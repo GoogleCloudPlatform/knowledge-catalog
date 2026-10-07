@@ -491,7 +491,7 @@ describe('node views: golden DDL', () => {
     ].join('\n'));
   });
 
-  test('normalize on a typed date column compares natively', () => {
+  test('normalize casts the column to the bound type, whatever its declared type', () => {
     const m = model();
     const opp = m.entities[2];
     opp.fields.push({name: 'closedOn', type: 'Date', expression: 'closed_on'});
@@ -500,7 +500,29 @@ describe('node views: golden DDL', () => {
     };
     const {views} = lowerNodeViews(m, TARGET, []);
     expect(views.find(v => v.name === 'opportunity')!.ddl).toContain(
-        `IF(t.closed_on >= DATE '2024-03-25', t.won_amount * 100, t.won_amount) AS won_amount`);
+        `IF(CAST(t.closed_on AS DATE) >= DATE '2024-03-25', t.won_amount * 100, t.won_amount) AS won_amount`);
+  });
+
+  test('a DateTime field stored as a TIMESTAMP still compares (no DATETIME literal)', () => {
+    const m = model();
+    const opp = m.entities[2];
+    opp.fields.push({name: 'loggedAt', type: 'DateTime', expression: 'logged_at'});
+    opp.hydration = {
+      normalize: [{field: 'wonAmount', before: '2024-03-25', divideBy: 100, on: 'logged_at'}],
+    };
+    const ddl = lowerNodeViews(m, TARGET, []).views.find(v => v.name === 'opportunity')!.ddl;
+    expect(ddl).toContain(
+        `IF(CAST(t.logged_at AS DATE) < DATE '2024-03-25', t.won_amount / 100, t.won_amount) AS won_amount`);
+    expect(ddl).not.toContain('DATETIME');
+  });
+
+  test('a bound with a time part compares as TIMESTAMP', () => {
+    const m = model();
+    m.entities[2].hydration = {
+      normalize: [{field: 'wonAmount', before: '2024-03-25T12:00:00Z', divideBy: 100, on: 'created_at'}],
+    };
+    expect(lowerNodeViews(m, TARGET, []).views.find(v => v.name === 'opportunity')!.ddl).toContain(
+        `IF(CAST(t.created_at AS TIMESTAMP) < TIMESTAMP '2024-03-25T12:00:00Z', t.won_amount / 100, t.won_amount)`);
   });
 
   test('resolve against a vocabulary reads its members inline', () => {

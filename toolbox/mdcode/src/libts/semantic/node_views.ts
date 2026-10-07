@@ -32,7 +32,8 @@
 // Rule shapes:
 //   - grain        QUALIFY ROW_NUMBER() ... = 1, keeping the greatest latest_by
 //                  per key (ties, and `deterministic`, by a hash of the row).
-//   - normalize    IF(<on> < DATE '<d>', <col> / n, <col>); `after` is >=.
+//   - normalize    IF(CAST(<on> AS DATE) < DATE '<d>', <col> / n, <col>);
+//                  `after` is >=; a bound with a time part compares as TIMESTAMP.
 //   - resolve      the foreign key rewritten to the destination's key when the
 //                  recorded value matches (case-insensitively, trimmed) the
 //                  destination's key or a listed unique key: COALESCE(<key>,
@@ -508,22 +509,17 @@ function lookupSource(
   };
 }
 
-// The date comparison a normalize rule applies on.
-function normalizeCondition(
-    rule: NormalizeRule, onExpr: string, onType: Field['type']): string {
+// The date comparison a normalize rule applies on. The column is cast to the
+// bound's own type rather than trusting the model's field type: a model
+// DateTime is often stored as a TIMESTAMP (or a Date as a DATETIME), and
+// BigQuery compares none of these with the others' literals. A cast to DATE or
+// TIMESTAMP is valid from every one of the three, and a no-op on its own type.
+function normalizeCondition(rule: NormalizeRule, onExpr: string): string {
   const bound = (rule.before ?? rule.after)!;
   const op = rule.before !== undefined ? '<' : '>=';
-  const ts = isTimestampBound(bound);
-  const hasOffset = /(Z|[+-]\d{2}(:?\d{2})?)$/.test(bound) && ts;
-  if (onType === 'Date' && !ts) return `${onExpr} ${op} DATE '${bound}'`;
-  if (onType === 'DateTimeTz') {
-    return `${onExpr} ${op} TIMESTAMP '${bound}'`;
-  }
-  if (onType === 'DateTime' && !hasOffset) {
-    return `${onExpr} ${op} DATETIME '${bound}'`;
-  }
-  return ts ? `CAST(${onExpr} AS TIMESTAMP) ${op} TIMESTAMP '${bound}'` :
-              `CAST(${onExpr} AS DATE) ${op} DATE '${bound}'`;
+  return isTimestampBound(bound) ?
+      `CAST(${onExpr} AS TIMESTAMP) ${op} TIMESTAMP '${bound}'` :
+      `CAST(${onExpr} AS DATE) ${op} DATE '${bound}'`;
 }
 
 function viewDescription(
@@ -588,7 +584,7 @@ function tableViewSql(
                                                  `* ${rule.multiplyBy}`;
     exprs.set(
         rule.field,
-        `IF(${normalizeCondition(rule, on.expr, on.type)}, ${current} ${
+        `IF(${normalizeCondition(rule, on.expr)}, ${current} ${
             factor}, ${current})`);
   }
 
