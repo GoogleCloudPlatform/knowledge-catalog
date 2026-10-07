@@ -867,6 +867,8 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
       delete f.aiContext;
       delete f.importedExpression;  // vendor SQL is not persisted
       delete f.importedDialect;
+      delete f.dialects;
+      delete f.stringForm;
       delete f.customExtensions;
       // A default push omits the per-field `semantics` block, so the field
       // expression and the DIMENSION role are not persisted (they ride back
@@ -889,6 +891,8 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     floorAiContext(metric);
     delete metric.importedExpression;
     delete metric.importedDialect;
+    delete metric.dialects;
+    delete metric.stringForm;
     delete metric.customExtensions;
     delete metric.expression;  // omitted by a default push, like field ones
     // The metric aspect stores only a dataType (no metadataType), so it cannot
