@@ -28,7 +28,7 @@ import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validateExpressionReferences, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -612,18 +612,13 @@ async function prepareModels(
     return null;
   }
   let unprunedErrors: string[] = [];
+  const unprunedWarnings: string[] = [];
   if (opts.transpile) {
     const transpiled = await transpileModels(models);
     models = transpiled.models;
     for (const w of transpiled.warnings) report.warning(w);
   }
   if (prune) {
-    // Pruning reads which fields each metric uses, with the SQL parser.
-    const parserError = await sqlParserError();
-    if (parserError) {
-      report.error(parserError);
-      return null;
-    }
     // A profile's exclusions apply to the entity that names each one, which
     // the merged document cannot say on its own. Only a
     // pruned push applies them: a catalog-only push publishes the whole
@@ -635,16 +630,17 @@ async function prepareModels(
                                 model: applyProfileExclusions(
                                     model, excludedByDoc.get(document) ?? []),
                               }));
-    // Pruning can remove the field an inheritance or concrete-leaf rule is
-    // about, so those rules also run on the model before pruning.
-    unprunedErrors = validateInheritance(labeled(marked));
+    // Pruning can remove the field an inheritance, concrete-leaf, or
+    // expression-reference rule is about, so those rules also run on the
+    // model before pruning.
+    unprunedErrors = [
+      ...validateInheritance(labeled(marked)),
+      ...validateExpressionReferences(labeled(marked), false, unprunedWarnings),
+    ];
     const availability: AvailabilityReport[] = [];
     models = marked.map(({document, model}) => {
       const {model: pruned, report: r} = pruneUnavailable(model, profileName);
       availability.push(r);
-      for (const w of r.warnings) {
-        report.warning(`[${document}] profile '${profileName}': ${w}`);
-      }
       return {document, model: pruned};
     });
     // Pruning never removes an entity or a relationship: their key and join
@@ -668,13 +664,18 @@ async function prepareModels(
       }
     }
   }
+  const pushWarnings: string[] = [];
   // The pruned model can only repeat an unpruned error, so each is
   // reported once.
   const validationErrors = [...new Set([
     ...unprunedErrors,
     ...validatePushRequirements(
-        labeled(models), {targetOptional: !prune, fieldsPruned: prune}),
+        labeled(models),
+        {targetOptional: !prune, fieldsPruned: prune, warnings: pushWarnings}),
   ])];
+  for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
+    report.warning(w);
+  }
   if (validationErrors.length) {
     for (const e of validationErrors) report.error(e);
     return null;
@@ -781,6 +782,8 @@ export async function push(options: PushOptions): Promise<number> {
         }
       }
     }
+
+    if (!await sqlParserReady()) return 1;
 
     // Apply one binding profile to every model document, returning the docs
     // (or null after reporting an error): a profile file is applied to the

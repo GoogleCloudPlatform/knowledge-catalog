@@ -303,12 +303,10 @@ function placeMetric(
   let referenced = referencedEntities(expression, model);
 
   // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its
-  // expression; fall back to the declared attach entity when the IR provides
-  // one, so it can still be placed rather than dropped as "references no
-  // entity". The loader DERIVES metric.entity from the expression's qualifiers,
-  // so from a loaded model this never fires (no qualifier => no entity). It is
-  // the hand-built-IR path: an author sets metric.entity for a COUNT(*) to
-  // attach it (see the COUNT(*)-lowering tests).
+  // expression; fall back to `metric.entity` when the IR provides one (an
+  // authored `entity` in `0.2.0.dev0/google`, an entity inferred from another
+  // dialect entry, or hand-built IR), so it can still be placed rather than
+  // dropped as "references no entity".
   if (referenced.length === 0 && metric.entity) {
     referenced = [metric.entity];
   }

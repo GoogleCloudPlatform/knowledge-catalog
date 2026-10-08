@@ -13,12 +13,14 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {isColumnName, keysCoveredByColumns} from './sql_expr_utils';
+import {expressionSources, sourcesDialect} from './resolve_profiles';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
+import {SqlColumn} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -34,9 +36,17 @@ import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
 // author declared. Checks that read a field list have to stand down for such a
 // model (see validateConstraints).
+//
+// `warnings` collects non-fatal messages (such as an expression the SQL parser
+// could not read, whose field references were therefore not checked) for the
+// caller to print.
 export function validatePushRequirements(
     models: LoadedModel[],
-    opts: {targetOptional?: boolean; fieldsPruned?: boolean} = {}): string[] {
+    opts: {
+      targetOptional?: boolean;
+      fieldsPruned?: boolean;
+      warnings?: string[];
+    } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
@@ -108,25 +118,6 @@ export function validatePushRequirements(
       }
     }
 
-    // A model that targets a BigQuery graph must have every metric resolve to a
-    // single entity, or the metric cannot lower to a MEASURE and would be
-    // silently dropped from the graph. The loader sets metric.entity only when
-    // the expression resolves to exactly one entity, so an unset entity is the
-    // "references zero or multiple entities" case. Spanner Graph has no
-    // MEASURE, so it imposes no such requirement (its metrics are dropped by
-    // design).
-    if (deployInfo.bigQuery.length > 0) {
-      for (const metric of model.metrics ?? []) {
-        if (!metric.entity) {
-          errors.push(
-              `metric '${metric.name}' in model '${model.name}' (${
-                  document}) targets a BigQuery graph but does not resolve to a ` +
-              `single entity; set its attach entity or scope its expression to ` +
-              `one entity.`);
-        }
-      }
-    }
-
     // A model that targets a graph (BigQuery OR Spanner) must have every
     // relationship's join columns bound. The loader accepts a column-less
     // relationship so a purely logical model (an OWL import) loads and pushes
@@ -154,6 +145,12 @@ export function validatePushRequirements(
     errors.push(...validateInheritance([{document, model}]));
     errors.push(...validateColumnsAndRelationships(model, document));
     errors.push(...relationshipKeyErrors(model, document));
+    const exprErrors = validateExpressionReferences(
+        [{document, model}], !!opts.fieldsPruned, opts.warnings);
+    errors.push(...exprErrors);
+    if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
+      errors.push(...validateBigQueryMetrics(model, document, exprErrors));
+    }
 
     // An action reaches Knowledge Catalog only, so its checks are
     // target-independent: each parameter's type must resolve to something in
@@ -1024,16 +1021,313 @@ function relationshipKeyErrors(
   return errors;
 }
 
-// Every field each entity has, inherited ones included. Inheritance is resolved
-// through the same pass the graph legs use rather than by walking `extends`
-// here, so the two can never disagree about what a subtype has. The pass
-// clones, so it is skipped for a model that declares no inheritance.
+// Validates field and metric expressions when inheritance resolved cleanly:
+//   - For each metric:
+//     1. Reject a metric with no `authoredEntity` (or vanilla GOOGLE block
+//        `entity`) when its expressions, read together, reach no entity or
+//        more than one (or when the metric has no expression and no anchor).
+//     2. Reject when `authoredEntity ?? entity` does not name a declared
+//        entity (runs on every push).
+//     3. When `authoredEntity` is set and the expressions reference at least
+//        one entity, at least one of those must be `authoredEntity`.
+//     4. For every referenced entity, every field it is referenced with must
+//        be declared or inherited on that entity (gated on `!fieldsPruned`,
+//        and run before pruning).
+//     5. Reject a column reference with no entity qualifier, or a qualified
+//        reference whose qualifier is not a declared entity (including when it
+//        differs in case from a declared entity), in a metric expression.
+//   - For each field on each entity E:
+//     1. Reject any reference to an entity other than E.
+//     2. For references to E itself, every field named must be declared or
+//        inherited on E (gated on `!fieldsPruned`, and run before pruning).
+//
+// Exported so `commands.ts` can also run it on the unpruned model before
+// `pruneUnavailable` drops unbound fields and metrics on a graph push.
+export function validateExpressionReferences(
+    models: LoadedModel[], fieldsPruned = false,
+    warnings: string[] = []): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    const fieldsByEntity = ifResolvable(() => declaredFields(model));
+    if (!fieldsByEntity) continue;
+    const entityNames = [...fieldsByEntity.keys()];
+    const impliedDialect = sourcesDialect(model);
+    const addUnreadableWarning =
+        (what: string, total: number, unreadDialects: string[]) => {
+          if (!unreadDialects.length) return;
+          if (unreadDialects.length === total) {
+            warnings.push(
+                `${what} in model '${model.name}' (${document}): kcmd could ` +
+                `not read its SQL, so the fields it reads were not checked.`);
+          } else {
+            const listed = unreadDialects.map(d => `'${d}'`).join(', ');
+            const entryText = unreadDialects.length === 1 ?
+                'that entry reads' :
+                'those entries read';
+            warnings.push(
+                `${what} in model '${model.name}' (${document}): kcmd could ` +
+                `not read its ${listed} SQL, so the fields ${entryText} were ` +
+                `not checked.`);
+          }
+        };
+
+    for (const entity of model.entities ?? []) {
+      const others = entityNames.filter(n => n !== entity.name);
+      const knownFields = fieldsByEntity.get(entity.name)!;
+      for (const field of entity.fields ?? []) {
+        const sources = expressionSources(field);
+        const allColumns: SqlColumn[] = [];
+        const unreadDialects: string[] = [];
+        for (const {text, dialect} of sources) {
+          const columns = columnsForSource(text, dialect, impliedDialect);
+          if (!columns) {
+            unreadDialects.push(dialect);
+            continue;
+          }
+          allColumns.push(...columns);
+        }
+        addUnreadableWarning(
+            `field '${entity.name}.${field.name}'`, sources.length,
+            unreadDialects);
+        for (const other of others) {
+          const refs = fieldsReadOn(allColumns, other);
+          if (refs.length) {
+            errors.push(
+                `field '${entity.name}.${field.name}' in model '${
+                    model.name}' (${document}) references entity '${
+                    other}' ('${other}.${
+                    refs[0]}'); a field expression may only reference its ` +
+                `own entity '${
+                    entity.name}' or unqualified columns of its backing ` +
+                `table.`);
+          }
+        }
+        if (!fieldsPruned) {
+          for (const ref of fieldsReadOn(allColumns, entity.name)) {
+            if (!knownFields.has(ref)) {
+              errors.push(
+                  `field '${entity.name}.${field.name}' in model '${
+                      model.name}' (${document}) references '${
+                      entity.name}.${ref}', which is not a declared or ` +
+                  `inherited field of '${entity.name}'.`);
+            }
+          }
+        }
+      }
+    }
+
+    for (const metric of model.metrics ?? []) {
+      const sources = expressionSources(metric);
+      const allColumns: SqlColumn[] = [];
+      const unreadDialects: string[] = [];
+      for (const {text, dialect} of sources) {
+        const columns = columnsForSource(text, dialect, impliedDialect);
+        if (!columns) {
+          unreadDialects.push(dialect);
+          continue;
+        }
+        allColumns.push(...columns);
+      }
+      addUnreadableWarning(
+          `metric '${metric.name}'`, sources.length, unreadDialects);
+
+      const googleEntity = googleMetricEntity(metric);
+      const authored = metric.authoredEntity ?? googleEntity;
+      const anchor = authored ?? metric.entity;
+      const reached = entitiesReached(allColumns, entityNames);
+
+      if (sources.length === 0) {
+        if (anchor === undefined) {
+          errors.push(
+              `metric '${metric.name}' in model '${model.name}' (${
+                  document}) has no expression and no 'entity' anchor; ` +
+              `supply an expression or set 'entity' on the metric.`);
+        }
+      } else if (
+          !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
+          !authored && reached.length > 1) {
+        const isVanilla = isVanillaModel(model);
+        const fixHint = isVanilla ?
+            `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
+            `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
+            `metric) or scope its expression to one entity.` :
+            `set 'entity' on the metric or scope its expression to one entity.`;
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) has no 'entity' anchor and its expression${
+                reached.length === 0 ?
+                    ' reaches no declared entity' :
+                    ` reaches multiple entities (${reached.join(', ')})`}, ` +
+            `so it does not resolve to a single entity; ${fixHint}`);
+      }
+
+      if (anchor !== undefined && !fieldsByEntity.has(anchor)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}): entity '${
+                anchor}' is not declared in the model.`);
+      }
+
+      if (authored !== undefined && fieldsByEntity.has(authored) &&
+          reached.length > 0 && !reached.includes(authored)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) is anchored to entity '${
+                authored}', but its expression only references ${
+                reached.map(e => `'${e}'`).join(', ')}; the anchor ` +
+            `contradicts the SQL.`);
+      }
+
+      if (!fieldsPruned) {
+        for (const entityName of reached) {
+          const knownFields = fieldsByEntity.get(entityName)!;
+          for (const ref of fieldsReadOn(allColumns, entityName)) {
+            if (!knownFields.has(ref)) {
+              errors.push(
+                  `metric '${metric.name}' in model '${model.name}' (${
+                      document}): expression references '${entityName}.${
+                      ref}', but entity '${entityName}' has no field '${
+                      ref}'; metric expressions must reference declared ` +
+                  `fields, not physical columns.`);
+            }
+          }
+        }
+      }
+
+      const seenUnqualified = new Set<string>();
+      for (const col of allColumns) {
+        if (col.qualifier !== undefined &&
+            (fieldsByEntity.has(col.qualifier) || col.qualifier === anchor)) {
+          continue;
+        }
+        const token = col.qualifier !== undefined ?
+            `${col.qualifier}.${col.name}` :
+            col.name;
+        if (seenUnqualified.has(token)) continue;
+        seenUnqualified.add(token);
+        if (col.qualifier === undefined) {
+          errors.push(
+              `metric '${metric.name}' in model '${model.name}' (${
+                  document}): '${token}' must be written as ` +
+              `'entity.field'; a metric reads fields, never columns.`);
+        } else {
+          const sameNameOtherCase = entityNames.find(
+              n => n.toLowerCase() === col.qualifier!.toLowerCase());
+          if (sameNameOtherCase) {
+            errors.push(
+                `metric '${metric.name}' in model '${model.name}' (${
+                    document}): '${token}' uses qualifier '${
+                    col.qualifier}', which differs in case from entity '${
+                    sameNameOtherCase}'; entity names are case-sensitive.`);
+          } else {
+            errors.push(
+                `metric '${metric.name}' in model '${model.name}' (${
+                    document}): '${token}' has qualifier '${
+                    col.qualifier}', which is not a declared entity in ` +
+                `model '${model.name}'; write 'entity.field' starting with ` +
+                `a declared entity.`);
+          }
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+// Temporary BigQuery-only metric check until b/568183888 moves the BigQuery
+// generator (`bigquery.ts`) to the SQL parser and stops its vendor-SQL
+// fallback. Rejects a metric that the BigQuery generator would either fill with
+// untranspiled vendor SQL or drop because its regex (`referencedEntityNames`)
+// disagrees with the parser or because `metric.entity` is unset. Reports only
+// metrics that `validateExpressionReferences` has not already flagged.
+function validateBigQueryMetrics(
+    model: SemanticModel, document: string,
+    alreadyReported: ReadonlyArray<string>): string[] {
+  const errors: string[] = [];
+  const entityNames = (model.entities ?? []).map(e => e.name);
+  for (const metric of model.metrics ?? []) {
+    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
+    if (alreadyReported.some(e => e.startsWith(prefix))) continue;
+    if (metric.expression === undefined &&
+        metric.importedExpression !== undefined) {
+      errors.push(
+          `${prefix} targets a BigQuery graph with only a '${
+              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
+      continue;
+    }
+    const expr = metric.expression ?? metric.importedExpression ?? '';
+    let referenced = referencedEntityNames(expr, entityNames);
+    if (referenced.length === 0 && metric.entity) {
+      referenced = [metric.entity];
+    }
+    if (referenced.length > 1) {
+      errors.push(
+          `${prefix} targets a BigQuery graph and references multiple ` +
+          `entities (${referenced.join(', ')}); the BigQuery generator ` +
+          `scans raw expression text (including comments and function ` +
+          `namespaces) for '<entity>.' qualifiers, so remove the extra ` +
+          `'<entity>.' match or scope its expression to one entity.`);
+    } else if (referenced.length === 0) {
+      errors.push(
+          `${prefix} targets a BigQuery graph but does not resolve to a ` +
+          `single entity; the BigQuery generator reads '<entity>.' ` +
+          `qualifiers in the expression or top-level 'entity' (in ` +
+          `'0.2.0.dev0/google', not a GOOGLE custom_extensions block).`);
+    }
+  }
+  return errors;
+}
+
+// True when `model` was loaded from a vanilla `0.2.0.dev0` document (in which
+// top-level `entity` on a metric is rejected by the loader, and
+// custom_extensions carries a GOOGLE block instead).
+function isVanillaModel(model: SemanticModel): boolean {
+  if (model.version !== undefined) return model.version === '0.2.0.dev0';
+  const hasGoogleBlock = (exts?: ReadonlyArray<{vendorName: string}>) =>
+      (exts ?? []).some(e => e.vendorName === 'GOOGLE');
+  return !model.deployments &&
+      (hasGoogleBlock(model.customExtensions) ||
+       (model.metrics ?? []).some(m => hasGoogleBlock(m.customExtensions)));
+}
+
+// In a vanilla 0.2.0.dev0 document a metric states its anchor inside its
+// GOOGLE custom_extensions block until b/568397001 teaches the loader to read
+// it.
+function googleMetricEntity(metric: Metric): string|undefined {
+  for (const ext of metric.customExtensions ?? []) {
+    if (ext.vendorName !== 'GOOGLE') continue;
+    try {
+      const parsed = JSON.parse(ext.data);
+      if (parsed && typeof parsed === 'object' &&
+          typeof parsed.entity === 'string' && parsed.entity.trim()) {
+        return parsed.entity;
+      }
+    } catch {
+      // Ignore malformed JSON here; if relevant, other checks report it.
+    }
+  }
+  return undefined;
+}
+
+// Every field each entity has, inherited and profile-excluded ones included so
+// an unpruned check before `pruneUnavailable` does not report a profile-excluded
+// inherited field as undeclared. Inheritance is resolved through the same pass
+// the graph legs use rather than by walking `extends` here, so the two can
+// never disagree about what a subtype has. The pass clones, so it is skipped
+// for a model that declares no inheritance.
 function declaredFields(model: SemanticModel): Map<string, Set<string>> {
   const inherits = (model.entities ?? []).some(e => e.extends?.length);
   const entities =
       (inherits ? resolveInheritance(model).model : model).entities ?? [];
-  return new Map(
-      entities.map(e => [e.name, new Set((e.fields ?? []).map(f => f.name))]));
+  return new Map(entities.map(
+      e => [
+        e.name,
+        new Set([
+          ...(e.fields ?? []).map(f => f.name),
+          ...(e.excludedFields ?? []),
+        ]),
+      ]));
 }
 
 // The executor coordinate fields that are absent or blank. An executor with no

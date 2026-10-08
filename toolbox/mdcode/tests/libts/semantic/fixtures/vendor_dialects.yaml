@@ -32,37 +32,47 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: o_custkey
+          - name: o_orderstatus
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_orderstatus
+          - name: o_totalprice
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: o_totalprice
           - name: order_status_label
             description: Human-readable order status
             expression:
               dialects:
                 - dialect: SNOWFLAKE
-                  expression: "IFF(orders.o_orderstatus = 'F', 'fulfilled', 'open')"
+                  expression: "IFF(o_orderstatus = 'F', 'fulfilled', 'open')"
           - name: clerk_name
             expression:
               dialects:
                 - dialect: SNOWFLAKE
-                  expression: "NVL(orders.o_clerk, 'unknown')"
+                  expression: "NVL(o_clerk, 'unknown')"
           - name: comment_text
             expression:
               dialects:
                 - dialect: DATABRICKS
-                  expression: "orders.o_comment::text"
+                  expression: "o_comment::text"
           - name: price_float
             expression:
               dialects:
                 - dialect: DATABRICKS
-                  expression: "orders.o_totalprice::double"
+                  expression: "o_totalprice::double"
           - name: due_date
             expression:
               dialects:
                 - dialect: SNOWFLAKE
-                  expression: "DATEADD(day, 7, orders.o_orderdate)"
+                  expression: "DATEADD(day, 7, o_orderdate)"
           - name: ship_days
             expression:
               dialects:
                 - dialect: SNOWFLAKE
-                  expression: "DATEDIFF(day, orders.o_orderdate, orders.o_shipdate)"
+                  expression: "DATEDIFF(day, o_orderdate, o_shipdate)"
       - name: customer
         source: samples.tpch.customer
         primary_key: [c_custkey]
@@ -76,12 +86,12 @@ semantic_model:
             expression:
               dialects:
                 - dialect: SNOWFLAKE
-                  expression: "REGEXP_LIKE(customer.c_phone, '[0-9]+')"
+                  expression: "REGEXP_LIKE(c_phone, '[0-9]+')"
           - name: is_auto_segment
             expression:
               dialects:
                 - dialect: DATABRICKS
-                  expression: "customer.c_mktsegment ILIKE 'AUTO%'"
+                  expression: "c_mktsegment ILIKE 'AUTO%'"
     relationships:
       - name: orders_to_customer
         from: orders

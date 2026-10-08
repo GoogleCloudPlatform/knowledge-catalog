@@ -58,7 +58,7 @@ import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {BIGLAKE_TABLE_URI, BIGQUERY_TABLE_URI, catalogNameSegments} from './loader';
-import {referencedEntityNames} from './sql_expr_utils';
+import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -299,7 +299,14 @@ function readMetric(
   const metric: Metric = {name};
   if (data.expression !== undefined) metric.expression = data.expression;
   const exprForRefs = data.expression ?? '';
-  const referenced = referencedEntityNames(exprForRefs, entityNames);
+  const cols = exprForRefs ? columnReferences(exprForRefs, 'BIGQUERY') : [];
+  if (cols === undefined) {
+    warnings.push(
+        `metric '${name}': expression could not be parsed; entity inference ` +
+        `was skipped (set 'entity' on the metric, or backtick-quote a ` +
+        `reserved qualifier, such as \`Date\`.amount)`);
+  }
+  const referenced = entitiesReached(cols ?? [], entityNames);
   const persistedEntity =
       typeof data.entity === 'string' && data.entity !== '' ? data.entity :
                                                               undefined;
@@ -312,7 +319,7 @@ function readMetric(
     // fall back to the attach entity the emitter persisted (metricAspectData)
     // rather than dropping it.
     metric.entity = persistedEntity;
-  } else if (exprForRefs && !referenced.length) {
+  } else if (cols !== undefined && exprForRefs && !referenced.length) {
     // Parity with the loader's convertMetric: an expression that qualifies no
     // known entity is flagged as potentially unplaceable downstream.
     warnings.push(

@@ -2870,7 +2870,7 @@ describe('a document mistake versus a bug', () => {
 
   test('a load does not report a bug as a model error', () => {
     const spy =
-        spyOn(sqlUtils, 'referencedEntityNames').mockImplementation(boom);
+        spyOn(sqlUtils, 'columnReferences').mockImplementation(boom);
     try {
       expect(() => loadSemanticModels([{name: 'shop', text: `version: "0.2.0.dev0/google"
 semantic_model:

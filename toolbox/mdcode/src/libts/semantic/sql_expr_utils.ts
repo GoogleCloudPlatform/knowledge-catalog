@@ -1,11 +1,12 @@
-// Literal-aware helpers for the entity-qualified SQL expressions used across the
+// Helpers for reading and rewriting entity-qualified SQL expressions across the
 // semantic-model layer.
 //
-// Expressions reference columns as `<Entity>.<column>`. Detecting and stripping
-// those qualifiers must ignore text inside string literals, so a value such as
-// 'orders.note' is treated as data, not as a reference to the `orders` entity.
-// Both the loader (metric-entity inference) and the BigQuery generator (measure
-// placement / qualifier stripping) share this one implementation.
+// Expressions reference columns as `<Entity>.<column>`. The SQL parser
+// (`columnReferences`, `entitiesReached`, `fieldsReadOn`) reads column and
+// entity references across dialects for the loader, validator, profile checks,
+// pull reader, and transpiler. The BigQuery generator still uses the literal-
+// aware regex helpers (`referencedEntityNames`, `stripQualifier`) until
+// b/568183888 moves it to the parser.
 //
 
 import {Entity, fieldBinding, keysCoveredBy} from './ir';
@@ -51,18 +52,15 @@ function entityQualifier(name: string, flags = ''): RegExp {
   return new RegExp(`(?<![\\w\`.])\`?${escapeRegExp(name)}\`?\\.`, flags);
 }
 
-// Returns the entity names whose `<name>.` qualifier appears in an expression, in
-// the order they first appear, ignoring text inside string literals. Matching is
-// case-sensitive by default (the emitter's behavior); pass `caseInsensitive` to
-// detect a qualifier regardless of how it was cased.
+// Returns the entity names whose `<name>.` qualifier appears in an expression,
+// in the order they first appear, ignoring text inside string literals.
+// Matching is case-sensitive (the emitter's behavior).
 export function referencedEntityNames(
-    expression: string, entityNames: string[],
-    opts: { caseInsensitive?: boolean } = {}): string[] {
+    expression: string, entityNames: string[]): string[] {
   const scannable = blankStringLiterals(expression);
-  const flags = opts.caseInsensitive ? 'i' : '';
   const hits: Array<{ name: string; at: number }> = [];
   for (const name of entityNames) {
-    const m = entityQualifier(name, flags).exec(scannable);
+    const m = entityQualifier(name).exec(scannable);
     if (m) hits.push({ name, at: m.index });
   }
   return hits.sort((a, b) => a.at - b.at).map(h => h.name);
@@ -113,6 +111,44 @@ export function keysCoveredByColumns(
 export function columnReferences(expression: string, dialect: string):
     SqlColumn[]|undefined {
   return sqlColumns(expression, dialect);
+}
+
+// Reads the columns of `text` in `dialect`. An `ANSI_SQL` text is read in the
+// dialect the model's sources imply (`impliedDialect`), since the database runs
+// an `ANSI_SQL` entry as its own SQL. When the sources do not imply a single
+// dialect, the generic parser reads the text, and any bare identifier that
+// BigQuery's parser does not also read as a bare column (such as a `MONTH`
+// date part or a double-quoted string literal) is filtered out.
+export function columnsForSource(
+    text: string, dialect: string,
+    impliedDialect?: string): SqlColumn[]|undefined {
+  if (dialect === 'ANSI_SQL' && impliedDialect) {
+    return columnReferences(text, impliedDialect);
+  }
+  const cols = columnReferences(text, dialect);
+  if (!cols || dialect !== 'ANSI_SQL') return cols;
+  const bqCols = columnReferences(text, 'BIGQUERY');
+  if (!bqCols) return cols;
+  const bqBare =
+      new Set(bqCols.filter(c => c.qualifier === undefined).map(c => c.name));
+  return cols.filter(c => c.qualifier !== undefined || bqBare.has(c.name));
+}
+
+// The entities from `entityNames` that `columns` read, deduplicated in
+// first-seen order. Matching is case-sensitive.
+export function entitiesReached(
+    columns: ReadonlyArray<SqlColumn>,
+    entityNames: ReadonlyArray<string>|ReadonlySet<string>): string[] {
+  const known =
+      entityNames instanceof Set ? entityNames : new Set(entityNames);
+  const reached: string[] = [];
+  for (const c of columns) {
+    if (c.qualifier && known.has(c.qualifier) &&
+        !reached.includes(c.qualifier)) {
+      reached.push(c.qualifier);
+    }
+  }
+  return reached;
 }
 
 // The fields `columns` read on `entityName`, written `entityName.field`,

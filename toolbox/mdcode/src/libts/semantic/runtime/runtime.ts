@@ -23,6 +23,7 @@ import {SemanticModel} from '../ir';
 import {deploymentProfileError, loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, unknownProfileMessage} from '../resolve_profiles';
+import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store} from './store';
 
@@ -116,6 +117,12 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   const docs = layout.modelDocuments();
   if (!docs.length) return {error: 'no semantic model documents found.'};
+
+  try {
+    await loadSqlEngine();
+  } catch (err: any) {
+    return {error: `${err?.message ?? err}`};
+  }
 
   const merged: Array<{name: string; text: string; allowLegacyBareSource?: boolean}> = [];
   const excludedByDoc = new Map<string, ProfileExclusion[]>();

@@ -461,13 +461,14 @@ export interface Metric {
   dialects?: DialectExpression[];  // every entry, in the order written
   stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // The single entity this metric attaches to -- the node it hangs off -- when
-  // its `expression` references exactly one. NOT part of the open format
-  // (Ossie's Metric has no such field): the loader DERIVES it by scanning the
-  // expression for known `entity.column` qualifiers (see
-  // referencedEntityNames). Omitted when the expression names no known entity
-  // (e.g. `COUNT(*)`; the loader warns) or references several -- a cross-entity
-  // metric whose join path consumers resolve from the model's relationships
-  // (the qualifiers stay inline in the expression).
+  // its expressions reference exactly one across all dialect entries (or when
+  // the author states `entity` on the metric). NOT part of the open format
+  // (Ossie's Metric has no such field): the loader DERIVES it by parsing the
+  // metric's expressions with `columnReferences` and collecting the known
+  // entity qualifiers (see `entitiesReached`). Omitted when the expressions
+  // name no known entity (e.g. `COUNT(*)`; the loader warns) or reference
+  // several -- a cross-entity metric whose join path consumers resolve from the
+  // model's relationships (the qualifiers stay inline in the expression).
   entity?: string;
   authoredEntity?: string;          // an anchor the author wrote, vs one inferred
   description?: string;

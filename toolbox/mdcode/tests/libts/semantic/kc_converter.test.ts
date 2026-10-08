@@ -727,7 +727,7 @@ describe('metric attach entity is re-derived from the expression', () => {
       });
 
   test(
-      'infers metric entity from the leading qualifier of a struct path',
+      'infers metric entity from the leading qualifier of a struct path and ignores function namespaces like NET.HOST',
       () => {
         const model: SemanticModel = {
           name: 'sales',
@@ -736,10 +736,16 @@ describe('metric attach entity is re-derived from the expression', () => {
               name: 'orders',
               dataSource: 'p.d.orders',
               keys: ['o_id'],
-              fields: [{
-                name: 'shipping_address',
-                expression: 'orders.shipping_address',
-              }],
+              fields: [
+                {
+                  name: 'shipping_address',
+                  expression: 'orders.shipping_address',
+                },
+                {
+                  name: 'url',
+                  expression: 'orders.url',
+                },
+              ],
             },
             {
               name: 'shipping_address',
@@ -747,16 +753,55 @@ describe('metric attach entity is re-derived from the expression', () => {
               keys: ['addr_id'],
               fields: [{name: 'city', expression: 'shipping_address.city'}],
             },
+            {
+              name: 'NET',
+              dataSource: 'p.d.net',
+              keys: ['n_id'],
+              fields: [{name: 'HOST', expression: 'NET.HOST'}],
+            },
           ],
           relationships: [],
-          metrics: [{
-            name: 'city_count',
-            expression: 'COUNT(orders.shipping_address.city)',
-          }],
+          metrics: [
+            {
+              name: 'city_count',
+              expression: 'COUNT(orders.shipping_address.city)',
+            },
+            {
+              name: 'host_count',
+              expression: 'COUNT(DISTINCT NET.HOST(orders.url))',
+            },
+          ],
         };
         const {models, warnings} = roundTripFull(model);
         expect(models[0].metrics[0].entity).toBe('orders');
+        expect(models[0].metrics[1].entity).toBe('orders');
         expect(warnings).toEqual([]);
+      });
+
+  test(
+      'warns when a metric expression cannot be parsed and does not also emit the no-known-entity warning',
+      () => {
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.orders',
+            keys: ['o_id'],
+            fields: [{name: 'amt', expression: 'orders.amt'}],
+          }],
+          relationships: [],
+          metrics: [{
+            name: 'broken',
+            expression: 'SUM(orders.amt',
+          }],
+        };
+        const {models, warnings} = roundTripFull(model);
+        expect(models[0].metrics[0].entity).toBeUndefined();
+        expect(warnings).toEqual([
+          "metric 'broken': expression could not be parsed; entity inference " +
+          "was skipped (set 'entity' on the metric, or backtick-quote a " +
+          "reserved qualifier, such as `Date`.amount)",
+        ]);
       });
 });
 

@@ -1538,6 +1538,63 @@ semantic_model:
       expect(warnings).toEqual([]);
     }
   });
+  test('does not mistake a function namespace like NET.HOST for an entity qualifier, infers entity across dialect entries, and warns with fix hint when an expression cannot be parsed', () => {
+    const netYaml = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [o_id]
+        fields:
+          - { name: url, expression: orders.url }
+          - { name: order_date, expression: orders.order_date }
+          - { name: flags, expression: orders.flags }
+      - name: NET
+        source: bigquery:p.d.net
+        primary_key: [n_id]
+        fields:
+          - { name: HOST, expression: NET.HOST }
+    metrics:
+      - name: host_count
+        expression: "COUNT(DISTINCT NET.HOST(orders.url))"
+      - name: multi_dialect_count
+        expression:
+          dialects:
+            - { dialect: BIGQUERY, expression: "COUNT(*)" }
+            - { dialect: SNOWFLAKE, expression: "COUNT(orders.url)" }
+      - name: recent_count
+        expression: 'COUNTIF(orders.order_date >= DATE "2024-01-01")'
+      - name: flagged_sum
+        expression: "SUM(orders.flags & 0x1)"
+      - name: anchored_broken
+        entity: orders
+        expression: "SUM(orders.url"
+      - name: inferred_from_other_dialect
+        expression:
+          dialects:
+            - { dialect: BIGQUERY, expression: "COUNT(orders.url)" }
+            - { dialect: SNOWFLAKE, expression: "SUM(orders.url" }
+`;
+    const netLoaded = loadModels(netYaml);
+    expect(netLoaded.models[0].metrics.map(m => m.entity)).toEqual([
+      'orders', 'orders', 'orders', 'orders', 'orders', 'orders',
+    ]);
+    expect(netLoaded.warnings).toEqual([]);
+
+    const unparseable = load(GOOGLE, fullModel('metric', { expression: expr('SUM(orders.id') }));
+    expect(unparseable.warnings).toContain(
+        "metric 'order_count': expression could not be parsed; entity inference was " +
+        "skipped (set 'entity' on the metric, or backtick-quote a reserved " +
+        "qualifier, such as `Date`.amount)");
+    expect(unparseable.warnings.some(w => w.includes('references no known entity'))).toBe(false);
+
+    const vanillaUnparseable = load(VANILLA, fullModel('metric', { expression: expr('SUM(orders.id') }));
+    expect(vanillaUnparseable.warnings).toContain(
+        "metric 'order_count': expression could not be parsed; entity inference was " +
+        "skipped (use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
+        "backtick-quote a reserved qualifier, such as `Date`.amount)");
+  });
 });
 
 describe('datatype casing follows the flavor', () => {

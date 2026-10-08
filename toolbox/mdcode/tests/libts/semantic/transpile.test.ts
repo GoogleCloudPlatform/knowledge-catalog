@@ -7,9 +7,10 @@
 // @polyglot-sql/sdk adapter is exercised separately in
 // transpile.polyglot.test.ts and end-to-end in transpile.e2e.test.ts.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import * as sqlParser from '../../../src/libts/semantic/sql_parser';
 import {SqlTranspiler, transpileModel, transpileModels, TranspileRequest,} from '../../../src/libts/semantic/transpile';
 
 // Builds a one-entity, one-metric model whose interesting fields/metric carry
@@ -58,9 +59,12 @@ function fakeTranspiler(
 
 describe('transpileModel', () => {
   test('fills a missing target expression from the imported form', async () => {
+    const loadSpy = spyOn(sqlParser, 'loadSqlEngine');
     const {transpiler} = fakeTranspiler(() => 'IF(orders.s = 1, 1, 0)');
     const {model, warnings} = await transpileModel(baseModel(), {transpiler});
 
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    loadSpy.mockRestore();
     const label = model.entities[0].fields[1];
     expect(label.expression).toBe('IF(orders.s = 1, 1, 0)');
     // The imported form is retained (round-trip fidelity; the KC leg may emit
@@ -352,6 +356,20 @@ describe('transpileModel', () => {
         });
         expect(out.metrics[0].expression).toBe('COUNT(orders.Customer.id)');
         expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
+      });
+
+  test(
+      'warns and keeps transpiled SQL when the qualifier check cannot parse the transpiled output',
+      async () => {
+        const {model: out, warnings} = await transpileModel(baseModel(), {
+          transpiler: async reqs =>
+              reqs.map(r => ({id: r.id, sql: 'SUM(orders.amt'})),
+        });
+        expect(out.metrics[0].expression).toBe('SUM(orders.amt');
+        expect(warnings.some(
+                   w => w.includes(`metric 'rev'`) &&
+                       w.includes('could not be parsed; qualifier check was skipped')))
+            .toBe(true);
       });
 });
 

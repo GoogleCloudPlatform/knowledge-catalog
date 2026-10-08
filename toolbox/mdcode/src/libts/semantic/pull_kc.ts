@@ -25,6 +25,7 @@ import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
 import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy} from './kc_custom_types';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
+import {loadSqlEngine} from './sql_parser';
 
 export interface KcPullOptions {
   // Project that owns the source entry group.
@@ -66,6 +67,7 @@ const SCHEMA_JOIN_LINK_TYPE =
 // -- throw, so the pull aborts rather than write a partial model.
 export async function pullKnowledgeCatalog(
     cat: CatalogClient, opts: KcPullOptions): Promise<KcPullResult> {
+  await loadSqlEngine();
   const destination = `${opts.project}.${opts.location}.${opts.entryGroup}`;
   const warnings: string[] = [];
 

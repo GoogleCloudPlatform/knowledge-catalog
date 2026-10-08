@@ -36,7 +36,7 @@
 import {Field, Metric, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 import {loadSqlEngine, PolyglotEngine} from './sql_parser';
-import {referencedEntityNames} from './sql_expr_utils';
+import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -99,6 +99,11 @@ function needsTranspile(node: Field|Metric): node is(Field | Metric)&{
  * `importedExpression` to `opts.target`, returning a clone plus diagnostics.
  * The input model is never mutated. When no node needs transpilation, the clone
  * is returned unchanged and the transpiler is not invoked.
+ *
+ * The qualifier-preservation guard parses the transpiled output with
+ * `columnReferences`, which requires the SQL parser to be loaded even when a
+ * custom `opts.transpiler` is injected (`loadSqlEngine()` is awaited before
+ * running the guard).
  */
 export async function transpileModel(
     model: SemanticModel,
@@ -150,6 +155,7 @@ export async function transpileModel(
 
   if (!pending.length) return {model: clone, warnings};
 
+  await loadSqlEngine();
   const responses = await transpiler(pending.map(p => p.request), target);
   const byId = new Map(responses.map(r => [r.id, r]));
 
@@ -167,25 +173,35 @@ export async function transpileModel(
     // strips qualifiers by matching `<Entity>.` case-sensitively (see
     // ./sql_expr_utils). A transpiler that re-cases a qualifier (`orders.` ->
     // `Orders.`) leaves SQL the emitter can no longer match, so the measure
-    // would silently drop or misplace. Detect that on the OUTPUT: every entity
-    // the transpiled SQL references case-insensitively must also be matched
-    // case-sensitively -- i.e. kept in the exact case the emitter needs.
-    // Comparing the output against itself (rather than the vendor input) avoids
-    // false positives from dialect-specific identifier quoting: the imported
-    // form may quote a qualifier in a way blankStringLiterals blanks (e.g.
-    // Snowflake double-quotes, which are string literals in GoogleSQL), so its
-    // qualifiers are invisible here anyway and are not a fair basis for
-    // comparison.
-    const emitterVisible = referencedEntityNames(res.sql, entityNames);
-    const anyCase =
-        referencedEntityNames(res.sql, entityNames, {caseInsensitive: true});
-    if (!sameSet(emitterVisible, anyCase)) {
+    // would silently drop or misplace. Detect that on the OUTPUT with
+    // `columnReferences`: every entity the transpiled SQL references
+    // case-insensitively must also be matched case-sensitively -- i.e. kept in
+    // the exact case the emitter needs. Comparing the output against itself
+    // (rather than the vendor input) avoids false positives from dialect-
+    // specific identifier quoting.
+    const cols = columnReferences(res.sql, target);
+    if (cols === undefined) {
       warnings.push(
-          `${ctx}: transpiled '${request.dialect}' -> '${
-              target}' but it re-cased an entity qualifier the emitter matches ` +
-          `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
-          `leaving the imported expression for the emitter`);
-      continue;
+          `${ctx}: transpiled '${request.dialect}' -> '${target}' could not ` +
+          `be parsed; qualifier check was skipped`);
+    } else {
+      const emitterVisible = entitiesReached(cols, entityNames);
+      const anyCase = [
+        ...new Set(
+            cols.flatMap(c => {
+              if (!c.qualifier) return [];
+              const lower = c.qualifier.toLowerCase();
+              return entityNames.filter(n => n.toLowerCase() === lower);
+            })),
+      ];
+      if (!sameSet(emitterVisible, anyCase)) {
+        warnings.push(
+            `${ctx}: transpiled '${request.dialect}' -> '${
+                target}' but it re-cased an entity qualifier the emitter matches ` +
+            `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
+            `leaving the imported expression for the emitter`);
+        continue;
+      }
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);

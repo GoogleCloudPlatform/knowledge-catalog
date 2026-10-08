@@ -14,7 +14,9 @@ import * as z from 'zod';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {referencedEntityNames} from './sql_expr_utils';
+import {sourcesDialect} from './resolve_profiles';
+import {columnsForSource, entitiesReached} from './sql_expr_utils';
+import {SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1198,19 +1200,57 @@ function keyWarning(entity: Pick<Entity, 'name'|'keys'|'abstract'>):
       undefined;
 }
 
-// The warning a metric gives when it states no `entity` and its expression
-// names none, so nothing says which entity it belongs to. An authored anchor
-// (Google flavor only) settles it, so a `COUNT(*)` with one is not warned
-// about.
+// Infers the entities a metric's expressions reach across all dialect entries,
+// and returns the warning the metric gives when an expression could not be
+// parsed or when it states no `entity` and its expressions name none. An
+// authored anchor (Google flavor only) settles which entity the metric belongs
+// to, so a `COUNT(*)` with one is not warned about.
 function metricEntityWarning(
     metric: Pick<
-        Metric, 'name'|'authoredEntity'|'expression'|'importedExpression'>,
-    entityNames: string[]): string|undefined {
-  if (metric.authoredEntity !== undefined) return undefined;
-  const text = metric.expression ?? metric.importedExpression ?? '';
-  if (referencedEntityNames(text, entityNames).length) return undefined;
-  return `metric '${metric.name}': expression references no known entity; ` +
-      `it may not be placeable downstream`;
+        Metric,
+        'name'|'authoredEntity'|'expression'|'importedExpression'|
+        'importedDialect'|'dialects'>,
+    entityNames: string[], preferred: string = DEFAULT_DIALECT,
+    impliedDialect?: string, version?: FormatVersion):
+    {referenced: string[]; warning?: string} {
+  const ctx = `metric '${metric.name}'`;
+  const sources: Array<{text: string; dialect: string}> =
+      (metric.dialects ?? [])
+          .map(d => ({text: d.expression, dialect: d.dialect}));
+  if (!sources.length) {
+    const text = metric.expression ?? metric.importedExpression ?? '';
+    const dialect = metric.expression !== undefined ?
+        preferred :
+        (metric.importedDialect ?? preferred);
+    if (text) sources.push({text, dialect});
+  }
+  const allCols: SqlColumn[] = [];
+  let unparsed = false;
+  for (const {text, dialect} of sources) {
+    if (!text) continue;
+    const cols = columnsForSource(text, dialect, impliedDialect);
+    if (cols === undefined) {
+      unparsed = true;
+    } else {
+      allCols.push(...cols);
+    }
+  }
+  const referenced = entitiesReached(allCols, entityNames);
+  if (metric.authoredEntity === undefined && !referenced.length) {
+    const entityHint = version === OSSIE_VERSION ?
+        `use version '${GOOGLE_VERSION}' and set 'entity' on the metric` :
+        `set 'entity' on the metric`;
+    return {
+      referenced,
+      warning: unparsed ?
+          `${ctx}: expression could not be parsed; entity inference was ` +
+              `skipped (${entityHint}, or backtick-quote a reserved ` +
+              `qualifier, such as \`Date\`.amount)` :
+          `${ctx}: expression references no known entity; ` +
+              `it may not be placeable downstream`,
+    };
+  }
+  return {referenced};
 }
 
 // Every warning a load gives about `model`'s entities and metrics, in the
@@ -1230,10 +1270,12 @@ export function entityAndMetricWarnings(
     }
   }
   const entityNames = (model.entities ?? []).map(e => e.name);
+  const impliedDialect = sourcesDialect(model);
   for (const m of model.metrics ?? []) {
     const w = expressionWarning(m, `metric '${m.name}'`, preferred);
     if (w) out.push(w);
-    const mw = metricEntityWarning(m, entityNames);
+    const {warning: mw} = metricEntityWarning(
+        m, entityNames, preferred, impliedDialect, model.version);
     if (mw) out.push(mw);
   }
   return [...new Set(out)];
@@ -1301,8 +1343,10 @@ function convertModel(
   rejectDuplicateNames(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
 
+  const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
-      mt => convertMetric(mt, version, entityNames, warnings, dialect));
+      mt => convertMetric(
+          mt, version, entityNames, warnings, dialect, impliedDialect));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`);
 
@@ -1620,22 +1664,23 @@ function convertRelationship(
 
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entityNames: string[],
-    warnings: string[], dialect: string): Metric {
+    warnings: string[], dialect: string, impliedDialect?: string): Metric {
   const ctx = `metric '${mt.name}'`;
   const {dialects, stringForm, picked} =
       convertExpression(mt.expression, version, dialect, ctx);
   const ew = expressionWarning({dialects, stringForm}, ctx, dialect);
   if (ew) warnings.push(ew);
-  // Infer referenced entities from whichever expression form we have; the
-  // imported form still carries the same entity qualifiers.
-  const exprForRefs = picked.expression ?? picked.importedExpression ?? '';
-  const referenced = referencedEntityNames(exprForRefs, entityNames);
-  const mw = metricEntityWarning({
-    name: mt.name,
-    authoredEntity: mt.entity,
-    expression: picked.expression,
-    importedExpression: picked.importedExpression,
-  }, entityNames);
+  // Infer referenced entities across all dialect entries of the metric.
+  const {referenced, warning: mw} = metricEntityWarning(
+      {
+        name: mt.name,
+        authoredEntity: mt.entity,
+        expression: picked.expression,
+        importedExpression: picked.importedExpression,
+        importedDialect: picked.importedDialect,
+        dialects,
+      },
+      entityNames, dialect, impliedDialect, version);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};
   if (mt.entity !== undefined) {

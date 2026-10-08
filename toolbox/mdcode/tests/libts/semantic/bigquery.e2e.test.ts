@@ -142,9 +142,16 @@ describe('a relationship to a keyless dataset', () => {
 // model push validation has accepted. A fixture that validation rejects would
 // pin output no real push produces, so every golden fixture must pass. The
 // deployment target is optional here: most fixtures exercise generation and
-// declare none.
+// declare none. `metric_skips.yaml` and `measure_lowering.yaml` exist
+// specifically to exercise how the generator skips or lowers a metric that push
+// validation rejects (unanchored multi-entity metrics and undeclared field
+// references), so they are excluded from this check.
+const GENERATOR_ONLY_FIXTURES = new Set([
+  'metric_skips.yaml',
+  'measure_lowering.yaml',
+]);
 describe('every golden fixture passes push validation', () => {
-  for (const fixture of CORPUS) {
+  for (const fixture of CORPUS.filter(f => !GENERATOR_ONLY_FIXTURES.has(f))) {
     test(fixture, () => {
       const {models} = loadFixture(fixture);
       expect(validatePushRequirements(

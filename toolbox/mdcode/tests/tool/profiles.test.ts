@@ -1391,15 +1391,11 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
     ]);
   });
 
-  test('reports a SQL parser that fails while push prunes', async () => {
+  test('reports a SQL parser that cannot load', async () => {
     writeScope({'commerce.yaml': commerce({targets: 1})});
-    const engine = await sqlParser.loadSqlEngine();
-    spyOn(sqlParser, 'loadSqlEngine')
-        .mockResolvedValueOnce(engine)
-        .mockRejectedValue(new Error('simulated'));
+    spyOn(sqlParser, 'loadSqlEngine').mockRejectedValue(new Error('simulated'));
     expect(await profiles()).toBe(1);
-    expect(rejects(section(NO_PROFILES)))
-        .toEqual(['the SQL parser could not be loaded: simulated']);
+    expect(errs).toContain('Error: the SQL parser could not be loaded: simulated');
   });
 });
 

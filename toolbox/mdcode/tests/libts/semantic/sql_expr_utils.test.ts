@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -79,6 +79,76 @@ describe('columnReferences', () => {
         .toEqual([{qualifier: 'orders', name: 'url'}]);
     expect(columnReferences('SUM(net_amount)', 'BIGQUERY'))
         .toEqual([{name: 'net_amount'}]);
+    for (const [fn, dialect] of [
+           ['DATEDIFF', 'DATABRICKS'],
+           ['DATEADD', 'DATABRICKS'],
+           ['DATE_DIFF', 'DATABRICKS'],
+           ['DATE_ADD', 'DATABRICKS'],
+           ['TIMESTAMPDIFF', 'MYSQL'],
+           ['TIMESTAMPADD', 'MYSQL'],
+           ['DATEDIFF', 'ANSI_SQL'],
+         ] as const) {
+      expect(columnReferences(
+                 `AVG(${fn}(DAY, orders.start_date, orders.end_date))`,
+                 dialect))
+          .toEqual([
+            {qualifier: 'orders', name: 'start_date'},
+            {qualifier: 'orders', name: 'end_date'},
+          ]);
+    }
+    // BigQuery's `DATE_DIFF(end_col, start_col, DAY)` puts the column first,
+    // so a bare column name in the first argument is still collected.
+    expect(columnReferences(
+               'AVG(DATE_DIFF(end_col, orders.start_date, DAY))', 'BIGQUERY'))
+        .toEqual([
+          {name: 'end_col'},
+          {qualifier: 'orders', name: 'start_date'},
+        ]);
+  });
+
+  test('ignores subquery/UNNEST/CTE/JOIN/OFFSET/SELECT aliases, subquery FROM bare columns, and lambda parameters', () => {
+    expect(columnReferences(
+               '(SELECT SUM(s.x) FROM UNNEST(orders.items) AS s)', 'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'items'}]);
+    expect(columnReferences(
+               '(SELECT SUM(x) FROM UNNEST(orders.items))', 'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'items'}]);
+    expect(columnReferences(
+               '(SELECT SUM(sub_col) FROM (SELECT orders.net_amount AS sub_col))',
+               'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'net_amount'}]);
+    expect(columnReferences(
+               '(SELECT SUM(x + orders.bad_field) FROM UNNEST(orders.items))',
+               'BIGQUERY'))
+        .toEqual([
+          {qualifier: 'orders', name: 'items'},
+          {qualifier: 'orders', name: 'bad_field'},
+        ]);
+    expect(columnReferences(
+               '(SELECT SUM(x) FROM UNNEST(bare_items))', 'BIGQUERY'))
+        .toEqual([{name: 'bare_items'}]);
+    expect(columnReferences(
+               '(WITH c AS (SELECT orders.id AS id) SELECT COUNT(c.id) FROM c)',
+               'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'id'}]);
+    expect(columnReferences(
+               '(SELECT SUM(j.x + off) FROM UNNEST(orders.items) AS i WITH OFFSET AS off JOIN UNNEST(orders.items) AS j ON i.id = j.id)',
+               'BIGQUERY'))
+        .toEqual([
+          {qualifier: 'orders', name: 'items'},
+          {qualifier: 'orders', name: 'items'},
+        ]);
+    expect(columnReferences(
+               '(SELECT orders.net_amount AS a FROM UNNEST(orders.items) GROUP BY a HAVING a > 0)',
+               'BIGQUERY'))
+        .toEqual([
+          {qualifier: 'orders', name: 'items'},
+          {qualifier: 'orders', name: 'net_amount'},
+        ]);
+    expect(columnReferences(
+               'AGGREGATE(orders.items, 0, (acc, e) -> acc + e.price)',
+               'DATABRICKS'))
+        .toEqual([{qualifier: 'orders', name: 'items'}]);
   });
 
   test('reads the expression a chained function call applies to', () => {
@@ -146,6 +216,15 @@ describe('columnReferences', () => {
   });
 });
 
+describe('entitiesReached', () => {
+  test('returns declared entities referenced in order without duplicates', () => {
+    const cols = columnReferences(
+        'orders.amount + customer.id + orders.tax + other.x', 'BIGQUERY')!;
+    expect(entitiesReached(cols, new Set(['orders', 'customer'])))
+        .toEqual(['orders', 'customer']);
+  });
+});
+
 describe('referencedEntityNames', () => {
   test('matches only the start of a dotted chain, never a struct subfield', () => {
     const entities = ['orders', 'shipping_address', 'customer'];
@@ -156,9 +235,6 @@ describe('referencedEntityNames', () => {
     expect(referencedEntityNames('orders.`shipping_address`.city', entities))
         .toEqual(['orders']);
     expect(referencedEntityNames("'orders.customer.id'", entities)).toEqual([]);
-    expect(referencedEntityNames(
-               'orders.Customer.id', entities, {caseInsensitive: true}))
-        .toEqual(['orders']);
   });
 });
 

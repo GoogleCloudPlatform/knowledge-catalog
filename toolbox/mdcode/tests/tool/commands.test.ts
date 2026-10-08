@@ -18,9 +18,10 @@ import {SemanticModel} from '../../src/libts/semantic/ir';
 import * as kcEmit from '../../src/libts/semantic/knowledge_catalog';
 import * as osi from '../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
+import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
-import {kcV2Aspects, pull, push} from '../../src/tool/commands';
+import {kcV2Aspects, profiles, pull, push} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -835,6 +836,101 @@ semantic_model:
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
         .toContain("(commerce, profile 'legacy')");
+  });
+
+  test('a metric reading an unbound field and a non-existent field is reported before pruning drops it', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+    entities:
+      - name: customer
+        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer, expression: id }
+          - { name: credit_limit, datatype: Decimal }
+    metrics:
+      - name: bad_metric
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: SUM(customer.credit_limit) + SUM(customer.non_existent)
+`);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    const code = await push({validateOnly: true, kc: false});
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .toContain("expression references 'customer.non_existent', but entity 'customer' has no field 'non_existent'");
+  });
+
+  test('an unparseable metric expression prints its unreadable-SQL warning only once on push, and entry points load the SQL engine', async () => {
+    writeWorkspace();
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: default, target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g }
+    entities:
+      - name: customer
+        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        primary_key: [id]
+        fields: [{ name: id, datatype: Integer, expression: id }]
+    metrics:
+      - name: broken_metric
+        entity: customer
+        expression: "SUM(customer.id"
+`);
+    spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const order: string[] = [];
+    const origLoad = sqlParser.loadSqlEngine;
+    const spy = spyOn(sqlParser, 'loadSqlEngine').mockImplementation(async () => {
+      order.push('loadSqlEngine');
+      return origLoad();
+    });
+    const origExprRefs = validateMod.validateExpressionReferences;
+    spyOn(validateMod, 'validateExpressionReferences')
+        .mockImplementation((...args) => {
+          order.push('validateExpressionReferences');
+          return origExprRefs(...args);
+        });
+    const origPushReqs = validateMod.validatePushRequirements;
+    spyOn(validateMod, 'validatePushRequirements')
+        .mockImplementation((...args) => {
+          order.push('validatePushRequirements');
+          return origPushReqs(...args);
+        });
+
+    expect(await push({validateOnly: true, kc: false})).toBe(0);
+    expect(warnSpy.mock.calls.map(c => String(c[0])).filter(m => m.includes('could not read its SQL')))
+        .toEqual([
+          "Warning: metric 'broken_metric' in model 'commerce' (commerce): kcmd " +
+          'could not read its SQL, so the fields it reads were not checked.',
+        ]);
+    expect(order).toEqual([
+      'loadSqlEngine',
+      'validateExpressionReferences',
+      'validatePushRequirements',
+      'validateExpressionReferences',
+    ]);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    await profiles();
+    await pullKc.pullKnowledgeCatalog(
+        {async *listEntries() {}} as any, {project: 'p', location: 'us', entryGroup: 'eg'});
+    await createSemanticRuntimes();
+    expect(spy).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -2009,8 +2105,8 @@ semantic_model:
     expect(await push({validateOnly: true})).toBe(1);
     expect(prints(console.warn))
         .toContain(
-            "Warning: [commerce] profile 'default': metric 'broken': kcmd " +
-            'could not read its SQL, so the fields it reads were not checked');
+            "Warning: metric 'broken' in model 'commerce' (commerce): kcmd " +
+            'could not read its SQL, so the fields it reads were not checked.');
   });
 
   test('a pruned push reports a SQL parser that cannot load', async () => {

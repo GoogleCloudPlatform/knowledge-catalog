@@ -95,7 +95,7 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
       oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
   if (!ast) return undefined;
   const columns: SqlColumn[] = [];
-  collectColumns(ast, columns);
+  collectColumns(ast, columns, new Set());
   return columns;
 }
 
@@ -122,9 +122,35 @@ function oneExpression(dialect: string, sql: string, kind?: string): unknown {
   return res.ast[0];
 }
 
-function collectColumns(node: unknown, out: SqlColumn[]): void {
+// Functions whose first argument is a date-part unit (such as `DAY` or `MONTH`)
+// that the parser represents as an unquoted bare `column` node in MySQL,
+// Databricks or generic ANSI SQL.
+const LEADING_DATE_PART_FUNCTIONS = new Set([
+  'DATEDIFF',
+  'DATEADD',
+  'DATE_ADD',
+  'DATE_DIFF',
+  'TIMESTAMPDIFF',
+  'TIMESTAMPADD',
+]);
+
+const DATE_PART_KEYWORDS = new Set([
+  'YEAR',        'YEARS',        'YYYY',        'YY',          'QUARTER',
+  'QUARTERS',    'QQ',           'Q',           'MONTH',       'MONTHS',
+  'MM',          'M',            'WEEK',        'WEEKS',       'WK',
+  'WW',          'DAYOFYEAR',    'DY',          'DOY',         'DAY',
+  'DAYS',        'DD',           'D',           'DAYOFWEEK',   'DW',
+  'WEEKDAY',     'HOUR',         'HOURS',       'HH',          'MINUTE',
+  'MINUTES',     'MI',           'N',           'SECOND',      'SECONDS',
+  'SS',          'S',            'MILLISECOND', 'MILLISECONDS', 'MS',
+  'MICROSECOND', 'MICROSECONDS', 'US',          'NANOSECOND',  'NANOSECONDS',
+  'NS',          'ISOWEEK',      'ISOYEAR',
+]);
+
+function collectColumns(
+    node: unknown, out: SqlColumn[], bound: ReadonlySet<string>): void {
   if (Array.isArray(node)) {
-    for (const item of node) collectColumns(item, out);
+    for (const item of node) collectColumns(item, out, bound);
     return;
   }
   if (!node || typeof node !== 'object') return;
@@ -133,9 +159,13 @@ function collectColumns(node: unknown, out: SqlColumn[]): void {
   if (keys.length === 1 && keys[0] === 'column' &&
       typeof obj.column?.name?.name === 'string') {
     const qualifier = obj.column.table?.name;
+    const name = obj.column.name.name;
+    if (typeof qualifier === 'string' ? bound.has(qualifier) : bound.has(name)) {
+      return;
+    }
     out.push({
       ...(typeof qualifier === 'string' ? {qualifier} : {}),
-      name: obj.column.name.name,
+      name,
     });
     return;
   }
@@ -152,13 +182,17 @@ function collectColumns(node: unknown, out: SqlColumn[]): void {
     if (typeof column?.name?.name === 'string') {
       const qualifier = column.table?.name;
       if (typeof qualifier === 'string') {
-        out.push({qualifier, name: column.name.name});
+        if (!bound.has(qualifier)) {
+          out.push({qualifier, name: column.name.name});
+        }
       } else if (typeof inner.field?.name === 'string') {
-        out.push({qualifier: column.name.name, name: inner.field.name});
+        if (!bound.has(column.name.name)) {
+          out.push({qualifier: column.name.name, name: inner.field.name});
+        }
       }
       return;
     }
-    collectColumns(obj.dot?.this, out);
+    collectColumns(obj.dot?.this, out, bound);
     return;
   }
   if (keys.length === 1 && keys[0] === 'method_call') {
@@ -167,11 +201,81 @@ function collectColumns(node: unknown, out: SqlColumn[]): void {
     // read. Any other receiver is the expression a chained call applies to, as
     // in `(orders.name).UPPER()` or `LOWER(orders.name).TRIM()`, and it is.
     const receiver = obj.method_call?.this;
-    if (!isNamePath(receiver)) collectColumns(receiver, out);
-    collectColumns(obj.method_call?.args, out);
+    if (!isNamePath(receiver)) collectColumns(receiver, out, bound);
+    collectColumns(obj.method_call?.args, out, bound);
     return;
   }
-  for (const value of Object.values(obj)) collectColumns(value, out);
+  if (keys.length === 1 && keys[0] === 'function') {
+    const fnName = String(obj.function?.name ?? '').toUpperCase();
+    const args: unknown[] =
+        Array.isArray(obj.function?.args) ? obj.function.args : [];
+    const col0 = (args[0] as any)?.column;
+    if (LEADING_DATE_PART_FUNCTIONS.has(fnName) && args.length >= 3 && col0 &&
+        col0.table == null && col0.name?.quoted === false &&
+        typeof col0.name?.name === 'string' &&
+        DATE_PART_KEYWORDS.has(col0.name.name.toUpperCase())) {
+      for (const arg of args.slice(1)) collectColumns(arg, out, bound);
+      return;
+    }
+  }
+  if (keys.length === 1 && keys[0] === 'lambda') {
+    const next = new Set(bound);
+    for (const p of obj.lambda?.parameters ?? []) {
+      if (typeof p?.name === 'string') next.add(p.name);
+    }
+    collectColumns(obj.lambda?.body, out, next);
+    return;
+  }
+  if (keys.length === 1 && keys[0] === 'select') {
+    const select = obj.select;
+    const next = new Set(bound);
+    for (const cte of select?.with?.ctes ?? []) {
+      if (typeof cte?.alias?.name === 'string') next.add(cte.alias.name);
+      collectColumns(cte?.this, out, next);
+    }
+    for (const expr of select?.from?.expressions ?? []) {
+      collectColumns(expr, out, next);
+      addSourceAliases(expr, next);
+    }
+    // Inside a subquery with its own `FROM` clause, a bare identifier in the
+    // remaining clauses may come from that `FROM` source (e.g. a derived
+    // table's column or an unaliased `UNNEST` field), so only qualified
+    // references outside `next` are kept.
+    const target: SqlColumn[] = select?.from ? [] : out;
+    for (const join of select?.joins ?? []) {
+      addSourceAliases(join?.this, next);
+      collectColumns(join, target, next);
+    }
+    for (const item of select?.expressions ?? []) {
+      if (typeof item?.alias?.alias?.name === 'string') {
+        next.add(item.alias.alias.name);
+      }
+    }
+    for (const [k, v] of Object.entries(select ?? {})) {
+      if (k !== 'with' && k !== 'from' && k !== 'joins') {
+        collectColumns(v, target, next);
+      }
+    }
+    if (select?.from) {
+      out.push(...target.filter(c => c.qualifier !== undefined));
+    }
+    return;
+  }
+  for (const value of Object.values(obj)) collectColumns(value, out, bound);
+}
+
+function addSourceAliases(source: any, bound: Set<string>): void {
+  if (typeof source?.alias?.alias?.name === 'string') {
+    bound.add(source.alias.alias.name);
+  }
+  const inner = source?.alias?.this ?? source;
+  for (const kind of ['unnest', 'table', 'subquery']) {
+    const node = inner?.[kind];
+    if (typeof node?.alias?.name === 'string') bound.add(node.alias.name);
+    if (typeof node?.offset_alias?.name === 'string') {
+      bound.add(node.offset_alias.name);
+    }
+  }
 }
 
 // Whether `node` is a name or a dotted run of names, such as `NET` or

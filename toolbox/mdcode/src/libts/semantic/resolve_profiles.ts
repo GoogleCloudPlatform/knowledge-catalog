@@ -40,7 +40,7 @@ import * as yaml from 'yaml';
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {entityAndMetricWarnings, databaseOf, DEFAULT_DIALECT, halfBoundJoinMessage, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
 import {InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
+import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -808,9 +808,7 @@ export function pruneUnavailable(
       });
       continue;
     }
-    const refs = [...new Set(
-        columns.map(c => c.qualifier)
-            .filter((q): q is string => !!q && allEntityNames.includes(q)))];
+    const refs = entitiesReached(columns, allEntityNames);
     if (refs.length > 1 && !connectingRelationshipKept(refs, keptRels)) {
       report.droppedMetrics.push({
         name: mt.name,
@@ -900,7 +898,7 @@ function firstUnboundReferenced(columns: SqlColumn[], unbound: Set<string>):
 // holds it, the imported dialect for the imported text, and BigQuery
 // otherwise, since the loader fills `expression` from a `BIGQUERY` or
 // `ANSI_SQL` entry.
-function dialectOf(
+export function dialectOf(
     f: Pick<Field, 'dialects'|'importedExpression'|'importedDialect'>,
     text: string): string {
   const entry = f.dialects?.find(d => d.expression === text);
@@ -1703,7 +1701,7 @@ function runsOn(f: Field, dialect: string): boolean {
 
 // Each text a field's or metric's expression carries, with the dialect it is
 // written in.
-function expressionSources(
+export function expressionSources(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>):
@@ -1764,7 +1762,8 @@ function prunedTexts(
 // none. A legacy bare name, which the loader completes into
 // `project.dataset.table` in `dataSource`, names BigQuery however many parts it
 // was written with.
-function sourcesDialect(model: SemanticModel): string|undefined {
+export function sourcesDialect(
+    model: Pick<SemanticModel, 'entities'>): string|undefined {
   return dialectOfSources(
       (model.entities ?? [])
           .filter(e => !e.abstract)
