@@ -1,8 +1,3 @@
----
-type: Log
-title: Acme Retail bundle history
----
-
 # Bundle history
 
 ## 2026-07-01
