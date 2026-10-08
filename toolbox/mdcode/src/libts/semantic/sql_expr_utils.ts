@@ -44,10 +44,11 @@ export function mapOutsideStringLiterals(
 
 // Builds a regex matching an `<entity>.` qualifier, including the BigQuery
 // backtick-quoted form (`` `entity`. ``). A negative lookbehind keeps the name
-// from matching inside a larger identifier (e.g. `customer_orders.`), and the
-// optional backticks let it match whether or not the identifier is quoted.
+// from matching inside a larger identifier (e.g. `customer_orders.`) or after a
+// dot in a struct path (e.g. `orders.customer.id`), and the optional backticks
+// let it match whether or not the identifier is quoted.
 function entityQualifier(name: string, flags = ''): RegExp {
-  return new RegExp(`(?<![\\w\`])\`?${escapeRegExp(name)}\`?\\.`, flags);
+  return new RegExp(`(?<![\\w\`.])\`?${escapeRegExp(name)}\`?\\.`, flags);
 }
 
 // Returns the entity names whose `<name>.` qualifier appears in an expression, in

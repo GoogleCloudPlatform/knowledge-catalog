@@ -132,7 +132,7 @@ A dataset is one concept in the business.
 |---|---|---|
 | `name` | string | required |
 | `fields` | list of [field](#211-field) | the concept's attributes |
-| `primary_key` | list of strings | the field(s) that identify a row |
+| `primary_key` | list of strings | the physical column(s) that identify a row |
 | `unique_keys` | list of lists of strings | additional unique column-sets |
 | `extends` | list of strings | supertype dataset names — extension ([§2.1.2](#212-inheritance-extends), [§5](#5-extensions)) |
 | `abstract` | boolean | a concept with no table — extension ([§5](#5-extensions)) |

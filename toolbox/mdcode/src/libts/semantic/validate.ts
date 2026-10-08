@@ -17,7 +17,7 @@ import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_
 import {LoadedModel} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {keysCoveredByColumns} from './sql_expr_utils';
+import {isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -141,7 +141,7 @@ export function validatePushRequirements(
         // renders it from `rel.association`. Only a plain FK edge needs direct
         // join columns.
         if (rel.association) continue;
-        if (!rel.source.columns.length || !rel.destination.columns.length) {
+        if (!rel.source.columns.length && !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
                   document}) targets a graph but has no join columns; add its ` +
@@ -152,6 +152,7 @@ export function validatePushRequirements(
     }
 
     errors.push(...validateInheritance([{document, model}]));
+    errors.push(...validateColumnsAndRelationships(model, document));
     errors.push(...relationshipKeyErrors(model, document));
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -879,6 +880,96 @@ function inheritanceRuleErrors(
   return errors;
 }
 
+// True when a rejected column string could be a column name written without
+// backticks (such as `order date` or `order-date`), rather than an empty
+// string, a qualified `entity.field` reference, or a SQL expression.
+function couldBeUnquotedColumnName(col: string): boolean {
+  const trimmed = col.trim();
+  return trimmed.length > 0 && !/[().+*\/=<>!|&^~,`]/.test(trimmed);
+}
+
+function invalidColumnNameError(
+    owner: string, modelName: string, document: string, slot: string,
+    col: string): string {
+  const hint = couldBeUnquotedColumnName(col) ?
+      ' (wrap a column name containing spaces or special characters in ' +
+          'backticks, for example `order date`)' :
+      '';
+  return `${owner} in model '${modelName}' (${document}): ${slot} column '${
+      col}' is not a physical column name; keys and join columns must name ` +
+      `physical table columns, not expressions or field references${hint}.`;
+}
+
+// Every key column (`primary_key`, `unique_keys[]`) and relationship join
+// column (`from_columns`, `to_columns`) must be a physical column identifier,
+// not a SQL expression or an entity-qualified reference. Every relationship's
+// endpoints must name defined datasets in the model, and its `from_columns`
+// and `to_columns` lists must have equal length. The loader checks endpoint
+// existence and join-column list lengths, not column names (which for the
+// model file are checked here, alongside `validateProfileCompleteness` for
+// binding profiles), and all three are checked here so a model built in
+// memory cannot bypass them.
+function validateColumnsAndRelationships(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entityNames = new Set((model.entities ?? []).map(e => e.name));
+
+  for (const entity of model.entities ?? []) {
+    if (entity.abstract) continue;
+    const owner = `entity '${entity.name}'`;
+    for (const col of entity.keys) {
+      if (!isColumnName(col)) {
+        errors.push(
+            invalidColumnNameError(owner, model.name, document, 'primary_key', col));
+      }
+    }
+    for (const uk of entity.uniqueKeys ?? []) {
+      for (const col of uk) {
+        if (!isColumnName(col)) {
+          errors.push(
+              invalidColumnNameError(owner, model.name, document, 'unique_keys', col));
+        }
+      }
+    }
+  }
+
+  for (const rel of model.relationships ?? []) {
+    const owner = `relationship '${rel.name}'`;
+    if (!entityNames.has(rel.source.entity)) {
+      errors.push(
+          `${owner} in model '${model.name}' (${document}): 'from' dataset '${
+              rel.source.entity}' is not defined in the model.`);
+    }
+    if (!entityNames.has(rel.destination.entity)) {
+      errors.push(
+          `${owner} in model '${model.name}' (${document}): 'to' dataset '${
+              rel.destination.entity}' is not defined in the model.`);
+    }
+    if (rel.association) continue;
+    if (rel.source.columns.length !== rel.destination.columns.length) {
+      errors.push(
+          `${owner} in model '${model.name}' (${document}): from_columns (${
+              rel.source.columns.length}) and to_columns (${
+              rel.destination.columns.length}) have different lengths; the ` +
+          `join keys are mismatched.`);
+    }
+    for (const col of rel.source.columns) {
+      if (!isColumnName(col)) {
+        errors.push(
+            invalidColumnNameError(owner, model.name, document, 'from_columns', col));
+      }
+    }
+    for (const col of rel.destination.columns) {
+      if (!isColumnName(col)) {
+        errors.push(
+            invalidColumnNameError(owner, model.name, document, 'to_columns', col));
+      }
+    }
+  }
+
+  return errors;
+}
+
 // A relationship's `to_columns` must cover a primary or unique key of the `to`
 // entity. A relationship is many-to-one or one-to-one, and the key its
 // `to_columns` cover decides which, so a join that covers no key is invalid in
@@ -886,9 +977,11 @@ function inheritanceRuleErrors(
 // catalog-only push included. A superset of a key covers it (see
 // keysCoveredBy). Keys and join columns are compared as the physical
 // columns they name, and a key that names a field with no column yet cannot be
-// judged until a binding gives it one. A relationship with no join columns
-// yet, one through a junction table, and one to an abstract entity, which the
-// concrete-leaf rule reports, are not checked here.
+// judged until a binding gives it one. Skipped here when the check's own inputs
+// are absent or already invalid (reported by their own checks): an association
+// (junction-table) relationship, an empty `to_columns` list, a non-column entry
+// in `to_columns`, an undeclared or abstract `to` entity, or a non-column entry
+// in the `to` entity's `primary_key` or `unique_keys`.
 function relationshipKeyErrors(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
@@ -900,8 +993,13 @@ function relationshipKeyErrors(
   for (const rel of model.relationships ?? []) {
     const to = rel.destination.columns;
     if (rel.association || !to.length) continue;
+    if (!to.every(isColumnName)) continue;
     const target = byName.get(rel.destination.entity);
     if (!target || target.abstract) continue;
+    if (!target.keys.every(isColumnName) ||
+        !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
+      continue;
+    }
     const covered = keysCoveredByColumns(
         target, to, target.keys, target.uniqueKeys ?? []);
     if (covered && !covered.length) {

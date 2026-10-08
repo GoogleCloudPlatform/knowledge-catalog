@@ -1509,6 +1509,35 @@ describe('metric entity anchor', () => {
     expect(() => load(GOOGLE, countStar({ entity: 'nope' })))
       .toThrow(/'entity' names 'nope', which is not a dataset in this model/);
   });
+  test('infers metric entity from the leading qualifier of a struct path', () => {
+    for (const exprText of [
+           'COUNT(orders.shipping_address.city)',
+           'COUNT(`orders`.`shipping_address`.city)',
+           'COUNT(orders.`shipping_address`.city)',
+         ]) {
+      const yaml = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [o_id]
+        fields:
+          - { name: shipping_address, expression: orders.shipping_address }
+      - name: shipping_address
+        source: bigquery:p.d.shipping_address
+        primary_key: [addr_id]
+        fields:
+          - { name: city, expression: shipping_address.city }
+    metrics:
+      - name: city_count
+        expression: "${exprText}"
+`;
+      const { models, warnings } = loadModels(yaml);
+      expect(models[0].metrics[0].entity).toBe('orders');
+      expect(warnings).toEqual([]);
+    }
+  });
 });
 
 describe('datatype casing follows the flavor', () => {

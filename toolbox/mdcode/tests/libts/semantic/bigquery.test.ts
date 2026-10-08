@@ -272,6 +272,28 @@ describe('IR-contract metric cases the loader cannot produce', () => {
             .toBe(false);
         expect(ddl).toContain('AS weird_sum');
       });
+
+  test(
+      'a measure over a struct path whose subfield matches another entity name is placed on the leading qualifier entity',
+      () => {
+        const model = orders();
+        model.entities.push({
+          name: 'customer',
+          dataSource: 'customer',
+          keys: ['c_id'],
+          fields: [{name: 'c_id', expression: 'customer.c_id'}],
+        });
+        model.metrics = [{
+          name: 'cust_amount',
+          expression: 'SUM(orders.customer.amount)',
+          entity: 'orders',
+        }];
+        const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+        expect(warnings.some(w => w.includes('spans multiple tables')))
+            .toBe(false);
+        expect(ddl).toContain('customer.amount AS cust_amount_input');
+        expect(ddl).toContain('MEASURE(SUM(cust_amount_input)) AS cust_amount');
+      });
 });
 
 

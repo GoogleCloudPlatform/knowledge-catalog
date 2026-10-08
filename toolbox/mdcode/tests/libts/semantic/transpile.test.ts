@@ -318,6 +318,41 @@ describe('transpileModel', () => {
         await transpileModel(baseModel(), {transpiler, target: 'SPARK'});
         expect(sawTarget).toBe('SPARK');
       });
+
+  test(
+      'qualifier guard does not mistake a struct subfield for a re-cased entity qualifier',
+      async () => {
+        const m: SemanticModel = {
+          name: 'sales',
+          entities: [
+            {
+              name: 'orders',
+              dataSource: 'p.d.orders',
+              keys: ['o_id'],
+              fields: [{name: 'customer', expression: 'orders.customer'}],
+            },
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: ['c_id'],
+              fields: [{name: 'id', expression: 'customer.c_id'}],
+            },
+          ],
+          relationships: [],
+          metrics: [{
+            name: 'cust_count',
+            importedExpression: 'COUNT(orders.Customer.id)',
+            importedDialect: 'SNOWFLAKE',
+            entity: 'orders',
+          }],
+        };
+        const {model: out, warnings} = await transpileModel(m, {
+          transpiler: async reqs =>
+              reqs.map(r => ({id: r.id, sql: 'COUNT(orders.Customer.id)'})),
+        });
+        expect(out.metrics[0].expression).toBe('COUNT(orders.Customer.id)');
+        expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
+      });
 });
 
 describe('transpileModels', () => {

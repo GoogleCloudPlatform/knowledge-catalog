@@ -725,6 +725,39 @@ describe('metric attach entity is re-derived from the expression', () => {
         const {models} = roundTrip(model);
         expect(models[0].metrics[0].entity).toBe('orders');
       });
+
+  test(
+      'infers metric entity from the leading qualifier of a struct path',
+      () => {
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: [
+            {
+              name: 'orders',
+              dataSource: 'p.d.orders',
+              keys: ['o_id'],
+              fields: [{
+                name: 'shipping_address',
+                expression: 'orders.shipping_address',
+              }],
+            },
+            {
+              name: 'shipping_address',
+              dataSource: 'p.d.shipping_address',
+              keys: ['addr_id'],
+              fields: [{name: 'city', expression: 'shipping_address.city'}],
+            },
+          ],
+          relationships: [],
+          metrics: [{
+            name: 'city_count',
+            expression: 'COUNT(orders.shipping_address.city)',
+          }],
+        };
+        const {models, warnings} = roundTripFull(model);
+        expect(models[0].metrics[0].entity).toBe('orders');
+        expect(warnings).toEqual([]);
+      });
 });
 
 

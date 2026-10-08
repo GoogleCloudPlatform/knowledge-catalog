@@ -939,7 +939,7 @@ describe('a relationship joins on a key of its target', () => {
   });
   const join = (to: string[]) => ({
     name: 'placed_by',
-    source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+    source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
     destination: {entity: 'customer', columns: to},
   });
   const check = (customer: Entity, to: string[]) => validatePushRequirements(
@@ -985,7 +985,7 @@ describe('a relationship joins on a key of its target', () => {
 describe('a relationship key check reads names as columns', () => {
   const join = (toEntity: string, to: string[]) => ({
     name: 'placed_by',
-    source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+    source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
     destination: {entity: toEntity, columns: to},
   });
   const orders: Entity = {name: 'orders', dataSource: 'p.d.o', keys: ['o_id'], fields: []};
@@ -1023,5 +1023,339 @@ describe('a relationship key check reads names as columns', () => {
     const errors = check([party], join('party', ['id'])).join('\n');
     expect(errors).toContain("connects 'party', which is abstract");
     expect(errors).not.toContain('cover no primary or unique key');
+  });
+
+  test('skips the key-coverage check only when its own inputs are invalid', () => {
+    const customer: Entity = {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
+    // Invalid to_columns entry -> skipped.
+    const badToCol = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['o_id']},
+      destination: {entity: 'customer', columns: ['LOWER(id)']},
+    });
+    expect(badToCol.length).toBe(1);
+    expect(badToCol[0]).toContain('to_columns');
+    expect(badToCol[0]).not.toContain('cover no primary or unique key');
+
+    // Undeclared to entity -> skipped.
+    const badToEntity = check([customer], join('ghost', ['id']));
+    expect(badToEntity.length).toBe(1);
+    expect(badToEntity[0]).toContain("'to' dataset 'ghost' is not defined in the model");
+
+    // Invalid target primary_key or unique_keys -> skipped.
+    const badPk = check(
+        [{...customer, keys: ['LOWER(id)']}],
+        join('customer', ['not_a_key']));
+    expect(badPk.length).toBe(1);
+    expect(badPk[0]).toContain('primary_key');
+    expect(badPk[0]).not.toContain('cover no primary or unique key');
+
+    const badUk = check(
+        [{...customer, uniqueKeys: [['LOWER(email)']]}],
+        join('customer', ['not_a_key']));
+    expect(badUk.length).toBe(1);
+    expect(badUk[0]).toContain('unique_keys');
+    expect(badUk[0]).not.toContain('cover no primary or unique key');
+  });
+
+  test('reports an uncovered to_columns alongside an unrelated from-side or length error', () => {
+    const customer: Entity = {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
+    const badFromCol = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['LOWER(o_id)']},
+      destination: {entity: 'customer', columns: ['not_a_key']},
+    });
+    expect(badFromCol.length).toBe(2);
+    expect(badFromCol.join('\n')).toContain('from_columns');
+    expect(badFromCol.join('\n')).toContain("cover no primary or unique key of 'customer'");
+
+    const badFromEntity = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'ghost', columns: ['o_id']},
+      destination: {entity: 'customer', columns: ['not_a_key']},
+    });
+    expect(badFromEntity.length).toBe(2);
+    expect(badFromEntity.join('\n')).toContain("'from' dataset 'ghost' is not defined in the model");
+    expect(badFromEntity.join('\n')).toContain("cover no primary or unique key of 'customer'");
+
+    const badLength = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['o_id', 'extra']},
+      destination: {entity: 'customer', columns: ['not_a_key']},
+    });
+    expect(badLength.length).toBe(2);
+    expect(badLength.join('\n')).toContain('from_columns (2) and to_columns (1)');
+    expect(badLength.join('\n')).toContain("cover no primary or unique key of 'customer'");
+  });
+});
+
+
+describe('physical column names and relationship shape', () => {
+  const validColumns = ['o_id', '`order date`'];
+  const invalidColumns = [
+    'order date',
+    'LOWER(cust_id)',
+    'a || b',
+    'customers.id',
+    '',
+  ];
+  const backtickHint =
+      'wrap a column name containing spaces or special characters in backticks, for example `order date`';
+
+  const baseOrders = (over: Partial<Entity> = {}): Entity => ({
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    keys: ['o_id'],
+    fields: [],
+    ...over,
+  });
+  const baseCustomers = (over: Partial<Entity> = {}): Entity => ({
+    name: 'customers',
+    dataSource: 'p.d.customers',
+    keys: ['c_id'],
+    fields: [],
+    ...over,
+  });
+
+  test('accepts bare and backtick-quoted physical column names in all four slots', () => {
+    for (const col of validColumns) {
+      const m = model({
+        entities: [
+          baseOrders({keys: [col], uniqueKeys: [[col]]}),
+          baseCustomers({keys: [col]}),
+        ],
+        relationships: [{
+          name: 'placed_by',
+          source: {entity: 'orders', columns: [col]},
+          destination: {entity: 'customers', columns: [col]},
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    }
+  });
+
+  test('rejects expressions, qualified names, unquoted whitespace, and empty strings in all four slots, printing the backtick hint only for unquoted names with spaces or special characters', () => {
+    for (const bad of invalidColumns) {
+      const expectHint = bad === 'order date';
+
+      const pkErrs = validatePushRequirements(
+          [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+          {targetOptional: true});
+      expect(pkErrs.length).toBe(1);
+      expect(pkErrs[0]).toContain("entity 'orders'");
+      expect(pkErrs[0]).toContain('primary_key');
+      expect(pkErrs[0]).toContain(`'${bad}'`);
+      expect(pkErrs[0].includes(backtickHint)).toBe(expectHint);
+
+      const ukErrs = validatePushRequirements(
+          [loaded(model({entities: [baseOrders({uniqueKeys: [[bad]]})]}))],
+          {targetOptional: true});
+      expect(ukErrs.length).toBe(1);
+      expect(ukErrs[0]).toContain("entity 'orders'");
+      expect(ukErrs[0]).toContain('unique_keys');
+      expect(ukErrs[0]).toContain(`'${bad}'`);
+      expect(ukErrs[0].includes(backtickHint)).toBe(expectHint);
+
+      const fromErrs = validatePushRequirements(
+          [loaded(model({
+            entities: [baseOrders(), baseCustomers()],
+            relationships: [{
+              name: 'placed_by',
+              source: {entity: 'orders', columns: [bad]},
+              destination: {entity: 'customers', columns: ['c_id']},
+            }],
+          }))],
+          {targetOptional: true});
+      expect(fromErrs.length).toBe(1);
+      expect(fromErrs[0]).toContain("relationship 'placed_by'");
+      expect(fromErrs[0]).toContain('from_columns');
+      expect(fromErrs[0]).toContain(`'${bad}'`);
+      expect(fromErrs[0].includes(backtickHint)).toBe(expectHint);
+
+      const toErrs = validatePushRequirements(
+          [loaded(model({
+            entities: [baseOrders(), baseCustomers()],
+            relationships: [{
+              name: 'placed_by',
+              source: {entity: 'orders', columns: ['o_id']},
+              destination: {entity: 'customers', columns: [bad]},
+            }],
+          }))],
+          {targetOptional: true});
+      expect(toErrs.length).toBe(1);
+      expect(toErrs[0]).toContain("relationship 'placed_by'");
+      expect(toErrs[0]).toContain('to_columns');
+      expect(toErrs[0]).toContain(`'${bad}'`);
+      expect(toErrs[0].includes(backtickHint)).toBe(expectHint);
+    }
+  });
+
+  test('rejects a model loaded from YAML whose key is not a physical column name', () => {
+    const [parsed] = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: ["LOWER(o_id)"]
+        fields:
+          - { name: o_id, expression: o_id }
+`).models;
+    const errs =
+        validatePushRequirements([loaded(parsed)], {targetOptional: true});
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain(
+        "entity 'orders' in model 'sales' (doc): primary_key column 'LOWER(o_id)' is not a physical column name");
+    expect(errs[0]).not.toContain(backtickHint);
+  });
+
+  test('an abstract entity with an invalid key gets only the abstract-entity key error', () => {
+    const party: Entity = {
+      name: 'party',
+      abstract: true,
+      dataSource: '',
+      keys: ['LOWER(id)'],
+      fields: [],
+    };
+    const errs = validatePushRequirements(
+        [loaded(model({entities: [party]}))],
+        {targetOptional: true});
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('cannot declare a primary key or unique keys');
+  });
+
+  test('a relationship to an abstract entity whose join column is an expression reports both the abstract endpoint and the bad join column', () => {
+    const party: Entity = {
+      name: 'party',
+      abstract: true,
+      dataSource: '',
+      keys: [],
+      fields: [],
+    };
+    const errs = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), party],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'party', columns: ['LOWER(id)']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(errs).toHaveLength(2);
+    expect(errs.join('\n')).toContain("connects 'party', which is abstract");
+    expect(errs.join('\n')).toContain(
+        "to_columns column 'LOWER(id)' is not a physical column name");
+    expect(errs.join('\n')).not.toContain('cover no primary or unique key');
+  });
+
+  test('skips direct-FK join column and length checks for an association relationship', () => {
+    const errs = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'orders_customers',
+            source: {entity: 'orders', columns: ['LOWER(o_id)', 'extra']},
+            destination: {entity: 'customers', columns: ['c_id']},
+            association: {
+              dataSource: 'p.d.order_customers',
+              keys: ['id'],
+              sourceColumns: ['o_id'],
+              destinationColumns: ['c_id'],
+            },
+          }],
+        }))],
+        {targetOptional: true});
+    expect(errs).toEqual([]);
+  });
+
+  test('rejects an undeclared from or to entity on a relationship', () => {
+    const badFrom = validatePushRequirements(
+        [loaded(model({
+          entities: [baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'ghost', columns: ['c_id']},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(badFrom.length).toBe(1);
+    expect(badFrom[0]).toContain("relationship 'placed_by'");
+    expect(badFrom[0]).toContain("'from' dataset 'ghost' is not defined in the model.");
+
+    const badTo = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'ghost', columns: ['o_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(badTo.length).toBe(1);
+    expect(badTo[0]).toContain("relationship 'placed_by'");
+    expect(badTo[0]).toContain("'to' dataset 'ghost' is not defined in the model.");
+  });
+
+  test('rejects mismatched from_columns and to_columns lengths on KC-only and graph pushes, and accepts both empty on KC-only push', () => {
+    const fromLonger = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id', 'extra_id']},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(fromLonger.length).toBe(1);
+    expect(fromLonger[0]).toContain("relationship 'placed_by'");
+    expect(fromLonger[0]).toContain(
+        'from_columns (2) and to_columns (1) have different lengths; the join keys are mismatched.');
+
+    const toLonger = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'customers', columns: ['c_id', 'extra_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(toLonger.length).toBe(1);
+    expect(toLonger[0]).toContain("relationship 'placed_by'");
+    expect(toLonger[0]).toContain(
+        'from_columns (1) and to_columns (2) have different lengths; the join keys are mismatched.');
+
+    const oneSideEmptyOnGraph = validatePushRequirements([loaded(model(
+        {
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'customers', columns: []},
+          }],
+        },
+        [googleExt([BQ_TARGET])]))]);
+    expect(oneSideEmptyOnGraph.length).toBe(1);
+    expect(oneSideEmptyOnGraph[0]).toContain(
+        'from_columns (1) and to_columns (0) have different lengths; the join keys are mismatched.');
+    expect(oneSideEmptyOnGraph[0]).not.toContain('has no join columns');
+
+    const unbound = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customers', columns: []},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(unbound).toEqual([]);
   });
 });
