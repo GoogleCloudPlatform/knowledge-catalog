@@ -21,7 +21,7 @@
 // DIMENSION role, resource-URI parsing, metric attach re-derivation,
 // relationship endpoint/direction recovery, and parent/anchor grouping).
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -30,6 +30,11 @@ import {linkNamePrefix, modelsFromCatalogResources} from '../../../src/libts/sem
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 

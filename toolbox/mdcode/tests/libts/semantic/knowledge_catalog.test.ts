@@ -14,12 +14,17 @@
 //   - IR-contract cases the loader never produces (a metric with an explicit
 //     type, a cross-entity metric with no attach entity, duplicate ids).
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const OPTS = {
   project: 'dest-proj',

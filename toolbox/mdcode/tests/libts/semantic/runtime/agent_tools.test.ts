@@ -1,7 +1,7 @@
 // Behavior specification for deriving action tools and schema metadata from a
 // model.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -10,6 +10,14 @@ import {loadModels} from '../../../../src/libts/semantic/loader';
 import {actionTools, modelTools, readableEntities} from '../../../../src/libts/semantic/runtime/agent_tools';
 import {dialectFor} from '../../../../src/libts/semantic/runtime/dialect';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
+import {loadSqlEngine} from '../../../../src/libts/semantic/sql_parser';
+
+let model: SemanticModel;
+
+beforeAll(async () => {
+  await loadSqlEngine();
+  model = loadFixtureModel('actions_place_order.yaml');
+});
 
 const FIXTURES = path.join(__dirname, '..', 'fixtures');
 
@@ -53,8 +61,10 @@ const RUNNABLE: Partial<Action> = {
 
 
 describe('action tools', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const tools = actionTools({runtime: rt(model)});
+  let tools: ReturnType<typeof actionTools>;
+  beforeAll(() => {
+    tools = actionTools({runtime: rt(model)});
+  });
 
   test('one tool per action, named the way tool APIs expect', () => {
     expect(tools).toHaveLength(1);
@@ -135,7 +145,6 @@ describe('action tools', () => {
 
 
 describe('what counts as runnable under a profile', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
 
   function guardedBy(constraint: Constraint, guard: string): SemanticModel {
     const base = withExecutor(model, {...RUNNABLE, guards: [guard]});
@@ -240,7 +249,6 @@ describe('what counts as runnable under a profile', () => {
 
 
 describe('the shape of an entity key withholds no tool', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
 
   test('a key in two parts is offered like any other', () => {
     const composite = {
@@ -284,7 +292,6 @@ describe('the shape of an entity key withholds no tool', () => {
 
 
 describe('parameter formatting', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
 
   test(
       'authored parameter descriptions normalize terminators and keep temporal format guidance',
@@ -315,7 +322,6 @@ describe('parameter formatting', () => {
 
 
 describe('one name space for everything a model offers', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
 
   test('two actions that snake-case alike are still told apart', () => {
     const twins = {
@@ -339,7 +345,6 @@ describe('one name space for everything a model offers', () => {
 
 
 describe('the instruction an agent is given comes from the model', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
 
   test('the model\'s own words come first, verbatim', () => {
     const stated = {
@@ -372,7 +377,6 @@ describe('the instruction an agent is given comes from the model', () => {
 
 
 describe('an entity whose fields await transpilation', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
 
   function untranspiled(name: string): Entity[] {
     return model.entities.map(entity => {

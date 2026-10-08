@@ -8,11 +8,16 @@
 // is covered by `bigquery.test.ts` (unit) and `bigquery.e2e.test.ts` (file -> DDL).
 //
 
-import { describe, test, expect } from 'bun:test';
+import { beforeAll, describe, test, expect } from 'bun:test';
 import { loadModels, fromDocument } from '../../../src/libts/semantic/loader';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
+import { loadSqlEngine } from '../../../src/libts/semantic/sql_parser';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 // Shorthand for the format's per-dialect expression object.
 function expr(expression: string, dialect = 'BIGQUERY') {

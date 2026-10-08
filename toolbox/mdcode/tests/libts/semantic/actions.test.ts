@@ -6,7 +6,7 @@
 // it lives in kc_actions.ts). Preconditions and `affects` are out of scope
 // for this prototype.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -15,7 +15,12 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
@@ -673,7 +678,10 @@ describe('validatePushRequirements gates actions', () => {
 
 
 describe('Knowledge Catalog publish/pull round trip', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
+  let model: SemanticModel;
+  beforeAll(() => {
+    model = loadFixtureModel('actions_place_order.yaml');
+  });
   const ACTION_ENTRY_TYPE = '/entryTypes/semantic-action';
 
   test('each action is published as its own semantic-action entry', () => {
@@ -807,7 +815,10 @@ describe('Knowledge Catalog publish/pull round trip', () => {
 // an action with neither a description nor instructions -- the cases where the
 // aspect either takes a different branch or omits fields.
 describe('Knowledge Catalog round trip across executor kinds', () => {
-  const model = loadFixtureModel('actions_executors.yaml');
+  let model: SemanticModel;
+  beforeAll(() => {
+    model = loadFixtureModel('actions_executors.yaml');
+  });
   const ACTION_ENTRY_TYPE = '/entryTypes/semantic-action';
 
   function actionEntriesOf(m: SemanticModel) {

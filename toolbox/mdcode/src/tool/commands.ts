@@ -26,7 +26,7 @@ import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validateExpressionReferences, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -462,6 +462,7 @@ export async function push(options: PushOptions): Promise<number> {
       models: LoadedModel[]; bqModels: LoadedModel[];
       spannerModels: LoadedModel[]
     }|null> => {
+      if (!await sqlParserReady()) return null;
       const loaded =
           loadSemanticModels(docs, {defaultProject, bindingOptional: !prune});
       if (loaded.error) {
@@ -474,14 +475,13 @@ export async function push(options: PushOptions): Promise<number> {
       }
       let models = loaded.models;
       let unprunedErrors: string[] = [];
+      const unprunedWarnings: string[] = [];
       if (options.transpile) {
         const transpiled = await transpileModels(models);
         models = transpiled.models;
         for (const w of transpiled.warnings) console.warn(`Warning: ${w}`);
       }
       if (prune) {
-        // Pruning reads which fields each metric uses, with the SQL parser.
-        if (!await sqlParserReady()) return null;
         // A profile's exclusions apply to the entity that names each one, which
         // the merged document cannot say on its own. Only a
         // pruned push applies them: a catalog-only push publishes the whole
@@ -493,9 +493,13 @@ export async function push(options: PushOptions): Promise<number> {
                                     model: applyProfileExclusions(
                                         model, excludedByDoc.get(document) ?? []),
                                   }));
-        // Pruning can remove the field an inheritance or concrete-leaf rule is
-        // about, so those rules also run on the model before pruning.
-        unprunedErrors = validateInheritance(marked);
+        // Pruning can remove the field an inheritance, concrete-leaf, or
+        // expression-reference rule is about, so those rules also run on the
+        // model before pruning.
+        unprunedErrors = [
+          ...validateInheritance(marked),
+          ...validateExpressionReferences(marked, false, unprunedWarnings),
+        ];
         const availability: AvailabilityReport[] = [];
         models = marked.map(({document, model}) => {
           const {model: pruned, report} = pruneUnavailable(model, profileName);
@@ -526,13 +530,18 @@ export async function push(options: PushOptions): Promise<number> {
           }
         }
       }
+      const pushWarnings: string[] = [];
       // The pruned model can only repeat an unpruned error, so each is
       // reported once.
       const validationErrors = [...new Set([
         ...unprunedErrors,
         ...validatePushRequirements(
-            models, {targetOptional: !prune, fieldsPruned: prune}),
+            models,
+            {targetOptional: !prune, fieldsPruned: prune, warnings: pushWarnings}),
       ])];
+      for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
+        console.warn(`Warning: ${w}`);
+      }
       if (validationErrors.length) {
         for (const e of validationErrors) console.error(`Error: ${e}`);
         return null;
@@ -1173,6 +1182,7 @@ async function pushKnowledgeCatalog(
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
     options: PullOptions): Promise<number> {
+  if (!await sqlParserReady()) return 1;
   // The semantic-model source always resolves to the SemanticModel layout
   // (see createLayout), so these casts are safe.
   const layout = snapshot.layout as SemanticModelLayout;

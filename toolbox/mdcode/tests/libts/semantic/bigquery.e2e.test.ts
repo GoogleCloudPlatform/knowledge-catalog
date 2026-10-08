@@ -139,9 +139,16 @@ describe('a relationship to a keyless dataset', () => {
 // model push validation has accepted. A fixture that validation rejects would
 // pin output no real push produces, so every golden fixture must pass. The
 // deployment target is optional here: most fixtures exercise generation and
-// declare none.
+// declare none. `metric_skips.yaml` and `measure_lowering.yaml` exist
+// specifically to exercise how the generator skips or lowers a metric that push
+// validation rejects (unanchored multi-entity metrics and undeclared field
+// references), so they are excluded from this check.
+const GENERATOR_ONLY_FIXTURES = new Set([
+  'metric_skips.yaml',
+  'measure_lowering.yaml',
+]);
 describe('every golden fixture passes push validation', () => {
-  for (const fixture of CORPUS) {
+  for (const fixture of CORPUS.filter(f => !GENERATOR_ONLY_FIXTURES.has(f))) {
     test(fixture, () => {
       const {models} = loadFixture(fixture);
       expect(validatePushRequirements(
@@ -200,11 +207,9 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
   // field/relationship/metric/ model level and unique_keys on a dataset with no
   // primary_key. None of these are part of the supported subset; the loader
   // must accept and skip them.
-  const {models, warnings: loadWarnings} =
-      loadFixture('lineitem_databricks_ext.yaml');
-
   test(
       'the model still loads despite custom_extensions and unique_keys', () => {
+        const {models} = loadFixture('lineitem_databricks_ext.yaml');
         expect(models).toHaveLength(1);
         expect(models[0].entities.map(e => e.name)).toEqual([
           'lineitem', 'orders'
@@ -212,6 +217,8 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
       });
 
   test('a dataset with only unique_keys (no primary_key) is warned about', () => {
+    const {warnings: loadWarnings} =
+        loadFixture('lineitem_databricks_ext.yaml');
     expect(loadWarnings)
         .toContain(
             'dataset \'orders\': no primary_key; the entity\'s KEY will be empty (invalid for graph generation)');
@@ -294,11 +301,11 @@ describe(
 describe(
     'measure placement over a fan-out (the reason goldens alone are not enough)',
     () => {
-      const {models, loadWarnings, genWarnings} = build('sales_fanout.yaml');
-
       test(
           'a fully-specified model loads and generates with no warnings',
           () => {
+            const {models, loadWarnings, genWarnings} =
+                build('sales_fanout.yaml');
             expect(models).toHaveLength(1);
             expect([...loadWarnings, ...genWarnings]).toEqual([]);
           });

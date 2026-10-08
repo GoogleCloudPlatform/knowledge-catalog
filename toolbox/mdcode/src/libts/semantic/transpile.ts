@@ -36,7 +36,7 @@
 import {Field, Metric, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
 import {loadSqlEngine, PolyglotEngine} from './sql_parser';
-import {referencedEntityNames} from './sql_expr_utils';
+import {columnReferences} from './sql_expr_utils';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -176,9 +176,20 @@ export async function transpileModel(
     // Snowflake double-quotes, which are string literals in GoogleSQL), so its
     // qualifiers are invisible here anyway and are not a fair basis for
     // comparison.
-    const emitterVisible = referencedEntityNames(res.sql, entityNames);
-    const anyCase =
-        referencedEntityNames(res.sql, entityNames, {caseInsensitive: true});
+    const cols = columnReferences(res.sql, target) ?? [];
+    const emitterVisible = [
+      ...new Set(
+          cols.map(c => c.qualifier)
+              .filter((q): q is string => !!q && entityNames.includes(q))),
+    ];
+    const anyCase = [
+      ...new Set(
+          cols.flatMap(c => {
+            if (!c.qualifier) return [];
+            const lower = c.qualifier.toLowerCase();
+            return entityNames.filter(n => n.toLowerCase() === lower);
+          })),
+    ];
     if (!sameSet(emitterVisible, anyCase)) {
       warnings.push(
           `${ctx}: transpiled '${request.dialect}' -> '${

@@ -23,6 +23,7 @@ import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
+import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store} from './store';
 
@@ -146,6 +147,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     excludedByDoc.set(doc.name, res.excluded);
   }
 
+  await loadSqlEngine();
   const loaded = loadSemanticModels(
       merged,
       {defaultProject: source.project ?? ctx.project, bindingOptional: true});

@@ -14,7 +14,7 @@ import * as z from 'zod';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {referencedEntityNames} from './sql_expr_utils';
+import {columnReferences} from './sql_expr_utils';
 import {YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1318,7 +1318,15 @@ function convertMetric(
   // Infer referenced entities from whichever expression form we have; the
   // imported form still carries the same entity qualifiers.
   const exprForRefs = picked.expression ?? picked.importedExpression ?? '';
-  const referenced = referencedEntityNames(exprForRefs, entityNames);
+  const dialectForRefs = picked.expression !== undefined ?
+      dialect :
+      (picked.importedDialect ?? dialect);
+  const cols = columnReferences(exprForRefs, dialectForRefs) ?? [];
+  const referenced = [
+    ...new Set(
+        cols.map(c => c.qualifier)
+            .filter((q): q is string => !!q && entityNames.includes(q))),
+  ];
   // An authored anchor (Google flavor only) says which entity the metric
   // belongs to, so an expression naming none -- `COUNT(*)` -- is not a problem
   // and is not warned about.

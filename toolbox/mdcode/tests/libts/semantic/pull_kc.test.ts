@@ -13,13 +13,18 @@
 // single-model-per-group invariant, aborting on any fetch failure, and ignoring
 // foreign entries.
 
-import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import {afterEach, beforeAll, describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {pullKnowledgeCatalog} from '../../../src/libts/semantic/pull_kc';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const OPTS = {
   project: 'dest',

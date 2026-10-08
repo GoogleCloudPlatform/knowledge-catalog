@@ -15,13 +15,18 @@
 //     UPDATE_GOLDENS=1 bun test ./tests/libts/semantic/transpile.e2e.test.ts
 //   then read the diff before committing.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {transpileModel} from '../../../src/libts/semantic/transpile';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const FIXTURE = 'vendor_dialects.yaml';

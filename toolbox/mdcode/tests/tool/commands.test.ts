@@ -214,4 +214,38 @@ semantic_model:
     expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
         .toContain("field 'name' is inherited, so it may only be rebound to a column");
   });
+
+  test('a metric reading an unbound field and a non-existent field is reported before pruning drops it', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployment_target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+    entities:
+      - name: customer
+        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer, expression: id }
+          - { name: credit_limit, datatype: Decimal }
+    metrics:
+      - name: bad_metric
+        expression:
+          dialects:
+            - dialect: GOOGLE_SQL
+              expression: SUM(customer.credit_limit) + SUM(customer.non_existent)
+`);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    const code = await push({validateOnly: true, kc: false});
+
+    expect(code).toBe(1);
+    expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .toContain("expression references 'customer.non_existent', but entity 'customer' has no field 'non_existent'");
+  });
 });
+

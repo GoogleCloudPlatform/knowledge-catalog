@@ -14,12 +14,17 @@
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/spanner.e2e.test.ts
 //   then read the diff before committing.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import {loadModels, LoadOptions} from '../../../src/libts/semantic/loader';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 

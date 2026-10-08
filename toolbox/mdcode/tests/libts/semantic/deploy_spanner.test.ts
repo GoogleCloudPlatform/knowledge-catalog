@@ -5,7 +5,7 @@
 // exercised end to end over a fixture (loader -> IR -> generator -> target),
 // with the Spanner client stubbed so no network call is made.
 
-import {describe, expect, spyOn, test} from 'bun:test';
+import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -15,6 +15,11 @@ import {deploySpanner} from '../../../src/libts/semantic/deploy_spanner';
 import {spannerGraphTargets} from '../../../src/libts/semantic/deployment_target';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 

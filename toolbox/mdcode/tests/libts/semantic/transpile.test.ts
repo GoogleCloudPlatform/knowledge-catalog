@@ -7,10 +7,15 @@
 // @polyglot-sql/sdk adapter is exercised separately in
 // transpile.polyglot.test.ts and end-to-end in transpile.e2e.test.ts.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {SqlTranspiler, transpileModel, transpileModels, TranspileRequest,} from '../../../src/libts/semantic/transpile';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 // Builds a one-entity, one-metric model whose interesting fields/metric carry
 // only an imported (vendor) form, so the pass has something to fill. Extra

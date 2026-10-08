@@ -14,7 +14,7 @@
 // its own is modified exactly the way a row is, and nothing downstream branches
 // on which kind a name turned out to be.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -23,7 +23,12 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
@@ -517,11 +522,12 @@ describe('publishing says when a blast radius outruns the push', () => {
 
 
 describe('affects survives every round trip', () => {
-  const model = (() => {
+  let model: SemanticModel;
+  beforeAll(() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text).models[0];
-  })();
+    model = loadModels(text).models[0];
+  });
 
   const EXPECTED = [
     {

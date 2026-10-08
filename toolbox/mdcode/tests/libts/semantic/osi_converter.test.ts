@@ -10,7 +10,7 @@
 // hard-coding YAML text. Targeted structural tests cover the mapping details a
 // round trip cannot isolate.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
@@ -18,6 +18,11 @@ import * as yaml from 'yaml';
 import {Field, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -67,9 +72,14 @@ describe('loader <-> serialize round trip is IR-stable', () => {
 
 
 describe('serialized document structure', () => {
-  const model = loadFixture('star_orders_customer.yaml')[0];
-  const doc = modelDocument(model) as any;
-  const sm = doc.semantic_model[0];
+  let model: SemanticModel;
+  let doc: any;
+  let sm: any;
+  beforeAll(() => {
+    model = loadFixture('star_orders_customer.yaml')[0];
+    doc = modelDocument(model) as any;
+    sm = doc.semantic_model[0];
+  });
 
   test('emits the supported version and a single model', () => {
     expect(doc.version).toBe('0.2.0.dev0/google');

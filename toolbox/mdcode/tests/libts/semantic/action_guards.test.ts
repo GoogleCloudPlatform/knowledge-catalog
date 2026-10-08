@@ -7,7 +7,7 @@
 // the naming: it resolves, or fails to resolve, at push time, and it survives
 // every round trip the model makes.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -16,7 +16,12 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
@@ -216,11 +221,12 @@ describe('validatePushRequirements resolves every guard', () => {
 
 
 describe('guards survive every round trip', () => {
-  const model = (() => {
+  let model: SemanticModel;
+  beforeAll(() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text).models[0];
-  })();
+    model = loadModels(text).models[0];
+  });
 
   test(
       'the fixture action is guarded by a constraint the model declares',

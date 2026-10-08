@@ -5,7 +5,7 @@
 // constraint publishes as one entry under the custom `semantic-constraint`
 // type, the way an action publishes under `semantic-action`.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -16,7 +16,12 @@ import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_ca
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
@@ -594,7 +599,10 @@ describe('OSI round trip', () => {
 
 
 describe('Knowledge Catalog publish/pull round trip', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
+  let model: SemanticModel;
+  beforeAll(() => {
+    model = loadFixtureModel('actions_place_order.yaml');
+  });
   const CONSTRAINT_ENTRY_TYPE = '/entryTypes/semantic-constraint';
   const CONSTRAINT_ASPECT = 'dest.global.semantic-constraint';
 

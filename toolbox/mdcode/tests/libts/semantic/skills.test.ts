@@ -20,7 +20,7 @@
 //
 // Nothing here opens a database. Generating a skill is pure.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
@@ -29,6 +29,14 @@ import {Action, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
 import {generateSkill, skillNameFor, whyNameIsInvalid} from '../../../src/libts/semantic/skills';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+let model: SemanticModel;
+
+beforeAll(async () => {
+  await loadSqlEngine();
+  model = loadFixtureModel('actions_place_order.yaml');
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -125,14 +133,12 @@ describe('the skill name', () => {
   test(
       'the name the caller passes is checked before anything is written',
       () => {
-        const model = loadFixtureModel('actions_place_order.yaml');
         const out = generateSkill({runtime: rt(model), name: 'MySkill'});
         expect(out).toHaveProperty('error');
         expect((out as {error: string}).error).toContain('MySkill');
       });
 
   test('the package names the directory it must be written under', () => {
-    const model = loadFixtureModel('actions_place_order.yaml');
     // The frontmatter name and the directory name are required to match, so
     // the generator reports one string and the caller uses it for both.
     const out = generate(rt(model));
@@ -143,9 +149,12 @@ describe('the skill name', () => {
 
 
 describe('SKILL.md frontmatter', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const out = generate(rt(withAction(model, RUNNABLE)));
-  const fm = frontmatter(out.files['SKILL.md']);
+  let out: ReturnType<typeof generate>;
+  let fm: Record<string, unknown>;
+  beforeAll(() => {
+    out = generate(rt(withAction(model, RUNNABLE)));
+    fm = frontmatter(out.files['SKILL.md']);
+  });
 
   test('carries only the fields the spec defines', () => {
     // The field set is closed: the reference validator errors on a seventh
@@ -197,9 +206,12 @@ describe('SKILL.md frontmatter', () => {
 
 
 describe('SKILL.md is a router', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const out = generate(rt(withAction(model, RUNNABLE)));
-  const skill = out.files['SKILL.md'];
+  let out: ReturnType<typeof generate>;
+  let skill: string;
+  beforeAll(() => {
+    out = generate(rt(withAction(model, RUNNABLE)));
+    skill = out.files['SKILL.md'];
+  });
 
   test('one row per action, pointing at the file with the detail', () => {
     expect(skill).toContain('`PlaceOrder`');
@@ -257,9 +269,12 @@ describe('SKILL.md is a router', () => {
 
 
 describe('an action reference', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-  const out = generate(rt(withAction(model, RUNNABLE)));
-  const reference = out.files['references/place-order.md'];
+  let out: ReturnType<typeof generate>;
+  let reference: string;
+  beforeAll(() => {
+    out = generate(rt(withAction(model, RUNNABLE)));
+    reference = out.files['references/place-order.md'];
+  });
 
   test('names the action the author named, not only the tool', () => {
     // Both, once. An agent meets one or the other depending on whether it was
@@ -304,14 +319,17 @@ describe('an action reference', () => {
 
 
 describe('the rules on a reference page', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
   // Both a rule that stops the write and one that does not, so the page has
   // to tell them apart.
-  const guarded = withAction(model, {
-    ...RUNNABLE,
-    guards: ['OrderWithinCustomerCredit', 'OrderWithinStandingLimit'],
+  let guarded: SemanticModel;
+  let reference: string;
+  beforeAll(() => {
+    guarded = withAction(model, {
+      ...RUNNABLE,
+      guards: ['OrderWithinCustomerCredit', 'OrderWithinStandingLimit'],
+    });
+    reference = generate(rt(guarded)).files['references/place-order.md'];
   });
-  const reference = generate(rt(guarded)).files['references/place-order.md'];
 
   test('each rule carries its words and its consequence', () => {
     expect(reference).toContain('### OrderWithinCustomerCredit');
@@ -345,8 +363,6 @@ describe('the rules on a reference page', () => {
 
 
 describe('when the runtime would refuse the call', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
   test('a guarded action is runnable, because the runtime settles it', () => {
     // The guard is settled in words, which is the runtime's job and not the
     // reading agent's: an agent that judged its own call would be the
@@ -424,16 +440,17 @@ describe('when the runtime would refuse the call', () => {
 
 
 describe('what a key matching nothing costs', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
   // The model-level instruction tells an agent never to invent an identifier,
   // and this skill offers only the write side. Saying where a key comes from
   // instead does not depend on the model declaring any entities.
-  const noEntities: SemanticModel = {
-    ...model,
-    entities: [],
-    actions: [{...model.actions![0], ...RUNNABLE} as Action],
-  };
+  let noEntities: SemanticModel;
+  beforeAll(() => {
+    noEntities = {
+      ...model,
+      entities: [],
+      actions: [{...model.actions![0], ...RUNNABLE} as Action],
+    };
+  });
 
   test('still says where a key has to come from', () => {
     const out = generate(rt(noEntities)).files['SKILL.md'];
@@ -464,31 +481,35 @@ describe('what a key matching nothing costs', () => {
 
 
 describe('the binding is one section', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
   // Two deployments of one model: different databases, and different DML,
   // which is what a second binding profile supplies.
-  const here = withAction(model, RUNNABLE);
-  const there = withAction(model, {
-    executor: {
-      kind: 'sql',
-      sql: {statements: ['UPDATE sales_order SET amount = 0 WHERE 1 = 0']},
-    },
-    guards: [],
+  let here: SemanticModel;
+  let there: SemanticModel;
+  let first: ReturnType<typeof generate>;
+  let second: ReturnType<typeof generate>;
+  beforeAll(() => {
+    here = withAction(model, RUNNABLE);
+    there = withAction(model, {
+      executor: {
+        kind: 'sql',
+        sql: {statements: ['UPDATE sales_order SET amount = 0 WHERE 1 = 0']},
+      },
+      guards: [],
+    });
+    first = generate(rt(here, {profile: 'spanner'}));
+    second = generate(rt(there, {
+      profile: 'alloydb',
+      store: {
+        kind: 'alloydb',
+        name: 'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
+        project: 'q',
+        location: 'us-central1',
+        cluster: 'j',
+        instance: 'inst',
+        database: 'e',
+      },
+    }));
   });
-  const first = generate(rt(here, {profile: 'spanner'}));
-  const second = generate(rt(there, {
-    profile: 'alloydb',
-    store: {
-      kind: 'alloydb',
-      name: 'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
-      project: 'q',
-      location: 'us-central1',
-      cluster: 'j',
-      instance: 'inst',
-      database: 'e',
-    },
-  }));
 
   test('a reference page does not change when the deployment does', () => {
     // The whole argument for generating this from the logical model: what an
@@ -567,8 +588,6 @@ describe('the binding is one section', () => {
 
 
 describe('text that would otherwise break the output', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
   test('a description with a colon and a quote stays parseable YAML', () => {
     // The failure this guards against is silent: the frontmatter parses as
     // something else, or fails to parse, and the skill never loads.
@@ -676,8 +695,6 @@ describe('text that would otherwise break the output', () => {
 //   Regenerate after an intentional change:
 //     UPDATE_GOLDENS=1 npx bun test ./tests/libts/semantic/skills.test.ts
 describe('a description that does not fit', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
   function manyActions(count: number): SemanticModel {
     const actions: Action[] = [];
     for (let i = 0; i < count; i++) {
@@ -751,8 +768,6 @@ describe('a description that does not fit', () => {
 
 
 describe('golden skill: the fixture generates these exact files', () => {
-  const model = loadFixtureModel('actions_place_order.yaml');
-
   // Two things vary across the three cases and nothing else does: the
   // executor the action carries, and whether the profile bound a store. Each
   // golden is named for its pair, so the axis reads off the filename.
@@ -768,7 +783,7 @@ describe('golden skill: the fixture generates these exact files', () => {
   // The fixture performs PlaceOrder over MCP, which `kcmd` does not wrap, so
   // the two `sql` cases swap the executor in. Guards are untouched throughout
   // -- `guardedSql` changes the executor and nothing else.
-  const guardedSql = withAction(model, {
+  const guardedSql = () => withAction(model, {
     executor: {
       kind: 'sql',
       sql: {statements: ['UPDATE orders SET o_totalprice = 0 WHERE 1 = 0']},
@@ -780,7 +795,7 @@ describe('golden skill: the fixture generates these exact files', () => {
       // The case an agent actually meets: bound to a store, so the guarded
       // action is runnable and the section carries a command line.
       golden: 'actions_place_order.sql_bound.skill.golden.md',
-      runtime: rt(guardedSql),
+      runtime: () => rt(guardedSql()),
     },
     {
       // The same action under a profile that binds no store. Calling one
@@ -788,7 +803,7 @@ describe('golden skill: the fixture generates these exact files', () => {
       // store directly goes too, which is the one thing a binding changes
       // outside "Running an action".
       golden: 'actions_place_order.sql_unbound.skill.golden.md',
-      runtime: rt(guardedSql, {store: undefined}),
+      runtime: () => rt(guardedSql(), {store: undefined}),
     },
     {
       // The authored MCP executor, still bound to a store. Reads work and the
@@ -797,7 +812,7 @@ describe('golden skill: the fixture generates these exact files', () => {
       // not `sql`, so it is what checks that the reference page does not move
       // when the executor does.
       golden: 'actions_place_order.mcp.skill.golden.md',
-      runtime: rt(model),
+      runtime: () => rt(model),
     },
   ];
 
@@ -821,7 +836,7 @@ describe('golden skill: the fixture generates these exact files', () => {
 
   CASES.forEach(({golden, runtime}, index) => {
     test(golden, () => {
-      const out = generateSkill({runtime});
+      const out = generateSkill({runtime: runtime()});
       if ('error' in out) throw new Error(out.error);
       const files = Object.fromEntries(out.files.map(f => [f.path, f.text]));
       expect(Object.keys(files).sort()).toEqual([
@@ -833,3 +848,4 @@ describe('golden skill: the fixture generates these exact files', () => {
     });
   });
 });
+

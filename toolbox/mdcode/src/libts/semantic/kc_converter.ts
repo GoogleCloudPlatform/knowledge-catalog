@@ -57,7 +57,7 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {Action, AiContext, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
-import {referencedEntityNames} from './sql_expr_utils';
+import {columnReferences} from './sql_expr_utils';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -288,7 +288,12 @@ function readMetric(
   const metric: Metric = {name};
   if (data.expression !== undefined) metric.expression = data.expression;
   const exprForRefs = data.expression ?? '';
-  const referenced = referencedEntityNames(exprForRefs, entityNames);
+  const cols = columnReferences(exprForRefs, 'BIGQUERY') ?? [];
+  const referenced = [
+    ...new Set(
+        cols.map(c => c.qualifier)
+            .filter((q): q is string => !!q && entityNames.includes(q))),
+  ];
   const persistedEntity =
       typeof data.entity === 'string' && data.entity !== '' ? data.entity :
                                                               undefined;

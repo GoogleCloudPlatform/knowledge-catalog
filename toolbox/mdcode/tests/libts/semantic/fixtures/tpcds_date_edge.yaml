@@ -29,8 +29,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_item_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_item_sk}"
             dimension:
               is_time: false
           - name: ss_ticket_number
@@ -38,8 +36,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_ticket_number
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_ticket_number}"
             dimension:
               is_time: false
           - name: ss_customer_sk
@@ -47,8 +43,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_customer_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_customer_sk}"
             dimension:
               is_time: false
           - name: ss_store_sk
@@ -56,8 +50,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_store_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_store_sk}"
             dimension:
               is_time: false
           - name: ss_quantity
@@ -65,32 +57,24 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_quantity
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_quantity}"
             description: Quantity of items sold
           - name: ss_sales_price
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_sales_price
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_sales_price}"
             description: Sales price per unit
           - name: ss_ext_sales_price
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_ext_sales_price
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_ext_sales_price}"
             description: Extended sales price (quantity * price)
           - name: ss_net_profit
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_net_profit
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_net_profit}"
             description: Net profit from the sale
 
       - name: customer

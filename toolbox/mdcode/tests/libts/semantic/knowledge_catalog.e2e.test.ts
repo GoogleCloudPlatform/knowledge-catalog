@@ -18,12 +18,17 @@
 // fallback) is asserted in knowledge_catalog.test.ts; the publisher's write
 // sequence in deploy_knowledge_catalog.test.ts.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels, LoadOptions} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 

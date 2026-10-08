@@ -8,7 +8,7 @@
 // provisioned at `init`, not here), idempotent upsert on re-push, delete
 // reconciliation, and the dry-run plan.
 
-import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import {afterEach, beforeAll, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -17,6 +17,11 @@ import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {applyKnowledgeCatalog, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const FIXTURES = path.join(__dirname, 'fixtures');
