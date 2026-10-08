@@ -17,10 +17,11 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {LoadedModel, loadSemanticModels, sourceRequiredMessage} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
+import {SemanticModel} from '../libts/semantic/ir';
+import {appliesInMemory, applyProfileExclusions, applyProfileFile, AvailabilityReport, DEFAULT_PROFILE, isProfileFileForm, mergeProfileOntoDoc, ProfileExclusion, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -314,24 +315,27 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 
 // A model document after one binding profile is merged onto it: the merged
 // text, the fields the profile excludes, and whether the profile is in the
-// profile file form, which names no deployment target.
+// profile file form, which names no deployment target. A profile file beside a
+// Google-flavor model is not merged into the text: the model file is loaded
+// and the profile applied to it, so `text` is the model file's and `applied`
+// the result, with the load's warnings in `warnings`.
 export interface MergedDoc {
   name: string;
   text: string;
   excluded?: ProfileExclusion[];
   profileFile?: boolean;
+  applied?: SemanticModel;
+  warnings?: string[];
 }
 
-// Whether a profile text is in the profile file form (a top-level profile
-// object) rather than the legacy `semantic_model:` wrapper.
-export function isProfileFileForm(text: string): boolean {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
-        doc.semantic_model === undefined;
-  } catch {
-    return false;
-  }
+export {isProfileFileForm};
+
+// `model` without the exclusions a profile marked on it.
+function withoutExclusions(model: SemanticModel): SemanticModel {
+  const out = structuredClone(model);
+  for (const e of out.entities ?? []) delete e.excludedFields;
+  delete out.excludedMetrics;
+  return out;
 }
 
 // Why a graph push of `profileName` cannot go ahead because the profile is a
@@ -407,9 +411,12 @@ export async function push(options: PushOptions): Promise<number> {
       }
     }
 
-    // Merge one binding profile onto every model document, returning the merged
-    // docs (or null after reporting an error). The implicit 'default' profile
-    // is the inline document as authored, so nothing is merged. With
+    // Apply one binding profile to every model document, returning the docs
+    // (or null after reporting an error): a profile file beside a
+    // Google-flavor model is applied to the loaded model file, and a legacy
+    // wrapper, or any profile of a vanilla model, is merged into its text. The
+    // implicit 'default' profile is the inline document as authored, so
+    // nothing is applied. With
     // `skipMissing` (the --all-profiles fan-out) a model that does not define
     // the profile is dropped from the result rather than erroring -- the
     // profile name came from another model in the group and is not this one's
@@ -431,6 +438,37 @@ export async function push(options: PushOptions): Promise<number> {
                   (names.length ? `defined profiles: ${names.join(', ')}.` :
                                   `no profiles are defined for this model.`));
               return null;
+            }
+            if (appliesInMemory(doc.text, chosen.text)) {
+              // The model file loads on its own, since its sources may all be
+              // in profile files, and the profile applies to the loaded model.
+              const loaded = loadSemanticModels(
+                  [doc], {defaultProject, bindingOptional: true});
+              if (loaded.error) {
+                console.error('Error:', loaded.error);
+                return null;
+              }
+              const res = applyProfileFile(
+                  loaded.models[0].model, chosen.text, profileName, {
+                    load: {defaultProject},
+                    from: {
+                      document: doc.name,
+                      warnings: loaded.warnings,
+                      ansiFallbacks: loaded.models[0].ansiFallbacks,
+                    },
+                  });
+              if ('error' in res) {
+                console.error(`Error: [${doc.name}] ${res.error}`);
+                return null;
+              }
+              merged.push({
+                name: doc.name,
+                text: doc.text,
+                profileFile: true,
+                applied: res.model,
+                warnings: res.warnings,
+              });
+              continue;
             }
             const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
             if ('error' in res) {
@@ -462,17 +500,39 @@ export async function push(options: PushOptions): Promise<number> {
       models: LoadedModel[]; bqModels: LoadedModel[];
       spannerModels: LoadedModel[]
     }|null> => {
-      const loaded =
-          loadSemanticModels(docs, {defaultProject, bindingOptional: !prune});
+      // A document a profile file applied to is already loaded. Its
+      // exclusions are marked; a catalog-only push publishes the whole logical
+      // model, so they come off again there.
+      const loaded = loadSemanticModels(
+          docs.filter(d => !d.applied),
+          {defaultProject, bindingOptional: !prune});
       if (loaded.error) {
         console.error('Error:', loaded.error);
         return null;
       }
-      for (const w of loaded.warnings) {
+      for (const w of [...docs.flatMap(d => d.warnings ?? []),
+                       ...loaded.warnings]) {
         if (options.transpile && w.includes('needs transpilation')) continue;
         console.warn(`Warning: ${w}`);
       }
-      let models = loaded.models;
+      // A pruned push needs every concrete entity bound, which a load of the
+      // merged text required.
+      if (prune) {
+        const sourceless = docs.flatMap(
+            d => (d.applied?.entities ?? [])
+                     .filter(e => !e.abstract && !e.dataSource)
+                     .map(e => `[${d.name}] ${sourceRequiredMessage(e.name)}`));
+        if (sourceless.length) {
+          for (const e of sourceless) console.error(`Error: ${e}`);
+          return null;
+        }
+      }
+      const loadedByDoc = new Map(loaded.models.map(m => [m.document, m]));
+      let models: LoadedModel[] = docs.map(
+          d => d.applied ?
+              {document: d.name,
+               model: prune ? d.applied : withoutExclusions(d.applied)} :
+              loadedByDoc.get(d.name)!);
       let unprunedErrors: string[] = [];
       if (options.transpile) {
         const transpiled = await transpileModels(models);
@@ -884,7 +944,7 @@ async function printStore(options: ProfilesOptions): Promise<number> {
 
 // Lists a semantic model's binding profiles and, per profile, its resolved
 // deployment target and sources plus what it cannot answer (the availability
-// report). Read-only: it merges and prunes each profile the way push does, but
+// report). Read-only: it applies and prunes each profile the way push does, but
 // deploys nothing and runs no live probe, so a user can see coverage before
 // choosing a profile. Returns a process exit code (0 on success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
@@ -953,23 +1013,53 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
           `'default' binding.`);
       continue;
     }
+    const defaultProject = source.project ?? ctx.project;
     for (const {name, text} of available) {
-      const res = mergeProfileOntoDoc(doc.text, text, name);
-      if ('error' in res) {
-        console.error(`  profile '${name}': ${res.error}`);
-        continue;
+      let model: SemanticModel;
+      if (appliesInMemory(doc.text, text)) {
+        // The profile applies to the model file loaded on its own. Every
+        // concrete entity then needs a source, as a load of the merged
+        // document requires.
+        const loaded = loadSemanticModels(
+            [{name: doc.name, text: doc.text}],
+            {defaultProject, bindingOptional: true});
+        if (loaded.error) {
+          console.error(`  profile '${name}': ${loaded.error}`);
+          continue;
+        }
+        const res = applyProfileFile(
+            loaded.models[0].model, text, name, {load: {defaultProject}});
+        if ('error' in res) {
+          console.error(`  profile '${name}': ${res.error}`);
+          continue;
+        }
+        const sourceless = (res.model.entities ?? [])
+                               .filter(e => !e.abstract && !e.dataSource);
+        if (sourceless.length) {
+          for (const e of sourceless) {
+            console.error(
+                `  profile '${name}': ${sourceRequiredMessage(e.name)}`);
+          }
+          continue;
+        }
+        model = res.model;
+      } else {
+        const res = mergeProfileOntoDoc(doc.text, text, name);
+        if ('error' in res) {
+          console.error(`  profile '${name}': ${res.error}`);
+          continue;
+        }
+        for (const w of res.warnings) {
+          console.warn(`  profile '${name}': warning: ${w}`);
+        }
+        const loaded = loadSemanticModels(
+            [{name: doc.name, text: res.text}], {defaultProject});
+        if (loaded.error) {
+          console.error(`  profile '${name}': ${loaded.error}`);
+          continue;
+        }
+        model = applyProfileExclusions(loaded.models[0].model, res.excluded);
       }
-      for (const w of res.warnings) {
-        console.warn(`  profile '${name}': warning: ${w}`);
-      }
-      const loaded = loadSemanticModels(
-          [{name: doc.name, text: res.text}],
-          {defaultProject: source.project ?? ctx.project});
-      if (loaded.error) {
-        console.error(`  profile '${name}': ${loaded.error}`);
-        continue;
-      }
-      const model = applyProfileExclusions(loaded.models[0].model, res.excluded);
       const {report} = pruneUnavailable(model, name);
       const marker = name === defaultProfile ? ' (default)' : '';
       console.log(`  profile '${name}'${marker}`);

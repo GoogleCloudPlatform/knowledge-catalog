@@ -176,6 +176,57 @@ entities:
 });
 
 
+describe('a catalog-only push with a sibling profile file', () => {
+  test('applies the profile to the model file, unpruned', async () => {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    // No deployment target, so the push publishes to Knowledge Catalog only.
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+        fields:
+          - { name: key, expression: c_key }
+          - { name: credit, expression: c_credit }
+`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    primary_key: [cust_key]
+    fields:
+      - { name: key, expression: cust_key }
+    fields_exclude: [credit]
+`);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    const deploySpy = spyOn(kc, 'deployKnowledgeCatalog');
+
+    const code = await push({validateOnly: true, profile: 'prod'});
+
+    expect(code).toBe(0);
+    const customer = deploySpy.mock.calls[0][0][0].model.entities[0];
+    expect(customer.dataSource).toBe('test-project.prod.customer');
+    expect(customer.keys).toEqual(['cust_key']);
+    expect(customer.fields.find(f => f.name === 'key')!.expression)
+        .toBe('cust_key');
+    // The excluded field loses its binding, as a merge clears it, and the
+    // catalog still receives it.
+    expect(customer.fields.find(f => f.name === 'credit')).toEqual({
+      name: 'credit',
+    });
+    expect(customer.excludedFields).toBeUndefined();
+    // The model file states no key, but the profile does.
+    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .not.toContain('no primary_key');
+  });
+});
+
+
 // A push that deploys a graph prunes unbound fields, which can remove the very
 // field an inheritance rule is about. The rules run on the model before
 // pruning, so a graph push and a catalog-only push give the same answer.

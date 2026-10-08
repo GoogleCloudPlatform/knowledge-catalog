@@ -36,9 +36,52 @@ export interface LoadOptions {
 export interface LoadResult {
   models: SemanticModel[];
   warnings: string[];
+  // Each field and metric whose expression falls back to ANSI_SQL for want of
+  // a text in the preferred dialect, as "field 'Entity.field'" or
+  // "metric 'name'". The note about it in `warnings` names none of them.
+  ansiFallbacks?: string[];
 }
 
-const DEFAULT_DIALECT = 'BIGQUERY';
+// Message texts the loader gives, shared with code that checks the same rules
+// on a model already loaded.
+export function halfBoundJoinMessage(relationship: string): string {
+  return `relationship '${
+             relationship}': from_columns and to_columns must be given ` +
+      `together (both bind the edge) or both omitted (a logical edge); one ` +
+      `without the other is a half-bound join.`;
+}
+
+export function joinLengthMessage(
+    relationship: string, from: number, to: number): string {
+  return `relationship '${relationship}': from_columns (${
+             from}) and to_columns ` +
+      `(${to}) have different lengths; the join keys are mismatched`;
+}
+
+export function sourceRequiredMessage(dataset: string): string {
+  return `dataset '${dataset}': a non-abstract dataset requires a ` +
+      `source; set 'source', or mark it 'abstract: true' if it has no table`;
+}
+
+export function noPrimaryKeyWarning(dataset: string): string {
+  return `dataset '${
+      dataset}': no primary_key; the entity's KEY will be empty (invalid for graph generation)`;
+}
+
+export function sourceQueryWarning(ctx: string): string {
+  return `${
+      ctx}: source looks like a query, not a table reference; keeping it verbatim`;
+}
+
+export function ansiFallbackNote(preferred: string): string {
+  return `note: no '${
+             preferred}' dialect for one or more expressions; using the portable ` +
+      `'${FALLBACK_DIALECT}' dialect verbatim ('${
+             preferred}' accepts the ANSI core subset — ` +
+      `supply '${preferred}' variants only for ${preferred}-specific SQL)`;
+}
+
+export const DEFAULT_DIALECT = 'BIGQUERY';
 const FALLBACK_DIALECT = 'ANSI_SQL';
 // The two accepted format versions. Every document MUST declare one at the top
 // level (a missing or unrecognized `version` is a load error). The value
@@ -52,7 +95,7 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 //     third-party vendors only; a GOOGLE block is rejected, since everything
 //     it would carry is a native key here.
 // Both parse into the same IR, so a downstream leg never sees the difference.
-const OSSIE_VERSION = '0.2.0.dev0';
+export const OSSIE_VERSION = '0.2.0.dev0';
 const GOOGLE_VERSION = '0.2.0.dev0/google';
 // The declared flavor, as stored on the IR (SemanticModel.version).
 type FormatVersion = NonNullable<SemanticModel['version']>;
@@ -262,10 +305,7 @@ const relationshipSchema = z.object({
   if ((r.from_columns === undefined) !== (r.to_columns === undefined)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: `relationship '${
-                   r.name}': from_columns and to_columns must be given ` +
-          `together (both bind the edge) or both omitted (a logical edge); one ` +
-          `without the other is a half-bound join.`,
+      message: halfBoundJoinMessage(r.name),
     });
   }
 });
@@ -524,9 +564,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 path: ['source'],
-                message:
-                    `dataset '${ds.name}': a non-abstract dataset requires a ` +
-                    `source; set 'source', or mark it 'abstract: true' if it has no table`,
+                message: sourceRequiredMessage(ds.name),
               });
             }
             // The converse is always contradictory: an abstract dataset has no
@@ -567,11 +605,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                 (r.to_columns === undefined)) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
-                message:
-                    `relationship '${
-                        r.name}': from_columns and to_columns must be given ` +
-                    `together (both bind the edge) or both omitted (a logical edge); one ` +
-                    `without the other is a half-bound join.`,
+                message: halfBoundJoinMessage(r.name),
               });
             }
           });
@@ -1025,7 +1059,27 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
 
   const models = parsed.semantic_model.map(
       m => convertModel(m, version, opts, warnings));
-  return {models, warnings: [...new Set(warnings)]};
+  const preferred = opts.dialect ?? DEFAULT_DIALECT;
+  const ansiFallbacks = parsed.semantic_model.flatMap(m => [
+    ...m.datasets.flatMap(
+        ds => (ds.fields ?? [])
+                  .filter(
+                      f => f.expression !== undefined &&
+                          fallsBackToAnsi(f.expression, preferred))
+                  .map(f => `field '${ds.name}.${f.name}'`)),
+    ...(m.metrics ?? [])
+        .filter(mt => fallsBackToAnsi(mt.expression, preferred))
+        .map(mt => `metric '${mt.name}'`),
+  ]);
+  return {models, warnings: [...new Set(warnings)], ansiFallbacks};
+}
+
+// Whether an expression takes its ANSI_SQL text for want of one in
+// `preferred`: the case pickDialect gives the fallback note for.
+function fallsBackToAnsi(expr: ExpressionDoc, preferred: string): boolean {
+  const upper = (s: string) => s.toUpperCase();
+  return !expr.dialects.some(d => upper(d.dialect) === upper(preferred)) &&
+      expr.dialects.some(d => upper(d.dialect) === FALLBACK_DIALECT);
 }
 
 // Reads and validates the top-level `version`. It is REQUIRED and must be one
@@ -1175,8 +1229,7 @@ function convertDataset(
       '';
   const keys = ds.primary_key ?? [];
   if (!keys.length && !ds.abstract) {
-    warnings.push(`${
-        ctxLabel}: no primary_key; the entity's KEY will be empty (invalid for graph generation)`);
+    warnings.push(noPrimaryKeyWarning(ds.name));
   }
   const fields = (ds.fields ?? []).map(
       f => convertField(f, ds.name, version, warnings, dialect));
@@ -1289,10 +1342,7 @@ function convertRelationship(
   const toColumns = r.to_columns ?? [];
   if (fromColumns.length !== toColumns.length) {
     throw new Error(
-        `${ctx}: from_columns (${fromColumns.length}) and to_columns ` +
-        `(${
-            toColumns
-                .length}) have different lengths; the join keys are mismatched`);
+        joinLengthMessage(r.name, fromColumns.length, toColumns.length));
   }
 
   const relationship: Relationship = {
@@ -1655,6 +1705,19 @@ function convertParameter(
   return param;
 }
 
+// An executor written outside a model document, such as in a profile file,
+// checked against the loader's schema and converted as a load converts one.
+// Throws naming `where` and every problem the schema finds.
+export function parseExecutor(raw: unknown, where: string): Executor {
+  const result = executorSchema.safeParse(raw);
+  if (!result.success) {
+    const problems = result.error.issues.map(
+        i => (i.path.length ? `${i.path.join('.')}: ` : '') + i.message);
+    throw new Error(`${where} 'executor': ${problems.join('; ')}`);
+  }
+  return convertExecutor(result.data);
+}
+
 // Normalizes the open format's single-key executor object to the IR's tagged
 // union. The schema already guaranteed exactly one kind is present.
 function convertExecutor(ex: ExecutorDoc): Executor {
@@ -1690,10 +1753,19 @@ function convertExecutor(ex: ExecutorDoc): Executor {
 //   - When neither the target nor ANSI_SQL is present, `expression` is left
 //     unset and only `importedExpression` is populated; that is a genuine risk
 //     (needs transpilation) and is warned per field/metric, naming the dialect.
-interface PickedExpression {
+export interface PickedExpression {
   expression?: string;
   importedExpression?: string;
   importedDialect?: string;
+}
+
+// The expression and imported vendor text a field takes from its per-dialect
+// texts, picked as the loader picks them for a field it reads. A profile
+// applied in memory uses this, so its fields match the ones a load gives.
+export function pickFieldExpression(
+    dialects: ReadonlyArray<{dialect: string; expression: string}>,
+    preferred: string, ctx: string, warnings: string[]): PickedExpression {
+  return pickDialect({dialects: [...dialects]}, preferred, ctx, warnings);
 }
 
 function pickDialect(
@@ -1724,12 +1796,7 @@ function pickDialect(
   const canonical = byName(FALLBACK_DIALECT);
   if (canonical) {
     out.expression = canonical.expression;
-    warnings.push(
-        `note: no '${
-            preferred}' dialect for one or more expressions; using the portable ` +
-        `'${FALLBACK_DIALECT}' dialect verbatim ('${
-            preferred}' accepts the ANSI core subset — ` +
-        `supply '${preferred}' variants only for ${preferred}-specific SQL)`);
+    warnings.push(ansiFallbackNote(preferred));
     return out;
   }
 
@@ -1751,14 +1818,13 @@ function pickDialect(
 // keeps whatever shape the source system gave it rather than being forced into
 // fixed slots. A source that looks like a query (contains whitespace) cannot be
 // qualified, so it is kept verbatim.
-function parseSource(
+export function parseSource(
     source: string, opts: LoadOptions, warnings: string[],
     ctx: string): string {
   const trimmed = source.trim();
 
   if (/\s/.test(trimmed)) {
-    warnings.push(`${
-        ctx}: source looks like a query, not a table reference; keeping it verbatim`);
+    warnings.push(sourceQueryWarning(ctx));
     return trimmed;
   }
 
@@ -1800,6 +1866,9 @@ export interface LoadedModel {
   // file; not part of the deployed IR.
   document: string;
   model: SemanticModel;
+  // The fields and metrics whose expression falls back to ANSI_SQL (see
+  // LoadResult).
+  ansiFallbacks?: string[];
 }
 
 export interface LoadedModels {
@@ -1838,7 +1907,10 @@ export function loadSemanticModels(
       };
     }
     for (const w of loaded.warnings) warnings.push(`[${doc.name}] ${w}`);
-    for (const model of loaded.models) models.push({document: doc.name, model});
+    for (const model of loaded.models) {
+      models.push(
+          {document: doc.name, model, ansiFallbacks: loaded.ansiFallbacks});
+    }
   }
   return {models, warnings};
 }

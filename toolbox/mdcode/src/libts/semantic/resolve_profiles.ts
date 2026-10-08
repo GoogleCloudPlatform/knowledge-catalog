@@ -6,17 +6,22 @@
 // BINDING PROFILES that supply the physical facets it leaves open: each entity's
 // `source`, each field's column (`expression`), each action's `executor`, and
 // the deployment target.
-// `kcmd push --profile <name>` merges the selected profile onto the logical
+// `kcmd push --profile <name>` applies the selected profile to the logical
 // model BY NAME and deploys the result. See docs/semantic-model/profiles.md.
 //
-// Two passes live here:
+// Three passes live here:
+//   - applyProfile applies a profile, read into a ProfileSpec, to a loaded
+//     model. Push, `kcmd profiles`, the runtime and the profile checks apply a
+//     profile file this way, and a profile held in memory is applied the same
+//     way.
 //   - mergeProfile overlays one profile document onto the logical document,
 //     enforcing the binding-only contract: a profile rebinds what it names,
 //     leaves everything else as the model file has it, may exclude fields and
 //     metrics, and may not add elements or change what anything means. It runs
 //     on the parsed authoring documents (the readable, sugared form) before
 //     schema validation, so a profile is written in the same syntax as the
-//     model.
+//     model. Only the legacy `semantic_model:` wrapper, and a profile of a
+//     vanilla model, still go through it.
 //   - pruneUnavailable runs over the loaded IR and drops each field left unbound
 //     or excluded, every field that reads one of those, and every metric whose
 //     expression reads any of them, returning the pruned model and a
@@ -26,7 +31,8 @@
 
 import * as yaml from 'yaml';
 
-import {Action, ALLOWED_DIALECTS, DialectExpression, Entity, Executor, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
+import {Action, ALLOWED_DIALECTS, DialectExpression, Entity, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
+import {ansiFallbackNote, DEFAULT_DIALECT, halfBoundJoinMessage, joinLengthMessage, LoadOptions, noPrimaryKeyWarning, OSSIE_VERSION, parseExecutor, parseSource, pickFieldExpression, sourceQueryWarning} from './loader';
 import {resolveInheritance} from './resolve_inheritance';
 import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -225,8 +231,9 @@ export function applyProfileExclusions(
 }
 
 // Overlays a top-level profile object onto the one model it binds. The object
-// is read first exactly as loadProfileFile reads it, so push and the profile
-// checks agree on what a valid profile file is.
+// is read first exactly as loadProfileFile reads it. The commands reach this
+// only for a profile of a vanilla model (see appliesInMemory). The tests also
+// merge profile files here, as the result applyProfile must match.
 function mergeProfileFile(
     lm: any, pf: any, profileName: string,
     excluded: ProfileExclusion[]): string|undefined {
@@ -843,10 +850,12 @@ function resolvedEntities(model: SemanticModel): Entity[] {
 }
 
 // The names of the fields `entityName` inherits from every ancestor its
-// `extends` reaches.
-function inheritedNamesOf(model: SemanticModel, entityName: string):
+// `extends` reaches. A caller asking for many entities passes `byName`, the
+// model's entities by name, built once.
+function inheritedNamesOf(
+    model: SemanticModel, entityName: string,
+    byName = new Map((model.entities ?? []).map(e => [e.name, e]))):
     Set<string> {
-  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   const names = new Set<string>();
   const seen = new Set<string>([entityName]);
   const queue = [...(byName.get(entityName)?.extends ?? [])];
@@ -901,9 +910,10 @@ function connectingRelationshipKept(
 /**
  * Parses a logical model document and a binding profile document, merges the
  * profile onto the model by name, and returns the merged authoring text plus
- * any merge warnings. Shared by every path that reads a profile -- push,
- * `profiles`, and creating a runtime -- so the three parse, merge, warn and
- * fail identically; on a parse error or a binding-contract violation it
+ * any merge warnings. Push, `profiles` and creating a runtime use it for the
+ * legacy `semantic_model:` wrapper and for any profile of a vanilla model, and
+ * apply a profile file beside a Google-flavor model with applyProfileFile. The
+ * tests merge profile files too, as the result applyProfile must match. On a parse error or a binding-contract violation it
  * returns `error` for the caller to surface.
  */
 export function mergeProfileOntoDoc(
@@ -955,9 +965,394 @@ export function loadProfileFile(text: string, profileName: string):
   return profileSpecOf(doc, profileName);
 }
 
+// Whether a profile text is in the profile file form (a top-level profile
+// object) rather than the legacy `semantic_model:` wrapper.
+export function isProfileFileForm(text: string): boolean {
+  try {
+    const doc = yaml.parse(text, YAML_OPTIONS);
+    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
+        doc.semantic_model === undefined;
+  } catch {
+    return false;
+  }
+}
+
+// Whether a profile applies in memory with applyProfileFile: a profile file
+// beside a Google-flavor model file. A vanilla model file keeps the YAML merge,
+// since a vanilla model's profiles belong in its GOOGLE block and the legacy
+// profile directory still lets one sit beside it.
+export function appliesInMemory(modelText: string, profileText: string):
+    boolean {
+  if (!isProfileFileForm(profileText)) return false;
+  try {
+    const doc = yaml.parse(modelText, YAML_OPTIONS);
+    return doc?.version !== OSSIE_VERSION;
+  } catch {
+    return false;
+  }
+}
+
+/** How a profile's values are read, matching the load of the model. */
+export interface ApplyProfileOptions {
+  // The options the model was loaded with: the preferred dialect and the
+  // defaults that complete a short source.
+  load?: Pick<LoadOptions, 'dialect'|'defaultProject'|'defaultDataset'>;
+  // Collects the warnings a load gives for the values the profile sets.
+  warnings?: string[];
+  // The load of the model file the profile applies to: its document name, its
+  // warnings, and the expressions that fell back to ANSI_SQL. applyProfileFile
+  // drops the warnings about values the profile replaces.
+  from?: {document: string; warnings: string[]; ansiFallbacks?: string[]};
+}
+
+/**
+ * Returns a copy of `model` with `profile` applied: each named entity's
+ * source, its keys where the profile states them, its field bindings, as a
+ * binding-only redeclaration for a field the entity inherits, and its
+ * `fields_exclude`; each relationship's join columns; `metrics_exclude`; and
+ * each action's executor. A field a profile binds keeps every dialect text the
+ * profile wrote. An excluded field is marked in `excludedFields`, and loses its
+ * binding when no entity inherits it. The input is never mutated.
+ *
+ * Throws, with the message reading a profile file or loading the merged
+ * document gives, when the profile repeats a name, leaves a field entry with
+ * nothing to bind, names something the model does not declare, binds an
+ * abstract entity, gives join columns a load would reject, or is applied to a
+ * model that declares a `sql` executor, which belongs in each profile.
+ */
+export function applyProfile(
+    model: SemanticModel, profile: ProfileSpec,
+    opts: ApplyProfileOptions = {}): SemanticModel {
+  const error = profileApplyError(model, profile);
+  if (error) throw new Error(error);
+  return applyBindings(model, profile, opts);
+}
+
+/**
+ * Reads the profile file `text` and applies it to `model`, or returns the
+ * error that stops it, with the message the YAML merge gives. The warnings are
+ * those of the model file's load (`opts.from`), less the ones about values the
+ * profile replaces, followed by those for the values it sets, each prefixed
+ * with the document name. Callers use it where appliesInMemory says so.
+ */
+export function applyProfileFile(
+    model: SemanticModel, text: string, profileName: string,
+    opts: ApplyProfileOptions = {}):
+    {model: SemanticModel; warnings: string[]}|{error: string} {
+  const sql = logicalSqlExecutorError(model, profileName);
+  if (sql) return {error: sql};
+  let profile: ProfileSpec;
+  try {
+    profile = loadProfileFile(text, profileName);
+  } catch (err: any) {
+    return {error: err?.message ?? String(err)};
+  }
+  const error = profileApplyError(model, profile);
+  if (error) return {error};
+  const own: string[] = [];
+  const applied = applyBindings(model, profile, {...opts, warnings: own});
+  return {
+    model: applied,
+    warnings: warningsAfterProfile(model, profile, own, opts),
+  };
+}
+
+// The model file's load warnings with those about values `profile` replaces
+// left out, then the warnings for the values it sets: a field it rebinds or
+// clears, a source or primary key it states, and the ANSI_SQL note when every
+// expression that caused it is one the profile replaces.
+function warningsAfterProfile(
+    model: SemanticModel, profile: ProfileSpec, own: string[],
+    opts: ApplyProfileOptions): string[] {
+  const from = opts.from;
+  const prefix = from ? `[${from.document}] ` : '';
+  const below = entitiesWithDescendants(model);
+  const replaced = new Set<string>();
+  const keyed = new Set<string>();
+  const sourced = new Set<string>();
+  for (const pe of profile.entities) {
+    if (pe.primaryKey !== undefined) keyed.add(pe.name);
+    if (pe.source !== undefined) sourced.add(pe.name);
+    for (const pf of pe.fields ?? []) replaced.add(`${pe.name}.${pf.name}`);
+    if (!below.has(pe.name)) {
+      for (const name of pe.fieldsExclude ?? []) {
+        replaced.add(`${pe.name}.${name}`);
+      }
+    }
+  }
+  const note = ansiFallbackNote(opts.load?.dialect ?? DEFAULT_DIALECT);
+  // Without the list of expressions that caused the note, it stays.
+  const noteStays = from?.ansiFallbacks === undefined ||
+      from.ansiFallbacks.some(ctx => {
+        const field = ctx.match(/^field '(.+)'$/);
+        return !field || !replaced.has(field[1]);
+      });
+  const superseded = new Set([
+    ...[...keyed].map(n => noPrimaryKeyWarning(n)),
+    ...[...sourced].map(n => sourceQueryWarning(`dataset '${n}'`)),
+  ]);
+  const kept = (from?.warnings ?? []).filter(w => {
+    if (!w.startsWith(prefix)) return true;
+    const body = w.slice(prefix.length);
+    if (body === note) return noteStays;
+    if (superseded.has(body)) return false;
+    const field = body.match(/^field '([^']+)': /);
+    return !field || !replaced.has(field[1]);
+  });
+  return [...new Set([...kept, ...own.map(w => prefix + w)])];
+}
+
+// Why `profile` cannot apply to `model`, in the order the YAML merge checks,
+// or undefined.
+function profileApplyError(
+    model: SemanticModel, profile: ProfileSpec): string|undefined {
+  const at = `profile '${profile.name}'`;
+  const sql = logicalSqlExecutorError(model, profile.name);
+  if (sql) return sql;
+  const structure = profileStructureErrors(profile);
+  if (structure.length) return structure[0];
+  const actions = new Set((model.actions ?? []).map(a => a.name));
+  for (const pa of profile.actions ?? []) {
+    if (!actions.has(pa.name)) {
+      return `${at}: action '${pa.name}' is not in the logical model`;
+    }
+  }
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  for (const pe of profile.entities) {
+    const e = byName.get(pe.name);
+    if (!e) return `${at}: entity '${pe.name}' is not in the logical model`;
+    if (e.abstract) {
+      return `${at}: entity '${pe.name}' is abstract, so a profile cannot ` +
+          `bind it`;
+    }
+    const declared = new Set(e.fields.map(f => f.name));
+    const inherited = inheritedNamesOf(model, e.name, byName);
+    for (const pf of pe.fields ?? []) {
+      if (!declared.has(pf.name) && !inherited.has(pf.name)) {
+        return `${at}: field '${pe.name}.${
+            pf.name}' is not in the logical model`;
+      }
+    }
+    for (const name of pe.fieldsExclude ?? []) {
+      if (!declared.has(name) && !inherited.has(name)) {
+        return `${at}: field '${pe.name}.${
+            name}' in 'fields_exclude' is not in the logical model`;
+      }
+    }
+  }
+  const relationships = new Set((model.relationships ?? []).map(r => r.name));
+  for (const pr of profile.relationships) {
+    if (!relationships.has(pr.name)) {
+      return `${at}: relationship '${pr.name}' is not in the logical model`;
+    }
+  }
+  if (Array.isArray(profile.metricsExclude)) {
+    const metrics = new Set((model.metrics ?? []).map(m => m.name));
+    for (const name of profile.metricsExclude) {
+      if (!metrics.has(name)) {
+        return `${at}: metric '${
+            name}' in 'metrics_exclude' is not in the logical model`;
+      }
+    }
+  }
+  // The join columns each relationship ends up with, checked as a load checks
+  // them: both lists or neither, of equal length.
+  for (const pr of profile.relationships) {
+    const r = (model.relationships ?? []).find(x => x.name === pr.name)!;
+    const from = pr.fromColumns.length ? pr.fromColumns : r.source.columns;
+    const to = pr.toColumns.length ? pr.toColumns : r.destination.columns;
+    if (!from.length !== !to.length) return halfBoundJoinMessage(r.name);
+    if (from.length !== to.length) {
+      return joinLengthMessage(r.name, from.length, to.length);
+    }
+  }
+  return undefined;
+}
+
+// What loadProfileFile rejects in a profile's structure, in the order it
+// checks, with its messages: a repeated name, a field entry with nothing to
+// bind, a repeated dialect, a field both bound and excluded, and `"*"` inside
+// a list. A profile file never has these; a profile built in memory may.
+function profileStructureErrors(profile: ProfileSpec): string[] {
+  const at = `profile '${profile.name}'`;
+  const errors: string[] = [];
+  const twice = (names: string[]) =>
+      names.find((n, i) => names.indexOf(n) !== i);
+  const dupEntity = twice(profile.entities.map(e => e.name));
+  if (dupEntity) errors.push(`${at} 'entities' lists '${dupEntity}' twice`);
+  for (const pe of profile.entities) {
+    const where = `${at}: entity '${pe.name}'`;
+    const bound = (pe.fields ?? []).map(f => f.name);
+    const dupField = twice(bound);
+    if (dupField) errors.push(`${where} 'fields' lists '${dupField}' twice`);
+    for (const pf of pe.fields ?? []) {
+      const fat = `${where}: field '${pf.name}'`;
+      if (!pf.dialects?.length && !isFieldBound(pf as Field)) {
+        errors.push(
+            `${fat} has no 'expression'; bind it with one, or list it in ` +
+            `'fields_exclude'`);
+      }
+      const dupDialect = twice((pf.dialects ?? []).map(d => d.dialect));
+      if (dupDialect) {
+        errors.push(`${fat}: dialect '${dupDialect}' appears twice`);
+      }
+    }
+    const both = (pe.fieldsExclude ?? []).find(n => bound.includes(n));
+    if (both) {
+      errors.push(
+          `${where}: field '${both}' is in both 'fields' and ` +
+          `'fields_exclude'`);
+    }
+  }
+  const dupRel = twice(profile.relationships.map(r => r.name));
+  if (dupRel) errors.push(`${at} 'relationships' lists '${dupRel}' twice`);
+  if (Array.isArray(profile.metricsExclude) &&
+      profile.metricsExclude.includes('*')) {
+    errors.push(
+        `${at}: 'metrics_exclude' takes "*" on its own, not inside a list`);
+  }
+  return errors;
+}
+
+// The error for a model that declares a `sql` executor when a profile binds
+// it: a statement names one database's tables, so it belongs in the profile.
+function logicalSqlExecutorError(
+    model: SemanticModel, profileName: string): string|undefined {
+  const action = (model.actions ?? []).find(a => a.executor?.kind === 'sql');
+  if (!action) return undefined;
+  return `profile '${profileName}': action '${action.name}' in model '${
+             model.name}' declares a 'sql' executor. A statement names one ` +
+      `database's own tables and columns, so it belongs in the profile that ` +
+      `binds them, not in the model. Move the executor into each profile ` +
+      `that performs this write as DML.`;
+}
+
+// Applies what `profile` sets on the names `model` declares, and skips any
+// name it does not. applyProfile checks the names first; the profile checks
+// report each unknown name themselves.
+function applyBindings(
+    model: SemanticModel, profile: ProfileSpec,
+    opts: ApplyProfileOptions): SemanticModel {
+  const out: SemanticModel = structuredClone(model);
+  const load = opts.load ?? {};
+  const preferred = load.dialect ?? DEFAULT_DIALECT;
+  const warnings = opts.warnings ?? [];
+  // An executor the profile leaves out stays as the model declares it; `null`
+  // withdraws it.
+  for (const pa of profile.actions ?? []) {
+    const a = (out.actions ?? []).find(x => x.name === pa.name);
+    if (!a || pa.executor === undefined) continue;
+    if (pa.executor === null) {
+      delete a.executor;
+    } else {
+      a.executor = structuredClone(pa.executor);
+    }
+  }
+  const byName = new Map((out.entities ?? []).map(e => [e.name, e]));
+  const extended = entitiesWithDescendants(out);
+  for (const pe of profile.entities) {
+    const e = byName.get(pe.name);
+    if (!e || e.abstract) continue;
+    if (pe.source !== undefined) {
+      e.dataSource =
+          parseSource(pe.source, load, warnings, `dataset '${e.name}'`);
+    }
+    if (pe.primaryKey !== undefined) {
+      e.keys = [...pe.primaryKey];
+      if (!e.keys.length) warnings.push(noPrimaryKeyWarning(e.name));
+    }
+    if (pe.uniqueKeys !== undefined) {
+      if (pe.uniqueKeys.length) {
+        e.uniqueKeys = pe.uniqueKeys.map(k => [...k]);
+      } else {
+        delete e.uniqueKeys;
+      }
+    }
+    const inherited = inheritedNamesOf(out, e.name, byName);
+    for (const pf of pe.fields ?? []) {
+      // An entry with nothing to bind leaves the field as it is. applyProfile
+      // rejects one, and validateProfileCompleteness reports it, through
+      // profileStructureErrors.
+      if (!pf.dialects?.length && !isFieldBound(pf as Field)) continue;
+      let f = e.fields.find(x => x.name === pf.name);
+      if (!f) {
+        if (!inherited.has(pf.name)) continue;
+        // Binding an inherited field redeclares it on this entity with only a
+        // binding, which inheritance merges over the ancestor's definition.
+        f = {name: pf.name};
+        e.fields.push(f);
+      }
+      for (const k of FIELD_BINDING_KEYS) delete f[k];
+      if (pf.dialects?.length) {
+        // The texts as a load picks them, plus the whole list. The loader
+        // reads a string-form text as the default dialect's, so it is picked
+        // that way here too.
+        const texts = pf.stringForm ?
+            [{dialect: DEFAULT_DIALECT, expression: pf.dialects[0].expression}] :
+            pf.dialects;
+        Object.assign(
+            f,
+            pickFieldExpression(
+                texts, preferred, `field '${e.name}.${pf.name}'`, warnings));
+        f.dialects = pf.dialects.map(d => ({...d}));
+      } else {
+        // A profile built in memory may carry a binding with no dialect list.
+        for (const k of FIELD_BINDING_KEYS) {
+          if (pf[k] !== undefined) (f as any)[k] = structuredClone(pf[k]);
+        }
+      }
+      if (pf.stringForm !== undefined) f.stringForm = pf.stringForm;
+    }
+    // An exclusion applies to this entity only. A field no entity inherits
+    // from this one also loses its binding; one a descendant inherits keeps
+    // the binding the descendant reads.
+    const below = extended.has(e.name);
+    for (const name of pe.fieldsExclude ?? []) {
+      const f = e.fields.find(x => x.name === name);
+      if (!f || below) continue;
+      if (inherited.has(name)) {
+        // A line that only redeclares an inherited field goes with its
+        // binding. The entity still inherits the declaration.
+        e.fields = e.fields.filter(x => x !== f);
+      } else {
+        for (const k of FIELD_BINDING_KEYS) delete f[k];
+      }
+    }
+    if (pe.fieldsExclude?.length) {
+      e.excludedFields =
+          [...new Set([...(e.excludedFields ?? []), ...pe.fieldsExclude])];
+    }
+  }
+  // A side the profile leaves empty keeps the model file's columns, as the
+  // merge keeps a side the profile does not name.
+  for (const pr of profile.relationships) {
+    const r = (out.relationships ?? []).find(x => x.name === pr.name);
+    if (!r) continue;
+    if (pr.fromColumns.length) r.source.columns = [...pr.fromColumns];
+    if (pr.toColumns.length) r.destination.columns = [...pr.toColumns];
+  }
+  if (profile.metricsExclude !== undefined) {
+    const names = profile.metricsExclude === '*' ?
+        (out.metrics ?? []).map(m => m.name) :
+        profile.metricsExclude;
+    if (names.length) {
+      out.excludedMetrics =
+          [...new Set([...(out.excludedMetrics ?? []), ...names])];
+    }
+  }
+  return out;
+}
+
+// The entities another entity extends, directly or through others: exactly
+// those named in some other entity's `extends`.
+function entitiesWithDescendants(model: SemanticModel): Set<string> {
+  return new Set((model.entities ?? [])
+                     .flatMap(e => (e.extends ?? []).filter(p => p !== e.name)));
+}
+
 // Reads a parsed profile file into a ProfileSpec, throwing on anything a
-// profile may not say. Shared by loadProfileFile and by the merge push runs,
-// so the two agree on what a valid profile file is.
+// profile may not say. Shared by loadProfileFile and mergeProfileFile, so the
+// two agree on what a valid profile file is.
 function profileSpecOf(doc: any, profileName: string): ProfileSpec {
   const where = `profile '${profileName}'`;
   if (!doc || typeof doc !== 'object' || Array.isArray(doc) ||
@@ -984,6 +1379,13 @@ function profileSpecOf(doc: any, profileName: string): ProfileSpec {
         namedListOf(doc.relationships, `${where} 'relationships'`).map(r => {
           requireKeys(r, PROFILE_RELATIONSHIP_KEYS, `${where}: relationship`);
           const at = `${where}: relationship '${r.name}'`;
+          // An empty list is rejected as a load rejects one, so an empty side
+          // here can only mean a side the profile leaves out.
+          for (const key of ['from_columns', 'to_columns']) {
+            if (Array.isArray(r[key]) && !r[key].length) {
+              throw new Error(`${at} '${key}' lists no column`);
+            }
+          }
           // A side the profile leaves out is empty, which completeness
           // rejects: a named profile states both join column lists itself.
           const binding: ProfileRelationshipBinding = {
@@ -1017,7 +1419,9 @@ function profileSpecOf(doc: any, profileName: string): ProfileSpec {
       if (a.executor === undefined) return {name: a.name};
       return {
         name: a.name,
-        executor: a.executor === null ? null : profileExecutor(a.executor),
+        executor: a.executor === null ?
+            null :
+            parseExecutor(a.executor, `${where}: action '${a.name}'`),
       };
     });
   }
@@ -1161,23 +1565,6 @@ function profileExpression(expr: unknown, where: string):
     stringForm: false,
   };
 }
-
-// An action executor as the loader reads one (see convertExecutor in
-// loader.ts): exactly one of mcp, rest, grpc or sql.
-function profileExecutor(ex: any): Executor {
-  if (ex?.mcp) return {kind: 'mcp', mcp: {...ex.mcp}};
-  if (ex?.rest) return {kind: 'rest', rest: {...ex.rest}};
-  if (ex?.grpc) return {kind: 'grpc', grpc: {...ex.grpc}};
-  if (ex?.sql && Array.isArray(ex.sql.statements)) {
-    return {
-      kind: 'sql',
-      sql: {statements: ex.sql.statements.map((t: string) => String(t).trim())},
-    };
-  }
-  throw new Error(
-      `an action executor must be one of 'mcp', 'rest', 'grpc' or 'sql'`);
-}
-
 
 // ---------------------------------------------------------------------------
 // Whether a profile can be deployed.
@@ -1343,15 +1730,17 @@ export function validateProfileCompleteness(
   // cannot read, reported once.
   const unreadable = new Set<string>();
   const at = `profile '${profile.name}'`;
+  // What a profile file could not say, for a profile built in memory.
+  errors.push(...profileStructureErrors(profile));
   const entities = baseModel.entities ?? [];
   const byName = new Map(entities.map(e => [e.name, e]));
   // Declared plus inherited fields, in the model file and as this profile sees
-  // the model (see withProfile): the profile's bindings applied, and each
-  // excluded field left off the entity that names it. A broken hierarchy in
+  // the model: the profile applied as push applies it, and each excluded field
+  // left off the entity that names it. A broken hierarchy in
   // the model file is reported by push; one the profile itself creates, by
   // binding a field on two unrelated branches, is reported here.
   const fieldsOf = fieldsByEntity(baseModel);
-  const profiled = withProfile(baseModel, profile);
+  const profiled = applyBindings(baseModel, profile, {});
   const profiledError = inheritanceErrorOf(profiled);
   if (profiledError && !inheritanceErrorOf(baseModel)) {
     errors.push(`${at}: ${profiledError}`);
@@ -1665,7 +2054,7 @@ export function validateProfileConsistency(
   // as that field's column, as the graph generators read it.
   const baseFields = fieldsByEntity(baseModel);
   const profileFields = new Map(
-      profiles.map(p => [p.name, fieldsByEntity(withProfile(baseModel, p))]));
+      profiles.map(p => [p.name, fieldsByEntity(applyBindings(baseModel, p, {}))]));
   for (const r of baseModel.relationships ?? []) {
     if (r.association) continue;
     const target = byName.get(r.destination.entity);
@@ -1745,38 +2134,6 @@ function fieldsByEntity(model: SemanticModel): Map<string, Map<string, Field>> {
       new Map(e.fields.filter(f => !excluded.has(f.name)).map(f => [f.name, f])),
     ];
   }));
-}
-
-// The model as `profile` sees it: each field the profile binds takes that
-// binding, as a binding-only redeclaration when the entity only inherits it,
-// and each field the profile excludes is marked excluded on the entity that
-// names it, which leaves it off that entity and nowhere else. This is what
-// merging the profile and applyProfileExclusions do to the model.
-function withProfile(model: SemanticModel, profile: ProfileSpec): SemanticModel {
-  const out = structuredClone(model);
-  const bindingOf = new Map(profile.entities.map(pe => [pe.name, pe]));
-  for (const e of out.entities ?? []) {
-    const pe = bindingOf.get(e.name);
-    if (!pe || e.abstract) continue;
-    for (const pf of pe.fields ?? []) {
-      if (!isFieldBound(pf)) continue;
-      const binding: Partial<Field> = {};
-      for (const k of FIELD_BINDING_KEYS) {
-        if (pf[k] !== undefined) (binding as any)[k] = pf[k];
-      }
-      const own = e.fields.find(f => f.name === pf.name);
-      if (own) {
-        for (const k of FIELD_BINDING_KEYS) delete own[k];
-        Object.assign(own, binding);
-      } else {
-        e.fields.push({name: pf.name, ...binding});
-      }
-    }
-    if (pe.fieldsExclude?.length) {
-      e.excludedFields = [...new Set(pe.fieldsExclude)];
-    }
-  }
-  return out;
 }
 
 // The message of the inheritance error resolving `model` throws, or undefined
