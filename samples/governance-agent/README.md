@@ -32,8 +32,8 @@ This project demonstrates an agentic data governance solution using Google Cloud
 ### Installation
 1.  **Clone & Navigate**:
     ```bash
-    git clone <repo-url>
-    cd governance-agent
+    git clone https://github.com/GoogleCloudPlatform/knowledge-catalog.git
+    cd knowledge-catalog/samples/governance-agent
     ```
 2.  **Environment Setup**:
     ```bash

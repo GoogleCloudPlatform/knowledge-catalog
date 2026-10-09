@@ -2,7 +2,7 @@
 
 A generative AI-powered agent designed to automate data governance on Google Cloud. It allows users to define, validate, and enforce data policies using natural language queries, translating them into executable code that runs against **Google Cloud Dataplex** and **BigQuery** metadata.
 
-The [Agent Starter Pack](https://goo.gle/agent-starter-pack) (ASP) is the **recommended** way to create a new project from this sample: you get deployment options and CI/CD scaffolding. The copy in [dataplex-labs](https://github.com/GoogleCloudPlatform/dataplex-labs) is the upstream source for browsing and contributions.
+The [Agent Starter Pack](https://goo.gle/agent-starter-pack) (ASP) is the **recommended** way to create a new project from this sample: you get deployment options and CI/CD scaffolding. The copy in [knowledge-catalog](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/samples/policy-as-code-agent) is the upstream source for browsing and contributions.
 
 ## Prerequisites
 
@@ -15,12 +15,18 @@ The [Agent Starter Pack](https://goo.gle/agent-starter-pack) (ASP) is the **reco
 
 To explore this sample or contribute, you can run the agent directly from this directory in the repository.
 
-1.  **Install dependencies**:
+1.  **Clone the repository and navigate to this sample**:
+    ```bash
+    git clone https://github.com/GoogleCloudPlatform/knowledge-catalog.git
+    cd knowledge-catalog/samples/policy-as-code-agent
+    ```
+
+2.  **Install dependencies**:
     ```bash
     uv sync --group dev
     ```
 
-2.  **Configure environment**:
+3.  **Configure environment**:
     Copy the example configuration file:
     ```bash
     cp .env.example .env
@@ -31,14 +37,14 @@ To explore this sample or contribute, you can run the agent directly from this d
     *   `ENABLE_MEMORY_BANK`: Set to `True` to enable long-term memory (requires Firestore). Set to `False` to run without it. See [Memory Integration](./docs/MEMORY_INTEGRATION.md) for details.
     *   `FIRESTORE_DATABASE`: (Optional) Leave as `(default)` unless using a named database.
 
-3.  **Authenticate with Google Cloud**:
+4.  **Authenticate with Google Cloud**:
     ```bash
     gcloud auth application-default login
     ```
 
 ## Running the Agent
 
-From the agent directory (`policy-as-code`):
+From the sample directory (`samples/policy-as-code-agent`):
 
 ```bash
 uv run adk run policy_as_code_agent

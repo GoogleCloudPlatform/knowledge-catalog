@@ -88,7 +88,8 @@ The repository includes a self-contained deployment script that:
 4. Deploys the service to Cloud Run with recommended CPU, memory, and port settings.
 
 ```bash
-cd governance-agent
+# From the root of your knowledge-catalog clone
+cd samples/governance-agent
 chmod +x deploy.sh
 
 # Optional: Override defaults via environment variables
@@ -105,7 +106,8 @@ chmod +x deploy.sh
 If you don't have Docker installed locally, you can deploy directly from source using Google Cloud Build:
 
 ```bash
-cd governance-agent
+# From the root of your knowledge-catalog clone
+cd samples/governance-agent
 
 gcloud run deploy governance-agent \
   --source . \
