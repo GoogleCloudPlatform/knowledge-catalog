@@ -5,13 +5,13 @@ from dataclasses import dataclass
 from urllib.parse import urldefrag, urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from bs4 import BeautifulSoup
 from markdownify import markdownify
 
 _USER_AGENT = "okf-reference-agent/0.1 (+https://github.com/amirhormati/open-knowledge-format)"
 _MAX_MARKDOWN_BYTES = 40 * 1024
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
-_HREF_RE = re.compile(r"""href\s*=\s*["']([^"'#\s]+)["']""", re.IGNORECASE)
 
 
 class FetchError(Exception):
@@ -35,10 +35,17 @@ def _extract_title(html: str) -> str | None:
 
 
 def _extract_links(html: str, base_url: str) -> list[str]:
+    # Parse href with an HTML parser rather than a raw-text regex so entities in
+    # attribute values are decoded per the HTML spec. Valid HTML must write `&`
+    # inside an href as `&amp;`, so a regex surfaces `?a=1&amp;b=2` verbatim and
+    # the agent later fetches a literally-broken URL. BeautifulSoup (already a
+    # dependency via markdownify) decodes it correctly — and, unlike a blanket
+    # html.unescape() on the raw string, it leaves query params such as
+    # `&copy=` / `&reg=` intact instead of turning them into `©` / `®`.
     seen: set[str] = set()
     out: list[str] = []
-    for match in _HREF_RE.finditer(html):
-        href = match.group(1).strip()
+    for anchor in BeautifulSoup(html, "html.parser").find_all("a", href=True):
+        href = anchor["href"].strip()
         if not href:
             continue
         scheme = urlparse(href).scheme.lower()
