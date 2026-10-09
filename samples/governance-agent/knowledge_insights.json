@@ -1,0 +1,46 @@
+{
+  "relationships": [
+    {
+      "target_table": "raw_transactions",
+      "source_table": "DATAPLEX_AI",
+      "table_overview": "This table stores individual retail transaction records. It captures details about each purchase event. The data supports analysis of sales performance and product popularity. It also facilitates tracking of customer purchasing behavior.",
+      "column_mappings": [
+        {
+          "target_col": "amount",
+          "source_col": "amount",
+          "confidence": 1.0,
+          "type": "DATAPLEX_INSIGHT",
+          "explanation": "This column holds the monetary value of the transaction for the specific product."
+        },
+        {
+          "target_col": "transaction_id",
+          "source_col": "transaction_id",
+          "confidence": 1.0,
+          "type": "DATAPLEX_INSIGHT",
+          "explanation": "This column holds a unique identifier for each individual transaction."
+        },
+        {
+          "target_col": "order_id",
+          "source_col": "order_id",
+          "confidence": 1.0,
+          "type": "DATAPLEX_INSIGHT",
+          "explanation": "This column holds an identifier that groups multiple transactions belonging to the same customer order."
+        },
+        {
+          "target_col": "product_id",
+          "source_col": "product_id",
+          "confidence": 1.0,
+          "type": "DATAPLEX_INSIGHT",
+          "explanation": "This column holds a unique identifier for the product involved in the transaction."
+        },
+        {
+          "target_col": "quantity",
+          "source_col": "quantity",
+          "confidence": 1.0,
+          "type": "DATAPLEX_INSIGHT",
+          "explanation": "This column holds the number of units of the product purchased in the transaction."
+        }
+      ]
+    }
+  ]
+}

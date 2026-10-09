@@ -1,0 +1,47 @@
+[
+  {
+    "createTime": "2026-02-06T08:43:46.339247Z",
+    "description": "The exact date and time when the order was placed.",
+    "displayName": "Transaction Timestamp",
+    "name": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary/terms/transaction-date",
+    "parent": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary",
+    "uid": "f8de22f9-3e43-49dd-8a5c-278bbadb5e77",
+    "updateTime": "2026-02-06T08:43:46.339247Z"
+  },
+  {
+    "createTime": "2026-02-06T08:43:46.184271Z",
+    "description": "Rank of customer membership (Gold, Silver, etc.).",
+    "displayName": "Loyalty Tier",
+    "name": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary/terms/membership-tier",
+    "parent": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary",
+    "uid": "98e54468-26b9-411e-b0a3-381bd17c3ecd",
+    "updateTime": "2026-02-06T08:43:46.184271Z"
+  },
+  {
+    "createTime": "2026-02-06T08:43:46.025231Z",
+    "description": "Stock Keeping Unit - unique identifier for merchandise items.",
+    "displayName": "Product SKU",
+    "name": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary/terms/product-sku",
+    "parent": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary",
+    "uid": "a8abf079-cc6a-4df1-8e87-dfa6acd7dea6",
+    "updateTime": "2026-02-06T08:43:46.025231Z"
+  },
+  {
+    "createTime": "2026-02-06T08:43:45.895535Z",
+    "description": "The final amount charged to the customer including taxes and discounts.",
+    "displayName": "Order Grand Total",
+    "name": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary/terms/order-amount",
+    "parent": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary",
+    "uid": "c40d419f-733c-4b73-a4b5-626cf5236add",
+    "updateTime": "2026-02-06T08:43:45.895535Z"
+  },
+  {
+    "createTime": "2026-02-06T08:43:45.750447Z",
+    "description": "Unique internal ID for a registered customer.",
+    "displayName": "Customer Identifier",
+    "name": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary/terms/customer-id",
+    "parent": "projects/governance-agent/locations/europe-west1/glossaries/retail-common-glossary",
+    "uid": "c4e61b71-612d-4621-9266-c894db55cc9f",
+    "updateTime": "2026-02-06T08:43:45.750447Z"
+  }
+]
