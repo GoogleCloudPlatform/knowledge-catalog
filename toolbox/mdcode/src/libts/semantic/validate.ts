@@ -17,7 +17,7 @@ import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_
 import {LoadedModel} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {keysCoveredByColumns} from './sql_expr_utils';
+import {isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 
 // Checks every model against the push requirements and returns the collected
@@ -128,7 +128,7 @@ export function validatePushRequirements(
         // renders it from `rel.association`. Only a plain FK edge needs direct
         // join columns.
         if (rel.association) continue;
-        if (!rel.source.columns.length || !rel.destination.columns.length) {
+        if (!rel.source.columns.length && !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
                   document}) targets a graph but has no join columns; add its ` +
@@ -139,6 +139,7 @@ export function validatePushRequirements(
     }
 
     errors.push(...validateInheritance([{document, model}]));
+    errors.push(...validateColumnsAndRelationships(model, document));
     errors.push(...relationshipKeyErrors(model, document));
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -866,6 +867,88 @@ function inheritanceRuleErrors(
   return errors;
 }
 
+// Every key column (`primary_key`, `unique_keys[]`) and relationship join
+// column (`from_columns`, `to_columns`) must be a physical column identifier,
+// not a SQL expression or an entity-qualified reference. Every relationship's
+// endpoints must name declared entities in the model, and its `from_columns`
+// and `to_columns` lists must have equal length. Checked here in addition to
+// the loader so hand-built IR and pulled models cannot bypass these rules.
+function validateColumnsAndRelationships(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entityNames = new Set((model.entities ?? []).map(e => e.name));
+
+  for (const entity of model.entities ?? []) {
+    for (const col of entity.keys ?? []) {
+      if (!isColumnName(col)) {
+        errors.push(
+            `entity '${entity.name}' in model '${model.name}' (${
+                document}): primary_key column '${
+                col}' is not a physical column name; keys and join columns ` +
+            `must name physical table columns, not expressions or field ` +
+            `references.`);
+      }
+    }
+    for (const uk of entity.uniqueKeys ?? []) {
+      for (const col of uk) {
+        if (!isColumnName(col)) {
+          errors.push(
+              `entity '${entity.name}' in model '${model.name}' (${
+                  document}): unique_keys column '${
+                  col}' is not a physical column name; keys and join columns ` +
+              `must name physical table columns, not expressions or field ` +
+              `references.`);
+        }
+      }
+    }
+  }
+
+  for (const rel of model.relationships ?? []) {
+    if (!entityNames.has(rel.source.entity)) {
+      errors.push(
+          `relationship '${rel.name}' in model '${model.name}' (${
+              document}): 'from' entity '${
+              rel.source.entity}' is not declared in the model.`);
+    }
+    if (!entityNames.has(rel.destination.entity)) {
+      errors.push(
+          `relationship '${rel.name}' in model '${model.name}' (${
+              document}): 'to' entity '${
+              rel.destination.entity}' is not declared in the model.`);
+    }
+    if (rel.association) continue;
+    if (rel.source.columns.length !== rel.destination.columns.length) {
+      errors.push(
+          `relationship '${rel.name}' in model '${model.name}' (${
+              document}): from_columns (${rel.source.columns.length}) and ` +
+          `to_columns (${rel.destination.columns.length}) have different ` +
+          `lengths; join column lists must have the same length.`);
+    }
+    for (const col of rel.source.columns) {
+      if (!isColumnName(col)) {
+        errors.push(
+            `relationship '${rel.name}' in model '${model.name}' (${
+                document}): from_columns column '${
+                col}' is not a physical column name; keys and join columns ` +
+            `must name physical table columns, not expressions or field ` +
+            `references.`);
+      }
+    }
+    for (const col of rel.destination.columns) {
+      if (!isColumnName(col)) {
+        errors.push(
+            `relationship '${rel.name}' in model '${model.name}' (${
+                document}): to_columns column '${
+                col}' is not a physical column name; keys and join columns ` +
+            `must name physical table columns, not expressions or field ` +
+            `references.`);
+      }
+    }
+  }
+
+  return errors;
+}
+
 // A relationship's `to_columns` must cover a primary or unique key of the `to`
 // entity. A relationship is many-to-one or one-to-one, and the key its
 // `to_columns` cover decides which, so a join that covers no key is invalid in
@@ -885,10 +968,16 @@ function relationshipKeyErrors(
       model.entities ?? [];
   const byName = new Map(entities.map(e => [e.name, e]));
   for (const rel of model.relationships ?? []) {
+    const from = rel.source.columns;
     const to = rel.destination.columns;
-    if (rel.association || !to.length) continue;
+    if (rel.association || !to.length || from.length !== to.length) continue;
+    if (!from.every(isColumnName) || !to.every(isColumnName)) continue;
     const target = byName.get(rel.destination.entity);
-    if (!target || target.abstract) continue;
+    if (!target || target.abstract || !byName.has(rel.source.entity)) continue;
+    if (!target.keys.every(isColumnName) ||
+        !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
+      continue;
+    }
     const covered = keysCoveredByColumns(
         target, to, target.keys, target.uniqueKeys ?? []);
     if (covered && !covered.length) {

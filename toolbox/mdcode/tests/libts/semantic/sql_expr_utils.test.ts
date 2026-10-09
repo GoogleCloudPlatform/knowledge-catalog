@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -143,6 +143,22 @@ describe('columnReferences', () => {
   test('returns undefined for text the parser cannot read', () => {
     expect(columnReferences('SUM(orders.amount', 'ANSI_SQL')).toBeUndefined();
     expect(columnReferences('a; b', 'BIGQUERY')).toBeUndefined();
+  });
+});
+
+describe('referencedEntityNames', () => {
+  test('matches only the start of a dotted chain, never a struct subfield', () => {
+    const entities = ['orders', 'shipping_address', 'customer'];
+    expect(referencedEntityNames('orders.shipping_address.city', entities))
+        .toEqual(['orders']);
+    expect(referencedEntityNames('`orders`.`shipping_address`.city', entities))
+        .toEqual(['orders']);
+    expect(referencedEntityNames('orders.`shipping_address`.city', entities))
+        .toEqual(['orders']);
+    expect(referencedEntityNames("'orders.customer.id'", entities)).toEqual([]);
+    expect(referencedEntityNames(
+               'orders.Customer.id', entities, {caseInsensitive: true}))
+        .toEqual(['orders']);
   });
 });
 

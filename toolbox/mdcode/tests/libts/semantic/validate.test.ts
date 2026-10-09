@@ -4,8 +4,11 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {transpileModel} from '../../../src/libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
@@ -928,7 +931,7 @@ describe('a relationship joins on a key of its target', () => {
   });
   const join = (to: string[]) => ({
     name: 'placed_by',
-    source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+    source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
     destination: {entity: 'customer', columns: to},
   });
   const check = (customer: Entity, to: string[]) => validatePushRequirements(
@@ -974,7 +977,7 @@ describe('a relationship joins on a key of its target', () => {
 describe('a relationship key check reads names as columns', () => {
   const join = (toEntity: string, to: string[]) => ({
     name: 'placed_by',
-    source: {entity: 'orders', columns: to.map(c => `o_${c}`)},
+    source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
     destination: {entity: toEntity, columns: to},
   });
   const orders: Entity = {name: 'orders', dataSource: 'p.d.o', keys: ['o_id'], fields: []};
@@ -1012,5 +1015,259 @@ describe('a relationship key check reads names as columns', () => {
     const errors = check([party], join('party', ['id'])).join('\n');
     expect(errors).toContain("connects 'party', which is abstract");
     expect(errors).not.toContain('cover no primary or unique key');
+  });
+});
+
+
+describe('physical column names and relationship shape', () => {
+  const validColumns = ['o_id', '`order date`'];
+  const invalidColumns = [
+    'order date',
+    'LOWER(cust_id)',
+    'a || b',
+    'customers.id',
+    '',
+  ];
+
+  const baseOrders = (over: Partial<Entity> = {}): Entity => ({
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    keys: ['o_id'],
+    fields: [],
+    ...over,
+  });
+  const baseCustomers = (over: Partial<Entity> = {}): Entity => ({
+    name: 'customers',
+    dataSource: 'p.d.customers',
+    keys: ['c_id'],
+    fields: [],
+    ...over,
+  });
+
+  test('accepts bare and backtick-quoted physical column names in all four slots', () => {
+    for (const col of validColumns) {
+      const m = model({
+        entities: [
+          baseOrders({keys: [col], uniqueKeys: [[col]]}),
+          baseCustomers({keys: [col]}),
+        ],
+        relationships: [{
+          name: 'placed_by',
+          source: {entity: 'orders', columns: [col]},
+          destination: {entity: 'customers', columns: [col]},
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    }
+  });
+
+  test('rejects expressions, qualified names, unquoted whitespace, and empty strings in all four slots', () => {
+    for (const bad of invalidColumns) {
+      const pkErrs = validatePushRequirements(
+          [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+          {targetOptional: true});
+      expect(pkErrs.length).toBe(1);
+      expect(pkErrs[0]).toContain("entity 'orders'");
+      expect(pkErrs[0]).toContain('primary_key');
+      expect(pkErrs[0]).toContain(`'${bad}'`);
+
+      const ukErrs = validatePushRequirements(
+          [loaded(model({entities: [baseOrders({uniqueKeys: [[bad]]})]}))],
+          {targetOptional: true});
+      expect(ukErrs.length).toBe(1);
+      expect(ukErrs[0]).toContain("entity 'orders'");
+      expect(ukErrs[0]).toContain('unique_keys');
+      expect(ukErrs[0]).toContain(`'${bad}'`);
+
+      const fromErrs = validatePushRequirements(
+          [loaded(model({
+            entities: [baseOrders(), baseCustomers()],
+            relationships: [{
+              name: 'placed_by',
+              source: {entity: 'orders', columns: [bad]},
+              destination: {entity: 'customers', columns: ['c_id']},
+            }],
+          }))],
+          {targetOptional: true});
+      expect(fromErrs.length).toBe(1);
+      expect(fromErrs[0]).toContain("relationship 'placed_by'");
+      expect(fromErrs[0]).toContain('from_columns');
+      expect(fromErrs[0]).toContain(`'${bad}'`);
+
+      const toErrs = validatePushRequirements(
+          [loaded(model({
+            entities: [baseOrders(), baseCustomers()],
+            relationships: [{
+              name: 'placed_by',
+              source: {entity: 'orders', columns: ['o_id']},
+              destination: {entity: 'customers', columns: [bad]},
+            }],
+          }))],
+          {targetOptional: true});
+      expect(toErrs.length).toBe(1);
+      expect(toErrs[0]).toContain("relationship 'placed_by'");
+      expect(toErrs[0]).toContain('to_columns');
+      expect(toErrs[0]).toContain(`'${bad}'`);
+    }
+  });
+
+  test('rejects an undeclared from or to entity on a relationship', () => {
+    const badFrom = validatePushRequirements(
+        [loaded(model({
+          entities: [baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'ghost', columns: ['c_id']},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(badFrom.length).toBe(1);
+    expect(badFrom[0]).toContain("relationship 'placed_by'");
+    expect(badFrom[0]).toContain("'from' entity 'ghost'");
+
+    const badTo = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'ghost', columns: ['o_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(badTo.length).toBe(1);
+    expect(badTo[0]).toContain("relationship 'placed_by'");
+    expect(badTo[0]).toContain("'to' entity 'ghost'");
+  });
+
+  test('rejects mismatched from_columns and to_columns lengths, and accepts both empty on KC-only push', () => {
+    const mismatch = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id', 'extra_id']},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(mismatch.length).toBe(1);
+    expect(mismatch[0]).toContain("relationship 'placed_by'");
+    expect(mismatch[0]).toContain('from_columns (2) and to_columns (1)');
+
+    const unbound = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customers', columns: []},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(unbound).toEqual([]);
+  });
+});
+
+
+describe('struct paths in metric entity inference and transpilation', () => {
+  test('loader infers metric entity from the leading qualifier of a struct path', () => {
+    for (const expr of [
+           'COUNT(orders.shipping_address.city)',
+           'COUNT(`orders`.`shipping_address`.city)',
+           'COUNT(orders.`shipping_address`.city)',
+         ]) {
+      const yaml = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: p.d.orders
+        primary_key: [o_id]
+        fields:
+          - { name: shipping_address, expression: orders.shipping_address }
+      - name: shipping_address
+        source: p.d.shipping_address
+        primary_key: [addr_id]
+        fields:
+          - { name: city, expression: shipping_address.city }
+    metrics:
+      - name: city_count
+        expression: "${expr}"
+`;
+      const {models, warnings} = loadModels(yaml);
+      expect(models[0].metrics[0].entity).toBe('orders');
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  test('pull (kc_converter) infers metric entity from the leading qualifier of a struct path', () => {
+    const m: SemanticModel = {
+      name: 'sales',
+      entities: [
+        {
+          name: 'orders',
+          dataSource: 'p.d.orders',
+          keys: ['o_id'],
+          fields: [{name: 'shipping_address', expression: 'orders.shipping_address'}],
+        },
+        {
+          name: 'shipping_address',
+          dataSource: 'p.d.shipping_address',
+          keys: ['addr_id'],
+          fields: [{name: 'city', expression: 'shipping_address.city'}],
+        },
+      ],
+      relationships: [],
+      metrics: [{
+        name: 'city_count',
+        expression: 'COUNT(orders.shipping_address.city)',
+        entity: 'orders',
+      }],
+    };
+    const kc = generateCatalogResources(m, {
+      project: 'p',
+      location: 'us',
+      entryGroup: 'eg',
+      emitExpressions: true,
+    });
+    const pulled = modelsFromCatalogResources(kc.entries, kc.entryLinks);
+    expect(pulled.models[0].metrics[0].entity).toBe('orders');
+    expect(pulled.warnings).toEqual([]);
+  });
+
+  test('transpile qualifier guard does not mistake a struct subfield for a re-cased entity qualifier', async () => {
+    const m: SemanticModel = {
+      name: 'sales',
+      entities: [
+        {
+          name: 'orders',
+          dataSource: 'p.d.orders',
+          keys: ['o_id'],
+          fields: [{name: 'customer', expression: 'orders.customer'}],
+        },
+        {
+          name: 'customer',
+          dataSource: 'p.d.customer',
+          keys: ['c_id'],
+          fields: [{name: 'id', expression: 'customer.c_id'}],
+        },
+      ],
+      relationships: [],
+      metrics: [{
+        name: 'cust_count',
+        importedExpression: 'COUNT(orders.Customer.id)',
+        importedDialect: 'SNOWFLAKE',
+        entity: 'orders',
+      }],
+    };
+    const {model: out, warnings} = await transpileModel(m, {
+      transpiler: async reqs =>
+          reqs.map(r => ({id: r.id, sql: 'COUNT(orders.Customer.id)'})),
+    });
+    expect(out.metrics[0].expression).toBe('COUNT(orders.Customer.id)');
+    expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
   });
 });
