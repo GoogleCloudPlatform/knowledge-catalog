@@ -219,7 +219,7 @@ appears nowhere above.
 | `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
 | `owl:Class` | `datasets[]` entry | a logical entity — **no `source`** (a binding profile adds one before a graph deploy) |
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; a logical field — **no `expression`** (a binding profile maps it to a column) |
-| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (you add `from_columns`/`to_columns` to the model before a graph deploy, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
+| `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (you add `from_columns`/`to_columns` to the model before a graph deploy, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); a property with several `rdfs:domain` values becomes **one edge per domain** (see [Verbs reused across classes](#verbs-reused-across-classes)); with several *different* `rdfs:range` values only the first is kept (an edge has one destination) and the rest are warned |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | **entity-level inheritance only** — records the parent(s) in document order; not read on object properties (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
 | `rdfs:subPropertyOf`, `owl:inverseOf`, `owl:equivalentClass`, `owl:disjointWith`, `owl:oneOf`, `owl:equivalentProperty`, `owl:propertyDisjointWith`, `owl:propertyChainAxiom`, `owl:AllDisjointClasses`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the property characteristics, `rdfs:seeAlso`, `rdfs:isDefinedBy`, `owl:deprecated`, `owl:versionInfo` | *(dropped)* | **no native home** — not imported (see [Limitations](#limitations)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
@@ -229,15 +229,82 @@ appears nowhere above.
 | `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when redundant with the name |
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
 | `skos:example` | `ai_context.examples` | sample questions / values |
-| `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | first present wins, in that order; on an object property (which has no `description` slot) the comment rides in `ai_context.instructions` |
+| `rdfs:comment`, `skos:definition`, `dcterms:`/`dc:description` | `description` | the most specific predicate that supplies any wins, in that order; several descriptions of one class join; on a property they pair with its domains (see [Verbs reused across classes](#verbs-reused-across-classes)); an object property has no `description` slot, so its comment rides in `ai_context.instructions` |
 | term IRIs, `@prefix` | dropped (base IRI named in `description` **only when the header has no comment of its own**) | a term's identity is its local name; the source namespace is not otherwise carried |
 
 A datatype property whose domain is not a class, or an object property missing an
 endpoint, cannot be placed; it is **skipped with a warning** rather than failing
-the whole import. An object property that declares *more than one* `rdfs:domain`
-or `rdfs:range` is kept — a relationship maps one source to one destination, so
-the first of each is used and the extra endpoints are dropped with a warning
-(unlike a multi-domain *datatype* property, which lands on every domain).
+the whole import. An object property that declares more than one *different*
+`rdfs:range` keeps the first — an edge has one destination — and warns about the
+rest.
+
+### Verbs reused across classes
+
+Ontology generators usually walk a model class by class, writing out each
+class's properties as they go. When several classes share a verb, the same
+property IRI is declared once per class:
+
+```turtle
+:hasClient a owl:ObjectProperty ;
+    rdfs:domain :SalesBooking ; rdfs:range :Client ;
+    rdfs:comment "Associates a sales booking with a specific client." .
+
+:hasClient a owl:ObjectProperty ;
+    rdfs:domain :Revenue ; rdfs:range :Client ;
+    rdfs:comment "Associates recognized revenue with a specific client." .
+```
+
+In RDF a term's name *is* its identity, so those are not two properties. They
+merge into one `:hasClient` carrying two `rdfs:domain` values and two
+`rdfs:comment` values. Repeating the shared `rdfs:range` changes nothing — the
+same triple asserted twice is one fact — so it is not reported as a conflict.
+
+Each domain becomes its own edge, named for the class it runs from:
+
+```yaml
+relationships:
+  - name: hasClient_SalesBooking
+    from: SalesBooking
+    to: Client
+    ai_context:
+      instructions: Associates a sales booking with a specific client.
+      synonyms:
+        - hasClient
+  - name: hasClient_Revenue
+    from: Revenue
+    to: Client
+    ai_context:
+      instructions: Associates recognized revenue with a specific client.
+      synonyms:
+        - hasClient
+```
+
+The suffix is what makes the names unique, which the model requires — a
+duplicate relationship name is a load error. A property with a single domain
+keeps its bare name, so the ordinary case is untouched.
+
+A renamed edge records the property it came from as an `ai_context` synonym.
+That keeps the OWL term searchable, and it re-links the siblings: the edges
+sharing a source term are the ones that came from one set of declarations.
+Without it the term would vanish entirely whenever an ontology writes no
+`rdfs:label` — and a label, where there is one, is the human phrase (`has
+client`), not the term. A single-domain edge is already named for its
+property, so it gets no such synonym.
+
+Each edge keeps the comment written beside its own declaration. RDF records no
+link between a domain and a comment, so that pairing is by document order, and
+it only holds when there is exactly one comment per domain. When the counts
+differ the order cannot be trusted: every edge then gets every comment, and the
+import warns. Comment every declaration, or none, and the pairing is exact.
+
+Two limits are worth knowing. Labels, synonyms and `skos:example` values have
+no per-domain slot, so every edge carries all of them and the import warns when
+a property fans out. And counts can line up for the wrong reason — one
+declaration carrying two comments and a second carrying none also counts two
+against two — in which case the comments are paired wrongly and silently.
+
+A multi-domain *datatype* property behaves the same way — a field on every
+domain, each keeping its own declaration's comment.
 
 ### Datatypes (`rdfs:range`)
 

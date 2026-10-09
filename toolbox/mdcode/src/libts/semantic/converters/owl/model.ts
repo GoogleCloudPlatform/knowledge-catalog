@@ -114,7 +114,13 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   // the mapper. Undefined when no range is declared (-> Opaque).
   rangeIri?: string;
   label?: string;
-  comment?: string;
+  // Every description written for this property, in document order. A
+  // re-declared property IRI contributes one per declaration, so the mapper
+  // pairs these with `domains` and each field keeps the sentence written
+  // beside its own class.
+  comments: string[];
+  // How many times the IRI was declared (`a owl:DatatypeProperty` triples).
+  declarations: number;
   synonyms: string[];
   examples: string[];
   // True when the property is also an owl:InverseFunctionalProperty -- it
@@ -149,14 +155,23 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   localName: string;
   // Local names of the rdfs:domain (edge source) and rdfs:range (edge
   // destination) classes. A relationship maps a single source to a single
-  // destination, so the mapper uses the first of each and warns when more are
-  // declared (multiple domains/ranges mean an intersection in OWL, which has no
-  // clean single-edge shape). Empty when none is declared (skipped with a
-  // warning: an edge needs both endpoints).
+  // destination. Multiple RANGES are an intersection in OWL, which has no
+  // clean single-edge shape, so the mapper keeps the first and warns.
+  // Multiple DOMAINS are something else entirely: one property IRI
+  // re-declared once per class that uses the verb, which generators emit
+  // routinely. Each domain becomes its own edge. Empty when none is declared
+  // (skipped with a warning: an edge needs both endpoints).
   domains: string[];
   ranges: string[];
   label?: string;
-  comment?: string;
+  // Every description written for this property, in document order -- one per
+  // declaration of the IRI. The mapper pairs these with `domains` so each
+  // fanned-out edge keeps the sentence written beside its own class.
+  comments: string[];
+  // How many times the IRI was declared (`a owl:ObjectProperty` triples). One
+  // declaration naming several domains is an INTERSECTION in OWL; the same
+  // verb re-declared per class is the union the mapper fans out.
+  declarations: number;
   synonyms: string[];
   examples: string[];
   // Referent IRIs of `rdfs:subPropertyOf` superproperties, if any. Relationship
