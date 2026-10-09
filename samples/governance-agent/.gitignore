@@ -13,5 +13,6 @@ uv.lock
 # Runtime artifacts written by the agent
 scratch/
 dq_history.json
+knowledge_insights.json
 .rag_cache/
 .agents/
