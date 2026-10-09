@@ -1,0 +1,18 @@
+# Local configuration and credentials (never commit)
+.env
+credentials.json
+
+# Python, virtual environments and tool caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+uv.lock
+
+# Runtime artifacts written by the agent
+scratch/
+dq_history.json
+knowledge_insights.json
+.rag_cache/
+.agents/
