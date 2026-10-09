@@ -473,7 +473,7 @@ Several fields name a path or URI: `resource`, `sources[].resource`,
 case it is not a path. Each path-valued field accepts:
 
 - an absolute URL (for example `https://...`),
-- a bundle-relative path beginning with `/`, or
+- a bundle-relative path beginning with `/` (interpreted relative to the bundle root directory, not the filesystem or host domain root), or
 - a relative path (for example `../computations/revenue.md`).
 
 ### 6.3 The `references/` convention
