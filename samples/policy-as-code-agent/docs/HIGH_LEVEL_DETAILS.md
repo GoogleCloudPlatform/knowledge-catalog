@@ -100,9 +100,9 @@ The agent follows a simple, powerful, five-step process:
 
 3.  **Final Output to User:**
     > **Policy Violations Found:**
-    > *   **Resource:** `bigquery:data-governance-agent-dev.public_data.daily_active_users`
+    > *   **Resource:** `bigquery:my-project.public_data.daily_active_users`
     >     *   **Violation:** Table is in 'public_data' dataset but is missing the 'sensitivity' label.
-    > *   **Resource:** `bigquery:data-governance-agent-dev.public_data.website_commenters`
+    > *   **Resource:** `bigquery:my-project.public_data.website_commenters`
     >     *   **Violation:** Table is in 'public_data' dataset but is missing the 'sensitivity' label.
 
 ## 5. Advanced Capabilities

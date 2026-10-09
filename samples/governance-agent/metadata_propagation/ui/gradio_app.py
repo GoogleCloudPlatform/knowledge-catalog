@@ -40,6 +40,7 @@ from metadata_propagation.agent.plugins.context import (
     get_oauth_token,
     is_oauth_bypassed,
     require_oauth_globally,
+    resolve_default_project,
     set_oauth_token,
 )
 from metadata_propagation.agent.plugins.dq_plugin import DQPlugin
@@ -60,21 +61,15 @@ from metadata_propagation.dataplex_integration.dq_propagation import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Fetch Project ID from environment or ADC default
-def _resolve_default_project():
-    if os.environ.get("GOOGLE_CLOUD_PROJECT"):
-        return os.environ["GOOGLE_CLOUD_PROJECT"]
-    try:
-        import google.auth
-        _, proj = google.auth.default()
-        if proj:
-            return proj
-    except Exception:
-        pass
-    return "data-governance-agent-dev"
-
-
-DEFAULT_PROJECT_ID = _resolve_default_project()
+# Project ID from GOOGLE_CLOUD_PROJECT or the ADC / gcloud default project.
+# Left empty when neither is available, so the user enters one in the UI.
+DEFAULT_PROJECT_ID = resolve_default_project() or ""
+if not DEFAULT_PROJECT_ID:
+    logger.warning(
+        "No Google Cloud project detected. Set GOOGLE_CLOUD_PROJECT, run "
+        "'gcloud config set project <PROJECT_ID>', or enter a Project ID in "
+        "the UI."
+    )
 DEFAULT_LOCATION = "europe-west1"
 DEFAULT_DATASET_ID = os.environ.get(
     "BIGQUERY_DATASET_ID", "retail_synthetic_data"
@@ -1401,7 +1396,7 @@ with gr.Blocks(title="Governance on Auto-pilot") as demo:
             with gr.Row():
                 config_project = gr.Dropdown(
                     label="Project ID",
-                    choices=list(dict.fromkeys([DEFAULT_PROJECT_ID, "data-governance-agent-dev", "governance-agent"])),
+                    choices=[DEFAULT_PROJECT_ID] if DEFAULT_PROJECT_ID else [],
                     value=DEFAULT_PROJECT_ID,
                     allow_custom_value=True,
                 )

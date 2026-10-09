@@ -19,6 +19,9 @@ import logging
 import tempfile
 
 try:
+    from metadata_propagation.agent.plugins.context import (
+        resolve_default_project,
+    )
     from metadata_propagation.agent.plugins.doc_description_plugin import (
         DocDescriptionPlugin,
     )
@@ -114,8 +117,7 @@ def main():
         "--project",
         "--project_id",
         dest="project",
-        default=os.environ.get("GOOGLE_CLOUD_PROJECT", "governance-agent"),
-        help="GCP Project ID",
+        help="GCP Project ID (default: GOOGLE_CLOUD_PROJECT or the gcloud default project)",
     )
     parser.add_argument(
         "--location", default="europe-west1", help="GCP Location"
@@ -361,6 +363,17 @@ def main():
         else:
             print("ℹ️ RAG cache directory does not exist or is already empty.")
         return
+
+    if not args.command:
+        parser.print_help()
+        return
+
+    args.project = args.project or resolve_default_project()
+    if not args.project:
+        parser.error(
+            "No Google Cloud project found. Pass --project, set "
+            "GOOGLE_CLOUD_PROJECT, or run 'gcloud config set project <PROJECT_ID>'."
+        )
 
     # Configure logging based on debug flag
     log_file_path = None

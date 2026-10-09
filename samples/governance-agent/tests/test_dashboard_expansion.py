@@ -16,7 +16,9 @@ import pytest
 
 @pytest.mark.integration
 def test_dashboard_logic():
-    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "governance-agent")
+    project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if not project_id:
+        pytest.skip("Set GOOGLE_CLOUD_PROJECT to run this integration test.")
     location = "europe-west1"
     dataset_id = "retail_syn_data"
 

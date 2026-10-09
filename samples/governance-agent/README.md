@@ -43,6 +43,11 @@ This project demonstrates an agentic data governance solution using Google Cloud
 3.  **Authentication**:
     - **CLI/Dev**: Run `gcloud auth application-default login`.
     - **Gradio App**: Follow [OAUTH_SETUP_GUIDE.md](OAUTH_SETUP_GUIDE.md) to enable "Login with Google".
+4.  **Project**: Set the Google Cloud project to work in, in your shell or in `.env`:
+    ```bash
+    export GOOGLE_CLOUD_PROJECT=<PROJECT_ID>
+    ```
+    The Steward CLI and UI fall back to your gcloud default project (`gcloud config set project <PROJECT_ID>`) when it isn't set, and the CLI also accepts `--project`. The data generation scripts require `GOOGLE_CLOUD_PROJECT`.
 
 ---
 

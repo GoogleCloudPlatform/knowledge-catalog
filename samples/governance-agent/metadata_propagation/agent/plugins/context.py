@@ -128,3 +128,23 @@ def get_credentials(quota_project_id: str):
 
     return _cached_adc_creds
 
+
+def resolve_default_project() -> str | None:
+    """
+    Returns the Google Cloud project to use when none is passed explicitly.
+
+    Uses GOOGLE_CLOUD_PROJECT (from the environment or .env) if set, otherwise
+    the project associated with Application Default Credentials, e.g. the
+    gcloud default project locally or the service's project on Cloud Run.
+    Returns None when no project can be determined.
+    """
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    if project:
+        return project
+    try:
+        _, project = google.auth.default()
+    except Exception as e:
+        logger.debug(f"Could not determine a project from ADC: {e}")
+        return None
+    return project or None
+
