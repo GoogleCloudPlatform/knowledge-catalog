@@ -1,17 +1,17 @@
 // Fills a Semantic Model's missing target expressions by transpiling the vendor
 // SQL the loader kept verbatim.
 //
-// The loader (./loader) collapses each field/metric to at most two forms: a
-// target/canonical `expression` valid against the target (GoogleSQL/ANSI) and,
-// when the source only supplied a vendor variant, the original vendor SQL in
-// `importedExpression` (+ `importedDialect`). When a node carries ONLY the
-// imported form -- e.g. a Databricks or Snowflake expression BigQuery does not
-// accept verbatim -- `expression` is left unset and the loader warns that it
-// "needs transpilation" (see pickDialect). This pass fills that gap: it
-// rewrites each such imported expression to the target dialect and sets
-// `expression`, while leaving `importedExpression`/`importedDialect` in place
-// so nothing is lost and the Knowledge Catalog leg can still emit the vendor
-// form.
+// The loader (./loader) keeps every entry in `dialects` (and records
+// `stringForm`), while still picking a target/canonical `expression` valid
+// against the target (GoogleSQL/ANSI) and, when the source supplied a vendor
+// variant, the first vendor SQL in `importedExpression` (+ `importedDialect`).
+// When a node carries ONLY the imported form -- e.g. a Databricks or Snowflake
+// expression BigQuery does not accept verbatim -- `expression` is left unset
+// and the loader warns that it "needs transpilation" (see pickDialect). This
+// pass fills that gap: it rewrites each such imported expression to the target
+// dialect and sets `expression`, while leaving
+// `importedExpression`/`importedDialect` in place so nothing is lost and the
+// Knowledge Catalog leg can still emit the vendor form.
 //
 // It is deliberately a GAP-FILLER, not a rewriter: a node that already has an
 // `expression` (target or portable canonical) is untouched, so a model authored

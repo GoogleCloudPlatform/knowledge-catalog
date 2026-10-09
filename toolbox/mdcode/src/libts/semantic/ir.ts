@@ -180,11 +180,13 @@ export interface DialectExpression {
  * not fields.
  *
  * Expression fidelity: the format may supply an expression in several SQL
- * dialects. The loader keeps at most two forms: `expression`, the BIGQUERY
- * text or else the ANSI_SQL one, and `importedExpression`, the first other
- * vendor entry, with its `importedDialect`. A bound field sets at least one of
- * the two. `dialects` keeps every entry in the order written where a producer
- * fills it; the loader does not yet. When only `importedExpression` is
+ * dialects (or as a single string in the Google flavor). The loader keeps every
+ * entry in `dialects` in the order written and records `stringForm` (`true`
+ * when authored as `expression: "<sql>"`, `false` when authored as a `dialects`
+ * list). It also populates `expression` (the target-dialect text, or else the
+ * `ANSI_SQL` one) and `importedExpression` (the first other vendor entry, with
+ * its `importedDialect`) via `pickDialect`. A bound field sets at least one of
+ * `expression` or `importedExpression`. When only `importedExpression` is
  * present, `expression` awaits a transpile pass (see ./transpile) that fills it
  * from the imported form.
  */
