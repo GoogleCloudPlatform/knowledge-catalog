@@ -34,10 +34,12 @@ describe('loadSemanticModels', () => {
   test(
       'flattens models across documents, tagging each with its document',
       () => {
-        const res = loadSemanticModels([
-          {name: 'a.yaml', text: doc('sales')},
-          {name: 'b.yaml', text: doc('ops')},
-        ]);
+        const res = loadSemanticModels(
+            [
+              {name: 'a.yaml', text: doc('sales')},
+              {name: 'b.yaml', text: doc('ops')},
+            ],
+            {allowLegacyBareSource: true});
         expect(res.error).toBeUndefined();
         expect(res.models.map(m => m.document)).toEqual(['a.yaml', 'b.yaml']);
         expect(res.models.map(m => m.model.name)).toEqual(['sales', 'ops']);
@@ -53,7 +55,8 @@ semantic_model:
       - name: orders
         source: proj.ds.tbl
 `;
-    const res = loadSemanticModels([{name: 'sales.yaml', text: noKey}]);
+    const res = loadSemanticModels(
+        [{name: 'sales.yaml', text: noKey}], {allowLegacyBareSource: true});
     expect(res.error).toBeUndefined();
     expect(res.warnings.some(w => w.startsWith('[sales.yaml] '))).toBe(true);
   });
@@ -61,10 +64,12 @@ semantic_model:
   test('returns a document-named error on a parse/schema failure', () => {
     // The second document is not a valid model; the error must name it and the
     // models parsed before it are still returned.
-    const res = loadSemanticModels([
-      {name: 'good.yaml', text: doc('sales')},
-      {name: 'broken.yaml', text: 'semantic_model: [ this is: not valid'},
-    ]);
+    const res = loadSemanticModels(
+        [
+          {name: 'good.yaml', text: doc('sales')},
+          {name: 'broken.yaml', text: 'semantic_model: [ this is: not valid'},
+        ],
+        {allowLegacyBareSource: true});
     expect(res.error).toBeDefined();
     expect(res.error).toContain('broken.yaml');
     expect(res.models.map(m => m.model.name)).toEqual(['sales']);
@@ -73,7 +78,7 @@ semantic_model:
   test('applies defaultProject when a source omits its project', () => {
     const res = loadSemanticModels(
         [{name: 'sales.yaml', text: doc('sales', 'ds.tbl')}],
-        {defaultProject: 'scope-proj'});
+        {defaultProject: 'scope-proj', allowLegacyBareSource: true});
     expect(res.error).toBeUndefined();
     expect(res.models[0].model.entities[0].dataSource)
         .toBe('scope-proj.ds.tbl');

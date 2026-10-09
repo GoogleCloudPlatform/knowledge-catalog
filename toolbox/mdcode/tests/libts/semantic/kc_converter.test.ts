@@ -810,7 +810,11 @@ describe(
         'tpcds_date_edge.yaml',
       ];
       // Same load defaults as the OSI / KC / pull goldens.
-      const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
+      const LOAD = {
+        defaultProject: 'sqlgen-testing',
+        defaultDataset: 'demo',
+        allowLegacyBareSource: true,
+      };
 
       for (const fixture of CORPUS) {
         test(fixture, () => {
@@ -860,6 +864,7 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     floorAiContext(e);
     if (e.uniqueKeys && !e.uniqueKeys.length) delete e.uniqueKeys;
     delete e.customExtensions;
+    delete e.authoredSource;
     for (const f of e.fields) {
       // Field label now persists via the schema aspect's per-field annotations;
       // field-level ai_context does not (only entry-backed objects get a

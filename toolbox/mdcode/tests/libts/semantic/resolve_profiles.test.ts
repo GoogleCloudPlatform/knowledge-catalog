@@ -1568,7 +1568,7 @@ semantic_model:
     const merged = mergeProfileOntoDoc(logicalText, `name: prod
 entities:
   - name: orders
-    source: p.d.orders
+    source: ${BQ('orders')}
     fields: [{name: id, expression: id}]
 `, 'prod');
     if ('error' in merged) throw new Error(merged.error);

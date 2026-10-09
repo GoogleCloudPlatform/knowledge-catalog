@@ -22,7 +22,8 @@ const CTX = new ApiContext('test-project', 'us', 'test-token');
 // so this helper parses them the way commands.ts does. defaultProject mirrors
 // the scope's declared project.
 function models(docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(docs, {defaultProject});
+  const r = loadSemanticModels(
+      docs, {defaultProject, allowLegacyBareSource: true});
   if (r.error) throw new Error(r.error);
   return r.models;
 }

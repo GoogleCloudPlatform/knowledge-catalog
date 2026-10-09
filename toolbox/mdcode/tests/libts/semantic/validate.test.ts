@@ -243,12 +243,16 @@ describe('validateBigQueryDataSources', () => {
     expect(errs[0]).toContain('permission denied');
   });
 
-  test('skips a source that is a query, not a table', async () => {
-    // A query source (contains whitespace) is not a table and cannot be probed,
-    // so it is not checked (nothing is mocked for it).
+  test('probes a table name that contains spaces (from a backtick-quoted catalog name)', async () => {
     const bq = new BigQueryClientMock();
-    const m = model({entities: [entity('q', 'SELECT * FROM x')]});
-    expect(await validateBigQueryDataSources([loaded(m)], bq, 'p')).toEqual([]);
+    bq.addMockSource('acme.sales.order items');
+    const ok = model({entities: [entity('o', 'acme.sales.order items')]});
+    expect(await validateBigQueryDataSources([loaded(ok)], bq, 'p')).toEqual([]);
+
+    const missing = model({entities: [entity('o', 'acme.sales.missing items')]});
+    const errs = await validateBigQueryDataSources([loaded(missing)], bq, 'p');
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('acme.sales.missing items');
   });
 
   test(
@@ -789,7 +793,7 @@ semantic_model:
           - { name: name, expression: c_name }
 `;
     const docs = (text: string, bindingOptional: boolean) =>
-        loadModels(text, {bindingOptional})
+        loadModels(text, {bindingOptional, allowLegacyBareSource: true})
             .models.map(m => loaded(m, 'sales.yaml'));
     // The catalog leg validates the logical model unpruned.
     expect(validatePushRequirements(docs(logical, true), {targetOptional: true}))

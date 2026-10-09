@@ -20,7 +20,8 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, isProfileFileForm, mergeProfileOntoDoc, ProfileExclusion, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
+export {isProfileFileForm};
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -320,18 +321,7 @@ export interface MergedDoc {
   text: string;
   excluded?: ProfileExclusion[];
   profileFile?: boolean;
-}
-
-// Whether a profile text is in the profile file form (a top-level profile
-// object) rather than the legacy `semantic_model:` wrapper.
-export function isProfileFileForm(text: string): boolean {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
-        doc.semantic_model === undefined;
-  } catch {
-    return false;
-  }
+  allowLegacyBareSource?: boolean;
 }
 
 // Why a graph push of `profileName` cannot go ahead because the profile is a
@@ -440,11 +430,13 @@ export async function push(options: PushOptions): Promise<number> {
             for (const w of res.warnings) {
               console.warn(`Warning: [${doc.name}] ${w}`);
             }
+            const profileFile = isProfileFileForm(chosen.text);
             merged.push({
               name: doc.name,
               text: res.text,
               excluded: res.excluded,
-              profileFile: isProfileFileForm(chosen.text),
+              profileFile,
+              allowLegacyBareSource: !profileFile,
             });
           }
           return merged;
@@ -462,8 +454,10 @@ export async function push(options: PushOptions): Promise<number> {
       models: LoadedModel[]; bqModels: LoadedModel[];
       spannerModels: LoadedModel[]
     }|null> => {
-      const loaded =
-          loadSemanticModels(docs, {defaultProject, bindingOptional: !prune});
+      const loaded = loadSemanticModels(docs, {
+        defaultProject,
+        bindingOptional: !prune,
+      });
       if (loaded.error) {
         console.error('Error:', loaded.error);
         return null;
@@ -557,9 +551,9 @@ export async function push(options: PushOptions): Promise<number> {
     const mergeOnce = (profileName: string, skipMissing: boolean) => {
       const key = `${profileName}|${skipMissing}`;
       if (mergeCache.has(key)) return mergeCache.get(key)!;
-      const docs = mergeForProfile(profileName, {skipMissing});
-      mergeCache.set(key, docs);
-      return docs;
+      const merged = mergeForProfile(profileName, {skipMissing});
+      mergeCache.set(key, merged);
+      return merged;
     };
     const prepareCache = new Map<string, Prepared|null>();
     const prepareOnce = async(
@@ -745,8 +739,8 @@ export async function push(options: PushOptions): Promise<number> {
       // does not define this profile is skipped rather than failing a warning.
       const kcProfileName =
           namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
-      const rest = (mergeOnce(kcProfileName, true) ??
-                    []).filter(d => !loadedDocs.has(d.name));
+      const rest = (mergeOnce(kcProfileName, true) ?? [])
+                       .filter(d => !loadedDocs.has(d.name));
       if (rest.length) {
         const prepared = await prepareOnce(rest, kcProfileName, false);
         // prepareModels has already printed why it failed. Ignoring that here
@@ -963,8 +957,14 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
         console.warn(`  profile '${name}': warning: ${w}`);
       }
       const loaded = loadSemanticModels(
-          [{name: doc.name, text: res.text}],
-          {defaultProject: source.project ?? ctx.project});
+          [{
+            name: doc.name,
+            text: res.text,
+            allowLegacyBareSource: !isProfileFileForm(text),
+          }],
+          {
+            defaultProject: source.project ?? ctx.project,
+          });
       if (loaded.error) {
         console.error(`  profile '${name}': ${loaded.error}`);
         continue;
