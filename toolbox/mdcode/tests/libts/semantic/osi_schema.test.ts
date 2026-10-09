@@ -116,15 +116,15 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
 }
 
 // Released Apache OSI (osi-schema.json) is vanilla `0.2.0.dev0`: it pins the
-// `version` const, requires `datasets`, and knows no native `deployment_target`
-// key. Many fixtures declare the extended `0.2.0.dev0/google` profile, whose
-// surface deltas -- the version suffix, the `entities` alias for `datasets`, and
-// the native `deployment_target` key -- are deliberate supersets, not drift.
-// Fold those back to the vanilla surface before validating, so the released
-// schema still checks the deep content (dialects, datatypes, field/metric
-// shapes); the remaining deep supersets (`extends`/`abstract`) and the logical
-// goldens' omitted bindings are tolerated by the checks below, exactly as they
-// were for vanilla fixtures.
+// `version` const, requires `datasets`, and knows no native `deployments` (or
+// legacy `deployment_target`) key. Many fixtures declare the extended
+// `0.2.0.dev0/google` profile, whose surface deltas -- the version suffix, the
+// `entities` alias for `datasets`, and the native `deployments` list -- are
+// deliberate supersets, not drift. Fold those back to the vanilla surface before
+// validating, so the released schema still checks the deep content (dialects,
+// datatypes, field/metric shapes); the remaining deep supersets
+// (`extends`/`abstract`) and the logical goldens' omitted bindings are tolerated
+// by the checks below, exactly as they were for vanilla fixtures.
 function toSchemaShape(doc: any): any {
   if (!doc || typeof doc !== 'object') return doc;
   const d = structuredClone(doc);
@@ -136,6 +136,7 @@ function toSchemaShape(doc: any): any {
       delete m.entities;
     }
     delete m.deployment_target;
+    delete m.deployments;
   }
   return d;
 }

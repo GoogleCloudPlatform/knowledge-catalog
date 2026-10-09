@@ -255,6 +255,7 @@ function mergeLegacyModel(
   }
   if (pm.deployment_target !== undefined) {
     lm.deployment_target = pm.deployment_target;
+    delete lm.deployments;
   }
   return mergeActions(lm, pm.actions, profileName) ??
       mergeEntities(

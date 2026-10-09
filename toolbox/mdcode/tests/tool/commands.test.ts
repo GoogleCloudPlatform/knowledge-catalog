@@ -152,7 +152,9 @@ describe('a push with a sibling profile file', () => {
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+    deployments:
+      - name: prod
+        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: Customer
         source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
@@ -183,7 +185,9 @@ describe('a graph push checks inheritance before pruning', () => {
   const GRAPH_MODEL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+    deployments:
+      - name: prod
+        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: customer
         source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer

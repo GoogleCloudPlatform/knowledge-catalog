@@ -4,7 +4,9 @@ semantic_model:
     description: Sales orders with customer attributes
     ai_context:
       instructions: Use this model for order analysis.
-    deployment_target: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
     entities:
       - name: orders
         source: samples.tpch.orders
