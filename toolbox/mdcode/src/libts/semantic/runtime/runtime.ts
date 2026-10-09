@@ -22,7 +22,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
+import {appliesInMemory, applyProfileExclusions, applyProfileFile, DEFAULT_PROFILE, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
 
 import {resolveStore, Store} from './store';
 
@@ -71,7 +71,7 @@ export interface CreateRuntimeOptions {
   /** Directory holding `catalog.yaml`. Defaults to the current directory. */
   path?: string;
   /**
-   * Binding profile to merge onto each model. Defaults to the scope's
+   * Binding profile to apply to each model. Defaults to the scope's
    * `default_profile`, and failing that to the model's inline bindings.
    */
   profile?: string;
@@ -119,6 +119,10 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   const merged: Array<{name: string; text: string}> = [];
   const excludedByDoc = new Map<string, ProfileExclusion[]>();
+  // A profile file applies to its model file loaded on its own, with its
+  // exclusions already marked.
+  const appliedByDoc = new Map<string, SemanticModel>();
+  const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
       merged.push({name: doc.name, text: doc.text});
@@ -139,6 +143,25 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
                             `no profiles are defined for this model.`),
       };
     }
+    if (appliesInMemory(doc.text, chosen.text)) {
+      const own = loadSemanticModels(
+          [{name: doc.name, text: doc.text}],
+          {defaultProject, bindingOptional: true});
+      if (own.error) return {error: own.error};
+      const applied = applyProfileFile(
+          own.models[0].model, chosen.text, profile, {
+            load: {defaultProject},
+            from: {
+              document: doc.name,
+              warnings: own.warnings,
+              ansiFallbacks: own.models[0].ansiFallbacks,
+            },
+          });
+      if ('error' in applied) return {error: `[${doc.name}] ${applied.error}`};
+      for (const w of applied.warnings) warn(`Warning: ${w}`);
+      appliedByDoc.set(doc.name, applied.model);
+      continue;
+    }
     const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
     if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
     for (const w of res.warnings) warn(`Warning: [${doc.name}] ${w}`);
@@ -147,10 +170,14 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   }
 
   const loaded = loadSemanticModels(
-      merged,
-      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+      merged, {defaultProject, bindingOptional: true});
   if (loaded.error) return {error: loaded.error};
   for (const w of loaded.warnings) warn(`Warning: ${w}`);
+  const loadedByDoc = new Map(loaded.models.map(m => [m.document, m.model]));
+  const models = docs.flatMap(doc => {
+    const model = appliedByDoc.get(doc.name) ?? loadedByDoc.get(doc.name);
+    return model ? [{document: doc.name, model}] : [];
+  });
 
   // Inheritance is resolved for the same reason both push legs resolve it: an
   // inherited field is a field, and every reader downstream reads
@@ -161,7 +188,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // refuses a generated UUID for an Integer key would read the key as a
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
-  for (const {document, model: loadedModel} of loaded.models) {
+  for (const {document, model: loadedModel} of models) {
     // A profile's exclusions apply to the entity that names each one.
     const authored = applyProfileExclusions(
         loadedModel, excludedByDoc.get(document) ?? []);

@@ -1,6 +1,6 @@
 // Tests for `kcmd profiles` (src/tool/commands.ts, profiles()) and the
 // catalog.yaml `default_profile` it reads (src/libts/manifest.ts). The command
-// is read-only -- it merges and prunes each profile the way push does but
+// is read-only -- it applies and prunes each profile the way push does but
 // deploys nothing and makes no network call -- so it runs in a temp working
 // directory with a pinned context, mirroring init_semantic_model.test.ts.
 
@@ -11,6 +11,7 @@ import * as path from 'node:path';
 
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogManifest} from '../../src/libts/manifest';
+import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {profiles} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -118,6 +119,69 @@ afterEach(() => {
   if (dir) fs.rmSync(dir, {recursive: true, force: true});
   dir = '';
   mock.restore();
+});
+
+
+describe('a vanilla model with a profile file in the legacy directory', () => {
+  test('keeps the YAML merge, so the merged document is checked', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    datasets:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: c_key}]}
+          - name: credit
+            expression: {dialects: [{dialect: ANSI_SQL, expression: c_credit}]}
+`);
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'prod.yaml'), `name: prod
+entities:
+  - name: Customer
+    fields_exclude: [credit]
+`);
+    expect(await profiles()).toBe(0);
+    // The merge clears the excluded field's expression, which a vanilla
+    // document requires.
+    expect(logs.join('\n')).toContain("requires 'expression'");
+  });
+});
+
+
+describe('a runtime over a sibling profile file', () => {
+  test('applies the profile to the model file', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    fields:
+      - { name: key, expression: c_custkey }
+      - { name: lifetimeValue, expression: c_ltv }
+    fields_exclude: [availableCredit]
+  - name: Order
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    fields:
+      - { name: key, expression: o_orderkey }
+`);
+    const warnings: string[] = [];
+    const runtimes = await createSemanticRuntimes(
+        {path: dir, profile: 'analytical', ctx: CTX, onWarning: w => warnings.push(w)});
+    if ('error' in runtimes) throw new Error(runtimes.error);
+    const customer = runtimes[0].model.entities.find(e => e.name === 'Customer')!;
+    expect(customer.dataSource).toBe('acme-analytics.sales.customer');
+    expect(customer.fields.map(f => f.name)).toEqual(['key', 'lifetimeValue']);
+    expect(customer.fields[0].expression).toBe('c_custkey');
+    expect(warnings).toEqual([]);
+  });
 });
 
 
