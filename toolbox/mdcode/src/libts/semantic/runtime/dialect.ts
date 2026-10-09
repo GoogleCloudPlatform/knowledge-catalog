@@ -46,7 +46,24 @@ export const POSTGRESQL: SqlDialect = {
 };
 
 
-/** The dialect `store` speaks; defaults to GoogleSQL when no store is bound. */
+/**
+ * The dialect `store` speaks; GoogleSQL when no store is bound.
+ *
+ * Every kind is listed rather than tested for the one that is not GoogleSQL.
+ * A backend added later speaks whatever dialect it speaks -- PostgreSQL for
+ * the Cloud SQL and AlloyDB family, something else again for MySQL or
+ * Snowflake -- and a test written the other way round would hand it GoogleSQL
+ * silently, mislabelling the dialect in `SKILL.md` and quoting its identifiers
+ * by the wrong rules. Exhaustive, so `noImplicitReturns` makes a new kind a
+ * build error here instead.
+ */
 export function dialectFor(store: Store|undefined): SqlDialect {
-  return store?.kind === 'alloydb' ? POSTGRESQL : GOOGLE_SQL;
+  if (!store) return GOOGLE_SQL;
+  switch (store.kind) {
+    case 'spanner':
+    case 'bigquery':
+      return GOOGLE_SQL;
+    case 'alloydb':
+      return POSTGRESQL;
+  }
 }
