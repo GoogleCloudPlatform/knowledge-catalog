@@ -1,6 +1,6 @@
 # Policy-as-Code Agent
 
-A generative AI-powered agent designed to automate data governance on Google Cloud. It allows users to define, validate, and enforce data policies using natural language queries, translating them into executable code that runs against **Google Cloud Dataplex** and **BigQuery** metadata.
+A generative AI-powered agent designed to automate data governance on Google Cloud. It allows users to define, validate, and enforce data policies using natural language queries, translating them into executable code that runs against **Knowledge Catalog** (formerly Dataplex) and **BigQuery** metadata.
 
 The [Agent Starter Pack](https://goo.gle/agent-starter-pack) (ASP) is the **recommended** way to create a new project from this sample: you get deployment options and CI/CD scaffolding. The copy in [knowledge-catalog](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/samples/policy-as-code-agent) is the upstream source for browsing and contributions.
 
@@ -98,7 +98,7 @@ This will scaffold a new project and prompt you for deployment options.
 *   **Hybrid Execution**: Generates Python code on-the-fly for flexibility, but executes it in a sandboxed environment for safety.
 *   **Memory & Learning**: Uses **Firestore** and **Vector Search** to remember valid policies. If you ask a similar question later, it reuses the proven code instead of regenerating it.
 *   **Dual-Mode Operation**:
-    *   **Live Mode**: Queries the **Dataplex Universal Catalog** in real-time.
+    *   **Live Mode**: Queries **Knowledge Catalog** in real-time.
     *   **Offline Mode**: Analyzes metadata exports stored in **Google Cloud Storage (GCS)**.
 *   **Compliance Scorecards**: Run a full health check on your data assets with a single command.
 *   **Remediation**: Can suggest specific fixes for identified violations.
@@ -111,7 +111,7 @@ The agent is built using the **Google Cloud Agent Development Kit (ADK)** and le
 *   **Gemini 2.5 Flash**: For conversational logic, tool selection, and remediation suggestions.
 *   **Vertex AI Vector Search**: For semantic retrieval of past policies.
 *   **Firestore**: Stores policy definitions, versions, and execution history.
-*   **Dataplex API**: For fetching live metadata.
+*   **Knowledge Catalog API** (`dataplex.googleapis.com`): For fetching live metadata.
 
 ### Project Structure
 
@@ -119,11 +119,10 @@ The agent is built using the **Google Cloud Agent Development Kit (ADK)** and le
     *   `__init__.py`: Application Default Credentials and Vertex environment defaults for ASP/local runs.
     *   `agent.py`: Entry point and core agent definition.
     *   `memory.py`: Handles Firestore interactions (saving/retrieving policies).
-    *   `utils/`: Utility modules for LLM logic, Dataplex, GCS, and common tools.
+    *   `utils/`: Utility modules for LLM logic, Knowledge Catalog, GCS, and common tools.
     *   `simulation.py`: Sandboxed execution engine for running policy code.
     *   `prompts/`: Markdown templates for LLM instructions.
 *   `tests/`: Unit and integration tests.
-*   `data/`: Sample metadata for local testing.
 
 ## Documentation
 

@@ -34,10 +34,10 @@ graph TD
 -   **`generate_policy_code_from_gcs(query: str, gcs_uri: str)`**: An ADK tool that generates Python policy code based on a schema inferred from a GCS metadata file.
 -   **`run_policy_from_gcs(policy_code: str, gcs_uri: str)`**: An ADK tool that executes the generated policy code against the metadata from the specified GCS URI.
 
-### 2. Dataplex Search Workflow Tools
+### 2. Knowledge Catalog Search Workflow Tools
 
--   **`generate_policy_code_from_dataplex(policy_query: str, dataplex_query: str)`**: An ADK tool that orchestrates the first step of the live validation workflow. It connects to Dataplex, fetches a small sample of entries matching the query, infers the schema, and generates the Python policy code.
--   **`run_policy_on_dataplex(policy_code: str, dataplex_query: str)`**: An ADK tool that handles the second step. It takes the generated code, connects to Dataplex to fetch *all* entries matching the query, and executes the code against the full dataset.
+-   **`generate_policy_code_from_dataplex(policy_query: str, dataplex_query: str)`**: An ADK tool that orchestrates the first step of the live validation workflow. It connects to Knowledge Catalog, fetches a small sample of entries matching the query, infers the schema, and generates the Python policy code.
+-   **`run_policy_on_dataplex(policy_code: str, dataplex_query: str)`**: An ADK tool that handles the second step. It takes the generated code, connects to Knowledge Catalog to fetch *all* entries matching the query, and executes the code against the full dataset.
 
 ### 3. Memory Components (`policy_as_code/memory.py`)
 
@@ -107,7 +107,7 @@ The `run_simulation` function is the secure execution engine for the agent.
 2.  **Vector Search:** `find_policy_in_memory` converts this to a vector and queries Firestore.
     *   If match found (similarity > threshold): Returns cached code.
 3.  **Sample Generation (If no match):**
-    *   The agent scans the metadata source (GCS file or Dataplex results).
+    *   The agent scans the metadata source (GCS file or Knowledge Catalog results).
     *   It identifies the "most representative" entry (the one with the most fields) to use as a sample.
 4.  **Code Generation:**
     *   Constructs the prompt with schema and sample.

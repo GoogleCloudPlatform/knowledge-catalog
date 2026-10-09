@@ -10,7 +10,7 @@ The Policy-as-Code Agent is designed to automate and streamline data governance 
 *   **Agentic AI**: Replaces static rules with generative logic. The LLM writes Python policy checks on-the-fly, showcasing advanced reasoning.
 *   **Hybrid Execution**: Combines LLM intent parsing with deterministic Python execution. This eliminates hallucinations during enforcement.
 *   **Intelligent Memory**: Vector-search memory (Firestore) caches and learns successful policies, optimizing latency and cost—a key production pattern.
-*   **Dual-Mode**: Flexible execution against offline GCS exports or live Dataplex API, demonstrating versatile integration.
+*   **Dual-Mode**: Flexible execution against offline GCS exports or the live Knowledge Catalog API, demonstrating versatile integration.
 
 ### Business (Sales/FSRs)
 *   **Democratized Governance**: Enables non-tech stakeholders to audit data via natural language, removing engineering bottlenecks.
@@ -25,7 +25,7 @@ The agent follows a simple, powerful, five-step process:
 1.  **Search the Memory**: When a user provides a policy, the agent first semantically searches its internal memory to see if it has already generated code for a similar policy. The search can be filtered by author and date range.
 2.  **Understand the Policy**: If no cached policy is found, a user provides a policy in natural language, like *"All datasets in the 'finance' domain must have a 'data_owner' label."*
 3.  **Generate and Cache the Logic**: The agent's core, powered by the Gemini LLM, dynamically writes a small, targeted Python script to check for that policy. Once generated, the agent saves this new policy to its memory for future use. The memory is version-controlled, so updates to a policy create a new version.
-4.  **Execute and Report**: The agent runs the Python script (either from the cache or newly generated) against your chosen metadata source—either a static metadata export from GCS or live results from a Dataplex Universal Catalog search. It then reports any resources found to be in violation of the policy.
+4.  **Execute and Report**: The agent runs the Python script (either from the cache or newly generated) against your chosen metadata source—either a static metadata export from GCS or live results from a Knowledge Catalog search. It then reports any resources found to be in violation of the policy.
 5.  **Suggest Remediation**: If violations are found, the agent can, at the user's request, use the LLM to suggest actionable remediation steps for each violation.
 6.  **Feedback and Ranking**: After a policy is used, the user can rate it. This feedback is used to rank policies, so the best ones are suggested first.
 
@@ -38,7 +38,7 @@ The agent follows a simple, powerful, five-step process:
     *   **Enhanced Search**: Policies can be searched by author and date range.
     *   **Ranking**: Policies are ranked based on user feedback, so the most effective policies are suggested first.
 *   **Dynamic and Flexible**: Generates code on-the-fly to support complex and nuanced policies.
-*   **Flexible Data Sources**: Operates on either static metadata exports from GCS for offline analysis or on live Dataplex search results for real-time validation.
+*   **Flexible Data Sources**: Operates on either static metadata exports from GCS for offline analysis or on live Knowledge Catalog search results for real-time validation.
 *   **Actionable Reporting**: Pinpoints exact violations for rapid remediation.
 *   **Actionable Remediation Suggestions**: Provides clear, actionable steps to fix policy violations.
 
@@ -63,16 +63,16 @@ The agent follows a simple, powerful, five-step process:
     *   **`run_simulation`:** The "engine room." This function takes the Python code from the LLM and executes it against the metadata, collecting and formatting any violations.
     *   **Metadata Sources:** The agent can source metadata from two places:
         *   **GCS Loader:** A utility that can read metadata exports from a Google Cloud Storage (GCS) bucket.
-        *   **Dataplex Search:** A tool that directly queries the Dataplex Universal Catalog and fetches full entry details in real-time.
+        *   **Knowledge Catalog Search:** A tool that directly queries Knowledge Catalog and fetches full entry details in real-time.
 *   **Technology Stack:**
     *   **Primary Language:** Python
     *   **Key Libraries:**
         *   `vertexai`: To interact with the Gemini LLM.
         *   `google-cloud-firestore`: To interact with the Firestore database for memory.
         *   `google-cloud-storage`: To read metadata files from GCS.
-        *   `google-cloud-dataplex`: To interact with the Dataplex API.
+        *   `google-cloud-dataplex`: To interact with the Knowledge Catalog API.
         *   `google-adk`: The framework for building the agent.
-    *   **Data Format:** The agent is designed to consume **JSONL** (JSON Lines) formatted metadata exports, which is a standard output from Dataplex.
+    *   **Data Format:** The agent is designed to consume **JSONL** (JSON Lines) formatted metadata exports, which is a standard output from Knowledge Catalog.
 *   **Security:**
     *   **AST Analysis:** Before any code is executed, the agent performs static analysis using Python's Abstract Syntax Tree (AST) module. This detects and blocks dangerous imports (like `os`, `sys`, `subprocess`) and unsafe function calls (like `eval`, `open`).
     *   **Restricted Execution:** The dynamic execution of code is handled within a restricted environment using `exec()`, where access is limited to a safe allowlist of libraries (`json`, `re`, `datetime`) and standard built-ins.
@@ -122,5 +122,5 @@ The agent tracks all policy executions, enabling advanced analysis:
 
 ### 🔌 Model Context Protocol (MCP) Integration
 The agent is compatible with the **Model Context Protocol (MCP)**.
-*   **Dataplex MCP**: Connects to a Dataplex MCP server to access additional tools for interacting with Dataplex resources.
+*   **Knowledge Catalog MCP**: Connects to a Knowledge Catalog MCP server (set `DATAPLEX_MCP_SERVER_URL`) to access additional tools for interacting with Knowledge Catalog resources.
 *   **Extensibility**: Allows the agent to gain new capabilities by connecting to other MCP-compliant servers.

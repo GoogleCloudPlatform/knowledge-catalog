@@ -25,7 +25,7 @@ This project demonstrates an agentic data governance solution using Google Cloud
 ## 🛠 Setup & Installation
 
 ### Prerequisites
-- Python 3.12+
+- Python 3.11+
 - Google Cloud Project with billing enabled.
 - APIs Enabled: `dataplex`, `bigquery`, `datacatalog`, `datalineage`, `aiplatform`.
 
@@ -112,6 +112,11 @@ uv run python -m metadata_propagation.steward_cli dq-propagate --dataset retail_
 uv run python -m metadata_propagation.steward_cli knowledge-propagate --dataset retail_syn_data --table transactions --apply
 ```
 
+### 4. Data Integration Scripts
+- **Generate Data**: `uv run python -m metadata_propagation.data_generation.generate_data` (Creates tables + lineage).
+- **Run Profiling & DQ**: `uv run python -m metadata_propagation.data_generation.run_dq_scans` (Creates and runs Data Profile and Quality scans, natively published to BigQuery).
+- **Unified Insights**: Run the Steward CLI's `knowledge-propagate` command (above) without `--apply` to trigger the Knowledge Catalog documentation scan, wait for it, and extract the results for review.
+
 ## 📄 Unstructured Document Processing
 The tool can leverage unstructured documents (PDFs, TXT, MD) to influence data governance metadata when lineage is missing or to supplement it.
 
@@ -136,11 +141,6 @@ When using the `--document` flag with the `apply`, `policy-propagate`, or `gloss
     ```bash
     uv run python -m metadata_propagation.steward_cli apply --dataset retail_syn_data --table transactions --context-mode datastore --datastore-id my-datastore-id
     ```
-
-### 3. Data Integration Scripts
-- **Generate Data**: `uv run python -m metadata_propagation.data_generation.generate_data` (Creates tables + lineage).
-- **Run Profiling & DQ**: `uv run python -m metadata_propagation.data_generation.run_dq_scans` (Creates and runs Data Profile and Quality scans, natively published to BigQuery).
-- **Unified Insights**: `uv run python -m metadata_propagation.dataplex_integration.insights_connector` (Triggers, waits and extracts documentation results).
 
 ---
 
@@ -189,8 +189,8 @@ You can also set these values in a `.env` file or in your shell:
 
 ## 💡 Workflow Example
 
-1.  **Initialize**: Generate synthetic data and lineage relationships.
+1.  **Initialize**: Generate synthetic data and lineage relationships (see [Data Integration Scripts](#4-data-integration-scripts)).
 2.  **Enrich & Propagate**: Run the unified `knowledge-propagate` command to trigger AI scans and sync metadata.
-4.  **Tag**: Use the **Glossary Plugin** to map technical columns to the Business Glossary for Knowledge Catalog UI visibility.
-5.  **Secure**: Use the **Policy Tag Propagation** plugin to sync sensitive data tags and verify access summary (Readers/Masking Rules).
-6.  **Verify**: Check the **BigQuery Console** (Schema -> Policy Tags) and **Knowledge Catalog Schema** (Business Terms).
+3.  **Tag**: Use the **Glossary Plugin** to map technical columns to the Business Glossary for Knowledge Catalog UI visibility.
+4.  **Secure**: Use the **Policy Tag Propagation** plugin to sync sensitive data tags and verify access summary (Readers/Masking Rules).
+5.  **Verify**: Check the **BigQuery Console** (Schema -> Policy Tags) and **Knowledge Catalog Schema** (Business Terms).
