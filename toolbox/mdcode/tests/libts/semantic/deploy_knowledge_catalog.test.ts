@@ -808,9 +808,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
            ['sales.entities.orders', 'sales.entities.supplier']);
        const {delLink} = stubClient({
          existing: STAR_ENTITIES,
-         links: (entry: string) => entry.endsWith('sales.entities.orders')
-             ? ok([orphan, KEPT])
-             : ok([KEPT]),
+         links: () => ok([orphan, KEPT]),
        });
 
        const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
@@ -926,7 +924,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
         const orphanB = linkEntry(
             'sales-orders-to-warehouse',
             ['sales.entities.orders', 'sales.entities.warehouse']);
-        const {delLink} = stubClient({
+        const {createLink, delLink} = stubClient({
           existing: STAR_ENTITIES,
           links: (entry: string) => entry.endsWith('sales.entities.orders') ?
               ok([orphanA, orphanB]) :
@@ -947,6 +945,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
                 'Deleting orphaned entry link \'sales-orders-to-warehouse\' ' +
                 'from model \'sales\' failed: boom');
         expect(delLink).toHaveBeenCalledTimes(2);
+        expect(createLink).not.toHaveBeenCalled();
       });
 
   test('validateOnly never looks up or deletes links (offline)', async () => {

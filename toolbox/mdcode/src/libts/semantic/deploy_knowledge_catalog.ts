@@ -26,13 +26,14 @@
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
 //     `semantic-explore`).
-//   * Relationship edges are published as `schema-join` entry links between
-//     the two entity entries after that model's entries exist. A re-push
-//     updates the link's aspects in place, or deletes and recreates the link
-//     when its type or endpoint references changed; orphaned links are then
-//     deleted. The caller additionally needs
-//     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`
-//     on the destination entry group.
+//   * Relationship edges are published as `schema-join` (or
+//     `semantic-relationship` under `v2Aspects`) entry links between the two
+//     entity entries after that model's entries exist. A re-push first deletes
+//     any orphaned relationship links the model no longer emits, then creates
+//     new links, updates existing links' aspects in place, or deletes and
+//     recreates a link whose type or endpoint references changed. The caller
+//     additionally needs `dataplex.entryGroups.useSchemaJoinEntryLink` and
+//     `useSchemaJoinAspect` on the destination entry group.
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
@@ -520,9 +521,9 @@ function planSummary(
  *   1. Creates or updates the model's entries (anchor first).
  *   2. Looks up the model's existing relationship links when the pre-write
  *      entry group contains entities owned by the model.
- *   3. Creates, updates, or recreates the model's relationship links.
- *   4. Deletes any existing relationship links owned by the model that are no
+ *   3. Deletes any existing relationship links owned by the model that are no
  *      longer emitted.
+ *   4. Creates, updates, or recreates the model's relationship links.
  *   5. Deletes any existing entries owned by the model that are no longer
  *      emitted.
  *
@@ -540,14 +541,15 @@ async function writeEmittedModels(
 
     // When the pre-write listing contains entity entries this model owns, look
     // up the model's existing links once and share the map between
-    // writeEntryLinks (to detect changed endpoints) and findOrphanedEntryLinks
-    // (to delete dropped links). Look up links via the model's entity entries
-    // known to the server (the pre-write snapshot `existing`), not the ones
-    // this push emits: only a server-side entry can already carry a link, and
-    // enumerating the snapshot also reaches a link both of whose endpoints were
-    // removed in this push (neither is re-emitted, but both entries are still
-    // present in `existing` until `deleteEntries` deletes them at the end). On
-    // a first push there are no such entries, so no lookup is made.
+    // findOrphanedEntryLinks (to delete dropped or renamed links) and
+    // writeEntryLinks (to detect a changed type or endpoints). Look up links
+    // via the model's entity entries known to the server (the pre-write
+    // snapshot `existing`), not the ones this push emits: only a server-side
+    // entry can already carry a link, and enumerating the snapshot also reaches
+    // a link both of whose endpoints were removed in this push (neither is
+    // re-emitted, but both entries are still present in `existing` until
+    // `deleteEntries` deletes them at the end). On a first push there are no
+    // such entries, so no lookup is made.
     const existingEntityNames = resources.entries.length ?
         collectEntityNames(collectOwnedEntries(resources, existing)) :
         [];
@@ -981,10 +983,9 @@ async function replaceEntryLink(
     const externalIds =
         existingLink.entryReferences.filter(r => !isEntryOwner(resources, r))
             .map(r => `'${entryId(r)}'`);
-    const externalNoun = externalIds.length === 1 ? 'entry' : 'entries';
     return {
-      error: `entry link '${id}' already exists and references ${
-                 externalNoun} ${externalIds.join(', ')} outside this model; ` +
+      error: `entry link '${id}' already exists and references entry ${
+                 externalIds.join(', ')} outside this model; ` +
           `rename the relationship or delete the existing link`,
     };
   }
@@ -1033,6 +1034,9 @@ async function updateEntryLink(
           linkTypeId(link)}' link already connects ${endpoints}`,
     };
   }
+  // Treat a masked PERMISSION_DENIED (403) as a no-op success on catalog
+  // surfaces that expose create + lookup for entry links without by-name
+  // aspect refresh.
   if (!isOkStatus(upd) && !isForbiddenStatus(upd)) {
     return {error: `entry link '${id}': ${errText(upd)}`};
   }
