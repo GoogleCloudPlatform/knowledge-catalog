@@ -75,11 +75,16 @@ semantic_model:
         source: demo.sales.orders
         primary_key: [o_orderkey]
         fields:
-          - { name: o_orderkey, expression: o_orderkey }
-          - { name: o_totalprice, expression: o_totalprice }
+          - name: o_orderkey
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
+          - name: o_totalprice
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_totalprice }]
     metrics:
       - name: total_revenue
-        expression: SUM(orders.o_totalprice)
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: SUM(orders.o_totalprice) }]
 `;
 
 // entryCreateTries: 1 keeps the propagation-retry loop from sleeping in tests.

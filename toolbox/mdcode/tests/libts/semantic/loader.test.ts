@@ -142,12 +142,20 @@ describe('per-dialect expressions collapse to a single string', () => {
     expect(models[0].metrics[0].expression).toBe('SF');
   });
 
-  test('dialect names are matched case-insensitively', () => {
-    const { models, warnings } = fromDocument(metricDoc([
+  test('dialect names must match ALLOWED_DIALECTS casing in both flavors', () => {
+    expect(() => fromDocument(metricDoc([
       { dialect: 'BigQuery', expression: 'SUM(orders.a)' },
-    ]), { dialect: 'bigquery' });
-    expect(models[0].metrics[0].expression).toBe('SUM(orders.a)');
-    expect(warnings.some(w => w.includes('dialect'))).toBe(false);
+    ]))).toThrow(/ANSI_SQL.*BIGQUERY/);
+    expect(() => fromDocument({
+      version: '0.2.0.dev0/google',
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+          fields: [{ name: 'a', expression: { dialects: [{ dialect: 'BigQuery', expression: 'orders.a' }] } }],
+        }],
+      }],
+    })).toThrow(/ANSI_SQL.*BIGQUERY/);
   });
 
   test('field expressions select their dialect independently of metrics', () => {
@@ -772,8 +780,8 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     expect(metric.aiContext?.synonyms).toEqual(['revenue']);
   });
 
-  test('all seven spec dialects and ten datatypes are accepted', () => {
-    const dialects = ['ANSI_SQL', 'SNOWFLAKE', 'MDX', 'TABLEAU', 'DATABRICKS', 'MAQL', 'BIGQUERY'];
+  test('all eight allowed dialects and ten datatypes are accepted, while non-SQL dialects (MDX, TABLEAU, MAQL) are rejected', () => {
+    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SNOWFLAKE', 'DATABRICKS'];
     const datatypes = [...DATA_TYPES];  // the loader accepts exactly the IR vocabulary
     const { models } = fromDocument({
       version: '0.2.0.dev0',
@@ -792,6 +800,22 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     // the same as leaving `datatype` out, so it loads as no type.
     expect(models[0].entities[0].fields.map(f => f.type))
         .toEqual(datatypes.map(dt => (dt === 'Opaque' ? undefined : dt)));
+
+    for (const nonSql of ['MDX', 'TABLEAU', 'MAQL', 'THOUGHTSPOT']) {
+      expect(() => fromDocument({
+        version: '0.2.0.dev0',
+        semantic_model: [{
+          name: 'm',
+          datasets: [{
+            name: 'd', source: 'd', primary_key: ['id'],
+            fields: [{
+              name: 'f',
+              expression: { dialects: [{ dialect: nonSql, expression: 'd.c' }] },
+            }],
+          }],
+        }],
+      })).toThrow(`Unknown dialect '${nonSql}'`);
+    }
   });
 });
 
@@ -1050,8 +1074,8 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
     })).toThrow(/set either 'entities' or 'datasets', not both/);
   });
 
-  test('a bare-string expression expands to the target-dialect object', () => {
-    const { models } = fromDocument({ version: '0.2.0.dev0',
+  test('a bare-string expression expands to a one-entry ANSI_SQL list in 0.2.0.dev0/google and is rejected in 0.2.0.dev0', () => {
+    const { models, warnings } = fromDocument({ version: '0.2.0.dev0/google',
       semantic_model: [{
         name: 'm',
         datasets: [{
@@ -1060,7 +1084,21 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
         }],
       }],
     });
-    expect(models[0].entities[0].fields[0].expression).toBe('id_col');
+    const field = models[0].entities[0].fields[0];
+    expect(field.expression).toBe('id_col');
+    expect(field.stringForm).toBe(true);
+    expect(field.dialects).toEqual([{ dialect: 'ANSI_SQL', expression: 'id_col' }]);
+    expect(warnings.some(w => w.includes("no 'BIGQUERY' dialect"))).toBe(false);
+
+    expect(() => fromDocument({ version: '0.2.0.dev0',
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'a', source: 'proj.ds.tbl', primary_key: ['id'],
+          fields: [{ name: 'id', expression: 'id_col' }],
+        }],
+      }],
+    })).toThrow(/dialects:/);
   });
 
   test("a top-level 'deployment_target' folds into the GOOGLE block form", () => {
@@ -1077,7 +1115,7 @@ describe('authoring sugars: entities alias, bare-string expression, deployment_t
         custom_extensions: [{ vendor_name: 'GOOGLE',
           data: JSON.stringify({ deploymentTargets: [URI] }) }],
         datasets: [{ name: 'a', source: 's', primary_key: ['id'],
-          fields: [{ name: 'id', expression: 'id' }] }],
+          fields: [{ name: 'id', expression: expr('id') }] }],
       }],
     });
     expect(sugar.models[0].customExtensions)
@@ -1582,7 +1620,10 @@ ${body}    datasets:
         source: p.d.t
         primary_key: [id]
         fields:
-          - { name: id, expression: id }
+          - name: id
+            expression:
+              dialects:
+                - { dialect: ANSI_SQL, expression: id }
 `;
   };
 
@@ -1682,5 +1723,162 @@ semantic_model:
 `;
     expect(() => loadModels(text))
         .toThrow("model 'm': ai_context has an unrecognized key '__proto__'.");
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Per-engine expression lists (b/567743508).
+// ---------------------------------------------------------------------------
+
+describe('per-engine expression lists', () => {
+  test('a three-engine list survives loading with all three entries in the order written', () => {
+    for (const v of FLAVORS) {
+      const { models } = load(v, {
+        name: 'm',
+        datasets: [{
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+          fields: [{
+            name: 'net',
+            expression: {
+              dialects: [
+                { dialect: 'ANSI_SQL', expression: 'gross - tax' },
+                { dialect: 'BIGQUERY', expression: 'SAFE_SUBTRACT(gross, tax)' },
+                { dialect: 'SPANNER', expression: 'gross - COALESCE(tax, 0)' },
+              ],
+            },
+          }],
+        }],
+        metrics: [{
+          name: 'rev',
+          expression: {
+            dialects: [
+              { dialect: 'SNOWFLAKE', expression: 'SUM(orders.net)' },
+              { dialect: 'BIGQUERY', expression: 'SUM(orders.net)' },
+              { dialect: 'POSTGRES', expression: 'SUM(orders.net)::numeric' },
+            ],
+          },
+        }],
+      });
+      const field = models[0].entities[0].fields[0];
+      expect(field.stringForm).toBe(false);
+      expect(field.dialects).toEqual([
+        { dialect: 'ANSI_SQL', expression: 'gross - tax' },
+        { dialect: 'BIGQUERY', expression: 'SAFE_SUBTRACT(gross, tax)' },
+        { dialect: 'SPANNER', expression: 'gross - COALESCE(tax, 0)' },
+      ]);
+      expect(field.expression).toBe('SAFE_SUBTRACT(gross, tax)');
+
+      const metric = models[0].metrics[0];
+      expect(metric.stringForm).toBe(false);
+      expect(metric.dialects).toEqual([
+        { dialect: 'SNOWFLAKE', expression: 'SUM(orders.net)' },
+        { dialect: 'BIGQUERY', expression: 'SUM(orders.net)' },
+        { dialect: 'POSTGRES', expression: 'SUM(orders.net)::numeric' },
+      ]);
+      expect(metric.expression).toBe('SUM(orders.net)');
+    }
+  });
+
+  test('the same dialect twice in one list is rejected', () => {
+    for (const v of FLAVORS) {
+      expect(() => load(v, {
+        name: 'm',
+        datasets: [{
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+          fields: [{
+            name: 'id',
+            expression: {
+              dialects: [
+                { dialect: 'BIGQUERY', expression: 'id' },
+                { dialect: 'BIGQUERY', expression: 'o_id' },
+              ],
+            },
+          }],
+        }],
+      })).toThrow("Duplicate dialect 'BIGQUERY' in expression dialects.");
+    }
+  });
+
+  test('the short form in Google flavor loads as a one-entry ANSI_SQL list with stringForm:true and no BIGQUERY fallback warning, and is rejected in vanilla', () => {
+    const { models, warnings } = load(GOOGLE, {
+      name: 'm',
+      datasets: [{
+        name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [
+          { name: 'id', expression: 'o_id' },
+          { name: 'amount', expression: 'o_amount' },
+        ],
+      }],
+      metrics: [{ name: 'total', expression: 'SUM(orders.amount)' }],
+    });
+    const field = models[0].entities[0].fields[0];
+    expect(field.stringForm).toBe(true);
+    expect(field.dialects).toEqual([{ dialect: 'ANSI_SQL', expression: 'o_id' }]);
+    expect(field.expression).toBe('o_id');
+
+    const metric = models[0].metrics[0];
+    expect(metric.stringForm).toBe(true);
+    expect(metric.dialects).toEqual([{ dialect: 'ANSI_SQL', expression: 'SUM(orders.amount)' }]);
+    expect(metric.expression).toBe('SUM(orders.amount)');
+    expect(warnings.some(w => w.includes('BIGQUERY'))).toBe(false);
+
+    expect(() => load(VANILLA, {
+      name: 'm',
+      datasets: [{
+        name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [{ name: 'id', expression: 'o_id' }],
+      }],
+    })).toThrow(/dialects:\n\s+- dialect: ANSI_SQL\n\s+expression: "o_id"/);
+
+    expect(() => load(VANILLA, {
+      name: 'm',
+      datasets: [{
+        name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [{ name: 'id', expression: expr('o_id') }],
+      }],
+      metrics: [{ name: 'total', expression: 'SUM(orders.id)' }],
+    })).toThrow(/dialects:\n\s+- dialect: ANSI_SQL\n\s+expression: "SUM\(orders\.id\)"/);
+  });
+
+  test('an expression dialect entry with an extra key is rejected', () => {
+    for (const v of FLAVORS) {
+      expect(() => load(v, {
+        name: 'm',
+        datasets: [{
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+          fields: [{
+            name: 'id',
+            expression: {
+              dialects: [
+                { dialect: 'BIGQUERY', expression: 'id', note: 'extra' },
+              ],
+            },
+          }],
+        }],
+      })).toThrow(/unrecognized_keys|Unrecognized key/i);
+    }
+  });
+
+  test('lowercase LoadOptions.dialect still picks the uppercase dialect entry', () => {
+    const { models } = fromDocument({
+      version: VANILLA,
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+          fields: [{
+            name: 'net',
+            expression: {
+              dialects: [
+                { dialect: 'ANSI_SQL', expression: 'gross - tax' },
+                { dialect: 'BIGQUERY', expression: 'SAFE_SUBTRACT(gross, tax)' },
+              ],
+            },
+          }],
+        }],
+      }],
+    }, { dialect: 'bigquery' });
+    expect(models[0].entities[0].fields[0].expression).toBe('SAFE_SUBTRACT(gross, tax)');
   });
 });

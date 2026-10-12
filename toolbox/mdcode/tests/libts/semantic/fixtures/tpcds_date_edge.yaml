@@ -4,8 +4,7 @@
 # from_columns and to_columns share the same column name, and a target
 # dimension (date_dim) that declares a primary key but no fields (only
 # custom_extensions). A relationship's to_columns must cover a key of its
-# target, so date_dim declares the one its join uses. Fields carry a second,
-# non-BigQuery dialect variant to exercise dialect selection.
+# target, so date_dim declares the one its join uses.
 #
 # Not to be confused with fixtures/ossie/tpcds_semantic_model.yaml: that is the
 # Apache Ossie reference example, copied verbatim to test that the loader parses
@@ -29,8 +28,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_item_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_item_sk}"
             dimension:
               is_time: false
           - name: ss_ticket_number
@@ -38,8 +35,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_ticket_number
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_ticket_number}"
             dimension:
               is_time: false
           - name: ss_customer_sk
@@ -47,8 +42,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_customer_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_customer_sk}"
             dimension:
               is_time: false
           - name: ss_store_sk
@@ -56,8 +49,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_store_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_store_sk}"
             dimension:
               is_time: false
           - name: ss_quantity
@@ -65,32 +56,24 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_quantity
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_quantity}"
             description: Quantity of items sold
           - name: ss_sales_price
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_sales_price
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_sales_price}"
             description: Sales price per unit
           - name: ss_ext_sales_price
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_ext_sales_price
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_ext_sales_price}"
             description: Extended sales price (quantity * price)
           - name: ss_net_profit
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_net_profit
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_net_profit}"
             description: Net profit from the sale
 
       - name: customer

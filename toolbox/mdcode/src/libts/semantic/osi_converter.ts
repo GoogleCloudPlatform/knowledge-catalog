@@ -20,12 +20,12 @@
 // -> a destination.
 //
 // Fidelity is at the IR level, not byte-for-byte with a hand-authored file. The
-// loader normalizes several authoring conveniences into the IR at load time, so
-// they are already gone before serialization and cannot be reproduced here:
-//   * per-dialect `expression.dialects[]` variants collapse to at most two
-//   forms
-//     (a target/canonical `expression` + an `importedExpression`); only those
-//     are re-emitted, each under a single dialect label.
+// loader keeps every entry in `dialects` and records `stringForm`, and also
+// picks a target/canonical `expression` + an `importedExpression` via
+// `pickDialect`:
+//   * this serializer currently reads only `expression` and `importedExpression`
+//     (not `dialects` or `stringForm` yet), re-emitting at most those two forms,
+//     each under a single dialect label.
 //   * comments and key ordering are not preserved.
 // What the loader DOES keep on the IR round-trips here: names, descriptions,
 // `ai_context` (instructions / synonyms / examples), keys and unique keys, data
@@ -56,13 +56,13 @@ const SERIALIZED_VERSION = '0.2.0.dev0/google';
 // is re-emitted as the native `deployment_target` key.
 const GOOGLE_VENDOR = 'GOOGLE';
 
-// The dialect label for the IR's target/canonical `expression`. The IR does not
-// record which authored dialect that string came from (the loader picked it
-// from the target dialect or the ANSI_SQL fallback and discarded the label),
-// and its contract is "GoogleSQL-valid". BIGQUERY is the loader's default
-// target dialect, so labeling the canonical form BIGQUERY makes the loader
-// re-pick it exactly on reload -- a clean round trip with no dialect-fallback
-// note.
+// The dialect label for the IR's target/canonical `expression`. While the loader
+// now also populates `dialects` and `stringForm`, `expression` itself does not
+// record which dialect it was picked from (the target dialect or the ANSI_SQL
+// fallback), and its contract is "GoogleSQL-valid". BIGQUERY is the loader's
+// default target dialect, so labeling the canonical form BIGQUERY makes the
+// loader re-pick it exactly on reload -- a clean round trip with no
+// dialect-fallback note.
 const CANONICAL_DIALECT = 'BIGQUERY';
 
 // The dialect label used for an `importedExpression` whose `importedDialect`

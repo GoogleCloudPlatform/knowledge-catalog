@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 import {YAML_OPTIONS} from './yaml_options';
@@ -64,24 +64,47 @@ function isFormatVersion(v: string): v is FormatVersion {
 
 
 
-// An expression is supplied as one or more per-dialect variants; we collapse it
-// to at most two forms (target/canonical + imported) by picking dialects.
-// Unknown sibling keys are ignored.
-//
-// A one-line string is accepted as shorthand for a single target-dialect
-// variant (`expression: c_name` == `{dialects: [{dialect: BIGQUERY, expression:
-// c_name}]}`) and normalized to the object form here, so the rest of the loader
-// only ever sees the per-dialect object.
-const expressionObjectSchema = z.object({
-  dialects: z.array(z.object({
-               dialect: z.string(),
-               expression: z.string(),
-             })).min(1),
-});
+// An expression is supplied as one or more per-dialect variants, or (in the
+// Google flavor only) as a bare SQL string shorthand for a single ANSI_SQL
+// entry. Every dialect is validated against ALLOWED_DIALECTS (exact casing in
+// both flavors), and a repeated dialect inside one list is rejected.
+const expressionDialectEntrySchema =
+    z.object({
+       dialect: z.string().superRefine((d, ctx) => {
+         if (!(ALLOWED_DIALECTS as readonly string[]).includes(d)) {
+           ctx.addIssue({
+             code: z.ZodIssueCode.custom,
+             message: `Unknown dialect '${d}' in expression dialects. ` +
+                 `Expected one of ${ALLOWED_DIALECTS.join(', ')}.`,
+           });
+         }
+       }),
+       expression: z.string(),
+     }).strict();
+
+const expressionObjectSchema =
+    z.object({
+       dialects: z.array(expressionDialectEntrySchema)
+                     .min(1)
+                     .superRefine((entries, ctx) => {
+                       const seen = new Set<string>();
+                       for (let i = 0; i < entries.length; i++) {
+                         const d = entries[i].dialect;
+                         if (seen.has(d)) {
+                           ctx.addIssue({
+                             code: z.ZodIssueCode.custom,
+                             path: [i, 'dialect'],
+                             message:
+                                 `Duplicate dialect '${d}' in expression dialects.`,
+                           });
+                         }
+                         seen.add(d);
+                       }
+                     }),
+     }).strict();
+
 const expressionSchema = z.union([
-  z.string().transform((s): z.infer<typeof expressionObjectSchema> => ({
-                         dialects: [{dialect: DEFAULT_DIALECT, expression: s}],
-                       })),
+  z.string(),
   expressionObjectSchema,
 ]);
 
@@ -1219,6 +1242,45 @@ function resolveDataType(
   return result.type;
 }
 
+function rejectVanillaShortFormExpression(
+    expr: ExpressionDoc, ctx: string): void {
+  if (typeof expr !== 'string') return;
+  throw new Error(
+      `Semantic model load error: ${ctx}: a '${OSSIE_VERSION}' document ` +
+      `does not support the bare-string 'expression' shorthand. Write the ` +
+      `per-dialect form instead:\n` +
+      `  expression:\n` +
+      `    dialects:\n` +
+      `      - dialect: ANSI_SQL\n` +
+      `        expression: ${JSON.stringify(expr)}\n` +
+      `or set the document version to '${GOOGLE_VERSION}'.`);
+}
+
+function convertExpression(
+    raw: z.infer<typeof expressionSchema>, version: FormatVersion,
+    dialect: string, ctx: string, warnings: string[]): {
+  dialects: DialectExpression[];
+  stringForm: boolean;
+  picked: PickedExpression;
+} {
+  if (version === OSSIE_VERSION) {
+    rejectVanillaShortFormExpression(raw, ctx);
+  }
+  if (typeof raw === 'string') {
+    return {
+      dialects: [{dialect: 'ANSI_SQL', expression: raw}],
+      stringForm: true,
+      picked: {expression: raw},
+    };
+  }
+  return {
+    dialects: raw.dialects.map(
+        d => ({dialect: d.dialect as SqlDialect, expression: d.expression})),
+    stringForm: false,
+    picked: pickDialect(raw, dialect, ctx, warnings),
+  };
+}
+
 function convertField(
     f: FieldDoc, entityName: string, version: FormatVersion,
     warnings: string[], dialect: string): Field {
@@ -1226,11 +1288,14 @@ function convertField(
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
   const description = composeDescription(f.description);
+  const ctx = `field '${entityName}.${f.name}'`;
 
   const field: Field = {name: f.name};
   if (f.expression !== undefined) {
-    const picked = pickDialect(
-        f.expression, dialect, `field '${entityName}.${f.name}'`, warnings);
+    const {dialects, stringForm, picked} =
+        convertExpression(f.expression, version, dialect, ctx, warnings);
+    field.dialects = dialects;
+    field.stringForm = stringForm;
     if (picked.expression !== undefined) field.expression = picked.expression;
     if (picked.importedExpression !== undefined) {
       field.importedExpression = picked.importedExpression;
@@ -1243,8 +1308,7 @@ function convertField(
   // the availability pass (pruneUnavailable) drops each unbound field, and
   // whatever depends on it, before generation, so one logical model can serve
   // stores that bind different subsets of columns.
-  const type =
-      resolveDataType(f.datatype, version, `field '${entityName}.${f.name}'`);
+  const type = resolveDataType(f.datatype, version, ctx);
   if (type) field.type = type;
   if (f.label) field.label = f.label;
   if (f.dimension) {
@@ -1255,8 +1319,7 @@ function convertField(
   if (description) field.description = description;
   const ai = aiContextOrUndefined(f.ai_context);
   if (ai) field.aiContext = ai;
-  rejectGoogleBlock(
-      f.custom_extensions, version, 'field', `field '${entityName}.${f.name}'`);
+  rejectGoogleBlock(f.custom_extensions, version, 'field', ctx);
   const ce = toCustomExtensions(f.custom_extensions);
   if (ce) field.customExtensions = ce;
   return field;
@@ -1314,7 +1377,8 @@ function convertMetric(
     mt: MetricDoc, version: FormatVersion, entityNames: string[],
     warnings: string[], dialect: string): Metric {
   const ctx = `metric '${mt.name}'`;
-  const picked = pickDialect(mt.expression, dialect, ctx, warnings);
+  const {dialects, stringForm, picked} =
+      convertExpression(mt.expression, version, dialect, ctx, warnings);
   // Infer referenced entities from whichever expression form we have; the
   // imported form still carries the same entity qualifiers.
   const exprForRefs = picked.expression ?? picked.importedExpression ?? '';
@@ -1326,7 +1390,7 @@ function convertMetric(
     warnings.push(`${
         ctx}: expression references no known entity; it may not be placeable downstream`);
   }
-  const metric: Metric = {name: mt.name};
+  const metric: Metric = {name: mt.name, dialects, stringForm};
   if (mt.entity !== undefined) {
     // Like a relationship endpoint, an anchor must name a dataset the model
     // declares; a dangling one would attach the metric to nothing downstream.
@@ -1677,9 +1741,10 @@ function convertExecutor(ex: ExecutorDoc): Executor {
 //   - `importedExpression` (+ `importedDialect`): the original vendor SQL, kept
 //     verbatim so nothing is lost and a later transpile pass (see ./transpile)
 //     can fill `expression` from it.
-// Dialect names are compared case-insensitively. No transpilation is performed
-// here; chosen expressions are passed through verbatim. At least one form is
-// set.
+// Dialect names in the document must match ALLOWED_DIALECTS (uppercase)
+// exactly; only `preferred` (which comes from LoadOptions.dialect) is matched
+// without regard to case. No transpilation is performed here; chosen
+// expressions are passed through verbatim. At least one form is set.
 //
 // The fallbacks differ in risk, so they are surfaced differently:
 //   - ANSI_SQL is the AI-first format's default expression language (ANSI
@@ -1697,17 +1762,16 @@ interface PickedExpression {
 }
 
 function pickDialect(
-    expr: ExpressionDoc, preferred: string, ctx: string,
-    warnings: string[]): PickedExpression {
-  const upper = (s: string) => s.toUpperCase();
+    expr: z.infer<typeof expressionObjectSchema>, preferred: string,
+    ctx: string, warnings: string[]): PickedExpression {
+  const preferredUpper = preferred.toUpperCase();
   const byName = (name: string) =>
-      expr.dialects.find(d => upper(d.dialect) === upper(name));
+      expr.dialects.find(d => d.dialect === name.toUpperCase());
 
   // The original vendor variant, if any: the first dialect that is neither the
   // target nor the portable canonical. Kept as `importedExpression`.
   const vendor = expr.dialects.find(
-      d => upper(d.dialect) !== upper(preferred) &&
-          upper(d.dialect) !== FALLBACK_DIALECT);
+      d => d.dialect !== preferredUpper && d.dialect !== FALLBACK_DIALECT);
 
   const out: PickedExpression = {};
   if (vendor) {
