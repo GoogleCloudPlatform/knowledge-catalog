@@ -1,0 +1,794 @@
+# Benchmark model 2 of 6 -- SaaS subscriptions and recurring revenue.
+#
+# Shape: a state entity (subscription) alongside an event log
+# (subscription_event), plus an inheritance hierarchy over billing documents.
+#
+# What it is here to test:
+#   - entity inheritance: an abstract `billing_document` supertype with two
+#     concrete subtypes (invoice, credit_note). A question about "billing
+#     documents" must reach both; a question about invoices must reach only one
+#   - state-vs-event reasoning: MRR is a point-in-time stock read off
+#     subscription; new/churned/expansion MRR are flows read off
+#     subscription_event. Answering a flow question off the state entity is wrong
+#   - signed event measures, where churn is a negative mrr_delta rather than a
+#     separate column
+#   - a ratio spanning three entities (net_revenue_retention)
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: saas_subscriptions
+    description: >-
+      Subscription state, subscription change events, metered usage and billing
+      documents for a B2B SaaS business.
+    ai_context:
+      instructions: >-
+        Point-in-time questions ("how much MRR do we have") read subscription,
+        filtered to status ACTIVE. Change questions ("how much MRR did we add",
+        "what churned") read subscription_event and sum mrr_delta, which is
+        negative for CHURN and CONTRACTION. Never derive a flow by differencing
+        subscription rows. "Billing documents" means invoice and credit_note
+        together; an invoice amount is positive and a credit note amount is
+        positive but reduces net billings.
+
+    entities:
+      - name: account
+        source: saas.public.account
+        primary_key: [account_id]
+        description: One row per paying customer organization.
+        ai_context:
+          synonyms: ["account", "customer", "organization", "tenant", "logo"]
+        fields:
+          - name: account_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: account_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_name}]
+          - name: industry
+            datatype: String
+            description: Customer industry, e.g. Financial Services, Healthcare, Retail.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: industry}]
+            ai_context:
+              synonyms: ["industry", "vertical", "sector"]
+          - name: segment
+            datatype: String
+            description: Go-to-market segment, one of SMB, MIDMARKET, ENTERPRISE.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: segment}]
+            ai_context:
+              synonyms: ["segment", "customer size", "tier"]
+          - name: country
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: country}]
+          - name: owner_rep_id
+            datatype: String
+            description: Sales rep who owns the account.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: owner_rep_id}]
+          - name: first_closed_date
+            datatype: Date
+            description: Date the account first became a customer.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: first_closed_date}]
+            ai_context:
+              synonyms: ["cohort date", "became a customer", "signup"]
+          - name: is_strategic
+            datatype: Boolean
+            description: Flagged as a strategic named account.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_strategic}]
+
+      - name: sales_rep
+        source: saas.public.sales_rep
+        primary_key: [rep_id]
+        description: One row per quota-carrying sales representative.
+        ai_context:
+          synonyms: ["rep", "account executive", "AE", "salesperson"]
+        fields:
+          - name: rep_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: rep_id}]
+          - name: rep_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: rep_name}]
+          - name: sales_region
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: sales_region}]
+            ai_context:
+              synonyms: ["region", "territory"]
+          - name: annual_quota
+            datatype: Decimal
+            description: Annual bookings quota in account currency.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: annual_quota}]
+            ai_context:
+              synonyms: ["quota", "target"]
+
+      - name: plan
+        source: saas.public.plan
+        primary_key: [plan_id]
+        description: One row per purchasable product plan.
+        ai_context:
+          synonyms: ["plan", "package", "product tier", "edition"]
+        fields:
+          - name: plan_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: plan_id}]
+          - name: plan_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: plan_name}]
+          - name: plan_family
+            datatype: String
+            description: Product family, e.g. Core, Analytics, Security.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: plan_family}]
+            ai_context:
+              synonyms: ["product family", "product line"]
+          - name: list_price_per_seat
+            datatype: Decimal
+            description: Published monthly price per seat.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: list_price_per_seat}]
+          - name: billing_period
+            datatype: String
+            description: One of MONTHLY, ANNUAL, MULTI_YEAR.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: billing_period}]
+            ai_context:
+              synonyms: ["billing term", "contract term"]
+
+      - name: subscription
+        source: saas.public.subscription
+        primary_key: [subscription_id]
+        description: >-
+          One row per subscription, carrying its CURRENT state. A point-in-time
+          stock, not a history.
+        ai_context:
+          synonyms: ["subscription", "contract", "active contract"]
+        fields:
+          - name: subscription_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: subscription_id}]
+          - name: account_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: plan_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: plan_id}]
+          - name: status
+            datatype: String
+            description: One of ACTIVE, PAUSED, CANCELLED, TRIAL.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: status}]
+            ai_context:
+              synonyms: ["status", "state", "active or cancelled"]
+          - name: seats
+            datatype: Integer
+            description: Licensed seats on the subscription.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: seats}]
+            ai_context:
+              synonyms: ["seats", "licenses", "users"]
+          - name: monthly_recurring_revenue
+            datatype: Decimal
+            description: Normalized monthly recurring revenue for this subscription.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: monthly_recurring_revenue}]
+            ai_context:
+              synonyms: ["MRR", "recurring revenue", "monthly revenue"]
+          - name: start_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: start_date}]
+          - name: renewal_date
+            datatype: Date
+            description: Next scheduled renewal.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: renewal_date}]
+            ai_context:
+              synonyms: ["renewal", "up for renewal", "renews"]
+          - name: cancelled_date
+            datatype: Date
+            description: Date the subscription was cancelled; null while active.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: cancelled_date}]
+          - name: discount_pct
+            datatype: Float
+            description: Negotiated discount off list, as a fraction.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: discount_pct}]
+
+      - name: subscription_event
+        source: saas.public.subscription_event
+        primary_key: [event_id]
+        description: >-
+          Append-only log of subscription changes. The grain of every MRR FLOW
+          metric.
+        ai_context:
+          synonyms: ["subscription change", "MRR movement", "event log", "change log"]
+        fields:
+          - name: event_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: event_id}]
+          - name: subscription_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: subscription_id}]
+          - name: event_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: event_date}]
+            ai_context:
+              synonyms: ["when it changed", "event date", "movement date"]
+          - name: event_type
+            datatype: String
+            description: >-
+              One of NEW, EXPANSION, CONTRACTION, CHURN, REACTIVATION. CHURN and
+              CONTRACTION carry a negative mrr_delta.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: event_type}]
+            ai_context:
+              synonyms: ["movement type", "change type", "reason"]
+          - name: mrr_delta
+            datatype: Decimal
+            description: Signed change in monthly recurring revenue.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: mrr_delta}]
+            ai_context:
+              synonyms: ["MRR change", "delta", "movement"]
+          - name: seat_delta
+            datatype: Integer
+            description: Signed change in licensed seats.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: seat_delta}]
+          - name: churn_reason
+            datatype: String
+            description: Free-text reason recorded on a CHURN event.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: churn_reason}]
+            ai_context:
+              synonyms: ["why they left", "churn reason", "cancellation reason"]
+
+      - name: usage_daily
+        source: saas.public.usage_daily
+        primary_key: [subscription_id, usage_date]
+        description: One row per subscription per day of metered product usage.
+        ai_context:
+          synonyms: ["usage", "product usage", "telemetry", "consumption"]
+        fields:
+          - name: subscription_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: subscription_id}]
+          - name: usage_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: usage_date}]
+          - name: active_users
+            datatype: Integer
+            description: Distinct users active on that day.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: active_users}]
+            ai_context:
+              synonyms: ["DAU", "active users", "logins"]
+          - name: api_calls
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: api_calls}]
+            ai_context:
+              synonyms: ["API calls", "requests", "API volume"]
+          - name: storage_gb
+            datatype: Float
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: storage_gb}]
+
+      # --- billing document hierarchy -------------------------------------
+      # `billing_document` has no table of its own: it is the shared signature
+      # of invoice and credit_note, and exists so a question about billing
+      # documents in general has something to attach to.
+      - name: billing_document
+        abstract: true
+        description: >-
+          Abstract supertype of everything issued to an account for money.
+          Has no backing table; its fields flatten into each subtype.
+        ai_context:
+          synonyms: ["billing document", "billing record", "AR document"]
+        fields:
+          - name: document_id
+            datatype: String
+            description: Identifier, unique across all document subtypes.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: document_id}]
+          - name: account_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: issue_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: issue_date}]
+            ai_context:
+              synonyms: ["issued", "document date", "billed on"]
+          - name: currency_code
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: currency_code}]
+          - name: total_amount
+            datatype: Decimal
+            description: Document total in the document currency, always positive.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: total_amount}]
+
+      - name: invoice
+        source: saas.public.invoice
+        primary_key: [document_id]
+        extends: [billing_document]
+        description: A billing document demanding payment.
+        ai_context:
+          synonyms: ["invoice", "bill", "AR invoice"]
+        fields:
+          - name: due_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: due_date}]
+          - name: paid_date
+            datatype: Date
+            description: Date paid in full; null while outstanding.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: paid_date}]
+            ai_context:
+              synonyms: ["paid", "settled", "payment date"]
+          - name: amount_paid
+            datatype: Decimal
+            description: Cash received against this invoice.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: amount_paid}]
+            ai_context:
+              synonyms: ["collected", "cash received", "paid amount"]
+          - name: payment_terms
+            datatype: String
+            description: One of NET15, NET30, NET60, PREPAID.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: payment_terms}]
+
+      - name: credit_note
+        source: saas.public.credit_note
+        primary_key: [document_id]
+        extends: [billing_document]
+        description: >-
+          A billing document reversing part of an invoice. total_amount is
+          positive but reduces net billings.
+        ai_context:
+          synonyms: ["credit note", "credit memo", "refund document", "clawback"]
+        fields:
+          - name: original_invoice_id
+            datatype: String
+            description: Invoice this credit reverses.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: original_invoice_id}]
+          - name: credit_reason
+            datatype: String
+            description: One of SERVICE_CREDIT, BILLING_ERROR, GOODWILL, DOWNGRADE.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: credit_reason}]
+            ai_context:
+              synonyms: ["credit reason", "why credited"]
+
+      - name: invoice_line
+        source: saas.public.invoice_line
+        primary_key: [invoice_line_id]
+        description: One row per charge on an invoice.
+        ai_context:
+          synonyms: ["invoice line", "charge", "billing line"]
+        fields:
+          - name: invoice_line_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: invoice_line_id}]
+          - name: document_id
+            datatype: String
+            description: Invoice this line belongs to.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: document_id}]
+          - name: subscription_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: subscription_id}]
+          - name: charge_type
+            datatype: String
+            description: One of RECURRING, OVERAGE, ONE_TIME, PRORATION.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: charge_type}]
+            ai_context:
+              synonyms: ["charge type", "kind of charge"]
+          - name: line_amount
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: line_amount}]
+          - name: service_period_start
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: service_period_start}]
+          - name: service_period_end
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: service_period_end}]
+
+    relationships:
+      - name: subscription_to_account
+        from: subscription
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        ai_context:
+          instructions: >-
+            Each subscription belongs to one account.
+      - name: subscription_to_plan
+        from: subscription
+        to: plan
+        from_columns: [plan_id]
+        to_columns: [plan_id]
+        ai_context:
+          instructions: >-
+            Each subscription is on one plan.
+      - name: subscription_event_to_subscription
+        from: subscription_event
+        to: subscription
+        from_columns: [subscription_id]
+        to_columns: [subscription_id]
+        ai_context:
+          instructions: >-
+            Each change event belongs to one subscription.
+      - name: account_to_sales_rep
+        from: account
+        to: sales_rep
+        from_columns: [owner_rep_id]
+        to_columns: [rep_id]
+        ai_context:
+          instructions: >-
+            Each account is owned by one rep.
+      - name: usage_daily_to_subscription
+        from: usage_daily
+        to: subscription
+        from_columns: [subscription_id]
+        to_columns: [subscription_id]
+        ai_context:
+          instructions: >-
+            Each usage day belongs to one subscription.
+      - name: invoice_to_account
+        from: invoice
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        ai_context:
+          instructions: >-
+            Each invoice is addressed to one account.
+      - name: credit_note_to_account
+        from: credit_note
+        to: account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        ai_context:
+          instructions: >-
+            Each credit note is addressed to one account.
+      - name: credit_note_to_invoice
+        from: credit_note
+        to: invoice
+        from_columns: [original_invoice_id]
+        to_columns: [document_id]
+        ai_context:
+          instructions: >-
+            Each credit note reverses one invoice.
+      - name: invoice_line_to_invoice
+        from: invoice_line
+        to: invoice
+        from_columns: [document_id]
+        to_columns: [document_id]
+        ai_context:
+          instructions: >-
+            Each invoice line belongs to one invoice.
+      - name: invoice_line_to_subscription
+        from: invoice_line
+        to: subscription
+        from_columns: [subscription_id]
+        to_columns: [subscription_id]
+        ai_context:
+          instructions: >-
+            Each invoice line bills one subscription.
+
+    metrics:
+      # --- stock metrics, read off subscription ---------------------------
+      - name: mrr
+        datatype: Decimal
+        description: >-
+          Monthly recurring revenue currently under contract. A stock: filter
+          subscription.status to ACTIVE.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription.status = 'ACTIVE'
+                    THEN subscription.monthly_recurring_revenue ELSE 0 END)
+        ai_context:
+          synonyms: ["MRR", "recurring revenue", "run rate"]
+      - name: arr
+        datatype: Decimal
+        description: Annual recurring revenue, twelve times MRR.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                12 * SUM(CASE WHEN subscription.status = 'ACTIVE'
+                         THEN subscription.monthly_recurring_revenue ELSE 0 END)
+        ai_context:
+          synonyms: ["ARR", "annual recurring revenue", "annualized revenue"]
+      - name: active_subscription_count
+        datatype: Integer
+        description: Number of subscriptions currently active.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN subscription.status = 'ACTIVE'
+                      THEN subscription.subscription_id END)
+        ai_context:
+          synonyms: ["active subscriptions", "live contracts"]
+      - name: account_count
+        datatype: Integer
+        description: Number of distinct accounts.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT account.account_id)
+        ai_context:
+          synonyms: ["customers", "logos", "accounts"]
+      - name: licensed_seats
+        datatype: Integer
+        description: Seats licensed across active subscriptions.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription.status = 'ACTIVE'
+                    THEN subscription.seats ELSE 0 END)
+        ai_context:
+          synonyms: ["seats", "licenses sold"]
+      - name: arpa
+        datatype: Decimal
+        description: Average recurring revenue per account.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription.status = 'ACTIVE'
+                    THEN subscription.monthly_recurring_revenue ELSE 0 END)
+                / NULLIF(COUNT(DISTINCT account.account_id), 0)
+        ai_context:
+          synonyms: ["ARPA", "ARPU", "revenue per customer", "average account size"]
+
+      # --- flow metrics, read off subscription_event ----------------------
+      - name: new_mrr
+        datatype: Decimal
+        description: MRR added by brand-new subscriptions in the period.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription_event.event_type = 'NEW'
+                    THEN subscription_event.mrr_delta ELSE 0 END)
+        ai_context:
+          synonyms: ["new business", "new MRR", "acquisition"]
+      - name: expansion_mrr
+        datatype: Decimal
+        description: MRR added by upsell and cross-sell on existing subscriptions.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription_event.event_type = 'EXPANSION'
+                    THEN subscription_event.mrr_delta ELSE 0 END)
+        ai_context:
+          synonyms: ["expansion", "upsell", "upgrade MRR"]
+      - name: contraction_mrr
+        datatype: Decimal
+        description: MRR lost to downgrades, as a negative number.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription_event.event_type = 'CONTRACTION'
+                    THEN subscription_event.mrr_delta ELSE 0 END)
+        ai_context:
+          synonyms: ["downgrade", "contraction", "downsell"]
+      - name: churned_mrr
+        datatype: Decimal
+        description: MRR lost to cancellation, as a negative number.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN subscription_event.event_type = 'CHURN'
+                    THEN subscription_event.mrr_delta ELSE 0 END)
+        ai_context:
+          synonyms: ["churn", "lost MRR", "cancellations"]
+      - name: net_new_mrr
+        datatype: Decimal
+        description: >-
+          Every MRR movement in the period summed, which nets acquisition and
+          expansion against contraction and churn.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(subscription_event.mrr_delta)
+        ai_context:
+          synonyms: ["net new MRR", "net MRR movement", "net growth"]
+      - name: churned_logo_count
+        datatype: Integer
+        description: Distinct subscriptions that churned in the period.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN subscription_event.event_type = 'CHURN'
+                      THEN subscription_event.subscription_id END)
+        ai_context:
+          synonyms: ["churned customers", "lost logos", "cancellations count"]
+      - name: gross_revenue_churn_rate
+        datatype: Float
+        description: >-
+          Churned and contracted MRR as a share of the MRR under contract.
+          Expansion is excluded, which is what makes it gross rather than net.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                -SUM(CASE WHEN subscription_event.event_type IN ('CHURN', 'CONTRACTION')
+                     THEN subscription_event.mrr_delta ELSE 0 END)
+                / NULLIF(SUM(CASE WHEN subscription.status = 'ACTIVE'
+                             THEN subscription.monthly_recurring_revenue ELSE 0 END), 0)
+        ai_context:
+          synonyms: ["gross churn", "revenue churn", "churn rate"]
+      - name: net_revenue_retention
+        datatype: Float
+        description: >-
+          Expansion net of contraction and churn, over the MRR under contract,
+          expressed as a retention rate. Above 1.0 means the installed base grew
+          without new logos.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                1 + SUM(CASE WHEN subscription_event.event_type
+                             IN ('EXPANSION', 'CONTRACTION', 'CHURN')
+                        THEN subscription_event.mrr_delta ELSE 0 END)
+                    / NULLIF(SUM(CASE WHEN subscription.status = 'ACTIVE'
+                                 THEN subscription.monthly_recurring_revenue ELSE 0 END), 0)
+        ai_context:
+          synonyms: ["NRR", "NDR", "net retention", "net dollar retention"]
+
+      # --- billing and collections ----------------------------------------
+      - name: invoiced_amount
+        datatype: Decimal
+        description: Total invoiced to customers.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(invoice.total_amount)
+        ai_context:
+          synonyms: ["invoiced", "billings", "amount billed"]
+      - name: credited_amount
+        datatype: Decimal
+        description: Total issued back as credit notes.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(credit_note.total_amount)
+        ai_context:
+          synonyms: ["credits", "credit notes issued", "clawbacks"]
+      - name: net_billings
+        datatype: Decimal
+        description: Invoiced less credited. Spans both billing-document subtypes.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(invoice.total_amount) - SUM(credit_note.total_amount)
+        ai_context:
+          synonyms: ["net billings", "net invoiced", "billings after credits"]
+      - name: collected_amount
+        datatype: Decimal
+        description: Cash received against invoices.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(invoice.amount_paid)
+        ai_context:
+          synonyms: ["collections", "cash collected", "payments received"]
+      - name: collection_rate
+        datatype: Float
+        description: Share of invoiced amount actually collected.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(invoice.amount_paid) / NULLIF(SUM(invoice.total_amount), 0)
+        ai_context:
+          synonyms: ["collection rate", "percent collected", "DSO health"]
+      - name: outstanding_balance
+        datatype: Decimal
+        description: Invoiced amount not yet collected.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(invoice.total_amount - invoice.amount_paid)
+        ai_context:
+          synonyms: ["AR balance", "receivables", "unpaid", "outstanding"]
+
+      # --- usage -----------------------------------------------------------
+      - name: total_api_calls
+        datatype: Integer
+        description: API calls across the usage history.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(usage_daily.api_calls)
+        ai_context:
+          synonyms: ["API volume", "requests", "calls"]
+      - name: peak_daily_active_users
+        datatype: Integer
+        description: Highest single-day active-user count in the period.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: MAX(usage_daily.active_users)
+        ai_context:
+          synonyms: ["peak DAU", "busiest day", "max active users"]
+      - name: seat_utilization
+        datatype: Float
+        description: >-
+          Active users over licensed seats. Numerator is at usage-day grain and
+          denominator at subscription grain, so the seats must be collapsed to
+          one row per subscription before dividing.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(usage_daily.active_users)
+                / NULLIF(SUM(CASE WHEN subscription.status = 'ACTIVE'
+                             THEN subscription.seats ELSE 0 END), 0)
+        ai_context:
+          synonyms: ["seat utilization", "license utilization", "adoption"]

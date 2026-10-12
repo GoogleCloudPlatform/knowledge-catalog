@@ -1,0 +1,948 @@
+# Benchmark model 6 of 6 -- workforce and organization.
+#
+# Shape: TWO self-referential hierarchies over the same model -- employee
+# reports to employee, and department rolls up into department -- plus two
+# distinct edges from performance_review back to employee (subject and
+# reviewer).
+#
+# What it is here to test:
+#   - recursive rollup. "Headcount in Maya's organization" means every
+#     employee at any depth beneath one manager, which no fixed join answers
+#   - two hierarchies that do not agree. An employee's manager may sit in a
+#     different department, so a rollup by reporting line and a rollup by
+#     department give different numbers for the same question phrased loosely
+#   - two edges between the same pair of entities (review subject vs reviewer).
+#     Choosing the wrong one silently answers a different question
+#   - stock vs flow once more: headcount is a state, attrition is an event
+#     count, and the attrition-rate denominator is average headcount, not
+#     ending headcount
+
+version: "0.2.0.dev0"
+
+semantic_model:
+  - name: workforce_org
+    description: >-
+      Employees, their reporting line and department hierarchy, compensation
+      snapshots, performance reviews, hiring requisitions and employment
+      events.
+    ai_context:
+      instructions: >-
+        Headcount is a state read off employee filtered to status ACTIVE.
+        Hires, terminations and promotions are events on employment_event and
+        must be counted there, not inferred from employee. "Organization"
+        means the recursive reporting line through employee_to_manager;
+        "department" means the recursive rollup through
+        department_to_parent_department. The two are different and give
+        different answers. performance_review has two edges to employee: use
+        performance_review_to_employee for the person reviewed and
+        performance_review_to_reviewer for the person who wrote it.
+
+    datasets:
+      - name: employee
+        source: hr.public.employee
+        primary_key: [employee_id]
+        description: >-
+          One row per employee, past or present, carrying current state.
+          Self-referential through manager_id.
+        ai_context:
+          synonyms: ["employee", "person", "staff", "worker", "headcount"]
+        fields:
+          - name: employee_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employee_id}]
+          - name: employee_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employee_name}]
+          - name: manager_id
+            datatype: String
+            description: >-
+              The employee this one reports to; null at the top of the
+              company. The recursive edge.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: manager_id}]
+            ai_context:
+              synonyms: ["manager", "reports to", "supervisor", "boss"]
+          - name: department_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: department_id}]
+          - name: job_role_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: job_role_id}]
+          - name: location_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: location_id}]
+          - name: employment_status
+            datatype: String
+            description: One of ACTIVE, ON_LEAVE, TERMINATED.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employment_status}]
+            ai_context:
+              synonyms: ["status", "active or departed", "still here"]
+          - name: employment_type
+            datatype: String
+            description: One of FULL_TIME, PART_TIME, CONTRACTOR, INTERN.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employment_type}]
+            ai_context:
+              synonyms: ["worker type", "FTE or contractor", "employment type"]
+          - name: hire_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: hire_date}]
+            ai_context:
+              synonyms: ["start date", "joined", "hire date"]
+          - name: termination_date
+            datatype: Date
+            description: Date they left; null while employed.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: termination_date}]
+            ai_context:
+              synonyms: ["end date", "left on", "departure date"]
+          - name: tenure_months
+            datatype: Integer
+            description: Months from hire to termination, or to today if still employed.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: tenure_months}]
+            ai_context:
+              synonyms: ["tenure", "time at company", "seniority"]
+          - name: is_people_manager
+            datatype: Boolean
+            description: True when at least one employee reports to this one.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_people_manager}]
+            ai_context:
+              synonyms: ["manager", "people manager", "has reports"]
+          - name: is_remote
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_remote}]
+            ai_context:
+              synonyms: ["remote", "works from home", "distributed"]
+
+      - name: department
+        source: hr.public.department
+        primary_key: [department_id]
+        description: >-
+          One row per organizational unit. Self-referential through
+          parent_department_id, a hierarchy independent of the reporting line.
+        ai_context:
+          synonyms: ["department", "org unit", "team", "division", "function"]
+        fields:
+          - name: department_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: department_id}]
+          - name: department_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: department_name}]
+          - name: parent_department_id
+            datatype: String
+            description: Unit this one rolls up into; null at the top.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: parent_department_id}]
+            ai_context:
+              synonyms: ["parent org", "rolls up to", "umbrella org"]
+          - name: cost_center
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: cost_center}]
+            ai_context:
+              synonyms: ["cost center", "budget code"]
+          - name: function_area
+            datatype: String
+            description: e.g. Engineering, Sales, Finance, Operations.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: function_area}]
+            ai_context:
+              synonyms: ["function", "discipline", "org type"]
+          - name: head_employee_id
+            datatype: String
+            description: Employee who leads the department.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: head_employee_id}]
+            ai_context:
+              synonyms: ["department head", "org leader", "who runs it"]
+          - name: budgeted_headcount
+            datatype: Integer
+            description: Approved positions, against which actual headcount is read.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: budgeted_headcount}]
+            ai_context:
+              synonyms: ["budget", "approved headcount", "plan"]
+
+      - name: job_role
+        source: hr.public.job_role
+        primary_key: [job_role_id]
+        description: One row per job role at a given level.
+        ai_context:
+          synonyms: ["role", "job", "position", "title", "level"]
+        fields:
+          - name: job_role_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: job_role_id}]
+          - name: job_title
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: job_title}]
+            ai_context:
+              synonyms: ["title", "job title"]
+          - name: job_family
+            datatype: String
+            description: e.g. Software Engineering, Product, Sales, Support.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: job_family}]
+            ai_context:
+              synonyms: ["job family", "career track", "discipline"]
+          - name: job_level
+            datatype: Integer
+            description: Numeric career level; higher is more senior.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: job_level}]
+            ai_context:
+              synonyms: ["level", "grade", "seniority band"]
+          - name: salary_midpoint
+            datatype: Decimal
+            description: Midpoint of the pay band, the denominator of compa-ratio.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: salary_midpoint}]
+            ai_context:
+              synonyms: ["band midpoint", "target salary", "market rate"]
+          - name: is_exempt
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_exempt}]
+
+      - name: location
+        source: hr.public.location
+        primary_key: [location_id]
+        description: One row per office or work location.
+        ai_context:
+          synonyms: ["location", "office", "site", "where they work"]
+        fields:
+          - name: location_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: location_id}]
+          - name: location_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: location_name}]
+          - name: city
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: city}]
+          - name: country
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: country}]
+          - name: region
+            datatype: String
+            description: e.g. AMER, EMEA, APAC.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: region}]
+            ai_context:
+              synonyms: ["region", "geo", "theater"]
+          - name: cost_of_labor_index
+            datatype: Float
+            description: Pay-zone multiplier relative to the company baseline.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: cost_of_labor_index}]
+            ai_context:
+              synonyms: ["pay zone", "cost of labor", "geo differential"]
+
+      - name: compensation_snapshot
+        source: hr.public.compensation_snapshot
+        primary_key: [effective_date, employee_id]
+        description: >-
+          One row per employee per compensation change. Read at one
+          effective_date; summing across dates double-counts salary.
+        ai_context:
+          synonyms: ["compensation", "pay", "salary record", "comp"]
+        fields:
+          - name: effective_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: effective_date}]
+            ai_context:
+              synonyms: ["effective", "as of", "comp date"]
+          - name: employee_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employee_id}]
+          - name: base_salary
+            datatype: Decimal
+            description: Annualized base pay.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: base_salary}]
+            ai_context:
+              synonyms: ["salary", "base pay", "annual salary"]
+          - name: target_bonus_pct
+            datatype: Float
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: target_bonus_pct}]
+            ai_context:
+              synonyms: ["bonus target", "variable pay"]
+          - name: equity_value
+            datatype: Decimal
+            description: Annualized value of equity grants.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: equity_value}]
+            ai_context:
+              synonyms: ["equity", "stock", "RSUs"]
+          - name: currency_code
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: currency_code}]
+          - name: change_reason
+            datatype: String
+            description: One of HIRE, MERIT, PROMOTION, MARKET_ADJUSTMENT, DEMOTION.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: change_reason}]
+            ai_context:
+              synonyms: ["why pay changed", "comp reason"]
+
+      - name: performance_review
+        source: hr.public.performance_review
+        primary_key: [review_id]
+        description: >-
+          One row per completed review. Carries TWO references to employee:
+          the person reviewed and the person who wrote it.
+        ai_context:
+          synonyms: ["review", "performance review", "rating", "appraisal"]
+        fields:
+          - name: review_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: review_id}]
+          - name: employee_id
+            datatype: String
+            description: The person being reviewed.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employee_id}]
+            ai_context:
+              synonyms: ["reviewed employee", "subject of the review"]
+          - name: reviewer_employee_id
+            datatype: String
+            description: The person who wrote the review.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: reviewer_employee_id}]
+            ai_context:
+              synonyms: ["reviewer", "who wrote it", "rater"]
+          - name: review_period
+            datatype: String
+            description: Review cycle label, e.g. 2026H1.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: review_period}]
+            ai_context:
+              synonyms: ["cycle", "review period", "half"]
+          - name: review_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: review_date}]
+          - name: rating_value
+            datatype: Integer
+            description: Numeric rating from 1 to 5; 5 is strongest.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: rating_value}]
+            ai_context:
+              synonyms: ["rating", "score", "performance score"]
+          - name: promotion_recommended
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: promotion_recommended}]
+            ai_context:
+              synonyms: ["promo recommended", "ready for promotion"]
+          - name: flight_risk
+            datatype: String
+            description: Assessed retention risk, one of LOW, MEDIUM, HIGH.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: flight_risk}]
+            ai_context:
+              synonyms: ["flight risk", "retention risk", "likely to leave"]
+
+      - name: requisition
+        source: hr.public.requisition
+        primary_key: [requisition_id]
+        description: One row per approved open position.
+        ai_context:
+          synonyms: ["requisition", "req", "open role", "job opening", "vacancy"]
+        fields:
+          - name: requisition_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: requisition_id}]
+          - name: department_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: department_id}]
+          - name: job_role_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: job_role_id}]
+          - name: location_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: location_id}]
+          - name: hiring_manager_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: hiring_manager_id}]
+          - name: opened_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: opened_date}]
+          - name: filled_date
+            datatype: Date
+            description: Date an offer was accepted; null while open.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: filled_date}]
+          - name: requisition_status
+            datatype: String
+            description: One of OPEN, FILLED, CANCELLED, ON_HOLD.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: requisition_status}]
+            ai_context:
+              synonyms: ["req status", "still open", "filled"]
+          - name: days_to_fill
+            datatype: Integer
+            description: Days from opened to filled; null while open.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: days_to_fill}]
+            ai_context:
+              synonyms: ["time to fill", "days open", "hiring speed"]
+          - name: offers_extended
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: offers_extended}]
+          - name: offers_accepted
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: offers_accepted}]
+
+      - name: employment_event
+        source: hr.public.employment_event
+        primary_key: [event_id]
+        description: >-
+          Append-only log of workforce movements. The grain of every FLOW
+          metric: hires, exits, promotions, transfers.
+        ai_context:
+          synonyms: ["workforce event", "movement", "hire or exit", "change log"]
+        fields:
+          - name: event_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: event_id}]
+          - name: employee_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employee_id}]
+          - name: event_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: event_date}]
+          - name: event_type
+            datatype: String
+            description: One of HIRE, PROMOTION, LATERAL_TRANSFER, DEMOTION, TERMINATION.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: event_type}]
+            ai_context:
+              synonyms: ["movement type", "what happened"]
+          - name: termination_type
+            datatype: String
+            description: >-
+              On a TERMINATION event, one of VOLUNTARY, INVOLUNTARY,
+              RETIREMENT, END_OF_CONTRACT. Null otherwise.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: termination_type}]
+            ai_context:
+              synonyms: ["quit or fired", "voluntary or involuntary", "exit type"]
+          - name: from_department_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: from_department_id}]
+          - name: to_department_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: to_department_id}]
+          - name: exit_reason
+            datatype: String
+            description: Free-text reason captured at exit interview.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: exit_reason}]
+            ai_context:
+              synonyms: ["why they left", "exit reason", "resignation reason"]
+
+    relationships:
+      - name: employee_to_manager
+        from: employee
+        to: employee
+        from_columns: [manager_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            The reporting line, self-referential and recursive. Walking it
+            transitively gives a manager's whole organization.
+          synonyms: ["reports to", "reporting line", "org chart", "chain of command"]
+      - name: employee_to_department
+        from: employee
+        to: department
+        from_columns: [department_id]
+        to_columns: [department_id]
+        ai_context:
+          instructions: >-
+            Each employee sits in one department.
+      - name: employee_to_job_role
+        from: employee
+        to: job_role
+        from_columns: [job_role_id]
+        to_columns: [job_role_id]
+        ai_context:
+          instructions: >-
+            Each employee holds one role.
+      - name: employee_to_location
+        from: employee
+        to: location
+        from_columns: [location_id]
+        to_columns: [location_id]
+        ai_context:
+          instructions: >-
+            Each employee is assigned to one location.
+      - name: department_to_parent_department
+        from: department
+        to: department
+        from_columns: [parent_department_id]
+        to_columns: [department_id]
+        ai_context:
+          instructions: >-
+            The org rollup, self-referential and recursive. Independent of the
+            reporting line: an employee's manager may be in another
+            department.
+          synonyms: ["rolls up to", "org hierarchy", "parent org"]
+      - name: department_to_head_employee
+        from: department
+        to: employee
+        from_columns: [head_employee_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            Who leads the department.
+      - name: compensation_snapshot_to_employee
+        from: compensation_snapshot
+        to: employee
+        from_columns: [employee_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            Each pay record is for one employee.
+      - name: performance_review_to_employee
+        from: performance_review
+        to: employee
+        from_columns: [employee_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            The person reviewed. Use this for "ratings of X".
+      - name: performance_review_to_reviewer
+        from: performance_review
+        to: employee
+        from_columns: [reviewer_employee_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            The person who wrote the review. Use this for "ratings given by
+            X". Choosing this edge when the question wanted the subject
+            answers a different question without erroring.
+      - name: requisition_to_department
+        from: requisition
+        to: department
+        from_columns: [department_id]
+        to_columns: [department_id]
+        ai_context:
+          instructions: >-
+            Each open position belongs to one department.
+      - name: requisition_to_job_role
+        from: requisition
+        to: job_role
+        from_columns: [job_role_id]
+        to_columns: [job_role_id]
+        ai_context:
+          instructions: >-
+            Each open position is for one role.
+      - name: requisition_to_location
+        from: requisition
+        to: location
+        from_columns: [location_id]
+        to_columns: [location_id]
+        ai_context:
+          instructions: >-
+            Each open position is based at one location.
+      - name: requisition_to_hiring_manager
+        from: requisition
+        to: employee
+        from_columns: [hiring_manager_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            Who is hiring for the position.
+      - name: employment_event_to_employee
+        from: employment_event
+        to: employee
+        from_columns: [employee_id]
+        to_columns: [employee_id]
+        ai_context:
+          instructions: >-
+            Each workforce movement is about one employee.
+
+    metrics:
+      # --- headcount, a state ----------------------------------------------
+      - name: headcount
+        datatype: Integer
+        description: Employees currently active. A state, not a sum of hires.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                      THEN employee.employee_id END)
+        ai_context:
+          synonyms: ["headcount", "how many people", "staff size", "employees"]
+      - name: fte_headcount
+        datatype: Integer
+        description: Active employees on full-time terms only.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                                     AND employee.employment_type = 'FULL_TIME'
+                      THEN employee.employee_id END)
+        ai_context:
+          synonyms: ["FTE", "full-time headcount", "permanent staff"]
+      - name: contractor_count
+        datatype: Integer
+        description: Active workers engaged as contractors.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                                     AND employee.employment_type = 'CONTRACTOR'
+                      THEN employee.employee_id END)
+        ai_context:
+          synonyms: ["contractors", "contingent workers", "non-employees"]
+      - name: manager_count
+        datatype: Integer
+        description: Active employees who have at least one direct report.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.is_people_manager
+                                     AND employee.employment_status = 'ACTIVE'
+                      THEN employee.employee_id END)
+        ai_context:
+          synonyms: ["managers", "people managers", "leaders"]
+      - name: span_of_control
+        datatype: Float
+        description: >-
+          Active employees per active manager. A whole-population ratio; it
+          does not describe any one manager's team.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                      THEN employee.employee_id END)
+                / NULLIF(COUNT(DISTINCT CASE WHEN employee.is_people_manager
+                                              AND employee.employment_status = 'ACTIVE'
+                               THEN employee.employee_id END), 0)
+        ai_context:
+          synonyms: ["span of control", "manager ratio", "org shape"]
+      - name: remote_share
+        datatype: Float
+        description: Share of active employees working remotely.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.is_remote
+                                     AND employee.employment_status = 'ACTIVE'
+                      THEN employee.employee_id END)
+                / NULLIF(COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                               THEN employee.employee_id END), 0)
+        ai_context:
+          synonyms: ["remote percentage", "distributed share", "work from home rate"]
+      - name: average_tenure_months
+        datatype: Float
+        description: Mean months of service across active employees.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN employee.employment_status = 'ACTIVE'
+                    THEN employee.tenure_months ELSE 0 END)
+                / NULLIF(COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                               THEN employee.employee_id END), 0)
+        ai_context:
+          synonyms: ["average tenure", "time at company", "seniority"]
+      - name: headcount_vs_budget
+        datatype: Float
+        description: Active headcount over approved positions.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                      THEN employee.employee_id END)
+                / NULLIF(SUM(department.budgeted_headcount), 0)
+        ai_context:
+          synonyms: ["against plan", "budget attainment", "staffed versus budget"]
+
+      # --- movement, a flow --------------------------------------------------
+      - name: hire_count
+        datatype: Integer
+        description: Hires in the period, counted off the event log.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'HIRE'
+                      THEN employment_event.event_id END)
+        ai_context:
+          synonyms: ["hires", "new joiners", "people added"]
+      - name: termination_count
+        datatype: Integer
+        description: Exits in the period, of any kind.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'TERMINATION'
+                      THEN employment_event.event_id END)
+        ai_context:
+          synonyms: ["exits", "departures", "leavers", "attrition count"]
+      - name: voluntary_exit_count
+        datatype: Integer
+        description: Exits the employee chose.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'TERMINATION'
+                                     AND employment_event.termination_type = 'VOLUNTARY'
+                      THEN employment_event.event_id END)
+        ai_context:
+          synonyms: ["resignations", "quits", "voluntary departures"]
+      - name: attrition_rate
+        datatype: Float
+        description: >-
+          Exits over active headcount. The denominator here is ending
+          headcount, which understates the rate when the population grew; a
+          period-average denominator is the more careful reading.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'TERMINATION'
+                      THEN employment_event.event_id END)
+                / NULLIF(COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                               THEN employee.employee_id END), 0)
+        ai_context:
+          synonyms: ["attrition", "turnover rate", "churn rate"]
+      - name: voluntary_attrition_rate
+        datatype: Float
+        description: Voluntary exits over active headcount.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'TERMINATION'
+                                     AND employment_event.termination_type = 'VOLUNTARY'
+                      THEN employment_event.event_id END)
+                / NULLIF(COUNT(DISTINCT CASE WHEN employee.employment_status = 'ACTIVE'
+                               THEN employee.employee_id END), 0)
+        ai_context:
+          synonyms: ["regretted attrition", "voluntary turnover", "quit rate"]
+      - name: promotion_count
+        datatype: Integer
+        description: Promotions in the period.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'PROMOTION'
+                      THEN employment_event.event_id END)
+        ai_context:
+          synonyms: ["promotions", "level ups", "advancement"]
+      - name: internal_mobility_count
+        datatype: Integer
+        description: Promotions and lateral transfers together.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type
+                                     IN ('PROMOTION', 'LATERAL_TRANSFER')
+                      THEN employment_event.event_id END)
+        ai_context:
+          synonyms: ["internal moves", "mobility", "internal transfers"]
+      - name: net_headcount_change
+        datatype: Integer
+        description: Hires less terminations in the period.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN employment_event.event_type = 'HIRE'
+                      THEN employment_event.event_id END)
+                - COUNT(DISTINCT CASE WHEN employment_event.event_type = 'TERMINATION'
+                        THEN employment_event.event_id END)
+        ai_context:
+          synonyms: ["net growth", "net adds", "headcount change"]
+
+      # --- compensation ------------------------------------------------------
+      - name: total_base_salary
+        datatype: Decimal
+        description: Base pay summed at one effective_date. Not additive across dates.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(compensation_snapshot.base_salary)
+        ai_context:
+          synonyms: ["salary cost", "payroll", "base pay spend"]
+      - name: average_base_salary
+        datatype: Decimal
+        description: Mean base pay per employee at one effective_date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(compensation_snapshot.base_salary)
+                / NULLIF(COUNT(DISTINCT compensation_snapshot.employee_id), 0)
+        ai_context:
+          synonyms: ["average salary", "mean pay", "typical salary"]
+      - name: total_compensation_cost
+        datatype: Decimal
+        description: Base, target bonus and equity combined.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(compensation_snapshot.base_salary
+                    * (1 + compensation_snapshot.target_bonus_pct)
+                    + compensation_snapshot.equity_value)
+        ai_context:
+          synonyms: ["total comp", "fully loaded pay", "compensation spend"]
+      - name: compa_ratio
+        datatype: Float
+        description: >-
+          Base pay over the role's band midpoint. Below 1.0 means paid under
+          the band. Spans compensation_snapshot, employee and job_role.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(compensation_snapshot.base_salary)
+                / NULLIF(SUM(job_role.salary_midpoint), 0)
+        ai_context:
+          synonyms: ["compa-ratio", "against band", "pay position"]
+
+      # --- performance and hiring --------------------------------------------
+      - name: average_rating
+        datatype: Float
+        description: Mean performance rating.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(performance_review.rating_value)
+                / NULLIF(COUNT(performance_review.review_id), 0)
+        ai_context:
+          synonyms: ["average rating", "mean score", "performance average"]
+      - name: review_count
+        datatype: Integer
+        description: Reviews completed.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT performance_review.review_id)
+        ai_context:
+          synonyms: ["reviews", "appraisals completed"]
+      - name: high_flight_risk_count
+        datatype: Integer
+        description: Distinct employees assessed as a HIGH retention risk.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN performance_review.flight_risk = 'HIGH'
+                      THEN performance_review.employee_id END)
+        ai_context:
+          synonyms: ["flight risks", "at risk of leaving", "retention concerns"]
+      - name: promotion_recommendation_rate
+        datatype: Float
+        description: Share of reviews recommending promotion.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN performance_review.promotion_recommended
+                      THEN performance_review.review_id END)
+                / NULLIF(COUNT(DISTINCT performance_review.review_id), 0)
+        ai_context:
+          synonyms: ["promo recommendations", "ready for promotion rate"]
+      - name: open_requisition_count
+        datatype: Integer
+        description: Positions approved and still unfilled.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN requisition.requisition_status = 'OPEN'
+                      THEN requisition.requisition_id END)
+        ai_context:
+          synonyms: ["open roles", "vacancies", "open reqs", "openings"]
+      - name: average_days_to_fill
+        datatype: Float
+        description: Mean days from opening a position to filling it.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(requisition.days_to_fill)
+                / NULLIF(COUNT(DISTINCT CASE WHEN requisition.requisition_status = 'FILLED'
+                               THEN requisition.requisition_id END), 0)
+        ai_context:
+          synonyms: ["time to fill", "hiring speed", "days to hire"]
+      - name: offer_acceptance_rate
+        datatype: Float
+        description: Offers accepted over offers extended.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(requisition.offers_accepted)
+                / NULLIF(SUM(requisition.offers_extended), 0)
+        ai_context:
+          synonyms: ["offer acceptance", "accept rate", "yield"]
