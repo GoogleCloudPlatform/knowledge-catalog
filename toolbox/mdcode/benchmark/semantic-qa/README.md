@@ -17,6 +17,8 @@ it was handed.
 models/<name>.yaml        one semantic model, loadable by kcmd's OSI loader
 questions/<name>.jsonl    one question per line, graded against models/<name>.yaml
 validate.ts               checks every model loads and every question reference resolves
+smoke/trap_check.py       runs the metric SQL on real rows; proves the traps diverge
+smoke/snapshot_check.py   the same, for supply_chain's daily stock snapshot
 ```
 
 A model file and its question file share a stem, and the model's `name` matches
@@ -187,6 +189,57 @@ cheap is a three-part score per question:
 Element recall and refusal need no warehouse. Checking values does, and the
 benchmark ships no data; populating the `source` tables is left to whoever
 needs value-level grading.
+
+## What has been validated, and what has not
+
+Validated:
+
+- **The models are structurally sound.** All six load through kcmd's loader and
+  pass the OSI schema check. Every `requires` name in all 152 questions
+  resolves.
+- **The metric SQL executes.** `smoke/trap_check.py` builds a SQLite database
+  whose views are generated from `retail_sales`'s own field expressions, loads
+  a seven-line fixture, and runs all 17 metric expressions. All 17 execute,
+  and the values are small enough to check by hand (net revenue 705, AOV
+  176.25 over four orders).
+- **The traps discriminate.** For each trap question the same script runs the
+  correct query beside the naive one and compares. All five diverge, and not
+  marginally: orders per store reads 4 instead of 2, revenue per employee
+  9.63 instead of 38.50, promotional discount totals 65 instead of 45.
+  `smoke/snapshot_check.py` repeats the exercise on `supply_chain`, where
+  summing a daily snapshot across three days values inventory at 7,180 instead
+  of 1,980. Three of its four cases diverge; the fourth does not because that
+  fixture never has a part dip below safety stock and recover, not because the
+  question is weak.
+
+Not validated:
+
+- **No QA system has been run against it.** Nothing here tells you whether a
+  current text-to-SQL or agent setup scores 40% or 95%. The traps are real,
+  but difficulty calibration is unmeasured and the `easy`/`medium`/`hard`
+  labels are editorial judgment.
+- **No gold values.** No data ships, so there is no exact-match answer key.
+  Scoring is element recall, grain and refusal (above).
+- **`requires` is one correct path, not the only one.** Several questions admit
+  more than one legitimate join path. Grade recall with tolerance; strict set
+  equality will produce false negatives.
+
+### Known caveat: two metrics fan out as written
+
+`retail_sales.revenue_per_employee` and `sales_per_square_foot` divide a
+line-grain numerator by `SUM(store.employee_count)` and `SUM(store.square_feet)`.
+Executed literally over a flat star join, the denominator repeats once per
+sales line: the smoke test returns 8.29 and 0.083 where the grain-correct
+answers are 20.14 and 0.201, a factor of 2.4 on this fixture and worse as
+basket size grows.
+
+Whether that is a defect depends on the consumer. A grain-aware semantic engine
+collapses the denominator and these are right; anything that executes the
+expression as plain SQL gets the fan-out. Each metric's `description` says so,
+and questions q15 and q19 are built around exactly this hazard. Left as is
+deliberately, but if you want the models to be safe to execute naively, rewrite
+both denominators as uncorrelated subqueries over `store` and keep the trap in
+the questions.
 
 ## Adding to the benchmark
 
