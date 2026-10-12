@@ -366,6 +366,43 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(result.details).toContain('sales-orders-to-customer');
   });
 
+  test(
+      'a failed link write in a batch of two keeps the partial linked count',
+      async () => {
+        stubClient({
+          createLink: (id) =>
+              id === 'sales-orders-to-lineitem' ? err(500, 'boom') : ok({}),
+        });
+        const emitted: EmittedModel[] = [{
+          model: 'sales',
+          resources: {
+            entries: [
+              {name: entryName('sales'), entryType: MODEL_TYPE},
+            ],
+            entryLinks: [
+              linkEntry(
+                  'sales-orders-to-customer',
+                  ['sales.entities.orders', 'sales.entities.customer']),
+              linkEntry(
+                  'sales-orders-to-lineitem',
+                  ['sales.entities.orders', 'sales.entities.lineitem']),
+            ],
+            ownedPrefixes: ['sales.entities.'],
+            warnings: [],
+          },
+        }];
+
+        const result = await deployEmittedModels(emitted, [], CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.created).toBe(1);
+        expect(result.linked).toBe(1);
+        expect(result.details)
+            .toBe(
+                'Model \'sales\': entry link \'sales-orders-to-lineitem\': ' +
+                'boom');
+      });
+
   test('a model with no relationships writes no links', async () => {
     const {createLink} = stubClient();
 
@@ -406,6 +443,36 @@ describe('deployKnowledgeCatalog: failures', () => {
     expect(result.success).toBe(false);
     expect(create).toHaveBeenCalledTimes(1);  // anchor only; children skipped
   });
+
+  test(
+      'a failed child entry write in a batch of two keeps partial created ' +
+          'and updated counts',
+      async () => {
+        // `STAR_DOCS` writes the anchor (`sales`) first, then the two
+        // independent entity entries (`sales.entities.orders` and
+        // `sales.entities.customer`) concurrently in one batch. Let the anchor
+        // be updated in place (409 -> 200), the first entity be created (200),
+        // and the second entity fail (500).
+        const {create, update} = stubClient({
+          create: (id) => {
+            if (id === 'sales') return err(409, 'already exists');
+            if (id === 'sales.entities.customer') return err(500, 'boom');
+            return ok({});
+          },
+          update: ok({}),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.created).toBe(1);  // sales.entities.orders
+        expect(result.updated).toBe(1);  // sales (anchor)
+        expect(result.details)
+            .toBe('Model \'sales\': entry \'sales.entities.customer\': boom');
+        expect(create).toHaveBeenCalledTimes(3);  // dependent metrics skipped
+        expect(update).toHaveBeenCalledTimes(1);
+      });
 
   test(
       'a model that throws during emit fails with the model + document named',
@@ -651,12 +718,16 @@ const METRIC_TYPE =
 
 // A schema-join entry link as lookupEntryLinks returns it: `refIds` are the two
 // endpoint entry ids (undirected, both UNSPECIFIED).
-function linkEntry(id: string, refIds: string[]): any {
+function linkEntry(id: string, refIds: string[], project = 'dest'): any {
   return {
-    name: `projects/dest/locations/us/entryGroups/eg/entryLinks/${id}`,
+    name: `projects/${project}/locations/us/entryGroups/eg/entryLinks/${id}`,
     entryLinkType:
         'projects/dataplex-types/locations/global/entryLinkTypes/schema-join',
-    entryReferences: refIds.map(r => ({name: entryName(r), type: 'UNSPECIFIED'})),
+    entryReferences: refIds.map(
+        r => ({
+          name: `projects/${project}/locations/us/entryGroups/eg/entries/${r}`,
+          type: 'UNSPECIFIED',
+        })),
   };
 }
 
@@ -1114,8 +1185,9 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
 
         expect(applied.success).toBe(false);
         expect(applied.details)
-            .toContain(
-                'looking up entry links for \'old.entities.a\': lookup failed');
+            .toBe(
+                'Looking up entry links for \'old.entities.a\' failed while ' +
+                'removing model \'old\': lookup failed');
       });
 
   test(
@@ -1440,6 +1512,7 @@ describe(
                 'sales-orders-to-customer',
                 ['sales.entities.orders', 'sales.entities.supplier']);
             let createLinkCalls = 0;
+            const callOrder: string[] = [];
             const {createLink, updateLink, delLink} = stubClient({
               existing: [
                 {id: 'sales', type: MODEL_TYPE},
@@ -1448,10 +1521,19 @@ describe(
                 {id: 'sales.entities.supplier', type: ENTITY_TYPE},
               ],
               links: () => ok([staleEndpointLink]),
-              createLink: () => {
+              createLink: (id) => {
                 createLinkCalls++;
+                callOrder.push(`createLink:${id}:${createLinkCalls}`);
                 return createLinkCalls === 1 ? err(409, 'already exists') :
                                                ok({});
+              },
+              delLink: (id) => {
+                callOrder.push(`delLink:${id}`);
+                return ok({});
+              },
+              del: (id) => {
+                callOrder.push(`delEntry:${id}`);
+                return ok({});
               },
             });
 
@@ -1463,6 +1545,18 @@ describe(
             expect(delLink).toHaveBeenCalledTimes(1);
             expect(delLink.mock.calls[0][3]).toBe('sales-orders-to-customer');
             expect(createLink).toHaveBeenCalledTimes(2);
+            expect((createLink.mock.calls[1][4] as any)
+                       .entryReferences.map((r: any) => r.name))
+                .toEqual([
+                  entryName('sales.entities.orders'),
+                  entryName('sales.entities.customer'),
+                ]);
+            expect(callOrder).toEqual([
+              'createLink:sales-orders-to-customer:1',
+              'delLink:sales-orders-to-customer',
+              'createLink:sales-orders-to-customer:2',
+              'delEntry:sales.entities.supplier',
+            ]);
             expect(updateLink).not.toHaveBeenCalled();
           });
 
@@ -1512,9 +1606,12 @@ describe(
           'updates an existing link in place without deleting when its ' +
               'endpoint references match',
           async () => {
+            // Dataplex returns project numbers in server-side resource names,
+            // whereas the emitted link carries the project ID ('dest').
             const matchingLink = linkEntry(
                 'sales-orders-to-customer',
-                ['sales.entities.orders', 'sales.entities.customer']);
+                ['sales.entities.orders', 'sales.entities.customer'],
+                '123456789');
             const {createLink, updateLink, delLink} = stubClient({
               existing: [
                 {id: 'sales', type: MODEL_TYPE},
@@ -1609,7 +1706,12 @@ describe(
                 await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
             expect(result.success).toBe(false);
-            expect(result.details).toContain('sales-orders-to-customer');
+            expect(result.details)
+                .toBe(
+                    'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
+                    'already exists and references entry ' +
+                    '\'other.entities.customer\' outside this model; rename ' +
+                    'the relationship or delete the existing link');
             expect(delLink).not.toHaveBeenCalled();
             expect(updateLink).not.toHaveBeenCalled();
             expect(createLink).toHaveBeenCalledTimes(1);
@@ -1637,8 +1739,10 @@ describe(
 
             expect(result.success).toBe(false);
             expect(result.details)
-                .toContain(
-                    'deleting entry link \'sales-orders-to-customer\': ' +
+                .toBe(
+                    'Model \'sales\': failed to delete entry link ' +
+                    '\'sales-orders-to-customer\' with stale endpoints ' +
+                    'before attempting to create the updated link: ' +
                     'delete failed');
           });
 
@@ -1669,8 +1773,11 @@ describe(
 
             expect(result.success).toBe(false);
             expect(result.details)
-                .toContain(
-                    'entry link \'sales-orders-to-customer\': recreate failed');
+                .toBe(
+                    'Model \'sales\': failed to create entry link ' +
+                    '\'sales-orders-to-customer\' with updated endpoints ' +
+                    'after deleting the previously stale link (push again ' +
+                    'to restore the link): recreate failed');
           });
     });
 
@@ -1721,9 +1828,10 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
         // relationship orphans were deleted.
         expect(result.success).toBe(true);
         expect(result.unlinked).toBe(2);
-        expect(lookupLinks.mock.calls[0][2]).toEqual({
-          entry: entryName('sales.entities.orders'),
-        });
+        expect(lookupLinks.mock.calls.map(c => c[2])).toEqual([
+          {entry: entryName('sales.entities.orders')},
+          {entry: entryName('sales.entities.customer')},
+        ]);
         expect(delLink.mock.calls.map(c => c[3]).sort()).toEqual([
           'sales-old-join',
           'sales-old-rel',
@@ -1746,9 +1854,9 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
 
         expect(result.success).toBe(false);
         expect(result.details)
-            .toContain(
-                'looking up entry links for \'sales.entities.orders\': ' +
-                'lookup failed');
+            .toBe(
+                'Model \'sales\': looking up entry links for ' +
+                '\'sales.entities.orders\': lookup failed');
       });
 });
 

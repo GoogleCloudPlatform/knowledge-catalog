@@ -42,7 +42,7 @@ export type KcOwner = KcResources | KcAnchor;
  * - `'projects/p/locations/us/entryGroups/eg/entries/sales/entities/orders'`
  *   -> `'sales/entities/orders'`
  */
-export function entryId(entry: Entry): string {
+export function entryId(entry: Entry|EntryReference): string {
   return entryIdOf(entry.name);
 }
 
@@ -178,10 +178,11 @@ export function collectEntityNames(entries: readonly Entry[]): string[] {
  *   * For `KcAnchor`, matches both the model anchor entry (`owner.anchorId`)
  *     and child entries under `owner.ownedPrefixes`.
  */
-export function isEntryOwner(owner: KcOwner, entry: Entry): boolean {
+export function isEntryOwner(
+    owner: KcOwner, entry: Entry|EntryReference): boolean {
   if ('anchorId' in owner) {
     if (!owner.anchorId) return false;
-    if (anchorId(entry) === owner.anchorId) return true;
+    if ('entryType' in entry && anchorId(entry) === owner.anchorId) return true;
   }
   return startsWithAny(entryId(entry), owner.ownedPrefixes);
 }

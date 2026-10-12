@@ -109,8 +109,8 @@ export interface KcDeployResult {
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
-  // Relationship (schema-join) entry links written -- created or upserted (0
-  // for validateOnly).
+  // Relationship (schema-join) entry links written -- created, updated, or
+  // recreated (0 for validateOnly).
   linked: number;
   // Orphaned relationship links deleted -- from relationships dropped or
   // renamed on a still-present model, and from force-removed models (0 for
@@ -555,7 +555,11 @@ async function writeEmittedModels(
     if (existingEntityNames.length) {
       const lookedUp = await lookupEntryLinks(cat, opts, existingEntityNames);
       if (lookedUp.error) {
-        return {error: `Model '${model}': ${lookedUp.error}`};
+        const {entryId, message} = lookedUp.error;
+        return {
+          error: `Model '${model}': looking up entry links for '${entryId}': ${
+              message}`,
+        };
       }
       existingLinks = lookedUp.links;
     }
@@ -682,6 +686,11 @@ interface LinkReconcileOutcome {
   error?: {linkId: string; message: string};
 }
 
+interface LinkLookupOutcome {
+  links: Map<string, EntryLink>;
+  error?: {entryId: string; message: string};
+}
+
 /**
  * Looks up all relationship entry links referencing any of `entityNames`.
  *
@@ -691,8 +700,8 @@ interface LinkReconcileOutcome {
  * relationship links via `isRelationshipLink`.
  */
 async function lookupEntryLinks(
-    cat: CatalogClient, opts: KcDeployOptions, entityNames: string[]):
-    Promise<{links: Map<string, EntryLink>; error?: string}> {
+    cat: CatalogClient, opts: KcDeployOptions,
+    entityNames: string[]): Promise<LinkLookupOutcome> {
   const links = new Map<string, EntryLink>();
   for (const entityName of entityNames) {
     const res = await cat.lookupEntryLinks(
@@ -700,8 +709,7 @@ async function lookupEntryLinks(
     if (!isOkStatus(res)) {
       return {
         links,
-        error: `looking up entry links for '${entryIdOf(entityName)}': ` +
-            errText(res),
+        error: {entryId: entryIdOf(entityName), message: errText(res)},
       };
     }
     for (const link of res.result ?? []) {
@@ -792,7 +800,16 @@ async function removeForeignModels(
     // Delete all relationship links referencing the foreign model's entities
     // before deleting the entries themselves.
     const lookedUp = await lookupEntryLinks(cat, opts, foreignEntityNames);
-    if (lookedUp.error) return {deleted, unlinked, error: lookedUp.error};
+    if (lookedUp.error) {
+      const {entryId, message} = lookedUp.error;
+      return {
+        deleted,
+        unlinked,
+        error: `Looking up entry links for '${
+            entryId}' failed while removing model '${foreignAnchorId}': ${
+            message}`,
+      };
+    }
     const links = await deleteEntryLinks(cat, opts, lookedUp.links.values());
     unlinked += links.unlinked;
     if (links.error) {
@@ -917,7 +934,7 @@ interface WriteOutcome {
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
     resources: kcEmit.KcResources,
-    existingLink?: EntryLink): Promise<WriteOutcome> {
+    existingLink?: EntryLink): Promise<{error?: string}> {
   const id = linkId(link);
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, id, link);
@@ -940,25 +957,41 @@ async function writeEntryLink(
 async function updateEntryLink(
     cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
     resources: kcEmit.KcResources,
-    existingLink?: EntryLink): Promise<WriteOutcome> {
+    existingLink?: EntryLink): Promise<{error?: string}> {
   const id = linkId(link);
   if (existingLink &&
       (linkTypeId(existingLink) !== linkTypeId(link) ||
        !sameLinkReferences(existingLink, link))) {
     if (!isLinkOwner(resources, existingLink)) {
+      const externalIds =
+          existingLink.entryReferences.filter(r => !isEntryOwner(resources, r))
+              .map(r => `'${entryId(r)}'`);
+      const externalNoun = externalIds.length === 1 ? 'entry' : 'entries';
       return {
-        error: `entry link '${id}' references an entry outside this model`,
+        error:
+            `entry link '${id}' already exists and references ${externalNoun} ${
+                externalIds.join(', ')} outside this model; ` +
+            `rename the relationship or delete the existing link`,
       };
     }
     const del = await cat.deleteEntryLink(
         opts.project, opts.location, opts.entryGroup, id);
     if (!isOkStatus(del) && !isNotFoundStatus(del)) {
-      return {error: `deleting entry link '${id}': ${errText(del)}`};
+      return {
+        error: `failed to delete entry link '${
+                   id}' with stale endpoints before attempting to create the ` +
+            `updated link: ${errText(del)}`,
+      };
     }
     const recreated = await cat.createEntryLink(
         opts.project, opts.location, opts.entryGroup, id, link);
     if (!isOkStatus(recreated)) {
-      return {error: `entry link '${id}': ${errText(recreated)}`};
+      return {
+        error:
+            `failed to create entry link '${
+                id}' with updated endpoints after deleting the previously stale ` +
+            `link (push again to restore the link): ${errText(recreated)}`,
+      };
     }
     return {};
   }
@@ -966,17 +999,18 @@ async function updateEntryLink(
   const upd = await cat.updateEntryLink(
       {name: link.name, aspects: link.aspects} as EntryLink,
       Object.keys(link.aspects ?? {}));
-  // A 409 already proved the link is present, and its entry references and
-  // type are immutable, so this follow-up only refreshes the aspect. Some
-  // catalog surfaces expose only create + lookup for an entry link and cannot
-  // address it by name for an update -- there the link is still fully written
+  // Reachable when `existingLink` already matches `link`'s type and endpoint
+  // references (or when `lookupEntryLinks` did not return the link), so only
+  // the link's aspects need to be refreshed in place. Some catalog surfaces
+  // expose only create + lookup for an entry link and cannot address it by name
+  // for an update -- there the link is already present (confirmed by the 409)
   // and only the aspect refresh is unavailable, so treat a not-addressable
-  // response as a no-op success rather than failing an otherwise-complete
-  // push. (This mirrors deleteEntryLinks tolerating a 404 on delete.)
+  // response as a no-op success rather than failing an otherwise-complete push.
+  // (This mirrors deleteEntryLinks tolerating a 404 on delete.)
   if (!isOkStatus(upd) && !isLinkNotAddressable(upd)) {
     return {error: `entry link '${id}': ${errText(upd)}`};
   }
-  return {updated: true};
+  return {};
 }
 
 /**
