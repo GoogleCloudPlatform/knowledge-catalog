@@ -403,6 +403,48 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
                 'boom');
       });
 
+  test(
+      'a thrown network error on a link write waits for other links in ' +
+          'the batch and names the link',
+      async () => {
+        stubClient({
+          createLink: (id) => {
+            if (id === 'sales-orders-to-lineitem') {
+              throw new Error('socket hang up');
+            }
+            return ok({});
+          },
+        });
+        const emitted: EmittedModel[] = [{
+          model: 'sales',
+          resources: {
+            entries: [
+              {name: entryName('sales'), entryType: MODEL_TYPE},
+            ],
+            entryLinks: [
+              linkEntry(
+                  'sales-orders-to-customer',
+                  ['sales.entities.orders', 'sales.entities.customer']),
+              linkEntry(
+                  'sales-orders-to-lineitem',
+                  ['sales.entities.orders', 'sales.entities.lineitem']),
+            ],
+            ownedPrefixes: ['sales.entities.'],
+            warnings: [],
+          },
+        }];
+
+        const result = await deployEmittedModels(emitted, [], CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.created).toBe(1);
+        expect(result.linked).toBe(1);
+        expect(result.details)
+            .toBe(
+                'Model \'sales\': entry link \'sales-orders-to-lineitem\': ' +
+                'socket hang up');
+      });
+
   test('a model with no relationships writes no links', async () => {
     const {createLink} = stubClient();
 
@@ -806,6 +848,29 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
      });
 
   test(
+      'a 404 on an orphaned link delete is tolerated (already gone) and ' +
+          'counts as unlinked',
+      async () => {
+        const orphan = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier']);
+        const {delLink} = stubClient({
+          existing: STAR_ENTITIES,
+          links: (entry: string) =>
+              entry.endsWith('sales.entities.orders') ? ok([orphan]) : ok([]),
+          delLink: () => err(404, 'already gone'),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(result.unlinked).toBe(1);
+        expect(delLink).toHaveBeenCalledTimes(1);
+        expect(delLink.mock.calls[0][3]).toBe('sales-orders-to-supplier');
+      });
+
+  test(
       'a failed link delete fails the push, naming the orphaned entry link ' +
           'and model while keeping partial counts',
       async () => {
@@ -944,6 +1009,36 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
        // ...and the current model is still written (3 entries).
        expect(create).toHaveBeenCalledTimes(3);
      });
+
+  test(
+      'a non-relationship link on a foreign model\'s entity survives ' +
+          '--force-remove',
+      async () => {
+        const orphanRelLink =
+            linkEntry('old-a-to-b', ['old.entities.a', 'old.entities.b']);
+        const synonymLink = {
+          ...linkEntry('old-synonym', ['old.entities.a', 'old.entities.b']),
+          entryLinkType:
+              'projects/dataplex-types/locations/global/entryLinkTypes/synonym',
+        };
+        const {delLink} = stubClient({
+          existing: [
+            {id: 'old', type: MODEL_TYPE},
+            {id: 'old.entities.a', type: ENTITY_TYPE},
+            {id: 'old.entities.b', type: ENTITY_TYPE},
+          ],
+          links: (entry: string) => entry.endsWith('old.entities.a') ?
+              ok([orphanRelLink, synonymLink]) :
+              ok([]),
+        });
+
+        const result = await deployKnowledgeCatalog(
+            models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+        expect(result.success).toBe(true);
+        expect(result.unlinked).toBe(1);
+        expect(delLink.mock.calls.map(c => c[3])).toEqual(['old-a-to-b']);
+      });
 
   test('a foreign model whose ids use a different scheme is removed whole',
      async () => {
@@ -1186,8 +1281,8 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
         expect(applied.success).toBe(false);
         expect(applied.details)
             .toBe(
-                'Looking up entry links for \'old.entities.a\' failed while ' +
-                'removing model \'old\': lookup failed');
+                'Looking up entry links for \'old.entities.a\' from removed ' +
+                'model \'old\' failed: lookup failed');
       });
 
   test(
@@ -1507,10 +1602,12 @@ describe(
           async () => {
             // The existing link in the entry group under the same ID
             // (`sales-orders-to-customer`) previously pointed at
-            // `sales.entities.supplier` instead of `sales.entities.customer`.
+            // `sales.entities.supplier` instead of `sales.entities.customer`,
+            // and the server spells the project by number ('123456789').
             const staleEndpointLink = linkEntry(
                 'sales-orders-to-customer',
-                ['sales.entities.orders', 'sales.entities.supplier']);
+                ['sales.entities.orders', 'sales.entities.supplier'],
+                '123456789');
             let createLinkCalls = 0;
             const callOrder: string[] = [];
             const {createLink, updateLink, delLink} = stubClient({
@@ -1741,8 +1838,8 @@ describe(
             expect(result.details)
                 .toBe(
                     'Model \'sales\': failed to delete entry link ' +
-                    '\'sales-orders-to-customer\' with stale endpoints ' +
-                    'before attempting to create the updated link: ' +
+                    '\'sales-orders-to-customer\' with a changed type or ' +
+                    'endpoints before attempting to create the updated link: ' +
                     'delete failed');
           });
 
@@ -1775,8 +1872,8 @@ describe(
             expect(result.details)
                 .toBe(
                     'Model \'sales\': failed to create entry link ' +
-                    '\'sales-orders-to-customer\' with updated endpoints ' +
-                    'after deleting the previously stale link (push again ' +
+                    '\'sales-orders-to-customer\' with a changed type or ' +
+                    'endpoints after deleting the previous link (push again ' +
                     'to restore the link): recreate failed');
           });
     });
@@ -1839,6 +1936,91 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       });
 
   test(
+      'looks up links only through entity entries, skipping model and ' +
+          'metric entries',
+      async () => {
+        const {lookupLinks} = stubClient({
+          existing: [
+            {id: 'sales', type: MODEL_TYPE},
+            {id: 'sales.entities.orders', type: ENTITY_TYPE},
+            {id: 'sales.entities.customer', type: ENTITY_TYPE},
+            {id: 'sales.metrics.total_revenue', type: METRIC_TYPE},
+            {id: 'sales.metrics.order_count', type: METRIC_TYPE},
+          ],
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(lookupLinks.mock.calls.map(c => c[2])).toEqual([
+          {entry: entryName('sales.entities.orders')},
+          {entry: entryName('sales.entities.customer')},
+        ]);
+      });
+
+  test(
+      'lookupEntryLinks skips relationship links stored in a sibling entry ' +
+          'group',
+      async () => {
+        // A relationship link created in a sibling entry group (`other-eg`)
+        // that references this model's entities must not shadow the model's
+        // own link on update or be treated as an orphan to delete in `eg`.
+        const siblingSameIdLink = {
+          ...linkEntry(
+              'sales-orders-to-customer',
+              ['sales.entities.orders', 'other.entities.external']),
+          name: 'projects/123456789/locations/us/entryGroups/other-eg/' +
+              'entryLinks/sales-orders-to-customer',
+        };
+        const siblingOrphanCandidate = {
+          ...linkEntry(
+              'sales-sibling-link',
+              ['sales.entities.orders', 'sales.entities.customer']),
+          name: 'projects/123456789/locations/us/entryGroups/other-eg/' +
+              'entryLinks/sales-sibling-link',
+        };
+        const {createLink, updateLink, delLink} = stubClient({
+          existing: [
+            {id: 'sales', type: MODEL_TYPE},
+            {id: 'sales.entities.orders', type: ENTITY_TYPE},
+            {id: 'sales.entities.customer', type: ENTITY_TYPE},
+          ],
+          links: () => ok([siblingSameIdLink, siblingOrphanCandidate]),
+          createLink: () => err(409, 'already exists'),
+          updateLink: ok({}),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(result.linked).toBe(1);
+        expect(result.unlinked).toBe(0);
+        expect(createLink).toHaveBeenCalledTimes(1);
+        expect(updateLink).toHaveBeenCalledTimes(1);
+        expect(delLink).not.toHaveBeenCalled();
+      });
+
+  test('a lookupEntryLinks call that returns 404 fails the push', async () => {
+    stubClient({
+      existing: [
+        {id: 'sales', type: MODEL_TYPE},
+        {id: 'sales.entities.orders', type: ENTITY_TYPE},
+      ],
+      links: () => err(404, 'not found'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(false);
+    expect(result.details)
+        .toBe(
+            'Looking up entry links for \'sales.entities.orders\' from ' +
+            'model \'sales\' failed: not found');
+  });
+
+  test(
       'returns an error when lookupEntryLinks fails while snapshotting ' +
           'existing links',
       async () => {
@@ -1855,8 +2037,8 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
         expect(result.success).toBe(false);
         expect(result.details)
             .toBe(
-                'Model \'sales\': looking up entry links for ' +
-                '\'sales.entities.orders\': lookup failed');
+                'Looking up entry links for \'sales.entities.orders\' from ' +
+                'model \'sales\' failed: lookup failed');
       });
 });
 

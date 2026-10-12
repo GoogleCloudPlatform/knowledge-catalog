@@ -557,8 +557,8 @@ async function writeEmittedModels(
       if (lookedUp.error) {
         const {entryId, message} = lookedUp.error;
         return {
-          error: `Model '${model}': looking up entry links for '${entryId}': ${
-              message}`,
+          error: `Looking up entry links for '${entryId}' from model '${
+              model}' failed: ${message}`,
         };
       }
       existingLinks = lookedUp.links;
@@ -692,16 +692,20 @@ interface LinkLookupOutcome {
 }
 
 /**
- * Looks up all relationship entry links referencing any of `entityNames`.
+ * Looks up all relationship entry links in the destination entry group
+ * referencing any of `entityNames`.
  *
  * Links are looked up per referenced entry -- the only server-side access path
  * -- so a link between two of the entities is returned twice and deduplicated
  * here by bare link ID. Queries `lookupEntryLinks` and filters the results to
- * relationship links via `isRelationshipLink`.
+ * relationship links (`isRelationshipLink`) stored in the destination entry
+ * group (`/locations/<location>/entryGroups/<entryGroup>/entryLinks/`).
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions,
     entityNames: string[]): Promise<LinkLookupOutcome> {
+  const groupSegment =
+      `/locations/${opts.location}/entryGroups/${opts.entryGroup}/entryLinks/`;
   const links = new Map<string, EntryLink>();
   for (const entityName of entityNames) {
     const res = await cat.lookupEntryLinks(
@@ -713,6 +717,7 @@ async function lookupEntryLinks(
       };
     }
     for (const link of res.result ?? []) {
+      if (!link.name?.includes(groupSegment)) continue;
       if (!isRelationshipLink(link)) continue;
       const id = linkId(link);
       if (!links.has(id)) links.set(id, link);
@@ -805,9 +810,8 @@ async function removeForeignModels(
       return {
         deleted,
         unlinked,
-        error: `Looking up entry links for '${
-            entryId}' failed while removing model '${foreignAnchorId}': ${
-            message}`,
+        error: `Looking up entry links for '${entryId}' from removed model '${
+            foreignAnchorId}' failed: ${message}`,
       };
     }
     const links = await deleteEntryLinks(cat, opts, lookedUp.links.values());
@@ -905,15 +909,23 @@ interface LinksOutcome {
  * Writes a model's relationship entry links concurrently.
  *
  * Both endpoint entries already exist because `writeEntries` runs first, and
- * links are independent of one another.
+ * links are independent of one another. Uses `Promise.allSettled` so a thrown
+ * network error on one link waits for any in-flight link replacement to finish
+ * and reports the link ID in the returned error.
  */
 async function writeEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
     existingLinks: Map<string, EntryLink>): Promise<LinksOutcome> {
   if (!resources.entryLinks.length) return {linked: 0};
-  const res = await Promise.all(resources.entryLinks.map(
+  const settled = await Promise.allSettled(resources.entryLinks.map(
       l => writeEntryLink(
           cat, opts, l, resources, existingLinks.get(linkId(l)))));
+  const res = settled.map((s, i) => {
+    if (s.status === 'fulfilled') return s.value;
+    const id = linkId(resources.entryLinks[i]);
+    const msg = s.reason?.message || String(s.reason);
+    return {error: `entry link '${id}': ${msg}`};
+  });
   const linked = res.filter(r => !r.error).length;
   const firstErr = res.find(r => r.error);
   if (firstErr) return {linked, error: firstErr.error};
@@ -929,7 +941,7 @@ interface WriteOutcome {
  * Writes a single relationship entry link to Knowledge Catalog.
  *
  * Attempts to create `link`, and if it already exists (HTTP 409), delegates to
- * `updateEntryLink`.
+ * `replaceOrUpdateEntryLink`.
  */
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
@@ -939,22 +951,22 @@ async function writeEntryLink(
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, id, link);
   if (isExistsStatus(res)) {
-    return updateEntryLink(cat, opts, link, resources, existingLink);
+    return replaceOrUpdateEntryLink(cat, opts, link, resources, existingLink);
   }
   if (!isOkStatus(res)) return {error: `entry link '${id}': ${errText(res)}`};
   return {};
 }
 
 /**
- * Updates an existing relationship entry link after `createEntryLink` returns
- * HTTP 409.
+ * Replaces or updates an existing relationship entry link after
+ * `createEntryLink` returns HTTP 409.
  *
  * Entry-link type and endpoint references are immutable in Knowledge Catalog,
  * so when `existingLink` differs in type or references, deletes and recreates
  * the link (failing if `existingLink` references an entry outside `resources`);
  * otherwise updates the link's aspects in place.
  */
-async function updateEntryLink(
+async function replaceOrUpdateEntryLink(
     cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
     resources: kcEmit.KcResources,
     existingLink?: EntryLink): Promise<{error?: string}> {
@@ -974,23 +986,23 @@ async function updateEntryLink(
             `rename the relationship or delete the existing link`,
       };
     }
-    const del = await cat.deleteEntryLink(
-        opts.project, opts.location, opts.entryGroup, id);
-    if (!isOkStatus(del) && !isNotFoundStatus(del)) {
+    const del = await deleteEntryLinks(cat, opts, [existingLink]);
+    if (del.error) {
       return {
-        error: `failed to delete entry link '${
-                   id}' with stale endpoints before attempting to create the ` +
-            `updated link: ${errText(del)}`,
+        error:
+            `failed to delete entry link '${
+                id}' with a changed type or endpoints before attempting to ` +
+            `create the updated link: ${del.error.message}`,
       };
     }
     const recreated = await cat.createEntryLink(
         opts.project, opts.location, opts.entryGroup, id, link);
     if (!isOkStatus(recreated)) {
       return {
-        error:
-            `failed to create entry link '${
-                id}' with updated endpoints after deleting the previously stale ` +
-            `link (push again to restore the link): ${errText(recreated)}`,
+        error: `failed to create entry link '${
+                   id}' with a changed type or endpoints after deleting the ` +
+            `previous link (push again to restore the link): ${
+                   errText(recreated)}`,
       };
     }
     return {};
@@ -1114,10 +1126,10 @@ function isNotFoundStatus(res: {status: number}): boolean {
 
 /**
  * Returns true when an entry link that `createEntryLink` reported as already
- * existing (409) could not be addressed by name in `updateEntryLink`:
+ * existing (409) could not be addressed by name in `replaceOrUpdateEntryLink`:
  * `NOT_FOUND` (404) or a masked `PERMISSION_DENIED` (403). Some catalog
- * surfaces expose only create + lookup for entry links, so `updateEntryLink`
- * treats this as a no-op success.
+ * surfaces expose only create + lookup for entry links, so
+ * `replaceOrUpdateEntryLink` treats this as a no-op success.
  */
 function isLinkNotAddressable(res: {status: number}): boolean {
   return isNotFoundStatus(res) || res.status === 403;

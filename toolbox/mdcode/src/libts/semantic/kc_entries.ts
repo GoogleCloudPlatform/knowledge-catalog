@@ -200,10 +200,8 @@ export function collectOwnedEntries(
  * (`KcResources` or `KcAnchor`).
  */
 export function isLinkOwner(owner: KcOwner, link: EntryLink): boolean {
-  if ('anchorId' in owner && !owner.anchorId) return false;
   return link.entryReferences.length === 2 &&
-      link.entryReferences.every(
-          r => startsWithAny(entryIdOf(r.name), owner.ownedPrefixes));
+      link.entryReferences.every(r => isEntryOwner(owner, r));
 }
 
 // ---------------------------------------------------------------------------
