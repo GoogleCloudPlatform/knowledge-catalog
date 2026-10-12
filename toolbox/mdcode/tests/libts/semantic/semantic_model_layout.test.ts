@@ -242,6 +242,32 @@ describe('SemanticModelLayout sibling profile files', () => {
     expect(() => l.profilePaths('retail')).toThrow(message);
   });
 
+  test('profileDocuments gives each file\'s path', async () => {
+    write('retail.yaml', GOOGLE);
+    write('retail.profile.prod.yaml', 'name: prod\n');
+    expect((await layout('eg')).profileDocuments('retail')[0].path)
+        .toBe(path.join(groupDir(), 'retail.profile.prod.yaml'));
+  });
+
+  // Pull lists the local profile files without the checks push applies, so a
+  // stale one is found whatever the model file now holds.
+  test('localProfileFiles lists sibling and legacy files with no flavor check',
+       async () => {
+         write('retail.yaml', 'version: 0.2.0.dev0\n');
+         write('retail.profile.prod.yaml', 'name: prod\n');
+         write('retail.profile.1bad.yaml', 'name: 1bad\n');
+         fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+         write('retail.profiles/old.yaml', '# old\n');
+         const l = await layout('eg');
+         expect(l.localProfileFiles('retail')).toEqual([
+           {
+             path: path.join(groupDir(), 'retail.profile.prod.yaml'),
+             profileName: 'prod',
+           },
+           {path: path.join(groupDir(), 'retail.profiles', 'old.yaml')},
+         ]);
+       });
+
   test('a legacy profile directory beside a Google-flavor model is read', async () => {
     write('retail.yaml', GOOGLE);
     fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));

@@ -15,7 +15,7 @@ import * as path from 'node:path';
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {applyKnowledgeCatalog, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -259,11 +259,161 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
       create: () => err(409, 'entry already exists'),
       update: err(500, 'update boom'),
     });
+    const MIX = 'The catalog may now hold a mix of old and new file copies, ' +
+        'so push again before you pull.';
 
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
     expect(result.success).toBe(false);
     expect(result.details).toContain('entry \'sales\': update boom');
+    expect(result.details).not.toContain(MIX);
+
+    // With file copies, some may be new and some old after a failed write.
+    const withCopies = await deployKnowledgeCatalog(
+        models(DOCS), CTX,
+        {...OPTS, sourceFiles: [{fileName: 'sales.yaml', content: OSSIE}]});
+    expect(withCopies.success).toBe(false);
+    expect(withCopies.details)
+        .toBe(`Model 'sales': entry 'sales': update boom. ${MIX}`);
+  });
+});
+
+
+describe('deployKnowledgeCatalog: the note on mixed file copies', () => {
+  const COPIES = [{fileName: 'sales.yaml', content: OSSIE}];
+
+  test('a server message that ends in a period gets no second one', async () => {
+    stubClient({
+      create: () => err(409, 'entry already exists'),
+      update: err(500, 'Internal error encountered.'),
+    });
+
+    const result = await deployKnowledgeCatalog(
+        models(DOCS), CTX, {...OPTS, sourceFiles: COPIES});
+
+    expect(result.details)
+        .toBe(
+            'Model \'sales\': entry \'sales\': Internal error encountered. ' +
+            'The catalog may now hold a mix of old and new file copies, so ' +
+            'push again before you pull.');
+  });
+
+  // A message that ends in a newline still gets the note on the same line.
+  test('a thrown error, such as a network failure, gets the note', async () => {
+    for (const message of ['fetch failed', 'fetch failed\n']) {
+      mock.restore();
+      stubClient({
+        create: (entryId) => {
+          if (entryId.includes('.files.')) throw new Error(message);
+          return ok({});
+        },
+      });
+
+      const result = await deployKnowledgeCatalog(
+          models(DOCS), CTX, {...OPTS, sourceFiles: COPIES});
+
+      expect(result.success).toBe(false);
+      expect(result.details)
+          .toBe(
+              'fetch failed. The catalog may now hold a mix of old and new ' +
+              'file copies, so push again before you pull.');
+    }
+  });
+
+  // Removing another model runs before any of this model's writes.
+  test('a failure removing another model has no note', async () => {
+    stubClient({
+      existing: [{id: 'old', type: MODEL_TYPE}],
+      del: () => err(500, 'delete boom'),
+    });
+
+    const result = await deployKnowledgeCatalog(
+        models(DOCS), CTX, {...OPTS, forceRemove: true, sourceFiles: COPIES});
+
+    expect(result.success).toBe(false);
+    expect(result.details).toContain('delete boom');
+    expect(result.details).not.toContain('mix of old and new file copies');
+  });
+
+  test('a thrown error removing another model has no note', async () => {
+    const {create} = stubClient({
+      existing: [{id: 'old', type: MODEL_TYPE}],
+      del: () => {
+        throw new Error('fetch failed');
+      },
+    });
+
+    const thrown = await deployKnowledgeCatalog(
+                       models(DOCS), CTX,
+                       {...OPTS, forceRemove: true, sourceFiles: COPIES})
+                       .then(() => undefined, (e: Error) => e);
+
+    expect(thrown?.message).toBe('fetch failed');
+    expect(create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('checkFileCopies', () => {
+  test('two file names that map to one entry id are an error', () => {
+    expect(checkFileCopies([
+      {fileName: 'sales.profiles/a b.yaml', content: 'x'},
+      {fileName: 'sales.profiles/a_b.yaml', content: 'y'},
+    ]))
+        .toBe(
+            'files \'sales.profiles/a b.yaml\' and ' +
+            '\'sales.profiles/a_b.yaml\' both map to one entry id; rename ' +
+            'one of them');
+  });
+
+  // The push id and the copy count are part of the aspect data.
+  test('the size counts the push id and the copy count', () => {
+    const file = {fileName: 'sales.yaml', content: ''};
+    const envelope = JSON.stringify(file).length;
+    const stamped = {pushId: 'p'.repeat(36), pushFileCount: 1};
+    const content = 'x'.repeat(MAX_ASPECT_DATA_BYTES - envelope);
+    expect(checkFileCopies([{...file, content}])).toBeUndefined();
+    expect(checkFileCopies([{...file, content, ...stamped}]))
+        .toContain('file \'sales.yaml\' is too large to store');
+  });
+});
+
+
+describe('deployKnowledgeCatalog: the size of a file copy', () => {
+  const LIMIT = 122_880;
+  const NAME = 'sales.yaml';
+  // The JSON around the content: `{"fileName":"sales.yaml","content":""}`.
+  const ENVELOPE = JSON.stringify({fileName: NAME, content: ''}).length;
+  const preflight = (content: string) => deployKnowledgeCatalog(
+      models(DOCS), CTX,
+      {...OPTS, validateOnly: true, sourceFiles: [{fileName: NAME, content}]});
+
+  test('a copy whose JSON is exactly at the limit fits; one byte more fails',
+       async () => {
+         expect((await preflight('x'.repeat(LIMIT - ENVELOPE))).success)
+             .toBe(true);
+         const over = await preflight('x'.repeat(LIMIT - ENVELOPE + 1));
+         expect(over.success).toBe(false);
+         expect(over.details)
+             .toBe(
+                 `file 'sales.yaml' is too large to store in Knowledge ` +
+                 `Catalog: its copy takes ${LIMIT + 1} bytes, and one aspect ` +
+                 `holds at most ${LIMIT}.`);
+       });
+
+  // 'é' is one UTF-16 unit and two UTF-8 bytes.
+  test('the size counts UTF-8 bytes', async () => {
+    const content = 'é'.repeat((LIMIT - ENVELOPE) / 2 + 1);
+    expect(JSON.stringify({fileName: NAME, content}).length)
+        .toBeLessThan(LIMIT);
+    expect((await preflight(content)).success).toBe(false);
+  });
+
+  // A double quote takes two bytes once escaped.
+  test('the size counts the JSON escapes', async () => {
+    const content = '"'.repeat((LIMIT - ENVELOPE) / 2 + 1);
+    expect(content.length + ENVELOPE).toBeLessThan(LIMIT);
+    expect((await preflight(content)).success).toBe(false);
   });
 });
 
@@ -777,6 +927,8 @@ const ENTITY_TYPE =
     'projects/dataplex-types/locations/global/entryTypes/semantic-entity';
 const METRIC_TYPE =
     'projects/dataplex-types/locations/global/entryTypes/semantic-metric';
+const FILE_TYPE =
+    'projects/dest/locations/global/entryTypes/semantic-model-file';
 
 // A schema-join entry link as lookupEntryLinks returns it: `refIds` are the two
 // endpoint entry ids (undirected, both UNSPECIFIED).
@@ -1091,6 +1243,48 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
        expect(create).toHaveBeenCalledTimes(3);
      });
 
+  describe('the omitted model\'s file copies', () => {
+    const EXISTING = [
+      {id: 'old', type: MODEL_TYPE},
+      {id: 'old.entities.a', type: ENTITY_TYPE},
+      {id: 'old.files.old.yaml', type: FILE_TYPE},
+      {id: 'old.files.old.profile.prod.yaml', type: FILE_TYPE},
+    ];
+
+    test('are deleted after its anchor', async () => {
+      const {del} = stubClient({existing: EXISTING});
+
+      const result = await deployKnowledgeCatalog(
+          models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+      expect(result.success).toBe(true);
+      expect(result.deleted).toBe(4);
+      expect(del.mock.calls.map(c => c[3])).toEqual([
+        'old.entities.a', 'old', 'old.files.old.yaml',
+        'old.files.old.profile.prod.yaml'
+      ]);
+    });
+
+    // Pull then still finds the removed model's files whole.
+    test('are kept when deleting its anchor fails', async () => {
+      const {del, create} = stubClient({
+        existing: EXISTING,
+        del: (entryId) => entryId === 'old' ? err(500, 'delete boom') : ok({}),
+      });
+
+      const result = await deployKnowledgeCatalog(
+          models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+      expect(result.success).toBe(false);
+      expect(result.details)
+          .toBe(
+              'Deleting entry \'old\' from removed model \'old\' failed: ' +
+              'delete boom');
+      expect(del.mock.calls.map(c => c[3])).toEqual(['old.entities.a', 'old']);
+      expect(create).not.toHaveBeenCalled();
+    });
+  });
+
   test(
       '--force-remove does not call deleteEntryLink on a non-relationship ' +
           'link',
@@ -1168,6 +1362,77 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
        expect(result.deleted).toBe(0);
        expect(del).not.toHaveBeenCalled();
      });
+});
+
+
+describe('deployKnowledgeCatalog: the file-copy type lookup', () => {
+  const COPIES = [{fileName: 'commerce.yaml', content: ACTIONS_DOC}];
+
+  test('a caller that has not checked the type gets it looked up', async () => {
+    const {getEntryType, getAspectType} = stubClient();
+
+    const result = await deployKnowledgeCatalog(
+        models(ACTIONS_DOCS), CTX, {...OPTS, sourceFiles: COPIES});
+
+    expect(result.success).toBe(true);
+    for (const spy of [getEntryType, getAspectType]) {
+      expect(spy.mock.calls.map(c => c[2]).sort())
+          .toEqual(['semantic-action', 'semantic-model-file']);
+    }
+  });
+
+  test('a caller that has checked it gets only the other types looked up',
+       async () => {
+         const {getEntryType, getAspectType} = stubClient();
+
+         const result = await deployKnowledgeCatalog(
+             models(ACTIONS_DOCS), CTX,
+             {...OPTS, sourceFiles: COPIES, fileCopyTypeChecked: true});
+
+         expect(result.success).toBe(true);
+         for (const spy of [getEntryType, getAspectType]) {
+           expect(spy.mock.calls.map(c => c[2])).toEqual(['semantic-action']);
+         }
+       });
+});
+
+
+describe('deployKnowledgeCatalog: file copies on a re-push', () => {
+  // A copy lives under the model's `.files.` prefix, so the model owns it. A
+  // copy is not an entity, so no link lookup goes through it.
+  test('keeps the copy it stores again, deletes the copy of a removed file, ' +
+           'and looks up links only through entities',
+       async () => {
+         const kept = linkEntry(
+             'sales-orders-to-customer',
+             ['sales.entities.orders', 'sales.entities.customer']);
+         const {del, lookupLinks, delLink} = stubClient({
+           existing: [
+             {id: 'sales', type: MODEL_TYPE},
+             {id: 'sales.entities.orders', type: ENTITY_TYPE},
+             {id: 'sales.entities.customer', type: ENTITY_TYPE},
+             {id: 'sales.files.star.yaml', type: FILE_TYPE},
+             {id: 'sales.files.star.profile.prod.yaml', type: FILE_TYPE},
+           ],
+           links: () => ok([kept]),
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(STAR_DOCS), CTX,
+             {...OPTS, sourceFiles: [{fileName: 'star.yaml', content: STAR}]});
+
+         expect(result.success).toBe(true);
+         expect(lookupLinks.mock.calls.map(c => (c[2] as any).entry).sort())
+             .toEqual([
+               entryName('sales.entities.customer'),
+               entryName('sales.entities.orders'),
+             ]);
+         expect(delLink).not.toHaveBeenCalled();
+         expect(del.mock.calls.map(c => c[3])).toEqual([
+           'sales.files.star.profile.prod.yaml',
+         ]);
+         expect(result.deleted).toBe(1);
+       });
 });
 
 

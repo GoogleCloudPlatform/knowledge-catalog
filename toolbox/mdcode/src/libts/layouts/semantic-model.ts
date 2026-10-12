@@ -137,9 +137,24 @@ export class SemanticModelLayout implements CatalogLayout {
     return siblings;
   }
 
-  // The text of each profile file beside a model, by profile name. Sibling
-  // files are checked first, and the first problem found with any of them
-  // throws, naming the file:
+  // Every local profile file of a model, for pull to find the ones the
+  // catalog did not return: each sibling file whose name is a valid profile
+  // name, with that name, then each file in the older `<model>.profiles/`
+  // directory. Unlike profilePaths it applies no flavor check, and sibling
+  // files do not hide the older directory. A sibling file with an invalid
+  // profile name is left out; push rejects it, naming it.
+  localProfileFiles(model: string): {path: string; profileName?: string}[] {
+    return [
+      ...this._siblingProfilePaths(model)
+          .filter(p => PROFILE_NAME.test(p.name))
+          .map(p => ({path: p.path, profileName: p.name})),
+      ...this._legacyProfilePaths(model).map(p => ({path: p.path})),
+    ];
+  }
+
+  // The text and path of each profile file beside a model, by profile name.
+  // Sibling files are checked first, and the first problem found with any of
+  // them throws, naming the file:
   //   - a `<model>.profile.yaml` names no profile;
   //   - the file's `name:` must equal its filename suffix, because `pull`
   //     writes a profile back to the file its name implies;
@@ -149,7 +164,8 @@ export class SemanticModelLayout implements CatalogLayout {
   //     directory;
   //   - the files are named after the model, so the model file must declare
   //     that name, which `pull` uses to name both.
-  profileDocuments(model: string): {name: string; text: string}[] {
+  profileDocuments(model: string):
+      {name: string; text: string; path: string}[] {
     const nameless = this._entryGroup ?
         path.join(this._groupDir(), `${model}.profile.yaml`) :
         undefined;
@@ -176,7 +192,8 @@ export class SemanticModelLayout implements CatalogLayout {
     const siblings = this._siblingProfilePaths(model);
     if (!siblings.length) {
       return this._flavorCheckedLegacyProfilePaths(model).map(
-          ({name, path: p}) => ({name, text: fs.readFileSync(p, 'utf8')}));
+          ({name, path: p}) =>
+              ({name, text: fs.readFileSync(p, 'utf8'), path: p}));
     }
     const modelFile = `${model}.yaml`;
     const header = this._modelHeader(model);
@@ -188,7 +205,7 @@ export class SemanticModelLayout implements CatalogLayout {
           `profile files after '${header.name}'.`);
     }
     const version = header.version;
-    const docs: {name: string; text: string}[] = [];
+    const docs: {name: string; text: string; path: string}[] = [];
     // Profile names are unique ignoring case.
     const byLowerName = new Map<string, string>();
     for (const {name, path: p} of siblings) {
@@ -230,7 +247,7 @@ export class SemanticModelLayout implements CatalogLayout {
             `Profile file '${file}' declares name '${declared}', which ` +
             `does not match filename suffix '${name}'.`);
       }
-      docs.push({name, text});
+      docs.push({name, text, path: p});
     }
     return docs;
   }
@@ -323,9 +340,11 @@ export class SemanticModelLayout implements CatalogLayout {
     return out.sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  // `<model>.profiles/*.yaml`, each named by its file basename.
+  // `<model>.profiles/*.yaml`, each named by its file basename. A model name
+  // that pull read from the catalog may hold a path separator, and with it a
+  // `..` segment, so such a name has no directory here.
   private _legacyProfilePaths(model: string): {name: string; path: string}[] {
-    if (!this._entryGroup) return [];
+    if (!this._entryGroup || /[\\/]/.test(model)) return [];
     const dir = path.join(this._groupDir(), `${model}.profiles`);
     if (!fs.existsSync(dir)) return [];
     const out: {name: string; path: string}[] = [];

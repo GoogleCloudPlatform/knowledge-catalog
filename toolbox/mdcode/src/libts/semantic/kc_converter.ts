@@ -206,7 +206,11 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         name}': no semantic-entity aspect data (fetch with the aspect type)`);
   }
 
-  const rawResource = (semantic?.source?.resources?.[0] ?? '').trim();
+  // A source written as a catalog name is stored in `importedResource`, with
+  // `resources` left empty.
+  const imported = semantic?.source?.importedResource;
+  const rawResource = (semantic?.source?.resources?.[0] ?? '').trim() ||
+      (typeof imported === 'string' ? imported.trim() : '');
   const dataSource = dataSourceFromResource(rawResource);
   if (!dataSource) {
     warnings.push(

@@ -11,6 +11,7 @@ import * as path from 'node:path';
 
 import {BigQueryClient} from '../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {CatalogManifest} from '../../src/libts/manifest';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {profiles, push} from '../../src/tool/commands';
@@ -578,6 +579,14 @@ entities:
       async () => {
         spyOn(BigQueryClient.prototype, 'query')
             .mockResolvedValue({status: 200, result: {}});
+        // The push checks that the file-copy type exists.
+        spyOn(globalThis, 'fetch').mockImplementation((async () => {
+          throw new Error('a test made a network call');
+        }) as any);
+        spyOn(CatalogClient.prototype, 'getEntryType')
+            .mockResolvedValue({status: 200, result: {}} as any);
+        spyOn(CatalogClient.prototype, 'getAspectType')
+            .mockResolvedValue({status: 200, result: {}} as any);
         fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
         const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
         fs.mkdirSync(path.join(eg, 'orders.profiles'), {recursive: true});

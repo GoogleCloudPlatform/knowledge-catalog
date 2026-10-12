@@ -54,14 +54,16 @@ half-deploys.
 kcmd pull
 ```
 
-Reconstructs the local model document from the Knowledge Catalog entries. Reads
-only from Knowledge Catalog (never BigQuery); its coordinates come from the same
-scope you authored under. See [Pull](README.md#pull) for behavior.
+Writes back the model file and profile files a push stored in Knowledge
+Catalog, or reconstructs the model document from the catalog entries when there
+are none. Reads only from Knowledge Catalog (never BigQuery); its coordinates
+come from the same scope you authored under. See [Pull](README.md#pull) for
+behavior.
 
 | Flag | Effect |
 |------|--------|
-| `--dry-run` | Reconstruct from the catalog and report what would be written, but write no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. |
+| `--dry-run` | Reconstruct from the catalog and report what would be written, but write or delete no files. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. |
 
 ### profiles
 
@@ -347,10 +349,10 @@ statement is planned against the target database first, on both legs (see
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
-below except `semantic-action` and `semantic-constraint` is a built-in system
-type under `dataplex-types/global` — push references them, it never creates
-them. Those two are custom, and `kcmd init --semantic-model` creates them in
-your own project at `global`; push still writes only entries.
+below except `semantic-action`, `semantic-constraint` and `semantic-model-file`
+is a built-in system type under `dataplex-types/global` — push references them,
+it never creates them. Those three are custom, and `kcmd init --semantic-model`
+creates them in your own project at `global`; push still writes only entries.
 
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
@@ -364,6 +366,7 @@ your own project at `global`; push still writes only entries.
 | Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
 | Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
 | Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
+| Model file and each profile file | `semantic-model-file` (custom type) | entry holding the file's text | `<model>.files.<file>` |
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
@@ -660,16 +663,24 @@ needs more than push does, in the destination project:
 
 * `dataplex.entryGroups.create` — the destination entry group
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
-  `dataplex.entryTypes.create` — the custom `semantic-action` and
-  `semantic-constraint` pairs. Init patches an aspect type that is already
-  there, so a project set up by an older `kcmd` picks up template additions; an
-  entry type that is already there is left alone.
+  `dataplex.entryTypes.create` — the custom `semantic-action`,
+  `semantic-constraint` and `semantic-model-file` pairs. Init patches an aspect
+  type that is already there, so a project set up by an older `kcmd` picks up
+  template additions; an entry type that is already there is left alone.
 
-Only the entry-group permission is required. Actions and constraints are
-optional constructs, so init reports a refusal to create their types as a
-warning and carries on; every model that declares neither still pushes and
-pulls. Any other failure to create a type stops init, rather than leaving a
-later push to hit an opaque parsing error.
+The entry group and the `semantic-model-file` pair are required. Every push
+stores the model file and its profile files with that type, so init fails when
+the type is missing and it cannot create it, and a push into a project that
+lacks it stops before writing anything and asks you to run
+`kcmd init --semantic-model`. A project set up by an older `kcmd` needs that
+once. When the entry group or a type already exists, init goes on even if you
+may not create or update it, and reports a refusal to update a type as a
+warning, so a teammate without these permissions can still run init in a
+project someone else set up. Actions and constraints are optional
+constructs, so init reports a refusal to create their types as a warning and
+carries on; every model that declares neither still pushes and pulls. Any other
+failure to create a type stops init, rather than leaving a later push to hit an
+opaque parsing error.
 
 `kcmd pull` needs read access to the same entry group instead — to list its
 entries and fetch each `semantic-*` entry with its aspects.

@@ -328,12 +328,13 @@ Warning: [sales] relationship 'placed_by': Knowledge Catalog stores the name onl
 Warning: [sales] relationship 'part_of': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'part-of'), not 'part_of'.
 -- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
-  5 entries:
+  6 entries:
     - sales (semantic-model)
     - sales.entities.orders (semantic-entity)
     - sales.entities.customer (semantic-entity)
     - sales.entities.lineitem (semantic-entity)
     - sales.metrics.revenue (semantic-metric)
+    - sales.files.sales.yaml (semantic-model-file)
   2 schema-join links:
     - sales-placed-by
     - sales-part-of
@@ -356,7 +357,7 @@ kcmd push
 
 ```
 Pushing semantic model (Knowledge Catalog)...
-Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
+Wrote 6 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 ```
 
 Each entity, the metric,

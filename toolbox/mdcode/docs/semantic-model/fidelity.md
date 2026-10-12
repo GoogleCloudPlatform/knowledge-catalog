@@ -285,6 +285,12 @@ and round-trip losslessly through `pull` — see
 
 ## What pull recovers
 
+Push stores a copy of the model file and of each profile file it reads, and
+`pull` writes those copies back unchanged. What follows describes the catalog
+metadata itself, which is what `pull` rebuilds the model file from when the
+model has no stored copy. That happens when an older `kcmd` last pushed it, or
+when its first push stopped before storing any.
+
 `pull` returns what push wrote — the **Recovered by `pull`** column above is the
 summary. When the push deployed a graph, what push wrote was already pruned to
 the bound view (see [To Knowledge Catalog](#to-knowledge-catalog)), so pull
@@ -309,8 +315,8 @@ returns that view. Two things about *how* it comes back:
   entities and metrics is not — they come back in the catalog's own order, not
   the authored one. Comments in the original YAML are not preserved.
 
-**So a push followed by a pull does not return your original file.** Treat a
-pulled document as a faithful copy of the catalog metadata rather than of the
+**So a file rebuilt from the metadata is not your original file.** Treat a
+rebuilt document as a faithful copy of the catalog metadata rather than of the
 authored model, and keep the authored document as the source of truth.
 
 ## Writer-side follow-up

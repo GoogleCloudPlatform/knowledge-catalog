@@ -14,12 +14,13 @@
 //   - IR-contract cases the loader never produces (a metric with an explicit
 //     type, a cross-entity metric with no attach entity, duplicate ids).
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
-import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import * as resolveInheritanceModule from '../../../src/libts/semantic/resolve_inheritance';
+import {applyProfileFile, mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 
 const OPTS = {
   project: 'dest-proj',
@@ -880,5 +881,287 @@ metrics_exclude: "*"
         .toEqual(['id', 'amount', 'secret']);
     expect(entries.filter(e => e.entryType.endsWith('/semantic-metric')).length)
         .toBe(1);
+  });
+});
+
+
+describe('each model and profile file is stored in a file-copy entry', () => {
+  const MODEL: SemanticModel = {
+    name: 'retail',
+    entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+    relationships: [],
+    metrics: [],
+  };
+  const FILES = [
+    {fileName: 'retail.yaml', content: '# the model\nversion: x\n'},
+    {fileName: 'retail.profiles/prod.yaml', content: 'name: prod\n'},
+    {fileName: 'retail.profile.dev.yaml', content: 'name: dev\n'},
+  ];
+  const copies = (opts: Record<string, any>) =>
+      generateCatalogResources(MODEL, {...OPTS, ...opts})
+          .entries.filter(e => e.entryType.endsWith('/semantic-model-file'));
+
+  test('one child entry of the model entry per file', () => {
+    const entries = copies({sourceFiles: FILES});
+    const prefix = 'projects/dest-proj/locations/us/entryGroups/eg/entries/';
+    expect(entries.map(e => e.name)).toEqual([
+      `${prefix}retail.files.retail.yaml`,
+      `${prefix}retail.files.retail.profiles_prod.yaml`,
+      `${prefix}retail.files.retail.profile.dev.yaml`,
+    ]);
+    // The type is custom, so it lives in the destination project.
+    expect(entries[0]).toEqual({
+      name: `${prefix}retail.files.retail.yaml`,
+      entryType:
+          'projects/dest-proj/locations/global/entryTypes/semantic-model-file',
+      parentEntry: `${prefix}retail`,
+      aspects: {
+        'dest-proj.global.semantic-model-file': {
+          aspectType: 'projects/dest-proj/locations/global/aspectTypes/' +
+              'semantic-model-file',
+          data: FILES[0],
+        },
+      },
+    });
+  });
+
+  test('none with v2Aspects on, and none without sourceFiles', () => {
+    expect(copies({sourceFiles: FILES, v2Aspects: true})).toEqual([]);
+    expect(copies({})).toEqual([]);
+  });
+
+  // `slug` turns a space into `_`, and names in the older profile directory
+  // are not checked, so two of them can share an id.
+  test('two file names that map to one entry id throw, naming both', () => {
+    expect(() => copies({
+             sourceFiles: [
+               {fileName: 'retail.profiles/a b.yaml', content: 'x'},
+               {fileName: 'retail.profiles/a_b.yaml', content: 'y'},
+             ]
+           }))
+        .toThrow(
+            'files \'retail.profiles/a b.yaml\' and ' +
+            '\'retail.profiles/a_b.yaml\' both map to entry id ' +
+            '\'retail.files.retail.profiles_a_b.yaml\'; rename one of them');
+  });
+
+  test('every copy sits under a prefix the model owns', () => {
+    const {entries, ownedPrefixes} =
+        generateCatalogResources(MODEL, {...OPTS, sourceFiles: FILES});
+    for (const e of entries.filter(
+             e => e.entryType.endsWith('/semantic-model-file'))) {
+      const id = e.name.split('/').pop()!;
+      expect(ownedPrefixes.some(p => id.startsWith(p))).toBe(true);
+    }
+  });
+});
+
+
+describe('an entity source is stored as written', () => {
+  function sourceRecord(authoredSource: string, dataSource: string) {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities:
+          [{name: 'e', authoredSource, dataSource, keys: ['k'], fields: []}],
+    };
+    const {entries} = generateCatalogResources(model, OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    return entity.aspects!['dataplex-types.global.semantic-entity']
+        .data!.source;
+  }
+
+  test('a catalog name goes to importedResource, leaving resources empty',
+       () => {
+         expect(sourceRecord('bigquery:proj.ds.tbl', 'proj.ds.tbl')).toEqual({
+           resources: [],
+           importedResource: 'bigquery:proj.ds.tbl',
+         });
+         const spanner = 'spanner:p.regional-us.i.db.Orders';
+         expect(sourceRecord(spanner, spanner))
+             .toEqual({resources: [], importedResource: spanner});
+       });
+
+  test('a resource URI stays in resources unchanged', () => {
+    const uri =
+        '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
+    expect(sourceRecord(uri, uri)).toEqual({resources: [uri]});
+  });
+});
+
+
+describe('a third-party custom_extensions block is noted once', () => {
+  const NOTE = 'custom_extensions from vendors other than GOOGLE are not ' +
+      'indexed by the Knowledge Catalog aspects; the stored copy of the ' +
+      'model file preserves them';
+  const SOURCE_FILES = [{fileName: 'm.yaml', content: 'x'}];
+  const withExtensions =
+      (model: SemanticModel['customExtensions'],
+       field: SemanticModel['customExtensions']): SemanticModel => ({
+        name: 'm',
+        customExtensions: model,
+        entities: [{
+          name: 'e',
+          dataSource: 'p.d.t',
+          keys: ['k'],
+          fields: [{name: 'k', customExtensions: field}],
+        }],
+        relationships: [],
+        metrics: [],
+      });
+
+  test('once, however many blocks there are', () => {
+    const model = withExtensions(
+        [{vendorName: 'GOODDATA', data: '{}'}],
+        [{vendorName: 'LOOKER', data: '{}'}]);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES});
+    expect(warnings.filter(w => w === NOTE)).toHaveLength(1);
+  });
+
+  test('not at all with KC_V2_ASPECTS on', () => {
+    const model =
+        withExtensions([{vendorName: 'GOODDATA', data: '{}'}], undefined);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES, v2Aspects: true});
+    expect(warnings).not.toContain(NOTE);
+  });
+
+  test('for a block on a field alone', () => {
+    const model =
+        withExtensions(undefined, [{vendorName: 'LOOKER', data: '{}'}]);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES});
+    expect(warnings).toContain(NOTE);
+  });
+
+  test('for a block on an entity, a relationship, a metric or an action alone',
+       () => {
+         const block = [{vendorName: 'LOOKER', data: '{}'}];
+         const base = withExtensions(undefined, undefined);
+         const entity = base.entities[0];
+         const relationship = {
+           name: 'r',
+           source: {entity: 'e', columns: []},
+           destination: {entity: 'e', columns: []},
+         };
+         const metric = {name: 'n', expression: 'COUNT(*)'};
+         const action = {name: 'a', parameters: []};
+         const variants: SemanticModel[] = [
+           {...base, entities: [{...entity, customExtensions: block}]},
+           {...base, relationships: [{...relationship, customExtensions: block}]},
+           {...base, metrics: [{...metric, customExtensions: block}]},
+           {...base, actions: [{...action, customExtensions: block}]},
+         ];
+         for (const model of variants) {
+           const {warnings} = generateCatalogResources(
+               model, {...OPTS, sourceFiles: SOURCE_FILES});
+           expect(warnings).toContain(NOTE);
+         }
+       });
+
+  test('not at all with only a GOOGLE block', () => {
+    const model = withExtensions(
+        [{vendorName: 'GOOGLE', data: '{"deploymentTargets":[]}'}], undefined);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES});
+    expect(warnings).not.toContain(NOTE);
+  });
+});
+
+
+describe('a subtype field that only rebinds an inherited field', () => {
+  const MODEL_FILE = (customerFields: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: Party
+        abstract: true
+        fields:
+          - { name: id, datatype: Integer, description: The party id, label: Party ID }
+      - name: Customer
+        extends: [Party]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        primary_key: [id]
+        fields:
+${customerFields}`;
+  const ANCESTOR = {
+    name: 'id',
+    dataType: 'INT64',
+    metadataType: 'NUMBER',
+    description: 'The party id',
+    annotations: {label: 'Party ID'},
+  };
+
+  function customerField(
+      model: SemanticModel, name: string, v2Aspects = false): any {
+    const {entries} = generateCatalogResources(model, {...OPTS, v2Aspects});
+    const customer = entries.find(e => e.entrySource?.displayName === 'Customer')!;
+    return customer.aspects!['dataplex-types.global.schema'].data!.fields.find(
+        (f: any) => f.name === name);
+  }
+
+  test('is published with the ancestor\'s datatype, description and label',
+       () => {
+         const {models} = loadModels(
+             MODEL_FILE('          - { name: id, expression: cust_id }\n'),
+             {bindingOptional: true});
+         expect(customerField(models[0], 'id')).toEqual(ANCESTOR);
+         // The second-generation layout lists inherited fields another way.
+         expect(customerField(models[0], 'id', true).dataType).toBe('STRING');
+       });
+
+  // Push rejects a subtype that sets a definition on an inherited field, so
+  // only the emitter's own rule is exercised here.
+  test('keeps a datatype, description and label it sets itself', () => {
+    const {models} = loadModels(
+        MODEL_FILE('          - { name: id, expression: cust_id }\n'),
+        {bindingOptional: true});
+    const model = structuredClone(models[0]);
+    const id = model.entities.find(e => e.name === 'Customer')!.fields[0];
+    Object.assign(id, {
+      type: 'String',
+      description: 'The customer id',
+      label: 'Customer ID',
+    });
+    expect(customerField(model, 'id')).toEqual({
+      name: 'id',
+      dataType: 'STRING',
+      metadataType: 'STRING',
+      description: 'The customer id',
+      annotations: {label: 'Customer ID'},
+    });
+  });
+
+  test('an error from resolving inheritance that is not an InheritanceError ' +
+           'is not swallowed',
+       () => {
+         const {models} = loadModels(
+             MODEL_FILE('          - { name: id, expression: cust_id }\n'),
+             {bindingOptional: true});
+         spyOn(resolveInheritanceModule, 'resolveInheritance')
+             .mockImplementation(() => {
+               throw new Error('resolver bug');
+             });
+         try {
+           expect(() => customerField(models[0], 'id')).toThrow('resolver bug');
+         } finally {
+           mock.restore();
+         }
+       });
+
+  test('is published the same way when a profile rebinds it', () => {
+    const {models} = loadModels(
+        MODEL_FILE('          - { name: tier, datatype: String }\n'),
+        {bindingOptional: true});
+    const applied = applyProfileFile(models[0], `name: prod
+entities:
+  - name: Customer
+    fields:
+      - { name: id, expression: cust_key }
+`, 'prod');
+    if ('error' in applied) throw new Error(applied.error);
+    expect(customerField(applied.model, 'id')).toEqual(ANCESTOR);
   });
 });

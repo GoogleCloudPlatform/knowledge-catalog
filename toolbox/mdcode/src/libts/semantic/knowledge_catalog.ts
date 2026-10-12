@@ -27,6 +27,12 @@
 // and `kc_actions.ts` and `kc_constraints.ts` encode the aspects they carry.
 // This module only appends the entries those two return.
 //
+// With the first-generation aspects (v2Aspects off), each model and profile
+// file the push read is also stored whole as a file copy, one
+// `semantic-model-file` entry per file, parented to the anchor. That type is
+// custom too. The aspects cannot hold the whole model, so a pull returns
+// these copies instead of rebuilding the file from them.
+//
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
 //   * semantic-model  = { deploymentTargets: string[] }
@@ -57,11 +63,13 @@
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
 import {googleDeploymentTargets} from './deployment_target';
-import {AiContext, DataType, Entity, Metric, Relationship, SemanticModel} from './ir';
+import {AiContext, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
+import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TYPE_ID, FileCopy} from './kc_custom_types';
 import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
 import {databaseOf} from './loader';
+import {InheritanceError, resolveInheritance} from './resolve_inheritance';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -80,6 +88,9 @@ export interface KcGenerateOptions {
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false), which
   // emits the first-generation layout.
   v2Aspects?: boolean;
+  // The file copies of the model file and its profile files, each stored in
+  // an entry of its own when v2Aspects is off. Absent emits none.
+  sourceFiles?: FileCopy[];
 }
 
 export interface KcResources {
@@ -123,6 +134,20 @@ export function generateCatalogResources(
 
   const names = new Namer(opts);
   const emitExpr = opts.emitExpressions ?? false;
+  const v2 = opts.v2Aspects ?? false;
+
+  // The first-generation aspects have no field for a vendor's extension
+  // blocks, and the stored copy of the model file keeps them.
+  if (!v2 && opts.sourceFiles?.length && hasThirdPartyExtensions(model)) {
+    warnings.push(
+        'custom_extensions from vendors other than GOOGLE are not indexed ' +
+        'by the Knowledge Catalog aspects; the stored copy of the model file ' +
+        'preserves them');
+  }
+
+  // With the first-generation aspects, a subtype field that only rebinds an
+  // inherited field is published with the definition it inherits.
+  const inherited = v2 ? undefined : inheritedFields(model);
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -182,7 +207,8 @@ export function generateCatalogResources(
       aspects: aspectsFor(
           names, {
             'semantic-entity': entityAspectData(entity),
-            'schema': schemaAspectData(entity, emitExpr),
+            'schema': schemaAspectData(
+                entity, emitExpr, inherited?.get(entity.name)),
           },
           entity.aiContext),
     });
@@ -228,6 +254,28 @@ export function generateCatalogResources(
     claim: (id: string, label: string) =>
         claim(seen, id, 'entry', label, warnings),
   }, warnings));
+
+  // One file copy entry per model and profile file, holding its text as
+  // read. Only with the first-generation aspects: a push with v2Aspects on
+  // emits none, so delete reconciliation removes the copies under the owned
+  // `.files.` prefix. Two file names that slug to one id fail the push, since
+  // storing only one would lose the other on the next pull.
+  if (!v2) {
+    const fileById = new Map<string, string>();
+    for (const file of opts.sourceFiles ?? []) {
+      const id = names.fileEntryId(model.name, file.fileName);
+      const earlier = fileById.get(id);
+      if (earlier !== undefined) {
+        throw new Error(
+            `files '${earlier}' and '${file.fileName}' both map to entry id ` +
+            `'${id}'; rename one of them`);
+      }
+      fileById.set(id, file.fileName);
+      if (!claim(seen, id, 'entry', `file '${file.fileName}'`, warnings))
+        continue;
+      entries.push(fileCopyEntry(names.entry(id), modelEntryName, file, opts));
+    }
+  }
 
   // Relationships map to schema-join entry links between their endpoint entries.
   const entryLinks: EntryLink[] = [];
@@ -381,6 +429,68 @@ function entityByName(model: SemanticModel, name: string): Entity|undefined {
   return (model.entities ?? []).find(e => e.name === name);
 }
 
+// The entry holding one file copy. Its entry and aspect types are custom, so
+// they live in the destination project.
+function fileCopyEntry(
+    name: string, anchor: string, file: FileCopy,
+    dest: {project: string}): Entry {
+  return {
+    name,
+    entryType: customEntryTypeName(FILE_COPY_TYPE_ID, dest),
+    parentEntry: anchor,
+    aspects: {
+      [customAspectKey(FILE_COPY_TYPE_ID, dest)]: {
+        aspectType: customAspectTypeName(FILE_COPY_TYPE_ID, dest),
+        data: fileCopyData(file),
+      },
+    },
+  };
+}
+
+// The aspect data of a file copy: the file's name and text, and the push id
+// and copy count when the push set them.
+export function fileCopyData(file: FileCopy): Record<string, any> {
+  return compact({
+    fileName: file.fileName,
+    content: file.content,
+    pushId: file.pushId,
+    pushFileCount: file.pushFileCount,
+  });
+}
+
+// True when the model, or anything in it, carries a `custom_extensions` block
+// from a vendor other than GOOGLE.
+function hasThirdPartyExtensions(model: SemanticModel): boolean {
+  const thirdParty = (o: {customExtensions?: {vendorName: string}[]}) =>
+      (o.customExtensions ?? []).some(x => x.vendorName !== 'GOOGLE');
+  const entities = model.entities ?? [];
+  return thirdParty(model) || entities.some(thirdParty) ||
+      entities.some(e => (e.fields ?? []).some(thirdParty)) ||
+      (model.relationships ?? []).some(thirdParty) ||
+      (model.metrics ?? []).some(thirdParty) ||
+      (model.actions ?? []).some(thirdParty);
+}
+
+// Each entity's fields with inheritance resolved, by entity and field name, or
+// undefined when no entity extends another or inheritance cannot be resolved.
+// A resolved field keeps what the entity's own declaration sets and takes the
+// rest from the ancestor that defines it.
+function inheritedFields(model: SemanticModel):
+    Map<string, Map<string, Field>>|undefined {
+  if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
+  let resolved: SemanticModel;
+  try {
+    resolved = resolveInheritance(model).model;
+  } catch (err) {
+    // Push validation reports it. The schema aspect keeps what each entity
+    // declares.
+    if (err instanceof InheritanceError) return undefined;
+    throw err;
+  }
+  return new Map((resolved.entities ?? []).map(
+      e => [e.name, new Map((e.fields ?? []).map(f => [f.name, f]))]));
+}
+
 
 // ---------------------------------------------------------------------------
 // Aspect-data mappers. Field names/nesting mirror the server aspect types'
@@ -402,8 +512,9 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
   });
 }
 
-// semantic-entity: the base table(s) backing the entity. importedSystem/
-// importedResource have no IR source today and are left unset.
+// semantic-entity: the base table backing the entity. A source written as a
+// catalog name, `<system>:...`, is stored whole in `importedResource`;
+// importedSystem is left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
   // A logical-only entity has no physical table (empty dataSource). Still emit
   // the `source` block with an empty `resources` array rather than a bogus
@@ -411,10 +522,15 @@ function entityAspectData(entity: Entity): Record<string, any> {
   // list), so omitting it is rejected server-side. An empty list is the honest
   // "no binding yet"; the reader treats it the same as an absent source
   // (dataSource becomes '').
-  const path = entity.authoredSource &&
-          databaseOf(entity.authoredSource) !== undefined ?
-      entity.authoredSource.trim() :
-      resourcePath(entity.dataSource);
+  const authored = entity.authoredSource?.trim();
+  if (authored && databaseOf(authored) !== undefined) {
+    // Every accepted source is a resource URI, which starts with `//`, or a
+    // catalog name. A catalog name leaves `resources` empty.
+    return authored.startsWith('//') ?
+        {source: {resources: [authored]}} :
+        {source: {resources: [], importedResource: authored}};
+  }
+  const path = resourcePath(entity.dataSource);
   return compact({
     source: {resources: path ? [path] : []},
   });
@@ -423,9 +539,12 @@ function entityAspectData(entity: Entity): Record<string, any> {
 // The built-in schema aspect, carrying each field's column type and display
 // label, the entity's primary/unique keys, plus the gated per-field `semantics`
 // block (expression / role). name, dataType, and metadataType are required per
-// column.
+// column. `inherited` holds the entity's fields with inheritance resolved; a
+// field that sets no datatype, description or label of its own takes the one
+// it inherits from there.
 function schemaAspectData(
-    entity: Entity, emitExpressions: boolean): Record<string, any> {
+    entity: Entity, emitExpressions: boolean,
+    inherited?: Map<string, Field>): Record<string, any> {
   // Key column lists ride the schema aspect verbatim -- they need NOT be
   // declared fields (the closed template accepts and round-trips columns absent
   // from fields[], live-verified). Keep only non-empty strings, matching the
@@ -439,9 +558,21 @@ function schemaAspectData(
   // A field a binding profile excludes on this entity is not published for it
   // (see Entity.excludedFields).
   const excluded = new Set(entity.excludedFields ?? []);
+  // A subtype's redeclaration of an inherited field only rebinds it, so its
+  // definition is the inherited one.
+  const withDefinition = (f: Field): Field => {
+    const from = inherited?.get(f.name);
+    return {
+      ...f,
+      type: f.type ?? from?.type,
+      description: f.description ?? from?.description,
+      label: f.label ?? from?.label,
+    };
+  };
   return compact({
     fields: (entity.fields ?? [])
                 .filter(f => !excluded.has(f.name))
+                .map(withDefinition)
                 .map(f => compact({
                        name: f.name,
                        // An untyped field is published as Opaque (STRING +

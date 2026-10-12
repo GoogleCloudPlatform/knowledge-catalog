@@ -165,11 +165,12 @@ kcmd push --validate-only --print   # preview the entries and links, write nothi
 kcmd push                           # write them
 ```
 
-Push creates one entry per entity and metric, one for the model itself, and a
+Push creates one entry per entity and metric, one for the model itself, one
+per model file and profile file holding a copy of that file, and a
 `schema-join` link for each relationship:
 
 ```
-Wrote 4 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
+Wrote 5 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
 ```
 
 Those entries are the single governed definition of the business. They are
@@ -345,10 +346,20 @@ entry group holding two models — so by default pull stops and reports the
 mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
 local model and replace it with the catalog's. Pull never touches the data store.
 
-Pull can only return what push wrote, so a push→pull round trip is **not** an
-identity — see [What push and pull preserve](fidelity.md) for exactly what
-comes back, what comes back normalized, and what doesn't come back at all. Keep
-your authored document as the source of truth.
+Push also stores a copy of the model file and of each profile file, and pull
+writes those copies back to the paths they came from, byte for byte. A local
+profile file the catalog has no copy of would be stored again by the next push,
+so pull names it in a warning, and `--force-remove` deletes it. Each push marks
+its copies with one id and the number of copies it stored. When the copies come
+from two pushes, or their number differs from that count, the last push stopped
+partway, and pull writes and deletes nothing and asks you to push again.
+
+A model has no stored copies when an older `kcmd` last pushed it, or when its
+first push stopped before storing any. Pull then rebuilds the model file from the
+catalog metadata, warns that it may differ from what was pushed, and keeps every
+local profile file. After a failed push, push again before you pull. That rebuild is **not** an identity
+— see [What push and pull preserve](fidelity.md) for exactly what comes back,
+what comes back normalized, and what doesn't come back at all.
 
 ## Importing an OWL ontology
 

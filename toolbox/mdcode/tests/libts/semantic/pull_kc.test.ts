@@ -10,8 +10,8 @@
 // entity's schema-join links). The reader's own mapping is covered in
 // kc_converter.test.ts; the focus here is the fetch SEQUENCE: aspect hydration,
 // the relationship-link fetch (per-entry, deduped across endpoints), the
-// single-model-per-group invariant, aborting on any fetch failure, and ignoring
-// foreign entries.
+// single-model-per-group invariant, aborting on any fetch failure, ignoring
+// foreign entries, and the stored file copies a pull returns.
 
 import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
 
@@ -71,6 +71,11 @@ function entriesFor(model: SemanticModel): Entry[] {
       .entries;
 }
 
+// The warning a pull gives when the catalog holds no stored copy of the model
+// file. Entries emitted without sourceFiles hold none.
+const NO_COPY_WARNING =
+    expect.stringContaining('no stored copy of the model file was found');
+
 function ok<T>(result?: T): ApiResult<T> {
   return {status: 200, result};
 }
@@ -125,7 +130,8 @@ describe('pullKnowledgeCatalog: happy path', () => {
 
     expect(models).toHaveLength(1);
     expect(models[0]).toEqual(SALES);
-    expect(warnings).toHaveLength(0);
+    // The entries hold no file copy, so the pull says it rebuilt the model.
+    expect(warnings).toEqual([NO_COPY_WARNING]);
     // Every listed semantic entry (model + entity + metric) was hydrated.
     expect(lookup).toHaveBeenCalledTimes(3);
   });
@@ -201,7 +207,7 @@ describe('pullKnowledgeCatalog: relationship links', () => {
           source: {entity: 'orders', columns: ['o_custkey']},
           destination: {entity: 'customer', columns: ['c_custkey']},
         }]);
-        expect(warnings).toHaveLength(0);
+        expect(warnings).toEqual([NO_COPY_WARNING]);
         // Links are fetched per entity (2 entities), and the single undirected
         // link -- returned from both endpoints -- is deduped to one edge.
         expect(lookupLinks).toHaveBeenCalledTimes(2);
@@ -325,4 +331,299 @@ describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
         // The metric was hydrated despite the parent mismatch (3 entries).
         expect(lookup).toHaveBeenCalledTimes(3);
       });
+});
+
+
+describe('pullKnowledgeCatalog: file copies', () => {
+  const MODEL_FILE = {fileName: 'sales.yaml', content: '# sales\nversion: x\n'};
+  const PROFILE_FILE = {
+    fileName: 'sales.profile.prod.yaml',
+    content: 'name: prod\n',
+  };
+  // The model file is listed first and sorts last, so the result shows the
+  // sort.
+  const withCopies = () => generateCatalogResources(SALES, {
+                       ...OPTS,
+                       emitExpressions: true,
+                       sourceFiles: [MODEL_FILE, PROFILE_FILE],
+                     }).entries;
+  const isCopy = (e: Entry) => e.entryType.endsWith('/semantic-model-file');
+
+  test('returns each stored file, sorted by file name', async () => {
+    const entries = withCopies();
+    const {lookup} = stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {models, rawFiles, warnings} = await pullKnowledgeCatalog(cat, OPTS);
+
+    expect(rawFiles).toEqual([PROFILE_FILE, MODEL_FILE]);
+    // The rebuilt model still comes back, for the caller's checks.
+    expect(models[0]).toEqual(SALES);
+    expect(warnings).toEqual([]);
+    // Each copy is fetched with its aspect, in the destination project where
+    // the custom type lives.
+    const copy = entries.find(isCopy)!;
+    const call = lookup.mock.calls.find((c: any[]) => c[2] === copy.name)!;
+    expect(call[3]).toEqual(
+        ['projects/dest/locations/global/aspectTypes/semantic-model-file']);
+  });
+
+  test('with v2Aspects on, returns no file and fetches none', async () => {
+    const entries = withCopies();
+    const {lookup} = stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {rawFiles, warnings} =
+        await pullKnowledgeCatalog(cat, {...OPTS, v2Aspects: true});
+
+    expect(rawFiles).toBeUndefined();
+    expect(warnings).toEqual([]);
+    const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
+    expect(entries.filter(isCopy).some(e => fetched.includes(e.name)))
+        .toBe(false);
+  });
+
+  test('a model with no copies is rebuilt from the aspects and warns',
+       async () => {
+         const entries = entriesFor(SALES);
+         stubClient(entries, entries);
+
+         const cat = new CatalogClient({} as any);
+         const {models, rawFiles, warnings} =
+             await pullKnowledgeCatalog(cat, OPTS);
+
+         expect(rawFiles).toEqual([]);
+         expect(models[0]).toEqual(SALES);
+         expect(warnings).toEqual([NO_COPY_WARNING]);
+       });
+
+  test('the rebuilt model\'s warnings are left out when the copies are used',
+       async () => {
+         // The reader warns that it made up a deployment name.
+         const targeted: SemanticModel = {
+           ...SALES,
+           customExtensions: [{
+             vendorName: 'GOOGLE',
+             data: JSON.stringify({
+               deploymentTargets: [
+                 '//bigquery.googleapis.com/projects/demo/datasets/d/propertyGraphs/g',
+               ],
+             }),
+           }],
+         };
+         const entries =
+             generateCatalogResources(
+                 targeted, {...OPTS, sourceFiles: [MODEL_FILE]})
+                 .entries;
+         stubClient(entries, entries);
+
+         const cat = new CatalogClient({} as any);
+         const {rawFiles, warnings} = await pullKnowledgeCatalog(cat, OPTS);
+
+         expect(rawFiles).toEqual([MODEL_FILE]);
+         expect(warnings).toEqual([]);
+       });
+
+  test('copies without the model file are not used, and the model is rebuilt',
+       async () => {
+         const entries = generateCatalogResources(SALES, {
+                           ...OPTS,
+                           emitExpressions: true,
+                           sourceFiles: [
+                             {fileName: 'shop.yaml', content: 'x'},
+                             PROFILE_FILE,
+                           ],
+                         }).entries;
+         stubClient(entries, entries);
+
+         const cat = new CatalogClient({} as any);
+         const {models, rawFiles, warnings} =
+             await pullKnowledgeCatalog(cat, OPTS);
+
+         expect(rawFiles).toEqual([]);
+         expect(models[0]).toEqual(SALES);
+         expect(warnings).toEqual([
+           'the stored copies of model \'sales\' hold no \'sales.yaml\', so ' +
+               'the model file is rebuilt from the catalog\'s aspects and may ' +
+               'differ from what was pushed',
+         ]);
+       });
+
+  test('copies from one push come back with its id', async () => {
+    const entries = generateCatalogResources(SALES, {
+                      ...OPTS,
+                      sourceFiles: [
+                        {...MODEL_FILE, pushId: 'push-2'},
+                        {...PROFILE_FILE, pushId: 'push-2'},
+                      ],
+                    }).entries;
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {rawFiles} = await pullKnowledgeCatalog(cat, OPTS);
+
+    expect(rawFiles).toEqual([
+      {...PROFILE_FILE, pushId: 'push-2'},
+      {...MODEL_FILE, pushId: 'push-2'},
+    ]);
+  });
+
+  // Copies stored before push ids carry none, and are used as they are.
+  test('copies of which none carries a push id are used', async () => {
+    const entries = withCopies();
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {rawFiles} = await pullKnowledgeCatalog(cat, OPTS);
+
+    expect(rawFiles).toEqual([PROFILE_FILE, MODEL_FILE]);
+  });
+
+  // A push that stopped partway leaves some copies from it beside copies
+  // from the push before.
+  for (const [label, profileId] of [
+         ['differ', 'push-1'],
+         ['are on only some copies', undefined],
+       ] as const) {
+    test(`copies whose push ids ${label} abort the pull`, async () => {
+      const entries = generateCatalogResources(SALES, {
+                        ...OPTS,
+                        sourceFiles: [
+                          {...MODEL_FILE, pushId: 'push-2'},
+                          {...PROFILE_FILE, pushId: profileId},
+                        ],
+                      }).entries;
+      stubClient(entries, entries);
+
+      const cat = new CatalogClient({} as any);
+      await expect(pullKnowledgeCatalog(cat, OPTS))
+          .rejects.toThrow(
+              'the last push of model \'sales\' did not finish: its file ' +
+              'copies in the catalog come from different pushes, so pull ' +
+              'writes nothing. Push again, then pull.');
+    });
+  }
+
+  // Every copy that push wrote landed.
+  test('a set of as many copies as the push stored is used', async () => {
+    const stamped = {pushId: 'push-2', pushFileCount: 2};
+    const entries = generateCatalogResources(SALES, {
+                      ...OPTS,
+                      sourceFiles: [
+                        {...MODEL_FILE, ...stamped},
+                        {...PROFILE_FILE, ...stamped},
+                      ],
+                    }).entries;
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {rawFiles} = await pullKnowledgeCatalog(cat, OPTS);
+
+    expect(rawFiles).toEqual([
+      {...PROFILE_FILE, ...stamped},
+      {...MODEL_FILE, ...stamped},
+    ]);
+  });
+
+  // A push that stopped before its last copy landed leaves a set whose ids
+  // agree.
+  test('fewer copies than the push stored abort the pull', async () => {
+    const entries = generateCatalogResources(SALES, {
+                      ...OPTS,
+                      sourceFiles: [
+                        {...MODEL_FILE, pushId: 'push-2', pushFileCount: 2},
+                      ],
+                    }).entries;
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    await expect(pullKnowledgeCatalog(cat, OPTS))
+        .rejects.toThrow(
+            'the last push of model \'sales\' did not finish: the catalog ' +
+            'holds 1 of its 2 file copies, so pull writes nothing. Push ' +
+            'again, then pull.');
+  });
+
+  // More copies than the push stored, which only another writer leaves,
+  // abort the pull too.
+  test('more copies than the push stored abort the pull', async () => {
+    const entries = generateCatalogResources(SALES, {
+                      ...OPTS,
+                      sourceFiles: [
+                        {...MODEL_FILE, pushId: 'push-2', pushFileCount: 1},
+                        {...PROFILE_FILE, pushId: 'push-2', pushFileCount: 1},
+                      ],
+                    }).entries;
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    await expect(pullKnowledgeCatalog(cat, OPTS))
+        .rejects.toThrow(
+            'the catalog holds 2 file copies, but the push stored 1, so pull ' +
+            'writes nothing.');
+  });
+
+  // A copy with no content is skipped, so the set comes up short; the error
+  // names the skipped copy.
+  test('a skipped copy is named in the refusal', async () => {
+    const entries = generateCatalogResources(SALES, {
+                      ...OPTS,
+                      sourceFiles: [
+                        {...MODEL_FILE, pushId: 'push-2', pushFileCount: 2},
+                        {...PROFILE_FILE, pushId: 'push-2', pushFileCount: 2},
+                      ],
+                    }).entries;
+    for (const e of entries.filter(isCopy)) {
+      for (const a of Object.values(e.aspects ?? {})) {
+        if ((a as any).data?.fileName === PROFILE_FILE.fileName) {
+          delete (a as any).data.content;
+        }
+      }
+    }
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    await expect(pullKnowledgeCatalog(cat, OPTS))
+        .rejects.toThrow(/holds 1 of its 2 file copies.*holds no file name or no content; it is skipped/);
+  });
+
+  // Another model's copy, left behind by a push that failed while deleting
+  // it, is not one of this model's.
+  test('a copy under another model\'s prefix is ignored', async () => {
+    const entries = generateCatalogResources(SALES, {
+                      ...OPTS,
+                      sourceFiles: [{...MODEL_FILE, pushId: 'push-2'}],
+                    }).entries;
+    const stray = generateCatalogResources({...SALES, name: 'old'}, {
+                    ...OPTS,
+                    sourceFiles: [
+                      {fileName: 'old.yaml', content: 'x', pushId: 'push-1'},
+                    ],
+                  }).entries.filter(isCopy);
+    stubClient([...entries, ...stray], [...entries, ...stray]);
+
+    const cat = new CatalogClient({} as any);
+    const {rawFiles} = await pullKnowledgeCatalog(cat, OPTS);
+
+    expect(rawFiles).toEqual([{...MODEL_FILE, pushId: 'push-2'}]);
+  });
+
+  test('a copy with no content is skipped with a warning', async () => {
+    const entries = withCopies();
+    const profile = entries.find(
+        e => isCopy(e) && e.name.endsWith('sales.profile.prod.yaml'))!;
+    for (const aspect of Object.values(profile.aspects!)) {
+      delete aspect.data!.content;
+    }
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    const {rawFiles, warnings} = await pullKnowledgeCatalog(cat, OPTS);
+
+    expect(rawFiles).toEqual([MODEL_FILE]);
+    expect(warnings).toEqual([
+      'file copy \'sales.files.sales.profile.prod.yaml\' holds no file name ' +
+          'or no content; it is skipped',
+    ]);
+  });
 });

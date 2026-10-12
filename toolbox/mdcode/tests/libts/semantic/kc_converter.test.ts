@@ -636,6 +636,26 @@ describe('data source resource-path parsing', () => {
     const query = 'SELECT * FROM t';
     expect(readDataSource(query)).toBe(query);
   });
+
+  // Push stores a catalog name in `importedResource` and leaves `resources`
+  // empty, so the reader takes the source from there.
+  test('a catalog name is read back from importedResource', () => {
+    const read = (authoredSource: string, dataSource: string) => roundTrip({
+                   name: 'm',
+                   entities: [
+                     {name: 'e', authoredSource, dataSource, keys: [], fields: []}
+                   ],
+                   relationships: [],
+                   metrics: [],
+                 }).models[0].entities[0];
+    const bq = read('bigquery:proj.ds.tbl', 'proj.ds.tbl');
+    expect(bq.dataSource).toBe('proj.ds.tbl');
+    expect(bq.authoredSource).toBe('bigquery:proj.ds.tbl');
+    const snowflake = 'snowflake:acct.SALES.PUBLIC.ORDERS';
+    const sf = read(snowflake, snowflake);
+    expect(sf.dataSource).toBe(snowflake);
+    expect(sf.authoredSource).toBe(snowflake);
+  });
 });
 
 

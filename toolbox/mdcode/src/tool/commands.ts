@@ -1,6 +1,7 @@
 // CLI command handlers
 //
 
+import {randomUUID} from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
@@ -17,7 +18,7 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {SemanticModel} from '../libts/semantic/ir';
-import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
@@ -243,7 +244,14 @@ export async function init(options: InitOptions): Promise<number> {
     const catalog = new dataplex.CatalogClient(ctx);
     const res = await catalog.createEntryGroup(
         source.project, source.location, source.entryGroup);
-    if (res.status !== 200 && res.status !== 409) {
+    // A caller without create permission may be refused the create of an
+    // entry group that exists. A lookup tells the two apart.
+    const exists = res.status === 409 ||
+        (res.status === 403 &&
+         (await catalog.getEntryGroup(
+              source.project, source.location, source.entryGroup))
+                 .status === 200);
+    if (res.status !== 200 && !exists) {
       console.error(
           `Error: failed to create entry group '${source.name}': ` +
           `${res.message || res.status}`);
@@ -269,7 +277,17 @@ export async function init(options: InitOptions): Promise<number> {
     return 1;
   }
 
+  // Re-running init for the same scope leaves catalog.yaml as it was, so
+  // default_profile, every other key and the comments are kept. Init for
+  // another scope writes a new file.
+  const prior = fs.existsSync('catalog.yaml') ?
+      fs.readFileSync('catalog.yaml', 'utf8') :
+      undefined;
   manifest.save('catalog.yaml');
+  const scope = scopeOf(fs.readFileSync('catalog.yaml', 'utf8'));
+  if (prior !== undefined && scope !== undefined && scopeOf(prior) === scope) {
+    fs.writeFileSync('catalog.yaml', prior);
+  }
   console.log(fs.readFileSync('catalog.yaml', 'utf8'));
 
   if (options.pull) {
@@ -277,6 +295,17 @@ export async function init(options: InitOptions): Promise<number> {
   }
 
   return 0;
+}
+
+
+// The scope a catalog.yaml text names, as JSON so that a list of scopes
+// compares by value. Undefined when the text does not parse or names none.
+function scopeOf(text: string): string|undefined {
+  try {
+    return JSON.stringify(yaml.parse(text)?.scope);
+  } catch {
+    return undefined;
+  }
 }
 
 
@@ -371,6 +400,49 @@ export function profileFileGraphError(
       `Catalog without deploying a graph.`;
 }
 
+// The file copies of each model file and of each of its profile files: each
+// file's text exactly as read, for the catalog to store. A file name is the
+// file's path relative to the entry group directory, with `/` between
+// segments. Throws when a profile file breaks one of the layout's file rules
+// or a file is not valid UTF-8.
+function fileCopiesOf(
+    layout: SemanticModelLayout,
+    docs: {name: string; text: string}[]): FileCopy[] {
+  const files: FileCopy[] = [];
+  for (const doc of docs) {
+    const modelPath = layout.modelPath(doc.name);
+    const copy = (localPath: string, content: string): FileCopy => {
+      const fileName = path.relative(path.dirname(modelPath), localPath)
+                           .split(path.sep)
+                           .join('/');
+      checkUtf8(localPath, fileName, content);
+      return {fileName, content};
+    };
+    files.push(copy(modelPath, doc.text));
+    // profileDocuments applies the file rules, so a profile file that breaks
+    // one stops the push here, before anything is stored.
+    for (const p of layout.profileDocuments(doc.name)) {
+      files.push(copy(p.path, p.text));
+    }
+  }
+  return files;
+}
+
+// Throws, naming the file, when the file at `localPath` is not valid UTF-8,
+// since its copy could not return it byte for byte. A file read as UTF-8 has
+// each invalid byte replaced by U+FFFD, so only a text holding U+FFFD needs
+// its bytes checked.
+function checkUtf8(localPath: string, fileName: string, text: string): void {
+  if (!text.includes('\uFFFD')) return;
+  try {
+    new TextDecoder('utf-8', {fatal: true}).decode(fs.readFileSync(localPath));
+  } catch {
+    throw new Error(
+        `File '${fileName}' is not valid UTF-8; push stores each model and ` +
+        `profile file exactly as written, so save it as UTF-8.`);
+  }
+}
+
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -413,7 +485,9 @@ export async function push(options: PushOptions): Promise<number> {
     // `<model>.profiles/default.yaml` would be silently unreachable. Reject it
     // rather than let it sit there doing nothing. Only when the graph axis is
     // on: a graph push may resolve profiles, but a catalog-only --no-profile
-    // push reads no profile files, so it does not police their names.
+    // push resolves none, so it does not police their names here. With
+    // KC_V2_ASPECTS off it still reads every profile file to store it, and the
+    // layout's file rules apply then.
     if (graphEnabled) {
       for (const doc of layoutDocs) {
         const clash = layout.profileDocuments(doc.name).some(
@@ -752,6 +826,36 @@ export async function push(options: PushOptions): Promise<number> {
       }
       graphPlans.push({profileName, prepared});
     }
+    // With KC_V2_ASPECTS off, the catalog leg stores the model file and every
+    // profile file as read, whichever profile this push selects, so a pull
+    // can return them all. Reading them under --no-profile too keeps a push
+    // from dropping a stored profile copy. They are read and checked, and the
+    // type that holds them is looked up, before any graph deploys and under
+    // --validate-only too. The catalog leg then does not look the type up
+    // again. With more than one model document, the catalog leg reports that
+    // first.
+    let fileCopies: FileCopy[] = [];
+    if (kcEnabled && !kcV2Aspects() && layoutDocs.length === 1) {
+      let read: FileCopy[];
+      try {
+        read = fileCopiesOf(layout, layoutDocs);
+      } catch (err: any) {
+        console.error(`Error: ${err.message || err}`);
+        return 1;
+      }
+      // One id and the number of copies on every copy this push stores let a
+      // pull tell a whole set from a push that stopped partway.
+      const pushId = randomUUID();
+      fileCopies = read.map(f => ({...f, pushId, pushFileCount: read.length}));
+      const problem = kc.checkFileCopies(fileCopies) ??
+          await kc.checkCustomTypes(
+              new dataplex.CatalogClient(ctx), source, [FILE_COPY_TYPE_ID]);
+      if (problem) {
+        console.error(`Error: ${problem}`);
+        return 1;
+      }
+    }
+
     for (const {profileName, prepared} of graphPlans) {
       if (multiProfile) console.log(`\n-- Binding profile '${profileName}' --`);
       if (prepared.bqModels.length) {
@@ -854,8 +958,19 @@ export async function push(options: PushOptions): Promise<number> {
       const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
       const prepared = await prepareOnce(docs, kcProfileName, prune);
       if (!prepared) return 1;
-      const code =
-          await pushKnowledgeCatalog(prepared.models, ctx, options, source);
+      // Pull writes a model to `<model>.yaml`, so it returns the copy of a
+      // model file only under that name.
+      for (const {document, model} of prepared.models) {
+        if (!fileCopies.length || document === model.name) continue;
+        console.warn(
+            `Warning: [${model.name}] model file '${document}.yaml' is not ` +
+            `named '${model.name}.yaml'. The file copy can only return a ` +
+            `model file named after its model, so pull will rebuild ` +
+            `'${model.name}.yaml' from the catalog instead of returning this ` +
+            `file; rename it '${model.name}.yaml' to keep it exact.`);
+      }
+      const code = await pushKnowledgeCatalog(
+          prepared.models, ctx, options, source, fileCopies);
       if (code !== 0) return code;
     } else if (deployedGraphs === 0) {
       // Graph-only push (--no-kc) whose selected profile(s) declare no target:
@@ -1249,7 +1364,7 @@ async function pushSpanner(
 // success).
 async function pushKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
-    source: SemanticModelSource): Promise<number> {
+    source: SemanticModelSource, sourceFiles: FileCopy[]): Promise<number> {
   console.log(
       options.validateOnly ?
           'Validating semantic model for Knowledge Catalog...' :
@@ -1266,6 +1381,10 @@ async function pushKnowledgeCatalog(
     // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
     systemTypeProject: process.env.KC_TYPE_PROJECT,
     v2Aspects: kcV2Aspects(),
+    sourceFiles,
+    // Push looks up the file-copy type before any graph deploys whenever it
+    // has copies to store.
+    fileCopyTypeChecked: sourceFiles.length > 0,
   });
 
   for (const w of result.warnings) {
@@ -1310,7 +1429,9 @@ async function pushKnowledgeCatalog(
 // (project.location.entryGroup). An entry group holds one model: a local
 // document with the same name is overwritten in place; a differently-named
 // local document is a conflict (pull would leave two models), so pull fails
-// unless --force-remove authorizes deleting the stale local model first.
+// unless --force-remove authorizes deleting the stale local model first. When
+// the catalog holds file copies of the model and profile files, pull writes
+// those instead of the model rebuilt from the aspects.
 // Returns a process exit code (0 on success).
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
@@ -1337,6 +1458,8 @@ async function pullSemanticModel(
     console.warn(`Warning: ${w}`);
   }
 
+  // A pull returns file copies only with the model they belong to.
+  const rawFiles = result.rawFiles ?? [];
   if (!result.models.length) {
     console.log('No semantic models found; nothing to pull.');
     return 0;
@@ -1378,6 +1501,13 @@ async function pullSemanticModel(
     }
   }
 
+  // The file copies are written instead of the model rebuilt from the
+  // aspects. Writing both would leave whichever wrote `<model>.yaml` last.
+  // The copies belong to the entry group's one model.
+  if (rawFiles.length) {
+    return writeFileCopies(layout, result.models[0].name, rawFiles, options);
+  }
+
   let created = 0;
   let updated = 0;
   // Guard against two reconstructed models whose names map to the same file
@@ -1411,12 +1541,149 @@ async function pullSemanticModel(
       created++;
   }
 
+  // A pull that writes the rebuilt model with KC_V2_ASPECTS off returns no
+  // profile, so it keeps every local profile file, even under --force-remove,
+  // and names each one.
+  if (result.rawFiles) {
+    for (const model of result.models) {
+      const kept = layout.localProfileFiles(model.name).map(p => p.path);
+      if (!kept.length) continue;
+      console.warn(
+          `Warning: [${model.name}] the catalog holds no copy of the profile ` +
+          `files, so pull keeps the local ones: ${kept.join(', ')}.`);
+    }
+  }
+
   console.log(
       options.dryRun ?
           `Dry run: would write ${created} new and ${
               updated} updated model document(s).` :
           `Wrote ${created} new and ${updated} updated model document(s).`);
   return 0;
+}
+
+
+// Writes the file copies a pull returned for `model` into the entry group
+// directory, each to the path its name maps to, and leaves a file whose
+// content is unchanged as it is. A name that is not one push stores is
+// skipped with a warning. Then each local profile file the catalog did not
+// return is named in a warning, or deleted under --force-remove. Returns a
+// process exit code.
+function writeFileCopies(
+    layout: SemanticModelLayout, model: string, files: FileCopy[],
+    options: PullOptions): number {
+  const written = new Set<string>();
+  const counts = {created: 0, updated: 0, unchanged: 0};
+  for (const {fileName, content} of files) {
+    const target = fileCopyTarget(layout, model, fileName);
+    if (!target) {
+      console.warn(
+          `Warning: skipped '${fileName}' from the catalog; pull writes only ` +
+          `'${model}.yaml', '${model}.profile.<name>.yaml' and ` +
+          `'${model}.profiles/<name>.yaml' inside the entry group directory.`);
+      continue;
+    }
+    written.add(path.resolve(target.path));
+    const before =
+        fs.existsSync(target.path) ? fs.readFileSync(target.path) : undefined;
+    const state = !before                   ? 'created' :
+        before.equals(Buffer.from(content)) ? 'unchanged' :
+                                              'updated';
+    counts[state]++;
+    if (state === 'unchanged') {
+      console.log(`  unchanged ${target.path}`);
+    } else if (options.dryRun) {
+      const verb = state === 'created' ? 'create' : 'update';
+      console.log(`  would ${verb} ${target.path}`);
+    } else {
+      target.write(content);
+      console.log(`  ${state} ${target.path}`);
+    }
+  }
+
+  // Pull writes each file back to the path it came from, so a local profile
+  // file the catalog does not have is stale.
+  for (const stale of layout.localProfileFiles(model)) {
+    if (written.has(path.resolve(stale.path))) continue;
+    if (!options.forceRemove) {
+      console.warn(
+          `Warning: local profile file ${stale.path} is not in the catalog; ` +
+          `delete it, or pull with --force-remove to delete it.`);
+    } else if (options.dryRun) {
+      console.log(`  would remove ${stale.path}`);
+    } else {
+      // The older `<model>.profiles/` directory has no layout method.
+      if (stale.profileName !== undefined) {
+        layout.removeProfileDocument(model, stale.profileName);
+      } else {
+        fs.rmSync(stale.path);
+      }
+      console.log(`  removed ${stale.path}`);
+    }
+  }
+
+  const unchanged = counts.unchanged ? `; ${counts.unchanged} unchanged` : '';
+  console.log(
+      options.dryRun ?
+          `Dry run: would write ${counts.created} new and ${
+              counts.updated} updated file(s)${unchanged}.` :
+          `Wrote ${counts.created} new and ${counts.updated} updated ` +
+              `file(s)${unchanged}.`);
+  return 0;
+}
+
+
+// Where pull writes a file copy of `model`, and how, or undefined when its
+// name is not one push stores. The name comes from the catalog, so only
+// `<model>.yaml`, `<model>.profile.<profile name>.yaml` and
+// `<model>.profiles/<name>.yaml` are written, each relative, ending in
+// `.yaml`, with no `..` segment and no NUL byte. The model file and a sibling
+// profile file are written through the layout, which keeps both in the entry
+// group directory; the older `<model>.profiles/` directory has no layout
+// method.
+function fileCopyTarget(
+    layout: SemanticModelLayout, model: string, fileName: string):
+    {path: string; write: (text: string) => void}|undefined {
+  if (path.posix.isAbsolute(fileName) || path.win32.isAbsolute(fileName) ||
+      fileName.includes('\0') || fileName.split(/[\\/]/).includes('..') ||
+      !fileName.endsWith('.yaml')) {
+    return undefined;
+  }
+  if (fileName === `${model}.yaml`) {
+    return {
+      path: layout.modelPath(model),
+      write: text => layout.writeModelDocument(model, text),
+    };
+  }
+  // A model name holding a path separator maps to a flat model file, and its
+  // profile files have no such mapping.
+  if (/[\\/]/.test(model) || !fileName.startsWith(`${model}.`)) {
+    return undefined;
+  }
+  const rest = fileName.slice(model.length + 1);
+  const profileName = /^profile\.(.+)\.yaml$/.exec(rest)?.[1];
+  if (profileName !== undefined) {
+    let localPath: string;
+    try {
+      // Throws when the name breaks the profile naming rule.
+      localPath = layout.profilePath(model, profileName);
+    } catch {
+      return undefined;
+    }
+    return {
+      path: localPath,
+      write: text => layout.writeProfileDocument(model, profileName, text),
+    };
+  }
+  if (!/^profiles\/[^/\\]+$/.test(rest)) return undefined;
+  const localPath = path.join(path.dirname(layout.modelPath(model)), fileName);
+  return {
+    path: localPath,
+    write: text => {
+      fs.mkdirSync(path.dirname(localPath), {recursive: true});
+      fs.writeFileSync(localPath, text);
+    },
+  };
 }
 
 
