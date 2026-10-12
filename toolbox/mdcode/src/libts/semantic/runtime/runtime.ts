@@ -22,7 +22,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {deploymentProfileError, loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileForDocument, unknownProfileMessage} from '../resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, unknownProfileMessage} from '../resolve_profiles';
 
 import {resolveStore, Store} from './store';
 
@@ -142,7 +142,8 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     if (res.kind === 'error') {
       return {
-        error: res.stage === 'load' ? res.error : `[${doc.name}] ${res.error}`,
+        error: res.stage === 'load' ? modelFileAloneMessage(res.error, profile) :
+                                      `[${doc.name}] ${res.error}`,
       };
     }
     if (res.kind === 'file') {

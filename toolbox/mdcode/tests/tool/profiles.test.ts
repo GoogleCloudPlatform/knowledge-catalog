@@ -270,9 +270,13 @@ relationships:
     expect('error' in runtimes && runtimes.error).toContain(
         "relationship 'placed_by': from_columns and to_columns must be given " +
         'together');
-    // The loader's error names the model document itself.
+    // The loader's error names the model document itself, and says why the
+    // profile does not complete it.
     expect('error' in runtimes && runtimes.error)
         .toStartWith("Model document 'commerce'");
+    expect('error' in runtimes && runtimes.error).toContain(
+        "(under profile 'prod', the model file must load on its own before " +
+        'the profile applies)');
   });
 
   test('the runtime names the document of a profile that cannot apply', async () => {

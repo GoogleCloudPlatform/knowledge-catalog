@@ -328,7 +328,12 @@ semantic_model:
     logSpy.mockClear();
     expect(await profiles()).toBe(1);
     expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
-        .toContain("'deployment_target' is no longer supported");
+        .toContain(
+            "'deployment_target' is no longer supported; migrate to the named " +
+            "'deployments' list");
+    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
+        .toContain(
+            '(the model file must load on its own before a profile file applies)');
     expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n'))
         .toContain("Model 'b'");
   });

@@ -1180,6 +1180,21 @@ export function profileForDocument(
   return {kind: 'wrapper', ...res};
 }
 
+/**
+ * `error`, from loading a model document on its own before a profile file
+ * applies to it, with a note that says so. A model file that a profile used to
+ * complete, such as one with a half-given join, fails that load. Names
+ * `profileName` when one profile is selected.
+ */
+export function modelFileAloneMessage(
+    error: string, profileName?: string): string {
+  return profileName === undefined ?
+      `${error} (the model file must load on its own before a profile file ` +
+          `applies)` :
+      `${error} (under profile '${profileName}', the model file must load ` +
+          `on its own before the profile applies)`;
+}
+
 /** The error for a profile name a model document does not declare. */
 export function unknownProfileMessage(
     profileName: string, model: string, declared: string[]): string {

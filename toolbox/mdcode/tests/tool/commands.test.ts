@@ -569,8 +569,12 @@ semantic_model:
     const code = await push({validateOnly: true, profile: 'prod'});
 
     expect(code).toBe(1);
-    expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
-        .toContain("Error: Model document 'commerce': ");
+    const errors = errorSpy.mock.calls.map(c => String(c[0])).join('\n');
+    expect(errors).toContain("Error: Model document 'commerce': ");
+    // The error says why a profile that would complete the model does not.
+    expect(errors).toContain(
+        "(under profile 'prod', the model file must load on its own before " +
+        'the profile applies)');
   });
 
   // The profile's source is read by the loader's source reader, so it is

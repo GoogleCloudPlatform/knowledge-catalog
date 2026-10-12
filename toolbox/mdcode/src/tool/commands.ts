@@ -21,7 +21,7 @@ import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, isProfileFileForm, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -455,8 +455,9 @@ export async function push(options: PushOptions): Promise<number> {
             }
             if (res.kind === 'error') {
               console.error(
-                  res.stage === 'load' ? `Error: ${res.error}` :
-                                         `Error: [${doc.name}] ${res.error}`);
+                  res.stage === 'load' ?
+                      `Error: ${modelFileAloneMessage(res.error, profileName)}` :
+                      `Error: [${doc.name}] ${res.error}`);
               return null;
             }
             if (res.kind === 'file') {
@@ -1046,7 +1047,9 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       const fileForm = res.kind === 'file';
       if (res.kind === 'error') {
         if (res.stage === 'load') {
-          if (!modelFileReported) console.error(`  ${res.error}`);
+          if (!modelFileReported) {
+            console.error(`  ${modelFileAloneMessage(res.error)}`);
+          }
           modelFileReported = true;
         } else {
           // Most errors applying or merging a profile name it already.
