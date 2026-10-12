@@ -16,7 +16,7 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
+import {googleBlockTargets, googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
@@ -182,15 +182,15 @@ export function declaresGraphTarget(text: string): boolean {
       if (ext?.vendor_name !== 'GOOGLE' || typeof ext?.data !== 'string') {
         continue;
       }
-      let data: any;
+      // The rule every other reader uses: blank and non-string targets name
+      // nothing.
       try {
-        data = JSON.parse(ext.data);
+        if (googleBlockTargets([{vendorName: 'GOOGLE', data: ext.data}], '')
+                .length) {
+          return true;
+        }
       } catch {
         return true;  // malformed GOOGLE data: strict load will name it
-      }
-      if (Array.isArray(data?.deploymentTargets) &&
-          data.deploymentTargets.length) {
-        return true;
       }
     }
   }

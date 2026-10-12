@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, loadModels, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { databaseOf, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -2219,25 +2219,87 @@ describe('deployments and inline profiles', () => {
     })).toThrow('Too small: expected string to have >=1 characters');
   });
 
-  test('setting both deployment_target and deployments is rejected even when allowLegacyBareSource is true', () => {
-    for (const allowLegacyBareSource of [false, true]) {
-      expect(() => load(GOOGLE, {
-        name: 'sales',
-        deployment_target: BQ_TARGET,
-        deployments: [{ name: 'prod', target: SPANNER_TARGET }],
-        datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
-      }, { allowLegacyBareSource })).toThrow(
-        "model 'sales': set either 'deployments' or 'deployment_target', not both.",
-      );
-    }
+  test('a deployment entry with an unknown key or an empty name or profile is rejected', () => {
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET, profle: 'spanner_binding' },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(/Unrecognized key.*profle/);
+
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: '', target: BQ_TARGET },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow('Too small: expected string to have >=1 characters');
+
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployments: [
+        { name: 'prod', target: BQ_TARGET, profile: '' },
+      ],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow('Too small: expected string to have >=1 characters');
   });
 
-  test('deployment_target and deployments are rejected in vanilla, and deployment_target in Google flavor', () => {
+  test('setting both deployment_target and deployments rejects deployment_target by default and rejects setting both when allowLegacyBareSource is true', () => {
+    // The author already has the list, so the message says to drop the old
+    // key rather than add a list they already wrote.
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployment_target: BQ_TARGET,
+      deployments: [{ name: 'prod', target: SPANNER_TARGET }],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      "model 'sales': 'deployment_target' is no longer supported; remove it, and list its target under 'deployments' if it is not there already.",
+    );
+
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployment_target: BQ_TARGET,
+      deployments: [{ name: 'prod', target: SPANNER_TARGET }],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    }, { allowLegacyBareSource: true })).toThrow(
+      "model 'sales': set either 'deployments' or 'deployment_target', not both.",
+    );
+
+    // A vanilla document cannot keep `deployments`, so it is told which key
+    // to drop rather than to keep either one.
+    expect(() => load(VANILLA, {
+      name: 'sales',
+      deployment_target: BQ_TARGET,
+      deployments: [{ name: 'prod', target: SPANNER_TARGET }],
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    }, { allowLegacyBareSource: true })).toThrow(
+      "model 'sales': neither 'deployments' nor 'deployment_target' is in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google', keep 'deployments' and remove 'deployment_target'.",
+    );
+  });
+
+  test('deployment_target and deployments are rejected in vanilla, and deployment_target in Google flavor quotes the target or <target>', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
       deployment_target: BQ_TARGET,
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
-    })).toThrow("model 'sales': 'deployment_target' is no longer supported; migrate to the named 'deployments' list");
+    })).toThrow(
+      `model 'sales': 'deployment_target' is no longer supported; migrate to the named 'deployments' list:\n` +
+      `  deployments:\n` +
+      `    - name: default\n` +
+      `      target: ${BQ_TARGET}`,
+    );
+
+    expect(() => load(GOOGLE, {
+      name: 'sales',
+      deployment_target: 123,
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    })).toThrow(
+      `model 'sales': 'deployment_target' is no longer supported; migrate to the named 'deployments' list:\n` +
+      `  deployments:\n` +
+      `    - name: default\n` +
+      `      target: <target>`,
+    );
 
     expect(() => load(VANILLA, {
       name: 'sales',
@@ -2254,6 +2316,15 @@ describe('deployments and inline profiles', () => {
     })).toThrow(
       "model 'sales': 'deployments' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
     );
+  });
+
+  test('a padded legacy deployment_target is trimmed, as a deployments target is', () => {
+    const { models } = load(GOOGLE, {
+      name: 'sales',
+      deployment_target: `  ${BQ_TARGET}  `,
+      datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
+    }, { allowLegacyBareSource: true });
+    expect(models[0].deployments).toEqual([{ name: 'default', target: BQ_TARGET }]);
   });
 
   test('an inline profiles key in a Google-flavor document is rejected, naming the sidecar file', () => {
@@ -2287,10 +2358,20 @@ ${extra}    ${key}:
           - { name: id, expression: id }
 `;
   const GOOGLE = '0.2.0.dev0/google';
-  const cases: [string, string, string][] = [
-    ['both keys', doc(GOOGLE, `    deployment_target: ${G}\n    deployments:\n      - { name: a, target: "${G}" }\n`),
-     "set either 'deployments' or 'deployment_target', not both"],
+  const both = `    deployment_target: ${G}\n    deployments:\n      - { name: a, target: "${G}" }\n`;
+  const cases: [string, string, string, LoadOptions?][] = [
+    ['both keys', doc(GOOGLE, both),
+     "remove it, and list its target under 'deployments' if it is not there already"],
+    // Under the legacy flag the both-keys check itself fires. It must throw
+    // SemanticModelError, the class the load catches, so it is reported.
+    ['both keys under the legacy flag', doc(GOOGLE, both),
+     "set either 'deployments' or 'deployment_target', not both",
+     {allowLegacyBareSource: true}],
+    ['both keys in the open format under the legacy flag', doc('0.2.0.dev0', both, 'datasets'),
+     "neither 'deployments' nor 'deployment_target' is in the open format", {allowLegacyBareSource: true}],
     ['deployment_target in the open format', doc('0.2.0.dev0', `    deployment_target: ${G}\n`, 'datasets'),
+     "'deployment_target' is not in the open format"],
+    ['both keys in the open format', doc('0.2.0.dev0', both, 'datasets'),
      "'deployment_target' is not in the open format"],
     ['deployment_target in the Google flavor', doc(GOOGLE, `    deployment_target: ${G}\n`),
      "'deployment_target' is no longer supported"],
@@ -2301,9 +2382,9 @@ ${extra}    ${key}:
     ['two deployments with one target', doc(GOOGLE, `    deployments:\n      - { name: a, target: "${G}" }\n      - { name: b, target: "${G}" }\n`),
      'target the same resource'],
   ];
-  for (const [label, text, message] of cases) {
+  for (const [label, text, message, opts] of cases) {
     test(label, () => {
-      const res = loadSemanticModels([{name: 'sales', text}]);
+      const res = loadSemanticModels([{name: 'sales', text}], opts);
       expect(res.error).toContain("Model document 'sales'");
       expect(res.error).toContain(message);
     });

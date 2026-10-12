@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {entityAndMetricWarnings, databaseOf, DEFAULT_DIALECT, halfBoundJoinMessage, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, halfBoundJoinMessage, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
 import {InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1767,8 +1767,9 @@ export function sourcesDialect(
   return dialectOfSources(
       (model.entities ?? [])
           .filter(e => !e.abstract)
-          .map(e => databaseOf((e.authoredSource ?? '').trim()) ?
-                   e.authoredSource! :
+          .map(e => e.authoredSource !== undefined &&
+                       isAcceptedSource(e.authoredSource.trim()) ?
+                   e.authoredSource :
                    e.dataSource ?? ''));
 }
 

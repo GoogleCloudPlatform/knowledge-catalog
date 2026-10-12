@@ -1,10 +1,11 @@
-// Tests the semantic-model push flag logic (src/tool/commands.ts): which flag
-// combinations are coherent, and how a model document's deployment target is
-// detected. The graph backend is NOT a command-line choice -- a model deploys
-// to whichever backend its deployment target names -- so these pin the two pure
-// decisions that gate a push: checkPushSelection (are the leg toggles and
-// binding-profile selection consistent?) and declaresGraphTarget (does a
-// document name a graph at all).
+// Tests the semantic-model push/pull/profiles planning and CLI guards
+// (src/tool/commands.ts): which flag combinations are coherent
+// (checkPushSelection), how a model document's deployment target is detected
+// (declaresGraphTarget), when a push warns that it publishes to Knowledge
+// Catalog only (catalogOnlyWarning), how a graph push treats a profile file,
+// how deployment-level `profile:` guards behave across `kcmd push`, `kcmd
+// profiles`, and `createSemanticRuntimes`, and how `kcmd pull` reconstructs
+// loadable `.yaml` files from Knowledge Catalog resources.
 //
 // The deploy legs themselves are covered end to end elsewhere
 // (deploy_bigquery.test.ts, deploy_spanner.test.ts,
@@ -149,6 +150,19 @@ semantic_model:
   - name: sales
     deployments: []
 `)).toBe(false);
+  });
+
+  test('a GOOGLE block whose targets are all blank or not strings is not a target', () => {
+    for (const list of ['["  "]', '[""]', '[7]']) {
+      expect(declaresGraphTarget(`
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets":${list}}'
+`)).toBe(false);
+    }
   });
 
   test('a non-GOOGLE extension is ignored', () => {
@@ -486,6 +500,50 @@ semantic_model:
             "'//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
+  test('push refuses a deployment naming a profile when it sits in the second of two model files', async () => {
+    const eg = setupWorkspace();
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'log').mockImplementation(() => {});
+    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
+    const kcSpy = spyOn(kcDeploy, 'deployKnowledgeCatalog');
+
+    fs.writeFileSync(path.join(eg, '01_valid.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: first_model
+    deployments:
+      - name: prod
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g1
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`);
+    fs.writeFileSync(path.join(eg, '02_invalid.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: second_model
+    deployments:
+      - name: staging
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2
+        profile: spanner_binding
+    datasets:
+      - name: items
+        source: bigquery:p.d.items
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`);
+
+    const code = await push({});
+    expect(code).toBe(1);
+    expect(bqSpy).not.toHaveBeenCalled();
+    expect(kcSpy).not.toHaveBeenCalled();
+    const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain(
+        "model 'second_model': deployment 'staging' names profile 'spanner_binding'");
+  });
+
   test('a legacy profile file carrying deployment_target and a bare source still merges and loads', async () => {
     const eg = setupWorkspace();
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
@@ -526,9 +584,9 @@ semantic_model:
     const bqGraph = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const alloyTarget = '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
 
-    // Primary model pushed and pulled through the CLI: two BigQuery entities in
-    // the same dataset (short form and full URI) and two deployments in
-    // [Spanner, BigQuery] order.
+    // Primary model pushed without `emitExpressions` (the default push) and
+    // pulled through the CLI: two BigQuery entities in the same dataset (short
+    // form and full URI) and two deployments in [Spanner, BigQuery] order.
     const salesYaml = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -549,7 +607,7 @@ semantic_model:
 `;
     const {models: [sales]} = loadModels(salesYaml);
     const {entries, entryLinks} = generateCatalogResources(
-        sales, {project: 'test-project', location: 'us', entryGroup: 'sales_eg', emitExpressions: true});
+        sales, {project: 'test-project', location: 'us', entryGroup: 'sales_eg'});
     const pulled = modelsFromCatalogResources(entries, entryLinks);
 
     spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue(pulled);
@@ -566,8 +624,10 @@ semantic_model:
     expect(written).not.toContain('deploymentTargets');
     expect(written).not.toContain('custom_extensions');
 
-    // The rebuilt file loads without allowLegacyBareSource and preserves
-    // deployment targets in declaration order and both BigQuery source forms.
+    // The rebuilt file (whose fields came back unbound because the default push
+    // omits `emitExpressions`) loads without allowLegacyBareSource and
+    // preserves deployment targets in declaration order and both BigQuery
+    // source forms.
     const loaded = loadModels(written);
     expect(loaded.models).toHaveLength(1);
     const m = loaded.models[0];
@@ -578,6 +638,7 @@ semantic_model:
     const byName = new Map(m.entities.map(e => [e.name, e]));
     expect(byName.get('bq_short')!.authoredSource).toBe('bigquery:p.d.orders');
     expect(byName.get('bq_short')!.dataSource).toBe('p.d.orders');
+    expect(byName.get('bq_short')!.fields[0].expression).toBeUndefined();
     expect(byName.get('bq_uri')!.authoredSource)
         .toBe('//bigquery.googleapis.com/projects/p/datasets/d/tables/items');
     expect(byName.get('bq_uri')!.dataSource).toBe('p.d.items');

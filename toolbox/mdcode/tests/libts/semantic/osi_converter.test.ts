@@ -146,6 +146,109 @@ describe('serialized document structure', () => {
       {name: 'staging', target, profile: 'spanner_binding'},
     ]);
   });
+
+  test('a vanilla model whose targets live only in the GOOGLE custom_extensions block serializes them under deployments', () => {
+    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const spTarget = '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+    const [singleVanilla] = loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deploymentTargets: [bqTarget]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+`).models;
+    expect(singleVanilla.deployments).toBeUndefined();
+    const singleSer = serializeModel(singleVanilla);
+    expect(singleSer.warnings).toEqual([]);
+    expect(yaml.parse(singleSer.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: bqTarget},
+    ]);
+
+    const [multiVanilla] = loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deploymentTargets: [spTarget, bqTarget]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+`).models;
+    const multiSer = serializeModel(multiVanilla);
+    expect(multiSer.warnings).toEqual([]);
+    expect(yaml.parse(multiSer.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'deployment_1', target: spTarget},
+      {name: 'deployment_2', target: bqTarget},
+    ]);
+  });
+
+  // A padded repeat of a target is the same target, and a blank one names
+  // none. Written out as they are, either gives a file that fails to load.
+  test('a vanilla GOOGLE block with a padded repeat and a blank target serializes to a file that loads', () => {
+    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const model: SemanticModel = {
+      name: 'sales',
+      version: '0.2.0.dev0',
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [bqTarget, '  ', ` ${bqTarget} `]}),
+      }],
+      entities: [{
+        name: 'orders', dataSource: 'p.d.orders',
+        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const ser = serializeModel(model);
+    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: bqTarget},
+    ]);
+    const reloaded = loadModels(ser.yaml).models[0];
+    expect(reloaded.deployments).toEqual([{name: 'default', target: bqTarget}]);
+  });
+
+  test('a GOOGLE block whose data is not valid JSON does not drop the targets of another block', () => {
+    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const model: SemanticModel = {
+      name: 'sales',
+      version: '0.2.0.dev0',
+      customExtensions: [
+        {vendorName: 'GOOGLE', data: 'not json'},
+        {vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [bqTarget]})},
+      ],
+      entities: [{
+        name: 'orders', dataSource: 'p.d.orders',
+        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const ser = serializeModel(model);
+    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: bqTarget},
+    ]);
+    expect(ser.warnings).toHaveLength(1);
+  });
 });
 
 

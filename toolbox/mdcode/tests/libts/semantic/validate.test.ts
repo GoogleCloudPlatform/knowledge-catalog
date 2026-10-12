@@ -72,8 +72,17 @@ describe('validatePushRequirements', () => {
   test('a model with no deployment target is rejected', () => {
     const errs = validatePushRequirements([loaded(model())]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('exactly one');
+    expect(errs[0]).toContain(
+        'declares 0 deployments; push uses exactly one deployment for now, ' +
+        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
     expect(errs[0]).toContain('doc');
+
+    const vanillaErrs =
+        validatePushRequirements([loaded(model({version: '0.2.0.dev0'}))]);
+    expect(vanillaErrs).toHaveLength(1);
+    expect(vanillaErrs[0]).toEndWith(
+        "; set version: '0.2.0.dev0/google' and use 'deployments:'");
+    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
   });
 
   test(
@@ -110,7 +119,9 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain(
-        'not a valid BigQuery Graph or Spanner Graph URI');
+        "target '//dataplex.googleapis.com/projects/p/locations/us' is not " +
+        'a valid BigQuery Graph or Spanner Graph URI');
+    expect(errs[0]).not.toContain('deploymentTarget');
   });
 
   // An AlloyDB target parses and is supported, and a push still cannot use it:
@@ -121,10 +132,27 @@ describe('validatePushRequirements', () => {
     const m = model({}, [googleExt([ALLOYDB_TARGET])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('is an AlloyDB database');
+    expect(errs[0]).toContain(`target '${ALLOYDB_TARGET}' is an AlloyDB database`);
     expect(errs[0]).toContain('runs against rather than deploys to');
-    expect(errs[0]).toContain(ALLOYDB_TARGET);
+    expect(errs[0]).toContain(
+        "Declare a BigQuery or Spanner Graph target (under 'deployments'; " +
+        "push uses exactly one deployment for now), or run 'kcmd push " +
+        "--no-profile' to publish to Knowledge Catalog only.");
+    expect(errs[0]).not.toContain('deploymentTarget');
     expect(errs[0]).not.toContain('is not a valid');
+
+    const vanilla =
+        model({version: '0.2.0.dev0'}, [googleExt([ALLOYDB_TARGET])]);
+    const vanillaErrs = validatePushRequirements([loaded(vanilla)]);
+    expect(vanillaErrs).toHaveLength(1);
+    // The version hint goes with the graph target it enables, not with the
+    // catalog-only option.
+    expect(vanillaErrs[0]).toContain(
+        "Declare a BigQuery or Spanner Graph target (set version: " +
+        "'0.2.0.dev0/google' and use 'deployments:'; push uses exactly one " +
+        "deployment for now), or run 'kcmd push --no-profile' to publish to " +
+        "Knowledge Catalog only.");
+    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
   });
 
   // A Knowledge-Catalog-only push deploys no graph at all, so it has no opinion
@@ -141,7 +169,35 @@ describe('validatePushRequirements', () => {
     const m = model({}, [googleExt([BQ_TARGET, other])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('exactly one');
+    expect(errs[0]).toContain(
+        'declares 2 deployments; push uses exactly one deployment for now, ' +
+        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
+  });
+
+  test('more than one target in a vanilla model ends with the version hint', () => {
+    const other =
+        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+    const m = model({version: '0.2.0.dev0'}, [googleExt([BQ_TARGET, other])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toEndWith(
+        "with a BigQuery Graph or Spanner Graph target; set version: " +
+        "'0.2.0.dev0/google' and use 'deployments:'");
+  });
+
+  // A padded target is the same target, so a blank one is dropped and a padded
+  // copy is caught as a repeat, on a catalog-only push too.
+  test('GOOGLE-block targets are trimmed and blank ones dropped before the repeat check', () => {
+    const padded = model({version: '0.2.0.dev0'},
+                         [googleExt([BQ_TARGET, '  ', ` ${BQ_TARGET} `])]);
+    expect(validatePushRequirements([loaded(padded)], {targetOptional: true}))
+        .toEqual([
+          `model 'm' (doc) declares duplicate deployment target '${
+              BQ_TARGET}'; each deployment must target a distinct resource.`,
+        ]);
+    const blank = model({version: '0.2.0.dev0'},
+                        [googleExt(['', ` ${BQ_TARGET} `])]);
+    expect(validatePushRequirements([loaded(blank)])).toEqual([]);
   });
 
   test('malformed GOOGLE extension JSON is reported, not thrown', () => {

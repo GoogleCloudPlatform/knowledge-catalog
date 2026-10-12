@@ -108,8 +108,12 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 //     third-party vendors only; a GOOGLE block is rejected, since everything
 //     it would carry is a native key here.
 // Both parse into the same IR, so a downstream leg never sees the difference.
-const OSSIE_VERSION = '0.2.0.dev0';
+export const OSSIE_VERSION = '0.2.0.dev0';
 const GOOGLE_VERSION = '0.2.0.dev0/google';
+// How a vanilla author gets the `deployments:` key: the end of every message
+// that asks a vanilla model for something only the Google flavor can say.
+export const DEPLOYMENTS_VERSION_HINT =
+    `set version: '${GOOGLE_VERSION}' and use 'deployments:'`;
 // The declared flavor, as stored on the IR (SemanticModel.version).
 type FormatVersion = NonNullable<SemanticModel['version']>;
 const ACCEPTED_VERSIONS: readonly FormatVersion[] = [OSSIE_VERSION, GOOGLE_VERSION];
@@ -883,10 +887,19 @@ function normalizeModelSugars(
     m: any, extended: boolean, allowLegacyBareSource = false): void {
   const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
 
-  if (m.deployment_target !== undefined && m.deployments !== undefined) {
+  // Only a load that still accepts the legacy key can be left holding both.
+  // Elsewhere the `deployment_target:` rejection below speaks to it. The open
+  // format has neither key, so a vanilla document is told to switch flavor.
+  if (allowLegacyBareSource && m.deployment_target !== undefined &&
+      m.deployments !== undefined) {
     throw new SemanticModelError(
-        `Semantic model load error: ${label}: set either 'deployments' or ` +
-        `'deployment_target', not both.`);
+        extended ?
+            `Semantic model load error: ${label}: set either 'deployments' ` +
+                `or 'deployment_target', not both.` :
+            `Semantic model load error: ${label}: neither 'deployments' nor ` +
+                `'deployment_target' is in the open format ` +
+                `('${OSSIE_VERSION}'); set version: '${GOOGLE_VERSION}', ` +
+                `keep 'deployments' and remove 'deployment_target'.`);
   }
 
   // `deployment_target` has been replaced by the named `deployments:` list in
@@ -896,8 +909,14 @@ function normalizeModelSugars(
     if (!extended) {
       throw new SemanticModelError(
           `Semantic model load error: ${label}: 'deployment_target' is not ` +
-          `in the open format ('${OSSIE_VERSION}'); set version: ` +
-          `'${GOOGLE_VERSION}' and use 'deployments:'`);
+          `in the open format ('${OSSIE_VERSION}'); ` +
+          `${DEPLOYMENTS_VERSION_HINT}`);
+    }
+    if (m.deployments !== undefined) {
+      throw new SemanticModelError(
+          `Semantic model load error: ${label}: 'deployment_target' is no ` +
+          `longer supported; remove it, and list its target under ` +
+          `'deployments' if it is not there already.`);
     }
     const target = typeof m.deployment_target === 'string' ?
         m.deployment_target :
@@ -913,8 +932,7 @@ function normalizeModelSugars(
   if (!extended && m.deployments !== undefined) {
     throw new SemanticModelError(
         `Semantic model load error: ${label}: 'deployments' is not in the ` +
-        `open format ('${OSSIE_VERSION}'); set version: '${GOOGLE_VERSION}' ` +
-        `and use 'deployments:'`);
+        `open format ('${OSSIE_VERSION}'); ${DEPLOYMENTS_VERSION_HINT}`);
   }
 
   // In the Google flavor, binding profiles live in sidecar files
@@ -1412,7 +1430,7 @@ function convertModel(
   }
   // A blank `deployment_target` names no target, as push reads it.
   if (!deployments.length && m.deployment_target?.trim()) {
-    deployments.push({name: 'default', target: m.deployment_target});
+    deployments.push({name: 'default', target: m.deployment_target.trim()});
   }
 
   const description = composeDescription(m.description);
@@ -2113,9 +2131,9 @@ interface ParsedSource {
 
 const MAX_CATALOG_NAME_LENGTH = 4000;
 
-export const BIGQUERY_TABLE_URI =
+const BIGQUERY_TABLE_URI =
     /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)\/tables\/([^/.]+)$/;
-export const BIGLAKE_TABLE_URI =
+const BIGLAKE_TABLE_URI =
     /^\/\/biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)\/tables\/([^/.]+)$/;
 const SPANNER_TABLE_URI =
     /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/;
@@ -2129,7 +2147,7 @@ const LEGACY_ALLOYDB_INSTANCE_URI =
 // dots and colons inside backticks do not split or fail. Returns [] when the
 // quoting is malformed (an unquoted colon, an unclosed backtick, text after a
 // closing backtick, or a backtick mid-segment outside quotes).
-export function catalogNameSegments(path: string): string[] {
+function catalogNameSegments(path: string): string[] {
   const out: string[] = [];
   let cur = '';
   let state: 'start'|'unquoted'|'quoted'|'after_quote' = 'start';
@@ -2259,6 +2277,39 @@ export function databaseOf(source: string): string|undefined {
   }
 }
 
+// True when `source` is a GCP resource URI or Knowledge Catalog name that
+// `databaseOf` accepts, as opposed to a legacy bare table name. The loader,
+// the Knowledge Catalog emitter and the serializer share it so they agree on
+// which sources are written back as authored.
+export function isAcceptedSource(source: string|undefined): boolean {
+  return source !== undefined && databaseOf(source) !== undefined;
+}
+
+// Maps an accepted source string (or catalog resource path) to the IR's
+// canonical `dataSource`: a BigQuery or BigLake resource URI or a 3-segment
+// `bigquery:` catalog name becomes the dot-separated table string; anything
+// else (Spanner/AlloyDB URIs, other catalog names, or an unrecognized string)
+// is returned trimmed. Shared by the loader (`parseSource`) and the Knowledge
+// Catalog reader (`dataSourceFromResource`) so `readRelationships` matches
+// `Entity.dataSource` against the `schema-join` aspect's table names.
+export function sourceToDataSource(source: string): string {
+  const value = source.trim();
+  const bqUri = value.match(BIGQUERY_TABLE_URI);
+  if (bqUri) return `${bqUri[1]}.${bqUri[2]}.${bqUri[3]}`;
+  const biglakeUri = value.match(BIGLAKE_TABLE_URI);
+  if (biglakeUri) {
+    const [, project, catalog, namespace, table] = biglakeUri;
+    return `${project}.${catalog}.${namespace}.${table}`;
+  }
+  if (value.startsWith('bigquery:')) {
+    const segs = catalogNameSegments(value.slice('bigquery:'.length));
+    if (segs.length === 3 && segs.every(s => s.length > 0)) {
+      return segs.join('.');
+    }
+  }
+  return value;
+}
+
 // Reads an entity's `source` into the dotted name the generators use and the
 // source as written. Throws on a form the loader does not accept. A profile
 // file's sources are read here too, so they follow the same rules.
@@ -2276,31 +2327,10 @@ export function parseSource(
   }
 
   // Accepted forms: GCP resource URI or Knowledge Catalog name.
-  if (databaseOf(trimmed) !== undefined) {
-    const bqUri = trimmed.match(BIGQUERY_TABLE_URI);
-    if (bqUri) {
-      return {
-        authoredSource: trimmed,
-        dataSource: `${bqUri[1]}.${bqUri[2]}.${bqUri[3]}`,
-      };
-    }
-    const biglakeUri = trimmed.match(BIGLAKE_TABLE_URI);
-    if (biglakeUri) {
-      return {
-        authoredSource: trimmed,
-        dataSource: `${biglakeUri[1]}.${biglakeUri[2]}.${biglakeUri[3]}.${biglakeUri[4]}`,
-      };
-    }
-    if (trimmed.startsWith('bigquery:')) {
-      const segs = catalogNameSegments(trimmed.slice('bigquery:'.length));
-      return {
-        authoredSource: trimmed,
-        dataSource: segs.join('.'),
-      };
-    }
+  if (isAcceptedSource(trimmed)) {
     return {
       authoredSource: trimmed,
-      dataSource: trimmed,
+      dataSource: sourceToDataSource(trimmed),
     };
   }
 

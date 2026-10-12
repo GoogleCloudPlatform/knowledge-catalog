@@ -426,6 +426,49 @@ describe('relationship recovery (schema-join links -> IR)', () => {
         entries, [...nameless, ...nameless.map(l => ({...l}))]);
     expect(models[0].relationships).toHaveLength(1);
   });
+
+  test(
+      'a relationship between bigquery: and BigLake entities preserves direction without warnings',
+      () => {
+        // `sales-customer` sorts before `sales-orders` in the link's
+        // entryReferences, so `readRelationships` sees [customer, orders] and
+        // must match the converted `dataSource` of both (`p.d.customer` and
+        // `p.c.n.orders`) against the schema-join aspect to flip the edge back
+        // to `orders -> customer`.
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: [
+            {
+              name: 'customer',
+              authoredSource: 'bigquery:p.d.customer',
+              dataSource: 'p.d.customer',
+              keys: ['c_custkey'],
+              fields: [{name: 'c_custkey', expression: 'customer.c_custkey'}],
+            },
+            {
+              name: 'orders',
+              authoredSource:
+                  '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders',
+              dataSource: 'p.c.n.orders',
+              keys: ['o_orderkey'],
+              fields: [{name: 'o_custkey', expression: 'orders.o_custkey'}],
+            },
+          ],
+          relationships: [{
+            name: 'places',
+            source: {entity: 'orders', columns: ['o_custkey']},
+            destination: {entity: 'customer', columns: ['c_custkey']},
+          }],
+          metrics: [],
+        };
+        const {models, warnings} = roundTrip(model);
+        expect(warnings).toEqual([]);
+        expect(models[0].relationships).toEqual([{
+          name: 'places',
+          source: {entity: 'orders', columns: ['o_custkey']},
+          destination: {entity: 'customer', columns: ['c_custkey']},
+        }]);
+      });
 });
 
 
@@ -488,6 +531,44 @@ describe(
           {vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [uri]})},
         ]);
       });
+
+      test(
+          'trims stored targets and entity source resources, and drops empty targets',
+          () => {
+            const uri =
+                '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            const model: SemanticModel = {
+              name: 'sales',
+              entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: []}],
+              relationships: [],
+              metrics: [],
+            };
+            const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+            const anchor =
+                entries.find(e => e.entryType.endsWith('/semantic-model'))!;
+            anchor.aspects!['dataplex-types.global.semantic-model'].data = {
+              deploymentTargets: ['   ', `  ${uri}  `, ''],
+            };
+            const entityEntry =
+                entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+            entityEntry.aspects!['dataplex-types.global.semantic-entity'].data =
+                {
+                  source: {resources: ['  bigquery:p.d.t  ']},
+                };
+            const {models} = modelsFromCatalogResources(entries, entryLinks);
+            expect(models[0].deployments).toEqual([
+              {name: 'default', target: uri},
+            ]);
+            expect(models[0].customExtensions).toEqual([
+              {
+                vendorName: 'GOOGLE',
+                data: JSON.stringify({deploymentTargets: [uri]}),
+              },
+            ]);
+            expect(models[0].entities[0].authoredSource)
+                .toBe('bigquery:p.d.t');
+            expect(models[0].entities[0].dataSource).toBe('p.d.t');
+          });
     });
 
 

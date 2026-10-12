@@ -43,7 +43,8 @@
 import * as yaml from 'yaml';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel,} from './ir';
-import {databaseOf} from './loader';
+import {googleBlockTargets, unnamedDeployments} from './deployment_target';
+import {isAcceptedSource} from './loader';
 import {declaredConceptFields} from './resolve_inheritance';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
@@ -186,15 +187,18 @@ function modelDoc(model: SemanticModel, warnings: string[], logical: boolean):
   }
   // The extended profile has no `custom_extensions` carrier: a model's
   // deployments are emitted under the native `deployments` key (from
-  // `model.deployments`), while the folded GOOGLE `deploymentTargets` block is
+  // `model.deployments`, or synthesized from the GOOGLE `deploymentTargets`
+  // block for a vanilla model), while the GOOGLE `deploymentTargets` block is
   // skipped and any other vendor extension is dropped with a warning.
   dropModelExtensions(model.customExtensions, model.name, warnings);
-  const deployments = nonEmpty((model.deployments ?? []).map(d => compact({
-                                                               name: d.name,
-                                                               target: d.target,
-                                                               profile:
-                                                                   d.profile,
-                                                             })));
+  const explicitDeployments =
+      (model.deployments ?? [])
+          .map(d => compact(
+                   {name: d.name, target: d.target, profile: d.profile}));
+  const deployments = nonEmpty(
+      explicitDeployments.length ?
+          explicitDeployments :
+          deploymentsFromGoogleExtensions(model));
   const emittedFields = emitted(model);
   return compact({
     name: model.name,
@@ -232,13 +236,11 @@ function datasetDoc(
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit
     // the key rather than emit `source: ""` (which the loader rejects). Prefer
-    // `authoredSource` when `databaseOf` accepts it so resource URIs and
+    // `authoredSource` when `isAcceptedSource` accepts it so resource URIs and
     // catalog names survive serialization, and fall back to `dataSource` when
     // `authoredSource` was a legacy bare name that the load qualified.
-    source: (entity.authoredSource &&
-                     databaseOf(entity.authoredSource) !== undefined ?
-                 entity.authoredSource :
-                 entity.dataSource) ||
+    source: (isAcceptedSource(entity.authoredSource) ? entity.authoredSource :
+                                                       entity.dataSource) ||
         undefined,
     // Supertype entities (entity-level inheritance); omitted when none.
     extends: nonEmpty(entity.extends),
@@ -530,24 +532,42 @@ function aiContextDoc(ai: AiContext|undefined): Record<string, any>|undefined {
   return Object.keys(doc).length ? doc : undefined;
 }
 
+// The deployments a vanilla model lists only as targets in its GOOGLE blocks,
+// named as a pull names them. A block whose data is not valid JSON gives none,
+// and dropModelExtensions warns that it was dropped. The other blocks still
+// give theirs.
+function deploymentsFromGoogleExtensions(model: SemanticModel):
+    Array<{name: string; target: string}> {
+  const targets = (model.customExtensions ?? []).flatMap(ext => {
+    try {
+      return googleBlockTargets([ext], model.name);
+    } catch {
+      return [];
+    }
+  });
+  return unnamedDeployments(targets);
+}
+
 // Warns about any model-level `custom_extensions` block that has no
-// representation under `/google`. The folded GOOGLE `deploymentTargets` block
-// is skipped here because its targets are serialized via `model.deployments`.
+// representation under `/google`. The GOOGLE `deploymentTargets` block is
+// skipped here because its targets are serialized via `deployments`.
 function dropModelExtensions(
     exts: CustomExtension[]|undefined, modelName: string,
     warnings: string[]): void {
   if (!exts || !exts.length) return;
   let dropped = 0;
   for (const ext of exts) {
-    let targets: unknown;
+    let hasTargets = false;
     if (ext.vendorName === GOOGLE_VENDOR) {
       try {
-        targets = JSON.parse(ext.data)?.deploymentTargets;
+        const targets = JSON.parse(ext.data)?.deploymentTargets;
+        hasTargets = Array.isArray(targets) &&
+            targets.some(t => typeof t === 'string' && t.trim() !== '');
       } catch {
-        targets = undefined;
+        hasTargets = false;
       }
     }
-    if (!Array.isArray(targets) || !targets.length) {
+    if (!hasTargets) {
       dropped += 1;  // a non-GOOGLE block, or a GOOGLE block without targets
     }
   }

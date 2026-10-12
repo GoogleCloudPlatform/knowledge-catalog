@@ -14,7 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, undefinedEndpointProblem} from './loader';
+import {DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {expressionSources, sourcesDialect} from './resolve_profiles';
@@ -29,8 +29,8 @@ import {SqlColumn} from './sql_parser';
 // `targetOptional` permits a model with NO deployment target -- the case for a
 // Knowledge-Catalog-only push, which governs the logical model and deploys no
 // graph. A graph leg never sets it, so a bq/spanner/all push still requires
-// exactly one target. A KC-only push ignores its deployment target entirely --
-// it deploys no graph.
+// exactly one target. A KC-only push skips the target count and kind checks,
+// while still rejecting a repeated target URI.
 //
 // `fieldsPruned` says the caller has already dropped every field the selected
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
@@ -82,35 +82,40 @@ export function validatePushRequirements(
     // gets its own arm below so it is not reported as a typo.
     //
     // A KC-only push (targetOptional) deploys no graph, so its deployment
-    // target is irrelevant: skip the check entirely. Such a push may carry no
-    // target (a logical model), one, or even both backends (whose KC aspect
-    // records both)
-    // -- none of that affects the Knowledge Catalog write.
+    // target count and kind are irrelevant: skip this check (duplicate targets
+    // were already rejected above). Such a push may carry no target (a logical
+    // model), one, or even several backends (whose KC aspect records all of
+    // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
+      const vanilla = model.version === OSSIE_VERSION;
       if (deployInfo.uris.length !== 1) {
         errors.push(
             `model '${model.name}' (${document}) declares ${
                 deployInfo.uris
                     .length} deployments; push uses ` +
             `exactly one deployment for now, with a BigQuery Graph or ` +
-            `Spanner Graph target under 'deployments'.`);
+            `Spanner Graph target${
+                vanilla ? `; ${DEPLOYMENTS_VERSION_HINT}` :
+                          ` under 'deployments'.`}`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
         // -- which makes this a deployment pointed at the wrong verb rather
         // than a URI to correct, and the message says which verb it is for.
         errors.push(
-            `model '${model.name}' (${document}) deploymentTarget '${
+            `model '${model.name}' (${document}) target '${
                 deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
             `model runs against rather than deploys to; AlloyDB has no ` +
             `property graph for a push to publish. Declare a BigQuery or ` +
-            `Spanner Graph target under 'deployments' (push uses exactly one ` +
-            `deployment for now), or pass --no-profile to publish to ` +
-            `Knowledge Catalog only.`);
+            `Spanner Graph target (${
+                vanilla ? `${DEPLOYMENTS_VERSION_HINT}; ` :
+                          `under 'deployments'; `}push uses exactly one ` +
+            `deployment for now), or run 'kcmd push --no-profile' to publish ` +
+            `to Knowledge Catalog only.`);
       } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
         // The single target is present but is not a supported graph URI.
         errors.push(
-            `model '${model.name}' (${document}) deploymentTarget '${
+            `model '${model.name}' (${document}) target '${
                 deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
             `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
             `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +

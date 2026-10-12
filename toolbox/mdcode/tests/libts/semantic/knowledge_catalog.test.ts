@@ -466,6 +466,33 @@ describe('model-level structure', () => {
             .toEqual({deploymentTargets: [spannerUri, bqUri, alloyUri]});
       });
 
+  test(
+      'a model preserves every declared target in order even when deployment_target.ts does not recognize it',
+      () => {
+        const clusterAlloyUri =
+            '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
+        const alloyCatalogName = 'alloydb:p.us-central1.c.db';
+        const bqUri =
+            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const customTarget = 'bigquery:p.d.graph_name';
+        const targets =
+            [clusterAlloyUri, bqUri, alloyCatalogName, customTarget];
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: targets}),
+          }],
+        };
+        const {entries} = generateCatalogResources(model, OPTS);
+        const anchor = entries[0];
+        expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
+            .toEqual({deploymentTargets: targets});
+      });
+
   test('the anchor is emitted first and is the parent of every child', () => {
     const model: SemanticModel = {
       name: 'm',

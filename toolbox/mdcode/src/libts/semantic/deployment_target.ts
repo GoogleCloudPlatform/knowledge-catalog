@@ -33,7 +33,7 @@
 // matches neither destination type is collected as `malformed` (rejected by the
 // validator and named in errors) rather than silently skipped.
 
-import {DeploymentSpec, SemanticModel} from './ir';
+import {CustomExtension, DeploymentSpec, SemanticModel} from './ir';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
@@ -338,8 +338,17 @@ const targetsCache = new WeakMap<SemanticModel, GoogleDeploymentTargets>();
 // an opaque, vendor-serialized JSON string (the loader keeps it verbatim); we
 // own its `deploymentTargets` shape. Throws on malformed extension JSON.
 function extensionTargets(model: SemanticModel): string[] {
+  return googleBlockTargets(model.customExtensions, model.name);
+}
+
+// The targets listed in the GOOGLE blocks among `exts`, in order, each
+// trimmed, with blank ones dropped. A padded target is the same target, so
+// trimming here keeps the duplicate check and the stored list in step. Throws
+// when a GOOGLE block's data is not valid JSON.
+export function googleBlockTargets(
+    exts: readonly CustomExtension[]|undefined, modelName: string): string[] {
   const uris: string[] = [];
-  for (const ext of model.customExtensions ?? []) {
+  for (const ext of exts ?? []) {
     if (ext.vendorName !== GOOGLE_VENDOR) {
       continue;
     }
@@ -349,7 +358,7 @@ function extensionTargets(model: SemanticModel): string[] {
       data = JSON.parse(ext.data);
     } catch {
       throw new Error(`Model '${
-          model.name}': GOOGLE custom_extension 'data' is not valid JSON.`);
+          modelName}': GOOGLE custom_extension 'data' is not valid JSON.`);
     }
 
     const list = data?.deploymentTargets;
@@ -357,10 +366,25 @@ function extensionTargets(model: SemanticModel): string[] {
       continue;
     }
     for (const uri of list) {
-      if (typeof uri === 'string') uris.push(uri);
+      if (typeof uri === 'string' && uri.trim() !== '') uris.push(uri.trim());
     }
   }
   return uris;
+}
+
+// Deployments for targets whose names are not known: a pull reads only the
+// targets back from the catalog, and a vanilla model lists only targets in
+// its GOOGLE block. One target is `default`; several are `deployment_1`,
+// `deployment_2`, and so on. Targets are trimmed, and blank and repeated ones
+// dropped, so the list loads as a `deployments:` list.
+export function unnamedDeployments(targets: readonly string[]):
+    Array<{name: string; target: string}> {
+  const kept =
+      [...new Set(targets.map(t => t.trim()).filter(t => t !== ''))];
+  return kept.map((target, i) => ({
+    name: kept.length === 1 ? 'default' : `deployment_${i + 1}`,
+    target,
+  }));
 }
 
 // Reads a model's deployment targets in a single pass and returns the facts

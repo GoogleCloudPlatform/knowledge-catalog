@@ -33,8 +33,9 @@
 // (re-derived from its expression, as the loader does, when the catalog holds
 // one, else the value the emitter persisted), the model's deployment targets
 // (from the semantic-model aspect, back into `deployments` and the GOOGLE
-// `custom_extensions` block), and 1:1 / 1:N relationships (from the `schema-join` entry links a
-// pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
+// `custom_extensions` block), and 1:1 / 1:N relationships (from the
+// `schema-join` entry links a pull fetched -- see
+// `modelsFromCatalogResources`'s `entryLinks` argument).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
@@ -57,7 +58,8 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
-import {BIGLAKE_TABLE_URI, BIGQUERY_TABLE_URI, catalogNameSegments} from './loader';
+import {unnamedDeployments} from './deployment_target';
+import {sourceToDataSource} from './loader';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -377,23 +379,12 @@ function irDataType(dataType: string|undefined, metadataType: string|undefined):
 }
 
 
-// The inverse of entityAspectData: a BigQuery or BigLake resource URI or a
-// `bigquery:` catalog name becomes the canonical dot-separated table string;
-// anything else (Spanner/AlloyDB URIs, other catalog names, or a query) is
-// returned unchanged.
+// The inverse of entityAspectData, through the loader's own conversion: a
+// BigQuery or BigLake resource URI or a `bigquery:` catalog name becomes the
+// dot-separated table string; anything else is returned trimmed. An absent
+// resource reads as ''.
 function dataSourceFromResource(resource: string|undefined): string {
-  const value = (resource ?? '').trim();
-  const bq = value.match(BIGQUERY_TABLE_URI);
-  if (bq) return `${bq[1]}.${bq[2]}.${bq[3]}`;
-  const bl = value.match(BIGLAKE_TABLE_URI);
-  if (bl) return `${bl[1]}.${bl[2]}.${bl[3]}.${bl[4]}`;
-  if (value.startsWith('bigquery:')) {
-    const segs = catalogNameSegments(value.slice('bigquery:'.length));
-    if (segs.length === 3 && segs.every(s => s.length > 0)) {
-      return segs.join('.');
-    }
-  }
-  return value;
+  return sourceToDataSource(resource ?? '');
 }
 
 
@@ -442,16 +433,11 @@ function aspectDataOf(aspects: Record<string, Aspect>|undefined, type: string):
 function readDeploymentTargets(
     anchor: Entry, modelName: string, warnings: string[]):
     {extension: CustomExtension; deployments: DeploymentSpec[]}|undefined {
-  const rawTargets =
+  const deployments: DeploymentSpec[] = unnamedDeployments(
       asArray(aspectData(anchor, 'semantic-model').deploymentTargets)
-          .filter((t): t is string => typeof t === 'string' && t.trim() !== '')
-          .map(t => t.trim());
-  const targets = [...new Set(rawTargets)];
-  if (!targets.length) return undefined;
-  const deployments: DeploymentSpec[] = targets.map((target, i) => ({
-    name: targets.length === 1 ? 'default' : `deployment_${i + 1}`,
-    target,
-  }));
+          .filter((t): t is string => typeof t === 'string'));
+  if (!deployments.length) return undefined;
+  const targets = deployments.map(d => d.target);
   warnings.push(
       `model '${modelName}': deployment names were not recovered (the ` +
       `catalog stores target URIs only); using ${
