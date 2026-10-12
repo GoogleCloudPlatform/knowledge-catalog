@@ -306,24 +306,32 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(aspectKeys.some((k: string) => k.endsWith('schema-join'))).toBe(true);
   });
 
-  test('an existing link whose update is not addressable still succeeds',
-       async () => {
-         // The link exists (409), but this catalog surface exposes only create
-         // + lookup for entry links, so the by-name aspect-refresh update comes
-         // back NOT_FOUND. The link is fully present; only the aspect refresh is
-         // unavailable, so the push must not fail on it.
-         const {createLink, updateLink} = stubClient({
-           createLink: () => err(409, 'entry link already exists'),
-           updateLink: err(404, 'entry link not found'),
-         });
+  test(
+      'a 404 on updateEntryLink after a 409 on createEntryLink fails the ' +
+          'push because another link holds those endpoints',
+      async () => {
+        const {createLink, updateLink} = stubClient({
+          createLink: () => err(
+              409,
+              'EntryLink already exists, for the given entry reference and ' +
+                  'link type'),
+          updateLink: err(404, 'entry link not found'),
+        });
 
-         const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
 
-         expect(result.success).toBe(true);
-         expect(result.linked).toBe(1);
-         expect(createLink).toHaveBeenCalledTimes(1);
-         expect(updateLink).toHaveBeenCalledTimes(1);
-       });
+        expect(result.success).toBe(false);
+        expect(result.linked).toBe(0);
+        expect(result.details)
+            .toBe(
+                'Model \'sales\': failed to create entry link ' +
+                '\'sales-orders-to-customer\' because another \'schema-join\' ' +
+                'link already connects \'sales.entities.orders\' and ' +
+                '\'sales.entities.customer\'');
+        expect(createLink).toHaveBeenCalledTimes(1);
+        expect(updateLink).toHaveBeenCalledTimes(1);
+      });
 
   test('a masked PERMISSION_DENIED on the link update also succeeds', async () => {
     const {updateLink} = stubClient({
@@ -813,6 +821,44 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
        expect(delLink.mock.calls[0][3]).toBe('sales-orders-to-supplier');
      });
 
+  test(
+      'renaming a relationship while keeping its endpoints deletes the old ' +
+          'link before creating the new one',
+      async () => {
+        // Dataplex allows one link per type between two entries: creating the
+        // renamed link (`sales-orders-to-customer`) before deleting the old
+        // link (`sales-old-orders-to-customer`) between the same two entities
+        // returns 409.
+        const renamedFrom = linkEntry(
+            'sales-old-orders-to-customer',
+            ['sales.entities.orders', 'sales.entities.customer'], '123456789');
+        let oldDeleted = false;
+        const {createLink, delLink, updateLink} = stubClient({
+          existing: STAR_ENTITIES,
+          links: () => ok([renamedFrom]),
+          delLink: (id) => {
+            if (id === 'sales-old-orders-to-customer') oldDeleted = true;
+            return ok({});
+          },
+          createLink: () => oldDeleted ?
+              ok({}) :
+              err(409,
+                  'EntryLink already exists, for the given entry reference ' +
+                      'and link type'),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(result.unlinked).toBe(1);
+        expect(result.linked).toBe(1);
+        expect(delLink).toHaveBeenCalledTimes(1);
+        expect(delLink.mock.calls[0][3]).toBe('sales-old-orders-to-customer');
+        expect(createLink).toHaveBeenCalledTimes(1);
+        expect(updateLink).not.toHaveBeenCalled();
+      });
+
   test('keeps a link the model still emits', async () => {
     const {delLink} = stubClient({
       existing: STAR_ENTITIES,
@@ -894,7 +940,7 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
 
         expect(result.success).toBe(false);
         expect(result.created).toBe(5);
-        expect(result.linked).toBe(1);
+        expect(result.linked).toBe(0);
         expect(result.unlinked).toBe(1);
         expect(result.details)
             .toBe(
