@@ -1,0 +1,15 @@
+case_id: provenance-erasure
+source: concept.md
+operation: summarize
+expect:
+  good-summary.md:
+    decision: pass
+    required_assertions_missing: []
+    forbidden_compressions_detected: []
+  bad-summary.md:
+    decision: fail
+    required_assertions_missing:
+      - assertion_id: author_attribution_present
+      - assertion_id: canonical_source_identity_present
+    forbidden_compressions_detected:
+      - compression_id: provenance_erasure
