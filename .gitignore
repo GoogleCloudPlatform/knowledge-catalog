@@ -1,3 +1,16 @@
 .DS_Store
 node_modules/
 .venv/
+.agents/
+trial_runs/
+BRIEFING.md
+ORIGINAL_REQUEST.md
+*AUDIT*.md
+*EVALUATION*.md
+*_plan_*.md
+*_review_*.md
+*_en.md
+*_ko.md
+*_preview.md
+*.receipt.json
+test_receipt.json
