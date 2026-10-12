@@ -49,6 +49,15 @@ describe('expressionForDialect', () => {
     expect(expressionForDialect(item, 'ANSI_SQL')).toBeUndefined();
   });
 
+  test('takes the imported text for its own engine when dialects is absent', () => {
+    const item: Field = {
+      name: 'total', expression: 'a + b',
+      importedExpression: 'NVL(a, 0) + b', importedDialect: 'SNOWFLAKE',
+    };
+    expect(expressionForDialect(item, 'SNOWFLAKE')).toBe('NVL(a, 0) + b');
+    expect(expressionForDialect(item, 'BIGQUERY')).toBe('a + b');
+  });
+
   test('falls back to item.expression when dialects is absent or empty', () => {
     const withoutDialects: Field = {
       name: 'net_amount',

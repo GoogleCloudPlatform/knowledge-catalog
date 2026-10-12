@@ -71,13 +71,15 @@ kcmd profiles
 
 Reports each binding profile the model declares: its deployment target, the
 source each entity binds to, and what the profile cannot answer or cannot run.
-Read-only — it merges and prunes each profile the way `push` does, but deploys
+Read-only — it applies and prunes each profile the way `push` does, but deploys
 nothing and runs no live probe, so you can compare coverage before choosing one.
+It exits non-zero when a profile cannot be applied or loaded, or when a
+deployment names a profile, which push and the runtime refuse.
 
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). Errors when the scope holds more than one model, since those may name different databases. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). Errors when the scope holds more than one model, since those may name different databases, and for a profile file, which names no deployment target. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the

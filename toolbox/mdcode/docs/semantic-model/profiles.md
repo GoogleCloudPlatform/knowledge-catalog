@@ -222,16 +222,20 @@ catalog/EntryGroups/commerce_eg/
 The `<name>` in the file name must match the `name:` inside the file, and
 `default` is reserved for the inline bindings. A profile file carries `name`,
 `entities`, `relationships`, `metrics_exclude` and `actions`, and names no
-deployment target. A model cannot yet list its deployments, so `kcmd push`
+deployment target. A deployment cannot name a profile yet, so `kcmd push`
 refuses to deploy a graph for a profile file, and says so before it deploys
-anything.
+anything. For the same reason a profile file has no store, so
+`kcmd profiles --print-store` and `kcmd skills-generate` report that there is no
+database to run it against.
 
 The examples on this page use the older layout, which `kcmd push` still
 deploys: a `commerce.profiles/` directory whose files are `semantic_model`
 documents in the logical model's schema, each carrying only physical facets and
 its own `deployment_target`. In either layout, `--profile analytical` reads
 `commerce.yaml` plus the analytical profile, so nothing in one binding can
-affect another.
+affect another. Beside a profile file, `commerce.yaml` must load on its own
+first. A half-bound join in it stops the push even when the profile supplies
+the missing join columns, and so does a rejected source the profile replaces.
 
 ## Example — one model, an analytical and an operational binding
 

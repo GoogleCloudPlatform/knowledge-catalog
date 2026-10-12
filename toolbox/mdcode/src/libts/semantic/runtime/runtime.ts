@@ -22,7 +22,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {deploymentProfileError, loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, isProfileFileForm, mergeProfileOntoDoc, ProfileExclusion} from '../resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileForDocument, unknownProfileMessage} from '../resolve_profiles';
 
 import {resolveStore, Store} from './store';
 
@@ -71,7 +71,7 @@ export interface CreateRuntimeOptions {
   /** Directory holding `catalog.yaml`. Defaults to the current directory. */
   path?: string;
   /**
-   * Binding profile to merge onto each model. Defaults to the scope's
+   * Binding profile to apply to each model. Defaults to the scope's
    * `default_profile`, and failing that to the model's inline bindings.
    */
   profile?: string;
@@ -119,6 +119,12 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   const merged: Array<{name: string; text: string; allowLegacyBareSource?: boolean}> = [];
   const excludedByDoc = new Map<string, ProfileExclusion[]>();
+  // A profile file applies to its model file loaded on its own, with its
+  // exclusions already marked.
+  const appliedByDoc = new Map<string, SemanticModel>();
+  // The warnings applying each profile file gave.
+  const fileWarnings = new Map<string, string[]>();
+  const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
       merged.push({name: doc.name, text: doc.text});
@@ -130,33 +136,47 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     } catch (err: any) {
       return {error: err?.message ?? String(err)};
     }
-    const chosen = available.find(p => p.name === profile);
-    if (!chosen) {
-      const names = available.map(p => p.name);
+    const res = profileForDocument(doc, available, profile);
+    if (res.kind === 'missing') {
+      return {error: unknownProfileMessage(profile, doc.name, res.declared)};
+    }
+    if (res.kind === 'error') {
       return {
-        error: `unknown binding profile '${profile}' for model '${doc.name}'; ` +
-            (names.length ? `defined profiles: ${names.join(', ')}.` :
-                            `no profiles are defined for this model.`),
+        error: res.stage === 'load' ? res.error : `[${doc.name}] ${res.error}`,
       };
     }
-    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
-    if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
+    if (res.kind === 'file') {
+      fileWarnings.set(doc.name, res.warnings);
+      appliedByDoc.set(doc.name, res.model);
+      continue;
+    }
     for (const w of res.warnings) warn(`Warning: [${doc.name}] ${w}`);
     merged.push({
       name: doc.name,
       text: res.text,
-      allowLegacyBareSource: !isProfileFileForm(chosen.text),
+      // A legacy `semantic_model:` wrapper may still carry
+      // `deployment_target:` and bare sources.
+      allowLegacyBareSource: true,
     });
     excludedByDoc.set(doc.name, res.excluded);
   }
 
-  const loaded = loadSemanticModels(merged, {
-    defaultProject: source.project ?? ctx.project,
-    bindingOptional: true,
-  });
+  const loaded = loadSemanticModels(
+      merged, {defaultProject, bindingOptional: true});
   if (loaded.error) return {error: loaded.error};
-  for (const w of loaded.warnings) warn(`Warning: ${w}`);
-  const depProfileErr = deploymentProfileError(loaded.models);
+  // In the order of the documents, as one load of them all gives. The load
+  // prefixes each warning with its document's name.
+  for (const doc of docs) {
+    const own = fileWarnings.get(doc.name) ??
+        loaded.warnings.filter(w => w.startsWith(`[${doc.name}] `));
+    for (const w of own) warn(`Warning: ${w}`);
+  }
+  const loadedByDoc = new Map(loaded.models.map(m => [m.document, m.model]));
+  const models = docs.flatMap(doc => {
+    const model = appliedByDoc.get(doc.name) ?? loadedByDoc.get(doc.name);
+    return model ? [{document: doc.name, model}] : [];
+  });
+  const depProfileErr = deploymentProfileError(models);
   if (depProfileErr) return {error: depProfileErr};
 
   // Inheritance is resolved for the same reason both push legs resolve it: an
@@ -168,7 +188,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // refuses a generated UUID for an Integer key would read the key as a
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
-  for (const {document, model: loadedModel} of loaded.models) {
+  for (const {document, model: loadedModel} of models) {
     // A profile's exclusions apply to the entity that names each one.
     const authored = applyProfileExclusions(
         loadedModel, excludedByDoc.get(document) ?? []);
@@ -180,7 +200,15 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     const resolved = resolveInheritance(authored);
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
-    const store = resolveStore(resolved.model);
+    // A profile file names no deployment target, so it has no store. The
+    // model file's target is for its own bindings, as push treats it.
+    const store = appliedByDoc.has(document) ?
+        {
+          error: `binding profile '${profile}' is a profile file, which ` +
+              `names no deployment target, so there is no database to run it ` +
+              `against`,
+        } :
+        resolveStore(resolved.model);
     runtimes.push({
       model: resolved.model,
       document,

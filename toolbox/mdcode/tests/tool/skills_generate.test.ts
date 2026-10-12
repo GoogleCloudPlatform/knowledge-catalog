@@ -113,6 +113,38 @@ describe('kcmd skills-generate: a broken profile file', () => {
 });
 
 
+describe('kcmd skills-generate: a profile file', () => {
+  // A profile file names no deployment target, so the skill says there is no
+  // store to run its actions against.
+  test('has no store', async () => {
+    // A `sql` executor names one database's tables, so it lives in the
+    // profile.
+    writeModel(
+        'commerce.yaml',
+        modelText('commerce', 'IssueCredit')
+            .replace(/        executor:\n(.*\n){3}/, ''));
+    writeModel('commerce.profile.prod.yaml', `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER}/databases/commerce_prod/tables/Orders
+actions:
+  - name: IssueCredit
+    executor:
+      sql:
+        statements:
+          - UPDATE Orders SET Total = 0 WHERE OrderId = @order
+`);
+    expect(await skillsGenerate({out: 'skills', profile: 'prod'})).toBe(0);
+    const skill =
+        fs.readFileSync(path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
+    expect(skill).toContain('Store: none.');
+    expect(skill).toContain(
+        "binding profile 'prod' is a profile file, which names no deployment " +
+        'target');
+  });
+});
+
+
 describe('kcmd skills-generate: --force replaces rather than layers', () => {
   test('a page for an action the model dropped is removed', async () => {
     // Progressive disclosure means an agent opens files under references/ on

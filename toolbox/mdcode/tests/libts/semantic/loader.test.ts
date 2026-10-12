@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, loadModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { databaseOf, loadModels, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -2184,3 +2184,42 @@ describe('deployments and inline profiles', () => {
 });
 
 
+
+
+// Each of these is an author's mistake, so a load reports it as an error
+// instead of throwing, and the callers print it with the document's name.
+describe('deployment mistakes are reported, not thrown', () => {
+  const G = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+  const doc = (version: string, extra: string, key = 'entities') => `version: "${version}"
+semantic_model:
+  - name: sales
+${extra}    ${key}:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`;
+  const GOOGLE = '0.2.0.dev0/google';
+  const cases: [string, string, string][] = [
+    ['both keys', doc(GOOGLE, `    deployment_target: ${G}\n    deployments:\n      - { name: a, target: "${G}" }\n`),
+     "set either 'deployments' or 'deployment_target', not both"],
+    ['deployment_target in the open format', doc('0.2.0.dev0', `    deployment_target: ${G}\n`, 'datasets'),
+     "'deployment_target' is not in the open format"],
+    ['deployment_target in the Google flavor', doc(GOOGLE, `    deployment_target: ${G}\n`),
+     "'deployment_target' is no longer supported"],
+    ['deployments in the open format', doc('0.2.0.dev0', `    deployments:\n      - { name: a, target: "${G}" }\n`, 'datasets'),
+     "'deployments' is not in the open format"],
+    ['inline profiles in the Google flavor', doc(GOOGLE, `    profiles:\n      - name: prod\n`),
+     "inline 'profiles' are not supported"],
+    ['two deployments with one target', doc(GOOGLE, `    deployments:\n      - { name: a, target: "${G}" }\n      - { name: b, target: "${G}" }\n`),
+     'target the same resource'],
+  ];
+  for (const [label, text, message] of cases) {
+    test(label, () => {
+      const res = loadSemanticModels([{name: 'sales', text}]);
+      expect(res.error).toContain("Model document 'sales'");
+      expect(res.error).toContain(message);
+    });
+  }
+});

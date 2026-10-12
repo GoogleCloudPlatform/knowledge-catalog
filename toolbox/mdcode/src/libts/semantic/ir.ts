@@ -360,10 +360,15 @@ export function keysCoveredBy(
  * With a non-empty `dialects` list, returns the entry matching `targetDialect`;
  * failing that, and where the target is not already `ANSI_SQL`, falls back to
  * the `ANSI_SQL` entry; failing both, returns `undefined`. With `dialects`
- * empty or absent, returns `item.expression`.
+ * empty or absent, returns `item.importedExpression` when `importedDialect` is
+ * the target, and `item.expression` otherwise.
  */
 export function expressionForDialect(
-    item: {expression?: string; dialects?: DialectExpression[]},
+    item: {
+      expression?: string; dialects?: DialectExpression[];
+      importedExpression?: string;
+      importedDialect?: string;
+    },
     targetDialect: (typeof ALLOWED_DIALECTS)[number]): string|undefined {
   if (item.dialects && item.dialects.length > 0) {
     const exact = item.dialects.find(d => d.dialect === targetDialect);
@@ -373,6 +378,10 @@ export function expressionForDialect(
       if (ansi) return ansi.expression;
     }
     return undefined;
+  }
+  if (item.importedExpression !== undefined &&
+      item.importedDialect === targetDialect) {
+    return item.importedExpression;
   }
   return item.expression;
 }

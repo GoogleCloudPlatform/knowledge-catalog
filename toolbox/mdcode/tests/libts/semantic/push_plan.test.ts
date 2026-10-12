@@ -212,7 +212,7 @@ describe('a graph push of a profile file', () => {
 
   test('is refused before any deploy, since a profile file names no target', () => {
     expect(profileFileGraphError(
-               [{name: 'retail', text: '', profileFile: true}], 'prod'))
+               [{name: 'retail', text: '', applied: {} as any}], 'prod'))
         .toContain("binding profile 'prod' is a profile file, which names no deployment target");
     expect(profileFileGraphError([{name: 'retail', text: ''}], 'prod'))
         .toBeUndefined();
@@ -247,6 +247,92 @@ describe('push, legacy profiles, and pull fallback (b/567743508)', () => {
     mock.restore();
   });
 
+  // A legacy wrapper is merged into the model file's text and may set its own
+  // target, so a deployment-profile error is reported under each wrapper.
+  test('kcmd profiles reports a deployment-profile error under each legacy wrapper', async () => {
+    const eg = setupWorkspace();
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    fs.writeFileSync(path.join(eg, 'sales.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    deployments:
+      - name: g
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+        profile: prod
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`);
+    fs.mkdirSync(path.join(eg, 'sales.profiles'));
+    for (const name of ['prod', 'qa']) {
+      fs.writeFileSync(
+          path.join(eg, 'sales.profiles', `${name}.yaml`),
+          `semantic_model:\n  - name: sales\n    datasets:\n      - name: orders\n        source: bigquery:p.d.${name}_orders\n`);
+    }
+
+    expect(await profiles()).toBe(1);
+    const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    for (const name of ['prod', 'qa']) {
+      expect(errors).toContain(
+          `profile '${name}': [sales] model 'sales': deployment 'g' names profile 'prod'`);
+    }
+  });
+
+  test('a model file the loader rejects is reported, not thrown', async () => {
+    const eg = setupWorkspace();
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
+    const kcSpy = spyOn(kcDeploy, 'deployKnowledgeCatalog');
+    const model = (name: string, target: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: ${name}
+    ${target}
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`;
+    const graph = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    fs.writeFileSync(
+        path.join(eg, 'a.yaml'), model('a', `deployment_target: ${graph}`));
+    fs.writeFileSync(
+        path.join(eg, 'b.yaml'),
+        model('b', `deployments:\n      - { name: prod, target: "${graph}2" }`));
+    // `kcmd profiles` loads a model file only when it has a profile.
+    fs.writeFileSync(
+        path.join(eg, 'a.profile.x.yaml'),
+        'name: x\nentities:\n  - name: orders\n    source: bigquery:p.d.orders2\n');
+
+    expect(await push({})).toBe(1);
+    expect(bqSpy).not.toHaveBeenCalled();
+    expect(kcSpy).not.toHaveBeenCalled();
+    const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    expect(errors).toContain(
+        "Model document 'a': Semantic model load error: model 'a': " +
+        "'deployment_target' is no longer supported");
+
+    expect(await createSemanticRuntimes({ctx: CTX})).toEqual({
+      error: expect.stringContaining(
+          "Model document 'a': Semantic model load error: model 'a': " +
+          "'deployment_target' is no longer supported"),
+    });
+
+    // `kcmd profiles` reports the bad file and still lists the good one.
+    errSpy.mockClear();
+    logSpy.mockClear();
+    expect(await profiles()).toBe(1);
+    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
+        .toContain("'deployment_target' is no longer supported");
+    expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n'))
+        .toContain("Model 'b'");
+  });
+
   test('a push with a deployment naming a profile fails before anything is written', async () => {
     const eg = setupWorkspace();
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -272,6 +358,9 @@ semantic_model:
     fs.writeFileSync(
         path.join(eg, 'sales.profile.spanner_binding.yaml'),
         'name: spanner_binding\nentities:\n  - name: orders\n    source: bigquery:p.d.orders\n');
+    fs.writeFileSync(
+        path.join(eg, 'sales.profile.other.yaml'),
+        'name: other\nentities:\n  - name: orders\n    source: bigquery:p.d.orders2\n');
 
     const code = await push({});
     expect(code).toBe(1);
@@ -290,14 +379,28 @@ semantic_model:
           "remove 'profile' from the deployment entry so it uses the model file's own bindings."),
     });
 
-    // And `kcmd profiles` reports the error instead of showing the target.
+    // The runtime applies the profile file to the model file, and the applied
+    // model keeps the model file's deployments, so it refuses too.
+    const rtProfile =
+        await createSemanticRuntimes({ctx: CTX, profile: 'spanner_binding'});
+    expect(rtProfile).toEqual({
+      error: expect.stringContaining(
+          "deployment 'staging' names profile 'spanner_binding'"),
+    });
+
+    // And `kcmd profiles` reports the error instead of showing the target,
+    // and exits non-zero.
     errSpy.mockClear();
     logSpy.mockClear();
-    await profiles();
+    expect(await profiles()).toBe(1);
     const profErrors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
     const profLogs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
+    // The error is the model file's, so it is reported once and names no
+    // profile file.
     expect(profErrors).toContain(
-        "profile 'spanner_binding': [sales] model 'sales': deployment 'staging' names profile 'spanner_binding'");
+        "  [sales] model 'sales': deployment 'staging' names profile 'spanner_binding'");
+    expect(profErrors.split('names profile').length - 1).toBe(1);
+    expect(profErrors).not.toContain("profile 'spanner_binding': [sales]");
     expect(profLogs).not.toContain('target:');
   });
 

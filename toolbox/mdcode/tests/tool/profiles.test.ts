@@ -1,6 +1,6 @@
 // Tests for `kcmd profiles` (src/tool/commands.ts, profiles()) and the
 // catalog.yaml `default_profile` it reads (src/libts/manifest.ts). The command
-// is read-only -- it merges and prunes each profile the way push does but
+// is read-only -- it applies and prunes each profile the way push does but
 // deploys nothing and makes no network call -- so it runs in a temp working
 // directory with a pinned context, mirroring init_semantic_model.test.ts.
 
@@ -123,6 +123,317 @@ afterEach(() => {
 });
 
 
+describe('a vanilla model with a legacy profile directory', () => {
+  test('is rejected, since a vanilla model keeps its profiles in its GOOGLE block', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    datasets:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: c_key}]}
+`);
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'prod.yaml'), `name: prod
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer
+`);
+    await expect(profiles()).rejects.toThrow(
+        "Profile directory 'commerce.profiles/' sits beside 'commerce.yaml', " +
+        "which is a 0.2.0.dev0 document");
+  });
+});
+
+
+// A profile file is applied to the model file loaded on its own, so the model
+// file must load by itself. The YAML merge loaded the merged text instead.
+describe('kcmd profiles applies a profile file to the loaded model file', () => {
+  function writeModel(model: string, profile: string): void {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), model);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), profile);
+  }
+  const BQ = (t: string) => `//bigquery.googleapis.com/projects/acme/datasets/sales/tables/${t}`;
+
+  test('a model file that does not load alone is reported, though the profile completes it', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: ${BQ('customer')}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: c_key }
+      - name: Order
+        source: ${BQ('orders')}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: o_key }
+    relationships:
+      - name: placed_by
+        from: Order
+        to: Customer
+        from_columns: [o_cust]
+`, `name: prod
+relationships:
+  - name: placed_by
+    to_columns: [c_key]
+`);
+    // A second profile file meets the same broken model file.
+    fs.writeFileSync(
+        path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg',
+                  'commerce.profile.staging.yaml'),
+        'name: staging\n');
+    // A profile that cannot be applied fails the command, and the model
+    // file's own error is reported once, not under each profile.
+    expect(await profiles()).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toContain(
+        "relationship 'placed_by': from_columns and to_columns must be given " +
+        'together');
+    expect(out.split("Model document 'commerce'").length - 1).toBe(1);
+  });
+
+  // A legacy wrapper that fails to load fails the command too.
+  test('a legacy wrapper that does not load fails the command', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL);
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'legacy.yaml'), `semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: SELECT * FROM customer
+`);
+    expect(await profiles()).toBe(1);
+    expect(logs.join('\n')).toContain("profile 'legacy': Model document 'commerce'");
+  });
+
+  // Applying a profile file warns as push does, under the profile's name.
+  test('the warnings applying a profile file gives are printed', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: ${BQ('customer')}
+        fields:
+          - { name: key, expression: c_key }
+`, `name: prod
+entities:
+  - name: Customer
+    source: ${BQ('customer_prod')}
+`);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await profiles()).toBe(0);
+    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .toContain("profile 'prod': warning: [commerce] dataset 'Customer': no primary_key");
+  });
+
+  test('the runtime reports a model file that does not load alone', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: ${BQ('customer')}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: c_key }
+      - name: Order
+        source: ${BQ('orders')}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: o_key }
+    relationships:
+      - name: placed_by
+        from: Order
+        to: Customer
+        from_columns: [o_cust]
+`, `name: prod
+relationships:
+  - name: placed_by
+    to_columns: [c_key]
+`);
+    const runtimes = await createSemanticRuntimes(
+        {path: dir, profile: 'prod', ctx: CTX, onWarning: () => {}});
+    expect('error' in runtimes && runtimes.error).toContain(
+        "relationship 'placed_by': from_columns and to_columns must be given " +
+        'together');
+    // The loader's error names the model document itself.
+    expect('error' in runtimes && runtimes.error)
+        .toStartWith("Model document 'commerce'");
+  });
+
+  test('the runtime names the document of a profile that cannot apply', async () => {
+    writeModel(LOGICAL, 'name: prod\nentities:\n  - name: Ghost\n');
+    const runtimes = await createSemanticRuntimes(
+        {path: dir, profile: 'prod', ctx: CTX, onWarning: () => {}});
+    expect('error' in runtimes && runtimes.error)
+        .toBe("[commerce] profile 'prod': entity 'Ghost' is not in the logical model");
+    // `kcmd profiles` names the profile once, since the error already does.
+    logs.length = 0;
+    expect(await profiles()).toBe(1);
+    const out = logs.join('\n');
+    expect(out).toContain("profile 'prod': entity 'Ghost' is not in the logical model");
+    expect(out).not.toContain("profile 'prod': profile 'prod'");
+  });
+
+  // A legacy wrapper's merged text warns as a load does, under the profile.
+  test('kcmd profiles prints the warnings of a legacy wrapper\'s load', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL.replace(
+        '      - name: Order\n        primary_key: [key]\n', '      - name: Order\n'));
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'legacy.yaml'), `semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+`);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await profiles()).toBe(0);
+    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n'))
+        .toContain("profile 'legacy': warning: [commerce] dataset 'Order': no primary_key");
+  });
+
+  test('a concrete entity with a source in neither file is reported', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: c_key }
+`, `name: prod
+entities:
+  - name: Customer
+    fields:
+      - { name: key, expression: cust_key }
+`);
+    expect(await profiles()).toBe(1);
+    expect(logs.join('\n')).toContain(
+        "profile 'prod': entity 'Customer' has no source in this profile or " +
+        'in the model file');
+  });
+});
+
+
+describe('a runtime over a sibling profile file', () => {
+  test('applies the profile to the model file', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    fields:
+      - { name: key, expression: c_custkey }
+      - { name: lifetimeValue, expression: c_ltv }
+    fields_exclude: [availableCredit]
+  - name: Order
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    fields:
+      - { name: key, expression: o_orderkey }
+`);
+    const warnings: string[] = [];
+    const runtimes = await createSemanticRuntimes(
+        {path: dir, profile: 'analytical', ctx: CTX, onWarning: w => warnings.push(w)});
+    if ('error' in runtimes) throw new Error(runtimes.error);
+    const customer = runtimes[0].model.entities.find(e => e.name === 'Customer')!;
+    expect(customer.dataSource).toBe('acme-analytics.sales.customer');
+    expect(customer.fields.map(f => f.name)).toEqual(['key', 'lifetimeValue']);
+    expect(customer.fields[0].expression).toBe('c_custkey');
+    expect(warnings).toEqual([]);
+  });
+
+  // The model file's own load warnings survive, and an excluded metric is not
+  // available under the profile.
+  test('keeps the model file\'s warnings and drops an excluded metric', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), LOGICAL.replace(
+        '      - name: Order\n        primary_key: [key]\n',
+        '      - name: Order\n'));
+    fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
+entities:
+  - name: Customer
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    fields:
+      - { name: key, expression: c_custkey }
+      - { name: lifetimeValue, expression: c_ltv }
+    fields_exclude: [availableCredit]
+  - name: Order
+    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    fields:
+      - { name: key, expression: o_orderkey }
+metrics_exclude: [order_count]
+`);
+    const warnings: string[] = [];
+    const runtimes = await createSemanticRuntimes(
+        {path: dir, profile: 'analytical', ctx: CTX, onWarning: w => warnings.push(w)});
+    if ('error' in runtimes) throw new Error(runtimes.error);
+    expect(warnings.join('\n')).toContain("dataset 'Order': no primary_key");
+    expect((runtimes[0].model.metrics ?? []).map(m => m.name))
+        .toEqual(['avg_lifetime_value']);
+  });
+});
+
+
+describe('a runtime over a scope that mixes the two profile forms', () => {
+  test('warns in document order', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(path.join(eg, 'a.profiles'), {recursive: true});
+    const BQ = (t: string) =>
+        `//bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
+    const keyless = (name: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: ${name}
+    entities:
+      - name: X
+        source: ${BQ(name)}
+        fields:
+          - { name: id, expression: id }
+`;
+    fs.writeFileSync(path.join(eg, 'a.yaml'), keyless('a'));
+    fs.writeFileSync(path.join(eg, 'b.yaml'), keyless('b'));
+    fs.writeFileSync(path.join(eg, 'a.profiles', 'prod.yaml'), `semantic_model:
+  - name: a
+    entities:
+      - name: X
+        source: ${BQ('a2')}
+`);
+    fs.writeFileSync(path.join(eg, 'b.profile.prod.yaml'),
+                     `name: prod\nentities:\n  - name: X\n    source: ${BQ('b2')}\n`);
+    const warnings: string[] = [];
+    await createSemanticRuntimes(
+        {path: dir, profile: 'prod', ctx: CTX, onWarning: w => warnings.push(w)});
+    const at = (doc: string) =>
+        warnings.findIndex(w => w.includes(`[${doc}] dataset 'X': no primary_key`));
+    expect(at('a')).toBeGreaterThan(-1);
+    expect(at('a')).toBeLessThan(at('b'));
+  });
+});
+
+
 describe('kcmd profiles', () => {
   test('reads a sibling profile file', async () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
@@ -145,6 +456,8 @@ entities:
     expect(await profiles()).toBe(0);
     const out = logs.join('\n');
     expect(out).toContain("profile 'analytical'");
+    expect(out).toContain(
+        'target: (none; a profile file names no deployment target)');
     expect(out).toContain('Customer -> acme-analytics.sales.customer');
     expect(out).toContain('field Customer.availableCredit (excluded)');
   });
@@ -316,6 +629,36 @@ describe('kcmd profiles --print-store', () => {
     const code = await profiles({printStore: true, profile: 'analytical'});
     expect(code).toBe(0);
     expect(logs).toEqual(['bigquery:acme-analytics/sales']);
+  });
+
+  test('a profile file has no store, since it names no deployment target', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    // The model file names a target for its own bindings.
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
+    entities:
+      - name: Customer
+        source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer
+        primary_key: [key]
+        fields:
+          - { name: key, expression: CustomerId }
+`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
+entities:
+  - name: Customer
+    source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customers
+`);
+    const code = await profiles({printStore: true, profile: 'prod'});
+    expect(code).not.toBe(0);
+    expect(logs.join('\n')).toContain(
+        "binding profile 'prod' is a profile file, which names no deployment " +
+        'target');
   });
 });
 

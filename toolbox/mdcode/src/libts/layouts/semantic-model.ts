@@ -38,6 +38,15 @@ const DEFAULT_PROFILE_NAME = 'default';
 const VANILLA_VERSION = '0.2.0.dev0';
 
 
+// The error for a sibling profile file beside a vanilla model, which keeps its
+// profiles in its GOOGLE block.
+function vanillaSiblingError(file: string, model: string): string {
+  return `Profile file '${file}' sits beside '${model}.yaml', which is a ` +
+      `${VANILLA_VERSION} document; sibling profile files are Google-flavor ` +
+      `only, and a ${VANILLA_VERSION} model keeps its profiles in its GOOGLE ` +
+      `block.`;
+}
+
 export class SemanticModelLayout implements CatalogLayout {
   private readonly _catalogPath: string;
   private readonly _entryGroup?: string;
@@ -116,10 +125,16 @@ export class SemanticModelLayout implements CatalogLayout {
   // The binding-profile files beside a model, by profile name: sibling
   // `<model>.profile.<name>.yaml` files in the model's EntryGroup dir. When a
   // model has none, the older `<model>.profiles/*.yaml` directory is read
-  // instead, until the fixtures and the demo move to sibling files.
+  // instead, until the fixtures and the demo move to sibling files. A vanilla
+  // model must have neither.
   profilePaths(model: string): {name: string; path: string}[] {
     const siblings = this._siblingProfilePaths(model);
-    return siblings.length ? siblings : this._legacyProfilePaths(model);
+    if (!siblings.length) return this._flavorCheckedLegacyProfilePaths(model);
+    if (this._modelHeader(model).version === VANILLA_VERSION) {
+      throw new Error(
+          vanillaSiblingError(path.basename(siblings[0].path), model));
+    }
+    return siblings;
   }
 
   // The text of each profile file beside a model, by profile name. Sibling
@@ -130,7 +145,8 @@ export class SemanticModelLayout implements CatalogLayout {
   //     writes a profile back to the file its name implies;
   //   - `default` names the model's inline bindings, so no profile may use it;
   //   - a vanilla `0.2.0.dev0` model keeps its profiles in its GOOGLE block, so
-  //     it may have no sibling profile files;
+  //     it must have no sibling profile files and no `<model>.profiles/`
+  //     directory;
   //   - the files are named after the model, so the model file must declare
   //     that name, which `pull` uses to name both.
   profileDocuments(model: string): {name: string; text: string}[] {
@@ -159,7 +175,7 @@ export class SemanticModelLayout implements CatalogLayout {
     }
     const siblings = this._siblingProfilePaths(model);
     if (!siblings.length) {
-      return this._legacyProfilePaths(model).map(
+      return this._flavorCheckedLegacyProfilePaths(model).map(
           ({name, path: p}) => ({name, text: fs.readFileSync(p, 'utf8')}));
     }
     const modelFile = `${model}.yaml`;
@@ -188,11 +204,7 @@ export class SemanticModelLayout implements CatalogLayout {
         throw new Error(`Profile file '${file}' is not a file.`);
       }
       if (version === VANILLA_VERSION) {
-        throw new Error(
-            `Profile file '${file}' sits beside '${modelFile}', which is a ` +
-            `${VANILLA_VERSION} document; sibling profile files are ` +
-            `Google-flavor only, and a ${VANILLA_VERSION} model keeps its ` +
-            `profiles in its GOOGLE block.`);
+        throw new Error(vanillaSiblingError(file, model));
       }
       const text = fs.readFileSync(p, 'utf8');
       const declared = parseProfileName(text, file);
@@ -324,6 +336,22 @@ export class SemanticModelLayout implements CatalogLayout {
           {name: path.basename(entry, '.yaml'), path: path.join(dir, entry)});
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  // The older `<model>.profiles/*.yaml` files of a model. A vanilla model keeps
+  // its profiles in its GOOGLE block, so it must have no such directory, just
+  // as it must have no sibling profile files.
+  private _flavorCheckedLegacyProfilePaths(model: string):
+      {name: string; path: string}[] {
+    const legacy = this._legacyProfilePaths(model);
+    if (legacy.length && this._modelHeader(model).version === VANILLA_VERSION) {
+      throw new Error(
+          `Profile directory '${model}.profiles/' sits beside ` +
+          `'${model}.yaml', which is a ${VANILLA_VERSION} document; profile ` +
+          `files are Google-flavor only, and a ${VANILLA_VERSION} model ` +
+          `keeps its profiles in its GOOGLE block.`);
+    }
+    return legacy;
   }
 
   // The `version` and model `name` a model document declares, each undefined

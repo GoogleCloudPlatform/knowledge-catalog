@@ -228,6 +228,26 @@ describe('SemanticModelLayout sibling profile files', () => {
     write('retail.profile.prod.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow(/Google-flavor only/);
+    expect(() => l.profilePaths('retail')).toThrow(/Google-flavor only/);
+  });
+
+  test('a legacy profile directory beside a vanilla model is an error', async () => {
+    write('retail.yaml', 'version: 0.2.0.dev0\n');
+    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+    write('retail.profiles/prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    const message = "Profile directory 'retail.profiles/' sits beside " +
+        "'retail.yaml', which is a 0.2.0.dev0 document";
+    expect(() => l.profileDocuments('retail')).toThrow(message);
+    expect(() => l.profilePaths('retail')).toThrow(message);
+  });
+
+  test('a legacy profile directory beside a Google-flavor model is read', async () => {
+    write('retail.yaml', GOOGLE);
+    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+    write('retail.profiles/prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
   });
 
   test('orphanProfilePaths lists profile files with no model', async () => {
