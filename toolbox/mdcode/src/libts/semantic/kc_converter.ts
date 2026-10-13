@@ -82,6 +82,7 @@ import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
 import {splitDerivedTrailers} from './derived_relationships';
 import {splitMembersTrailer} from './vocabulary';
 import {splitHydrationTrailer} from './hydration_kc';
+import {splitQueryTrailer, splitReadThroughTrailer} from './read_trailers';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -256,11 +257,12 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 
   // Publish appends the Specializes paragraph then the Abstract marker (or the
   // definition trailers), then the K7 Grain / History paragraphs, then the K3
-  // Members paragraph, then the Hydration paragraph, to the entity
-  // description (knowledge_catalog.entityDescription); peel them off in
-  // reverse.
+  // Members paragraph, then the derived Read through paragraph, then the
+  // Hydration paragraph, to the entity description
+  // (knowledge_catalog.entityDescription); peel them off in reverse. Read
+  // through is recomputed by every push, so it is dropped.
   const hyd = splitHydrationTrailer(entry.entrySource?.description);
-  const k3 = splitMembersTrailer(hyd.rest);
+  const k3 = splitMembersTrailer(splitReadThroughTrailer(hyd.rest).rest);
   const k7 = splitGrainHistoryTrailers(k3.rest);
   const defined = splitDefinitionTrailer(k7.rest);
   const trailers = splitEntityTrailers(defined.rest);
@@ -512,7 +514,9 @@ function readMetric(
     metric.importedExpression = exprAnn.importedExpression;
   if (exprAnn?.importedDialect !== undefined)
     metric.importedDialect = exprAnn.importedDialect;
-  const description = entry.entrySource?.description;
+  // Push appends the derived `Query: …` paragraph when it knew the physical
+  // layout (read_trailers.ts); every push recomputes it, so it is dropped.
+  const description = splitQueryTrailer(entry.entrySource?.description).rest;
   if (description !== undefined) metric.description = description;
   const aiAnn = readAiContextAnnotation(entry);
   const ai = aiAnn ? aiAnn.aiContext : readAiContext(entry);

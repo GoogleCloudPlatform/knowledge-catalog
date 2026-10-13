@@ -84,6 +84,7 @@ import {AnnotationTarget, EntityPhysical, entityAnnotationAspects, junctionAnnot
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
 import {AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID} from './kc_custom_types';
 import {lowerNodeViews} from './node_views';
+import {metricQueries, readThroughTrailer, withQueryTrailer} from './read_trailers';
 import {entityTrailers, withUnitTrailer} from './units_history';
 import {derivedTrailers} from './derived_relationships';
 import {generatesVocabularyView, membersTrailer, vocabularyViewName} from './vocabulary';
@@ -179,10 +180,15 @@ export function generateCatalogResources(
     aspects: new Set(opts.customAspects ?? []),
     dest: {project: opts.project},
   };
-  const physical = annotations.aspects.has(BINDING_TYPE_ID) ||
-          opts.bigQueryEntries ?
-      physicalBindings(model) :
-      new Map<string, EntityPhysical>();
+  // When push knows the physical layout, each entry's description also says
+  // how to read it -- an entity's node view and graph node, a metric's
+  // measure query -- because lookup_context, the call an agent grounds on,
+  // renders descriptions but not aspects or links (read_trailers.ts).
+  const readable =
+      annotations.aspects.has(BINDING_TYPE_ID) || !!opts.bigQueryEntries;
+  const physical = readable ? physicalBindings(model) :
+                              new Map<string, EntityPhysical>();
+  const queries = readable ? metricQueries(model) : new Map<string, string>();
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -238,7 +244,9 @@ export function generateCatalogResources(
       name: names.entry(entityId),
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
-      entrySource: source(entity.name, entityDescription(entity, model)),
+      entrySource: source(
+          entity.name,
+          entityDescription(entity, model, physical.get(entity.name))),
       // required_aspects: semantic-entity AND the built-in schema; plus the
       // built-in guidelines aspect when the entity carries ai_context
       // instructions.
@@ -263,7 +271,9 @@ export function generateCatalogResources(
       name: names.entry(metricId),
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
-      entrySource: source(metric.name, metric.description),
+      entrySource: source(
+          metric.name,
+          withQueryTrailer(metric.description, queries.get(metric.name))),
       aspects: {
         ...aspectsFor(
             names, {'semantic-metric': metricAspectData(metric, emitExpr)},
@@ -744,7 +754,9 @@ export function oneParagraph(text: string): string {
 // The description, then the Specializes paragraph, then the Abstract marker or
 // the definition trailers -- a fixed order, so pull peels them off from the end
 // in reverse.
-function entityDescription(entity: Entity, model?: SemanticModel): string|undefined {
+function entityDescription(
+    entity: Entity, model?: SemanticModel,
+    physical?: EntityPhysical): string|undefined {
   const parts = [
     entity.description,
     entity.extends?.length ?
@@ -762,8 +774,12 @@ function entityDescription(entity: Entity, model?: SemanticModel): string|undefi
     // K3 members (see units_history.splitGrainHistoryTrailers).
     ...entityTrailers(entity),
     // K3: a vocabulary's `Members: …` paragraph, so pull peels it right
-    // after the hydration paragraph (see vocabulary.splitMembersTrailer).
+    // after the read-through paragraph (see vocabulary.splitMembersTrailer).
     membersTrailer(entity),
+    // `Read through: …`: the node view (or table) and graph node the entity
+    // is read through, derived from the deployment target, so pull peels it
+    // right after the hydration paragraph and drops it (read_trailers.ts).
+    readThroughTrailer(entity, physical),
     // Hydration: how the binding reshapes the source (and `mode: direct`),
     // last of all, so pull peels it first (see hydration_kc.ts).
     hydrationTrailer(

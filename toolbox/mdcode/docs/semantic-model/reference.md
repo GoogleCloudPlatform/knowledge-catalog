@@ -833,6 +833,24 @@ through it, so `--emit-expressions` is no longer needed. `pull` reads all three
 back and treats them as authoritative for what they cover; the description
 trailers (`Hydration:`, `Members:`, …) stay for human and agent readers.
 
+### What an agent reads through `lookup_context`
+
+`lookup_context`, the call an agent grounds on, returns each entry's
+description and its schema. It does not return aspects or entry links. So when
+push knows the physical layout (the `semantic-binding` type is provisioned, or
+the BigQuery entries are located), it ends each description with how to read
+the entry:
+
+| Entry | Paragraph | Example |
+|---|---|---|
+| Bound entity | `Read through:` its node view (its table under `mode: direct`), its graph and node label, just before `Hydration:` | ``Read through: node view `p.d.order`; graph `p.d.shop_graph`, node Order.`` |
+| Metric | `Query:` its measures composed as its expression over `GRAPH_EXPAND` of the graph that holds them (or its expression over its fallback view), last | `Query: SELECT AGG(Order_revenue) FROM GRAPH_EXPAND("p.d.shop_graph__order_metrics")` |
+
+The query runs as written; to slice it, add `WHERE` and `GROUP BY` over the
+same `GRAPH_EXPAND`'s `<NodeTable>_<field>` columns. Both paragraphs are
+derived from the model and its deployment target, so `pull` drops them and the
+next push writes them again.
+
 ### Binding links
 
 When the graph and the source datasets are visible, push links each bound
@@ -840,8 +858,8 @@ entity entry to the `@bigquery` entry it is read through — its generated node
 view, or its table under `mode: direct` — and to its node in the property graph
 (`…/propertyGraphs/<graph>/nodes/<Label>`). Each is a `schema-join` of type
 `JOIN` on the entity key, described `Binding: <entity> is read through …`, so
-`lookup_context` on an entity returns its physical asset and a glossary term
-walks term → entity → view inside the catalog. The `@bigquery` entries exist
+a reader can walk from an entity, or from a glossary term, to the physical
+asset inside the catalog. The `@bigquery` entries exist
 only once BigQuery has created the view or graph and Dataplex has indexed it,
 so a refused binding link is a warning, not a failed push; the next push writes
 it. Binding links an entity no longer has are deleted on push.

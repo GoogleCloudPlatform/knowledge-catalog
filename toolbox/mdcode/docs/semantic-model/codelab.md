@@ -716,17 +716,20 @@ pushed by kcmd. It names no entity, table, metric or project:
 1. **Find** — one `search_entries` call over the catalog with the question's
    business terms; synonyms on the `semantic-ai-context` aspect make
    `"turnover"` find `revenue`.
-2. **Ground** — one `lookup_context` call on the hits. The entry gives the
-   metric's entity and expression, the instructions and examples, and the
-   binding: graph, node label and node view.
+2. **Ground** — one `lookup_context` call on the hits. It returns each entry's
+   description and schema, and push ends each description with how to read
+   the entry: a metric's ready-to-run `Query:` (`AGG(<node>_<measure>)` over
+   `GRAPH_EXPAND`), an entity's `Read through:` node view and graph node (see
+   [Reference → What an agent reads through `lookup_context`](reference.md#what-an-agent-reads-through-lookup_context)).
 3. **Execute** — pick the cheapest correct form:
-   - a metric → `AGG(<node>_<measure>)` over `GRAPH_EXPAND("<graph>")`, as in
+   - a metric → its `Query:`, with any `WHERE` / `GROUP BY` added over the
+     `GRAPH_EXPAND` columns, as in
      [Query Semantic Model: metrics](#query-semantic-model-metrics) above —
      never a hand-written join;
    - a path or an absence ("customers with no orders") → GQL `MATCH`, with
      `NOT EXISTS` or a bounded quantifier such as `{1,5}`;
-   - a plain fact about one entity → the node view, which already applies the
-     grain, normalization and resolution rules;
+   - a plain fact about one entity → the node view named in `Read through:`,
+     which already applies the grain, normalization and resolution rules;
    - nothing modeled → fall back to the raw tables, and say so in the answer.
 4. **Answer** — cite the metric or entity used and any instruction that shaped
    the query.
