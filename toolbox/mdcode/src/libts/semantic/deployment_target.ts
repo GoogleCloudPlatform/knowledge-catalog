@@ -1,17 +1,18 @@
-// Reads a model's GOOGLE deployment-target extension and classifies each
-// declared target URI.
+// Reads where a model deploys and classifies each declared target.
 //
-// A semantic model names where it deploys with `deployments:` (which the loader
-// folds into `deploymentTargets` in a GOOGLE `custom_extensions` block, or
-// carries directly from a vanilla document's GOOGLE block). Three destination
-// types are recognized here, each an AIP-122 resource name:
+// A semantic model names where it deploys with its `deployments:` list. Each
+// entry has a name, a target and optionally the binding profile it uses. The
+// loader also folds every target into `deploymentTargets` in a GOOGLE
+// `custom_extensions` block, which is also where a vanilla document's GOOGLE
+// block carries them. Three destination types are recognized here, each an
+// AIP-122 resource name:
 //
 //   BigQuery Graph:
 //     //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 //   Spanner Graph:
 //     //spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
 //   AlloyDB database:
-//     //alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/instances/<i>/databases/<db>
+//     //alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>
 //
 // The first two name a GRAPH; the third names a DATABASE, and the difference is
 // not an oversight. AlloyDB has no property-graph DDL, so there is no graph to
@@ -24,7 +25,7 @@
 //
 // The deploy legs (deploy_bigquery, deploy_spanner) and the push-time validator
 // all derive their targets from this one reader, so a multi-destination push
-// parses each model's extension once rather than once per reader.
+// parses each model's targets once rather than once per reader.
 //
 // The capture groups are restricted to valid identifier characters: the
 // components are interpolated into DDL unescaped (see the generators), so a
@@ -32,7 +33,8 @@
 // matches neither destination type is collected as `malformed` (rejected by the
 // validator and named in errors) rather than silently skipped.
 
-import {SemanticModel} from './ir';
+import {DeploymentSpec, SemanticModel} from './ir';
+import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
 // Our own vendor tag in the Ossie `custom_extensions` list.
@@ -50,15 +52,40 @@ const BQ_GRAPH_TARGET =
 const SPANNER_GRAPH_TARGET =
     /^\/\/spanner\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
 
-// An AlloyDB database. The segments are an AlloyDB instance resource name --
-// AlloyDB locates an instance by cluster and region rather than by instance id
-// alone, which is why there is a `locations` segment here and none in the
-// Spanner target -- followed by the PostgreSQL database inside it. A database
-// name is a PostgreSQL identifier, and the strict class serves the same purpose
-// as it does above: the name is interpolated into a connection string and into
-// generated SQL, so a permissive class would let a quote character through.
+// An AlloyDB database. A database belongs to its cluster, and AlloyDB locates
+// a cluster by region, which is why there is a `locations` segment here and
+// none in the Spanner target. A database name is a PostgreSQL identifier, and
+// the strict class serves the same purpose as it does above: the name is
+// interpolated into a connection string and into generated SQL, so a
+// permissive class would let a quote character through.
 const ALLOYDB_TARGET =
+    /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)$/;
+
+// The instance-based AlloyDB URI kcmd used before. It names no real resource,
+// so resolveModelDeployments rejects it. The loader turns a legacy
+// `deployment_target:` that may hold it into a deployment, so
+// googleDeploymentTargets keeps reading it, from a list too.
+const LEGACY_ALLOYDB_TARGET =
     /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)$/;
+
+// The resource URI form of each destination type, for messages.
+const BQ_GRAPH_FORM =
+    '//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>';
+const SPANNER_GRAPH_FORM =
+    '//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>';
+const ALLOYDB_FORM =
+    '//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>';
+
+// The Knowledge Catalog name prefixes of a graph or an AlloyDB database, each
+// with the resource URI form to write instead. kcmd accepts no catalog name as
+// a target. `bigquery:propertygraph:` is a deprecated synonym for
+// `bigquery:graph:`.
+const CATALOG_PREFIXES: Array<[string, string]> = [
+  ['bigquery:graph:', BQ_GRAPH_FORM],
+  ['bigquery:propertygraph:', BQ_GRAPH_FORM],
+  ['spanner:graph:', SPANNER_GRAPH_FORM],
+  ['alloydb:', ALLOYDB_FORM],
+];
 
 
 export interface BigQueryGraphTarget {
@@ -80,13 +107,14 @@ export interface AlloyDbTarget {
   project: string;
   location: string;
   cluster: string;
-  instance: string;
+  // Set only by the legacy instance-based URI.
+  instance?: string;
   database: string;
   uri: string;
 }
 
 export interface GoogleDeploymentTargets {
-  // Every declared deploymentTarget URI, in declaration order.
+  // Every declared target, as written, in declaration order.
   uris: string[];
   // The subset that parse as BigQuery Graph targets.
   bigQuery: BigQueryGraphTarget[];
@@ -95,10 +123,189 @@ export interface GoogleDeploymentTargets {
   // The subset that parse as AlloyDB database targets. Not a graph: see the
   // file header for why this one names a database.
   alloyDb: AlloyDbTarget[];
-  // URIs that parse as NONE of the supported destinations (a host/scheme/
+  // Targets that parse as NONE of the supported destinations (a host/scheme/
   // segment/identifier typo, or an unsupported destination). Kept so a caller
   // can name the typo instead of silently dropping it.
   malformed: string[];
+}
+
+// A deployment target's engine, with its coordinates.
+export type ParsedDeploymentTarget =
+    {engine: 'bigquery'; coordinates: BigQueryGraphTarget}|
+    {engine: 'spanner'; coordinates: SpannerGraphTarget}|
+    {engine: 'alloydb'; coordinates: AlloyDbTarget};
+
+// One entry of a model's `deployments:` list, with its target parsed.
+export type ResolvedDeployment = ParsedDeploymentTarget&{
+  name: string;
+  // The binding profile the deployment uses: its `profile`, or `default`.
+  profile: string;
+};
+
+
+// Parses a deployment target written as a resource URI. Returns undefined for
+// any other form. The legacy instance-based AlloyDB URI parses only when
+// `legacyAlloyDb` is set.
+function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
+    ParsedDeploymentTarget|undefined {
+  const bq = uri.match(BQ_GRAPH_TARGET);
+  if (bq) {
+    return {
+      engine: 'bigquery',
+      coordinates: {project: bq[1], dataset: bq[2], graphName: bq[3], uri},
+    };
+  }
+  const sp = uri.match(SPANNER_GRAPH_TARGET);
+  if (sp) {
+    return {
+      engine: 'spanner',
+      coordinates: {
+        project: sp[1],
+        instance: sp[2],
+        database: sp[3],
+        graphName: sp[4],
+        uri,
+      },
+    };
+  }
+  const ad = uri.match(ALLOYDB_TARGET);
+  if (ad) {
+    return {
+      engine: 'alloydb',
+      coordinates: {
+        project: ad[1],
+        location: ad[2],
+        cluster: ad[3],
+        database: ad[4],
+        uri,
+      },
+    };
+  }
+  const legacy = opts.legacyAlloyDb ? uri.match(LEGACY_ALLOYDB_TARGET) : null;
+  if (legacy) {
+    return {
+      engine: 'alloydb',
+      coordinates: {
+        project: legacy[1],
+        location: legacy[2],
+        cluster: legacy[3],
+        instance: legacy[4],
+        database: legacy[5],
+        uri,
+      },
+    };
+  }
+  return undefined;
+}
+
+// The cluster-based URI of the database a legacy instance-based AlloyDB URI
+// names.
+function clusterUri(legacy: RegExpMatchArray): string {
+  return `//alloydb.googleapis.com/projects/${legacy[1]}/locations/${
+      legacy[2]}/clusters/${legacy[3]}/databases/${legacy[5]}`;
+}
+
+/**
+ * The destination a target names. That is the target as written, except for
+ * the legacy instance-based AlloyDB URI, which names its database by the
+ * cluster-based URI.
+ */
+export function destinationKey(target: string): string {
+  const legacy = target.match(LEGACY_ALLOYDB_TARGET);
+  return legacy ? clusterUri(legacy) : target;
+}
+
+/** Why a deployment's target is not accepted in a `deployments:` list. */
+export function deploymentTargetError(
+    model: SemanticModel, d: DeploymentSpec): string {
+  const at =
+      `Model '${model.name}': deployment '${d.name}' targets '${d.target}'`;
+  const legacy = d.target.match(LEGACY_ALLOYDB_TARGET);
+  if (legacy) {
+    return `${at}, the instance-based AlloyDB URI, which names no real ` +
+        `resource. An AlloyDB database belongs to its cluster; write '${
+               clusterUri(legacy)}'.`;
+  }
+  const form =
+      CATALOG_PREFIXES.find(([prefix]) => d.target.startsWith(prefix))?.[1];
+  if (form) {
+    return `${at}, which is a Knowledge Catalog name. Write the resource URI ` +
+        `instead: '${form}'.`;
+  }
+  return `${at}, which is not a BigQuery graph, a Spanner graph or an ` +
+      `AlloyDB database. Write a resource URI: '${BQ_GRAPH_FORM}', '${
+             SPANNER_GRAPH_FORM}' or '${ALLOYDB_FORM}'.`;
+}
+
+
+/**
+ * The deployment names a `--deployment` flag selects, or undefined when the
+ * flag is absent or negated. The flag is repeated or comma-separated. It
+ * arrives as a string, as an array when it is repeated, or as a boolean when
+ * it is absent or negated. Pieces are trimmed, empty ones dropped, and a
+ * repeated name kept once, at its first position. Throws when any occurrence
+ * of the flag names no deployment. A bare occurrence among repeated ones
+ * arrives as `true` and names none.
+ */
+export function parseDeploymentSelection(
+    raw?: string|boolean|Array<string|boolean>): string[]|undefined {
+  if (raw === undefined || typeof raw === 'boolean') return undefined;
+  const noNames = `--deployment names no deployment; give one or more ` +
+      `deployment names, comma-separated.`;
+  const names: string[] = [];
+  const parts = Array.isArray(raw) ? raw : [raw];
+  for (const part of parts) {
+    const pieces = typeof part === 'boolean' ?
+        [] :
+        String(part).split(',').map(p => p.trim()).filter(p => p);
+    if (!pieces.length) throw new Error(noNames);
+    for (const name of pieces) {
+      if (!names.includes(name)) names.push(name);
+    }
+  }
+  if (!names.length) throw new Error(noNames);
+  return names;
+}
+
+
+/**
+ * A model's deployments with each target parsed into its engine and
+ * coordinates. Returns every deployment in declaration order, or only the
+ * `selected` names, in the order given. Fails on a selected name the model
+ * does not declare, and on a target in no accepted form.
+ */
+export function resolveModelDeployments(
+    model: SemanticModel, selected?: string[]):
+    {deployments: ResolvedDeployment[]}|{error: string} {
+  const declared = model.deployments ?? [];
+  let chosen = declared;
+  if (selected !== undefined) {
+    const byName = new Map(declared.map(d => [d.name, d]));
+    chosen = [];
+    for (const name of selected) {
+      const d = byName.get(name);
+      if (!d) {
+        const available =
+            declared.length ? declared.map(x => x.name).join(', ') : 'none';
+        return {
+          error: `Model '${model.name}' has no deployment named '${
+              name}' (available: ${available}).`,
+        };
+      }
+      chosen.push(d);
+    }
+  }
+  const deployments: ResolvedDeployment[] = [];
+  for (const d of chosen) {
+    const parsed = parseTarget(d.target, {legacyAlloyDb: false});
+    if (!parsed) return {error: deploymentTargetError(model, d)};
+    deployments.push({
+      ...parsed,
+      name: d.name,
+      profile: d.profile ?? DEFAULT_PROFILE,
+    });
+  }
+  return {deployments};
 }
 
 
@@ -107,25 +314,16 @@ export interface GoogleDeploymentTargets {
 // single parse rather than re-running JSON.parse + the regexes once per reader.
 // Keyed by model identity: the IR object is stable through a push (the loader,
 // transpile, and inheritance passes each hand on a fixed set of objects) and
-// its customExtensions are not mutated after loading. The returned value is
-// read-only by convention -- no caller mutates its arrays.
+// neither its deployments nor its customExtensions are mutated after loading.
+// A caller that narrows `deployments` builds a new model object. The returned
+// value is read-only by convention -- no caller mutates its arrays.
 const targetsCache = new WeakMap<SemanticModel, GoogleDeploymentTargets>();
 
-// Reads a model's GOOGLE custom_extension(s) in a single pass and returns the
-// deployment-target facts every caller derives from them. The extension `data`
-// is an opaque, vendor-serialized JSON string (the loader keeps it verbatim);
-// we own its `deploymentTargets` shape. Throws on malformed extension JSON.
-export function googleDeploymentTargets(model: SemanticModel):
-    GoogleDeploymentTargets {
-  const cached = targetsCache.get(model);
-  if (cached) return cached;
-
+// The targets in a model's GOOGLE custom_extension(s). The extension `data` is
+// an opaque, vendor-serialized JSON string (the loader keeps it verbatim); we
+// own its `deploymentTargets` shape. Throws on malformed extension JSON.
+function extensionTargets(model: SemanticModel): string[] {
   const uris: string[] = [];
-  const bigQuery: BigQueryGraphTarget[] = [];
-  const spanner: SpannerGraphTarget[] = [];
-  const alloyDb: AlloyDbTarget[] = [];
-  const malformed: string[] = [];
-
   for (const ext of model.customExtensions ?? []) {
     if (ext.vendorName !== GOOGLE_VENDOR) {
       continue;
@@ -143,40 +341,40 @@ export function googleDeploymentTargets(model: SemanticModel):
     if (!Array.isArray(list)) {
       continue;
     }
-
     for (const uri of list) {
-      if (typeof uri !== 'string') {
-        continue;
-      }
-      uris.push(uri);
-      const bq = uri.match(BQ_GRAPH_TARGET);
-      if (bq) {
-        bigQuery.push({project: bq[1], dataset: bq[2], graphName: bq[3], uri});
-        continue;
-      }
-      const sp = uri.match(SPANNER_GRAPH_TARGET);
-      if (sp) {
-        spanner.push({
-          project: sp[1],
-          instance: sp[2],
-          database: sp[3],
-          graphName: sp[4],
-          uri,
-        });
-        continue;
-      }
-      const ad = uri.match(ALLOYDB_TARGET);
-      if (ad) {
-        alloyDb.push({
-          project: ad[1],
-          location: ad[2],
-          cluster: ad[3],
-          instance: ad[4],
-          database: ad[5],
-          uri,
-        });
-        continue;
-      }
+      if (typeof uri === 'string') uris.push(uri);
+    }
+  }
+  return uris;
+}
+
+// Reads a model's deployment targets in a single pass and returns the facts
+// every caller derives from them. The targets come from `model.deployments`
+// when the model has it, and otherwise from its GOOGLE custom_extension(s).
+// Never both: the loader's GOOGLE block holds a copy of the list. Throws on
+// malformed extension JSON.
+export function googleDeploymentTargets(model: SemanticModel):
+    GoogleDeploymentTargets {
+  const cached = targetsCache.get(model);
+  if (cached) return cached;
+
+  const uris = model.deployments !== undefined ?
+      model.deployments.map(d => d.target) :
+      extensionTargets(model);
+  const bigQuery: BigQueryGraphTarget[] = [];
+  const spanner: SpannerGraphTarget[] = [];
+  const alloyDb: AlloyDbTarget[] = [];
+  const malformed: string[] = [];
+
+  for (const uri of uris) {
+    const parsed = parseTarget(uri, {legacyAlloyDb: true});
+    if (parsed?.engine === 'bigquery') {
+      bigQuery.push(parsed.coordinates);
+    } else if (parsed?.engine === 'spanner') {
+      spanner.push(parsed.coordinates);
+    } else if (parsed?.engine === 'alloydb') {
+      alloyDb.push(parsed.coordinates);
+    } else {
       // Matches no supported destination type: collect it as malformed
       // (rejected by the validator) rather than silently ignoring it.
       malformed.push(uri);

@@ -15,7 +15,7 @@
 // the same database describe ONE store; the profile is how a caller found it,
 // not what it is.
 
-import {googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, destinationKey, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 
 
@@ -143,8 +143,9 @@ function strayBindings(model: SemanticModel, store: string): string[] {
  * wrong place.
  */
 export function resolveStore(model: SemanticModel): Store|{error: string} {
-  const {spanner, alloyDb, bigQuery, malformed} =
-      googleDeploymentTargets(model);
+  const targets = googleDeploymentTargets(model);
+  const {spanner, bigQuery, malformed} = targets;
+  const alloyDb = mergeUriPairs(targets.alloyDb);
   const declared = spanner.length + alloyDb.length + bigQuery.length;
 
   const operational = [...spanner, ...alloyDb];
@@ -181,6 +182,7 @@ export function resolveStore(model: SemanticModel): Store|{error: string} {
   }
 
   const store = storeFor(spanner[0], alloyDb[0], bigQuery[0]);
+  if ('error' in store) return {error: `Model '${model.name}': ${store.error}`};
 
   const strays = strayBindings(model, store.name);
   if (strays.length) {
@@ -196,13 +198,32 @@ export function resolveStore(model: SemanticModel): Store|{error: string} {
 }
 
 
+// The AlloyDB targets, with each database that is named once by its
+// instance-based URI and once by its cluster-based URI counted once. The
+// instance-based one is kept, whichever is listed first, because it names the
+// instance to connect through. Any other repeat of a database is kept, so the
+// same URI twice, or two instances of one database, count twice.
+function mergeUriPairs(targets: AlloyDbTarget[]): AlloyDbTarget[] {
+  const byDatabase = new Map<string, AlloyDbTarget[]>();
+  for (const t of targets) {
+    const key = destinationKey(t.uri);
+    byDatabase.set(key, [...(byDatabase.get(key) ?? []), t]);
+  }
+  return targets.filter(t => {
+    const named = byDatabase.get(destinationKey(t.uri))!;
+    const pair = named.length === 2 &&
+        named.some(n => n.instance !== undefined) &&
+        named.some(n => n.instance === undefined);
+    return !pair || t.instance !== undefined;
+  });
+}
+
+
 function storeFor(
     spanner: {project: string; instance: string; database: string}|undefined,
-    alloyDb: {
-      project: string; location: string; cluster: string; instance: string;
-      database: string
-    }|undefined,
-    bigQuery: {project: string; dataset: string}|undefined): Store {
+    alloyDb: AlloyDbTarget|undefined,
+    bigQuery: {project: string; dataset: string}|undefined):
+    Store|{error: string} {
   if (spanner) {
     return {
       kind: 'spanner',
@@ -214,6 +235,15 @@ function storeFor(
     };
   }
   if (alloyDb) {
+    // A connection to an AlloyDB database goes through an instance. Only the
+    // legacy instance-based URI names one.
+    if (alloyDb.instance === undefined) {
+      return {
+        error: `AlloyDB target '${alloyDb.uri}' names a database in its ` +
+            `cluster. The runtime cannot find the cluster's primary instance ` +
+            `yet, so it has no instance to connect through.`,
+      };
+    }
     return {
       kind: 'alloydb',
       name: `projects/${alloyDb.project}/locations/${

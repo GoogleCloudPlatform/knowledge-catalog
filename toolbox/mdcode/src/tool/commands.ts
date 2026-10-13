@@ -825,12 +825,14 @@ export async function push(options: PushOptions): Promise<number> {
     // is skipped). The live BigQuery pre-flight runs before each BigQuery
     // deploy so a push fails fast when a source table is unreachable; it also
     // runs under
-    // --validate-only. A deployment target may be claimed by only one profile
-    // in a run: two profiles pointing at the same graph would have the second
-    // CREATE OR REPLACE silently overwrite the first, so that is an error
-    // rather than last-write-wins.
+    // --validate-only. A deployment target may be claimed by only one model
+    // and profile in a run: two profiles, or two model files under one
+    // profile, pointing at the same graph would have the second CREATE OR
+    // REPLACE silently overwrite the first, so that is an error rather than
+    // last-write-wins.
     const multiProfile = graphProfileNames.length > 1;
-    const claimedTargets = new Map<string, string>();  // target URI -> profile
+    // Target URI -> the profile and model that claimed it first.
+    const claimedTargets = new Map<string, {profile: string; model: string}>();
     const deployedProfiles: string[] = [];
     const skippedProfiles: string[] = [];
     let deployedGraphs = 0;
@@ -877,17 +879,17 @@ export async function push(options: PushOptions): Promise<number> {
       noteCatalogOnly(prepared.models);
       for (const m of prepared.models) {
         for (const uri of deploy.deploymentTargetUris(m.model)) {
-          const owner = claimedTargets.get(uri);
-          if (owner !== undefined) {
+          const first = claimedTargets.get(uri);
+          if (first !== undefined) {
             console.error(
-                `Error: binding profiles '${owner}' and '${
-                    profileName}' both ` +
-                `deploy to the same graph '${
-                    uri}'; give each profile its own ` +
+                `Error: model '${first.model}' under binding profile '${
+                    first.profile}' and model '${
+                    m.model.name}' under binding profile '${profileName}' ` +
+                `both deploy to the same graph '${uri}'; give each its own ` +
                 `deployment target (the second would overwrite the first).`);
             return 1;
           }
-          claimedTargets.set(uri, profileName);
+          claimedTargets.set(uri, {profile: profileName, model: m.model.name});
         }
       }
       graphPlans.push({profileName, prepared});

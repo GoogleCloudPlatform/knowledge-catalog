@@ -76,6 +76,38 @@ describe('where a model says it lives', () => {
         'projects/p/locations/us-central1/clusters/c/instances/i/databases/d');
   });
 
+  // A connection to an AlloyDB database goes through an instance, and a
+  // target named by its cluster names none.
+  test('an AlloyDB target named by its cluster has no store yet', () => {
+    const target =
+        '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
+    expect(resolveStore(bound(target, `${PG}/tables/customer`))).toEqual({
+      error: `Model 'm': AlloyDB target '${target}' names a database in ` +
+          `its cluster. The runtime cannot find the cluster's primary ` +
+          `instance yet, so it has no instance to connect through.`,
+    });
+  });
+
+  // The instance-based URI names the instance to connect through, so it is
+  // kept in either order.
+  test('one AlloyDB database named by both of its URIs is one store', () => {
+    const byInstance = `      - {name: by_instance, target: "${PG}"}\n`;
+    const byCluster =
+        `      - {name: by_cluster, target: "//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d"}\n`;
+    for (const listed of [byInstance + byCluster, byCluster + byInstance]) {
+      const store = resolveStore(model(
+          `    deployments:\n` + listed +
+          `    entities:\n` +
+          `      - name: Customer\n` +
+          `        primary_key: [id]\n` +
+          `        source: ${PG}/tables/customer\n` +
+          `        fields:\n` +
+          `          - {name: id, datatype: Integer, expression: id}\n`));
+      if ('error' in store) throw new Error(store.error);
+      expect(store.kind === 'alloydb' && store.instance).toBe('i');
+    }
+  });
+
   // An AlloyDB target names a DATABASE, not a graph, because AlloyDB has no
   // property-graph DDL to address. A URI carrying the graph segment the other
   // two backends use names nothing that could be created, so it is not quietly
@@ -153,9 +185,11 @@ describe('a binding that disagrees with the target', () => {
 // not in doubt -- only Spanner accepts a write -- so the pair resolves. Two
 // destinations of the SAME backend is the case nothing here can decide.
 describe('a model that declares more than one deployment target', () => {
+  // The targets sit in a GOOGLE block, as a vanilla model's do.
   function targets(uris: string[], source: string): SemanticModel {
     return {
       ...bound(`${DB}/propertyGraphs/g`, source),
+      deployments: undefined,
       customExtensions: [{
         vendorName: 'GOOGLE',
         data: JSON.stringify({deploymentTargets: uris}),
@@ -213,5 +247,29 @@ describe('a model that declares more than one deployment target', () => {
     expect('error' in store).toBe(true);
     if (!('error' in store)) return;
     expect(store.error).toContain('2 BigQuery deployment targets');
+  });
+
+  // Only the two URIs of one AlloyDB database are merged. A graph listed twice
+  // in a GOOGLE block counts twice.
+  test('one Spanner graph listed twice is ambiguous', () => {
+    const store = resolveStore(targets(
+        [`${DB}/propertyGraphs/g`, `${DB}/propertyGraphs/g`],
+        `${DB}/tables/Customer`));
+    expect('error' in store && store.error)
+        .toContain('2 Spanner deployment targets');
+  });
+
+  test('one AlloyDB URI listed twice is ambiguous', () => {
+    const store = resolveStore(targets([PG, PG], `${PG}/tables/customer`));
+    expect('error' in store && store.error)
+        .toContain('2 AlloyDB deployment targets');
+  });
+
+  test('two instances of one AlloyDB database are ambiguous', () => {
+    const store = resolveStore(targets(
+        [PG, PG.replace('/instances/i/', '/instances/i2/')],
+        `${PG}/tables/customer`));
+    expect('error' in store && store.error)
+        .toContain('2 AlloyDB deployment targets');
   });
 });

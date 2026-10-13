@@ -409,6 +409,81 @@ semantic_model:
     expect(profLogs).not.toContain('target:');
   });
 
+  // The error names the model and the profile on each side.
+  test('push --all-profiles refuses two profiles that deploy one graph', async () => {
+    const eg = setupWorkspace();
+    spyOn(globalThis, 'fetch').mockImplementation((() => {
+      throw new Error('unexpected network call');
+    }) as any);
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation(() => {});
+    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
+    fs.writeFileSync(path.join(eg, 'sales.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    deployments:
+      - name: prod
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`);
+    fs.mkdirSync(path.join(eg, 'sales.profiles'), {recursive: true});
+    fs.writeFileSync(path.join(eg, 'sales.profiles', 'staging.yaml'), `semantic_model:
+  - name: sales
+    deployment_target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    entities:
+      - name: orders
+        source: bigquery:p.d.orders_staging
+`);
+
+    expect(await push({allProfiles: true, kc: false, validateOnly: true}))
+        .toBe(1);
+    expect(bqSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
+        .toContain(
+            "model 'sales' under binding profile 'staging' and model 'sales' " +
+            "under binding profile 'default' both deploy to the same graph " +
+            "'//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
+  });
+
+  // Both models are under one profile, so only their names tell them apart.
+  test('push refuses two model files that deploy one graph', async () => {
+    const eg = setupWorkspace();
+    spyOn(globalThis, 'fetch').mockImplementation((() => {
+      throw new Error('unexpected network call');
+    }) as any);
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation(() => {});
+    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
+    const modelFile = (name: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: ${name}
+    deployments:
+      - name: prod
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`;
+    fs.writeFileSync(path.join(eg, 'a.yaml'), modelFile('a'));
+    fs.writeFileSync(path.join(eg, 'b.yaml'), modelFile('b'));
+
+    expect(await push({kc: false, validateOnly: true})).toBe(1);
+    expect(bqSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
+        .toContain(
+            "model 'a' under binding profile 'default' and model 'b' under " +
+            "binding profile 'default' both deploy to the same graph " +
+            "'//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
+  });
+
   test('a legacy profile file carrying deployment_target and a bare source still merges and loads', async () => {
     const eg = setupWorkspace();
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
