@@ -957,6 +957,22 @@ export async function push(options: PushOptions): Promise<number> {
       }
       graphPlans.push({profileName, prepared});
     }
+    // Knowledge Catalog records one canonical view of the logical model: the
+    // single --profile selection, else the default binding. prepareOnce keeps
+    // the result, so preparing it early costs nothing.
+    const kcProfileName =
+        namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+    const prepareKc = async(): Promise<PreparedModels|null> => {
+      const docs = docsOnce(kcProfileName, false);
+      if (!docs) return null;
+      const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
+      return prepareOnce(docs, kcProfileName, prune);
+    };
+    // A push that deploys no graph prepares the catalog leg first. Its local
+    // errors then come before the file-copy type lookup below, which needs
+    // the network.
+    if (kcEnabled && !graphPlans.length && !await prepareKc()) return 1;
+
     // With KC_V2_ASPECTS off, the catalog leg stores the model file and every
     // profile file as read, whichever profile this push selects, so a pull
     // can return them all. Reading them under --no-profile too keeps a push
@@ -1049,8 +1065,6 @@ export async function push(options: PushOptions): Promise<number> {
       // The loop above already loaded every document that contributes a graph.
       // Only the rest need loading, which is usually none, and a model that
       // does not define this profile is skipped rather than failing a warning.
-      const kcProfileName =
-          namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
       const rest = (docsOnce(kcProfileName, true) ?? [])
                        .filter(d => !loadedDocs.has(d.name));
       if (rest.length) {
@@ -1067,18 +1081,11 @@ export async function push(options: PushOptions): Promise<number> {
       }
     }
 
-    // Knowledge Catalog records one canonical view of the logical model: the
-    // single --profile selection, else the default binding. Alongside a graph
-    // deploy the entries reflect that binding (pruned to what it answers); a
-    // catalog-only --no-profile push publishes the whole logical model
-    // unpruned.
+    // Alongside a graph deploy the catalog entries reflect the binding
+    // (pruned to what it answers); a catalog-only --no-profile push publishes
+    // the whole logical model unpruned.
     if (kcEnabled) {
-      const kcProfileName =
-          namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
-      const docs = docsOnce(kcProfileName, false);
-      if (!docs) return 1;
-      const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
-      const prepared = await prepareOnce(docs, kcProfileName, prune);
+      const prepared = await prepareKc();
       if (!prepared) return 1;
       // Pull writes a model to `<model>.yaml`, so it returns the copy of a
       // model file only under that name.

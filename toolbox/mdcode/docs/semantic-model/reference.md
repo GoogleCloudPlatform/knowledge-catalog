@@ -55,14 +55,15 @@ kcmd pull
 ```
 
 Writes back the model file and profile files a push stored in Knowledge
-Catalog, or reconstructs the model document from the catalog entries when there
-are none. Reads only from Knowledge Catalog (never BigQuery); its coordinates
-come from the same scope you authored under. See [Pull](README.md#pull) for
-behavior.
+Catalog. It reconstructs the model document from the catalog entries instead
+for a model an older `kcmd` pushed, and when no stored file is named after the
+model. When it finds that the last push stopped partway, it writes nothing.
+Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
+the same scope you authored under. See [Pull](README.md#pull) for behavior.
 
 | Flag | Effect |
 |------|--------|
-| `--dry-run` | Reconstruct from the catalog and report what would be written, but write or delete no files. |
+| `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. |
 
 ### profiles
@@ -382,6 +383,13 @@ creates them in your own project at `global`; push still writes only entries.
 | Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
 | Model file and each profile file | `semantic-model-file` (custom type) | entry holding the file's text | `<model>.files.<file>` |
 
+The model entry also carries the `kcmd-push-id` label, which names the push that
+stored the file copies. On each entry, push owns the `schema`, `semantic-*` and
+`guidelines` aspects it writes, the display name, the description and that
+label. When it updates an entry, it keeps every other label and the source
+`resource`, `system`, `platform`, `createTime` and `updateTime` another tool
+set.
+
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
 (`primaryKey` / `uniqueConstraints`); a `schema-join` link carries the
@@ -432,9 +440,10 @@ constraint will not push, and loading the pulled model names the constraint and
 says the word is missing. That is the outcome to want when the catalog no
 longer says how a breach routes.
 
-Push to Knowledge Catalog is lossy — the catalog holds metadata, not a full copy
-of your model. For exactly what is stored, what is gated behind
-`--emit-expressions`, and what is never stored, see
+The catalog's metadata does not hold your whole model, so push also stores a
+copy of each model file and profile file, which pull returns. For exactly what
+the metadata stores, what is gated behind `--emit-expressions`, and what is
+never stored, see
 [What push and pull preserve](fidelity.md#to-knowledge-catalog).
 
 ## Validation

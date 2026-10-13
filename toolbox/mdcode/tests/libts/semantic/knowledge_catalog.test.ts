@@ -930,6 +930,22 @@ describe('each model and profile file is stored in a file-copy entry', () => {
     expect(copies({})).toEqual([]);
   });
 
+  // A pull compares the label with the push id on the copies.
+  test('the model entry carries the copies\' push id in the kcmd-push-id ' +
+           'label, only when copies are stored',
+       () => {
+         const anchor = (opts: Record<string, any>) =>
+             generateCatalogResources(MODEL, {...OPTS, ...opts}).entries[0];
+         const stamped = FILES.map(f => ({...f, pushId: 'push-7'}));
+         expect(anchor({sourceFiles: stamped}).entrySource).toEqual({
+           displayName: 'retail',
+           labels: {'kcmd-push-id': 'push-7'},
+         });
+         expect(anchor({sourceFiles: stamped, v2Aspects: true}).entrySource)
+             .toEqual({displayName: 'retail'});
+         expect(anchor({}).entrySource).toEqual({displayName: 'retail'});
+       });
+
   // `slug` turns a space into `_`, and names in the older profile directory
   // are not checked, so two of them can share an id.
   test('two file names that map to one entry id throw, naming both', () => {

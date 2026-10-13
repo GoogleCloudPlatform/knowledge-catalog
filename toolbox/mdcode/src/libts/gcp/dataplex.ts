@@ -52,6 +52,8 @@ export interface Entry {
   updateTime?: string;
   entrySource?: {
     resource?: string;
+    system?: string;
+    platform?: string;
     ancestors?: {
       name: string;
       type: string;
@@ -127,8 +129,10 @@ export class CatalogClient extends api.ApiClient {
     return await this._get(name);
   }
 
+  // `fix.keepSourceResource` returns `entrySource.resource` exactly as stored.
   async getEntry(project: string, location: string, entryGroup: string, entry: string,
-                 aspects?: string[]): Promise<api.ApiResult<Entry>> {
+                 aspects?: string[],
+                 fix: FixOptions = {}): Promise<api.ApiResult<Entry>> {
     const name = `${catalogContainer(project, location, entryGroup)}/entries/${entry}`;
     const params: Record<string, any> = { view: 'BASIC' };
     if (aspects && aspects.length) {
@@ -138,7 +142,7 @@ export class CatalogClient extends api.ApiClient {
 
     const res = await this._get<Entry>(name, params);
     if (res.status == 200 && res.result) {
-      await _fixEntry(res.result, this.context);
+      await _fixEntry(res.result, this.context, fix);
     }
 
     return res;
@@ -203,8 +207,10 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async *listEntries(project: string, location: string,
-                     entryGroup: string): AsyncGenerator<Entry, void, unknown> {
+  // `fix.keepSourceResource` returns each `entrySource.resource` exactly as
+  // stored.
+  async *listEntries(project: string, location: string, entryGroup: string,
+                     fix: FixOptions = {}): AsyncGenerator<Entry, void, unknown> {
     const parent = catalogContainer(project, location, entryGroup);
     const resourceName = `${parent}/entries`;
 
@@ -222,7 +228,7 @@ export class CatalogClient extends api.ApiClient {
 
       const entries = res.result?.entries || [];
       for (const entry of entries) {
-        await _fixEntry(entry, this.context);
+        await _fixEntry(entry, this.context, fix);
         yield entry;
       }
 
@@ -409,13 +415,21 @@ export class CatalogClient extends api.ApiClient {
 }
 
 
+// How `_fixEntry` treats an entry. `keepSourceResource` leaves
+// `entrySource.resource` as stored, so a caller that writes it back changes
+// nothing and makes no Resource Manager lookup for it.
+export interface FixOptions {
+  keepSourceResource?: boolean;
+}
+
 // Normalises an entry and its aspects in place so resource names and aspect
 // keys consistently use project IDs (rather than project numbers), while
 // preserving `@<path>` suffixes and `path` fields on field-level aspects.
-export async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
+export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
+                                fix: FixOptions = {}): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
   entry.entryType = await crm.fixProject(entry.entryType, ctx);
-  if (entry.entrySource?.resource) {
+  if (entry.entrySource?.resource && !fix.keepSourceResource) {
     entry.entrySource.resource = await crm.fixProject(entry.entrySource.resource, ctx);
   }
 

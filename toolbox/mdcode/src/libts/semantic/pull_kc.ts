@@ -23,7 +23,7 @@ import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import {SemanticModel} from './ir';
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
-import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy} from './kc_custom_types';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
 import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
 import {loadSqlEngine} from './sql_parser';
 
@@ -175,7 +175,14 @@ export async function pullKnowledgeCatalog(
   // stored. Copies whose ids differ, or of which only some carry one, or a
   // number of copies other than that count, mean the last push stopped
   // partway. Writing them would mix files from two pushes or leave one out.
+  // A push that stores copies also labels the model entry with its push id,
+  // and writes that entry first. A labeled model whose copies are missing or
+  // carry another id means the last push stopped before storing them.
+  // Writing the copies of an earlier push, or rebuilding, would overwrite
+  // the local files. The hydrated entries keep the order of `targets`.
   const count = copies[0]?.pushFileCount;
+  const anchor = hydrated[targets.indexOf(anchors[0])];
+  const label = anchor.entrySource?.labels?.[PUSH_ID_LABEL];
   const unfinished = new Set(copies.map(f => f.pushId)).size > 1 ?
       'its file copies in the catalog come from different pushes' :
       count !== undefined && copies.length < count ?
@@ -183,6 +190,11 @@ export async function pullKnowledgeCatalog(
       count !== undefined && copies.length > count ?
       `the catalog holds ${copies.length} file copies, but the push stored ` +
           `${count}` :
+      label !== undefined && !copies.length ?
+      (skipped.length ? 'the catalog holds no readable file copy' :
+                        'the catalog holds none of its file copies') :
+      label !== undefined && copies[0].pushId !== label ?
+      'its model entry and its file copies come from different pushes' :
       undefined;
   if (unfinished) {
     // A skipped copy is often why the count is off, so its warning goes with

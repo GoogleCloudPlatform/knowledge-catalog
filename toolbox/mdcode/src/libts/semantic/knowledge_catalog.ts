@@ -31,7 +31,9 @@
 // file the push read is also stored whole as a file copy, one
 // `semantic-model-file` entry per file, parented to the anchor. That type is
 // custom too. The aspects cannot hold the whole model, so a pull returns
-// these copies instead of rebuilding the file from them.
+// these copies instead of rebuilding the file from them. The anchor of a
+// model with copies carries their push id in the `kcmd-push-id` label on its
+// entrySource.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -66,7 +68,7 @@ import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
-import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TYPE_ID, FileCopy} from './kc_custom_types';
+import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
 import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
 import {databaseOf} from './loader';
 import {InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -262,6 +264,7 @@ export function generateCatalogResources(
   // storing only one would lose the other on the next pull.
   if (!v2) {
     const fileById = new Map<string, string>();
+    let pushId: string|undefined;
     for (const file of opts.sourceFiles ?? []) {
       const id = names.fileEntryId(model.name, file.fileName);
       const earlier = fileById.get(id);
@@ -274,6 +277,17 @@ export function generateCatalogResources(
       if (!claim(seen, id, 'entry', `file '${file.fileName}'`, warnings))
         continue;
       entries.push(fileCopyEntry(names.entry(id), modelEntryName, file, opts));
+      pushId ??= file.pushId;
+    }
+    // The anchor is written before the copies and is labeled with the push id
+    // they carry. A pull that finds the label and no copies from that push
+    // knows the last push stopped before storing them. A model an older kcmd
+    // pushed has no label.
+    if (pushId !== undefined) {
+      entries[0].entrySource = {
+        ...entries[0].entrySource,
+        labels: {[PUSH_ID_LABEL]: pushId},
+      };
     }
   }
 

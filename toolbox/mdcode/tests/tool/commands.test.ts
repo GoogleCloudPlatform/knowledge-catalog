@@ -1106,6 +1106,27 @@ describe('the file copy round trip', () => {
          expect(create).not.toHaveBeenCalled();
        });
 
+  // A push that deploys no graph runs the catalog leg's local checks first.
+  test('a catalog-only push reports a local error before a failed file-copy ' +
+           'type lookup',
+       async () => {
+         writeRoundTripWorkspace();
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.yaml'),
+             ROUND_TRIP_MODEL.replace(
+                 'primary_key: [key]', 'primary_key: [key]\n        bogus: 1'));
+         const {entryType} =
+             fakeCatalog({missingType: 'semantic-model-file'});
+         for (const validateOnly of [true, false]) {
+           const errorSpy =
+               spyOn(console, 'error').mockImplementation(() => {});
+           expect(await push({profile: false, validateOnly})).toBe(1);
+           expect(messages(errorSpy)).toContain('bogus');
+           expect(messages(errorSpy)).not.toContain('not found in project');
+         }
+         expect(entryType).not.toHaveBeenCalled();
+       });
+
   test('a file over the aspect size limit fails in the preflight, naming it',
        async () => {
          // The limit production enforces on one aspect's data.
@@ -1866,9 +1887,11 @@ describe('the push id on every file copy', () => {
           .filter(f => fs.statSync(f).isFile())
           .map(f => [f, fs.readFileSync(f, 'utf8')]));
 
-  // Makes every write of the copy of `fileName` fail.
-  const failCopyWrites = (entries: Map<string, Entry>, fileName: string) => {
-    const failing = (entry: Entry) =>
+  // Makes every write of the copy of `fileName` fail, or of every copy when
+  // `fileName` is absent.
+  const failCopyWrites = (entries: Map<string, Entry>, fileName?: string) => {
+    const failing = (entry: Entry) => fileName === undefined ?
+        entry.name.includes('/commerce.files.') :
         entry.name.endsWith(`/commerce.files.${fileName}`);
     spyOn(CatalogClient.prototype, 'createEntry')
         .mockImplementation(async (...args: any[]) => {
@@ -1888,6 +1911,124 @@ describe('the push id on every file copy', () => {
   const PARTIAL = 'the last push of model \'commerce\' did not finish: the ' +
       'catalog holds 1 of its 2 file copies, so pull writes nothing. Push ' +
       'again, then pull.';
+  const NONE = 'the last push of model \'commerce\' did not finish: the ' +
+      'catalog holds none of its file copies, so pull writes nothing. Push ' +
+      'again, then pull.';
+
+  // The labeled model entry lands, and no copy does.
+  test('a first push whose copies all failed leaves a model pull refuses, ' +
+           'and --force-remove writes and deletes nothing',
+       async () => {
+         writeRoundTripWorkspace();
+         const {entries} = fakeCatalog();
+         failCopyWrites(entries);
+         expect(await push({profile: false})).toBe(1);
+         expect(storedCopies(entries)).toEqual({});
+
+         // A teammate's workspace, with another model file that
+         // --force-remove would delete.
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'other.yaml'),
+             MODEL_YAML.replace('name: commerce', 'name: other'));
+         const before = localFiles();
+         await expect(pull({forceRemove: true})).rejects.toThrow(NONE);
+         expect(localFiles()).toEqual(before);
+       });
+
+  test('a --force-remove rename whose copies all failed leaves a model pull ' +
+           'refuses',
+       async () => {
+         fs.writeFileSync(
+             path.join(dir, 'catalog.yaml'),
+             'scope: semantic-model.test-project.us.commerce_eg\n');
+         fs.mkdirSync(entryGroupDir(), {recursive: true});
+         const shop = path.join(entryGroupDir(), 'shop.yaml');
+         fs.writeFileSync(
+             shop, ROUND_TRIP_MODEL.replace('name: commerce', 'name: shop'));
+         const {entries} = fakeCatalog();
+         expect(await push({profile: false})).toBe(0);
+
+         fs.rmSync(shop);
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.yaml'), ROUND_TRIP_MODEL);
+         failCopyWrites(entries);
+         expect(await push({profile: false, forceRemove: true})).toBe(1);
+         expect(storedCopies(entries)).toEqual({});
+
+         const before = localFiles();
+         await expect(pull({forceRemove: true})).rejects.toThrow(NONE);
+         expect(localFiles()).toEqual(before);
+       });
+
+  // The earlier push's copies are a finished set, so only the push id label
+  // on the model entry tells.
+  test('a re-push whose model entry landed and whose copies all failed ' +
+           'leaves a model pull refuses, and --force-remove keeps the new ' +
+           'files',
+       async () => {
+         writeRoundTripWorkspace();
+         fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
+         const {entries} = fakeCatalog();
+         expect(await push({profile: false})).toBe(0);
+
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.yaml'),
+             ROUND_TRIP_MODEL.replace('Orders and customers', 'Orders'));
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
+             ROUND_TRIP_PROFILE);
+         failCopyWrites(entries);
+         expect(await push({profile: false})).toBe(1);
+         expect(Object.keys(storedCopies(entries))).toEqual(['commerce.yaml']);
+
+         const before = localFiles();
+         await expect(pull({forceRemove: true}))
+             .rejects.toThrow(
+                 'the last push of model \'commerce\' did not finish: its ' +
+                 'model entry and its file copies come from different ' +
+                 'pushes, so pull writes nothing. Push again, then pull.');
+         expect(localFiles()).toEqual(before);
+       });
+
+  // Dataplex deletes the old model entry's children with it, so a rename that
+  // stops after that delete leaves no model at all.
+  test('a --force-remove rename that stopped after deleting the old model ' +
+           'leaves a catalog pull writes nothing from',
+       async () => {
+         fs.writeFileSync(
+             path.join(dir, 'catalog.yaml'),
+             'scope: semantic-model.test-project.us.commerce_eg\n');
+         fs.mkdirSync(entryGroupDir(), {recursive: true});
+         const shop = path.join(entryGroupDir(), 'shop.yaml');
+         fs.writeFileSync(
+             shop, ROUND_TRIP_MODEL.replace('name: commerce', 'name: shop'));
+         const {entries} = fakeCatalog();
+         expect(await push({profile: false})).toBe(0);
+
+         fs.rmSync(shop);
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.yaml'), ROUND_TRIP_MODEL);
+         // Every delete but the old model entry's fails.
+         spyOn(CatalogClient.prototype, 'deleteEntry')
+             .mockImplementation(async (...args: any[]) => {
+               if (args[3] !== 'shop') return {status: 500, message: 'injected'};
+               for (const name of [...entries.keys()]) {
+                 const id = name.split('/').pop()!;
+                 if (id === 'shop' || id.startsWith('shop.')) entries.delete(name);
+               }
+               return {status: 200};
+             });
+         expect(await push({profile: false, forceRemove: true})).toBe(1);
+         expect(entries.size).toBe(0);
+
+         const before = localFiles();
+         const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+         expect(await pull()).toBe(0);
+         expect(await pull({forceRemove: true})).toBe(0);
+         expect(localFiles()).toEqual(before);
+         expect(messages(logSpy).split('No semantic models found').length)
+             .toBe(3);
+       });
 
   // The copies that landed share one id, so only the count tells.
   test('a first push whose profile copy failed leaves a set pull refuses, ' +
@@ -1979,8 +2120,8 @@ describe('the push id on every file copy', () => {
          expect(await push({profile: false})).toBe(1);
          expect(messages(errorSpy))
              .toContain(
-                 'The catalog may now hold a mix of old and new file copies, ' +
-                 'so push again before you pull.');
+                 'The catalog may now lack some or all of this push\'s file ' +
+                 'copies, so push again before you pull.');
 
          // A teammate's workspace, with a profile file the catalog lacks.
          fs.writeFileSync(

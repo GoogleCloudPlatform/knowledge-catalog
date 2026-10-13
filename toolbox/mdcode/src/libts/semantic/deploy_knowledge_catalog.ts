@@ -47,7 +47,7 @@ import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
-import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy} from './kc_custom_types';
+import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isRelationshipLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf, slug} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
@@ -232,26 +232,33 @@ export async function applyKnowledgeCatalog(
   const {emitted, existing} = prepared;
 
   // Some of this model's writes may have landed before a failure in them.
-  // The catalog then holds a mix of old and new file copies, which pull
-  // refuses until a push succeeds.
+  // The catalog may then lack some or all of this push's file copies, and
+  // pull refuses that until a push succeeds.
   const storesCopies = emitted.some(
       m => m.resources.entries.some(e => entryTypeId(e) === FILE_COPY_TYPE_ID));
   const failed = (details: string) => result(
       false,
       storesCopies ?
-          `${details.replace(/\.$/, '')}. The catalog may now hold a mix of ` +
-              `old and new file copies, so push again before you pull.` :
+          `${details.replace(/\.$/, '')}. The catalog may now lack some or ` +
+              `all of this push's file copies, so push again before you pull.` :
           details);
 
   if (opts.forceRemove) {
     const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
     if (foreignAnchorIds.length) {
-      // This runs before any of this model's writes.
+      // This runs before any of this model's writes. A failure here leaves
+      // none of this push's file copies, so it gets the note too, and so
+      // does a thrown error.
       const removed =
-          await removeForeignModels(cat, opts, existing, foreignAnchorIds);
+          await removeForeignModels(cat, opts, existing, foreignAnchorIds)
+              .catch((err: any) => ({
+                       deleted: 0,
+                       unlinked: 0,
+                       error: String(err?.message || err).trim(),
+                     }));
       counts.deleted += removed.deleted;
       counts.unlinked += removed.unlinked;
-      if (removed.error) return result(false, removed.error);
+      if (removed.error) return failed(removed.error);
     }
   }
 
@@ -642,7 +649,8 @@ async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
     existing: Entry[], counts: Counts): Promise<{error?: string}> {
   for (const {model, resources} of emitted) {
-    const entries = await writeEntries(cat, opts, resources.entries);
+    const entries =
+        await writeEntries(cat, opts, resources.entries, existing);
     counts.created += entries.created;
     counts.updated += entries.updated;
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
@@ -794,8 +802,11 @@ async function listEntryGroup(
     opts: KcDeployOptions): Promise<{entries: Entry[]; error?: string}> {
   const entries: Entry[] = [];
   try {
+    // Push writes listed source fields back, so it keeps each `resource` as
+    // stored.
     for await (const entry of cat.listEntries(
-        opts.project, opts.location, opts.entryGroup)) {
+        opts.project, opts.location, opts.entryGroup,
+        {keepSourceResource: true})) {
       entries.push(entry);
     }
   } catch (err: any) {
@@ -959,9 +970,12 @@ function findStaleEntryLinks(
  * Deletes models already in the entry group that this push does not re-emit
  * (`--force-remove`).
  *
- * For each foreign anchor, removes its relationship links first (since they
- * reference entries about to be deleted), then deletes its children present in
- * `existing` followed by the anchor itself. Its file copies go last.
+ * For each foreign anchor, looks up its relationship links and then deletes
+ * the anchor before anything else. Dataplex deletes an entry's child entries
+ * with it, and a link with an entry it references, so a push that stops here
+ * leaves the whole foreign model or none of it. Pull then returns the whole
+ * model or finds none. The links and the children present in `existing` are
+ * deleted after the anchor, and a 404 for one already gone counts as success.
  *
  * A foreign model is by definition not in this push, so its emitter's
  * `ownedPrefixes` are unavailable. Ownership is instead the anchor followed by
@@ -989,8 +1003,7 @@ async function removeForeignModels(
     const foreignEntries = collectOwnedEntries(foreignAnchor, existing);
     const foreignEntityNames = collectEntityNames(foreignEntries);
 
-    // Delete all relationship links referencing the foreign model's entities
-    // before deleting the entries themselves.
+    // Look the links up while their entity entries still exist.
     const lookedUp = await lookupEntryLinks(cat, opts, foreignEntityNames);
     if (lookedUp.error) {
       const {entryId, message} = lookedUp.error;
@@ -1001,6 +1014,21 @@ async function removeForeignModels(
             foreignAnchorId}' failed: ${message}`,
       };
     }
+
+    // The anchor goes first and takes its children and their links with it.
+    // A failure before it leaves the foreign model whole. The deletes after it
+    // remove anything Dataplex left and normally get 404.
+    const entryFailure = (e: NonNullable<ReconcileOutcome['error']>) => ({
+      deleted,
+      unlinked,
+      error: `Deleting entry '${e.entryId}' from removed model '${
+          foreignAnchorId}' failed: ${e.message}`,
+    });
+    const anchors = await deleteEntries(
+        cat, opts, foreignEntries.filter(isAnchorEntry));
+    deleted += anchors.deleted;
+    if (anchors.error) return entryFailure(anchors.error);
+
     const links = await deleteEntryLinks(cat, opts, lookedUp.links.values());
     unlinked += links.unlinked;
     if (links.error) {
@@ -1013,31 +1041,10 @@ async function removeForeignModels(
       };
     }
 
-    // Delete child entries before the anchor so that if a child delete fails
-    // mid-way, the foreign anchor remains in the entry group and a subsequent
-    // `--force-remove` push can still discover and finish removing the model.
-    // The file copies go after the anchor. A delete that fails before them
-    // then leaves the removed model's files whole, and pull returns them.
-    // Dataplex deletes an entry's child entries with it, and the copies are
-    // children of the anchor. These deletes then normally find the copies
-    // gone, so nothing is left behind.
-    const isCopy = (e: Entry) => entryTypeId(e) === FILE_COPY_TYPE_ID;
-    const orderedDeletions = [
-      ...foreignEntries.filter(e => !isAnchorEntry(e) && !isCopy(e)),
-      ...foreignEntries.filter(isAnchorEntry),
-      ...foreignEntries.filter(isCopy),
-    ];
-    const entries = await deleteEntries(cat, opts, orderedDeletions);
-    deleted += entries.deleted;
-    if (entries.error) {
-      const {entryId, message} = entries.error;
-      return {
-        deleted,
-        unlinked,
-        error: `Deleting entry '${entryId}' from removed model '${
-            foreignAnchorId}' failed: ${message}`,
-      };
-    }
+    const children = await deleteEntries(
+        cat, opts, foreignEntries.filter(e => !isAnchorEntry(e)));
+    deleted += children.deleted;
+    if (children.error) return entryFailure(children.error);
   }
   return {deleted, unlinked};
 }
@@ -1064,12 +1071,16 @@ interface EntriesOutcome {
  * An entry that already exists is updated in place (idempotent re-push).
  */
 async function writeEntries(
-    cat: CatalogClient, opts: KcDeployOptions,
-    entries: Entry[]): Promise<EntriesOutcome> {
+    cat: CatalogClient, opts: KcDeployOptions, entries: Entry[],
+    existing: Entry[] = []): Promise<EntriesOutcome> {
   if (!entries.length) return {created: 0, updated: 0};
+  // The entrySource each entry had before this push. An update keeps the
+  // fields kcmd does not own.
+  const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
+  const write = (e: Entry) => writeEntry(cat, opts, e, sources);
   const [anchor, ...children] = entries;
 
-  const anchorRes = await writeEntry(cat, opts, anchor);
+  const anchorRes = await write(anchor);
   if (anchorRes.error) return {created: 0, updated: 0, error: anchorRes.error};
 
   let created = anchorRes.updated ? 0 : 1;
@@ -1079,7 +1090,7 @@ async function writeEntries(
   const dependentEntries = children.filter(isDependentEntry);
 
   for (const entryWave of [independentEntries, dependentEntries]) {
-    const res = await Promise.all(entryWave.map(e => writeEntry(cat, opts, e)));
+    const res = await Promise.all(entryWave.map(write));
     for (const r of res) {
       if (r.error) continue;
       if (r.updated) {
@@ -1183,17 +1194,34 @@ async function updateEntryLink(
  * Writes a single entry to Knowledge Catalog.
  *
  * Attempts to create `entry` (retrying brief entry-group propagation 404s), and
- * if it already exists (HTTP 409), delegates to `updateEntry`.
+ * if it already exists (HTTP 409), delegates to `updateEntry` with the
+ * entrySource `sources` lists for it. An entry `sources` does not hold is read
+ * first. That happens after a listing the caller may not make, or when another
+ * writer created the entry after the listing.
  */
 async function writeEntry(
-    cat: CatalogClient, opts: KcDeployOptions,
-    entry: Entry): Promise<WriteOutcome> {
+    cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
+    sources: ReadonlyMap<string, Entry['entrySource']>): Promise<WriteOutcome> {
   const id = entryId(entry);
   const res = await createEntry(cat, opts, id, entry);
-  if (isExistsStatus(res)) return updateEntry(cat, opts, entry);
+  if (isExistsStatus(res)) {
+    if (sources.has(id)) return updateEntry(cat, opts, entry, sources.get(id));
+    const read = await cat.getEntry(
+        opts.project, opts.location, opts.entryGroup, id, undefined,
+        {keepSourceResource: true});
+    if (!isOkStatus(read)) {
+      return {error: `entry '${id}': reading it before the update: ${
+                  errText(read)}`};
+    }
+    return updateEntry(cat, opts, entry, read.result?.entrySource);
+  }
   if (!isOkStatus(res)) return {error: `entry '${id}': ${errText(res)}`};
   return {};
 }
+
+// The entrySource fields another writer may set, which an update keeps.
+const KEPT_SOURCE_FIELDS =
+    ['resource', 'system', 'platform', 'createTime', 'updateTime'] as const;
 
 /**
  * Updates an existing entry in place after `createEntry` returns HTTP 409.
@@ -1212,10 +1240,32 @@ async function writeEntry(
  * so it removes any that the model does not declare even if someone added them
  * in the console. Every other aspect another tool attached is left alone,
  * since `aspectKeys` names only the types kcmd writes.
+ *
+ * The update mask replaces the whole entrySource, so the update carries over
+ * fields from `source`, the entrySource the entry had before this push. Of
+ * those fields kcmd owns the display name, the description and the
+ * `kcmd-push-id` label. The update keeps another writer's `resource`,
+ * `system`, `platform`, `createTime` and `updateTime`, and every label but
+ * `kcmd-push-id`. It sets that label when `entry` carries it and drops it
+ * when not. Dataplex refuses an update that leaves out an `updateTime` the
+ * entry has, or moves it back. A kept field another writer changes after
+ * `source` was read is written back with the old value. For `updateTime` the
+ * update fails instead.
  */
 async function updateEntry(
-    cat: CatalogClient, opts: KcDeployOptions,
-    entry: Entry): Promise<WriteOutcome> {
+    cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
+    source?: Entry['entrySource']): Promise<WriteOutcome> {
+  const {[PUSH_ID_LABEL]: _own, ...others} = source?.labels ?? {};
+  const labels = {...others, ...entry.entrySource?.labels};
+  const kept = Object.fromEntries(
+      KEPT_SOURCE_FIELDS.filter(k => source?.[k] !== undefined)
+          .map(k => [k, source![k]]));
+  const merged = {
+    ...kept,
+    ...entry.entrySource,
+    ...(Object.keys(labels).length ? {labels} : {}),
+  };
+  if (Object.keys(merged).length) entry = {...entry, entrySource: merged};
   // We cannot simply pass `Object.keys(entry.aspects ?? {})` here because
   // `entry.aspects` only contains the aspects emitted in *this* push. If an
   // optional aspect (such as `guidelines`, `sql-expressions`, or a column's

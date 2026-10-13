@@ -348,6 +348,18 @@ describe('pullKnowledgeCatalog: file copies', () => {
                        sourceFiles: [MODEL_FILE, PROFILE_FILE],
                      }).entries;
   const isCopy = (e: Entry) => e.entryType.endsWith('/semantic-model-file');
+  // The entries a push of both files writes. It labels the model entry with
+  // its push id.
+  const stamp = (pushId: string) => ({pushId, pushFileCount: 2});
+  const pushed = (pushId = 'push-3') => generateCatalogResources(SALES, {
+                                          ...OPTS,
+                                          emitExpressions: true,
+                                          sourceFiles: [
+                                            {...MODEL_FILE, ...stamp(pushId)},
+                                            {...PROFILE_FILE, ...stamp(pushId)},
+                                          ],
+                                        }).entries;
+  const NOT_FINISHED = 'the last push of model \'sales\' did not finish: ';
 
   test('returns each stored file, sorted by file name', async () => {
     const entries = withCopies();
@@ -383,9 +395,12 @@ describe('pullKnowledgeCatalog: file copies', () => {
         .toBe(false);
   });
 
-  test('a model with no copies is rebuilt from the aspects and warns',
+  // A model an older kcmd pushed has no push id label and no copies.
+  test('a model with no label and no copies is rebuilt from the aspects and ' +
+           'warns',
        async () => {
          const entries = entriesFor(SALES);
+         expect(entries[0].entrySource?.labels).toBeUndefined();
          stubClient(entries, entries);
 
          const cat = new CatalogClient({} as any);
@@ -395,6 +410,89 @@ describe('pullKnowledgeCatalog: file copies', () => {
          expect(rawFiles).toEqual([]);
          expect(models[0]).toEqual(SALES);
          expect(warnings).toEqual([NO_COPY_WARNING]);
+       });
+
+  // A push writes the model entry before its copies, so one that stopped in
+  // between leaves the labeled model entry and no copy.
+  test('a labeled model with no copies aborts the pull', async () => {
+    const entries = pushed().filter(e => !isCopy(e));
+    expect(entries[0].entrySource?.labels).toEqual({'kcmd-push-id': 'push-3'});
+    stubClient(entries, entries);
+
+    const cat = new CatalogClient({} as any);
+    await expect(pullKnowledgeCatalog(cat, OPTS))
+        .rejects.toThrow(
+            `${NOT_FINISHED}the catalog holds none of its file copies, so ` +
+            'pull writes nothing. Push again, then pull.');
+  });
+
+  // A re-push whose model entry landed and whose copies did not leaves the
+  // copies of the push before it, which are a finished set.
+  test('a labeled model whose copies come from another push aborts the pull',
+       async () => {
+         const entries = [
+           ...pushed().filter(e => !isCopy(e)),
+           ...pushed('push-2').filter(isCopy),
+         ];
+         stubClient(entries, entries);
+
+         const cat = new CatalogClient({} as any);
+         await expect(pullKnowledgeCatalog(cat, OPTS))
+             .rejects.toThrow(
+                 `${NOT_FINISHED}its model entry and its file copies come ` +
+                 'from different pushes, so pull writes nothing. Push ' +
+                 'again, then pull.');
+       });
+
+  test('a labeled model whose copies are all unreadable aborts the pull, ' +
+           'naming them',
+       async () => {
+         const entries = pushed();
+         for (const e of entries.filter(isCopy)) {
+           for (const a of Object.values(e.aspects ?? {})) delete a.data!.content;
+         }
+         stubClient(entries, entries);
+
+         const cat = new CatalogClient({} as any);
+         await expect(pullKnowledgeCatalog(cat, OPTS))
+             .rejects.toThrow(
+                 `${NOT_FINISHED}the catalog holds no readable file copy, so ` +
+                 'pull writes nothing. Push again, then pull. file copy ' +
+                 '\'sales.files.sales.yaml\' holds no file name or no ' +
+                 'content; it is skipped.');
+       });
+
+  // Only the model entry carries the label. A listing may put any entry
+  // first, such as the model's own children or a copy another model left.
+  test('the label is read from the model entry, wherever it is listed',
+       async () => {
+         const [anchor, ...children] = pushed().filter(e => !isCopy(e));
+         const stray = generateCatalogResources({...SALES, name: 'old'}, {
+                         ...OPTS,
+                         sourceFiles: [{
+                           fileName: 'old.yaml',
+                           content: 'x',
+                           pushId: 'push-1',
+                         }],
+                       }).entries.filter(isCopy);
+         const listed = [...stray, ...children, anchor];
+         stubClient(listed, listed);
+
+         const cat = new CatalogClient({} as any);
+         await expect(pullKnowledgeCatalog(cat, OPTS))
+             .rejects.toThrow('the catalog holds none of its file copies');
+       });
+
+  test('with v2Aspects on, a labeled model with no copies is pulled',
+       async () => {
+         const entries = pushed().filter(e => !isCopy(e));
+         stubClient(entries, entries);
+
+         const cat = new CatalogClient({} as any);
+         const {models} =
+             await pullKnowledgeCatalog(cat, {...OPTS, v2Aspects: true});
+
+         expect(models.map(m => m.name)).toEqual(['sales']);
        });
 
   test('the rebuilt model\'s warnings are left out when the copies are used',

@@ -128,9 +128,10 @@ agree on every structural row and differ only where a Spanner target has no
 
 ## To Knowledge Catalog
 
-The catalog holds metadata rather than a full copy of your model. Every resource
-type it uses is a built-in system type under `dataplex-types/global`, apart from
-the custom `semantic-action` and `semantic-constraint` pairs that `kcmd init`
+The catalog holds the model's metadata and a copy of each model file and profile
+file. Every resource type it uses is a built-in system type under
+`dataplex-types/global`, apart from the custom `semantic-action`,
+`semantic-constraint` and `semantic-model-file` pairs that `kcmd init`
 provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
@@ -288,8 +289,10 @@ and round-trip losslessly through `pull` — see
 Push stores a copy of the model file and of each profile file it reads, and
 `pull` writes those copies back unchanged. What follows describes the catalog
 metadata itself, which is what `pull` rebuilds the model file from when the
-model has no stored copy. That happens when an older `kcmd` last pushed it, or
-when its first push stopped before storing any.
+model has no `kcmd-push-id` label and no stored copy, such as a model an older
+`kcmd` pushed. It also rebuilds the model file when no stored copy is named
+after the model. [Pull](README.md#pull) says when `pull` refuses the catalog
+instead.
 
 `pull` returns what push wrote — the **Recovered by `pull`** column above is the
 summary. When the push deployed a graph, what push wrote was already pruned to

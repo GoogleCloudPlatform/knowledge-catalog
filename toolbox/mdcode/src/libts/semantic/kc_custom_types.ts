@@ -587,6 +587,12 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
 // profile file as push read it, so a pull can return the file unchanged.
 export const FILE_COPY_TYPE_ID = 'semantic-model-file';
 
+// The entrySource label a push puts on the model entry when it stores file
+// copies. Its value is the push id those copies carry. A model entry whose
+// label names a push the catalog holds no copies of was last written by a
+// push that stopped before storing them. kcmd owns this label and no other.
+export const PUSH_ID_LABEL = 'kcmd-push-id';
+
 // A file copy: one model or profile file's name and text.
 export interface FileCopy {
   // The file's path relative to the entry group directory, for example

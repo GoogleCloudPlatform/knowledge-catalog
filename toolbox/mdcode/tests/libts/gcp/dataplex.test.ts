@@ -7,7 +7,8 @@
 import {describe, expect, spyOn, test} from 'bun:test';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {_fixEntry, CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
+import {ResourceManagerClient} from '../../../src/libts/gcp/crm';
+import {_fixEntry, CatalogClient, Entry, EntryLink, FixOptions} from '../../../src/libts/gcp/dataplex';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SCHEMA_JOIN =
@@ -228,4 +229,49 @@ describe('CatalogClient.updateEntry', () => {
       aspectKeys: ['p.global.guidelines'],
     });
   });
+});
+
+
+describe('entrySource.resource on a read', () => {
+  // A relative name whose project is a number.
+  const RESOURCE = 'projects/97531/locations/us/things/t';
+  const REWRITTEN = 'projects/other-proj/locations/us/things/t';
+  const raw = (): Entry => ({
+    name: 'projects/proj/locations/us/entryGroups/g/entries/e',
+    entryType: 'projects/dataplex-types/locations/global/entryTypes/x',
+    entrySource: {resource: RESOURCE},
+  });
+
+  // Push passes keepSourceResource, since it writes the value back. Every
+  // other caller gets the project id.
+  test('listEntries and getEntry rewrite it by default and keep it as ' +
+           'stored on request',
+       async () => {
+         const client = new CatalogClient(CTX);
+         spyOn(client as any, '_get')
+             .mockImplementation(
+                 async (name: string) => name.endsWith('/entries') ?
+                     {status: 200, result: {entries: [raw()]}} :
+                     {status: 200, result: raw()});
+         const lookup =
+             spyOn(ResourceManagerClient.prototype, 'getProject')
+                 .mockResolvedValue(
+                     {status: 200, result: {projectId: 'other-proj'}} as any);
+         const listed = async (fix?: FixOptions) => {
+           const resources: (string|undefined)[] = [];
+           for await (const e of client.listEntries('proj', 'us', 'g', fix)) {
+             resources.push(e.entrySource?.resource);
+           }
+           return resources[0];
+         };
+         const got = async (fix?: FixOptions) =>
+             (await client.getEntry('proj', 'us', 'g', 'e', undefined, fix))
+                 .result?.entrySource?.resource;
+
+         expect(await listed()).toBe(REWRITTEN);
+         expect(await got()).toBe(REWRITTEN);
+         expect(await listed({keepSourceResource: true})).toBe(RESOURCE);
+         expect(await got({keepSourceResource: true})).toBe(RESOURCE);
+         lookup.mockRestore();
+       });
 });

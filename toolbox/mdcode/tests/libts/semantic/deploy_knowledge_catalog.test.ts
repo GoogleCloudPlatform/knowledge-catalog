@@ -14,6 +14,7 @@ import * as path from 'node:path';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
+import {ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
@@ -121,7 +122,9 @@ function stubClient(opts: {
   existing?: (string |
               {
                 id: string;
-                type?: string
+                type?: string;
+                labels?: Record<string, string>;
+                source?: Record<string, string>
               })[],
   // How listEntries spells the project in the names it yields. Defaults to the
   // scope's own project; set to a number to reproduce the server's inconsistent
@@ -136,6 +139,9 @@ function stubClient(opts: {
   links?: (entry: string) => ApiResult<any>,
   // Result of deleteEntryLink, keyed by the entry-link id. Default: 200.
   delLink?: (linkId: string) => ApiResult<any>,
+  // Result of getEntry, which push makes for an entry the listing lacks when
+  // create returns 409, keyed by entry id. Default: 200 with no entrySource.
+  getEntry?: (entryId: string) => ApiResult<any>,
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
   aspectType?: (typeId: string) => ApiResult<any>,
@@ -155,9 +161,16 @@ function stubClient(opts: {
                        const entryType = typeof e === 'string' ?
                            'semantic' :
                            (e.type ?? 'semantic');
+                       const labels =
+                           typeof e === 'string' ? undefined : e.labels;
+                       const source =
+                           typeof e === 'string' ? undefined : e.source;
                        yield {
                          name: entryName(id, opts.existingProject),
                          entryType,
+                         ...(labels || source ?
+                                 {entrySource: {...source, labels}} :
+                                 {}),
                        } as any;
                      }
                    });
@@ -180,6 +193,10 @@ function stubClient(opts: {
                       .mockImplementation(
                           async (_p, _l, _eg, linkId) =>
                               (opts.delLink ?? (() => ok({})))(linkId));
+  const getEntry = spyOn(CatalogClient.prototype, 'getEntry')
+                       .mockImplementation(
+                           async (_p, _l, _eg, entryId) =>
+                               (opts.getEntry ?? (() => ok({})))(entryId));
   const getEntryType = spyOn(CatalogClient.prototype, 'getEntryType')
                            .mockImplementation(
                                async (_p, _l, typeId) =>
@@ -198,6 +215,7 @@ function stubClient(opts: {
     updateLink,
     lookupLinks,
     delLink,
+    getEntry,
     getEntryType,
     getAspectType,
   };
@@ -259,8 +277,8 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
       create: () => err(409, 'entry already exists'),
       update: err(500, 'update boom'),
     });
-    const MIX = 'The catalog may now hold a mix of old and new file copies, ' +
-        'so push again before you pull.';
+    const MIX = 'The catalog may now lack some or all of this push\'s file ' +
+        'copies, so push again before you pull.';
 
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
@@ -268,7 +286,8 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
     expect(result.details).toContain('entry \'sales\': update boom');
     expect(result.details).not.toContain(MIX);
 
-    // With file copies, some may be new and some old after a failed write.
+    // With file copies, some or all of this push's copies may be missing
+    // after a failed write.
     const withCopies = await deployKnowledgeCatalog(
         models(DOCS), CTX,
         {...OPTS, sourceFiles: [{fileName: 'sales.yaml', content: OSSIE}]});
@@ -279,7 +298,7 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
 });
 
 
-describe('deployKnowledgeCatalog: the note on mixed file copies', () => {
+describe('deployKnowledgeCatalog: the note to push again before a pull', () => {
   const COPIES = [{fileName: 'sales.yaml', content: OSSIE}];
 
   test('a server message that ends in a period gets no second one', async () => {
@@ -294,8 +313,8 @@ describe('deployKnowledgeCatalog: the note on mixed file copies', () => {
     expect(result.details)
         .toBe(
             'Model \'sales\': entry \'sales\': Internal error encountered. ' +
-            'The catalog may now hold a mix of old and new file copies, so ' +
-            'push again before you pull.');
+            'The catalog may now lack some or all of this push\'s file ' +
+            'copies, so push again before you pull.');
   });
 
   // A message that ends in a newline still gets the note on the same line.
@@ -315,13 +334,15 @@ describe('deployKnowledgeCatalog: the note on mixed file copies', () => {
       expect(result.success).toBe(false);
       expect(result.details)
           .toBe(
-              'fetch failed. The catalog may now hold a mix of old and new ' +
-              'file copies, so push again before you pull.');
+              'fetch failed. The catalog may now lack some or all of this ' +
+              'push\'s file copies, so push again before you pull.');
     }
   });
 
-  // Removing another model runs before any of this model's writes.
-  test('a failure removing another model has no note', async () => {
+  // A rename that stops while removing the old model stores none of this
+  // push's copies. Pull may then return the old model, so push says to push
+  // again.
+  test('a failure removing another model gets the note', async () => {
     stubClient({
       existing: [{id: 'old', type: MODEL_TYPE}],
       del: () => err(500, 'delete boom'),
@@ -331,11 +352,14 @@ describe('deployKnowledgeCatalog: the note on mixed file copies', () => {
         models(DOCS), CTX, {...OPTS, forceRemove: true, sourceFiles: COPIES});
 
     expect(result.success).toBe(false);
-    expect(result.details).toContain('delete boom');
-    expect(result.details).not.toContain('mix of old and new file copies');
+    expect(result.details)
+        .toBe(
+            'Deleting entry \'old\' from removed model \'old\' failed: ' +
+            'delete boom. The catalog may now lack some or all of this ' +
+            'push\'s file copies, so push again before you pull.');
   });
 
-  test('a thrown error removing another model has no note', async () => {
+  test('a thrown error removing another model gets the note', async () => {
     const {create} = stubClient({
       existing: [{id: 'old', type: MODEL_TYPE}],
       del: () => {
@@ -343,13 +367,209 @@ describe('deployKnowledgeCatalog: the note on mixed file copies', () => {
       },
     });
 
-    const thrown = await deployKnowledgeCatalog(
-                       models(DOCS), CTX,
-                       {...OPTS, forceRemove: true, sourceFiles: COPIES})
-                       .then(() => undefined, (e: Error) => e);
+    const result = await deployKnowledgeCatalog(
+        models(DOCS), CTX, {...OPTS, forceRemove: true, sourceFiles: COPIES});
 
-    expect(thrown?.message).toBe('fetch failed');
+    expect(result.success).toBe(false);
+    expect(result.details)
+        .toBe(
+            'fetch failed. The catalog may now lack some or all of this ' +
+            'push\'s file copies, so push again before you pull.');
     expect(create).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('deployKnowledgeCatalog: the push id label and other writers\' fields', () => {
+  const PUSH = '6f1c1a0e-4b7d-4c55-9b1e-2a6f8f0d9c3b';
+  const COPIES = [{fileName: 'sales.yaml', content: OSSIE, pushId: PUSH}];
+  const LABELS = {'kcmd-push-id': PUSH};
+  // The entry each write call sent for the model entry `sales`.
+  const createdAnchor = (create: any) =>
+      create.mock.calls.find((c: any[]) => c[3] === 'sales')![4];
+  const updated = (update: any, id: string) => update.mock.calls.find(
+      (c: any[]) => c[0].name.endsWith(`/entries/${id}`))!;
+  const ENTITY = 'sales.entities.orders';
+  // Labels another writer set, beside the label of an earlier push.
+  const existing: {id: string; type: string; labels: Record<string, string>}[] =
+      [
+        {
+          id: 'sales',
+          type: MODEL_TYPE,
+          labels: {'owner': 'data-team', 'kcmd-push-id': 'earlier'},
+        },
+        {id: ENTITY, type: ENTITY_TYPE, labels: {'owner': 'data-team'}},
+      ];
+  const exists = () => err(409, 'entry already exists');
+
+  test('a push that stores copies labels the model entry on create and on ' +
+           'update',
+       async () => {
+         const {create} = stubClient();
+         expect((await deployKnowledgeCatalog(
+                     models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
+                    .success)
+             .toBe(true);
+         expect(createdAnchor(create).entrySource.labels).toEqual(LABELS);
+         // Only the model entry carries it.
+         for (const c of create.mock.calls.filter(c => c[3] !== 'sales')) {
+           expect((c[4] as any).entrySource?.labels).toBeUndefined();
+         }
+
+         mock.restore();
+         const {update} = stubClient({create: exists});
+         expect((await deployKnowledgeCatalog(
+                     models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
+                    .success)
+             .toBe(true);
+         const [entry, mask] = updated(update, 'sales');
+         expect(entry.entrySource.labels).toEqual(LABELS);
+         // The mask names the entrySource, so Dataplex stores the label.
+         expect(mask).toContain('entry_source');
+       });
+
+  test('with v2Aspects on, the model entry carries no label', async () => {
+    const opts = {...OPTS, sourceFiles: COPIES, v2Aspects: true};
+    const {create} = stubClient();
+    expect((await deployKnowledgeCatalog(models(DOCS), CTX, opts)).success)
+        .toBe(true);
+    expect(createdAnchor(create).entrySource.labels).toBeUndefined();
+
+    mock.restore();
+    const {update} = stubClient({create: exists});
+    expect((await deployKnowledgeCatalog(models(DOCS), CTX, opts)).success)
+        .toBe(true);
+    const [entry, mask] = updated(update, 'sales');
+    expect(entry.entrySource.labels).toBeUndefined();
+    expect(mask).toContain('entry_source');
+  });
+
+  // The update replaces the whole entrySource, so it carries them over.
+  test('a re-push keeps the labels another writer set', async () => {
+    const {update} = stubClient({create: exists, existing});
+    expect((await deployKnowledgeCatalog(
+                models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
+               .success)
+        .toBe(true);
+    expect(updated(update, 'sales')[0].entrySource.labels)
+        .toEqual({'owner': 'data-team', 'kcmd-push-id': PUSH});
+    expect(updated(update, ENTITY)[0].entrySource.labels)
+        .toEqual({'owner': 'data-team'});
+  });
+
+  test('a re-push keeps the source fields another writer set', async () => {
+    const source = {
+      resource: '//bigquery.googleapis.com/projects/p/datasets/d/tables/t',
+      system: 'other-tool',
+      platform: 'gcp',
+      createTime: '2026-01-02T03:04:05Z',
+      updateTime: '2026-02-03T04:05:06Z',
+    };
+    // kcmd owns the display name and the description. This model sets no
+    // description, and a file copy sets neither.
+    const listed = {
+      ...source,
+      displayName: 'renamed in console',
+      description: 'set by an earlier push',
+    };
+    const COPY = 'sales.files.sales.yaml';
+    const {create, update} = stubClient({
+      create: exists,
+      existing: [
+        {id: 'sales', type: MODEL_TYPE, source: listed},
+        {id: ENTITY, type: ENTITY_TYPE, source: listed},
+        {id: COPY, type: FILE_TYPE, source: listed},
+      ],
+    });
+    expect((await deployKnowledgeCatalog(
+                models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
+               .success)
+        .toBe(true);
+    // kcmd's own fields come from the entry it emitted.
+    const emitted = (id: string): Record<string, any> =>
+        create.mock.calls.find((c: any[]) => c[3] === id)![4]!.entrySource!;
+    expect(updated(update, 'sales')[0].entrySource)
+        .toEqual({...source, ...emitted('sales')});
+    expect(emitted('sales'))
+        .toMatchObject({displayName: 'sales', labels: LABELS});
+    expect(updated(update, ENTITY)[0].entrySource)
+        .toEqual({...source, ...emitted(ENTITY)});
+    expect(updated(update, COPY)[0].entrySource).toEqual(source);
+  });
+
+  // A listing the caller may not make comes back empty, and another writer
+  // can create an entry after the listing.
+  test('an entry the listing lacks is read before its update, and its ' +
+           'fields are kept',
+       async () => {
+         const source = {system: 'other-tool', labels: {'owner': 'data-team'}};
+         const {getEntry, update} = stubClient({
+           create: exists,
+           // A listed entry with no entrySource is not read again.
+           existing: [{id: ENTITY, type: ENTITY_TYPE}],
+           getEntry: (id) => ok(id === 'sales' ? {entrySource: source} : {}),
+         });
+         expect((await deployKnowledgeCatalog(
+                     models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
+                    .success)
+             .toBe(true);
+         expect(updated(update, 'sales')[0].entrySource).toEqual({
+           system: 'other-tool',
+           displayName: 'sales',
+           labels: {'owner': 'data-team', ...LABELS},
+         });
+         // The read keeps the stored resource as it is.
+         const read = getEntry.mock.calls.find((c: any[]) => c[3] === 'sales')!;
+         expect(read[5]).toEqual({keepSourceResource: true});
+         expect(getEntry.mock.calls.map((c: any[]) => c[3]))
+             .not.toContain(ENTITY);
+
+         mock.restore();
+         stubClient({create: exists, getEntry: () => err(403, 'denied')});
+         const failed = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, sourceFiles: COPIES});
+         expect(failed.success).toBe(false);
+         expect(failed.details)
+             .toContain('entry \'sales\': reading it before the update: ');
+       });
+
+  // A relative `projects/<number>` name would otherwise come back with the
+  // project id, which push would then write.
+  test('push writes a listed resource back as stored, with no project ' +
+           'lookup',
+       async () => {
+         const resource = 'projects/123456789/locations/us/things/t';
+         const listed =
+             {name: entryName('sales'), entryType: MODEL_TYPE,
+              entrySource: {resource}};
+         spyOn(CatalogClient.prototype, '_get')
+             .mockImplementation(
+                 (async (name: string) => name.endsWith('/entries') ?
+                      ok({entries: [listed]}) :
+                      err(404, 'not found')) as any);
+         const lookup =
+             spyOn(ResourceManagerClient.prototype, 'getProject')
+                 .mockResolvedValue(ok({projectId: 'other-proj'}) as any);
+         const {update} = stubClient({create: exists});
+         // stubClient replaces listEntries; the real one reads through `_get`.
+         (CatalogClient.prototype.listEntries as any).mockRestore();
+
+         expect((await deployKnowledgeCatalog(models(DOCS), CTX, OPTS)).success)
+             .toBe(true);
+         expect(updated(update, 'sales')[0].entrySource.resource)
+             .toBe(resource);
+         expect(lookup).not.toHaveBeenCalled();
+       });
+
+  test('a flag-on push removes only kcmd\'s label', async () => {
+    const {update} = stubClient({create: exists, existing});
+    expect((await deployKnowledgeCatalog(
+                models(DOCS), CTX,
+                {...OPTS, sourceFiles: COPIES, v2Aspects: true}))
+               .success)
+        .toBe(true);
+    expect(updated(update, 'sales')[0].entrySource.labels)
+        .toEqual({'owner': 'data-team'});
   });
 });
 
@@ -1231,17 +1451,61 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
            models(DOCS), CTX, {...OPTS, forceRemove: true});
 
        expect(result.success).toBe(true);
-       // The foreign model's 4 entries (children first, anchor last) and its 1
-       // link are removed...
+       // The foreign model's 4 entries (anchor first, then its children) and
+       // its 1 link are removed...
        expect(result.deleted).toBe(4);
        expect(result.unlinked).toBe(1);
        expect(delLink.mock.calls.map(c => c[3])).toEqual(['old-a-to-b']);
        expect(del.mock.calls.map(c => c[3])).toEqual([
-         'old.entities.a', 'old.entities.b', 'old.metrics.m', 'old'
+         'old', 'old.entities.a', 'old.entities.b', 'old.metrics.m'
        ]);
        // ...and the current model is still written (3 entries).
        expect(create).toHaveBeenCalledTimes(3);
      });
+
+  // Dataplex deletes the anchor's children, and their links, with it. A push
+  // that stops after the anchor delete then leaves nothing of the old model,
+  // and the deletes after it get 404.
+  test('--force-remove deletes the omitted model\'s anchor first, then its ' +
+           'links and children',
+       async () => {
+         const order: string[] = [];
+         const link =
+             linkEntry('old-a-to-b', ['old.entities.a', 'old.entities.b']);
+         const {create} = stubClient({
+           existing: [
+             {id: 'old.entities.a', type: ENTITY_TYPE},
+             {id: 'old', type: MODEL_TYPE},
+             {id: 'old.entities.b', type: ENTITY_TYPE},
+             {id: 'old.files.old.yaml', type: FILE_TYPE},
+           ],
+           links: (entry: string) => {
+             order.push(`lookup ${entry.split('/').pop()}`);
+             return entry.endsWith('old.entities.a') ? ok([link]) : ok([]);
+           },
+           del: (id) => {
+             order.push(id);
+             return id === 'old' ? ok({}) : err(404, 'not found');
+           },
+           delLink: (id) => {
+             order.push(id);
+             return err(404, 'not found');
+           },
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+         expect(result.success).toBe(true);
+         expect(order).toEqual([
+           'lookup old.entities.a', 'lookup old.entities.b', 'old',
+           'old-a-to-b', 'old.entities.a', 'old.entities.b',
+           'old.files.old.yaml'
+         ]);
+         expect(result.deleted).toBe(4);
+         expect(result.unlinked).toBe(1);
+         expect(create).toHaveBeenCalledTimes(3);
+       });
 
   describe('the omitted model\'s file copies', () => {
     const EXISTING = [
@@ -1260,14 +1524,15 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
       expect(result.success).toBe(true);
       expect(result.deleted).toBe(4);
       expect(del.mock.calls.map(c => c[3])).toEqual([
-        'old.entities.a', 'old', 'old.files.old.yaml',
+        'old', 'old.entities.a', 'old.files.old.yaml',
         'old.files.old.profile.prod.yaml'
       ]);
     });
 
-    // Pull then still finds the removed model's files whole.
+    // Nothing else of the model is deleted either, so pull still finds it
+    // whole, with its files.
     test('are kept when deleting its anchor fails', async () => {
-      const {del, create} = stubClient({
+      const {del, delLink, create} = stubClient({
         existing: EXISTING,
         del: (entryId) => entryId === 'old' ? err(500, 'delete boom') : ok({}),
       });
@@ -1280,7 +1545,8 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
           .toBe(
               'Deleting entry \'old\' from removed model \'old\' failed: ' +
               'delete boom');
-      expect(del.mock.calls.map(c => c[3])).toEqual(['old.entities.a', 'old']);
+      expect(del.mock.calls.map(c => c[3])).toEqual(['old']);
+      expect(delLink).not.toHaveBeenCalled();
       expect(create).not.toHaveBeenCalled();
     });
   });
@@ -1667,7 +1933,7 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
 
   test(
       'apply fails under --force-remove when deleteEntry fails on a ' +
-          'foreign model, leaving the foreign anchor intact',
+          'foreign model\'s child, after deleting its anchor',
       async () => {
         const forceOpts = {...OPTS, forceRemove: true};
         const {del} = stubClient({
@@ -1687,8 +1953,9 @@ describe('preflightKnowledgeCatalog and applyKnowledgeCatalog', () => {
             await applyKnowledgeCatalog(pre.prepared!, CTX, forceOpts);
 
         expect(applied.success).toBe(false);
-        expect(applied.deleted).toBe(1);
+        expect(applied.deleted).toBe(2);
         expect(del.mock.calls.map(c => c[3])).toEqual([
+          'old',
           'old.entities.a',
           'old.entities.b',
         ]);
