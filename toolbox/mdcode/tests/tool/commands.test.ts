@@ -18,6 +18,7 @@ import {SemanticModel} from '../../src/libts/semantic/ir';
 import * as kcEmit from '../../src/libts/semantic/knowledge_catalog';
 import * as osi from '../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
+import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {kcV2Aspects, pull, push} from '../../src/tool/commands';
 
@@ -1564,17 +1565,6 @@ describe('push checks each file before anything is stored', () => {
     expect(create).not.toHaveBeenCalled();
   });
 
-  test('each profile file is read once', async () => {
-    writeRoundTripWorkspace();
-    fakeCatalog();
-    const read = spyOn(fs, 'readFileSync');
-
-    expect(await push({profile: false})).toBe(0);
-    const profile = path.join(entryGroupDir(), 'commerce.profile.prod.yaml');
-    expect(read.mock.calls.filter(c => path.resolve(String(c[0])) === profile))
-        .toHaveLength(1);
-  });
-
   test('a profile file that is not valid UTF-8 fails the push, naming it',
        async () => {
          writeRoundTripWorkspace();
@@ -1909,4 +1899,198 @@ describe('the push id on every file copy', () => {
                  'pull writes nothing. Push again, then pull.');
          expect(localFiles()).toEqual(before);
        });
+});
+
+
+// Push applies a profile, loads its models and checks them. It prints each
+// warning after `Warning:`, the summary of what pruning leaves unavailable after
+// `Note:` and each error after `Error:`.
+describe('push applies, loads and checks a profile', () => {
+  const BQ = 'bigquery.googleapis.com/projects/acme/datasets/sales';
+  const prints = (spy: any) => spy.mock.calls.map((c: any[]) => c.join(' '));
+
+  // Writes the scope and its model file, and returns the entry group's
+  // directory.
+  function writeModel(text: string): string {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), text);
+    return eg;
+  }
+
+  // Mocks the Knowledge Catalog leg, and returns the mock.
+  function mockKc() {
+    return spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue({
+      success: true,
+      warnings: [],
+      created: 0,
+      updated: 0,
+      deleted: 0,
+      linked: 0,
+      unlinked: 0,
+      plan: [],
+    });
+  }
+
+  // Two deployments stop the push after pruning, before any live check.
+  test('a pruned push notes the fields its profile leaves unbound', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: a, target: "//${BQ}/propertyGraphs/a" }
+      - { name: b, target: "//${BQ}/propertyGraphs/b" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: ltv }
+`);
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.warn))
+        .toContain("Note: profile 'default' leaves 1 field(s) unbound.");
+  });
+
+  test('--transpile fills a vendor-only expression and drops the warning about it', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: purchase
+        source: //${BQ}/tables/purchase
+        primary_key: [p_id]
+        fields:
+          - { name: p_id, expression: p_id }
+          - { name: amount, expression: amount }
+    metrics:
+      - name: positive_spend
+        expression:
+          dialects:
+            - { dialect: SNOWFLAKE, expression: "SUM(IFF(purchase.amount > 0, purchase.amount, 0))" }
+`);
+    const kcSpy = mockKc();
+    const metric = () =>
+        kcSpy.mock.calls.at(-1)![0][0].model.metrics![0];
+    expect(await push({validateOnly: true})).toBe(0);
+    expect(prints(console.warn).join('\n')).toContain('needs transpilation');
+    expect(metric().expression).toBeUndefined();
+
+    (console.warn as any).mockClear();
+    expect(await push({validateOnly: true, transpile: true})).toBe(0);
+    expect(prints(console.warn).join('\n')).not.toContain('needs transpilation');
+    expect(prints(console.warn)).toContain(
+        "Warning: [commerce] metric 'positive_spend': transpiled " +
+        "'SNOWFLAKE' -> 'BIGQUERY'");
+    expect(metric().expression).toBeDefined();
+  });
+
+  // Two deployments stop the push after pruning, before any live check.
+  test('a pruned push warns about a metric whose SQL it cannot read', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: a, target: "//${BQ}/propertyGraphs/a" }
+      - { name: b, target: "//${BQ}/propertyGraphs/b" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+    metrics:
+      - { name: broken, expression: "SUM((customer.c_id" }
+`);
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.warn))
+        .toContain(
+            "Warning: [commerce] profile 'default': metric 'broken': kcmd " +
+            'could not read its SQL, so the fields it reads were not checked');
+  });
+
+  test('a pruned push reports a SQL parser that cannot load', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+`);
+    spyOn(sqlParser, 'loadSqlEngine')
+        .mockRejectedValue(new Error('engine missing'));
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.error)).toEqual(
+        ['Error: the SQL parser could not be loaded: engine missing']);
+  });
+
+  // Push reserves the name 'default' in any letter case.
+  test('a push refuses a legacy profile named Default', async () => {
+    const eg = writeModel(MODEL_YAML);
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'));
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'Default.yaml'), `semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: //${BQ}/tables/customer
+`);
+    mockKc();
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.error)).toEqual([
+      "Error: [commerce] a binding profile may not be named 'default' -- " +
+          "that name refers to the model's inline bindings. Rename the " +
+          'profile file.',
+    ]);
+  });
+
+  test('a push resolves a legacy wrapper\'s bare source in the default project', async () => {
+    const eg = writeModel(MODEL_YAML);
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'));
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'legacy.yaml'), `semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        source: sales.customer
+`);
+    const kcSpy = mockKc();
+    expect(await push({validateOnly: true, profile: 'legacy'})).toBe(0);
+    expect(kcSpy.mock.calls[0][0][0].model.entities![0].dataSource)
+        .toBe('test-project.sales.customer');
+  });
+
+  const selections = [
+    ['--profile', {profile: 'prod'}],
+    ['--all-profiles', {allProfiles: true}],
+    ['--no-profile', {profile: false}],
+  ] as const;
+  for (const [flag, selection] of selections) {
+    test(`each profile file is read once during a ${flag} push`, async () => {
+      const eg = writeModel(MODEL_YAML);
+      const profilePath = path.join(eg, 'commerce.profile.prod.yaml');
+      fs.writeFileSync(profilePath, `name: prod
+entities:
+  - name: Customer
+    source: //${BQ}/tables/customer
+    fields:
+      - { name: key, expression: c_id }
+`);
+      mockKc();
+      const readSpy = spyOn(fs, 'readFileSync');
+
+      expect(await push({validateOnly: true, ...selection})).toBe(0);
+
+      const reads = readSpy.mock.calls.filter(
+          c => path.resolve(String(c[0])) === profilePath);
+      expect(reads).toHaveLength(1);
+    });
+  }
 });
