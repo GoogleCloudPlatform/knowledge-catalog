@@ -429,7 +429,7 @@ kcmd push --profile operational           # deploy the graph with the operationa
 kcmd push --all-profiles                  # deploy the graph once per binding profile
 kcmd push --profile analytical --no-kc    # deploy only the graph, skip Knowledge Catalog
 kcmd push --no-profile                    # publish only to Knowledge Catalog, deploy no graph
-kcmd profiles                             # list profiles, their resolved sources, and what each cannot answer
+kcmd profiles                             # list profiles, their resolved sources, what each cannot answer, and what push would reject
 ```
 
 `--profile` chooses **which physical binding** feeds the graph, and that binding's

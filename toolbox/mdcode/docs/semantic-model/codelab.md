@@ -459,8 +459,9 @@ echo 'default_profile: analytical' >> catalog.yaml
 
 ### Inspect the binding profile
 
-`kcmd profiles` lists the model's binding profiles and reports what each one can
-answer. Run it to confirm the binding before you deploy:
+`kcmd profiles` lists the model's binding profiles, reports what each one can
+answer, and prints any error push would give for it. Run it to confirm the
+binding before you deploy:
 
 ```bash
 kcmd profiles

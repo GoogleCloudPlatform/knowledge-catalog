@@ -73,10 +73,24 @@ kcmd profiles
 
 Reports each binding profile the model declares: its deployment target, the
 source each entity binds to, and what the profile cannot answer or cannot run.
-Read-only — it applies and prunes each profile the way `push` does, but deploys
-nothing and runs no live probe, so you can compare coverage before choosing one.
-It exits non-zero when a profile cannot be applied or loaded, or when a
-deployment names a profile, which push and the runtime refuse.
+Under each profile it then prints every error `kcmd push --profile <name>`
+would give for it, after a `push rejects:` heading. The inline `default`
+binding is checked too. Beside declared profiles it is listed only when push
+would reject it. Some errors fail every push of the scope, such as a second
+model in the entry group. When push would stop at such an error,
+`kcmd profiles` prints it once above the profiles and still checks each
+profile. When `default_profile` names a profile that a model does not declare,
+a push that names no profile fails. That error prints above the model's
+profiles.
+
+The command is read-only. It applies and prunes each profile and generates each
+graph as `push --validate-only` does, but deploys nothing and calls no service,
+so you can compare coverage before choosing one. The checks that need a service
+run only at push time: the BigQuery source table probe, the dry runs of action
+statements and, on a push without `--validate-only`, the Knowledge Catalog
+checks on the entry group. Push's lookup of the file-copy type also runs only
+at push time, because it calls a service. It exits non-zero when push would
+reject a binding.
 
 | Flag | Effect |
 |------|--------|

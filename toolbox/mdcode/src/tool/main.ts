@@ -96,7 +96,7 @@ cli.command('push', 'Push catalog entries')
 
 cli.command(
        'profiles',
-       'List a semantic model\'s binding profiles and what each can answer')
+       'List a semantic model\'s binding profiles, what each can answer, and what push would reject')
     .option(
         '--profile [name]',
         'Report only this binding profile; defaults to every profile the model declares')

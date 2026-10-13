@@ -392,12 +392,17 @@ function validateEmittedModels(
   }
   if (emitted.length > 1) {
     return result(
-        false,
-        `entry group '${opts.entryGroup}' would receive ${
-            emitted.length} models, but only one model per entry group is ` +
-            `supported; split them into separate entry groups.`);
+        false, oneModelPerEntryGroupMessage(opts.entryGroup, emitted.length));
   }
   return result(true);
+}
+
+/** The error for an entry group that would receive more than one model. */
+export function oneModelPerEntryGroupMessage(
+    entryGroup: string, models: number): string {
+  return `entry group '${entryGroup}' would receive ${models} models, but ` +
+      `only one model per entry group is supported; split them into ` +
+      `separate entry groups.`;
 }
 
 /**

@@ -248,7 +248,8 @@ describe('push, legacy profiles, and pull fallback (b/567743508)', () => {
   });
 
   // A legacy wrapper is merged into the model file's text and may set its own
-  // target, so a deployment-profile error is reported under each wrapper.
+  // target, so a deployment-profile error is reported under each wrapper, and
+  // under the inline bindings.
   test('kcmd profiles reports a deployment-profile error under each legacy wrapper', async () => {
     const eg = setupWorkspace();
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -274,11 +275,12 @@ semantic_model:
     }
 
     expect(await profiles()).toBe(1);
-    const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    for (const name of ['prod', 'qa']) {
-      expect(errors).toContain(
-          `profile '${name}': [sales] model 'sales': deployment 'g' names profile 'prod'`);
-    }
+    const errors = errSpy.mock.calls.map(c => c.join(' '));
+    expect(errors.filter(
+               l => l === "      [sales] model 'sales': deployment 'g' names " +
+                   "profile 'prod'; remove 'profile' from the deployment " +
+                   "entry so it uses the model file's own bindings."))
+        .toHaveLength(3);
   });
 
   test('a model file the loader rejects is reported, not thrown', async () => {
@@ -333,7 +335,8 @@ semantic_model:
             "'deployments' list");
     expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
         .toContain(
-            '(the model file must load on its own before a profile file applies)');
+            "(under profile 'x', the model file must load on its own before " +
+            'the profile applies)');
     expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n'))
         .toContain("Model 'b'");
   });
@@ -393,20 +396,21 @@ semantic_model:
           "deployment 'staging' names profile 'spanner_binding'"),
     });
 
-    // And `kcmd profiles` reports the error instead of showing the target,
-    // and exits non-zero.
+    // And `kcmd profiles` reports what push reports, and exits non-zero. A
+    // push of the inline bindings gives the deployment's error. A push of
+    // either profile file refuses it, since the model file names a graph.
     errSpy.mockClear();
     logSpy.mockClear();
     expect(await profiles()).toBe(1);
     const profErrors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    const profLogs = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    // The error is the model file's, so it is reported once and names no
-    // profile file.
     expect(profErrors).toContain(
         "  [sales] model 'sales': deployment 'staging' names profile 'spanner_binding'");
     expect(profErrors.split('names profile').length - 1).toBe(1);
-    expect(profErrors).not.toContain("profile 'spanner_binding': [sales]");
-    expect(profLogs).not.toContain('target:');
+    for (const name of ['other', 'spanner_binding']) {
+      expect(profErrors).toContain(
+          `[sales] binding profile '${name}' is a profile file, which names ` +
+          'no deployment target');
+    }
   });
 
   test('a legacy profile file carrying deployment_target and a bare source still merges and loads', async () => {

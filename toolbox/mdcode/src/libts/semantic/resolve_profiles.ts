@@ -1092,8 +1092,7 @@ export interface AppliedProfile {
   // The document's load warnings, less those the profile settles, then those
   // its values give, each prefixed with the document name.
   warnings: string[];
-  // Each concrete entity left with no source, which a pruned push and
-  // `kcmd profiles` reject.
+  // Each concrete entity left with no source, which a pruned push rejects.
   sourceless: string[];
 }
 
