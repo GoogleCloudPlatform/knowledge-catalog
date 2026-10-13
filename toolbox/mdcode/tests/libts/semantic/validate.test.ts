@@ -6,6 +6,7 @@ import {describe, expect, test} from 'bun:test';
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
@@ -1092,15 +1093,53 @@ describe('a relationship key check reads names as columns', () => {
 
 describe('physical column names and relationship shape', () => {
   const validColumns = ['o_id', '`order date`'];
-  const invalidColumns = [
+  // Rejected values that could be a column name written without backticks.
+  // Their error suggests backticks as a condition, because only a parser could
+  // tell a value made of words, such as `a AND b`, from a column name.
+  const hintedColumns = [
     'order date',
+    'order-date',
+    'a-',
+    'margin%',
+    'growth %',
+    'R&D cost',
+    'a AND b',
+    'o_id IS NULL',
+    'CASE WHEN a THEN b END',
+  ];
+  // Rejected values whose error gives no backtick hint.
+  const unhintedColumns = [
+    '',
+    '   ',
+    ' o_id',
+    'o_id ',
+    'customers.id',
     'LOWER(cust_id)',
     'a || b',
-    'customers.id',
-    '',
+    'a,b',
+    'a`b',
+    '``',
+    'amount - discount',
+    'x % 2',
+    'cost + tax',
+    'a = b',
+    '-1',
+    'a\t-\tb',
+    'price $ usd',
+    'amount €',
+    '"order date"',
+    '[order date]',
   ];
+  const invalidColumns = [...hintedColumns, ...unhintedColumns];
   const backtickHint =
-      'wrap a column name containing spaces or special characters in backticks, for example `order date`';
+      'if it names a column with spaces or special characters, wrap it in backticks, for example `order date`';
+  // The whole error for a rejected column, with or without the backtick hint.
+  const columnError =
+      (owner: string, slot: string, value: string, hint: boolean) =>
+          `${owner} in model 'm' (doc): ${slot} column '${value}' is not a ` +
+          'physical column name; keys and join columns must name physical ' +
+          'table columns, not expressions or field references' +
+          (hint ? ` (${backtickHint})` : '') + '.';
 
   const baseOrders = (over: Partial<Entity> = {}): Entity => ({
     name: 'orders',
@@ -1135,27 +1174,21 @@ describe('physical column names and relationship shape', () => {
     }
   });
 
-  test('rejects expressions, qualified names, unquoted whitespace, and empty strings in all four slots, printing the backtick hint only for unquoted names with spaces or special characters', () => {
+  test('rejects expressions, qualified names, unquoted whitespace, and empty strings in all four slots, printing the backtick hint only for a value that could be a column name', () => {
     for (const bad of invalidColumns) {
-      const expectHint = bad === 'order date';
+      const expectHint = hintedColumns.includes(bad);
 
       const pkErrs = validatePushRequirements(
           [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
           {targetOptional: true});
-      expect(pkErrs.length).toBe(1);
-      expect(pkErrs[0]).toContain("entity 'orders'");
-      expect(pkErrs[0]).toContain('primary_key');
-      expect(pkErrs[0]).toContain(`'${bad}'`);
-      expect(pkErrs[0].includes(backtickHint)).toBe(expectHint);
+      expect(pkErrs).toEqual(
+          [columnError("entity 'orders'", 'primary_key', bad, expectHint)]);
 
       const ukErrs = validatePushRequirements(
           [loaded(model({entities: [baseOrders({uniqueKeys: [[bad]]})]}))],
           {targetOptional: true});
-      expect(ukErrs.length).toBe(1);
-      expect(ukErrs[0]).toContain("entity 'orders'");
-      expect(ukErrs[0]).toContain('unique_keys');
-      expect(ukErrs[0]).toContain(`'${bad}'`);
-      expect(ukErrs[0].includes(backtickHint)).toBe(expectHint);
+      expect(ukErrs).toEqual(
+          [columnError("entity 'orders'", 'unique_keys', bad, expectHint)]);
 
       const fromErrs = validatePushRequirements(
           [loaded(model({
@@ -1167,11 +1200,8 @@ describe('physical column names and relationship shape', () => {
             }],
           }))],
           {targetOptional: true});
-      expect(fromErrs.length).toBe(1);
-      expect(fromErrs[0]).toContain("relationship 'placed_by'");
-      expect(fromErrs[0]).toContain('from_columns');
-      expect(fromErrs[0]).toContain(`'${bad}'`);
-      expect(fromErrs[0].includes(backtickHint)).toBe(expectHint);
+      expect(fromErrs).toEqual([columnError(
+          "relationship 'placed_by'", 'from_columns', bad, expectHint)]);
 
       const toErrs = validatePushRequirements(
           [loaded(model({
@@ -1183,11 +1213,51 @@ describe('physical column names and relationship shape', () => {
             }],
           }))],
           {targetOptional: true});
-      expect(toErrs.length).toBe(1);
-      expect(toErrs[0]).toContain("relationship 'placed_by'");
-      expect(toErrs[0]).toContain('to_columns');
-      expect(toErrs[0]).toContain(`'${bad}'`);
-      expect(toErrs[0].includes(backtickHint)).toBe(expectHint);
+      expect(toErrs).toEqual([columnError(
+          "relationship 'placed_by'", 'to_columns', bad, expectHint)]);
+    }
+  });
+
+  test('gives no backtick hint for an operator at the start of a value or next to whitespace', () => {
+    const operators =
+        ['+', '-', '*', '/', '%', '=', '<', '>', '!', '|', '&', '^', '~'];
+    for (const op of operators) {
+      for (const bad of [`${op}a`, `a ${op}b`, `a${op} b`]) {
+        const errs = validatePushRequirements(
+            [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+            {targetOptional: true});
+        expect(errs).toEqual(
+            [columnError("entity 'orders'", 'primary_key', bad, false)]);
+      }
+    }
+  });
+
+  test('gives the backtick hint for a rejected a<c>b or a<c>b c only when BigQuery allows c in a column name', () => {
+    // The ASCII characters BigQuery allows in a column name.
+    const allowedAscii = /^[A-Za-z0-9_ &%=+:'<>#|-]$/;
+    // Whitespace, then a letter, a numeric character, connector punctuation,
+    // a dash and a mark, each allowed.
+    const allowedOther =
+        ['\t', '\n', '\u00a0', '\u3000', 'ñ', '\u0663', '\u203f', '\u2013',
+         '\u0301'];
+    // A currency sign, a symbol, an emoji and a zero-width space, each
+    // forbidden.
+    const forbiddenOther = ['€', '°', '\u{1F600}', '\u200b'];
+    const chars = [...Array(95)]
+                      .map((_, i) => String.fromCharCode(32 + i))
+                      .concat(allowedOther, forbiddenOther);
+    for (const c of chars) {
+      const hint = allowedAscii.test(c) || allowedOther.includes(c);
+      // isColumnName rejects a<c>b only for some c. It rejects every a<c>b c,
+      // because of the space.
+      for (const bad of [`a${c}b`, `a${c}b c`]) {
+        if (isColumnName(bad)) continue;
+        const errs = validatePushRequirements(
+            [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+            {targetOptional: true});
+        expect(errs).toEqual(
+            [columnError("entity 'orders'", 'primary_key', bad, hint)]);
+      }
     }
   });
 
@@ -1207,7 +1277,7 @@ semantic_model:
     expect(errs).toHaveLength(1);
     expect(errs[0]).toContain(
         "entity 'orders' in model 'sales' (doc): primary_key column 'LOWER(o_id)' is not a physical column name");
-    expect(errs[0]).not.toContain(backtickHint);
+    expect(errs[0]).not.toContain('backticks');
   });
 
   test('an abstract entity with an invalid key gets only the abstract-entity key error', () => {
@@ -1270,6 +1340,28 @@ semantic_model:
     expect(errs).toEqual([]);
   });
 
+  test('checks the endpoints of an association relationship', () => {
+    const errs = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders()],
+          relationships: [{
+            name: 'orders_ghosts',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'ghost', columns: []},
+            association: {
+              dataSource: 'p.d.orders_ghosts',
+              keys: ['id'],
+              sourceColumns: ['o_id'],
+              destinationColumns: ['g_id'],
+            },
+          }],
+        }))],
+        {targetOptional: true});
+    expect(errs).toEqual([
+      "relationship 'orders_ghosts' in model 'm' (doc): 'to' dataset 'ghost' is not defined in the model.",
+    ]);
+  });
+
   test('rejects an undeclared from or to entity on a relationship', () => {
     const badFrom = validatePushRequirements(
         [loaded(model({
@@ -1300,7 +1392,7 @@ semantic_model:
     expect(badTo[0]).toContain("'to' dataset 'ghost' is not defined in the model.");
   });
 
-  test('rejects mismatched from_columns and to_columns lengths on KC-only and graph pushes, and accepts both empty on KC-only push', () => {
+  test('rejects mismatched from_columns and to_columns lengths on KC-only and graph pushes, calls one bound side a half-bound join, and accepts both empty on KC-only push', () => {
     const fromLonger = validatePushRequirements(
         [loaded(model({
           entities: [baseOrders(), baseCustomers()],
@@ -1311,10 +1403,9 @@ semantic_model:
           }],
         }))],
         {targetOptional: true});
-    expect(fromLonger.length).toBe(1);
-    expect(fromLonger[0]).toContain("relationship 'placed_by'");
-    expect(fromLonger[0]).toContain(
-        'from_columns (2) and to_columns (1) have different lengths; the join keys are mismatched.');
+    expect(fromLonger).toEqual([
+      "relationship 'placed_by' in model 'm' (doc): from_columns (2) and to_columns (1) have different lengths; the join keys are mismatched.",
+    ]);
 
     const toLonger = validatePushRequirements(
         [loaded(model({
@@ -1326,10 +1417,9 @@ semantic_model:
           }],
         }))],
         {targetOptional: true});
-    expect(toLonger.length).toBe(1);
-    expect(toLonger[0]).toContain("relationship 'placed_by'");
-    expect(toLonger[0]).toContain(
-        'from_columns (1) and to_columns (2) have different lengths; the join keys are mismatched.');
+    expect(toLonger).toEqual([
+      "relationship 'placed_by' in model 'm' (doc): from_columns (1) and to_columns (2) have different lengths; the join keys are mismatched.",
+    ]);
 
     const oneSideEmptyOnGraph = validatePushRequirements([loaded(model(
         {
@@ -1341,10 +1431,21 @@ semantic_model:
           }],
         },
         [googleExt([BQ_TARGET])]))]);
-    expect(oneSideEmptyOnGraph.length).toBe(1);
-    expect(oneSideEmptyOnGraph[0]).toContain(
-        'from_columns (1) and to_columns (0) have different lengths; the join keys are mismatched.');
-    expect(oneSideEmptyOnGraph[0]).not.toContain('has no join columns');
+    const halfBound =
+        "relationship 'placed_by' in model 'm' (doc): from_columns and to_columns must be given together (both bind the edge) or both omitted (a logical edge); one without the other is a half-bound join.";
+    expect(oneSideEmptyOnGraph).toEqual([halfBound]);
+
+    const onlyToBound = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(onlyToBound).toEqual([halfBound]);
 
     const unbound = validatePushRequirements(
         [loaded(model({

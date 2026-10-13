@@ -49,19 +49,29 @@ export interface LoadResult {
 export class SemanticModelError extends Error {}
 
 // Message texts the loader gives, shared with code that checks the same rules
-// on a model already loaded.
+// on a model already loaded. The texts that end in Problem leave out the
+// relationship, so a caller can name it in its own way.
+export const HALF_BOUND_JOIN_PROBLEM = `from_columns and to_columns must be ` +
+    `given together (both bind the edge) or both omitted (a logical edge); ` +
+    `one without the other is a half-bound join.`;
+
 export function halfBoundJoinMessage(relationship: string): string {
-  return `relationship '${
-             relationship}': from_columns and to_columns must be given ` +
-      `together (both bind the edge) or both omitted (a logical edge); one ` +
-      `without the other is a half-bound join.`;
+  return `relationship '${relationship}': ${HALF_BOUND_JOIN_PROBLEM}`;
+}
+
+export function joinLengthProblem(from: number, to: number): string {
+  return `from_columns (${from}) and to_columns (${to}) have different ` +
+      `lengths; the join keys are mismatched`;
 }
 
 export function joinLengthMessage(
     relationship: string, from: number, to: number): string {
-  return `relationship '${relationship}': from_columns (${
-             from}) and to_columns ` +
-      `(${to}) have different lengths; the join keys are mismatched`;
+  return `relationship '${relationship}': ${joinLengthProblem(from, to)}`;
+}
+
+export function undefinedEndpointProblem(
+    side: 'from'|'to', dataset: string): string {
+  return `'${side}' dataset '${dataset}' is not defined in the model`;
 }
 
 function sourceRequiredMessage(dataset: string): string {
@@ -1580,11 +1590,11 @@ function convertRelationship(
   rejectVanillaRelationshipDescription(r, version);
   if (!entityNames.has(r.from)) {
     throw new SemanticModelError(
-        `${ctx}: 'from' dataset '${r.from}' is not defined in the model`);
+        `${ctx}: ${undefinedEndpointProblem('from', r.from)}`);
   }
   if (!entityNames.has(r.to)) {
     throw new SemanticModelError(
-        `${ctx}: 'to' dataset '${r.to}' is not defined in the model`);
+        `${ctx}: ${undefinedEndpointProblem('to', r.to)}`);
   }
   const fromColumns = r.from_columns ?? [];
   const toColumns = r.to_columns ?? [];

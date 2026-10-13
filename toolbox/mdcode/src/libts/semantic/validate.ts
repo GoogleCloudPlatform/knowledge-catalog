@@ -14,7 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {LoadedModel} from './loader';
+import {HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {isColumnName, keysCoveredByColumns} from './sql_expr_utils';
@@ -881,34 +881,45 @@ function inheritanceRuleErrors(
 }
 
 // True when a rejected column string could be a column name written without
-// backticks (such as `order date` or `order-date`), rather than an empty
-// string, a qualified `entity.field` reference, or a SQL expression.
+// backticks, such as `order date`, `order-date`, `margin%` or `R&D cost`. An
+// empty value gets no hint. Neither does a value that starts or ends with
+// whitespace, because the fix there is to delete the whitespace. BigQuery
+// allows only letters, numeric characters, marks, connector punctuation,
+// dashes, whitespace and `& % = + : ' < > # |` in a column name, so any other
+// character rules out the hint. Of the operators isColumnName rejects,
+// BigQuery allows `- + % = < > | &`. Each of those counts as an operator at
+// the start of the value, or next to whitespace unless it ends the value. No
+// operator among them can end an expression, so `growth %` keeps the hint. A
+// value made only of words, such as `a AND b`, passes this test, so the hint
+// is worded as a condition.
 function couldBeUnquotedColumnName(col: string): boolean {
-  const trimmed = col.trim();
-  return trimmed.length > 0 && !/[().+*\/=<>!|&^~,`]/.test(trimmed);
+  return col === col.trim() &&
+      /^[\p{L}\p{N}\p{Pc}\p{Pd}\p{M}\s&%=+:'<>#|]+$/u.test(col) &&
+      !/^[-+%=<>|&]|\s[-+%=<>|&](?!$)|[-+%=<>|&]\s/.test(col);
 }
 
 function invalidColumnNameError(
     owner: string, modelName: string, document: string, slot: string,
     col: string): string {
   const hint = couldBeUnquotedColumnName(col) ?
-      ' (wrap a column name containing spaces or special characters in ' +
-          'backticks, for example `order date`)' :
+      ' (if it names a column with spaces or special characters, wrap it ' +
+          'in backticks, for example `order date`)' :
       '';
   return `${owner} in model '${modelName}' (${document}): ${slot} column '${
       col}' is not a physical column name; keys and join columns must name ` +
       `physical table columns, not expressions or field references${hint}.`;
 }
 
-// Every key column (`primary_key`, `unique_keys[]`) and relationship join
-// column (`from_columns`, `to_columns`) must be a physical column identifier,
-// not a SQL expression or an entity-qualified reference. Every relationship's
-// endpoints must name defined datasets in the model, and its `from_columns`
-// and `to_columns` lists must have equal length. The loader checks endpoint
-// existence and join-column list lengths, not column names (which for the
-// model file are checked here, alongside `validateProfileCompleteness` for
-// binding profiles), and all three are checked here so a model built in
-// memory cannot bypass them.
+// Checks that every key column and join column is a physical column name and
+// not a SQL expression or an entity-qualified reference. Key columns are the
+// entries of `primary_key` and `unique_keys`. Join columns are the entries of
+// `from_columns` and `to_columns`. Also checks that every relationship's
+// endpoints name entities the model declares, and that its two join column
+// lists have equal length. The loader checks endpoints and lengths for a model
+// it reads, and this repeats them for a model built in memory. Push runs this
+// on the model with its profile applied, so it also checks the key and join
+// columns a profile file supplies. An abstract entity's keys and an
+// association's direct join columns are not checked.
 function validateColumnsAndRelationships(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
@@ -919,15 +930,15 @@ function validateColumnsAndRelationships(
     const owner = `entity '${entity.name}'`;
     for (const col of entity.keys) {
       if (!isColumnName(col)) {
-        errors.push(
-            invalidColumnNameError(owner, model.name, document, 'primary_key', col));
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'primary_key', col));
       }
     }
     for (const uk of entity.uniqueKeys ?? []) {
       for (const col of uk) {
         if (!isColumnName(col)) {
-          errors.push(
-              invalidColumnNameError(owner, model.name, document, 'unique_keys', col));
+          errors.push(invalidColumnNameError(
+              owner, model.name, document, 'unique_keys', col));
         }
       }
     }
@@ -935,34 +946,33 @@ function validateColumnsAndRelationships(
 
   for (const rel of model.relationships ?? []) {
     const owner = `relationship '${rel.name}'`;
+    const at = `${owner} in model '${model.name}' (${document})`;
     if (!entityNames.has(rel.source.entity)) {
       errors.push(
-          `${owner} in model '${model.name}' (${document}): 'from' dataset '${
-              rel.source.entity}' is not defined in the model.`);
+          `${at}: ${undefinedEndpointProblem('from', rel.source.entity)}.`);
     }
     if (!entityNames.has(rel.destination.entity)) {
       errors.push(
-          `${owner} in model '${model.name}' (${document}): 'to' dataset '${
-              rel.destination.entity}' is not defined in the model.`);
+          `${at}: ${undefinedEndpointProblem('to', rel.destination.entity)}.`);
     }
     if (rel.association) continue;
-    if (rel.source.columns.length !== rel.destination.columns.length) {
-      errors.push(
-          `${owner} in model '${model.name}' (${document}): from_columns (${
-              rel.source.columns.length}) and to_columns (${
-              rel.destination.columns.length}) have different lengths; the ` +
-          `join keys are mismatched.`);
+    const fromCount = rel.source.columns.length;
+    const toCount = rel.destination.columns.length;
+    if (!fromCount !== !toCount) {
+      errors.push(`${at}: ${HALF_BOUND_JOIN_PROBLEM}`);
+    } else if (fromCount !== toCount) {
+      errors.push(`${at}: ${joinLengthProblem(fromCount, toCount)}.`);
     }
     for (const col of rel.source.columns) {
       if (!isColumnName(col)) {
-        errors.push(
-            invalidColumnNameError(owner, model.name, document, 'from_columns', col));
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'from_columns', col));
       }
     }
     for (const col of rel.destination.columns) {
       if (!isColumnName(col)) {
-        errors.push(
-            invalidColumnNameError(owner, model.name, document, 'to_columns', col));
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'to_columns', col));
       }
     }
   }
