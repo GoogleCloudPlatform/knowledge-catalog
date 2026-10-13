@@ -5,14 +5,19 @@
 // which needs no disk. What is under test here is the part that can lose work:
 // which directory a skill lands in, what happens to the skill already there,
 // and what happens when two models want the same one. It runs in a temp
-// working directory with a pinned context, mirroring action.test.ts.
+// working directory with a pinned context, mirroring action.test.ts. The
+// store each profile runs against, which a skill reports, is covered here too,
+// through createSemanticRuntimes.
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
+import {storeLine} from '../../src/libts/semantic/runtime/store';
 import {skillsGenerate} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -195,4 +200,287 @@ describe('kcmd skills-generate: two models, one name', () => {
     // left behind as the answer to a question the command refused to answer.
     expect(fs.existsSync(path.join('skills', 'sales-orders'))).toBe(false);
   });
+});
+
+
+// The runtime's store is the one the deployments for the selected profile
+// name: those that name it in `profile`, or that name none for `default`.
+describe('createSemanticRuntimes: the store a profile uses', () => {
+  const SPANNER_DB = `${SPANNER}/databases/commerce`;
+  const BQ =
+      '//bigquery.googleapis.com/projects/acme-analytics/datasets/sales';
+  const CLUSTER =
+      '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+
+  beforeEach(() => {
+    // Nothing here may reach the network; the AlloyDB listing is mocked.
+    spyOn(globalThis, 'fetch').mockImplementation((() => {
+      throw new Error('unexpected network call');
+    }) as any);
+  });
+
+  function logical(deployments: string, source: string): string {
+    return `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+${deployments}    entities:
+      - name: Order
+        source: ${source}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`;
+  }
+
+  async function runtimeFor(profile?: string) {
+    const runtimes = await createSemanticRuntimes(
+        {ctx: CTX, ...(profile ? {profile} : {}), onWarning: () => {}});
+    if ('error' in runtimes) throw new Error(runtimes.error);
+    expect(runtimes).toHaveLength(1);
+    return runtimes[0];
+  }
+
+  test('each sibling profile file takes the deployment that names it', async () => {
+    writeModel(
+        'commerce.yaml',
+        logical(
+            `      - name: bq_prod\n` +
+                `        target: ${BQ}/propertyGraphs/commerce\n` +
+                `        profile: analytical\n` +
+                `      - name: spanner_prod\n` +
+                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        profile: operational\n`,
+            `${SPANNER_DB}/tables/Orders`));
+    writeModel(
+        'commerce.profile.analytical.yaml',
+        `name: analytical\nentities:\n  - name: Order\n    source: ${
+            BQ}/tables/orders\n`);
+    writeModel(
+        'commerce.profile.operational.yaml',
+        `name: operational\nentities:\n  - name: Order\n    source: ${
+            SPANNER_DB}/tables/Orders\n`);
+
+    const analytical = await runtimeFor('analytical');
+    expect(analytical.store && storeLine(analytical.store))
+        .toBe('bigquery:acme-analytics/sales');
+    const operational = await runtimeFor('operational');
+    expect(operational.store && storeLine(operational.store))
+        .toBe('acme-ops/prod/commerce');
+    // Neither deployment is for the model file's own bindings.
+    const byDefault = await runtimeFor();
+    expect(byDefault.store).toBeUndefined();
+    expect(byDefault.storeError)
+        .toContain("declares no deployment without a 'profile'");
+  });
+
+  // A legacy wrapper that names no `deployment_target` keeps the model file's
+  // `deployments:` list. It takes the deployment that names it, and otherwise
+  // the ones that name no profile, which is where push deploys it.
+  test('a legacy wrapper with no target takes the deployments push uses',
+       async () => {
+         const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+         fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+         fs.writeFileSync(
+             path.join(eg, 'commerce.profiles', 'prod.yaml'), `semantic_model:
+  - name: commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+`);
+         const withSpanner = (profileLine: string) => logical(
+             `      - name: bq_prod\n` +
+                 `        target: ${BQ}/propertyGraphs/commerce\n` +
+                 `        profile: analytical\n` +
+                 `      - name: spanner_prod\n` +
+                 `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                 profileLine,
+             `${SPANNER_DB}/tables/Orders`);
+
+         writeModel('commerce.yaml', withSpanner(''));
+         const unnamed = await runtimeFor('prod');
+         expect(unnamed.store && storeLine(unnamed.store))
+             .toBe('acme-ops/prod/commerce');
+
+         writeModel('commerce.yaml', withSpanner('        profile: prod\n'));
+         const named = await runtimeFor('prod');
+         expect(named.store && storeLine(named.store))
+             .toBe('acme-ops/prod/commerce');
+
+         writeModel(
+             'commerce.yaml', withSpanner('        profile: operational\n'));
+         const none = await runtimeFor('prod');
+         expect(none.store).toBeUndefined();
+         expect(none.storeError)
+             .toBe(
+                 "legacy binding profile 'prod' names no 'deployment_target', " +
+                 "and every deployment in 'deployments' names another profile, " +
+                 'so there is no database to run it against');
+       });
+
+  test('default with one deployment takes it', async () => {
+    writeModel(
+        'commerce.yaml',
+        logical(
+            `      - name: prod\n` +
+                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+            `${SPANNER_DB}/tables/Orders`));
+    const runtime = await runtimeFor();
+    expect(runtime.store && storeLine(runtime.store))
+        .toBe('acme-ops/prod/commerce');
+  });
+
+  test('default with several takes the single operational store', async () => {
+    writeModel(
+        'commerce.yaml',
+        logical(
+            `      - name: bq_prod\n` +
+                `        target: ${BQ}/propertyGraphs/commerce\n` +
+                `      - name: spanner_prod\n` +
+                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+            `${SPANNER_DB}/tables/Orders`));
+    const runtime = await runtimeFor();
+    expect(runtime.store && storeLine(runtime.store))
+        .toBe('acme-ops/prod/commerce');
+  });
+
+  test('several with no single operational store fail, naming them', async () => {
+    writeModel(
+        'commerce.yaml',
+        logical(
+            `      - name: spanner_a\n` +
+                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `      - name: alloy_b\n` +
+                `        target: ${CLUSTER}/databases/commerce\n`,
+            `${SPANNER_DB}/tables/Orders`));
+    const runtime = await runtimeFor();
+    expect(runtime.store).toBeUndefined();
+    expect(runtime.storeError)
+        .toContain(
+            'deployment targets on two operational backends (1 Spanner and ' +
+            "1 AlloyDB) in 'deployments' for profile 'default' (spanner_a, " +
+            'alloy_b)');
+  });
+
+  test('an AlloyDB cluster connects through its primary instance', async () => {
+    const list = spyOn(AlloyDbClient.prototype, 'listInstances')
+                     .mockResolvedValue({
+                       status: 200,
+                       result: [{
+                         name: 'projects/acme-ops/locations/us-central1/' +
+                             'clusters/main/instances/main-primary',
+                         instanceType: 'PRIMARY',
+                         state: 'READY',
+                       }],
+                     });
+    writeModel(
+        'commerce.yaml',
+        logical(
+            `      - name: alloy_prod\n` +
+                `        target: ${CLUSTER}/databases/commerce\n`,
+            `${CLUSTER}/databases/commerce/schemas/public/tables/orders`));
+    const runtime = await runtimeFor();
+    expect(runtime.store && storeLine(runtime.store))
+        .toBe('alloydb:acme-ops/us-central1/main/main-primary/commerce');
+    expect(list).toHaveBeenCalledWith('acme-ops', 'us-central1', 'main');
+  });
+
+  test('an AlloyDB cluster with no primary instance has no store', async () => {
+    spyOn(AlloyDbClient.prototype, 'listInstances')
+        .mockResolvedValue({status: 200, result: []});
+    writeModel(
+        'commerce.yaml',
+        logical(
+            `      - name: alloy_prod\n` +
+                `        target: ${CLUSTER}/databases/commerce\n`,
+            `${CLUSTER}/databases/commerce/schemas/public/tables/orders`));
+    const runtime = await runtimeFor();
+    expect(runtime.store).toBeUndefined();
+    expect(runtime.storeError)
+        .toContain(
+            "AlloyDB cluster 'projects/acme-ops/locations/us-central1/" +
+            "clusters/main' has no primary instance");
+  });
+
+  // A store the model names but cannot reach is a fault to fix, so no skill
+  // is written that says the model has none.
+  test('skills-generate fails when the AlloyDB lookup fails', async () => {
+    spyOn(AlloyDbClient.prototype, 'listInstances')
+        .mockRejectedValue(new Error('fetch failed'));
+    writeModel(
+        'commerce.yaml',
+        modelText('commerce', 'IssueCredit')
+            .replace(
+                `${SPANNER}/databases/commerce/propertyGraphs/commerce`,
+                `${CLUSTER}/databases/commerce`)
+            .replace(
+                `${SPANNER}/databases/commerce/tables/Orders`,
+                `${CLUSTER}/databases/commerce/schemas/public/tables/orders`));
+    expect(await skillsGenerate({out: 'skills'})).toBe(1);
+    expect(logs.join('\n'))
+        .toContain(
+            "Error: [commerce] Could not list the instances of AlloyDB " +
+            "cluster 'projects/acme-ops/locations/us-central1/clusters/main': " +
+            'fetch failed');
+    expect(fs.existsSync(path.join('skills', 'commerce'))).toBe(false);
+  });
+
+  // The model names a store that cannot be resolved, so no skill is written
+  // that says it has none.
+  test('skills-generate fails when the deployments give no single store',
+       async () => {
+         const spannerGraph =
+             `${SPANNER}/databases/commerce/propertyGraphs/commerce`;
+         for (const [second, error] of [
+                [
+                  'bigquery:graph:acme-analytics.sales.commerce',
+                  "deployment 'second' targets " +
+                      "'bigquery:graph:acme-analytics.sales.commerce', which " +
+                      'is a Knowledge Catalog name',
+                ],
+                [
+                  `${CLUSTER}/databases/commerce`,
+                  'deployment targets on two operational backends',
+                ],
+              ]) {
+           logs = [];
+           writeModel(
+               'commerce.yaml',
+               modelText('commerce', 'IssueCredit')
+                   .replace(
+                       `        target: ${spannerGraph}\n`,
+                       `        target: ${spannerGraph}\n` +
+                           `      - name: second\n` +
+                           `        target: ${second}\n`));
+           expect(await skillsGenerate({out: 'skills'})).toBe(1);
+           expect(logs.join('\n')).toContain(error);
+           expect(fs.existsSync(path.join('skills', 'commerce'))).toBe(false);
+         }
+       });
+
+  test('a skill generated from a profile file names that profile\'s store',
+       async () => {
+         writeModel(
+             'commerce.yaml',
+             modelText('commerce', 'IssueCredit')
+                 .replace(/        executor:\n(.*\n){3}/, '')
+                 .replace(
+                     '      - name: prod\n',
+                     '      - name: prod\n        profile: prod\n'));
+         writeModel('commerce.profile.prod.yaml', `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+actions:
+  - name: IssueCredit
+    executor:
+      sql:
+        statements:
+          - UPDATE Orders SET Total = 0 WHERE OrderId = @order
+`);
+         expect(await skillsGenerate({out: 'skills', profile: 'prod'})).toBe(0);
+         const skill = fs.readFileSync(
+             path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
+         expect(skill).toContain('- Store: `acme-ops/prod/commerce`');
+       });
 });

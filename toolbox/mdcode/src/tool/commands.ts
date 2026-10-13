@@ -2049,6 +2049,13 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const claimed = new Map<string, string>();
   let failed = false;
   for (const runtime of opened) {
+    // The profile's deployments name a store and none results from them, so
+    // a skill saying the model has none would be wrong.
+    if (runtime.storeFailed) {
+      console.error(`Error: [${runtime.model.name}] ${runtime.storeError}`);
+      failed = true;
+      continue;
+    }
     const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
       console.error(`Error: [${runtime.model.name}] ${generated.error}`);

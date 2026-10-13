@@ -6,13 +6,17 @@
 // target gets a refusal rather than a write into whichever database happened
 // to be named last.
 //
-// Nothing here opens a connection. Deciding where to write is pure.
+// Nothing here opens a connection. Deciding where to write is pure, and the
+// AlloyDB instance listing is mocked.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 
+import {AlloyDbClient, Instance} from '../../../../src/libts/gcp/alloydb';
+import * as api from '../../../../src/libts/gcp/api';
+import {ApiContext} from '../../../../src/libts/gcp/context';
 import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {resolveStore} from '../../../../src/libts/semantic/runtime/store';
+import {AlloyDbDatabase, resolveStore, storeLine, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = '//bigquery.googleapis.com/projects/p/datasets/s';
@@ -76,18 +80,6 @@ describe('where a model says it lives', () => {
         'projects/p/locations/us-central1/clusters/c/instances/i/databases/d');
   });
 
-  // A connection to an AlloyDB database goes through an instance, and a
-  // target named by its cluster names none.
-  test('an AlloyDB target named by its cluster has no store yet', () => {
-    const target =
-        '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
-    expect(resolveStore(bound(target, `${PG}/tables/customer`))).toEqual({
-      error: `Model 'm': AlloyDB target '${target}' names a database in ` +
-          `its cluster. The runtime cannot find the cluster's primary ` +
-          `instance yet, so it has no instance to connect through.`,
-    });
-  });
-
   // The instance-based URI names the instance to connect through, so it is
   // kept in either order.
   test('one AlloyDB database named by both of its URIs is one store', () => {
@@ -117,7 +109,8 @@ describe('where a model says it lives', () => {
         resolveStore(bound(`${PG}/propertyGraphs/g`, `${PG}/tables/customer`));
     expect('error' in store).toBe(true);
     if (!('error' in store)) return;
-    expect(store.error).toContain('no deployment target');
+    expect(store.error).toContain(
+        'which is not a BigQuery graph, a Spanner graph or an AlloyDB database');
     expect(store.error).toContain('propertyGraphs/g');
   });
 
@@ -271,5 +264,447 @@ describe('a model that declares more than one deployment target', () => {
         `${PG}/tables/customer`));
     expect('error' in store && store.error)
         .toContain('2 AlloyDB deployment targets');
+  });
+});
+
+
+// A model names its stores in `deployments:`, each for the profile it names or
+// for `default` when it names none. The runtime asks for one profile's store.
+describe('the store a profile uses', () => {
+  const BQ_GRAPH = `${DATASET}/propertyGraphs/g`;
+  const SPANNER_GRAPH = `${DB}/propertyGraphs/g`;
+  const CLUSTER_DB =
+      '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
+
+  function deployed(entries: string, source = ''): SemanticModel {
+    return model(
+        `    deployments:\n${entries}` +
+        `    entities:\n` +
+        `      - name: Customer\n` +
+        `        primary_key: [id]\n` +
+        (source ? `        source: ${source}\n` : '') +
+        `        fields:\n` +
+        `          - {name: id, datatype: Integer, expression: id}\n`);
+  }
+
+  const threeProfiles = deployed(
+      `      - {name: bq_prod, target: "${BQ_GRAPH}", profile: analytical}\n` +
+      `      - {name: spanner_prod, target: "${SPANNER_GRAPH}", profile: operational}\n` +
+      `      - {name: alloy_prod, target: "${CLUSTER_DB}"}\n`);
+
+  test('each profile takes the deployment that names it', () => {
+    const operational = resolveStore(threeProfiles, 'operational');
+    if ('error' in operational) throw new Error(operational.error);
+    expect(operational.name).toBe('projects/p/instances/i/databases/d');
+    const analytical = resolveStore(threeProfiles, 'analytical');
+    if ('error' in analytical) throw new Error(analytical.error);
+    expect(analytical.name).toBe('projects/p/datasets/s');
+  });
+
+  test('default takes the deployment that names no profile', () => {
+    const store = resolveStore(threeProfiles, 'default');
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('alloydb');
+    if (store.kind !== 'alloydb') return;
+    // A cluster target names no instance; the runtime finds it.
+    expect(store.instance).toBeUndefined();
+    expect(store.name).toBe('projects/p/locations/us-central1/clusters/c/databases/d');
+  });
+
+  test('a profile no deployment uses has no store', () => {
+    const store = resolveStore(threeProfiles, 'staging');
+    expect('error' in store && store.error)
+        .toBe(
+            "binding profile 'staging' is a profile file, which names no " +
+            "deployment target, and no deployment in 'deployments' uses it, so " +
+            'there is no database to run it against');
+  });
+
+  test('default has no store when every deployment names a profile', () => {
+    const store = resolveStore(
+        deployed(
+            `      - {name: bq_prod, target: "${BQ_GRAPH}", profile: analytical}\n`),
+        'default');
+    expect('error' in store && store.error)
+        .toContain(
+            "Model 'm' declares no deployment without a 'profile' in " +
+            "'deployments'");
+  });
+
+  test('of several, the single operational store is taken', () => {
+    const store = resolveStore(
+        deployed(
+            `      - {name: bq_prod, target: "${BQ_GRAPH}"}\n` +
+                `      - {name: spanner_prod, target: "${SPANNER_GRAPH}"}\n`,
+            `${DB}/tables/Customer`),
+        'default');
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('spanner');
+  });
+
+  test('several with no single operational store fail, naming them', () => {
+    const store = resolveStore(
+        deployed(
+            `      - {name: spanner_a, target: "${SPANNER_GRAPH}", profile: operational}\n` +
+            `      - {name: spanner_b, target: "${DB}2/propertyGraphs/g", profile: operational}\n` +
+            `      - {name: spanner_c, target: "${DB}3/propertyGraphs/g"}\n`),
+        'operational');
+    expect('error' in store && store.error)
+        .toContain(
+            "declares 2 Spanner deployment targets in 'deployments' for " +
+            "profile 'operational' (spanner_a, spanner_b), so which store it " +
+            'runs against is ambiguous');
+  });
+
+  test('a deployment that names no destination is reported beside one that does',
+       () => {
+         const typo =
+             '//spanner.googleapis.com/projects/p/instance/i/databases/d/propertyGraphs/g';
+         const store = resolveStore(
+             deployed(
+                 `      - {name: good, target: "${SPANNER_GRAPH}"}\n` +
+                     `      - {name: bad, target: "${typo}"}\n`,
+                 `${DB}/tables/Customer`),
+             'default');
+         expect('error' in store && store.error)
+             .toContain(
+                 `Model 'm': deployment 'bad' targets '${typo}', which is ` +
+                 'not a BigQuery graph, a Spanner graph or an AlloyDB database');
+       });
+
+  test('a lone deployment in no accepted form is reported the same way', () => {
+    const target = 'bigquery:graph:p.s.g';
+    const store = resolveStore(
+        deployed(`      - {name: prod, target: "${target}"}\n`), 'default');
+    expect(store).toEqual({
+      error: `Model 'm': deployment 'prod' targets '${target}', which is a ` +
+          `Knowledge Catalog name. Write the resource URI instead: ` +
+          `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`,
+      named: true,
+    });
+  });
+
+  // Every AlloyDB target pushed before the cluster form holds the
+  // instance-based URI, so the runtime still reads it in a list.
+  test('an instance-based AlloyDB target in a list is still read', () => {
+    const store = resolveStore(
+        deployed(
+            `      - {name: alloy_old, target: "${PG}"}\n`,
+            '//alloydb.googleapis.com/projects/p/locations/us-central1/' +
+                'clusters/c/databases/d/schemas/public/tables/customer'),
+        'default');
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind === 'alloydb' && store.instance).toBe('i');
+  });
+
+  // A vanilla model keeps its targets in a GOOGLE block, which names no
+  // profile, so they are for the model's own bindings.
+  test('a GOOGLE block gives no store to a named profile', () => {
+    const vanilla: SemanticModel = {
+      ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
+      deployments: undefined,
+    };
+    expect(resolveStore(vanilla, 'prod'))
+        .toEqual({
+          error: "binding profile 'prod' is a profile file, which names no " +
+              'deployment target, so there is no database to run it against',
+        });
+    const store = resolveStore(vanilla, 'default');
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('spanner');
+    // A legacy wrapper merged into such a model reads the block as push does.
+    const wrapped = resolveStore(vanilla, 'prod', {legacyWrapper: true});
+    if ('error' in wrapped) throw new Error(wrapped.error);
+    expect(wrapped.kind).toBe('spanner');
+    const noTarget: SemanticModel = {...vanilla, customExtensions: undefined};
+    expect(resolveStore(noTarget, 'prod', {legacyWrapper: true}))
+        .toEqual({
+          error: expect.stringContaining(
+              "Model 'm' declares no deployment target in 'deployments'"),
+        });
+  });
+
+  // A legacy wrapper is merged into the model file, and push deploys it to
+  // the model file's deployments when none names it.
+  test('a legacy wrapper no deployment names takes the unprofiled ones', () => {
+    const twoProfiles = deployed(
+        `      - {name: bq_prod, target: "${BQ_GRAPH}", profile: analytical}\n` +
+            `      - {name: spanner_prod, target: "${SPANNER_GRAPH}"}\n`,
+        `${DB}/tables/Customer`);
+    const store = resolveStore(twoProfiles, 'staging', {legacyWrapper: true});
+    if ('error' in store) throw new Error(store.error);
+    expect(store.name).toBe('projects/p/instances/i/databases/d');
+    expect('error' in resolveStore(twoProfiles, 'staging')).toBe(true);
+    // A deployment that names the wrapper is its own; this one is BigQuery.
+    const analytical =
+        resolveStore(twoProfiles, 'analytical', {legacyWrapper: true});
+    expect('error' in analytical && analytical.error)
+        .toContain('deployment target is projects/p/datasets/s');
+  });
+});
+
+
+// The loader keeps a Spanner or AlloyDB source written as a catalog name as
+// it was written, and the store reads it.
+describe('a catalog-name source', () => {
+  function sourced(target: string, source: string): SemanticModel {
+    return model(
+        `    deployments:\n` +
+        `      - {name: prod, target: "${target}"}\n` +
+        `    entities:\n` +
+        `      - name: Customer\n` +
+        `        primary_key: [id]\n` +
+        `        source: ${source}\n` +
+        `        fields:\n` +
+        `          - {name: id, datatype: Integer, expression: id}\n`);
+  }
+
+  const CLUSTER_DB =
+      '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
+
+  test('in Spanner matches a Spanner target', () => {
+    const store = resolveStore(sourced(
+        `${DB}/propertyGraphs/g`, 'spanner:p.regional-us-central1.i.d.Customer'));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.name).toBe('projects/p/instances/i/databases/d');
+  });
+
+  test('in AlloyDB matches an AlloyDB target', () => {
+    const store = resolveStore(
+        sourced(CLUSTER_DB, 'alloydb:p.us-central1.c.d.public.customer'));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('alloydb');
+  });
+
+  test('in another database is refused', () => {
+    const store = resolveStore(sourced(
+        CLUSTER_DB, 'alloydb:p.us-central1.c.other.public.customer'));
+    expect('error' in store && store.error)
+        .toContain("'Customer' to alloydb:p.us-central1.c.other.public.customer");
+  });
+});
+
+
+describe('an AlloyDB source', () => {
+  const CLUSTER =
+      '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
+
+  function alloyModel(target: string, source: string): SemanticModel {
+    return model(
+        `    deployments:\n` +
+        `      - {name: alloy_prod, target: "${target}"}\n` +
+        `    entities:\n` +
+        `      - name: Customer\n` +
+        `        primary_key: [id]\n` +
+        `        source: ${source}\n` +
+        `        fields:\n` +
+        `          - {name: id, datatype: Integer, expression: id}\n`);
+  }
+
+  test('written as a table URI, matches a target with the same cluster and database',
+       () => {
+         const store = resolveStore(alloyModel(
+             `${CLUSTER}/databases/d`,
+             `${CLUSTER}/databases/d/schemas/public/tables/customer`));
+         if ('error' in store) throw new Error(store.error);
+         expect(store.kind).toBe('alloydb');
+       });
+
+  test('in another database of the cluster is refused', () => {
+    const store = resolveStore(alloyModel(
+        `${CLUSTER}/databases/d`,
+        `${CLUSTER}/databases/other/schemas/public/tables/customer`));
+    expect('error' in store && store.error)
+        .toContain("'Customer' to " + `${CLUSTER}/databases/other`);
+  });
+
+  // The instance is compute. The database belongs to the cluster, so a legacy
+  // source's instance takes no part in the match.
+  test('written as a legacy instance URI, matches on cluster and database', () => {
+    const store = resolveStore(alloyModel(
+        `${CLUSTER}/databases/d`,
+        `${CLUSTER}/instances/any/databases/d/tables/customer`));
+    if ('error' in store) throw new Error(store.error);
+    expect(store.kind).toBe('alloydb');
+  });
+});
+
+
+// A connection to an AlloyDB database goes through an instance, and a cluster
+// target names none. The cluster's primary instance is the one to use.
+describe('the instance an AlloyDB store connects through', () => {
+  const CTX = new ApiContext('test-project', 'us', 'test-token');
+  const CLUSTER = 'projects/p/locations/us-central1/clusters/c';
+  const store: AlloyDbDatabase = {
+    kind: 'alloydb',
+    name: `${CLUSTER}/databases/d`,
+    project: 'p',
+    location: 'us-central1',
+    cluster: 'c',
+    database: 'd',
+  };
+
+  function clientListing(result: api.ApiResult<Instance[]>): AlloyDbClient {
+    const client = new AlloyDbClient(CTX);
+    spyOn(client, 'listInstances').mockResolvedValue(result);
+    return client;
+  }
+
+  test('is the cluster\'s primary instance', async () => {
+    const client = clientListing({
+      status: 200,
+      result: [
+        {name: `${CLUSTER}/instances/reader`, instanceType: 'READ_POOL'},
+        {
+          name: `${CLUSTER}/instances/main`,
+          instanceType: 'PRIMARY',
+          state: 'READY',
+        },
+      ],
+    });
+    const found = await withPrimaryInstance(store, client);
+    if ('error' in found) throw new Error(found.error);
+    expect(found.kind === 'alloydb' && found.instance).toBe('main');
+    expect(storeLine(found)).toBe('alloydb:p/us-central1/c/main/d');
+    expect(client.listInstances).toHaveBeenCalledWith('p', 'us-central1', 'c');
+  });
+
+  test('a cluster with no primary instance fails, naming the cluster',
+       async () => {
+         const found = await withPrimaryInstance(
+             store, clientListing({
+               status: 200,
+               result: [{
+                 name: `${CLUSTER}/instances/reader`,
+                 instanceType: 'READ_POOL',
+               }],
+             }));
+         expect('error' in found && found.error)
+             .toBe(
+                 `AlloyDB cluster '${CLUSTER}' has no primary instance, so ` +
+                 `there is no instance to connect to database 'd' through.`);
+       });
+
+  test('a primary instance that is not READY fails, naming its state',
+       async () => {
+         const found = await withPrimaryInstance(store, clientListing({
+           status: 200,
+           result: [{
+             name: `${CLUSTER}/instances/main`,
+             instanceType: 'PRIMARY',
+             state: 'STOPPED',
+           }],
+         }));
+         expect('error' in found && found.error)
+             .toBe(
+                 `AlloyDB cluster '${CLUSTER}' has primary instance 'main' in ` +
+                 `state STOPPED; it must be READY to connect to database 'd' ` +
+                 `through it.`);
+       });
+
+  test('a failed listing says why', async () => {
+    const found = await withPrimaryInstance(store, clientListing({
+      status: 404,
+      message: JSON.stringify(
+          {error: {code: 404, message: "Resource 'clusters/c' was not found"}}),
+    }));
+    expect('error' in found && found.error)
+        .toBe(
+            `Could not list the instances of AlloyDB cluster '${CLUSTER}': ` +
+            `404 Resource 'clusters/c' was not found`);
+  });
+
+  test('a listing that cannot be sent says why', async () => {
+    const client = new AlloyDbClient(CTX);
+    spyOn(client, 'listInstances').mockRejectedValue(new Error('fetch failed'));
+    expect(await withPrimaryInstance(store, client))
+        .toEqual({
+          error: `Could not list the instances of AlloyDB cluster '${
+              CLUSTER}': fetch failed`,
+        });
+  });
+
+  test('every page of the listing is read', async () => {
+    const client = new AlloyDbClient(CTX);
+    const get = spyOn(client as any, '_get')
+                    .mockResolvedValueOnce({
+                      status: 200,
+                      result: {
+                        instances: [{
+                          name: `${CLUSTER}/instances/reader`,
+                          instanceType: 'READ_POOL',
+                        }],
+                        nextPageToken: 'T',
+                      },
+                    })
+                    .mockResolvedValueOnce({
+                      status: 200,
+                      result: {
+                        instances: [{
+                          name: `${CLUSTER}/instances/main`,
+                          instanceType: 'PRIMARY',
+                          state: 'READY',
+                        }],
+                      },
+                    });
+    const found = await withPrimaryInstance(store, client);
+    if ('error' in found) throw new Error(found.error);
+    expect(found.kind === 'alloydb' && found.instance).toBe('main');
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(get.mock.calls[0][0]).toBe(`${CLUSTER}/instances`);
+    expect((get.mock.calls[1][1] as any).pageToken).toBe('T');
+  });
+
+  test('a failed page of the listing says why', async () => {
+    const client = new AlloyDbClient(CTX);
+    spyOn(client as any, '_get')
+        .mockResolvedValueOnce({
+          status: 200,
+          result: {
+            instances: [
+              {name: `${CLUSTER}/instances/reader`, instanceType: 'READ_POOL'},
+            ],
+            nextPageToken: 'T',
+          },
+        })
+        .mockResolvedValueOnce({
+          status: 403,
+          message: JSON.stringify({error: {message: 'Permission denied'}}),
+        });
+    expect(await withPrimaryInstance(store, client))
+        .toEqual({
+          error: `Could not list the instances of AlloyDB cluster '${
+              CLUSTER}': 403 Permission denied`,
+        });
+  });
+
+  test('a listing that repeats a page token stops and says why', async () => {
+    const client = new AlloyDbClient(CTX);
+    let calls = 0;
+    // Gives up after ten pages, so a listing that does not stop fails here
+    // and does not hang.
+    spyOn(client as any, '_get').mockImplementation(async () => {
+      calls++;
+      return {
+        status: 200,
+        result: {
+          instances: [],
+          ...(calls < 10 ? {nextPageToken: 'same'} : {}),
+        },
+      };
+    });
+    expect(await withPrimaryInstance(store, client))
+        .toEqual({
+          error: `Could not list the instances of AlloyDB cluster '${
+              CLUSTER}': the AlloyDB API returned page token 'same' twice`,
+        });
+    expect(calls).toBe(2);
+  });
+
+  test('a store that names its instance is not looked up', async () => {
+    const client = clientListing({status: 500});
+    const legacy = {...store, instance: 'i'};
+    expect(await withPrimaryInstance(legacy, client)).toEqual(legacy);
+    expect(client.listInstances).not.toHaveBeenCalled();
   });
 });

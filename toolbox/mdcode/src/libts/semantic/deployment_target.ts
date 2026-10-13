@@ -107,7 +107,8 @@ export interface AlloyDbTarget {
   project: string;
   location: string;
   cluster: string;
-  // Set only by the legacy instance-based URI.
+  // Set only by the legacy instance-based URI. Otherwise the runtime finds the
+  // cluster's primary instance.
   instance?: string;
   database: string;
   uri: string;

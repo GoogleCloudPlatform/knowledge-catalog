@@ -379,22 +379,20 @@ semantic_model:
     expect(errors).toContain("remove 'profile' from the deployment entry so it uses the model file's own bindings");
     expect(errors).not.toContain('--deployment');
 
-    // createSemanticRuntimes enforces the same guard on the library path.
+    // The runtime takes the store of the deployment that uses the profile,
+    // so the default profile has none.
     const rt = await createSemanticRuntimes({ctx: CTX});
-    expect(rt).toEqual({
-      error: expect.stringContaining(
-          "model 'sales': deployment 'staging' names profile 'spanner_binding'; " +
-          "remove 'profile' from the deployment entry so it uses the model file's own bindings."),
-    });
+    if ('error' in rt) throw new Error(rt.error);
+    expect(rt[0].store).toBeUndefined();
+    expect(rt[0].storeError).toContain(
+        "declares no deployment without a 'profile' in 'deployments'");
 
     // The runtime applies the profile file to the model file, and the applied
-    // model keeps the model file's deployments, so it refuses too.
+    // model keeps the model file's deployments, so it has the store.
     const rtProfile =
         await createSemanticRuntimes({ctx: CTX, profile: 'spanner_binding'});
-    expect(rtProfile).toEqual({
-      error: expect.stringContaining(
-          "deployment 'staging' names profile 'spanner_binding'"),
-    });
+    if ('error' in rtProfile) throw new Error(rtProfile.error);
+    expect(rtProfile[0].store?.name).toBe('projects/p/datasets/d');
 
     // And `kcmd profiles` reports what push reports, and exits non-zero. A
     // push of the inline bindings gives the deployment's error. A push of

@@ -1,5 +1,5 @@
 // Creating a semantic runtime: the model as authored, merged with one binding
-// profile, paired with the store that profile's deployment target names.
+// profile, paired with the store the deployment that uses that profile names.
 //
 // A semantic model on disk is a declaration. A runtime is that declaration
 // made operational -- bindings applied, inheritance resolved, a store to run
@@ -14,18 +14,19 @@
 // while the product fails. The CLI calls this too, so there is one answer to
 // "what does this scope say" rather than one per caller.
 
+import {AlloyDbClient} from '../../gcp/alloydb';
 import * as context from '../../gcp/context';
 import {SemanticModelLayout} from '../../layouts/semantic-model';
 import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
-import {deploymentProfileError, loadSemanticModels} from '../loader';
+import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, unknownProfileMessage} from '../resolve_profiles';
 import {loadSqlEngine} from '../sql_parser';
 
-import {resolveStore, Store} from './store';
+import {resolveStore, Store, withPrimaryInstance} from './store';
 
 
 /**
@@ -43,6 +44,14 @@ export interface SemanticRuntime {
   store?: Store;
   /** Why there is no store. Set exactly when `store` is absent. */
   storeError?: string;
+  /**
+   * Set when the profile's deployments name a target and still no store
+   * results. A target may be in no accepted form, several targets may leave
+   * the store ambiguous, the model may bind an entity elsewhere, or finding
+   * how to connect may fail, such as the lookup of an AlloyDB cluster's
+   * primary instance. `storeError` says why.
+   */
+  storeFailed?: boolean;
   /** Which binding profile produced this. Provenance, for messages. */
   profile: string;
   /** The entry group the model is scoped to. */
@@ -131,6 +140,8 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const appliedByDoc = new Map<string, SemanticModel>();
   // The warnings applying each profile file gave.
   const fileWarnings = new Map<string, string[]>();
+  // The documents a legacy `semantic_model:` wrapper was merged into.
+  const wrapped = new Set<string>();
   const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
@@ -167,6 +178,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       allowLegacyBareSource: true,
     });
     excludedByDoc.set(doc.name, res.excluded);
+    wrapped.add(doc.name);
   }
 
   const loaded = loadSemanticModels(
@@ -184,8 +196,6 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     const model = appliedByDoc.get(doc.name) ?? loadedByDoc.get(doc.name);
     return model ? [{document: doc.name, model}] : [];
   });
-  const depProfileErr = deploymentProfileError(models);
-  if (depProfileErr) return {error: depProfileErr};
 
   // Inheritance is resolved for the same reason both push legs resolve it: an
   // inherited field is a field, and every reader downstream reads
@@ -196,6 +206,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // refuses a generated UUID for an Integer key would read the key as a
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
+  const alloyDb = new AlloyDbClient(ctx);
   for (const {document, model: loadedModel} of models) {
     // A profile's exclusions apply to the entity that names each one.
     const authored = applyProfileExclusions(
@@ -208,22 +219,30 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     }
     const resolved = resolveInheritance(authored);
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
-    // A profile file names no deployment target, so it has no store. The
-    // model file's target is for its own bindings, as push treats it.
-    const store = appliedByDoc.has(document) ?
-        {
-          error: `binding profile '${profile}' is a profile file, which ` +
-              `names no deployment target, so there is no database to run it ` +
-              `against`,
-        } :
-        resolveStore(resolved.model);
-    runtimes.push({
+    // The store is the one the profile's deployments name. An AlloyDB
+    // database is reached through its cluster's primary instance.
+    const runtime: SemanticRuntime = {
       model: resolved.model,
       document,
-      ...('error' in store ? {storeError: store.error} : {store}),
       profile,
       entryGroup: source.entryGroup,
-    });
+    };
+    const chosen = resolveStore(
+        resolved.model, profile, {legacyWrapper: wrapped.has(document)});
+    if ('error' in chosen) {
+      runtime.storeError = chosen.error;
+      if (chosen.named) runtime.storeFailed = true;
+    } else {
+      const store = await withPrimaryInstance(chosen, alloyDb);
+      if ('error' in store) {
+        runtime.storeError = store.error;
+        runtime.storeFailed = true;
+      } else {
+        runtime.store = store;
+      }
+    }
+    runtimes.push(runtime);
   }
   return runtimes;
 }
+

@@ -90,12 +90,15 @@ run only at push time: the BigQuery source table probe, the dry runs of action
 statements and, on a push without `--validate-only`, the Knowledge Catalog
 checks on the entry group. Push's lookup of the file-copy type also runs only
 at push time, because it calls a service. It exits non-zero when push would
-reject a binding.
+reject a binding. Until push accepts a deployment that names a profile, the
+report refuses one, while `--print-store` takes that profile's store from it.
+For an AlloyDB target named by its cluster, `--print-store` calls the AlloyDB
+API to find the cluster's primary instance.
 
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). Errors when the scope holds more than one model, since those may name different databases, and for a profile file, which names no deployment target. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile for `default`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. For a legacy instance-based AlloyDB target, it is the instance the target names. Errors when the scope holds more than one model, since those may name different databases, and when no single store results. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the
@@ -115,8 +118,17 @@ kcmd skills-generate
 Writes each model in the scope out as an [Agent Skill](https://agentskills.io/)
 folder: a `SKILL.md` naming the model, routing to its actions and saying what a
 call comes back as, and one `references/<action>.md` per action carrying that
-action's arguments, rules and blast radius. Reading the model is all this does --
-it touches no store, calls no judge, and runs nothing.
+action's arguments, rules and blast radius. It reads the model, touches no
+store, calls no judge, and runs nothing. For an AlloyDB target named by its
+cluster, it calls the AlloyDB API to find the cluster's primary instance, which
+the skill's store line names. It fails without writing anything when the
+cluster has no primary instance, when the primary is not READY, or when the
+instance listing fails. It also fails without writing anything when the
+profile's deployments name a target and still give no store. That happens
+when a target is in no accepted form, when several targets leave the store
+ambiguous, or when the model binds an entity outside the store. A profile
+whose deployments name no target gets a skill whose store line says there is
+none.
 
 A skill's `name` and the directory it sits in have to match, or a client skips
 it. So the directory is named from what was generated rather than from anything
