@@ -289,11 +289,12 @@ existing one in place; you don't get duplicates.
 push. Push deletes the leftover catalog entry for you (the summary shows
 `removed N orphaned entries`).
 
-**When you rename or delete a relationship** — push removes the old
-`schema-join` link after writing the new ones, so a rename never leaves the
-two entities disconnected (the summary shows `unlinked N orphaned links`). Push
-reconciles only the links of the model it is deploying, and an entry group holds
-exactly one model, so it never disturbs another model's links.
+**When you rename or delete a relationship** — push removes orphaned and stale
+relationship links before writing the current ones, so a renamed or re-pointed
+relationship can be created without colliding with the old link (the summary
+shows `unlinked N orphaned links`). Push reconciles only the links of the model
+it is deploying, and an entry group holds exactly one model, so it never
+disturbs another model's links.
 
 **When you remove a whole model** — deleting its document does *not* remove it
 from the catalog. As long as you still push at least one other model in the same

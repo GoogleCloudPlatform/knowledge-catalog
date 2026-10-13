@@ -232,10 +232,27 @@ export function generateCatalogResources(
   // Relationships map to schema-join entry links between their endpoint entries.
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
+  const seenPairs = new Map<string, string>();
   for (const rel of relationships) {
+    const pairKey =
+        [rel.source.entity, rel.destination.entity].sort().join('|');
+    if (!opts.v2Aspects) {
+      const firstRel = seenPairs.get(pairKey);
+      if (firstRel !== undefined) {
+        warnings.push(
+            `relationship '${rel.name}': shares entities '${
+                rel.source.entity}' and '${
+                rel.destination.entity}' with relationship '${firstRel}'; ` +
+            `skipped because the catalog shows one join for those entities.`);
+        continue;
+      }
+    }
     const link = relationshipLink(
         names, model, rel, entityEntryName, seenLinks, warnings);
-    if (link) entryLinks.push(link);
+    if (link) {
+      seenPairs.set(pairKey, rel.name);
+      entryLinks.push(link);
+    }
   }
 
   return {

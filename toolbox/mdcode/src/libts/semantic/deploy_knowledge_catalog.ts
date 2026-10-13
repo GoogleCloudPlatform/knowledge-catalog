@@ -29,9 +29,9 @@
 //   * Relationship edges are published as `schema-join` (or
 //     `semantic-relationship` under `v2Aspects`) entry links between the two
 //     entity entries after that model's entries exist. A re-push first deletes
-//     any orphaned relationship links the model no longer emits, then creates
-//     new links, updates existing links' aspects in place, or deletes and
-//     recreates a link whose type or endpoint references changed. The caller
+//     any orphaned relationship links (no longer emitted) and stale links
+//     (whose type or endpoint references changed), then creates new or
+//     recreated links and updates unchanged links' aspects in place. The caller
 //     additionally needs `dataplex.entryGroups.useSchemaJoinEntryLink` and
 //     `useSchemaJoinAspect` on the destination entry group.
 //   * Reconcile deletions: after writing, delete any child entry this push owns
@@ -110,8 +110,8 @@ export interface KcDeployResult {
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
-  // Relationship (schema-join) entry links written -- created, updated, or
-  // recreated (0 for validateOnly).
+  // Relationship (schema-join or semantic-relationship) entry links written --
+  // created, updated, or recreated (0 for validateOnly).
   linked: number;
   // Orphaned relationship links deleted -- from relationships dropped or
   // renamed on a still-present model, and from force-removed models (0 for
@@ -521,9 +521,9 @@ function planSummary(
  *   1. Creates or updates the model's entries (anchor first).
  *   2. Looks up the model's existing relationship links when the pre-write
  *      entry group contains entities owned by the model.
- *   3. Deletes any existing relationship links owned by the model that are no
- *      longer emitted.
- *   4. Creates, updates, or recreates the model's relationship links.
+ *   3. Deletes any orphaned relationship links (no longer emitted) and stale
+ *      relationship links (changed type or endpoints) owned by the model.
+ *   4. Creates or updates the model's relationship links.
  *   5. Deletes any existing entries owned by the model that are no longer
  *      emitted.
  *
@@ -542,14 +542,14 @@ async function writeEmittedModels(
     // When the pre-write listing contains entity entries this model owns, look
     // up the model's existing links once and share the map between
     // findOrphanedEntryLinks (to delete dropped or renamed links) and
-    // writeEntryLinks (to detect a changed type or endpoints). Look up links
-    // via the model's entity entries known to the server (the pre-write
-    // snapshot `existing`), not the ones this push emits: only a server-side
-    // entry can already carry a link, and enumerating the snapshot also reaches
-    // a link both of whose endpoints were removed in this push (neither is
-    // re-emitted, but both entries are still present in `existing` until
-    // `deleteEntries` deletes them at the end). On a first push there are no
-    // such entries, so no lookup is made.
+    // findStaleEntryLinks (to delete links whose type or endpoints changed).
+    // Look up links via the model's entity entries known to the server (the
+    // pre-write snapshot `existing`), not the ones this push emits: only a
+    // server-side entry can already carry a link, and enumerating the snapshot
+    // also reaches a link both of whose endpoints were removed in this push
+    // (neither is re-emitted, but both entries are still present in `existing`
+    // until `deleteEntries` deletes them at the end). On a first push there are
+    // no such entries, so no lookup is made.
     const existingEntityNames = resources.entries.length ?
         collectEntityNames(collectOwnedEntries(resources, existing)) :
         [];
@@ -566,27 +566,45 @@ async function writeEmittedModels(
       existingLinks = lookedUp.links;
     }
 
-    // Delete any relationship link this model owns but no longer emits (a
-    // relationship dropped or renamed) BEFORE writing current links. Dataplex
-    // allows only one link per type between two entries, so a renamed
-    // relationship that keeps its two endpoints must have its old link deleted
-    // first or `createEntryLink` for the new ID will fail with HTTP 409.
+    // Find orphaned links (dropped or renamed) and stale links (same ID,
+    // changed type or endpoints) in `existingLinks` and delete both BEFORE
+    // creating current links so renamed links, swapped endpoint pairs, and
+    // taken-over endpoint pairs do not collide with an existing link.
     const orphanedLinks = findOrphanedEntryLinks(resources, existingLinks);
-    const unlinked = await deleteEntryLinks(cat, opts, orphanedLinks);
-    counts.unlinked += unlinked.unlinked;
-    if (unlinked.error) {
-      const {linkId, message} = unlinked.error;
+    const staleLinks = findStaleEntryLinks(resources, existingLinks);
+    if (staleLinks.error) {
+      return {error: `Model '${model}': ${staleLinks.error}`};
+    }
+    const orphanedLinkDeletions =
+        await deleteEntryLinks(cat, opts, orphanedLinks);
+    counts.unlinked += orphanedLinkDeletions.unlinked;
+    if (orphanedLinkDeletions.error) {
+      const {linkId, message} = orphanedLinkDeletions.error;
       return {
         error: `Deleting orphaned entry link '${linkId}' from model '${
+            model}' failed: ${message}`,
+      };
+    }
+    const staleLinkDeletions =
+        await deleteEntryLinks(cat, opts, staleLinks.links);
+    if (staleLinkDeletions.error) {
+      const {linkId, message} = staleLinkDeletions.error;
+      return {
+        error: `Deleting stale entry link '${linkId}' from model '${
             model}' failed: ${message}`,
       };
     }
 
     // Links reference this model's entity entries, so they follow the entries
     // above (both endpoints must exist first).
-    const links = await writeEntryLinks(cat, opts, resources, existingLinks);
+    const links = await writeEntryLinks(cat, opts, resources.entryLinks);
     counts.linked += links.linked;
-    if (links.error) return {error: `Model '${model}': ${links.error}`};
+    if (links.error) {
+      const hint = (orphanedLinks.length || staleLinks.links.length) ?
+          ' (push again to restore the link)' :
+          '';
+      return {error: `Model '${model}': ${links.error}${hint}`};
+    }
 
     // Finally, delete any entry this model owns but no longer emits.
     const orphanedEntries = findOrphanedEntries(resources, existing);
@@ -703,13 +721,21 @@ interface LinkLookupOutcome {
  * -- so a link between two of the entities is returned twice and deduplicated
  * here by bare link ID. Queries `lookupEntryLinks` and filters the results to
  * relationship links (`isRelationshipLink`) stored in the destination entry
- * group (`/locations/<location>/entryGroups/<entryGroup>/entryLinks/`).
+ * group
+ * (`projects/<project>/locations/<location>/entryGroups/<entryGroup>/entryLinks/`).
  */
 async function lookupEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions,
     entityNames: string[]): Promise<LinkLookupOutcome> {
-  const groupSegment =
-      `/locations/${opts.location}/entryGroups/${opts.entryGroup}/entryLinks/`;
+  // Live Dataplex always returns numeric project numbers in `link.name`, while
+  // unit tests (and any caller that normalizes link names) spell the project
+  // with `opts.project`. When `opts.project` is already a project number, match
+  // only that exact number; when it is a project ID, accept either that ID or a
+  // numeric project number.
+  const projectRe =
+      /^\d+$/.test(opts.project) ? opts.project : `(?:${opts.project}|\\d+)`;
+  const groupRegExp = new RegExp(`^projects/${projectRe}/locations/${
+      opts.location}/entryGroups/${opts.entryGroup}/entryLinks/`);
   const links = new Map<string, EntryLink>();
   for (const entityName of entityNames) {
     const res = await cat.lookupEntryLinks(
@@ -721,7 +747,7 @@ async function lookupEntryLinks(
       };
     }
     for (const link of res.result ?? []) {
-      if (!link.name?.includes(groupSegment)) continue;
+      if (!link.name || !groupRegExp.test(link.name)) continue;
       if (!isRelationshipLink(link)) continue;
       const id = linkId(link);
       if (!links.has(id)) links.set(id, link);
@@ -770,6 +796,55 @@ function findOrphanedEntryLinks(
   return [...existingLinks.values()].filter(
       link =>
           isLinkOwner(resources, link) && !emittedLinkIds.has(linkId(link)));
+}
+
+interface StaleLinksOutcome {
+  links: EntryLink[];
+  error?: string;
+}
+
+/**
+ * Returns the existing entry links in `existingLinks` that share a bare link ID
+ * with an emitted link in `resources.entryLinks` but have a different link type
+ * or endpoint references, so they must be deleted before recreating the link.
+ *
+ * Fails with `error` (before any link is deleted) if a matching existing link
+ * references an entry outside `resources`.
+ */
+function findStaleEntryLinks(
+    resources: kcEmit.KcResources,
+    existingLinks: Map<string, EntryLink>): StaleLinksOutcome {
+  const links: EntryLink[] = [];
+  if (!existingLinks.size) return {links};
+  for (const link of resources.entryLinks) {
+    const id = linkId(link);
+    const existingLink = existingLinks.get(id);
+    // Check whether `existingLink` is stale and safe to delete:
+    //   1. If no link with this ID exists yet, `writeEntryLinks` creates it.
+    //   2. If an existing link with this ID references an entry outside this
+    //      model, we do not own it and must fail before deleting anything.
+    //   3. If we own it and its link type and endpoint references are
+    //      unchanged, `writeEntryLinks` updates its aspects in place.
+    // Otherwise, its immutable type or endpoints changed, so it is stale.
+    if (!existingLink) continue;
+    if (!isLinkOwner(resources, existingLink)) {
+      const externalIds =
+          existingLink.entryReferences.filter(r => !isEntryOwner(resources, r))
+              .map(r => `'${entryId(r)}'`);
+      return {
+        links: [],
+        error: `entry link '${id}' already exists and references entry ${
+                   externalIds.join(', ')} outside this model; ` +
+            `rename the relationship or delete the existing link`,
+      };
+    }
+    if (linkTypeId(existingLink) === linkTypeId(link) &&
+        sameLinkReferences(existingLink, link)) {
+      continue;
+    }
+    links.push(existingLink);
+  }
+  return {links};
 }
 
 /**
@@ -913,20 +988,20 @@ interface LinksOutcome {
  * Writes a model's relationship entry links concurrently.
  *
  * Both endpoint entries already exist because `writeEntries` runs first, and
- * links are independent of one another. Uses `Promise.allSettled` so a thrown
- * network error on one link waits for any in-flight link replacement to finish
- * and reports the link ID in the returned error.
+ * any orphaned or stale links have already been deleted, so links are
+ * independent of one another. Uses `Promise.allSettled` so a thrown network
+ * error on one link waits for any in-flight link writes to finish and reports
+ * the link ID in the returned error.
  */
 async function writeEntryLinks(
-    cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
-    existingLinks: Map<string, EntryLink>): Promise<LinksOutcome> {
-  if (!resources.entryLinks.length) return {linked: 0};
-  const settled = await Promise.allSettled(resources.entryLinks.map(
-      l => writeEntryLink(
-          cat, opts, l, resources, existingLinks.get(linkId(l)))));
+    cat: CatalogClient, opts: KcDeployOptions,
+    entryLinks: EntryLink[]): Promise<LinksOutcome> {
+  if (!entryLinks.length) return {linked: 0};
+  const settled = await Promise.allSettled(
+      entryLinks.map(l => writeEntryLink(cat, opts, l)));
   const res = settled.map((s, i) => {
     if (s.status === 'fulfilled') return s.value;
-    const id = linkId(resources.entryLinks[i]);
+    const id = linkId(entryLinks[i]);
     const msg = s.reason?.message || String(s.reason);
     return {error: `entry link '${id}': ${msg}`};
   });
@@ -944,69 +1019,17 @@ interface WriteOutcome {
 /**
  * Writes a single relationship entry link to Knowledge Catalog.
  *
- * Attempts to create `link`, and if it already exists (HTTP 409), replaces it
- * via `replaceEntryLink` when its type or endpoints changed, or updates its
+ * Attempts to create `link`, and if it already exists (HTTP 409), updates its
  * aspects in place via `updateEntryLink`.
  */
 async function writeEntryLink(
-    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
-    resources: kcEmit.KcResources,
-    existingLink?: EntryLink): Promise<{error?: string}> {
+    cat: CatalogClient, opts: KcDeployOptions,
+    link: EntryLink): Promise<{error?: string}> {
   const id = linkId(link);
   const res = await cat.createEntryLink(
       opts.project, opts.location, opts.entryGroup, id, link);
-  if (isExistsStatus(res)) {
-    if (existingLink &&
-        (linkTypeId(existingLink) !== linkTypeId(link) ||
-         !sameLinkReferences(existingLink, link))) {
-      return replaceEntryLink(cat, opts, link, resources, existingLink);
-    }
-    return updateEntryLink(cat, opts, link);
-  }
+  if (isExistsStatus(res)) return updateEntryLink(cat, opts, link);
   if (!isOkStatus(res)) return {error: `entry link '${id}': ${errText(res)}`};
-  return {};
-}
-
-/**
- * Replaces an existing relationship entry link whose type or endpoint
- * references changed by deleting `existingLink` and recreating `link`.
- *
- * Fails without deleting if `existingLink` references an entry outside
- * `resources`.
- */
-async function replaceEntryLink(
-    cat: CatalogClient, opts: KcDeployOptions, link: EntryLink,
-    resources: kcEmit.KcResources,
-    existingLink: EntryLink): Promise<{error?: string}> {
-  const id = linkId(link);
-  if (!isLinkOwner(resources, existingLink)) {
-    const externalIds =
-        existingLink.entryReferences.filter(r => !isEntryOwner(resources, r))
-            .map(r => `'${entryId(r)}'`);
-    return {
-      error: `entry link '${id}' already exists and references entry ${
-                 externalIds.join(', ')} outside this model; ` +
-          `rename the relationship or delete the existing link`,
-    };
-  }
-  const del = await deleteEntryLinks(cat, opts, [existingLink]);
-  if (del.error) {
-    return {
-      error: `failed to delete entry link '${
-                 id}' with a changed type or endpoints before attempting to ` +
-          `create the updated link: ${del.error.message}`,
-    };
-  }
-  const recreated = await cat.createEntryLink(
-      opts.project, opts.location, opts.entryGroup, id, link);
-  if (!isOkStatus(recreated)) {
-    return {
-      error: `failed to create entry link '${
-                 id}' with a changed type or endpoints after deleting the ` +
-          `previous link (push again to restore the link): ${
-                 errText(recreated)}`,
-    };
-  }
   return {};
 }
 
@@ -1024,9 +1047,10 @@ async function updateEntryLink(
   // Dataplex allows one link per type between two entries, so `createEntryLink`
   // also returns 409 when another link under a different ID already connects
   // the same endpoints. Because links are addressable by name in
-  // `updateEntryLink`, a 404 here means `id` itself does not exist and another
-  // link holds those endpoints.
-  if (isNotFoundStatus(upd)) {
+  // `updateEntryLink`, a 404 or 403 ("Permission denied ... (or it may not
+  // exist)") here means `id` itself does not exist and another link holds
+  // those endpoints.
+  if (isNotFoundStatus(upd) || isForbiddenStatus(upd)) {
     const endpoints =
         link.entryReferences.map(r => `'${entryId(r)}'`).join(' and ');
     return {
@@ -1034,10 +1058,7 @@ async function updateEntryLink(
           linkTypeId(link)}' link already connects ${endpoints}`,
     };
   }
-  // Treat a masked PERMISSION_DENIED (403) as a no-op success on catalog
-  // surfaces that expose create + lookup for entry links without by-name
-  // aspect refresh.
-  if (!isOkStatus(upd) && !isForbiddenStatus(upd)) {
+  if (!isOkStatus(upd)) {
     return {error: `entry link '${id}': ${errText(upd)}`};
   }
   return {};

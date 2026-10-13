@@ -629,6 +629,96 @@ describe('relationships map to schema-join entry links', () => {
                        w.includes('orders-to-customer')))
             .toBe(true);
       });
+
+  test(
+      'two relationships between the same pair of entities, flag off, ' +
+          'emit one link and warn on the second',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'billing-customer',
+            source: {entity: 'orders', columns: ['billing_custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'shipping-customer',
+            source: {entity: 'customer', columns: ['c_key']},
+            destination: {entity: 'orders', columns: ['shipping_custkey']},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-billing-customer',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'shipping-customer\': shares entities \'customer\' ' +
+              'and \'orders\' with relationship \'billing-customer\'; ' +
+              'skipped because the catalog shows one join for those entities.',
+        ]);
+      });
+
+  test(
+      'an unpublishable relationship does not claim the entity pair ' +
+          'ahead of a valid relationship',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'assoc-orders-customer',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+            association: {
+              dataSource: 'p.d.order_customer',
+              keys: ['id'],
+              sourceColumns: ['o_key'],
+              destinationColumns: ['c_key'],
+            },
+          },
+          {
+            name: 'orders-to-customer',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-orders-to-customer',
+        ]);
+        expect(warnings.length).toBe(1);
+        expect(warnings[0]).toContain('assoc-orders-customer');
+      });
+
+  test(
+      'two relationships between the same pair of entities emit both ' +
+          'links when v2Aspects is true',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'billing-customer',
+            source: {entity: 'orders', columns: ['billing_custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'shipping-customer',
+            source: {entity: 'orders', columns: ['shipping_custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+        ];
+
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, {...OPTS, v2Aspects: true});
+
+        expect(entryLinks.length).toBe(2);
+        expect(warnings).toEqual([]);
+      });
 });
 
 
