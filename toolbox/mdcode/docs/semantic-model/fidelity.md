@@ -33,7 +33,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Primary key                                                    | `schema.primaryKey`             | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
 | Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | — dropped (only PK emitted)                                          | — dropped (only PK emitted)                                          |
 | Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
-| Relationship (1:1 / 1:N)                                       | `schema-join` link              | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
+| Relationship (1:1 / 1:N)                                       | `schema-join` link¹⁵            | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | — not modelled                  | —                                              | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
@@ -125,6 +125,13 @@ agree on every structural row and differ only where a Spanner target has no
     binding — the one named by `--profile`, else the default binding, which is
     what an `--all-profiles` run always records, the two flags being mutually
     exclusive. See [Binding profiles](profiles.md).
+15. **Relationships with no link.** Knowledge Catalog keeps one link between
+    two entries, so when several relationships join the same two entities,
+    push links the first and skips the rest with a warning. Knowledge Catalog
+    does not support a relationship from an entity to itself, so push skips it
+    with a warning. The catalog metadata holds no link for a skipped
+    relationship. `pull` still returns it from the stored copy of the model
+    file, and leaves it out only when it rebuilds the file from the metadata.
 
 ## To Knowledge Catalog
 
@@ -137,11 +144,13 @@ provisions. A push references those types and never creates them (see
 
 What is recorded depends on the push. A catalog-only push (`--no-profile`), or a
 purely logical model with no bindings, records the whole model: every entity,
-metric, and relationship the document declares. A push that also deploys a graph
+metric, and relationship the document declares, apart from the relationships in
+footnote 15. A push that also deploys a graph
 first prunes the model to what that graph binds, so an unbound field — and any
 entity, metric, or relationship that depends on it — is left out of the catalog
-entries too. A pull of such a push returns the bound view rather than the full
-authored model.
+entries too. A pull still returns the authored model file from its stored copy.
+Only a model file that pull rebuilds from the catalog metadata comes back as the
+bound view.
 
 A logical model still produces complete entries. Each entity's `source` is
 recorded empty (`resources: []`) because there is no table behind it, and a

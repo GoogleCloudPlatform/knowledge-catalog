@@ -368,6 +368,11 @@ export class CatalogClient extends api.ApiClient {
     return await this._patch<EntryLink>(entryLink.name!, entryLink, params);
   }
 
+  // Reads an entry link by its full resource name.
+  async getEntryLink(name: string): Promise<api.ApiResult<EntryLink>> {
+    return await this._get<EntryLink>(name);
+  }
+
   async deleteEntryLink(project: string, location: string, entryGroup: string,
                         entryLinkId: string): Promise<api.ApiResult<EntryLink>> {
     const name = `${

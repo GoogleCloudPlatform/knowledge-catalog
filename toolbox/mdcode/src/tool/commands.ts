@@ -1550,6 +1550,13 @@ async function pushKnowledgeCatalog(
       options.validateOnly ?
           'Validating semantic model for Knowledge Catalog...' :
           'Pushing semantic model (Knowledge Catalog)...');
+  // The deploy passes its warnings to `onWarnings` before the first catalog
+  // write. A run that stops before then returns them in the result instead.
+  let printed = 0;
+  const printWarnings = (warnings: readonly string[]) => {
+    for (const w of warnings.slice(printed)) console.warn(`Warning: ${w}`);
+    printed = warnings.length;
+  };
   const result = await kc.deployKnowledgeCatalog(models, ctx, {
     project: source.project,
     location: source.location,
@@ -1566,11 +1573,10 @@ async function pushKnowledgeCatalog(
     // Push looks up the file-copy type before any graph deploys whenever it
     // has copies to store.
     fileCopyTypeChecked: sourceFiles.length > 0,
+    onWarnings: printWarnings,
   });
 
-  for (const w of result.warnings) {
-    console.warn(`Warning: ${w}`);
-  }
+  printWarnings(result.warnings);
   if (options.print) {
     console.log('-- Knowledge Catalog --');
     for (const line of result.plan) {

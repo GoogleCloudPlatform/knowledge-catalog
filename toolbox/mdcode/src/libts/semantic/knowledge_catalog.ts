@@ -296,6 +296,23 @@ export function generateCatalogResources(
   const seenLinks = new Set<string>();
   const seenPairs = new Map<string, string>();
   for (const rel of relationships) {
+    // Dataplex refuses a link whose two references name the same entry, so the
+    // flag-off path skips a relationship from an entity to itself. Such a
+    // relationship never reaches the pair check below, so a second one on the
+    // same entity gets this warning and not the pair warning. Under v2Aspects
+    // the link is still emitted, and Dataplex refuses it. The V2 design for
+    // that case is not settled.
+    if (!opts.v2Aspects && rel.source.entity === rel.destination.entity) {
+      warnings.push(
+          `relationship '${rel.name}': skipped because Knowledge Catalog ` +
+          `does not support a relationship from an entity to itself.`);
+      continue;
+    }
+    // Dataplex allows one link of a type between two entries. The flag-off
+    // path links the first relationship on a pair and warns about the rest.
+    // Under v2Aspects every relationship still gets a link, so Dataplex
+    // refuses the second link on a pair. The V2 design for that case is not
+    // settled.
     const pairKey =
         [rel.source.entity, rel.destination.entity].sort().join('|');
     if (!opts.v2Aspects) {

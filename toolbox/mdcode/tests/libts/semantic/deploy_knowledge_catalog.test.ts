@@ -14,7 +14,7 @@ import * as path from 'node:path';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {ResourceManagerClient} from '../../../src/libts/gcp/crm';
+import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
@@ -134,6 +134,8 @@ function stubClient(opts: {
   // Result of createEntryLink, keyed by the entry-link id. Default: 200.
   createLink?: (linkId: string) => ApiResult<any>,
   updateLink?: ApiResult<any>,
+  // Result of getEntryLink. Default: 404, no link with that name.
+  getLink?: ApiResult<any>,
   // Entry links the destination returns from lookupEntryLinks, keyed by the
   // referenced entry's full resource name. Default: none (ok, empty list).
   links?: (entry: string) => ApiResult<any>,
@@ -145,6 +147,9 @@ function stubClient(opts: {
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
   aspectType?: (typeId: string) => ApiResult<any>,
+  // Result of Cloud Resource Manager's getProject, keyed by project. Default:
+  // project 'dest' has the number 123456789, and any other project is denied.
+  project?: (project: string) => ApiResult<any>,
 } = {}) {
   const group = spyOn(CatalogClient.prototype, 'createEntryGroup')
                     .mockImplementation(async () => opts.group ?? ok({}));
@@ -185,6 +190,9 @@ function stubClient(opts: {
   const updateLink = spyOn(CatalogClient.prototype, 'updateEntryLink')
                          .mockImplementation(
                              async () => opts.updateLink ?? ok({}));
+  const getLink = spyOn(CatalogClient.prototype, 'getEntryLink')
+                      .mockImplementation(
+                          async () => opts.getLink ?? err(404, 'not found'));
   const lookupLinks =
       spyOn(CatalogClient.prototype, 'lookupEntryLinks')
           .mockImplementation(
@@ -205,6 +213,10 @@ function stubClient(opts: {
                             .mockImplementation(
                                 async (_p, _l, typeId) => (
                                     opts.aspectType ?? (() => ok({})))(typeId));
+  const getProject =
+      spyOn(ResourceManagerClient.prototype, 'getProject')
+          .mockImplementation(
+              async (project) => (opts.project ?? destProject)(project));
   return {
     group,
     create,
@@ -213,12 +225,22 @@ function stubClient(opts: {
     del,
     createLink,
     updateLink,
+    getLink,
     lookupLinks,
     delLink,
     getEntry,
     getEntryType,
     getAspectType,
+    getProject,
   };
+}
+
+// Cloud Resource Manager's answer for the scope's project 'dest', whose number
+// is 123456789. Any other project is denied.
+function destProject(project: string): ApiResult<any> {
+  return project === 'dest' ?
+      ok({name: 'projects/123456789', projectId: 'dest'}) :
+      err(403, 'Permission denied');
 }
 
 
@@ -659,8 +681,12 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
   });
 
   test('a link that already exists is upserted via updateEntryLink', async () => {
+    // Reading the link shows it joins this model's two entities.
     const {createLink, updateLink} = stubClient({
       createLink: () => err(409, 'entry link already exists'),
+      getLink: ok(linkEntry(
+          'sales-orders-to-customer',
+          ['sales.entities.orders', 'sales.entities.customer'], '123456789')),
       updateLink: ok({}),
     });
 
@@ -698,7 +724,8 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
                 'Model \'sales\': failed to create entry link ' +
                 '\'sales-orders-to-customer\' because another \'schema-join\' ' +
                 'link already connects \'sales.entities.orders\' and ' +
-                '\'sales.entities.customer\'');
+                '\'sales.entities.customer\'; updating ' +
+                '\'sales-orders-to-customer\' returned: entry link not found');
         expect(createLink).toHaveBeenCalledTimes(1);
         expect(updateLink).toHaveBeenCalledTimes(1);
       });
@@ -723,9 +750,37 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
                 'Model \'sales\': failed to create entry link ' +
                 '\'sales-orders-to-customer\' because another ' +
                 '\'schema-join\' link already connects ' +
-                '\'sales.entities.orders\' and \'sales.entities.customer\'');
+                '\'sales.entities.orders\' and \'sales.entities.customer\'; ' +
+                'updating \'sales-orders-to-customer\' returned: Permission ' +
+                'denied on resource (or it may not exist)');
         expect(createLink).toHaveBeenCalledTimes(1);
         expect(updateLink).toHaveBeenCalledTimes(1);
+      });
+
+  test(
+      'a link under this model\'s link ID that joins two entries outside ' +
+          'the model is not changed, and the push fails naming the link',
+      async () => {
+        // The lookup cannot return such a link, because it references none
+        // of the model's entities.
+        const {updateLink} = stubClient({
+          createLink: () => err(409, 'entry link already exists'),
+          getLink: ok(linkEntry(
+              'sales-orders-to-customer', ['tool.a', 'tool.b'], '123456789')),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.linked).toBe(0);
+        expect(result.details)
+            .toBe(
+                'Model \'sales\': entry link \'sales-orders-to-customer\' ' +
+                'already exists and references entries \'tool.a\' and ' +
+                '\'tool.b\' outside this model; rename the relationship or ' +
+                'delete the existing link');
+        expect(updateLink).not.toHaveBeenCalled();
       });
 
   test(
@@ -1245,9 +1300,11 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
       'when creating a renamed relationship link fails after deleting the ' +
           'old link, the error includes the push-again hint',
       async () => {
+        // The lookup spells the old link with the project number and lists
+        // its ends in the other order. It still joins the same two entities.
         const renamedFrom = linkEntry(
             'sales-old-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer']);
+            ['sales.entities.customer', 'sales.entities.orders'], '123456789');
         stubClient({
           existing: STAR_ENTITIES,
           links: () => ok([renamedFrom]),
@@ -1263,6 +1320,83 @@ describe('deployKnowledgeCatalog: link reconciliation', () => {
             .toBe(
                 'Model \'sales\': entry link \'sales-orders-to-customer\': ' +
                 'create failed (push again to restore the link)');
+      });
+
+  test(
+      'a failed orphan delete after another orphan\'s delete freed the ' +
+          'pair says to push again',
+      async () => {
+        const renamedFrom = linkEntry(
+            'sales-old-orders-to-customer',
+            ['sales.entities.orders', 'sales.entities.customer'], '123456789');
+        const dropped = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier']);
+        const {createLink} = stubClient({
+          existing: STAR_ENTITIES,
+          links: () => ok([renamedFrom, dropped]),
+          delLink: (id) => id === 'sales-orders-to-supplier' ?
+              err(500, 'delete failed') :
+              ok({}),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.details)
+            .toBe(
+                'Deleting orphaned entry link \'sales-orders-to-supplier\' ' +
+                'from model \'sales\' failed: delete failed (push again to ' +
+                'restore the link)');
+        expect(createLink).not.toHaveBeenCalled();
+      });
+
+  test('a failed delete of a renamed link has no push-again hint', async () => {
+    // The old link still joins the pair, so nothing is missing.
+    const renamedFrom = linkEntry(
+        'sales-old-orders-to-customer',
+        ['sales.entities.orders', 'sales.entities.customer']);
+    stubClient({
+      existing: STAR_ENTITIES,
+      links: () => ok([renamedFrom]),
+      delLink: () => err(500, 'delete failed'),
+    });
+
+    const result = await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(false);
+    expect(result.details)
+        .toBe(
+            'Deleting orphaned entry link \'sales-old-orders-to-customer\' ' +
+            'from model \'sales\' failed: delete failed');
+  });
+
+  test(
+      'an error on a link that no deleted link made way for has no ' +
+          'push-again hint',
+      async () => {
+        // The orphan belongs to a dropped relationship, so no emitted link
+        // takes its place. The link whose update fails still exists.
+        const orphan = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier']);
+        stubClient({
+          existing: STAR_ENTITIES,
+          links: () => ok([orphan, KEPT]),
+          createLink: () => err(409, 'already exists'),
+          updateLink: err(500, 'backend error'),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(false);
+        expect(result.unlinked).toBe(1);
+        expect(result.details)
+            .toBe(
+                'Model \'sales\': entry link \'sales-orders-to-customer\': ' +
+                'backend error');
       });
 
   test('keeps a link the model still emits', async () => {
@@ -2387,19 +2521,91 @@ describe(
           });
 
       test(
+          'a 403 on updating a link the lookup returned reports the ' +
+              'server\'s message and does not blame another link',
+          async () => {
+            // Dataplex also answers 403 to a caller that may not update the
+            // link. The lookup shows the link exists, so no other link is
+            // involved.
+            const matchingLink = linkEntry(
+                'sales-orders-to-customer',
+                ['sales.entities.orders', 'sales.entities.customer'],
+                '123456789');
+            stubClient({
+              existing: [
+                {id: 'sales', type: MODEL_TYPE},
+                {id: 'sales.entities.orders', type: ENTITY_TYPE},
+                {id: 'sales.entities.customer', type: ENTITY_TYPE},
+              ],
+              links: () => ok([matchingLink]),
+              createLink: () => err(409, 'already exists'),
+              updateLink:
+                  err(403, 'Permission denied on resource (or it may not exist)'),
+            });
+
+            const result =
+                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+            expect(result.success).toBe(false);
+            expect(result.details)
+                .toBe(
+                    'Model \'sales\': entry link \'sales-orders-to-customer\': ' +
+                    'Permission denied on resource (or it may not exist)');
+          });
+
+      test(
+          'a 403 on updating the ID of a deleted stale link blames another ' +
+              'link and says to push again',
+          async () => {
+            // The push deletes the stale link, so its ID has no link when the
+            // create returns 409. Another link holds the new endpoints.
+            const staleLink = linkEntry(
+                'sales-orders-to-customer',
+                ['sales.entities.orders', 'sales.entities.supplier']);
+            stubClient({
+              existing: [
+                {id: 'sales', type: MODEL_TYPE},
+                {id: 'sales.entities.orders', type: ENTITY_TYPE},
+                {id: 'sales.entities.customer', type: ENTITY_TYPE},
+              ],
+              links: () => ok([staleLink]),
+              createLink: () => err(409, 'already exists'),
+              updateLink:
+                  err(403, 'Permission denied on resource (or it may not exist)'),
+            });
+
+            const result =
+                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+            expect(result.success).toBe(false);
+            expect(result.details)
+                .toBe(
+                    'Model \'sales\': failed to create entry link ' +
+                    '\'sales-orders-to-customer\' because another ' +
+                    '\'schema-join\' link already connects ' +
+                    '\'sales.entities.orders\' and \'sales.entities.customer\'; ' +
+                    'updating \'sales-orders-to-customer\' returned: Permission ' +
+                    'denied on resource (or it may not exist) (push again to ' +
+                    'restore the link)');
+          });
+
+      test(
           'a link with a reference outside the model is not deleted, and ' +
-              'the push fails naming the link',
+              'the push fails naming the link before any orphan is deleted',
           async () => {
             const foreignRefLink = linkEntry(
                 'sales-orders-to-customer',
                 ['sales.entities.orders', 'other.entities.customer']);
+            const orphan = linkEntry(
+                'sales-orders-to-supplier',
+                ['sales.entities.orders', 'sales.entities.supplier']);
             const {createLink, updateLink, delLink} = stubClient({
               existing: [
                 {id: 'sales', type: MODEL_TYPE},
                 {id: 'sales.entities.orders', type: ENTITY_TYPE},
                 {id: 'sales.entities.customer', type: ENTITY_TYPE},
               ],
-              links: () => ok([foreignRefLink]),
+              links: () => ok([foreignRefLink, orphan]),
             });
 
             const result =
@@ -2446,6 +2652,84 @@ describe(
           });
 
       test(
+          'a failed stale link delete after the delete of a renamed ' +
+              'relationship\'s link says to push again',
+          async () => {
+            // `sales-old-orders-to-customer` joins the entities that the
+            // emitted `sales-orders-to-customer` joins, so the push deletes it
+            // to make way. The push then stops before writing the new link.
+            const renamedFrom = linkEntry(
+                'sales-old-orders-to-customer',
+                ['sales.entities.orders', 'sales.entities.customer']);
+            const staleLink = linkEntry(
+                'sales-orders-to-customer',
+                ['sales.entities.orders', 'sales.entities.supplier']);
+            const {createLink} = stubClient({
+              existing: [
+                {id: 'sales', type: MODEL_TYPE},
+                {id: 'sales.entities.orders', type: ENTITY_TYPE},
+                {id: 'sales.entities.customer', type: ENTITY_TYPE},
+              ],
+              links: () => ok([renamedFrom, staleLink]),
+              delLink: (id) => id === 'sales-orders-to-customer' ?
+                  err(500, 'delete failed') :
+                  ok({}),
+            });
+
+            const result =
+                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+            expect(result.success).toBe(false);
+            expect(result.unlinked).toBe(1);
+            expect(result.details)
+                .toBe(
+                    'Deleting stale entry link ' +
+                    '\'sales-orders-to-customer\' from model \'sales\' ' +
+                    'failed: delete failed (push again to restore the link)');
+            expect(createLink).not.toHaveBeenCalled();
+          });
+
+      test(
+          'a thrown error on a link delete after an earlier delete in the ' +
+              'same batch names the link, keeps the count and says to push ' +
+              'again',
+          async () => {
+            // The first orphan is a renamed relationship's old link, so its
+            // delete leaves the pair without a link.
+            const renamedFrom = linkEntry(
+                'sales-old-orders-to-customer',
+                ['sales.entities.orders', 'sales.entities.customer']);
+            const dropped = linkEntry(
+                'sales-orders-to-supplier',
+                ['sales.entities.orders', 'sales.entities.supplier']);
+            stubClient({
+              existing: [
+                {id: 'sales', type: MODEL_TYPE},
+                {id: 'sales.entities.orders', type: ENTITY_TYPE},
+                {id: 'sales.entities.customer', type: ENTITY_TYPE},
+              ],
+              links: () => ok([renamedFrom, dropped]),
+              delLink: (id) => {
+                if (id === 'sales-orders-to-supplier') {
+                  throw new Error('socket hang up');
+                }
+                return ok({});
+              },
+            });
+
+            const result =
+                await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+            expect(result.success).toBe(false);
+            expect(result.unlinked).toBe(1);
+            expect(result.details)
+                .toBe(
+                    'Deleting orphaned entry link ' +
+                    '\'sales-orders-to-supplier\' from model \'sales\' ' +
+                    'failed: socket hang up (push again to restore the link)');
+          });
+
+      test(
           'returns an error when recreating a link after deletion fails',
           async () => {
             const staleDottedLink = linkEntry(
@@ -2471,6 +2755,49 @@ describe(
                     'Model \'sales\': entry link ' +
                     '\'sales-orders-to-customer\': recreate failed ' +
                     '(push again to restore the link)');
+          });
+
+      test(
+          'an error on one link after another replaced a deleted link has ' +
+              'no push-again hint',
+          async () => {
+            // `sales-old-a` joins the pair `sales-a` takes, and `sales-a` is
+            // written. The update of `sales-b` fails, and that link still
+            // exists.
+            const linkA = linkEntry(
+                'sales-a', ['sales.entities.orders', 'sales.entities.customer']);
+            const linkB = linkEntry(
+                'sales-b', ['sales.entities.orders', 'sales.entities.supplier']);
+            stubClient({
+              existing: [
+                {id: 'sales', type: MODEL_TYPE},
+                {id: 'sales.entities.orders', type: ENTITY_TYPE},
+              ],
+              links: () => ok([
+                linkEntry(
+                    'sales-old-a',
+                    ['sales.entities.orders', 'sales.entities.customer']),
+                linkB,
+              ]),
+              createLink: (id) =>
+                  id === 'sales-b' ? err(409, 'already exists') : ok({}),
+              updateLink: err(500, 'backend error'),
+            });
+            const emitted: EmittedModel[] = [{
+              model: 'sales',
+              resources: {
+                entries: [{name: entryName('sales'), entryType: MODEL_TYPE}],
+                entryLinks: [linkA, linkB],
+                ownedPrefixes: ['sales.entities.'],
+                warnings: [],
+              },
+            }];
+
+            const result = await deployEmittedModels(emitted, [], CTX, OPTS);
+
+            expect(result.success).toBe(false);
+            expect(result.details)
+                .toBe('Model \'sales\': entry link \'sales-b\': backend error');
           });
 
       test(
@@ -2510,18 +2837,18 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: s_suppkey }]
     relationships:
-      - name: rel-a
+      - name: rel_a
         from: orders
         to: customer
         from_columns: [o_custkey]
         to_columns: [c_custkey]
-      - name: rel-b
+      - name: rel_b
         from: orders
         to: supplier
         from_columns: [o_suppkey]
         to_columns: [s_suppkey]
 `;
-            // Previously, `rel-a` connected orders <-> supplier and `rel-b`
+            // Previously, `rel_a` connected orders <-> supplier and `rel_b`
             // connected orders <-> customer (the opposite pairs).
             const oldRelA = linkEntry(
                 'sales-rel-a',
@@ -2568,6 +2895,12 @@ semantic_model:
 
 
 describe('deployKnowledgeCatalog: both relationship link types', () => {
+  // The STAR model's anchor and entity entries, as a re-push finds them.
+  const STAR_ENTITY_ENTRIES = [
+    {id: 'sales', type: MODEL_TYPE},
+    {id: 'sales.entities.orders', type: ENTITY_TYPE},
+    {id: 'sales.entities.customer', type: ENTITY_TYPE},
+  ];
   const SEMANTIC_REL_LINK_TYPE =
       'projects/dataplex-types/locations/global/entryLinkTypes/' +
       'semantic-relationship';
@@ -2716,20 +3049,25 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
       'lookupEntryLinks skips relationship links stored in another ' +
           'project\'s entry group of the same name',
       async () => {
+        // Dataplex spells link names with project numbers. The scope's project
+        // 'dest' has the number 123456789, so 987654321 is another project.
         const otherProjectLink = {
           ...linkEntry(
               'sales-other-proj-link',
               ['sales.entities.orders', 'sales.entities.customer'],
-              'other-proj'),
+              '987654321'),
           entryReferences: [
-            {name: entryName('sales.entities.orders'), type: 'UNSPECIFIED'},
             {
-              name: entryName('sales.entities.customer', 'other-proj'),
+              name: entryName('sales.entities.orders', '123456789'),
+              type: 'UNSPECIFIED',
+            },
+            {
+              name: entryName('sales.entities.customer', '987654321'),
               type: 'UNSPECIFIED',
             },
           ],
         };
-        const {delLink} = stubClient({
+        const {delLink, getProject} = stubClient({
           existing: [
             {id: 'sales', type: MODEL_TYPE},
             {id: 'sales.entities.orders', type: ENTITY_TYPE},
@@ -2747,6 +3085,7 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
         expect(result.success).toBe(true);
         expect(result.unlinked).toBe(0);
         expect(delLink).not.toHaveBeenCalled();
+        expect(getProject.mock.calls.map(c => c[0])).toEqual(['dest']);
 
         // Also when `opts.project` is given as a numeric project number
         // ('123456789'), a link stored in another numeric project ('987654321')
@@ -2788,6 +3127,159 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
         expect(delNumericLink).not.toHaveBeenCalled();
       });
 
+  test(
+      'lookupEntryLinks takes the scope\'s project number from the entry ' +
+          'listing when Resource Manager cannot give it',
+      async () => {
+        // A caller without resourcemanager.projects.get sees the listing spell
+        // the scope's project with its number. A link stored under that
+        // number is the model's own, and a link under another number is not.
+        const ownOrphan = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier'], '123456789');
+        const otherProjectOrphan = linkEntry(
+            'sales-orders-to-warehouse',
+            ['sales.entities.orders', 'sales.entities.warehouse'], '987654321');
+        const {delLink, getProject} = stubClient({
+          existing: STAR_ENTITY_ENTRIES,
+          existingProject: '123456789',
+          links: () => ok([ownOrphan, otherProjectOrphan]),
+          project: () => err(403, 'Permission denied'),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(delLink.mock.calls.map(c => c[3])).toEqual([
+          'sales-orders-to-supplier',
+        ]);
+        expect(getProject).not.toHaveBeenCalled();
+      });
+
+  test(
+      'lookupEntryLinks keeps a link under any project number when the ' +
+          'scope\'s project number cannot be found',
+      async () => {
+        // Neither the scope nor the listing spells a number, and Resource
+        // Manager denies the lookup, so the filter cannot tell the scope's
+        // number from another project's.
+        const orphan = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier'], '987654321');
+        const {delLink, getProject} = stubClient({
+          existing: STAR_ENTITY_ENTRIES,
+          links: () => ok([orphan]),
+          project: () => err(403, 'Permission denied'),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(delLink.mock.calls.map(c => c[3])).toEqual([
+          'sales-orders-to-supplier',
+        ]);
+        expect(getProject).toHaveBeenCalledTimes(1);
+      });
+
+  test(
+      'lookupEntryLinks keeps a link under any project number when ' +
+          'Resource Manager throws',
+      async () => {
+        const orphan = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier'], '987654321');
+        const {delLink} = stubClient({
+          existing: STAR_ENTITY_ENTRIES,
+          links: () => ok([orphan]),
+          project: () => {
+            throw new TypeError('fetch failed');
+          },
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(delLink.mock.calls.map(c => c[3])).toEqual([
+          'sales-orders-to-supplier',
+        ]);
+      });
+
+  test(
+      'lookupEntryLinks takes the scope\'s project number that fixProject ' +
+          'cached, with no second Resource Manager call',
+      async () => {
+        // The listing's _fixEntry resolves the number to the ID through
+        // fixProject, which caches the pair. The cache outlives a test, so
+        // this test uses a project no other test uses.
+        const ownOrphan = linkEntry(
+            'sales-orders-to-supplier',
+            ['sales.entities.orders', 'sales.entities.supplier'], '555000111');
+        const otherProjectOrphan = linkEntry(
+            'sales-orders-to-warehouse',
+            ['sales.entities.orders', 'sales.entities.warehouse'], '987654321');
+        const {delLink, getProject} = stubClient({
+          existing: STAR_ENTITY_ENTRIES,
+          existingProject: 'cached-proj',
+          links: () => ok([ownOrphan, otherProjectOrphan]),
+          project: (p) => p === '555000111' ?
+              ok({name: 'projects/555000111', projectId: 'cached-proj'}) :
+              err(403, 'Permission denied'),
+        });
+        expect(await fixProject('projects/555000111', CTX))
+            .toBe('projects/cached-proj');
+
+        const result = await deployKnowledgeCatalog(
+            models(STAR_DOCS), CTX, {...OPTS, project: 'cached-proj'});
+
+        expect(result.success).toBe(true);
+        expect(delLink.mock.calls.map(c => c[3])).toEqual([
+          'sales-orders-to-supplier',
+        ]);
+        expect(getProject.mock.calls.map(c => c[0])).toEqual(['555000111']);
+      });
+
+  test(
+      'lookupEntryLinks skips links stored in another location or in an ' +
+          'entry group whose name starts with the destination\'s',
+      async () => {
+        const otherLocationLink = {
+          ...linkEntry(
+              'sales-other-location-link',
+              ['sales.entities.orders', 'sales.entities.customer']),
+          name: 'projects/dest/locations/eu/entryGroups/eg/entryLinks/' +
+              'sales-other-location-link',
+        };
+        const longerGroupLink = {
+          ...linkEntry(
+              'sales-longer-group-link',
+              ['sales.entities.orders', 'sales.entities.customer']),
+          name: 'projects/dest/locations/us/entryGroups/eg2/entryLinks/' +
+              'sales-longer-group-link',
+          entryReferences: [
+            {name: entryName('sales.entities.orders'), type: 'UNSPECIFIED'},
+            {
+              name: 'projects/dest/locations/us/entryGroups/eg2/entries/' +
+                  'sales.entities.customer',
+              type: 'UNSPECIFIED',
+            },
+          ],
+        };
+        const {delLink} = stubClient({
+          existing: STAR_ENTITY_ENTRIES,
+          links: () => ok([otherLocationLink, longerGroupLink]),
+        });
+
+        const result =
+            await deployKnowledgeCatalog(models(STAR_DOCS), CTX, OPTS);
+
+        expect(result.success).toBe(true);
+        expect(result.unlinked).toBe(0);
+        expect(delLink).not.toHaveBeenCalled();
+      });
+
   test('a lookupEntryLinks call that returns 404 fails the push', async () => {
     stubClient({
       existing: [
@@ -2826,6 +3318,130 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
                 'Looking up entry links for \'sales.entities.orders\' from ' +
                 'model \'sales\' failed: lookup failed');
       });
+});
+
+
+describe('deployKnowledgeCatalog: a relationship from an entity to itself', () => {
+  // `manager` and `mentor` join `employee` to itself. `assignment` joins
+  // `employee` to `department` and publishes the link `hr-assignment`.
+  const SELF_DOCS = [{
+    name: 'hr.yaml',
+    text: `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: hr
+    datasets:
+      - name: employee
+        source: demo.hr.employee
+        primary_key: [employee_id]
+        fields:
+          - name: employee_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: employee_id }]
+          - name: manager_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: manager_id }]
+          - name: mentor_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: mentor_id }]
+          - name: department_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: department_id }]
+      - name: department
+        source: demo.hr.department
+        primary_key: [department_id]
+        fields:
+          - name: department_id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: department_id }]
+    relationships:
+      - name: manager
+        from: employee
+        to: employee
+        from_columns: [manager_id]
+        to_columns: [employee_id]
+      - name: mentor
+        from: employee
+        to: employee
+        from_columns: [mentor_id]
+        to_columns: [employee_id]
+      - name: assignment
+        from: employee
+        to: department
+        from_columns: [department_id]
+        to_columns: [department_id]
+`,
+  }];
+
+  const SELF_WARNINGS = [
+    '[hr] relationship \'manager\': skipped because Knowledge Catalog does ' +
+        'not support a relationship from an entity to itself.',
+    '[hr] relationship \'mentor\': skipped because Knowledge Catalog does ' +
+        'not support a relationship from an entity to itself.',
+  ];
+
+  test('validateOnly warns about each one and plans no link for it',
+       async () => {
+         const {list, create, createLink} = stubClient();
+
+         const result = await deployKnowledgeCatalog(
+             models(SELF_DOCS), CTX, {...OPTS, validateOnly: true});
+
+         expect(result.success).toBe(true);
+         expect(result.warnings).toEqual(SELF_WARNINGS);
+         expect(result.plan).toContain('  1 schema-join link:');
+         expect(result.plan).toContain('    - hr-assignment');
+         expect(list).not.toHaveBeenCalled();
+         expect(create).not.toHaveBeenCalled();
+         expect(createLink).not.toHaveBeenCalled();
+       });
+
+  test('a push skips it and writes every other link', async () => {
+    const {createLink} = stubClient();
+
+    const result = await deployKnowledgeCatalog(models(SELF_DOCS), CTX, OPTS);
+
+    expect(result.success).toBe(true);
+    expect(result.warnings).toEqual(SELF_WARNINGS);
+    expect(result.linked).toBe(1);
+    expect(createLink.mock.calls.map(c => c[3])).toEqual(['hr-assignment']);
+  });
+
+  test('a push passes the warnings to onWarnings before the first write',
+       async () => {
+         const events: string[] = [];
+         stubClient({
+           create: (id) => {
+             events.push(`create:${id}`);
+             return ok({});
+           },
+         });
+
+         const result = await deployKnowledgeCatalog(models(SELF_DOCS), CTX, {
+           ...OPTS,
+           onWarnings: (warnings) => events.push(...warnings),
+         });
+
+         expect(result.success).toBe(true);
+         expect(events.slice(0, 3)).toEqual([...SELF_WARNINGS, 'create:hr']);
+       });
+
+  test('deployEmittedModels also passes them before the first write',
+       async () => {
+         const events: string[] = [];
+         stubClient({create: (id) => (events.push(`create:${id}`), ok({}))});
+         const resources = {
+           entries: [{name: entryName('hr'), entryType: MODEL_TYPE}],
+           entryLinks: [], ownedPrefixes: ['hr.'], warnings: [],
+         };
+
+         const result = await deployEmittedModels(
+             [{model: 'hr', resources}], ['a warning'], CTX,
+             {...OPTS, onWarnings: (warnings) => events.push(...warnings)});
+
+         expect(result.success).toBe(true);
+         expect(events).toEqual(['a warning', 'create:hr']);
+       });
 });
 
 

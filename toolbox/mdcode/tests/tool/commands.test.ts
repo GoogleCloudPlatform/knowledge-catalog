@@ -100,6 +100,44 @@ describe('kcV2Aspects', () => {
   });
 });
 
+describe('push prints Knowledge Catalog warnings', () => {
+  const RESULT = {
+    success: true, created: 1, updated: 0, deleted: 0, linked: 0, unlinked: 0,
+    warnings: ['a relationship is skipped'], plan: [],
+  };
+
+  test('before the first catalog write, once each', async () => {
+    writeWorkspace();
+    const events: string[] = [];
+    spyOn(console, 'warn').mockImplementation((m: any) => {
+      events.push(String(m));
+    });
+    spyOn(kc, 'deployKnowledgeCatalog')
+        .mockImplementation(async (_models, _ctx, opts) => {
+          opts.onWarnings?.(RESULT.warnings);
+          events.push('first catalog write');
+          return RESULT;
+        });
+
+    expect(await push({})).toBe(0);
+    expect(events).toEqual([
+      'Warning: a relationship is skipped',
+      'first catalog write',
+    ]);
+  });
+
+  test('under --validate-only, from the result', async () => {
+    writeWorkspace();
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue(RESULT);
+
+    expect(await push({validateOnly: true})).toBe(0);
+    expect(warn.mock.calls.map(c => String(c[0]))).toEqual([
+      'Warning: a relationship is skipped',
+    ]);
+  });
+});
+
 describe('v2Aspects forwarding', () => {
   test(
       'push forwards v2Aspects: false when KC_V2_ASPECTS is unset',
