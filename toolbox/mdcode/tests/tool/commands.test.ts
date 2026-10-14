@@ -16,6 +16,7 @@ import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as spannerLeg from '../../src/libts/semantic/deploy_spanner';
 import {SemanticModel} from '../../src/libts/semantic/ir';
 import * as kcEmit from '../../src/libts/semantic/knowledge_catalog';
+import * as loaderMod from '../../src/libts/semantic/loader';
 import * as osi from '../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
@@ -937,6 +938,11 @@ semantic_model:
       order.push('loadSqlEngine');
       return origLoad();
     });
+    const origLoadModels = loaderMod.loadSemanticModels;
+    spyOn(loaderMod, 'loadSemanticModels').mockImplementation((...args) => {
+      order.push('loadSemanticModels');
+      return origLoadModels(...args);
+    });
     const origExprRefs = validateMod.validateExpressionReferences;
     spyOn(validateMod, 'validateExpressionReferences')
         .mockImplementation((...args) => {
@@ -958,6 +964,7 @@ semantic_model:
         ]);
     expect(order).toEqual([
       'loadSqlEngine',
+      'loadSemanticModels',
       'validateExpressionReferences',
       'validatePushRequirements',
       'validateExpressionReferences',

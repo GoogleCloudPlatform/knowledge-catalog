@@ -95,7 +95,7 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
       oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
   if (!ast) return undefined;
   const columns: SqlColumn[] = [];
-  collectColumns(ast, columns, new Set());
+  collectColumns(ast, columns, new Set(), engineDialect === 'bigquery');
   return columns;
 }
 
@@ -134,6 +134,19 @@ const LEADING_DATE_PART_FUNCTIONS = new Set([
   'TIMESTAMPADD',
 ]);
 
+// In BigQuery (and Spanner), these put the unit last, as in
+// `DATE_DIFF(end_col, start_col, DAY)`, so their first argument is a column
+// even when its name matches a short unit such as `d`.
+const BIGQUERY_TRAILING_UNIT_FUNCTIONS = new Set(['DATE_ADD', 'DATE_DIFF']);
+
+// BigQuery functions whose last argument is a date part, as in
+// `DATE_TRUNC(d, MONTH)` or `DATE_DIFF(a, b, WEEK(MONDAY))`. Under the `SAFE.`
+// prefix the engine reads that date part as a column.
+const BIGQUERY_DATE_PART_FUNCTIONS = new Set([
+  'DATE_DIFF', 'DATETIME_DIFF', 'TIMESTAMP_DIFF', 'TIME_DIFF', 'DATE_TRUNC',
+  'DATETIME_TRUNC', 'TIMESTAMP_TRUNC', 'TIME_TRUNC', 'LAST_DAY',
+]);
+
 const DATE_PART_KEYWORDS = new Set([
   'YEAR',        'YEARS',        'YYYY',        'YY',          'QUARTER',
   'QUARTERS',    'QQ',           'Q',           'MONTH',       'MONTHS',
@@ -148,9 +161,12 @@ const DATE_PART_KEYWORDS = new Set([
 ]);
 
 function collectColumns(
-    node: unknown, out: SqlColumn[], bound: ReadonlySet<string>): void {
+    node: unknown, out: SqlColumn[], bound: ReadonlySet<string>,
+    bigQuery: boolean): void {
   if (Array.isArray(node)) {
-    for (const item of node) collectColumns(item, out, bound);
+    for (const item of node) {
+      collectColumns(item, out, bound, bigQuery);
+    }
     return;
   }
   if (!node || typeof node !== 'object') return;
@@ -192,7 +208,7 @@ function collectColumns(
       }
       return;
     }
-    collectColumns(obj.dot?.this, out, bound);
+    collectColumns(obj.dot?.this, out, bound, bigQuery);
     return;
   }
   if (keys.length === 1 && keys[0] === 'method_call') {
@@ -201,20 +217,32 @@ function collectColumns(
     // read. Any other receiver is the expression a chained call applies to, as
     // in `(orders.name).UPPER()` or `LOWER(orders.name).TRIM()`, and it is.
     const receiver = obj.method_call?.this;
-    if (!isNamePath(receiver)) collectColumns(receiver, out, bound);
-    collectColumns(obj.method_call?.args, out, bound);
+    if (!isNamePath(receiver)) {
+      collectColumns(receiver, out, bound, bigQuery);
+    }
+    collectColumns(obj.method_call?.args, out, bound, bigQuery);
     return;
   }
   if (keys.length === 1 && keys[0] === 'function') {
     const fnName = String(obj.function?.name ?? '').toUpperCase();
+    const hasLeadingUnit = LEADING_DATE_PART_FUNCTIONS.has(fnName) &&
+        !(bigQuery && BIGQUERY_TRAILING_UNIT_FUNCTIONS.has(fnName));
     const args: unknown[] =
         Array.isArray(obj.function?.args) ? obj.function.args : [];
     const col0 = (args[0] as any)?.column;
-    if (LEADING_DATE_PART_FUNCTIONS.has(fnName) && args.length >= 3 && col0 &&
+    if (hasLeadingUnit && args.length >= 3 && col0 &&
         col0.table == null && col0.name?.quoted === false &&
         typeof col0.name?.name === 'string' &&
         DATE_PART_KEYWORDS.has(col0.name.name.toUpperCase())) {
-      for (const arg of args.slice(1)) collectColumns(arg, out, bound);
+      for (const arg of args.slice(1)) {
+        collectColumns(arg, out, bound, bigQuery);
+      }
+      return;
+    }
+    if (bigQuery && fnName.startsWith('SAFE.') &&
+        BIGQUERY_DATE_PART_FUNCTIONS.has(fnName.slice('SAFE.'.length)) &&
+        args.length >= 2 && isDatePart(args[args.length - 1])) {
+      collectColumns(args.slice(0, -1), out, bound, bigQuery);
       return;
     }
   }
@@ -223,7 +251,7 @@ function collectColumns(
     for (const p of obj.lambda?.parameters ?? []) {
       if (typeof p?.name === 'string') next.add(p.name);
     }
-    collectColumns(obj.lambda?.body, out, next);
+    collectColumns(obj.lambda?.body, out, next, bigQuery);
     return;
   }
   if (keys.length === 1 && keys[0] === 'select') {
@@ -231,10 +259,10 @@ function collectColumns(
     const next = new Set(bound);
     for (const cte of select?.with?.ctes ?? []) {
       if (typeof cte?.alias?.name === 'string') next.add(cte.alias.name);
-      collectColumns(cte?.this, out, next);
+      collectColumns(cte?.this, out, next, bigQuery);
     }
     for (const expr of select?.from?.expressions ?? []) {
-      collectColumns(expr, out, next);
+      collectColumns(expr, out, next, bigQuery);
       addSourceAliases(expr, next);
     }
     // Inside a subquery with its own `FROM` clause, a bare identifier in the
@@ -244,7 +272,7 @@ function collectColumns(
     const target: SqlColumn[] = select?.from ? [] : out;
     for (const join of select?.joins ?? []) {
       addSourceAliases(join?.this, next);
-      collectColumns(join, target, next);
+      collectColumns(join, target, next, bigQuery);
     }
     for (const item of select?.expressions ?? []) {
       if (typeof item?.alias?.alias?.name === 'string') {
@@ -253,7 +281,7 @@ function collectColumns(
     }
     for (const [k, v] of Object.entries(select ?? {})) {
       if (k !== 'with' && k !== 'from' && k !== 'joins') {
-        collectColumns(v, target, next);
+        collectColumns(v, target, next, bigQuery);
       }
     }
     if (select?.from) {
@@ -261,7 +289,21 @@ function collectColumns(
     }
     return;
   }
-  for (const value of Object.values(obj)) collectColumns(value, out, bound);
+  for (const value of Object.values(obj)) {
+    collectColumns(value, out, bound, bigQuery);
+  }
+}
+
+// Whether `node` is a date part written as a bare name, such as `DAY`, or as
+// `WEEK(MONDAY)`.
+function isDatePart(node: any): boolean {
+  const col = node?.column;
+  if (col) {
+    return col.table == null && col.name?.quoted === false &&
+        typeof col.name?.name === 'string' &&
+        DATE_PART_KEYWORDS.has(col.name.name.toUpperCase());
+  }
+  return String(node?.function?.name ?? '').toUpperCase() === 'WEEK';
 }
 
 function addSourceAliases(source: any, bound: Set<string>): void {

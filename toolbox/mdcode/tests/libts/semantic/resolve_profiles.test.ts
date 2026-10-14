@@ -3822,4 +3822,77 @@ entities:
     expect(res.error).toContain("'customer'");
     expect(res.error).not.toContain("'orders'");
   });
+
+  // A logical model file implies no dialect, so an ANSI_SQL metric using
+  // BigQuery syntax (double-quoted DATE literal, hex literal, WITH OFFSET)
+  // cannot be parsed until the profile file binds its entity to BigQuery.
+  test('infers a metric entity again once the profile binds the entity source', () => {
+    const logicalDoc = {
+      name: 'sales.yaml',
+      text: `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: orders
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: order_date, expression: order_date}
+          - {name: flags, expression: flags}
+          - {name: items, expression: items}
+    metrics:
+      - name: recent_orders
+        expression: 'COUNTIF(orders.order_date >= DATE "2024-01-01")'
+      - name: flagged_orders
+        expression: 'SUM(orders.flags & 0x1)'
+      - name: item_positions
+        expression: '(SELECT SUM(off) FROM UNNEST(orders.items) AS i WITH OFFSET AS off)'
+`,
+    };
+    const res = profileForDocument(
+        logicalDoc,
+        [{name: 'prod', text: `name: prod\nentities:\n  - name: orders\n    source: "${BQ('orders')}"\n`}],
+        'prod');
+    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
+    expect(res.model.metrics?.map(m => [m.name, m.entity])).toEqual([
+      ['recent_orders', 'orders'],
+      ['flagged_orders', 'orders'],
+      ['item_positions', 'orders'],
+    ]);
+    expect(res.warnings).toEqual([]);
+  });
+
+  // The generic parser reads `"orders"."amount"` as a column, and BigQuery
+  // cannot parse it. Once the profile binds a BigQuery source, the metric has
+  // no entity, as when the model file names that source itself.
+  test('drops an inferred metric entity the profile dialect does not pin', () => {
+    const doc = {
+      name: 'sales.yaml',
+      text: `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: orders
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: amount, expression: amount}
+    metrics:
+      - name: total
+        expression: 'SUM("orders"."amount")'
+`,
+    };
+    const prod = `name: prod\nentities:\n  - name: orders\n    source: "${BQ('orders')}"\n`;
+    const loaded = loadSemanticModels([doc], {bindingOptional: true});
+    expect(loaded.models[0].model.metrics?.[0].entity).toBe('orders');
+    const res = profileForDocument(doc, [{name: 'prod', text: prod}], 'prod');
+    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
+    expect(res.model.metrics?.[0].entity).toBeUndefined();
+    expect(res.warnings).toContain(
+        "[sales.yaml] metric 'total': expression could not be parsed; entity " +
+        "inference was skipped (set 'entity' on the metric, or " +
+        "backtick-quote a reserved qualifier, such as `Date`.amount)");
+    // The YAML merge of the same profile builds the same model.
+    mergeProfileOntoDoc(doc.text, prod, 'prod');
+  });
 });

@@ -97,11 +97,18 @@ describe('columnReferences', () => {
           ]);
     }
     // BigQuery's `DATE_DIFF(end_col, start_col, DAY)` puts the column first,
-    // so a bare column name in the first argument is still collected.
+    // so a bare column name in the first argument is still collected, even when
+    // its name matches a short date-part keyword such as `d`.
     expect(columnReferences(
                'AVG(DATE_DIFF(end_col, orders.start_date, DAY))', 'BIGQUERY'))
         .toEqual([
           {name: 'end_col'},
+          {qualifier: 'orders', name: 'start_date'},
+        ]);
+    expect(columnReferences(
+               'AVG(DATE_DIFF(d, orders.start_date, DAY))', 'BIGQUERY'))
+        .toEqual([
+          {name: 'd'},
           {qualifier: 'orders', name: 'start_date'},
         ]);
   });
@@ -138,17 +145,58 @@ describe('columnReferences', () => {
           {qualifier: 'orders', name: 'items'},
           {qualifier: 'orders', name: 'items'},
         ]);
+    // A later FROM item can read the offset alias.
     expect(columnReferences(
-               '(SELECT orders.net_amount AS a FROM UNNEST(orders.items) GROUP BY a HAVING a > 0)',
+               '(SELECT SUM(j) FROM UNNEST(orders.items) AS i WITH OFFSET AS off, UNNEST([off]) AS j)',
+               'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'items'}]);
+    expect(columnReferences(
+               '(SELECT orders.net_amount AS a HAVING a > 0)',
+               'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'net_amount'}]);
+    expect(columnReferences(
+               '(SELECT STRUCT(orders.net_amount AS v) AS a FROM UNNEST(orders.items) HAVING a.v > 0)',
                'BIGQUERY'))
         .toEqual([
           {qualifier: 'orders', name: 'items'},
           {qualifier: 'orders', name: 'net_amount'},
         ]);
+    // Bound alias at the head of a struct path (both regular identifier and
+    // keyword-like identifier `Time`).
     expect(columnReferences(
-               'AGGREGATE(orders.items, 0, (acc, e) -> acc + e.price)',
+               '(SELECT s.addr.city FROM UNNEST(orders.items) AS s)',
+               'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'items'}]);
+    expect(columnReferences(
+               'AGGREGATE(orders.items, 0, (acc, Time) -> acc + Time.addr.zip)',
                'DATABRICKS'))
         .toEqual([{qualifier: 'orders', name: 'items'}]);
+    // Inner alias scoping: an inner subquery or lambda alias does not hide an
+    // outer `s.x` reference outside that scope.
+    expect(columnReferences(
+               '(SELECT SUM(s.x) FROM UNNEST(orders.items) AS s) + s.x',
+               'BIGQUERY'))
+        .toEqual([
+          {qualifier: 'orders', name: 'items'},
+          {qualifier: 's', name: 'x'},
+        ]);
+    expect(columnReferences(
+               'AGGREGATE(orders.items, 0, (acc, s) -> acc + s.price) + s.x',
+               'DATABRICKS'))
+        .toEqual([
+          {qualifier: 'orders', name: 'items'},
+          {qualifier: 's', name: 'x'},
+        ]);
+  });
+
+  test('SAFE.DATE_DIFF reads the same columns as DATE_DIFF', () => {
+    expect(columnReferences('SAFE.DATE_DIFF(orders.a, orders.b, DAY)', 'BIGQUERY'))
+        .toEqual(columnReferences('DATE_DIFF(orders.a, orders.b, DAY)', 'BIGQUERY'));
+    expect(columnReferences('SAFE.DATE_TRUNC(orders.d, MONTH)', 'BIGQUERY'))
+        .toEqual([{qualifier: 'orders', name: 'd'}]);
+    // Only the last argument is a date part, so a bare `d` before it is read.
+    expect(columnReferences('SAFE.DATE_DIFF(orders.a, d, DAY)', 'BIGQUERY'))
+        .toEqual(columnReferences('DATE_DIFF(orders.a, d, DAY)', 'BIGQUERY'));
   });
 
   test('reads the expression a chained function call applies to', () => {

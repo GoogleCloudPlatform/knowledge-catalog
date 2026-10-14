@@ -150,11 +150,12 @@ export function validatePushRequirements(
     errors.push(...validateInheritance([{document, model}]));
     errors.push(...validateColumnsAndRelationships(model, document));
     errors.push(...relationshipKeyErrors(model, document));
-    const exprErrors = validateExpressionReferences(
-        [{document, model}], !!opts.fieldsPruned, opts.warnings);
-    errors.push(...exprErrors);
+    const flaggedMetrics = new Set<string>();
+    errors.push(...validateExpressionReferences(
+        [{document, model}], !!opts.fieldsPruned, opts.warnings,
+        flaggedMetrics));
     if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
-      errors.push(...validateBigQueryMetrics(model, document, exprErrors));
+      errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -1047,10 +1048,11 @@ function relationshipKeyErrors(
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
 //
 // Exported so `commands.ts` can also run it on the unpruned model before
-// `pruneUnavailable` drops unbound fields and metrics on a graph push.
+// `pruneUnavailable` drops unbound fields and metrics on a graph push. When
+// given, `flaggedMetrics` collects the name of each metric it reports.
 export function validateExpressionReferences(
-    models: LoadedModel[], fieldsPruned = false,
-    warnings: string[] = []): string[] {
+    models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
+    flaggedMetrics?: Set<string>): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     const fieldsByEntity = ifResolvable(() => declaredFields(model));
@@ -1122,6 +1124,7 @@ export function validateExpressionReferences(
     }
 
     for (const metric of model.metrics ?? []) {
+      const before = errors.length;
       const sources = expressionSources(metric);
       const allColumns: SqlColumn[] = [];
       const unreadDialects: string[] = [];
@@ -1151,8 +1154,7 @@ export function validateExpressionReferences(
       } else if (
           !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
           !authored && reached.length > 1) {
-        const isVanilla = isVanillaModel(model);
-        const fixHint = isVanilla ?
+        const fixHint = model.version === '0.2.0.dev0' ?
             `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
             `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
             `metric) or scope its expression to one entity.` :
@@ -1234,6 +1236,7 @@ export function validateExpressionReferences(
           }
         }
       }
+      if (errors.length > before) flaggedMetrics?.add(metric.name);
     }
   }
   return errors;
@@ -1247,12 +1250,12 @@ export function validateExpressionReferences(
 // metrics that `validateExpressionReferences` has not already flagged.
 function validateBigQueryMetrics(
     model: SemanticModel, document: string,
-    alreadyReported: ReadonlyArray<string>): string[] {
+    alreadyFlagged: ReadonlySet<string>): string[] {
   const errors: string[] = [];
   const entityNames = (model.entities ?? []).map(e => e.name);
   for (const metric of model.metrics ?? []) {
+    if (alreadyFlagged.has(metric.name)) continue;
     const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    if (alreadyReported.some(e => e.startsWith(prefix))) continue;
     if (metric.expression === undefined &&
         metric.importedExpression !== undefined) {
       errors.push(
@@ -1282,18 +1285,6 @@ function validateBigQueryMetrics(
     }
   }
   return errors;
-}
-
-// True when `model` was loaded from a vanilla `0.2.0.dev0` document (in which
-// top-level `entity` on a metric is rejected by the loader, and
-// custom_extensions carries a GOOGLE block instead).
-function isVanillaModel(model: SemanticModel): boolean {
-  if (model.version !== undefined) return model.version === '0.2.0.dev0';
-  const hasGoogleBlock = (exts?: ReadonlyArray<{vendorName: string}>) =>
-      (exts ?? []).some(e => e.vendorName === 'GOOGLE');
-  return !model.deployments &&
-      (hasGoogleBlock(model.customExtensions) ||
-       (model.metrics ?? []).some(m => hasGoogleBlock(m.customExtensions)));
 }
 
 // In a vanilla 0.2.0.dev0 document a metric states its anchor inside its

@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, halfBoundJoinMessage, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, halfBoundJoinMessage, inferMetricEntities, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
 import {InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -898,7 +898,7 @@ function firstUnboundReferenced(columns: SqlColumn[], unbound: Set<string>):
 // holds it, the imported dialect for the imported text, and BigQuery
 // otherwise, since the loader fills `expression` from a `BIGQUERY` or
 // `ANSI_SQL` entry.
-export function dialectOf(
+function dialectOf(
     f: Pick<Field, 'dialects'|'importedExpression'|'importedDialect'>,
     text: string): string {
   const entry = f.dialects?.find(d => d.expression === text);
@@ -1511,6 +1511,24 @@ function applyBindings(
           [...new Set([...(out.excludedMetrics ?? []), ...names])];
     }
   }
+  // The load read each ANSI_SQL metric in the dialect the model file's sources
+  // imply, or with the generic parser when they imply none. The profile's
+  // sources can imply another dialect, so each metric with no authored entity
+  // is inferred again, as a load of the model file with these sources would
+  // infer it. A metric whose new reading does not pin exactly one entity has
+  // none.
+  const entityNames = (out.entities ?? []).map(e => e.name);
+  const impliedDialect = sourcesDialect(out);
+  for (const m of out.metrics ?? []) {
+    if (m.authoredEntity !== undefined) continue;
+    const {referenced} = inferMetricEntities(
+        m, entityNames, preferred, impliedDialect, out.version);
+    if (referenced.length === 1) {
+      m.entity = referenced[0];
+    } else {
+      delete m.entity;
+    }
+  }
   return {model: out, errors};
 }
 
@@ -2044,7 +2062,7 @@ export function validateProfileCompleteness(
     const metricExcluded = new Set(profile.metricsExclude ?? []);
     for (const m of baseModel.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
-      const read: SqlColumn[][] = [];
+      const read: Array<ReadonlyArray<SqlColumn>> = [];
       for (const text of textsFor(m as Field, dialect)) {
         const columns = columnReferences(text.text, text.dialect);
         if (columns) {

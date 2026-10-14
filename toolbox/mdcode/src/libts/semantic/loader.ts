@@ -1223,7 +1223,7 @@ function keyWarning(entity: Pick<Entity, 'name'|'keys'|'abstract'>):
 // parsed or when it states no `entity` and its expressions name none. An
 // authored anchor (Google flavor only) settles which entity the metric belongs
 // to, so a `COUNT(*)` with one is not warned about.
-function metricEntityWarning(
+export function inferMetricEntities(
     metric: Pick<
         Metric,
         'name'|'authoredEntity'|'expression'|'importedExpression'|
@@ -1292,7 +1292,7 @@ export function entityAndMetricWarnings(
   for (const m of model.metrics ?? []) {
     const w = expressionWarning(m, `metric '${m.name}'`, preferred);
     if (w) out.push(w);
-    const {warning: mw} = metricEntityWarning(
+    const {warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     if (mw) out.push(mw);
   }
@@ -1690,7 +1690,7 @@ function convertMetric(
   const ew = expressionWarning({dialects, stringForm}, ctx, dialect);
   if (ew) warnings.push(ew);
   // Infer referenced entities across all dialect entries of the metric.
-  const {referenced, warning: mw} = metricEntityWarning(
+  const {referenced, warning: mw} = inferMetricEntities(
       {
         name: mt.name,
         authoredEntity: mt.entity,

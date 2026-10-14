@@ -1,19 +1,14 @@
 // Behavior spec for the push-time validation gate
 // (src/libts/semantic/validate.ts).
 
-import {beforeAll, describe, expect, test} from 'bun:test';
+import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
-import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validateExpressionReferences, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
-
-beforeAll(async () => {
-  await loadSqlEngine();
-});
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
 const BQ_TARGET =

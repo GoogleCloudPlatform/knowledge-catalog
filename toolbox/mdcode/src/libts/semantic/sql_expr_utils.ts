@@ -100,6 +100,11 @@ export function keysCoveredByColumns(
       to as string[], keys[0] as string[], keys.slice(1) as string[][]);
 }
 
+// Results of columnReferences by dialect and text, so the checks one push
+// runs read each text once. When full, the oldest entry goes.
+const MAX_COLUMN_CACHE_SIZE = 65536;
+const COLUMN_CACHE = new Map<string, ReadonlyArray<SqlColumn>|undefined>();
+
 // Every column an expression reads, with the qualifier written before it, in
 // the order written, or undefined when the SQL parser cannot read the
 // expression in `dialect`, one of the dialect names a dialect list uses. The
@@ -109,8 +114,15 @@ export function keysCoveredByColumns(
 // as its first two parts: `orders.shipping_address.city` reads
 // `shipping_address` of `orders`.
 export function columnReferences(expression: string, dialect: string):
-    SqlColumn[]|undefined {
-  return sqlColumns(expression, dialect);
+    ReadonlyArray<SqlColumn>|undefined {
+  const key = `${dialect.toUpperCase()}\0${expression}`;
+  if (COLUMN_CACHE.has(key)) return COLUMN_CACHE.get(key);
+  const cols = sqlColumns(expression, dialect);
+  if (COLUMN_CACHE.size >= MAX_COLUMN_CACHE_SIZE) {
+    COLUMN_CACHE.delete(COLUMN_CACHE.keys().next().value!);
+  }
+  COLUMN_CACHE.set(key, cols);
+  return cols;
 }
 
 // Reads the columns of `text` in `dialect`. An `ANSI_SQL` text is read in the
@@ -121,7 +133,7 @@ export function columnReferences(expression: string, dialect: string):
 // date part or a double-quoted string literal) is filtered out.
 export function columnsForSource(
     text: string, dialect: string,
-    impliedDialect?: string): SqlColumn[]|undefined {
+    impliedDialect?: string): ReadonlyArray<SqlColumn>|undefined {
   if (dialect === 'ANSI_SQL' && impliedDialect) {
     return columnReferences(text, impliedDialect);
   }
@@ -153,7 +165,8 @@ export function entitiesReached(
 
 // The fields `columns` read on `entityName`, written `entityName.field`,
 // deduplicated in first-seen order. Matching is case-sensitive.
-export function fieldsReadOn(columns: SqlColumn[], entityName: string):
+export function fieldsReadOn(
+    columns: ReadonlyArray<SqlColumn>, entityName: string):
     string[] {
   const fields: string[] = [];
   for (const c of columns) {

@@ -302,16 +302,16 @@ function readMetric(
   if (data.expression !== undefined) metric.expression = data.expression;
   const exprForRefs = data.expression ?? '';
   const cols = exprForRefs ? columnReferences(exprForRefs, 'BIGQUERY') : [];
-  if (cols === undefined) {
+  const referenced = entitiesReached(cols ?? [], entityNames);
+  const persistedEntity =
+      typeof data.entity === 'string' && data.entity !== '' ? data.entity :
+                                                              undefined;
+  if (cols === undefined && persistedEntity === undefined) {
     warnings.push(
         `metric '${name}': expression could not be parsed; entity inference ` +
         `was skipped (set 'entity' on the metric, or backtick-quote a ` +
         `reserved qualifier, such as \`Date\`.amount)`);
   }
-  const referenced = entitiesReached(cols ?? [], entityNames);
-  const persistedEntity =
-      typeof data.entity === 'string' && data.entity !== '' ? data.entity :
-                                                              undefined;
   if (referenced.length === 1) {
     // The expression pins exactly one known entity; re-derive it (as the loader
     // does) so the attach entity stays consistent with the reconstructed set.

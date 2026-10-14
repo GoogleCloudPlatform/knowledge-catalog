@@ -883,6 +883,15 @@ describe('metric attach entity is re-derived from the expression', () => {
           "was skipped (set 'entity' on the metric, or backtick-quote a " +
           "reserved qualifier, such as `Date`.amount)",
         ]);
+
+        // When the pulled aspect already carries `entity`, entity inference is
+        // not needed to place the metric, so no warning is emitted.
+        const withEntity = roundTripFull({
+          ...model,
+          metrics: [{name: 'broken', entity: 'orders', expression: 'SUM(orders.amt'}],
+        });
+        expect(withEntity.models[0].metrics[0].entity).toBe('orders');
+        expect(withEntity.warnings).toEqual([]);
       });
 });
 
