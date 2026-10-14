@@ -12,7 +12,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {ANNOTATION_ASPECT_IDS} from '../../../src/libts/semantic/kc_custom_types';
 import {generateCatalogResources, physicalBindings} from '../../../src/libts/semantic/knowledge_catalog';
-import {metricQueries, readThroughTrailer, splitQueryTrailer, splitReadThroughTrailer, withQueryTrailer} from '../../../src/libts/semantic/read_trailers';
+import {metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer, withQueryTrailer} from '../../../src/libts/semantic/read_trailers';
 
 const OPTS = {project: 'dest', location: 'us', entryGroup: 'eg'};
 const ALL = [...ANNOTATION_ASPECT_IDS];
@@ -152,17 +152,51 @@ describe('query paragraph (metric)', () => {
   });
 });
 
+describe('relationships paragraph (entity)', () => {
+  const phys = physicalBindings(shop());
+  const entity = (n: string) => shop().entities.find(e => e.name === n)!;
+
+  test('each edge from and to the entity, with node-view join columns', () => {
+    // Order.customerId is bound to column customer_ref, but its node view
+    // column is customer_id (snake_case of the field).
+    expect(relationshipItems(entity('Order'), shop(), phys))
+        .toEqual(['placedBy → Customer (customer_id = customer_id)']);
+    expect(relationshipItems(entity('Customer'), shop(), phys))
+        .toEqual(['placedBy ← Order (customer_id = customer_id)']);
+    expect(relationshipItems(entity('Product'), shop(), phys)).toEqual([]);
+  });
+
+  test('a paragraph that does not fit is cut, saying how many are left', () => {
+    const items = ['a → B (x = y)', 'c → D (x = y)', 'e → F (x = y)'];
+    expect(relationshipsTrailer(items, 500))
+        .toBe('Relationships: a → B (x = y); c → D (x = y); e → F (x = y).');
+    expect(relationshipsTrailer(items, 45))
+        .toBe('Relationships: a → B (x = y); … 2 more.');
+    expect(relationshipsTrailer(items, 10)).toBeUndefined();
+    expect(relationshipsTrailer([], 500)).toBeUndefined();
+  });
+
+  test('peel removes only a well-formed last paragraph', () => {
+    const t = relationshipsTrailer(['placedBy → Customer (customer_id = customer_id)'], 500)!;
+    expect(splitRelationshipsTrailer(`A purchase.\n\n${t}`)).toEqual({rest: 'A purchase.'});
+    expect(splitRelationshipsTrailer('A purchase.\n\nRelationships: see the ERD.'))
+        .toEqual({rest: 'A purchase.\n\nRelationships: see the ERD.'});
+  });
+});
+
 describe('on the published entries', () => {
   const {entries, entryLinks} =
       generateCatalogResources(shop(), {...OPTS, customAspects: ALL});
 
-  test('a bound entity ends with Read through (before Hydration)', () => {
+  test('a bound entity ends with Read through and Relationships (before Hydration)', () => {
     expect(descriptionOf(entries, 'shop.entities.Customer')).toBe(
         'A buyer.\n\nRead through: node view `data-proj.sem.customer`; ' +
-        'graph `data-proj.sem.shop_graph`, node Customer.');
+        'graph `data-proj.sem.shop_graph`, node Customer.\n\n' +
+        'Relationships: placedBy ← Order (customer_id = customer_id).');
     const order = descriptionOf(entries, 'shop.entities.Order')!.split('\n\n');
     expect(order[1]).toMatch(/^Read through: node view `data-proj\.sem\.order`/);
-    expect(order[2]).toMatch(/^Hydration: /);
+    expect(order[2]).toBe('Relationships: placedBy → Customer (customer_id = customer_id).');
+    expect(order[3]).toMatch(/^Hydration: /);
   });
 
   test('a metric ends with its query', () => {

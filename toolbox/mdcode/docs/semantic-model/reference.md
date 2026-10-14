@@ -853,11 +853,12 @@ the entry:
 
 | Entry | Paragraph | Example |
 |---|---|---|
-| Bound entity | `Read through:` its node view (its table under `mode: direct`), its graph and node label, just before `Hydration:` | ``Read through: node view `p.d.order`; graph `p.d.shop_graph`, node Order.`` |
+| Bound entity | `Read through:` its node view (its table under `mode: direct`), its graph and node label | ``Read through: node view `p.d.order`; graph `p.d.shop_graph`, node Order.`` |
+| Bound entity | `Relationships:` every edge from it (`→`) and to it (`←`) with the join columns of the views both ends are read through, this entity's column first; a many-to-many edge names its junction table. Sized to keep the description within Dataplex's 2,000 characters (`… N more`), just before `Hydration:` | `Relationships: placedBy → Customer (customer_id = customer_id).` |
 | Metric | `Query:` its measures composed as its expression over `GRAPH_EXPAND` of the graph that holds them (or its expression over its fallback view), last | `Query: SELECT AGG(Order_revenue) FROM GRAPH_EXPAND("p.d.shop_graph__order_metrics")` |
 
 The query runs as written; to slice it, add `WHERE` and `GROUP BY` over the
-same `GRAPH_EXPAND`'s `<NodeTable>_<field>` columns. Both paragraphs are
+same `GRAPH_EXPAND`'s `<NodeTable>_<field>` columns. The paragraphs are
 derived from the model and its deployment target, so `pull` drops them and the
 next push writes them again.
 

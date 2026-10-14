@@ -667,8 +667,11 @@ join and the formula come from the model rather than from whoever writes the
 query, so the correct answer is the default one.
 
 > **Tips.** Use `--nouse_cache` — `GRAPH_EXPAND` result caches are not
-> invalidated by graph edits. To see the exact output column names for a graph:
-> `DECLARE s STRING; CALL BQ.SHOW_GRAPH_EXPAND_SCHEMA("$PROJECT.$DATASET.$GRAPH", s); SELECT s;`
+> invalidated by graph edits. Output columns are `<node>_<field>` and
+> `<node>_<measure>`. Don't try to list them with
+> `BQ.SHOW_GRAPH_EXPAND_SCHEMA` or `SELECT *`: both fail on a graph that has
+> measures. Each metric's Knowledge Catalog entry ends with its ready-to-run
+> query (see [Consume with an agent](#consume-with-an-agent)).
 
 ### Query Semantic Model: GQL
 
@@ -734,9 +737,9 @@ pushed by kcmd. It names no entity, table, metric or project:
 4. **Answer** — cite the metric or entity used and any instruction that shaped
    the query.
 
-Its budget is at most three catalog calls and three queries per question. When
-the agent is unsure of a `GRAPH_EXPAND` column name, it calls
-`BQ.SHOW_GRAPH_EXPAND_SCHEMA` (one of its three queries) rather than guessing.
+Its budget is at most three catalog calls and three queries per question. It
+takes `GRAPH_EXPAND` column names from the `<node>_<field>` rule and the schema
+`lookup_context` returns, and it never probes the graph.
 Put the skill wherever your agent harness loads skills from, and connect the
 harness to the Knowledge Catalog MCP server and BigQuery. Then ask it "revenue
 by customer". It should return the `290 / 40` result above, not the fan-out

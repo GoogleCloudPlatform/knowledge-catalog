@@ -84,7 +84,7 @@ import {AnnotationTarget, EntityPhysical, entityAnnotationAspects, junctionAnnot
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
 import {AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID} from './kc_custom_types';
 import {lowerNodeViews} from './node_views';
-import {metricQueries, readThroughTrailer, withQueryTrailer} from './read_trailers';
+import {DESCRIPTION_MAX, metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, withQueryTrailer} from './read_trailers';
 import {entityTrailers, withUnitTrailer} from './units_history';
 import {derivedTrailers} from './derived_relationships';
 import {generatesVocabularyView, membersTrailer, vocabularyViewName} from './vocabulary';
@@ -246,7 +246,9 @@ export function generateCatalogResources(
       parentEntry: modelEntryName,
       entrySource: source(
           entity.name,
-          entityDescription(entity, model, physical.get(entity.name))),
+          entityDescription(
+              entity, model, physical.get(entity.name),
+              readable ? relationshipItems(entity, model, physical) : [])),
       // required_aspects: semantic-entity AND the built-in schema; plus the
       // built-in guidelines aspect when the entity carries ai_context
       // instructions.
@@ -755,9 +757,9 @@ export function oneParagraph(text: string): string {
 // the definition trailers -- a fixed order, so pull peels them off from the end
 // in reverse.
 function entityDescription(
-    entity: Entity, model?: SemanticModel,
-    physical?: EntityPhysical): string|undefined {
-  const parts = [
+    entity: Entity, model?: SemanticModel, physical?: EntityPhysical,
+    relItems: string[] = []): string|undefined {
+  const head = [
     entity.description,
     entity.extends?.length ?
         `${SPECIALIZES_PREFIX}${entity.extends.join(', ')}.` :
@@ -778,16 +780,24 @@ function entityDescription(
     membersTrailer(entity),
     // `Read through: …`: the node view (or table) and graph node the entity
     // is read through, derived from the deployment target, so pull peels it
-    // right after the hydration paragraph and drops it (read_trailers.ts).
+    // right after the relationships paragraph and drops it (read_trailers.ts).
     readThroughTrailer(entity, physical),
-    // Hydration: how the binding reshapes the source (and `mode: direct`),
-    // last of all, so pull peels it first (see hydration_kc.ts).
-    hydrationTrailer(
-        entity,
-        model ? field => resolveRelationship(model, entity, field)
-                             ?.destination.entity :
-                undefined),
   ].filter((p): p is string => !!p);
+  // Hydration: how the binding reshapes the source (and `mode: direct`),
+  // last of all, so pull peels it first (see hydration_kc.ts).
+  const hydration = hydrationTrailer(
+      entity,
+      model ? field => resolveRelationship(model, entity, field)
+                           ?.destination.entity :
+              undefined);
+  // `Relationships: …`: every edge to and from the entity with its join
+  // columns, derived from the model, between Read through and Hydration; it
+  // takes only the room the rest of the description leaves (read_trailers.ts).
+  const used = [...head, hydration].filter(p => !!p).join('\n\n').length;
+  const relationships =
+      relationshipsTrailer(relItems, DESCRIPTION_MAX - used - 2);
+  const parts = [...head, relationships, hydration].filter(
+      (p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }
 

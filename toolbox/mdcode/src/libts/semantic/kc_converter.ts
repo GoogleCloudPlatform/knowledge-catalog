@@ -82,7 +82,7 @@ import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
 import {splitDerivedTrailers} from './derived_relationships';
 import {splitMembersTrailer} from './vocabulary';
 import {splitHydrationTrailer} from './hydration_kc';
-import {splitQueryTrailer, splitReadThroughTrailer} from './read_trailers';
+import {splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer} from './read_trailers';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -257,12 +257,14 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 
   // Publish appends the Specializes paragraph then the Abstract marker (or the
   // definition trailers), then the K7 Grain / History paragraphs, then the K3
-  // Members paragraph, then the derived Read through paragraph, then the
-  // Hydration paragraph, to the entity description
+  // Members paragraph, then the derived Read through and Relationships
+  // paragraphs, then the Hydration paragraph, to the entity description
   // (knowledge_catalog.entityDescription); peel them off in reverse. Read
-  // through is recomputed by every push, so it is dropped.
+  // through and Relationships are recomputed by every push, so they are
+  // dropped.
   const hyd = splitHydrationTrailer(entry.entrySource?.description);
-  const k3 = splitMembersTrailer(splitReadThroughTrailer(hyd.rest).rest);
+  const k3 = splitMembersTrailer(
+      splitReadThroughTrailer(splitRelationshipsTrailer(hyd.rest).rest).rest);
   const k7 = splitGrainHistoryTrailers(k3.rest);
   const defined = splitDefinitionTrailer(k7.rest);
   const trailers = splitEntityTrailers(defined.rest);

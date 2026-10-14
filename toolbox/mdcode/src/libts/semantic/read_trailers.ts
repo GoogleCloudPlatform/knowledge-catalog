@@ -24,11 +24,96 @@
 // and drops them, and the next push writes them again.
 
 import {googleDeploymentTargets} from './deployment_target';
+import {snakeCase} from './generated_views';
 import {Entity, SemanticModel} from './ir';
 import {EntityPhysical} from './kc_annotations';
 import {renderComposition} from './metric_composition';
 import {MetricPlacement, planMetricGraphs} from './metric_slices';
 import {lowerNodeViews} from './node_views';
+
+/** The prefix of an entity's relationships paragraph. */
+export const RELATIONSHIPS_PREFIX = 'Relationships: ';
+
+/** Dataplex caps an entry's description (entrySource.description). */
+export const DESCRIPTION_MAX = 2000;
+
+// The column a reader joins on for one of a relationship's columns. Under a
+// node view it is the view column of the field the relationship column names
+// (snake_case of the field; the relationship may name the field or the column
+// the field is bound to). Without one it is the table column itself.
+function joinColumn(entity: Entity, column: string, nodeView: boolean): string {
+  const bare = column.trim();
+  const field = entity.fields.find(f => f.name === bare) ??
+      entity.fields.find(f => (f.expression ?? '').trim() === bare);
+  if (nodeView) return field ? snakeCase(field.name) : bare;
+  const expr = (field?.expression ?? '').trim();
+  return field?.name === bare && /^[A-Za-z_][A-Za-z0-9_]*$/.test(expr) ? expr :
+                                                                        bare;
+}
+
+/**
+ * The entity's relationships, one item per edge: `<edge> → <Entity> (<col> =
+ * <col>)` for each edge from it and `<edge> ← <Entity> (…)` for each edge to
+ * it, with the join columns of the views (or tables) both ends are read
+ * through, this entity's column first. A many-to-many edge names its junction
+ * table; a derived edge the relationships it is derived through. Abstract
+ * relationships (no join) and edges to an entity with no physical binding are
+ * left out. Empty for an entity with no physical binding.
+ */
+export function relationshipItems(
+    entity: Entity, model: SemanticModel,
+    physical: Map<string, EntityPhysical>): string[] {
+  if (!physical.has(entity.name)) return [];
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const items: string[] = [];
+  for (const rel of model.relationships ?? []) {
+    if (rel.abstract) continue;
+    const out = rel.source.entity === entity.name;
+    const inc = rel.destination.entity === entity.name;
+    if (!out && !inc) continue;
+    const src = byName.get(rel.source.entity);
+    const dst = byName.get(rel.destination.entity);
+    if (!src || !dst || !physical.has(src.name) || !physical.has(dst.name)) {
+      continue;
+    }
+    const srcView = !!physical.get(src.name)!.nodeView;
+    const dstView = !!physical.get(dst.name)!.nodeView;
+    const join = (fromSrc: boolean): string => {
+      if (rel.association) {
+        return `many-to-many through \`${rel.association.dataSource}\``;
+      }
+      if (rel.via?.length) return `derived through ${rel.via.join(', ')}`;
+      const s = rel.source.columns ?? [];
+      const d = rel.destination.columns ?? [];
+      return s.map((c, i) => {
+                const sc = joinColumn(src, c, srcView);
+                const dc = joinColumn(dst, d[i] ?? '', dstView);
+                return fromSrc ? `${sc} = ${dc}` : `${dc} = ${sc}`;
+              })
+          .join(' and ');
+    };
+    if (out) items.push(`${rel.name} → ${dst.name} (${join(true)})`);
+    if (inc) items.push(`${rel.name} ← ${src.name} (${join(false)})`);
+  }
+  return items;
+}
+
+/**
+ * The relationships paragraph, at most `budget` characters: as many items as
+ * fit, then `… N more`. Undefined when there are none or none fits.
+ */
+export function relationshipsTrailer(items: string[], budget: number): string|
+    undefined {
+  if (!items.length) return undefined;
+  const all = `${RELATIONSHIPS_PREFIX}${items.join('; ')}.`;
+  if (all.length <= budget) return all;
+  for (let n = items.length - 1; n > 0; n--) {
+    const cut = `${RELATIONSHIPS_PREFIX}${items.slice(0, n).join('; ')}; … ${
+        items.length - n} more.`;
+    if (cut.length <= budget) return cut;
+  }
+  return undefined;
+}
 
 /** The prefix of an entity's read-through paragraph. */
 export const READ_THROUGH_PREFIX = 'Read through: ';
@@ -170,4 +255,15 @@ export function splitReadThroughTrailer(text: string|undefined):
 export function splitQueryTrailer(text: string|undefined):
     {rest: string|undefined} {
   return peel(text, QUERY);
+}
+
+const RELATIONSHIPS = /^Relationships: .*\S+ [→←] \S+ \(.*\)(?:; … \d+ more)?\.$/;
+
+/**
+ * Peels the relationships paragraph (see relationshipsTrailer) off a pulled
+ * entity description. Text without one is returned untouched.
+ */
+export function splitRelationshipsTrailer(text: string|undefined):
+    {rest: string|undefined} {
+  return peel(text, RELATIONSHIPS);
 }
