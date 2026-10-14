@@ -390,6 +390,16 @@ whose operands resolve to the same SQL share one derived property. (Through a
 node view, the column a field is bound to is its view column,
 `snake_case(<field>)`.)
 
+**Measure names.** A measure is named like its metric, so a reader selects
+`AGG(<NodeTable>_<metric>)`, with one exception. When the metric's name is also
+a column of the node table's backing table, the measure is named
+`<metric>__measure`. That happens, for example, with a metric `won_amount =
+SUM(Opportunity.wonAmount)` read through a node view whose column is
+`won_amount`. BigQuery accepts a measure named like a backing column, but then
+fails every query on the graph, GQL and `GRAPH_EXPAND` alike, with an internal
+error. Push warns once per renamed metric, and the metric's `Query:` paragraph
+in Knowledge Catalog always names the measure as deployed.
+
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).

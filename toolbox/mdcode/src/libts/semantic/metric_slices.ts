@@ -124,6 +124,12 @@ export type MetricPlacement = {
   decomposition: MetricDecomposition;
   /** The node table each component's MEASURE is declared on. */
   homes: string[];
+  /**
+   * Each component's MEASURE name: the component's own name, or
+   * `<name>__measure` when that is a column of its node table (see
+   * bigquery.ts measureNameFor). A reader selects AGG(<home>_<measure>).
+   */
+  measures: string[];
 }|{
   kind: 'view';
   ref: string;
@@ -368,6 +374,7 @@ export function planMetricGraphs(
   }
   const g = graphView(lowered, resolved);
   const mainMeasures = new Map(main.measures.map(m => [m.metric, m.nodeTable]));
+  const mainMeasureNames = new Map(main.measures.map(m => [m.metric, m.measure]));
   const mainWarnings = new Set(main.warnings);
 
   const entityNames = (lowered.entities ?? []).map(e => e.name);
@@ -411,7 +418,8 @@ export function planMetricGraphs(
   for (const fact of [...groups.keys()].sort()) {
     const slice = buildSlice(
         fact, groups.get(fact)!, {g, lowered, target, max, metricsByName,
-                                  mainMeasures, mainWarnings, taken, plan});
+                                  mainMeasures, mainMeasureNames, mainWarnings,
+                                  taken, plan});
     for (const f of slice.rejected) fallbacks.push(f);
   }
 
@@ -472,6 +480,8 @@ interface SliceContext {
   max: number;
   metricsByName: Map<string, Metric>;
   mainMeasures: Map<string, string>;
+  /** Metric -> its measure's name on the main graph (see measureNameFor). */
+  mainMeasureNames: Map<string, string>;
   mainWarnings: Set<string>;
   taken: Set<string>;
   plan: MetricGraphPlan;
@@ -526,6 +536,8 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
         fact,
         decomposition: c.d,
         homes: [c.d.components[0].entity],
+        measures: [sc.mainMeasureNames.get(c.d.components[0].name) ??
+                   c.d.components[0].name],
       });
     }
     return {rejected};
@@ -548,12 +560,13 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
       }
       return {rejected};
     }
-    const placed = new Map(gen.measures.map(m => [m.metric, m.nodeTable]));
+    const placed = new Map(gen.measures.map(m => [m.metric, m]));
     const failed = accepted.filter(
-        c => c.d.components.some(comp => placed.get(comp.name) !== comp.entity));
+        c => c.d.components.some(comp => placed.get(comp.name)?.nodeTable !== comp.entity));
     if (failed.length) {
       for (const c of failed) {
-        const missing = c.d.components.find(comp => placed.get(comp.name) !== comp.entity)!;
+        const missing = c.d.components.find(
+            comp => placed.get(comp.name)?.nodeTable !== comp.entity)!;
         const why = gen.warnings.find(w => w.startsWith(`metric '${missing.name}'`));
         rejected.push({
           metric: c.metric,
@@ -584,7 +597,7 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
       labels: labelNames(model, tree),
       omitted: omitted.sort(),
       metrics: accepted.map(c => c.metric.name).sort(),
-      measures: placed,
+      measures: new Map(gen.measures.map(m => [m.measure, m.nodeTable])),
       model,
       ddl: gen.ddl,
     });
@@ -597,6 +610,7 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
         fact,
         decomposition: c.d,
         homes: c.d.components.map(comp => comp.entity),
+        measures: c.d.components.map(comp => placed.get(comp.name)!.measure),
       });
     }
     return {rejected};

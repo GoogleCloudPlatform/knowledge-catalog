@@ -28,6 +28,7 @@ import {Entity, SemanticModel} from './ir';
 import {EntityPhysical} from './kc_annotations';
 import {renderComposition} from './metric_composition';
 import {MetricPlacement, planMetricGraphs} from './metric_slices';
+import {lowerNodeViews} from './node_views';
 
 /** The prefix of an entity's read-through paragraph. */
 export const READ_THROUGH_PREFIX = 'Read through: ';
@@ -74,9 +75,9 @@ export function readThroughTrailer(
 export function placementQuery(placement: MetricPlacement): string|undefined {
   switch (placement.kind) {
     case 'graph': {
-      const {decomposition: d, homes} = placement;
+      const {decomposition: d, homes, measures} = placement;
       const select = renderComposition(
-          d.template, i => `AGG(${homes[i]}_${d.components[i].name})`);
+          d.template, i => `AGG(${homes[i]}_${measures[i]})`);
       return oneLine(
           `SELECT ${select} FROM GRAPH_EXPAND("${placement.ref}")`);
     }
@@ -105,7 +106,16 @@ export function metricQueries(model: SemanticModel): Map<string, string> {
   }
   if (!target) return out;
   try {
-    const plan = planMetricGraphs(model, {
+    // Plan on the model the BigQuery push deploys: node-view lowered
+    // (deploy_bigquery.ts), so measure names and placements match.
+    let graphModel = model;
+    try {
+      graphModel = lowerNodeViews(
+          model, {project: target.project, dataset: target.dataset}, []).model;
+    } catch {
+      // A model the lowering cannot plan binds directly; the graph push warns.
+    }
+    const plan = planMetricGraphs(graphModel, {
       project: target.project,
       dataset: target.dataset,
       graphName: target.graphName,

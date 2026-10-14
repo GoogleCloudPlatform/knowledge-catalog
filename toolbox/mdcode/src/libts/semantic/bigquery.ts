@@ -46,10 +46,12 @@ export interface GenerateResult {
   // must exist before `ddl` runs (see deploy_bigquery.ts). Absent when none.
   views?: GeneratedView[];
   // The metrics emitted as MEASUREs, each with the node table (entity) whose
-  // label carries it -- what a GRAPH_EXPAND reader selects as
-  // AGG(<nodeTable>_<metric>). A metric absent here was skipped (see
-  // warnings). Read by the metric-slice planner (metric_slices.ts).
-  measures: Array<{metric: string; nodeTable: string}>;
+  // label carries it and the measure's name -- what a GRAPH_EXPAND reader
+  // selects as AGG(<nodeTable>_<measure>). The measure is named like the
+  // metric unless that name is a column of the node table's backing table
+  // (see measureNameFor). A metric absent here was skipped (see warnings).
+  // Read by the metric-slice planner (metric_slices.ts).
+  measures: Array<{metric: string; nodeTable: string; measure: string}>;
 }
 
 // Aggregate functions BigQuery accepts inside MEASURE(...). This is the
@@ -527,6 +529,15 @@ function placeMetric(
     return;
   }
   lowering.taken.add(metric.name);
+  const measureName = measureNameFor(metric.name, lowering, entity);
+  if (measureName !== metric.name) {
+    lowering.taken.add(measureName);
+    warnings.push(
+        `metric '${metric.name}' is the measure '${measureName}' on ` +
+        `'${entityName}' (a measure named like a column of its node table ` +
+        `makes BigQuery fail every query on the graph); read it as ` +
+        `AGG(${entityName}_${measureName})`);
+  }
 
   const propName = exposeOperand(lowering, operandExpr, metric.name);
   const aggregate =
@@ -535,11 +546,34 @@ function placeMetric(
   const opts = optionsClause(
       elementDescription(metric.description, metric.aiContext),
       metric.aiContext?.synonyms);
-  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(metric.name)}`;
+  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(measureName)}`;
   const lines = metricsByEntity.get(entityName) ?? [];
   lines.push(opts ? `${measure} ${opts}` : measure);
   metricsByEntity.set(entityName, lines);
-  measures.push({metric: metric.name, nodeTable: entityName});
+  measures.push({metric: metric.name, nodeTable: entityName, measure: measureName});
+}
+
+// The name a metric's MEASURE takes on its node table: the metric's own name,
+// or `<metric>__measure` when that name is a column of the node table's
+// backing table (compared case-insensitively, as BigQuery resolves names).
+// BigQuery accepts a MEASURE named like a backing column but then fails every
+// query on the graph -- GQL and GRAPH_EXPAND alike -- with an internal error
+// (verified live 2026-10-13: a node table over t(id, won_amount) exposing
+// `won_amount AS wonAmount` and `MEASURE(SUM(wonAmount)) AS won_amount`; the
+// same graph with the measure named `won_total` works). A metric named like
+// its field's column (won_amount = SUM(wonAmount), read from column
+// won_amount) is common, so it is renamed rather than dropped; the metric
+// keeps its name everywhere else.
+function measureNameFor(
+    name: string, lowering: MeasureLowering, entity: Entity): string {
+  const columns = new Set<string>();
+  for (const expr of lowering.fieldExprs.values()) {
+    const bare = expr.trim().replace(/^`(.*)`$/, '$1');
+    if (isSimpleIdentifier(bare)) columns.add(bare.toLowerCase());
+  }
+  for (const key of entity.keys ?? []) columns.add(key.toLowerCase());
+  if (!columns.has(name.toLowerCase())) return name;
+  return uniqueName(`${name}__measure`, lowering.taken);
 }
 
 // Ensures `operandExpr` is exposed as a node property and returns its property

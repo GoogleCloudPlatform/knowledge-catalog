@@ -7,6 +7,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
+import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {ANNOTATION_ASPECT_IDS} from '../../../src/libts/semantic/kc_custom_types';
@@ -185,5 +186,46 @@ describe('on the published entries', () => {
         .toEqual(src.metrics.map(m => m.description));
     expect(back.entities.find(e => e.name === 'Order')!.hydration)
         .toEqual({grain: {latestBy: 'updated_at'}});
+  });
+});
+
+// BigQuery accepts a MEASURE named like a column of its node table's backing
+// table but then fails every query on the graph (internal error, verified
+// live). A metric named like its field's column is renamed `<metric>__measure`
+// -- in the DDL, in the generator's record, and in the catalog's Query.
+describe('a metric named like its node table\'s column', () => {
+  function withWon(): SemanticModel {
+    const m = shop();
+    const order = m.entities.find(e => e.name === 'Order')!;
+    order.fields.push({name: 'wonAmount', expression: 'won_amount', type: 'Decimal'});
+    m.metrics.push(
+        {name: 'won_amount', expression: 'SUM(Order.wonAmount)', entity: 'Order'},
+        {name: 'win_share', expression: 'SUM(Order.wonAmount) / SUM(Order.amount)', entity: 'Order'});
+    return m;
+  }
+  const TARGET = {project: 'data-proj', dataset: 'sem', graphName: 'shop_graph'};
+
+  test('its MEASURE takes the __measure suffix', () => {
+    const gen = generatePropertyGraph(withWon(), TARGET);
+    expect(gen.ddl).toContain('MEASURE(SUM(wonAmount)) AS won_amount__measure');
+    expect(gen.ddl).not.toMatch(/\) AS won_amount\b(?!__)/);
+    expect(gen.measures).toContainEqual(
+        {metric: 'won_amount', nodeTable: 'Order', measure: 'won_amount__measure'});
+    expect(gen.warnings.some(w => w.includes('read it as AGG(Order_won_amount__measure)')))
+        .toBe(true);
+  });
+
+  test('a metric not named like a column keeps its name', () => {
+    const gen = generatePropertyGraph(withWon(), TARGET);
+    expect(gen.measures).toContainEqual(
+        {metric: 'revenue', nodeTable: 'Order', measure: 'revenue'});
+  });
+
+  test('the Query paragraph reads the renamed measure, also inside a composite', () => {
+    const q = metricQueries(withWon());
+    expect(q.get('won_amount')).toMatch(
+        /^SELECT AGG\(Order_won_amount__measure\) FROM GRAPH_EXPAND\("data-proj\.sem\.shop_graph(?:__order_metrics)?"\)$/);
+    expect(q.get('win_share')).toMatch(
+        /^SELECT SAFE_DIVIDE\(AGG\(Order_won_amount__measure\), AGG\(Order_(?:revenue|win_share__agg2)\)\) FROM /);
   });
 });
