@@ -83,6 +83,12 @@ export interface KcDeployOptions {
   entryCreateTries?: number;
   // Delay between entries.create retries, in ms. Default ENTRY_CREATE_RETRY_MS.
   entryCreateRetryMs?: number;
+  // How many times to try an entry-link write that the per-minute entry-link
+  // quota refused (HTTP 429). Default LINK_WRITE_TRIES.
+  linkWriteTries?: number;
+  // Base delay before retrying a rate-limited entry-link write, in ms; the n-th
+  // retry waits n times this. Default LINK_RETRY_MS.
+  linkRetryMs?: number;
 }
 
 export interface KcDeployResult {
@@ -136,8 +142,28 @@ type EmittedModel = {model: string; resources: KcResources};
 const ENTRY_CREATE_TRIES = 3;
 const ENTRY_CREATE_RETRY_MS = 3000;
 
+// Entry-link writes share a per-minute, per-region quota (300 by default). A
+// push that writes more links than that in a minute gets HTTP 429 on the rest;
+// waiting 20 s, 40 s, then 60 s spans a full quota window.
+const LINK_WRITE_TRIES = 4;
+const LINK_RETRY_MS = 20000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// Runs one entry-link write, retrying while the entry-link quota refuses it.
+async function withLinkQuotaRetry<T>(
+    opts: KcDeployOptions,
+    write: () => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
+  const tries = opts.linkWriteTries ?? LINK_WRITE_TRIES;
+  const retryMs = opts.linkRetryMs ?? LINK_RETRY_MS;
+  let res = await write();
+  for (let attempt = 1; attempt < tries && res.status === 429; attempt++) {
+    await sleep(retryMs * attempt);
+    res = await write();
+  }
+  return res;
 }
 
 
@@ -693,17 +719,22 @@ async function createEntryLinks(
 // it already exists. A link's entry references and type are immutable, so a
 // re-push only refreshes the aspect (the join detail). A relationship whose id
 // changed writes a new link and leaves the old one; reconcileLinks deletes such
-// orphaned links after this model's links are written.
+// orphaned links after this model's links are written. Both calls retry while
+// the per-minute entry-link quota refuses them (withLinkQuotaRetry).
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<{error?: string}> {
   const linkId = linkIdOf(link.name ?? '');
-  const res = await cat.createEntryLink(
-      opts.project, opts.location, opts.entryGroup, linkId, link);
+  const res = await withLinkQuotaRetry(
+      opts,
+      () => cat.createEntryLink(
+          opts.project, opts.location, opts.entryGroup, linkId, link));
   if (isExists(res)) {
-    const upd = await cat.updateEntryLink(
-        {name: link.name, aspects: link.aspects} as EntryLink,
-        Object.keys(link.aspects ?? {}));
+    const upd = await withLinkQuotaRetry(
+        opts,
+        () => cat.updateEntryLink(
+            {name: link.name, aspects: link.aspects} as EntryLink,
+            Object.keys(link.aspects ?? {})));
     // A 409 already proved the link is present, and its entry references and type
     // are immutable, so this follow-up only refreshes the aspect. Some catalog
     // surfaces expose only create + lookup for an entry link and cannot address

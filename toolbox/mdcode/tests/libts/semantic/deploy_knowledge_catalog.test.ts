@@ -247,6 +247,40 @@ describe('deployKnowledgeCatalog: relationship entry links', () => {
     expect(aspectKeys.some((k: string) => k.endsWith('schema-join'))).toBe(true);
   });
 
+  test('a link write refused by the entry-link quota is retried until it lands',
+       async () => {
+         // Dataplex caps entry-link writes per minute and region; a push larger
+         // than the cap gets 429 on the rest. The write is retried, not dropped.
+         let calls = 0;
+         const {createLink} = stubClient({
+           createLink: () => (++calls === 1 ?
+                                  err(429, 'Quota exceeded for quota metric ' +
+                                               '\'Write requests for Entry Links\'') :
+                                  ok({})),
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(STAR_DOCS), CTX, {...OPTS, linkRetryMs: 0});
+
+         expect(result.success).toBe(true);
+         expect(result.linked).toBe(1);
+         expect(createLink).toHaveBeenCalledTimes(2);
+       });
+
+  test('a link still rate-limited after every try fails the push with the 429',
+       async () => {
+         const {createLink} = stubClient({
+           createLink: () => err(429, 'Quota exceeded for entry links'),
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(STAR_DOCS), CTX, {...OPTS, linkRetryMs: 0, linkWriteTries: 3});
+
+         expect(result.success).toBe(false);
+         expect(result.details).toContain('Quota exceeded for entry links');
+         expect(createLink).toHaveBeenCalledTimes(3);
+       });
+
   test('an existing link whose update is not addressable still succeeds',
        async () => {
          // The link exists (409), but this catalog surface exposes only create
