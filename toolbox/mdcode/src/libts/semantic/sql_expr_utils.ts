@@ -4,9 +4,9 @@
 // Expressions reference columns as `<Entity>.<column>`. The SQL parser
 // (`columnReferences`, `entitiesReached`, `fieldsReadOn`) reads column and
 // entity references across dialects for the loader, validator, profile checks,
-// pull reader, and transpiler. The BigQuery generator still uses the literal-
+// pull reader, and transpiler. The graph generators still use the literal-
 // aware regex helpers (`referencedEntityNames`, `stripQualifier`) until
-// b/568183888 moves it to the parser.
+// b/568183888 moves them to the parser.
 //
 
 import {Entity, fieldBinding, keysCoveredBy} from './ir';

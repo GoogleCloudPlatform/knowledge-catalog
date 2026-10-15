@@ -1,14 +1,10 @@
 // Generates BigQuery property-graph DDL (with inline measures) from the
 // Semantic Model IR.
 //
-// The IR (./ir) is pure semantics. This module is one of its consumers: it
-// emits a single `CREATE OR REPLACE PROPERTY GRAPH` statement over the
-// entities' existing base tables, with model-level metrics rendered as inline
-// `MEASURE(...)` properties. The graph structure -- node tables, edge tables,
-// labels, properties, and key and join columns -- is the shared GoogleSQL
-// generator's (./graph_ddl); this module supplies the BigQuery setting for it:
-// qualified names, measures, the per-element OPTIONS clause, and the SQL text a
-// field binds to.
+// The shared GoogleSQL generator (./graph_ddl) writes the graph structure: node
+// tables, edge tables, labels, properties, and key and join columns. This
+// module supplies its BigQuery engine: qualified names, measures, the
+// per-element OPTIONS clause, and the SQL text a field binds to.
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
@@ -23,16 +19,14 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, PlacedMeasures} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
 import {AiContext, Entity, Field, fieldBinding, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
-  project?: string;    // fills the project for the graph name + under-qualified
-                       // table refs
-  dataset?: string;    // fills the dataset for the graph name + under-qualified
-                       // table refs
+  project?: string;    // fills the graph name's project
+  dataset?: string;    // fills the graph name's dataset
   graphName?: string;  // default: model.name
 }
 
@@ -64,12 +58,11 @@ export function generatePropertyGraph(
   return generateGraphDdl(model, bigQueryEngine(opts));
 }
 
-// The BigQuery setting for the shared generator.
+// The BigQuery engine for the shared generator.
 function bigQueryEngine(opts: GenerateOptions): GraphEngine {
   return {
     name: 'BigQuery',
     table: qualifyTable,
-    unresolvedTable: entityName => `\`${entityName}\``,
     graphName: model => qualifyGraph(model, opts),
     placeMetrics,
     elementOptions: (description, ai) =>
@@ -84,22 +77,15 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
 // it to a MEASURE over an exposed property (see placeMetric).
 function placeMetrics(
     metrics: Metric[], input: MetricPlacementInput,
-    warnings: string[]): Map<string, PlacedMeasures> {
-  const metricsByEntity = new Map<string, string[]>();
+    warnings: string[]): Map<string, string[]> {
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
-    placeMetric(
-        metric, input.model, input.entityByName, input.skipped,
-        input.ancestorsUsed, metricsByEntity, loweringByEntity, warnings);
+    placeMetric(metric, input, loweringByEntity, warnings);
   }
-  // placeMetric creates an entity's lowering before it records any measure on
-  // it, so every entity with a measure has a lowering.
-  const placed = new Map<string, PlacedMeasures>();
+  // The operand properties come first: the measures aggregate them.
+  const placed = new Map<string, string[]>();
   for (const [name, lowering] of loweringByEntity) {
-    placed.set(name, {
-      derivedProperties: lowering.derivedProperties,
-      measures: metricsByEntity.get(name) ?? [],
-    });
+    placed.set(name, [...lowering.derivedProperties, ...lowering.measures]);
   }
   return placed;
 }
@@ -114,6 +100,7 @@ function placeMetrics(
 // unique.
 interface MeasureLowering {
   derivedProperties: string[];  // extra property lines to emit on the node
+  measures: string[];           // the MEASURE properties placed on the node
   taken: Set<string>;           // property names already in use on the node
   fieldNames: Set<string>;      // declared field names (each an exposed property)
   byLocalExpr: Map<string, string>;  // existing field local-expression -> its
@@ -139,6 +126,7 @@ function newLowering(entity: Entity): MeasureLowering {
   }
   return {
     derivedProperties: [],
+    measures: [],
     taken,
     fieldNames,
     byLocalExpr,
@@ -151,10 +139,9 @@ function newLowering(entity: Entity): MeasureLowering {
 // warning (and skips) when it references zero/multiple entities or is not a
 // single supported aggregate over one operand.
 function placeMetric(
-    metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    skipped: Set<string>, ancestorsUsed: Set<string>,
-    metricsByEntity: Map<string, string[]>,
+    metric: Metric, input: MetricPlacementInput,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
+  const {entityByName, skipped, ancestorsUsed} = input;
   // The IR keeps at most two expression forms; a measure is emitted from the
   // target/canonical `expression`, falling back to the imported vendor SQL when
   // that is all the model carries (a transpile pass may fill `expression`
@@ -167,7 +154,9 @@ function placeMetric(
     return;
   }
 
-  let referenced = referencedEntities(expression, model);
+  // The entities whose `<name>.` qualifier the expression uses. String literals
+  // are ignored, so a value like 'orders.x' does not reference `orders`.
+  let referenced = referencedEntityNames(expression, [...entityByName.keys()]);
 
   // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its
   // expression; fall back to `metric.entity` when the IR provides one (an
@@ -303,9 +292,7 @@ function placeMetric(
       elementDescription(metric.description, metric.aiContext),
       metric.aiContext?.synonyms);
   const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(metric.name)}`;
-  const lines = metricsByEntity.get(entityName) ?? [];
-  lines.push(opts ? `${measure} ${opts}` : measure);
-  metricsByEntity.set(entityName, lines);
+  lowering.measures.push(opts ? `${measure} ${opts}` : measure);
 }
 
 // Ensures `operandExpr` is exposed as a node property and returns its property
@@ -443,15 +430,6 @@ function uniqueName(base: string, taken: Set<string>): string {
     const candidate = `${base}_${i}`;
     if (!taken.has(candidate)) return candidate;
   }
-}
-
-// Returns the model entity names whose `<name>.` qualifier appears in an
-// expression. String literals are ignored so a value like 'orders.x' is not
-// mistaken for a reference to the `orders` entity.
-function referencedEntities(
-    expression: string, model: SemanticModel): string[] {
-  return referencedEntityNames(
-      expression, (model.entities ?? []).map(e => e.name));
 }
 
 

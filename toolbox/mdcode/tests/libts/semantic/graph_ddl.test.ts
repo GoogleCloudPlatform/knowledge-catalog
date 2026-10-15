@@ -1,12 +1,14 @@
 // Behavior specification for the shared GoogleSQL property-graph generator
 // (src/libts/semantic/graph_ddl.ts).
 //
-// The BigQuery setting's output is pinned by the BigQuery goldens
-// (`bigquery.e2e.test.ts`, `bigquery.test.ts`); moving that generator onto the
-// shared code changed none of them. This file checks the shared code itself:
-// that each of the four engine differences -- names, measures, element
-// metadata, SQL text -- comes from the setting, and that a setting with
-// Spanner's names, no measures and no metadata reproduces spanner.ts's graph.
+// The BigQuery goldens (`bigquery.e2e.test.ts`, `bigquery.test.ts`) pin the
+// BigQuery engine's output. This file checks the shared code itself: that each
+// of the four engine differences -- names, measures, element metadata, SQL
+// text -- comes from the engine, and that an engine with Spanner's names, no
+// measures and no metadata gives spanner.ts's graph on the Spanner test
+// fixtures. It does not everywhere: a subtype that restates a field it inherits
+// from a concrete parent with a different column gets the parent's column
+// (BigQuery's supertype override), where spanner.ts writes the subtype's own.
 //
 
 import {describe, expect, test} from 'bun:test';
@@ -35,13 +37,13 @@ function loadFixture(fixture: string): SemanticModel {
 
 describe('the graph structure is engine-neutral', () => {
   // Spanner's names, no measures, no metadata, and today's field SQL. This is
-  // not the Spanner setting (b/573660675 adds that); it is only enough to show
-  // the shared node tables, edge tables, labels, properties, and key and join
-  // columns are the ones spanner.ts writes.
+  // not the Spanner engine (that comes later); it is only enough to show that
+  // on the Spanner test fixtures the shared node tables, edge tables, labels,
+  // properties, and key and join columns are the ones spanner.ts writes. The
+  // last test here pins the one known difference.
   const BARE: GraphEngine = {
     name: 'Spanner',
     table: spannerTable,
-    unresolvedTable: quoteIdentifier,
     graphName: model => quoteIdentifier(model.name),
     placeMetrics: () => new Map(),
     elementOptions: () => undefined,
@@ -99,30 +101,78 @@ describe('the graph structure is engine-neutral', () => {
     expect(generateGraphDdl(model, BARE).ddl)
         .toBe(generateSpannerPropertyGraph(model).ddl);
   });
+
+  // The known difference. BigQuery allows one definition of a property under a
+  // shared label, so the shared code gives a subtype's restated `email` the
+  // parent's column and warns; spanner.ts writes the subtype's own column. A
+  // later change removes the override.
+  test('a subtype that remaps an inherited column differs from spanner.ts',
+       () => {
+         const model: SemanticModel = {
+           name: 'people',
+           entities: [
+             {
+               name: 'Person',
+               dataSource: 'p.d.person',
+               keys: ['id'],
+               fields: [
+                 {name: 'id', expression: 'Person.id'},
+                 {name: 'email', expression: 'Person.email'},
+               ],
+             },
+             {
+               name: 'Customer',
+               dataSource: 'p.d.customer',
+               keys: ['id'],
+               extends: ['Person'],
+               fields: [
+                 {name: 'id', expression: 'Customer.id'},
+                 {name: 'email', expression: 'Customer.contact_email'},
+               ],
+             },
+           ],
+           relationships: [],
+           metrics: [],
+         };
+         const spanner = generateSpannerPropertyGraph(model).ddl;
+         expect(spanner).toContain('contact_email AS email');
+         expect(generateGraphDdl(model, BARE).ddl)
+             .toBe(spanner.replace('contact_email AS email', 'email'));
+       });
 });
 
 
-describe('each engine difference comes from the setting', () => {
+describe('each engine difference comes from the engine', () => {
   // Every hook writes a visible marker, so the expected DDL shows where the
   // shared code puts what each one returns.
   const MARKED: GraphEngine = {
     name: 'Marked',
     table: dataSource => `<table ${dataSource}>`,
-    unresolvedTable: entityName => `<unresolved ${entityName}>`,
     graphName: model => `<graph ${model.name}>`,
     placeMetrics: metrics => new Map([[
-      'orders', {
-        derivedProperties: ['<derived>'],
-        measures: metrics.map(m => `<measure ${m.name}>`),
-      }
+      'orders', ['<derived>', ...metrics.map(m => `<measure ${m.name}>`)]
     ]]),
     elementOptions: description =>
         description === undefined ? undefined : `<options ${description}>`,
     fieldOptions: field => field.description === undefined ?
         undefined :
         `<field options ${field.description}>`,
-    fieldExpression: field =>
-        field.name === 'amount' ? 'orders.amount_usd' : fieldBinding(field),
+    // Other SQL than the field's own for the key column and `amount`, and none
+    // for `notes`, so the expected DDL shows every place the graph reads a
+    // field's SQL: properties, key and join columns, and the filter that leaves
+    // out a field the engine has no SQL for.
+    fieldExpression: field => {
+      switch (field.name) {
+        case 'order_id':
+          return 'id';
+        case 'amount':
+          return 'amount_usd';
+        case 'notes':
+          return undefined;
+        default:
+          return fieldBinding(field);
+      }
+    },
   };
 
   const MODEL: SemanticModel = {
@@ -137,7 +187,7 @@ describe('each engine difference comes from the setting', () => {
           {name: 'order_id', expression: 'orders.order_id'},
           {name: 'amount', expression: 'orders.amount', description: 'Total'},
           {name: 'customer_id', expression: 'orders.customer_id'},
-          {name: 'notes'},
+          {name: 'notes', expression: 'orders.notes'},
         ],
       },
       {
@@ -157,12 +207,31 @@ describe('each engine difference comes from the setting', () => {
         description: 'Who placed it',
       },
       {
+        name: 'gifted_to',
+        source: {entity: 'orders', columns: []},
+        destination: {entity: 'customers', columns: []},
+        description: 'Who received it',
+        association: {
+          dataSource: 'p.d.gifts',
+          keys: ['gift_id'],
+          sourceColumns: ['order_id'],
+          destinationColumns: ['customer_id'],
+          fields: [{
+            name: 'message',
+            expression: 'gifted_to.card_text',
+            description: 'Card text',
+          }],
+        },
+      },
+      {
         name: 'from_ghost',
         source: {entity: 'ghost', columns: ['customer_id']},
         destination: {entity: 'customers', columns: ['customer_id']},
       },
     ],
     metrics: [{name: 'revenue', expression: 'SUM(orders.amount)'}],
+    actions: [{name: 'refund', parameters: []}],
+    constraints: [{name: 'amount_is_positive'}],
   };
 
   test('names, measures, metadata and SQL text land where the graph puts them',
@@ -171,10 +240,10 @@ describe('each engine difference comes from the setting', () => {
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
   <table p.d.orders> AS orders
-    KEY(order_id)
+    KEY(id)
     <options One row per order>
     PROPERTIES(
-      order_id,
+      id AS order_id,
       amount_usd AS amount <field options Total>,
       customer_id,
       <derived>,
@@ -188,16 +257,106 @@ NODE TABLES (
 )
 EDGE TABLES (
   <table p.d.orders> AS placed_by
-    KEY(order_id)
-    SOURCE KEY(order_id) REFERENCES orders(order_id)
+    KEY(id)
+    SOURCE KEY(id) REFERENCES orders(id)
     DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
     <options Who placed it>,
-  <unresolved ghost> AS from_ghost
+  <table p.d.gifts> AS gifted_to
+    KEY(gift_id)
+    SOURCE KEY(order_id) REFERENCES orders(id)
+    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
+    <options Who received it>
+    PROPERTIES(
+      card_text AS message <field options Card text>
+    ),
+  <table ghost> AS from_ghost
     KEY(customer_id)
     SOURCE KEY(customer_id) REFERENCES ghost(customer_id)
     DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
 );
 `);
+       });
+
+  // A subtype of a concrete entity shares its label. The supertype's label
+  // loses its OPTIONS, the subtype's remapped `customer_id` gives way to the
+  // supertype's, and the subtype's `LABEL orders` block repeats the
+  // supertype's properties with the engine's SQL and field metadata. Both
+  // warnings name the engine.
+  test('a class hierarchy takes its metadata and SQL text from the engine',
+       () => {
+         const model: SemanticModel = {
+           name: 'shop',
+           entities: [
+             {
+               name: 'orders',
+               dataSource: 'p.d.orders',
+               keys: ['order_id'],
+               description: 'One row per order',
+               fields: [
+                 {name: 'order_id', expression: 'orders.order_id'},
+                 {
+                   name: 'amount',
+                   expression: 'orders.amount',
+                   description: 'Total'
+                 },
+                 {name: 'customer_id', expression: 'orders.customer_id'},
+               ],
+             },
+             {
+               name: 'gift_orders',
+               dataSource: 'p.d.gift_orders',
+               keys: ['order_id'],
+               extends: ['orders'],
+               description: 'Orders sent as gifts',
+               fields: [
+                 {name: 'customer_id', expression: 'gift_orders.buyer_id'},
+               ],
+             },
+           ],
+           relationships: [],
+           metrics: [],
+         };
+         const {ddl, warnings} =
+             generateGraphDdl(model, {...MARKED, placeMetrics: () => new Map()});
+         expect(ddl).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH <graph shop>
+NODE TABLES (
+  <table p.d.orders> AS orders
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id AS order_id,
+      amount_usd AS amount <field options Total>,
+      customer_id
+    ),
+  <table p.d.gift_orders> AS gift_orders
+    KEY(id)
+    DEFAULT LABEL
+    <options Orders sent as gifts>
+    PROPERTIES(
+      customer_id,
+      id AS order_id,
+      amount_usd AS amount <field options Total>
+    )
+    LABEL orders
+    PROPERTIES(
+      id AS order_id,
+      amount_usd AS amount <field options Total>,
+      customer_id
+    )
+);
+`);
+         expect(warnings).toEqual([
+           `entity 'orders' is a supertype in a class hierarchy; its ` +
+               `description/synonyms are dropped from the shared 'orders' ` +
+               `label (Marked forbids OPTIONS on a label bound by multiple ` +
+               `tables)`,
+           `entity 'gift_orders' remaps inherited property 'customer_id' to ` +
+               `a different column/expression than its supertype; Marked ` +
+               `allows only one definition per property under a shared ` +
+               `label, so the supertype's is used and the subclass's ` +
+               `remapping is dropped`,
+         ]);
        });
 
   test('warnings name the engine', () => {
@@ -206,7 +365,13 @@ EDGE TABLES (
         `entity 'customers': field 'customer_id' is bound to a non-column ` +
         `expression (CAST(id AS STRING)); a KEY/REFERENCES site ` +
         `requires a bare column, so Marked will reject the generated DDL`);
-    // A field the setting has no SQL for is left out of its node table.
+    expect(warnings).toContain(
+        `1 action(s) reach Knowledge Catalog only; the Marked push deploys ` +
+        `none of them.`);
+    expect(warnings).toContain(
+        `1 constraint(s) reach Knowledge Catalog only; the Marked push ` +
+        `deploys none of them.`);
+    // A field the engine has no SQL for is left out of its node table.
     expect(warnings).toContain(
         `entity 'orders': field 'notes' has no column under this binding; ` +
         `omitted from the node table (bind it, or govern the logical model in ` +

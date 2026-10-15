@@ -128,9 +128,9 @@ export function validatePushRequirements(
     if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
         // An M:N edge binds through its junction table (association), so its
-        // direct source/destination columns are empty by design -- bigquery.ts
-        // renders it from `rel.association`. Only a plain FK edge needs direct
-        // join columns.
+        // direct source/destination columns are empty by design -- the graph
+        // generators render it from `rel.association`. Only a plain FK edge
+        // needs direct join columns.
         if (rel.association) continue;
         if (!rel.source.columns.length && !rel.destination.columns.length) {
           errors.push(

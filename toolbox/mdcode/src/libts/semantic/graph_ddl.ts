@@ -4,8 +4,8 @@
 // The IR (./ir) is pure semantics. This module emits a single `CREATE OR
 // REPLACE PROPERTY GRAPH` statement over the entities' existing base tables:
 // node tables, edge tables, labels, properties, and key and join columns. Both
-// BigQuery and Spanner take that same statement, so the graph structure lives
-// here once. What differs between the engines is a `GraphEngine` setting:
+// BigQuery and Spanner take that same statement. What differs between the
+// engines is a `GraphEngine`:
 //
 //   1. Names. How a table and the graph itself are named (BigQuery writes
 //      `project.dataset.table` and qualifies the graph name; a Spanner graph
@@ -16,7 +16,8 @@
 //      descriptions and synonyms (BigQuery has one; Spanner has none).
 //   4. SQL text. Which of a field's expressions the engine reads.
 //
-// ./bigquery supplies the BigQuery setting.
+// ./bigquery supplies the BigQuery engine; spanner.ts still writes its own
+// graph.
 //
 
 import {AiContext, Association, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
@@ -32,37 +33,33 @@ export interface GenerateResult {
 // What the generator knows about the graph when it hands the model's metrics
 // to an engine's measure placement.
 export interface MetricPlacementInput {
-  model: SemanticModel;  // the inheritance-resolved model
-  entityByName: Map<string, Entity>;  // every entity, abstract and skipped too
-  skipped: Set<string>;  // entities that form no node table (abstract, no KEY)
-  ancestorsUsed: Set<string>;  // entities some node-forming entity extends
+  // Every entity of the inheritance-resolved model, abstract and skipped too.
+  entityByName: ReadonlyMap<string, Entity>;
+  // Entities that form no node table (abstract, no KEY).
+  skipped: ReadonlySet<string>;
+  // Entities some node-forming entity extends.
+  ancestorsUsed: ReadonlySet<string>;
 }
 
-// The measure properties an engine places on one entity's node table.
-export interface PlacedMeasures {
-  derivedProperties: string[];  // operand properties the measures aggregate
-  measures: string[];           // the measure properties themselves
-}
-
-// The four ways the engines differ (see the header). Everything else about the
-// graph is shared.
+// The engine's name, and the four ways the engines differ (see the header).
+// Everything else about the graph is shared.
 export interface GraphEngine {
   // The engine's name as warnings write it ("the BigQuery push ...").
   name: string;
 
   // 1. Names. `table` names an element table from its `dataSource`;
-  // `unresolvedTable` names an edge's backing table from its source entity's
-  // name when that entity is unknown; `graphName` names the graph.
+  // `graphName` names the graph.
   table(dataSource: string, warnings: string[], context: string): string;
-  unresolvedTable(entityName: string): string;
   graphName(model: SemanticModel): string;
 
   // 2. Measures. Places the model's metrics on node tables, keyed by entity
-  // name, warning for each metric it skips. An entity absent from the result
+  // name, warning for each metric it skips. Each entry is the properties the
+  // entity's node table lists after its fields: the operand properties the
+  // measures aggregate, then the measures. An entity absent from the result
   // carries no measures.
   placeMetrics(
       metrics: Metric[], input: MetricPlacementInput,
-      warnings: string[]): Map<string, PlacedMeasures>;
+      warnings: string[]): Map<string, string[]>;
 
   // 3. Element metadata. The trailing metadata clause for a label (from an
   // entity's or relationship's description and AI context) and for a field
@@ -155,7 +152,7 @@ export function generateGraphDdl(
 
   // The ancestors carried by a table-emitting entity. Two uses. First, measure
   // placement: an engine's measure may be allowed only on a LEAF type -- one
-  // that no *table-emitting* entity extends (see the BigQuery setting).
+  // that no *table-emitting* entity extends (see the BigQuery engine).
   // Building this from validEntities (not all entities) is deliberate: an
   // abstract or empty-KEY subtype emits no table, so it does not duplicate its
   // parent's label and must not mark the parent non-leaf. Second, the orphan
@@ -203,8 +200,7 @@ export function generateGraphDdl(
   // never render.
   const entityByName = new Map(entities.map(e => [e.name, e]));
   const measuresByEntity = engine.placeMetrics(
-      metrics, {model: resolved.model, entityByName, skipped, ancestorsUsed},
-      warnings);
+      metrics, {entityByName, skipped, ancestorsUsed}, warnings);
 
   // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
   // signature, so the label renderer must reach every LABEL CARRIER by name:
@@ -219,12 +215,10 @@ export function generateGraphDdl(
       new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
                   .map(e => [e.name, e]));
 
-  const nodeTables = validEntities.map(entity => {
-    const placed = measuresByEntity.get(entity.name);
-    return renderNodeTable(
-        entity, placed?.derivedProperties ?? [], placed?.measures ?? [],
-        labelByName, ancestorsUsed.has(entity.name), engine, warnings);
-  });
+  const nodeTables = validEntities.map(
+      entity => renderNodeTable(
+          entity, measuresByEntity.get(entity.name) ?? [], labelByName,
+          ancestorsUsed.has(entity.name), engine, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -252,19 +246,16 @@ export function generateGraphDdl(
     blocks.push(`EDGE TABLES (\n${edgeTables.join(',\n')}\n)`);
   }
 
-  // Model-level description / ai_context has no home in the graph:
-  // statement-level `OPTIONS` after EDGE TABLES parses on BigQuery but is
-  // silently dropped (verified live; create_property_graph_options is off for
-  // BigQuery), so we do not emit it. The model's description is carried into
-  // Knowledge Catalog's model entry instead (see knowledge_catalog.ts);
-  // element-level metadata rides on labels, properties, and measures here.
+  // The model's own description and AI context go to Knowledge Catalog's model
+  // entry (see knowledge_catalog.ts), not the graph; bigquery.ts's
+  // optionsClause says why.
 
   return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
 }
 
 
 function renderNodeTable(
-    entity: Entity, derivedProperties: string[], measures: string[],
+    entity: Entity, measures: string[],
     labelByName: Map<string, Entity>, isSupertype: boolean,
     engine: GraphEngine, warnings: string[]): string {
   const table =
@@ -332,12 +323,12 @@ function renderNodeTable(
     return canonical;
   };
 
-  // Order: declared fields, then any operand properties synthesized for
-  // measures, then the measures themselves (which reference those operand
-  // properties).
+  // Order: declared fields, then the engine's measure properties (any operand
+  // properties synthesized for measures, then the measures themselves, which
+  // reference those operand properties).
   // Defense in depth: availability pruning normally strips every unbound field
   // (it has no column) before generation. Pruning tests isFieldBound, and the
-  // BigQuery setting's fieldExpression is fieldBinding, the same test, so the
+  // BigQuery engine's fieldExpression is fieldBinding, the same test, so the
   // two never disagree. But a caller that generates DDL straight from a
   // bindingOptional load without pruning could still reach here with an
   // unbound (e.g. purely logical) field. Skip it with a warning rather than
@@ -350,11 +341,7 @@ function renderNodeTable(
         `model in Knowledge Catalog instead)`);
     return false;
   });
-  const properties = [
-    ...boundFields.map(renderOwn),
-    ...derivedProperties,
-    ...measures,
-  ];
+  const properties = [...boundFields.map(renderOwn), ...measures];
 
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
@@ -372,7 +359,9 @@ function renderNodeTable(
   // bound to more than one element table (verified live -- "the label ... is
   // defined with OPTIONS clause in one of the element tables and cannot be
   // bound to another element table"), so a shared supertype label must be
-  // options-free; its description/synonyms are dropped (with a warning).
+  // options-free; its description/synonyms are dropped (with a warning). The
+  // rule is BigQuery's, but it applies to any engine whose elementOptions
+  // returns a clause.
   let labelOpts = engine.elementOptions(entity.description, entity.aiContext);
   if (isSupertype && labelOpts) {
     warnings.push(
@@ -532,16 +521,19 @@ function renderEdgeTable(
   // than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
   const destEntity = entitiesByName.get(rel.destination.entity);
+  const relCtx = `relationship '${rel.name}'`;
   let backing: string;
   let sourceKey: string[];
   if (!sourceEntity) {
+    // Only hand-built IR gets here: the loader rejects a relationship whose
+    // endpoint is not one of the model's entities. Name the table after the
+    // entity.
     warnings.push(`relationship '${rel.name}': unknown source entity '${
         rel.source.entity}'`);
-    backing = engine.unresolvedTable(rel.source.entity);
+    backing = engine.table(rel.source.entity, warnings, relCtx);
     sourceKey = rel.source.columns;
   } else {
-    backing = engine.table(
-        sourceEntity.dataSource, warnings, `relationship '${rel.name}'`);
+    backing = engine.table(sourceEntity.dataSource, warnings, relCtx);
     sourceKey = sourceEntity.keys;
   }
 
@@ -549,7 +541,6 @@ function renderEdgeTable(
   // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
   // against the source entity, while the destination REFERENCES resolves against
   // the destination entity's key.
-  const relCtx = `relationship '${rel.name}'`;
   const key = physicalColumns(sourceEntity, sourceKey, engine, warnings, relCtx)
                   .join(', ');
   const destFk = physicalColumns(

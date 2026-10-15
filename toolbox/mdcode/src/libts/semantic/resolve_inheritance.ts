@@ -27,7 +27,7 @@
 //   - Relationships (edges) are NOT inherited: a subclass does not gain its
 //     supertype's edges. Only node properties flow down.
 //   - It does not classify abstract vs concrete or drop anything -- that is the
-//     consuming leg's concern (see bigquery.ts). This pass is leg-agnostic.
+//     consuming leg's concern (see graph_ddl.ts). This pass is leg-agnostic.
 //
 // Errors, all thrown: a cycle in `extends`; a parent that is not an entity in
 // the model; and a field inherited from two ancestors that each declare it
@@ -218,8 +218,8 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
 // stripping: this pass normalizes an inherited expression INTO the child's
 // frame once here, and the emitter's table-local renderer then strips the
 // child's own qualifier uniformly for every field (see
-// bigquery.renderFieldPropertyCore). Both route through the same `stripQualifier`
-// primitive; they differ only in which qualifier they remove.
+// graph_ddl.renderFieldPropertyCore). Both route through the same
+// `stripQualifier` primitive; they differ only in which qualifier they remove.
 function localizeInheritedField(field: Field, ancestor: string): Field {
   const clone = structuredClone(field);
   if (clone.expression !== undefined) {

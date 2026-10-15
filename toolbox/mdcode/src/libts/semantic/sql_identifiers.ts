@@ -1,6 +1,6 @@
 // Quoting for GoogleSQL identifiers emitted into generated graph DDL.
 //
-// Both graph generators (./bigquery, ./spanner) lower logical names -- entity
+// Both graph generators (./graph_ddl, ./spanner) lower logical names -- entity
 // and relationship labels, property names, key columns -- into identifier
 // positions of a `CREATE OR REPLACE PROPERTY GRAPH` statement. A name that is a
 // GoogleSQL RESERVED KEYWORD (e.g. an entity named `Order`) is a valid model
