@@ -116,6 +116,7 @@ sense for the knowledge being captured.
 path/to/bundle/
   index.md                      # Optional. Directory listing for progressive disclosure.
   log.md                        # Optional. Chronological history of updates.
+  usage.yaml                    # Optional. Advisory usage/navigation hints.
   <concept>.md                  # A concept at the bundle root.
   <subdirectory>/               # Subdirectories organize concepts into groups.
     index.md
@@ -133,13 +134,14 @@ A bundle MAY be distributed as:
 
 ### 3.1 Reserved filenames
 
-The following filenames have defined meaning at any level of the
-hierarchy and MUST NOT be used for concept documents:
+The following filenames have defined meaning and MUST NOT be used for
+concept documents:
 
 | Filename   | Purpose                          |
 |------------|----------------------------------|
 | `index.md` | Directory listing. See §8.       |
 | `log.md`   | Update history. See §9.          |
+| `usage.yaml` | Bundle-root usage/navigation hints. See §9.1. |
 
 All other `.md` files are concept documents.
 
@@ -518,9 +520,7 @@ sections, each grouping concepts under a heading:
 
 * [Title 1](relative-url-1) - short description of item 1
 * [Title 2](relative-url-2) - short description of item 2
-
 # Another Section
-
 * [Subdirectory](subdir/) - short description of the subdirectory
 ```
 
@@ -550,6 +550,47 @@ date-grouped entries, newest first:
 Date headings MUST use ISO 8601 `YYYY-MM-DD` form. Log entries are prose;
 the leading bold word (`**Update**`, `**Creation**`, `**Deprecation**`) is
 a convention, not a requirement.
+
+### 9.1 Usage and navigation hints
+
+A bundle MAY contain a `usage.yaml` file at its root. It records aggregated,
+derived observations about which concepts have historically been useful for
+an intent and set of conditions. It is a navigation signal, not knowledge:
+consumers MUST treat it as advisory and MUST read the referenced concept as
+the source of truth.
+
+The initial schema is:
+
+```yaml
+version: 1
+usage_hints:
+  - concept: metrics/revenue.md
+    intent: revenue_calculation
+    conditions:
+      period: monthly
+      aggregation: total
+    access_count: 514
+    successful_count: 462
+    last_accessed: 2026-08-20T08:30:00Z
+```
+
+`concept` is a bundle-relative path to a non-reserved Markdown concept.
+`intent` and condition keys are producer-defined strings. `access_count` is
+the number of observed accesses; `successful_count`, when present, counts
+accesses that contributed to a successful resolution and MUST NOT exceed
+`access_count`. `last_accessed` is an optional ISO 8601 timestamp.
+
+Usage data SHOULD be aggregated across consumers and MAY be updated in
+batches. Producers MUST NOT store raw user queries or per-user history in
+this file, and implementations MUST NOT require personally identifying
+information in `usage.yaml`. Consumers MAY use recency, success rate,
+frequency, keyword search, vector search, or graph traversal when ranking
+candidates; OKF does not prescribe a matching algorithm. A usage hint MUST
+NOT be used to answer a request without retrieving and evaluating the
+referenced concept.
+
+The file is optional. Consumers that do not support it MUST ignore it, and
+consumers MUST tolerate unknown top-level and entry fields.
 
 ---
 
@@ -740,8 +781,8 @@ A bundle is **conformant** with OKF v0.2 if:
 1. Every non-reserved `.md` file in the tree contains a parseable YAML
    frontmatter block.
 2. Every frontmatter block contains a non-empty `type` field.
-3. Every reserved filename (`index.md`, `log.md`) follows the structure in
-   §8 and §9 respectively when present.
+3. Every reserved filename (`index.md`, `log.md`, `usage.yaml`) follows the
+  structure in §8, §9, and §9.1 respectively when present.
 
 When the trust, lifecycle, provenance, or computation families are
 present, producers SHOULD follow §5 through §10, and consumers:
