@@ -98,6 +98,14 @@ describe('kcmd skills-generate: what lands on disk', () => {
         .toBe(true);
   });
 
+  test('--name names the skill of a scope with one model', async () => {
+    writeModel('commerce.yaml', modelText('commerce', 'IssueCredit'));
+    expect(await skillsGenerate({out: 'skills', name: 'orders'})).toBe(0);
+    expect(fs.existsSync(path.join('skills', 'orders', 'SKILL.md')))
+        .toBe(true);
+    expect(fs.existsSync(path.join('skills', 'commerce'))).toBe(false);
+  });
+
   test('an existing skill is not overwritten without --force', async () => {
     writeModel('commerce.yaml', modelText('commerce', 'IssueCredit'));
     expect(await skillsGenerate({out: 'skills'})).toBe(0);

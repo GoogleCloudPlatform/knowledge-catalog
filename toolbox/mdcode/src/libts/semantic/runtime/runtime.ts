@@ -103,9 +103,10 @@ export interface CreateRuntimeOptions {
   onWarning?: (text: string) => void;
   /**
    * Set to refuse a scope that holds more than one model. The scope is
-   * refused before any store is looked up.
+   * refused before any store is looked up. When this is a function, it takes
+   * the number of models and returns the error.
    */
-  oneModel?: boolean;
+  oneModel?: boolean|((count: number) => string);
 }
 
 
@@ -237,9 +238,11 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   if (options.oneModel && models.length > 1) {
     return {
-      error: `this scope holds ${models.length} models, which may name ` +
-          `different databases, so there is no single store. Narrow the ` +
-          `scope to one model.`,
+      error: typeof options.oneModel === 'function' ?
+          options.oneModel(models.length) :
+          `this scope holds ${models.length} models, which may name ` +
+              `different databases, so there is no single store. Narrow ` +
+              `the scope to one model.`,
     };
   }
 

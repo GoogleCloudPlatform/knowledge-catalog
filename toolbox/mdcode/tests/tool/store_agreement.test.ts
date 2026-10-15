@@ -550,10 +550,10 @@ entities:
 });
 
 
-// --print-store refuses a scope of several models before it looks up any
-// AlloyDB cluster in it.
-describe('kcmd profiles --print-store over several models', () => {
-  test('refuses before any AlloyDB lookup', async () => {
+// --print-store and skills-generate --name refuse a scope of several models
+// before they look up any AlloyDB cluster in it.
+describe('--print-store and skills-generate --name over several models', () => {
+  test('refuse before any AlloyDB lookup', async () => {
     const list = spyOn(AlloyDbClient.prototype, 'listInstances')
                      .mockResolvedValue({status: 200, result: []});
     const cluster =
@@ -576,5 +576,14 @@ semantic_model:
     expect(await profiles({printStore: true})).toBe(1);
     expect(logs.join('\n')).toContain('this scope holds 2 models');
     expect(list).not.toHaveBeenCalled();
+    logs = [];
+    const out = path.join(dir, 'skills-out');
+    expect(await skillsGenerate({out, name: 'custom'})).toBe(1);
+    expect(logs.join('\n')).toContain(
+        '--name applies to one skill, and this scope has 2 models');
+    expect(list).not.toHaveBeenCalled();
+    // Without --name, skills-generate looks up the cluster.
+    await skillsGenerate({out});
+    expect(list).toHaveBeenCalled();
   });
 });

@@ -2029,14 +2029,18 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const ctx = context.ApiContext.default();
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
-  const opened = await createSemanticRuntimes({profile: named, ctx});
+  // `--name` names one skill, so a scope of several models is refused before
+  // any AlloyDB lookup.
+  const opened = await createSemanticRuntimes({
+    profile: named,
+    ctx,
+    oneModel: options.name ?
+        count => `--name applies to one skill, and this scope has ${
+            count} models. Drop it and each takes its model's name.` :
+        false,
+  });
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);
-    return 1;
-  }
-  if (options.name && opened.length > 1) {
-    console.error(`Error: --name applies to one skill, and this scope has ${
-        opened.length} models. Drop it and each takes its model's name.`);
     return 1;
   }
 
