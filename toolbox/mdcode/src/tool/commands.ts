@@ -12,6 +12,7 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {ConstraintRates} from '../libts/semantic/constraint_enforcement';
 import * as contracts from '../libts/semantic/contract_tests';
 import {buildCoverageReport, CoverageReport, formatCoverageSummary, writeCoverageFile} from '../libts/semantic/converters/coverage';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
@@ -587,6 +588,10 @@ export async function push(options: PushOptions): Promise<number> {
       }
     };
     const loadedDocs = new Set<string>();
+    // Per model, how often each constraint breaks in the node views that
+    // enforce constraints: measured after the BigQuery deploy, published by
+    // the Knowledge Catalog leg (constraint_enforcement.ts).
+    const constraintRates = new Map<string, ConstraintRates>();
     for (const profileName of graphProfileNames) {
       // --all-profiles fans out over every model's profiles, so a model that
       // does not define this one is dropped (skipMissing) rather than failing
@@ -646,7 +651,9 @@ export async function push(options: PushOptions): Promise<number> {
             !(await profileGate(prepared.bqModels, ctx, profileName))) {
           return 1;
         }
-        const code = await pushBigQuery(prepared.bqModels, ctx, options);
+        const code = await pushBigQuery(
+            prepared.bqModels, ctx, options,
+            kcEnabled ? constraintRates : undefined);
         if (code !== 0) return code;
         deployedGraphs += prepared.bqModels.length;
       }
@@ -690,9 +697,11 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     // Neither a BigQuery nor a Spanner property graph has a construct for an
-    // action or a constraint, so Knowledge Catalog is their only destination. A
-    // push that omits the KC leg (--no-kc) would validate them and then deploy
-    // them nowhere. Warn instead of dropping them silently.
+    // action or a constraint, so Knowledge Catalog is the only place they are
+    // published (a node view applies the constraints its binding enforces, but
+    // publishes none). A push that omits the KC leg (--no-kc) would validate
+    // them and then publish them nowhere. Warn instead of dropping them
+    // silently.
     if (!kcEnabled) {
       // The loop above already loaded every document that contributes a graph.
       // Only the rest need loading, which is usually none, and a model that
@@ -728,8 +737,8 @@ export async function push(options: PushOptions): Promise<number> {
       const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
       const prepared = await prepareOnce(docs, kcProfileName, prune);
       if (!prepared) return 1;
-      const code =
-          await pushKnowledgeCatalog(prepared.models, ctx, options, source);
+      const code = await pushKnowledgeCatalog(
+          prepared.models, ctx, options, source, constraintRates);
       if (code !== 0) return code;
     } else if (deployedGraphs === 0) {
       // Graph-only push (--no-kc) whose selected profile(s) declare no target:
@@ -978,12 +987,18 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
 // Deploys the semantic model's BigQuery Graph leg (over the pre-loaded models)
 // and prints the result. Returns a process exit code (0 on success).
 async function pushBigQuery(
-    models: LoadedModel[], ctx: context.ApiContext,
-    options: PushOptions): Promise<number> {
+    models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
+    constraintRates?: Map<string, ConstraintRates>): Promise<number> {
   console.log(
       options.validateOnly ? 'Validating semantic model for BigQuery Graph...' :
                              'Pushing semantic model (BigQuery Graph)...');
-  const result = await deploy.deployBigQuery(models, ctx, options);
+  // With a rates sink, the deploy also measures how often each enforced
+  // constraint breaks, for the Knowledge Catalog leg.
+  const result = await deploy.deployBigQuery(
+      models, ctx, {...options, measureConstraints: !!constraintRates});
+  for (const [model, rates] of result.constraintRates ?? []) {
+    constraintRates?.set(model, rates);
+  }
 
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
@@ -1062,7 +1077,8 @@ async function pushSpanner(
 // success).
 async function pushKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
-    source: SemanticModelSource): Promise<number> {
+    source: SemanticModelSource,
+    constraintRates?: Map<string, ConstraintRates>): Promise<number> {
   console.log(
       options.validateOnly ?
           'Validating semantic model for Knowledge Catalog...' :
@@ -1082,6 +1098,7 @@ async function pushKnowledgeCatalog(
     emitExpressions: options.emitExpressions,
     customAspects,
     bigQueryEntries,
+    ...(constraintRates?.size ? {constraintRates} : {}),
     // The semantic-* system types live in `dataplex-types/global` on prod.
     // Override via KC_TYPE_PROJECT to reference them from another project
     // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
@@ -1641,9 +1658,9 @@ export function catalogOnlyWarning(
         n.constraints ? `${n.constraints} constraint(s)` : '',
       ].filter(part => part)
           .join(' and ');
-  return `model '${model}' declares ${declared}, which deploy only to ` +
+  return `model '${model}' declares ${declared}, which publish only to ` +
       `Knowledge Catalog; --no-kc excludes that leg, so they will not be ` +
-      `deployed. Drop --no-kc to deploy them.`;
+      `published. Drop --no-kc to publish them.`;
 }
 
 

@@ -735,9 +735,15 @@ reads the document ([§6](#6-the-extension-mechanism)).
 
   A constraint takes effect only where something references it. Declaring one
   adds a rule to the catalog and refuses nothing, so publishing a rule cannot
-  change what an already-working call does. `guards` on an action is the only
-  reference the model defines, and it is where a rule over an action's
-  parameters belongs, having no other moment to run. A rule that turns on a
+  change what an already-working call does. The model defines one reference,
+  `guards` on an action, and the binding layer one more: a binding profile
+  whose entity sets `hydration.constraints: enforce` has that entity's node
+  view apply every rule it can check deterministically (the rules an importer
+  generates from SHACL or OWL) to the rows a read sees
+  ([Validation → Enforcing constraints at consumption
+  time](validation.md#enforcing-constraints-at-consumption-time)). `guards` is
+  where a rule over an action's parameters belongs, having no other moment to
+  run. A rule that turns on a
   stored value can be declared there too, but nothing fetches that value: a
   judge is given the rule, the action and the arguments, so such a rule is
   recorded rather than enforced, and its enforcement belongs in your schema.
@@ -753,6 +759,10 @@ reads the document ([§6](#6-the-extension-mechanism)).
   **`on_violation`** is what a violation does to the write that tripped it:
   `reject` refuses it outright and nobody may approve it, `escalate` holds it
   for a human decision, `warn` lets it proceed and reports it. It is required.
+  On the read side, an enforcing node view routes on the same word: `reject`
+  withholds the failing value (or leaves the row out, when the rule is about the
+  record: a required field, or the key), and `warn` and `escalate` serve the row
+  as stored; every broken rule is named in the row's `_warnings`.
   **`severity`** is how grave a violation is — `critical`, `high`, `medium` or
   `low` — for ranking and reporting. It is optional, carries no default, and
   nothing ranks or routes on it yet.

@@ -214,6 +214,7 @@ function hydrationData(h: EntityHydration|undefined): Record<string, any>|
         h.resolve.map(r => ({field: r.field, match: [...r.match]})) :
         undefined,
     deriveFrom: h.deriveFrom?.relationship,
+    constraints: h.constraints,
   }));
 }
 
@@ -460,6 +461,7 @@ function readHydration(v: any): EntityHydration|undefined {
   if (resolve.length) h.resolve = resolve;
   const derive = str(v.deriveFrom);
   if (derive) h.deriveFrom = {relationship: derive};
+  if (v.constraints === 'enforce') h.constraints = 'enforce';
   return Object.keys(h).length ? h : undefined;
 }
 

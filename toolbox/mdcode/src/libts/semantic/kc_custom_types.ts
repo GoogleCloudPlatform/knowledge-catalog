@@ -914,6 +914,18 @@ const BINDING_ASPECT_TYPE: Omit<AspectType, 'name'> = {
                   'values are the entity\'s rows.',
             },
           },
+          {
+            index: 5,
+            name: 'constraints',
+            type: 'string',
+            annotations: {
+              displayName: 'Constraints',
+              description: '`enforce`: the node view applies the model\'s ' +
+                  'constraints to the rows it serves (reject rules withhold ' +
+                  'the value or exclude the row; the rest are named in ' +
+                  '`_warnings`).',
+            },
+          },
         ],
         annotations: {
           displayName: 'Hydration',

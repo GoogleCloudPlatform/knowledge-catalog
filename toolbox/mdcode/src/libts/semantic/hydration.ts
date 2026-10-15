@@ -14,22 +14,28 @@
 //     normalize:   [{ field: wonAmount, before: "2024-03-25", divide_by: 100 }]
 //     resolve:     [{ field: homeMarketUnit, match: [marketUnitCode, unitName] }]
 //     derive_from: { relationship: allianceWith }
+//     constraints: enforce                         # the model's rules, applied
 //   mode: view                                     # or direct
 //
 // Each rule compiles to one documented SQL shape in the entity's node view
-// (node_views.ts). This module owns the vocabulary: the document validator
+// (node_views.ts; `constraints` in constraint_enforcement.ts). This module
+// owns the vocabulary: the document validator
 // (shared by the profile merge and the loader, so both reject the same
 // documents with the same words), the document <-> IR mapping, the static
 // cross-reference checks, and the one-line human summary that node-view
 // descriptions and catalog entries carry.
 
-import {Entity, EntityHydration, Field, NormalizeRule, Relationship, ResolveRule, SemanticModel} from './ir';
+import {ConstraintsMode, Entity, EntityHydration, Field, NormalizeRule, Relationship, ResolveRule, SemanticModel} from './ir';
 import {declaredConceptFields} from './resolve_inheritance';
 import {snakeCase} from './generated_views';
 import {isSimpleIdentifier} from './sql_identifiers';
 
 /** The rules a `hydration` block may carry; anything else is rejected. */
-export const HYDRATION_RULES = ['grain', 'normalize', 'resolve', 'derive_from'] as const;
+export const HYDRATION_RULES =
+    ['grain', 'normalize', 'resolve', 'derive_from', 'constraints'] as const;
+
+/** The values of `hydration.constraints`. */
+export const CONSTRAINTS_MODES: readonly ConstraintsMode[] = ['enforce'];
 
 /** The values of an entity's `mode`. */
 export const BINDING_MODES = ['view', 'direct'] as const;
@@ -202,6 +208,12 @@ export function hydrationDocErrors(doc: unknown): string[] {
           `has no table of its own, so ${others.join(', ')} cannot apply`);
     }
   }
+  if (doc.constraints !== undefined &&
+      !(CONSTRAINTS_MODES as readonly unknown[]).includes(doc.constraints)) {
+    errors.push(`'hydration.constraints' must be ${
+        CONSTRAINTS_MODES.map(m => `'${m}'`).join(' or ')} (the node view ` +
+        `applies the model's constraints to the rows it serves)`);
+  }
   return errors;
 }
 
@@ -241,6 +253,7 @@ export function hydrationFromDoc(doc: any): EntityHydration {
   if (doc.derive_from !== undefined) {
     out.deriveFrom = {relationship: doc.derive_from.relationship};
   }
+  if (doc.constraints !== undefined) out.constraints = doc.constraints;
   return out;
 }
 
@@ -266,6 +279,7 @@ export function hydrationToDoc(h: EntityHydration): Record<string, any> {
     out.resolve = h.resolve.map(r => ({field: r.field, match: [...r.match]}));
   }
   if (h.deriveFrom) out.derive_from = {relationship: h.deriveFrom.relationship};
+  if (h.constraints) out.constraints = h.constraints;
   return out;
 }
 
@@ -377,8 +391,9 @@ export function checkHydration(
       continue;
     }
     if (isDirect(e)) {
-      const viewOnly = (['grain', 'normalize', 'deriveFrom'] as const)
-                           .filter(r => h[r] !== undefined);
+      const viewOnly =
+          (['grain', 'normalize', 'deriveFrom', 'constraints'] as const)
+              .filter(r => h[r] !== undefined);
       if (viewOnly.length) {
         errors.push(`${at}: 'mode: direct' binds the source table as-is, so ` +
             `hydration ${viewOnly.map(r => r === 'deriveFrom' ? 'derive_from' : r)
@@ -500,6 +515,7 @@ function formatNumber(n: number): string {
  *   wonAmount ÷100 before 2024-03-25
  *   homeMarketUnit resolved to MarketUnit by marketUnitCode or unitName
  *   derived from allianceWith
+ *   constraints enforced
  *   bound directly (no node view)
  * The wording is fixed so the catalog trailer can be parsed back (see
  * hydration_kc.ts). Key columns are the node view's (snake_case of the key
@@ -530,6 +546,10 @@ export function hydrationClauses(
         r.match.join(' or ')}`);
   }
   if (h?.deriveFrom) out.push(`derived from ${h.deriveFrom.relationship}`);
+  if (h?.constraints === 'enforce') out.push(CONSTRAINTS_ENFORCED_CLAUSE);
   if (entity.mode === 'direct') out.push('bound directly (no node view)');
   return out;
 }
+
+/** The hydration clause of `constraints: enforce` (see hydrationClauses). */
+export const CONSTRAINTS_ENFORCED_CLAUSE = 'constraints enforced';

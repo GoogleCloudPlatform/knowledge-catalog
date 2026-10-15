@@ -352,7 +352,7 @@ becomes one part of that graph:
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Relationship `extends` / `abstract` | extra `LABEL … NO PROPERTIES` clauses on the sub-relationship's edge table; no edge table for an abstract relationship | a match on the parent label spans every descendant edge table (see [Relationship hierarchies](#relationship-hierarchies)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
-| Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
+| Constraint | *no graph construct* | a constraint is published to Knowledge Catalog (see below); a node view under `hydration.constraints: enforce` applies it to the rows it serves (see [Node views](#node-views-hydration)) |
 
 Next to that graph, a push also deploys the model's metrics as small
 `GRAPH_EXPAND`-ready metric graphs, plus a view for any metric none can hold
@@ -421,11 +421,20 @@ through a view it generates in the graph's dataset, named
   table, the distinct foreign keys of a relationship (`derive_from`). See
   [Hydration](profiles.md#hydration--reshaping-a-table-into-the-entity) for the
   rules and the SQL each compiles to;
+- **constraints** — under `constraints: enforce`, the model's constraints
+  applied to those rows: a `reject` rule's failing value withheld (NULL) or,
+  for a required field or the key, the row left out; allowed-set values served
+  in the member's spelling; and a `_warnings` column (`ARRAY<STRING>`) naming
+  every rule the row breaks. See
+  [Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time);
 - **description** — the entity's description, its key, a one-line summary of
-  the rules applied, and its source.
+  the rules applied (and of the constraints it enforces), and its source.
 
 The graph, its edges (a foreign key is read from its entity's view), vocabulary
-and derived edges, measures, and metric graphs all read the views. An abstract,
+and derived edges, measures, and metric graphs all read the views, so every
+governed read inherits the hydration and the enforced constraints; the
+`_warnings` column is read through the view itself (it is not a node
+property). An abstract,
 defined, or vocabulary entity gets none (a vocabulary keeps its `vocab_*`
 view), nor does one with `mode: direct`, or one whose view would replace a
 table the model binds (warned). The views need `bigquery.tables.create` /
@@ -836,7 +845,7 @@ did before.
 |---|---|---|
 | `semantic-ai-context` | model, entity, metric | the element's whole `ai_context` (instructions, synonyms, examples) and each field's `ai_context`; on the model entry, every relationship's authored name, its link id and its `ai_context` (an entry link cannot carry a custom aspect) |
 | `semantic-expressions` | entity, metric | the metric's expression, imported vendor SQL and logical type; per field its expression, imported SQL, logical type and dimension role |
-| `semantic-binding` | entity | binding `mode`, `hydration` rules, vocabulary `members` (all member fields), and the node view / graph / node label it is read through; on a junction entry, the many-to-many relationship it backs |
+| `semantic-binding` | entity | binding `mode`, `hydration` rules (`constraints: enforce` included), vocabulary `members` (all member fields), and the node view / graph / node label it is read through; on a junction entry, the many-to-many relationship it backs |
 
 With `semantic-expressions` provisioned, expressions are always published
 through it, so `--emit-expressions` is no longer needed. `pull` reads all three
@@ -855,7 +864,8 @@ the entry:
 |---|---|---|
 | Model anchor | `Contents:` every metric, then every entity, by name, so an agent whose search matched nothing can pick the entries to look up. Sized to keep the description within Dataplex's 2,000 characters (`… N more`) | `Contents: metrics revenue, aov; entities Customer, Order, Product.` |
 | Bound entity | `Read through:` its node view (its table under `mode: direct`), its graph and node label | ``Read through: node view `p.d.order`; graph `p.d.shop_graph`, node Order.`` |
-| Bound entity | `Relationships:` every edge from it (`→`) and to it (`←`) with the join columns of the views both ends are read through, this entity's column first; a many-to-many edge names its junction table. Sized to keep the description within Dataplex's 2,000 characters (`… N more`), just before `Hydration:` | `Relationships: placedBy → Customer (customer_id = customer_id).` |
+| Bound entity | `Relationships:` every edge from it (`→`) and to it (`←`) with the join columns of the views both ends are read through, this entity's column first; a many-to-many edge names its junction table. Sized to keep the description within Dataplex's 2,000 characters (`… N more`), just before `Constraints:` / `Hydration:` | `Relationships: placedBy → Customer (customer_id = customer_id).` |
+| Bound entity under `hydration.constraints: enforce` | `Constraints:` the rules its node view applies (rows excluded, values withheld, flagged only), the spelling it normalizes, and the relationship rules it reports, each with how often it breaks over the hydrated rows (push measures it after the deploy); every broken rule is named in the view's `_warnings` column. At most 800 characters: the rules no row breaks fold into a count first. Just before `Hydration:` | `Constraints: enforced in the node view after hydration; … Values withheld (served as NULL): floorPrice by DealPricing_floorPrice_lte_targetPrice (50.1%). …` |
 | Metric | `Query:` its measures composed as its expression over `GRAPH_EXPAND` of the graph that holds them (or its expression over its fallback view), last | `Query: SELECT AGG(Order_revenue) FROM GRAPH_EXPAND("p.d.shop_graph__order_metrics")` |
 
 The query runs as written; to slice it, add `WHERE` and `GROUP BY` over the
@@ -1094,8 +1104,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   third dotted segment, which is a path rather than a field. What is left is the
   case the check exists for: a tail the model declares under no kind at all,
   next to an entity it does declare. *(static)*
-* Like an action, a constraint reaches Knowledge Catalog only, and a `--no-kc`
-  push warns that it will not be deployed. Two rules are enforced at parse time:
+* Like an action, a constraint is published to Knowledge Catalog only, and a
+  `--no-kc` push warns that it will not be published (a node view still applies
+  the constraints its binding enforces). Two rules are enforced at parse time:
   `on_violation` and `severity` are each a closed vocabulary — `reject` /
   `escalate` / `warn` and `critical` / `high` / `medium` / `low` — so an
   unrecognized word is a hard load error rather than a value that publishes and

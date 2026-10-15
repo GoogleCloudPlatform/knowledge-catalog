@@ -990,8 +990,11 @@ describe('a graph leg says what it dropped', () => {
       expect(warnings.some(
                  w => /1 action\(s\) reach Knowledge Catalog only/.test(w)))
           .toBe(true);
+      // BigQuery applies constraints in enforcing node views; Spanner nowhere.
       expect(warnings.some(
-                 w => /5 constraint\(s\) reach Knowledge Catalog only/.test(w)))
+                 w => backend === 'BigQuery' ?
+                     /5 constraint\(s\) have no property-graph construct: Knowledge Catalog publishes them, and the BigQuery push applies them only in node views/.test(w) :
+                     /5 constraint\(s\) reach Knowledge Catalog only/.test(w)))
           .toBe(true);
       // Named the system it does reach, and the one that drops it.
       expect(warnings.some(w => w.includes(`the ${backend} push deploys none`)))
@@ -1002,7 +1005,8 @@ describe('a graph leg says what it dropped', () => {
   test('a model with neither is quiet about both', () => {
     const {warnings} = generatePropertyGraph(
         loadFixtureModel('star_orders_customer.yaml'));
-    expect(warnings.some(w => /reach Knowledge Catalog only/.test(w)))
+    expect(warnings.some(
+               w => /reach Knowledge Catalog only|no property-graph construct/.test(w)))
         .toBe(false);
   });
 });

@@ -240,7 +240,17 @@ export interface EntityHydration {
   // The entity has no table: its rows are the distinct foreign-key values of
   // this relationship, whose destination is the entity's key.
   deriveFrom?: {relationship: string};
+  // `enforce`: the node view applies the model's constraints to the rows it
+  // serves, after the rules above (see constraint_enforcement.ts). A `reject`
+  // rule withholds the failing value, or excludes the row when the rule is
+  // about the record itself (a required field, or the key); every other rule
+  // is named in the view's `_warnings` column. Relationship rules are
+  // reported, never applied. Absent: the view serves the rows as hydrated.
+  constraints?: ConstraintsMode;
 }
+
+/** See EntityHydration.constraints. */
+export type ConstraintsMode = 'enforce';
 
 /** A declared value correction applied before or after a date. */
 export interface NormalizeRule {
@@ -865,7 +875,11 @@ export interface GrpcExecutor {
  * `guards`, and `warn` reports while `reject` and `escalate` stop the call;
  * `escalate` says so in the refusal, because nothing here has an approver to
  * route to. An expression is still text nothing computes, so its word decides
- * nothing yet.
+ * nothing yet. On the read side, a node view whose profile sets
+ * `hydration.constraints: enforce` routes on the word of every rule it can
+ * check deterministically (see constraint_enforcement.ts): `reject` withholds
+ * the failing value or excludes the row, and `warn` and `escalate` name the
+ * rule in the row's `_warnings`, since a read has no approver to escalate to.
  */
 export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
 
