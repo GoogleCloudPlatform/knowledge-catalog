@@ -216,14 +216,14 @@ function placeMetric(
     return;
   }
   // A measure is allowed only on a LEAF type -- one that no table-emitting
-  // entity extends (agreed with Dmitri). A metric lowers to a MEASURE on
-  // the target's DEFAULT LABEL; when that entity is a supertype its label is
-  // shared with every subtype table, and BigQuery forbids a MEASURE on a label
-  // carried by more than one element table (verified live: "defined as MEASURE,
-  // but there are other declarations with the same name"). Drop it with a
-  // warning rather than emit DDL BigQuery rejects. Push validation rejects such
-  // a metric before generation; this guard covers a caller that generates DDL
-  // without validating first.
+  // entity extends. A metric lowers to a MEASURE on the target's DEFAULT LABEL;
+  // when that entity is a supertype its label is shared with every subtype
+  // table, and BigQuery forbids a MEASURE on a label carried by more than one
+  // element table (verified live: "defined as MEASURE, but there are other
+  // declarations with the same name"). Drop it with a warning rather than emit
+  // DDL BigQuery rejects. Push validation rejects such a metric before
+  // generation; this guard covers a caller that generates DDL without
+  // validating first.
   if (ancestorsUsed.has(entityName)) {
     warnings.push(
         `metric '${metric.name}' targets entity '${entityName}', which is not ` +
