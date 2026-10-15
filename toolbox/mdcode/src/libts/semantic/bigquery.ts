@@ -111,11 +111,14 @@ export function generatePropertyGraph(
   const relationships = lowered.relationships ?? [];
   const metrics = lowered.metrics ?? [];
 
-  // Knowledge Catalog is the only system an action or a constraint reaches
-  // (kc_actions.ts, kc_constraints.ts), so this leg emits nothing for either.
-  // Warn once each, so an author who declared them learns where they go. A push
-  // that leaves Knowledge Catalog out warns separately that they reach nothing
-  // at all (see commands.ts).
+  // A property graph has no construct for an action or a constraint
+  // (kc_actions.ts and kc_constraints.ts publish them to Knowledge Catalog),
+  // so this leg emits nothing for either. Warn once each, so an author who
+  // declared them learns where they go. Constraints are the one exception on
+  // the read side: a node view whose binding sets `hydration.constraints:
+  // enforce` applies them to the rows it serves (constraint_enforcement.ts). A
+  // push that leaves Knowledge Catalog out warns separately that they are
+  // published nowhere (see commands.ts).
   const actions = resolved.model.actions ?? [];
   if (actions.length) {
     warnings.push(
@@ -125,8 +128,9 @@ export function generatePropertyGraph(
   const constraints = resolved.model.constraints ?? [];
   if (constraints.length) {
     warnings.push(
-        `${constraints.length} constraint(s) reach Knowledge Catalog only; ` +
-        `the BigQuery push deploys none of them.`);
+        `${constraints.length} constraint(s) have no property-graph construct: ` +
+        `Knowledge Catalog publishes them, and the BigQuery push applies them ` +
+        `only in node views whose binding sets hydration.constraints: enforce.`);
   }
 
   // An abstract entity is conceptual: it has no physical table and produces no

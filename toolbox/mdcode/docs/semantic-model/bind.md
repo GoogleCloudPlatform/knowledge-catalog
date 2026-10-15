@@ -156,6 +156,7 @@ read. `--model <file>` binds one document and writes its profile beside it.
 | `--model <file>` | bind this document instead of the scope's |
 | `--from-catalog` | bind the model pulled from Knowledge Catalog |
 | `--accept-review` | take every best candidate and switch on the proposed `normalize` rules |
+| `--enforce-constraints` | write `hydration.constraints: enforce` on every entity whose node view applies or reports one of the model's constraints (see [Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time)) |
 | `--no-profile-data` | do not profile the chosen tables (no hydration proposals) |
 | `--exclude <glob>` | leave matching datasets out; repeatable |
 | `--include-views` | consider views as well as base tables |

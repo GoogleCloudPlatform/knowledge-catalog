@@ -147,10 +147,14 @@ much a fact about an account as the fields beside it. Each one states its rule
 in words, under `judgment`, with the field names it mentions written
 model-qualified so they are checked like any other reference — which is what
 lets a rule no arithmetic decides, such as whether a discount is justified by
-the reason given, be stated at all. A constraint does nothing until an action
-names it in `guards`; then it is settled before that call runs, by a language
-model reading the attempted call. A constraint reaches Knowledge Catalog only:
-it is validated, published there, and read back by `pull`.
+the reason given, be stated at all. A constraint does nothing until something
+references it. An action names it in `guards`; then it is settled before that
+call runs, by a language model reading the attempted call. A binding profile
+can set `hydration.constraints: enforce` on an entity; then its BigQuery node
+view applies every rule `kcmd validate` can check to the rows a read sees (see
+[Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time)).
+A constraint is validated, published to Knowledge Catalog, and read back by
+`pull`.
 
 This model names no table and no store, so it is complete enough to govern in
 Knowledge Catalog as-is (step 2). Where each entity reads from — the store and the

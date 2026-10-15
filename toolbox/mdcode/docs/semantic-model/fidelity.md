@@ -48,7 +48,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Relationship `via` / `filter` (derived, proposed)              | `schema-join` over the endpoint keys + `Derived via:` / `Derived filter:` paragraphs¹⁸ | ✓ (step names normalized⁶)¹⁸ | generated `edge_<relationship>` view + `EDGE TABLE` over it¹⁸ | — push error¹⁸ |
 | Entity `hydration` / `mode` (binding)                          | `Hydration:` paragraph¹⁹ + structured `semantic-binding` aspect²⁰; binding links to the node view / table and graph node entries²⁰ | ✓¹⁹ ²⁰ | the generated node view's rows (`mode: direct`: the source table as-is)¹⁹ | — tables bound as-is; `derive_from` is a push error¹⁹ |
 | Action                                                         | `semantic-action` entry¹²       | ✓¹²                                            | — not deployed¹²                                                     | — not deployed¹²                                                     |
-| Constraint                                                     | `semantic-constraint` entry¹³   | ✓¹³                                            | — not deployed¹³                                                     | — not deployed¹³                                                     |
+| Constraint                                                     | `semantic-constraint` entry¹³; `Constraints:` paragraph on an enforcing entity¹³ | ✓¹³ (paragraph peeled off)                     | applied by the node view under `hydration.constraints: enforce`¹³    | — not deployed¹³                                                     |
 | Glossary (`glossary:`)                                         | Business Glossary, categories, terms and `related` / `definition` entry links, via `kcmd glossary push`¹⁶ | — not yet¹⁶ | — not deployed¹⁶ | — not deployed¹⁶ |
 | `description` (entity / metric / field / relationship)         | entry description / aspect      | ✓                                              | `OPTIONS(description)`                                               | — dropped                                                            |
 | `ai_context.synonyms`                                          | `semantic-ai-context` aspect²⁰ (else not stored) | ✓²⁰                                  | `OPTIONS(synonyms=[...])`                                            | — dropped                                                            |
@@ -134,12 +134,18 @@ agree on every structural row and differ only where a Spanner target has no
     to stay loadable. Its `affects` round-trips the same way, with the same
     exception for a repeated concept-and-operation pair. See
     [Modeling write operations](actions.md).
-13. **Constraints.** A constraint reaches Knowledge Catalog only, as one
+13. **Constraints.** A constraint is published to Knowledge Catalog as one
     `semantic-constraint` entry under the model entry, and `pull` reads it back.
-    Every other push target deploys nothing for it and warns once. Publishing is
-    all that push does with a constraint; what settles one is a run, and the
-    runtime an application embeds is what puts each guard to a judge before the
-    write.
+    No graph has a construct for one. On BigQuery, an entity whose binding sets
+    `hydration.constraints: enforce` has its node view apply every rule `kcmd
+    validate` can check (a `reject` rule's failing value withheld, or the row
+    left out for a required field or the key; every broken rule named in
+    `_warnings`), and its entry carries a derived `Constraints:` paragraph with
+    how often each rule breaks, which `pull` drops (see
+    [Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time)).
+    Spanner deploys nothing for a constraint and warns once. What settles a
+    judged rule is a run: the runtime an application embeds puts each guard to a
+    judge before the write.
 14. **Binding profiles.** A model may define several physical realizations, one
     per binding profile. `--all-profiles` deploys a graph for every profile that
     declares a deployment target, each to the backend its own target names; a
@@ -300,9 +306,9 @@ content.
 | `rdfs:subPropertyOf` between object properties | compiled | relationship `extends`; the parent is `abstract` | `LABEL <parent> NO PROPERTIES` on each sub-relationship's edge table; no edge table for the parent |
 | `owl:equivalentClass` definition (defined class), with its restrictions | compiled | defined entity (`definition`) | the boolean property `is<Class>` on the base's node table, computed from the definition; `kcmd test` checks it (`defined-membership`) |
 | `owl:NamedIndividual` whose code a definition uses | compiled | the code inside the definition | inside the `is<Class>` expression |
-| `owl:Restriction`, `owl:FunctionalProperty` on an object property, `owl:disjointWith`, `owl:AllDisjointClasses` | compiled | constraint, or the model structure | — not deployed¹³; `kcmd validate` counts the violations in the bound tables |
-| SHACL node and property shapes and their constraint components | compiled | constraint, or the model structure | — not deployed¹³; `kcmd validate` counts the violations |
-| `sh:message` or `sh:description`, `sh:severity` | compiled with their constraint | constraint `description`, `severity`, `on_violation` | — not deployed¹³ |
+| `owl:Restriction`, `owl:FunctionalProperty` on an object property, `owl:disjointWith`, `owl:AllDisjointClasses` | compiled | constraint, or the model structure | not in the graph¹³; `kcmd validate` counts the violations in the bound tables; an enforcing node view applies a restriction on a field and reports the rest |
+| SHACL node and property shapes and their constraint components | compiled | constraint, or the model structure | not in the graph¹³; `kcmd validate` counts the violations; an enforcing node view applies the field rules (withhold / exclude / flag in `_warnings`) and reports the relationship rules |
+| `sh:message` or `sh:description`, `sh:severity` | compiled with their constraint | constraint `description`, `severity`, `on_violation` | `on_violation` decides what an enforcing node view does¹³ |
 | `owl:TransitiveProperty` | hinted | relationship `ai_context.instructions` | into the edge's `OPTIONS(description)`; a query follows the edge with a quantified path `-[:p]->{1,k}`, which `kcmd test` checks (`transitive-closure`) |
 | `owl:SymmetricProperty` | hinted | relationship `ai_context.instructions` | into the edge's `OPTIONS(description)`; a query matches the edge undirected |
 | `owl:equivalentClass` or `owl:equivalentProperty` to a named term | hinted | `ai_context.synonyms` | `OPTIONS(synonyms=[...])` |
@@ -315,8 +321,8 @@ content.
 
 The outcome and the lowering answer different questions. A construct is
 compiled when the model holds it natively, even where the graph then leaves it
-out: a constraint is compiled, and `kcmd validate` measures it, but no graph
-carries it. A hinted construct reaches the graph only as text an agent reads.
+out: a constraint is compiled, `kcmd validate` measures it, and an enforcing
+node view applies it, but no graph construct carries it. A hinted construct reaches the graph only as text an agent reads.
 A Spanner target keeps the structural lowerings and drops every `OPTIONS` (see
 [To Spanner](#to-spanner)).
 
@@ -604,7 +610,9 @@ Everything else — keys, relationships, the label hierarchy — matches the
 **Actions and constraints** reach neither graph. They are published to
 Knowledge Catalog as one `semantic-action` or `semantic-constraint` entry each
 and round-trip losslessly through `pull` — see
-[To Knowledge Catalog](#to-knowledge-catalog).
+[To Knowledge Catalog](#to-knowledge-catalog). On BigQuery, a node view under
+`hydration.constraints: enforce` applies the constraints to the rows it serves;
+a Spanner graph binds tables directly and applies none.
 
 ## What pull recovers
 

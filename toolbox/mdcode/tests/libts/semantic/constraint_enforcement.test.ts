@@ -170,6 +170,24 @@ describe('which rules a node view applies, and how', () => {
     expect(plan.rules.map(r => r.effect)).toEqual(['flag', 'flag']);
   });
 
+  test('a reported rule no query can measure is skipped, with the reason', () => {
+    const m = model();
+    m.constraints = [{
+      name: 'DealPricing_disjoint_Region',
+      judgment: 'Nothing is both.',
+      description: 'Disjoint. (From OWL: DealPricing DisjointWith Region.)',
+      onViolation: 'warn',
+    }];
+    m.entities.push({name: 'Region', dataSource: '', keys: ['regionId'],
+                     fields: [{name: 'regionId', type: 'String'}]});
+    const plan = planEnforcement(m, resolvedOf(m, 'DealPricing'), boundOn(m, 'DealPricing'));
+    expect(plan.rules).toEqual([]);
+    expect(plan.skipped).toEqual([{
+      constraint: 'DealPricing_disjoint_Region',
+      reason: `entity 'Region' has no bound table and key under this binding`,
+    }]);
+  });
+
   test('a rule on a supertype applies to the subtype\'s rows', () => {
     const m = model();
     m.entities.push({
