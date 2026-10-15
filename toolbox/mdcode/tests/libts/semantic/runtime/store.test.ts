@@ -305,6 +305,7 @@ describe('a model that declares more than one deployment target', () => {
                `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>' ` +
                `or '//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.`,
            named: true,
+           rejected: true,
          };
          expect(resolveStore(targets(
                     [`${DB}/propertyGraphs/g`, typo], `${DB}/tables/Customer`)))
@@ -321,6 +322,7 @@ describe('a model that declares more than one deployment target', () => {
                    `instead: ` +
                    `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>'.`,
                named: true,
+               rejected: true,
              });
        });
 
@@ -335,6 +337,7 @@ describe('a model that declares more than one deployment target', () => {
          expect(resolveStore(broken)).toEqual({
            error: "Model 'm': GOOGLE custom_extension 'data' is not valid JSON.",
            named: true,
+           rejected: true,
          });
        });
 });
@@ -453,6 +456,7 @@ describe('the store a profile uses', () => {
           `Knowledge Catalog name. Write the resource URI instead: ` +
           `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`,
       named: true,
+      rejected: true,
     });
   });
 
@@ -474,6 +478,7 @@ describe('the store a profile uses', () => {
   test('a GOOGLE block gives no store to a named profile', () => {
     const vanilla: SemanticModel = {
       ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
+      version: '0.2.0.dev0',
       deployments: undefined,
     };
     expect(resolveStore(vanilla, 'prod'))
@@ -484,15 +489,20 @@ describe('the store a profile uses', () => {
     const store = resolveStore(vanilla, 'default');
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('spanner');
-    // A legacy wrapper merged into such a model reads the block as push does.
-    const wrapped = resolveStore(vanilla, 'prod', {legacyWrapper: true});
-    if ('error' in wrapped) throw new Error(wrapped.error);
-    expect(wrapped.kind).toBe('spanner');
-    const noTarget: SemanticModel = {...vanilla, customExtensions: undefined};
+  });
+
+  // A legacy wrapper merged into a model with no deployments has no target.
+  test('a legacy wrapper over a model with no deployments has no store', () => {
+    const noTarget: SemanticModel = {
+      ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
+      deployments: undefined,
+      customExtensions: undefined,
+    };
     expect(resolveStore(noTarget, 'prod', {legacyWrapper: true}))
         .toEqual({
-          error: expect.stringContaining(
-              "Model 'm' declares no deployment target in 'deployments'"),
+          error: "Model 'm' declares no deployment target in 'deployments', " +
+              'so there is no store to run against. Declare a deployment in ' +
+              "'deployments' whose target names a database.",
         });
   });
 

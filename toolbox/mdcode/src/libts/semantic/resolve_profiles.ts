@@ -938,12 +938,17 @@ export function isProfileFileForm(text: string): boolean {
  * legacy `semantic_model:` wrapper, and apply a profile file with
  * applyProfileFile. The tests merge profile files too, as the result
  * applyProfile must match. On a parse error or a binding-contract violation it
- * returns `error` for the caller to surface.
+ * returns `error` for the caller to surface. `deploymentTarget` is set when
+ * the merged model names its target with a `deployment_target` key, which the
+ * loader turns into a deployment named `default`.
  */
 export function mergeProfileOntoDoc(
-    logicalText: string, profileText: string, profileName: string):
-    {text: string; warnings: string[]; excluded: ProfileExclusion[]}|
-    {error: string} {
+    logicalText: string, profileText: string, profileName: string): {
+  text: string;
+  warnings: string[];
+  excluded: ProfileExclusion[];
+  deploymentTarget: boolean;
+}|{error: string} {
   let logicalDoc: unknown;
   let profileDoc: unknown;
   try {
@@ -959,10 +964,12 @@ export function mergeProfileOntoDoc(
   }
   const merged = mergeProfile(logicalDoc, profileDoc, profileName);
   if (merged.error) return {error: merged.error};
+  const models: any[] = (merged.doc as any).semantic_model;
   return {
     text: yaml.stringify(merged.doc),
     warnings: merged.warnings,
     excluded: merged.excluded,
+    deploymentTarget: models.some(m => m?.deployment_target !== undefined),
   };
 }
 
@@ -1144,10 +1151,13 @@ export type DeclaredProfile = {name: string; text: string}|
 /** A profile, in either form, applied to one model document. */
 export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
   // A legacy `semantic_model:` wrapper, merged into the document's text.
+  // `deploymentTarget` is set when the merged model names its target with a
+  // `deployment_target` key.
   kind: 'wrapper';
   text: string;
   excluded: ProfileExclusion[];
   warnings: string[];
+  deploymentTarget: boolean;
 }|{kind: 'error'; error: string; stage: 'load'|'apply'}|{
   // The document declares no profile by that name.
   kind: 'missing';

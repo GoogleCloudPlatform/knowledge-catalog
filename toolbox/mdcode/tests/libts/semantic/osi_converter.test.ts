@@ -249,6 +249,31 @@ semantic_model:
     ]);
     expect(ser.warnings).toHaveLength(1);
   });
+
+  // A non-string target is a target in no accepted form. It is written out as
+  // its JSON text, so a push of the reloaded file rejects it.
+  test('a vanilla GOOGLE block with a non-string target serializes it as its JSON text', () => {
+    const model: SemanticModel = {
+      name: 'sales',
+      version: '0.2.0.dev0',
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [7]}),
+      }],
+      entities: [{
+        name: 'orders', dataSource: 'p.d.orders',
+        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const ser = serializeModel(model);
+    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: '7'},
+    ]);
+    expect(ser.warnings).toEqual([]);
+  });
 });
 
 

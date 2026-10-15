@@ -281,13 +281,17 @@ ${deployments}    entities:
        async () => {
          const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
          fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
-         fs.writeFileSync(
-             path.join(eg, 'commerce.profiles', 'prod.yaml'), `semantic_model:
+         // A deployment may name only a profile the model declares.
+         for (const name of ['prod', 'analytical', 'operational']) {
+           fs.writeFileSync(
+               path.join(eg, 'commerce.profiles', `${name}.yaml`),
+               `semantic_model:
   - name: commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
 `);
+         }
          const withSpanner = (profileLine: string) => logical(
              `      - name: bq_prod\n` +
                  `        target: ${BQ}/propertyGraphs/commerce\n` +
@@ -480,7 +484,7 @@ semantic_model:
 `;
          const listed = (uris: string[]) =>
              JSON.stringify({deploymentTargets: uris});
-         const notAccepted = `Error: [commerce] Model 'commerce': the GOOGLE ` +
+         const notAccepted = `Error: Model 'commerce': the GOOGLE ` +
              `custom_extension's 'deploymentTargets' lists '${typo}', which ` +
              'is not a BigQuery graph, a Spanner graph or an AlloyDB database';
          for (const [data, error] of [
@@ -491,8 +495,8 @@ semantic_model:
                 ],
                 [
                   '{not-json',
-                  "Error: [commerce] Model 'commerce': GOOGLE " +
-                      "custom_extension 'data' is not valid JSON.",
+                  "Error: Model 'commerce': GOOGLE custom_extension 'data' " +
+                      'is not valid JSON.',
                 ],
               ]) {
            logs = [];

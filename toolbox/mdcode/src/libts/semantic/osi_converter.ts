@@ -560,9 +560,7 @@ function dropModelExtensions(
     let hasTargets = false;
     if (ext.vendorName === GOOGLE_VENDOR) {
       try {
-        const targets = JSON.parse(ext.data)?.deploymentTargets;
-        hasTargets = Array.isArray(targets) &&
-            targets.some(t => typeof t === 'string' && t.trim() !== '');
+        hasTargets = googleBlockTargets([ext], modelName).length > 0;
       } catch {
         hasTargets = false;
       }

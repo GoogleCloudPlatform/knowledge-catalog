@@ -152,8 +152,8 @@ semantic_model:
 `)).toBe(false);
   });
 
-  test('a GOOGLE block whose targets are all blank or not strings is not a target', () => {
-    for (const list of ['["  "]', '[""]', '[7]']) {
+  test('a GOOGLE block whose targets are all blank is not a target', () => {
+    for (const list of ['["  "]', '[""]']) {
       expect(declaresGraphTarget(`
 version: 0.2.0.dev0
 semantic_model:
@@ -163,6 +163,19 @@ semantic_model:
         data: '{"deploymentTargets":${list}}'
 `)).toBe(false);
     }
+  });
+
+  // A non-string entry is a target in no accepted form, so the push goes to
+  // the target checks, which reject it.
+  test('a GOOGLE block with a non-string target declares a target', () => {
+    expect(declaresGraphTarget(`
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets":[7]}'
+`)).toBe(true);
   });
 
   test('a non-GOOGLE extension is ignored', () => {

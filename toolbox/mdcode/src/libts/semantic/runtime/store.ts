@@ -17,9 +17,9 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
-import {databaseOf} from '../loader';
+import {databaseOf, OSSIE_VERSION} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
 
 
@@ -174,17 +174,24 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
 
 
 /**
- * Why resolveStore gives no store. `named` is set when the profile's
- * deployments name a target and still no store results: a target is in no
- * accepted form, several targets leave the store ambiguous, or the model
- * binds a table outside its Spanner or AlloyDB store. It is also set when the
- * targets cannot be read because a GOOGLE block's data is not valid JSON. It
- * is unset when the profile binds no store, and when a BigQuery model binds a
- * table outside the graph's dataset, which push accepts.
+ * Why resolveStore gives no store.
+ *
+ * `named` is set when the profile's deployments name a target and still no
+ * store results, so a caller that runs against the store fails. `rejected` is
+ * set with it when push rejects those deployments too, so the model is wrong
+ * whatever it is used for. That is the case when a target is in no accepted
+ * form, when a GOOGLE block's data is not valid JSON, and when several targets
+ * leave the store ambiguous. `named` alone means the model binds a table
+ * outside its Spanner or AlloyDB store.
+ *
+ * Neither is set when the profile names no store. Neither is set either when a
+ * BigQuery model binds a table outside the graph's dataset, which push
+ * accepts.
  */
 export interface StoreError {
   error: string;
   named?: boolean;
+  rejected?: boolean;
 }
 
 
@@ -192,39 +199,44 @@ export interface StoreError {
  * The store a model runs against under binding profile `profile`, which
  * defaults to `default`, the model file's own bindings. It is the one the
  * deployments for that profile name: those that name it in `profile`, or that
- * name none for `default`. A model with no `deployments` list, such as a
- * vanilla model, names no profile for any of its targets, so they are all for
- * `default`. The instance-based and cluster-based URIs of one AlloyDB
- * database are one store.
+ * name none or `default` for `default`. A model with no `deployments` list,
+ * such as a vanilla model, names no profile for any of its targets, so they
+ * are all for `default`. The instance-based and cluster-based URIs of one
+ * AlloyDB database are one store. With several targets, the store is the
+ * single operational one, Spanner or AlloyDB.
  *
- * A legacy `semantic_model:` wrapper is merged into the model file's text, so
- * set `legacyWrapper` for its merged model. When no deployment names the
- * wrapper, its store is the one the deployments that name no profile give, as
- * push deploys it. A wrapper that names its own `deployment_target` replaces
- * those deployments with it.
+ * Set `legacyWrapper` for a model a legacy `semantic_model:` wrapper was
+ * merged into. Set `deploymentTarget` when the model's deployment comes from a
+ * `deployment_target` key, which the loader names `default`, so that a
+ * message names the key instead.
  *
- * With several targets, the store is the single operational one, Spanner or
- * AlloyDB. Fails six ways: no deployment uses the profile; a GOOGLE block's
- * data is not valid JSON, so its targets cannot be read; a target names no
- * supported destination; there are several targets and no single operational
- * one, so which store is meant is ambiguous; there is no target, so there is
- * nothing to run against; or the model binds a table outside the store, so a
- * write would land in the wrong place. That last error is named only for a
- * Spanner or AlloyDB store. A BigQuery graph may read tables in any dataset,
- * and push accepts that.
+ * Fails six ways:
+ *
+ * 1. No deployment uses the profile.
+ * 2. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
+ * 3. A target names no supported destination.
+ * 4. There are several targets and no single operational one, so which store
+ *    is meant is ambiguous.
+ * 5. There is no target, so there is nothing to run against.
+ * 6. The model binds a table outside the store. For a Spanner or AlloyDB
+ *    store, a write would land in the wrong place, and the error is named. A
+ *    BigQuery graph may read tables in any dataset, and push accepts that, so
+ *    for a BigQuery store the error is not named.
  */
 export function resolveStore(
     model: SemanticModel, profile: string = DEFAULT_PROFILE,
-    opts: {legacyWrapper?: boolean} = {}): ChosenStore|StoreError {
-  const scoped = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
-  if ('error' in scoped) return scoped;
+    opts: {legacyWrapper?: boolean; deploymentTarget?: boolean} = {}):
+    ChosenStore|StoreError {
+  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+  if ('error' in used) return used;
+  const {model: scoped, owner} = used;
   let targets: GoogleDeploymentTargets;
   try {
     targets = googleDeploymentTargets(scoped);
   } catch (err: any) {
     // It throws when a GOOGLE block's data is not valid JSON. Push reports
     // that as an error, so the store fails.
-    return {error: `${err?.message || err}`, named: true};
+    return {error: `${err?.message || err}`, named: true, rejected: true};
   }
   const {spanner, bigQuery, malformed} = targets;
   const alloyDb = mergeUriPairs(targets.alloyDb);
@@ -233,7 +245,7 @@ export function resolveStore(
   // A vanilla model lists its targets in a GOOGLE block, which names no
   // deployment, so a message names the block.
   const inGoogleBlock =
-      scoped.deployments === undefined && model.version === '0.2.0.dev0';
+      scoped.deployments === undefined && model.version === OSSIE_VERSION;
   const where =
       inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` : `'deployments'`;
 
@@ -241,11 +253,15 @@ export function resolveStore(
   // a store.
   if (malformed.length) {
     const unparsed = scoped.deployments?.find(d => d.target === malformed[0]);
-    return {
-      error: unparsed ? deploymentTargetError(model, unparsed) :
-                        googleBlockTargetError(model, malformed[0]),
-      named: true,
-    };
+    let error: string;
+    if (!unparsed) {
+      error = googleBlockTargetError(model, malformed[0]);
+    } else if (opts.deploymentTarget) {
+      error = deploymentTargetKeyError(model, unparsed.target);
+    } else {
+      error = deploymentTargetError(model, unparsed);
+    }
+    return {error, named: true, rejected: true};
   }
 
   const operational = [...spanner, ...alloyDb];
@@ -260,19 +276,20 @@ export function resolveStore(
         `deployment targets on two operational backends (${
             counted.join(' and ')})` :
         `${counted[0]} deployment targets`;
-    const names = deploymentNames(scoped, contenders.map(t => t.uri), profile);
+    const names = deploymentNames(scoped, contenders.map(t => t.uri), owner);
     return {
       error: `Model '${model.name}' declares ${what} in ${where}${
                  names}, so which store it runs against is ambiguous; the ` +
           `runtime uses exactly one deployment for now.`,
       named: true,
+      rejected: true,
     };
   }
   if (!declared) {
     const declare = inGoogleBlock ?
         '' :
-        ` Declare one deployment in 'deployments' whose target names a ` +
-            `database (the runtime uses exactly one deployment for now).`;
+        ` Declare a deployment in 'deployments' whose target names a ` +
+            `database.`;
     return {
       error: `Model '${model.name}' declares no deployment target in ${
                  where}, so there is no store to run against.${declare}`,
@@ -320,25 +337,32 @@ function mergeUriPairs(targets: AlloyDbTarget[]): AlloyDbTarget[] {
 }
 
 
-// The model with only the deployments for `profile`, or why there are none.
-// A model with no `deployments` list keeps every target in its GOOGLE block
-// for `default` and for a legacy wrapper. An empty list names no deployment.
+// The model with only the deployments `profile` uses, or why there are none.
+// `owner` is the profile those deployments are for: `profile` itself, or
+// `default` when a legacy wrapper that no deployment names falls back to the
+// model file's own, as push deploys it. A wrapper that names its own
+// `deployment_target` has replaced the model file's deployments with it. A
+// model with no `deployments` list keeps every target in its GOOGLE block for
+// `default` and for a legacy wrapper. An empty list names no deployment.
 // Either way, any other profile has none.
 function deploymentsFor(
-    model: SemanticModel, profile: string,
-    legacyWrapper: boolean): SemanticModel|{error: string} {
+    model: SemanticModel, profile: string, legacyWrapper: boolean):
+    {model: SemanticModel; owner: string}|{error: string} {
   const nothingToRun = `so there is no database to run it against`;
   const profileFile = `binding profile '${profile}' is a profile file, ` +
       `which names no deployment target`;
   if (!model.deployments?.length) {
     return profile === DEFAULT_PROFILE || legacyWrapper ?
-        model :
+        {model, owner: DEFAULT_PROFILE} :
         {error: `${profileFile}, ${nothingToRun}`};
   }
-  let used = model.deployments.filter(
-      d => (d.profile ?? DEFAULT_PROFILE) === profile);
+  const usedBy = (name: string) => model.deployments!.filter(
+      d => (d.profile ?? DEFAULT_PROFILE) === name);
+  let owner = profile;
+  let used = usedBy(profile);
   if (!used.length && legacyWrapper) {
-    used = model.deployments.filter(d => d.profile === undefined);
+    owner = DEFAULT_PROFILE;
+    used = usedBy(DEFAULT_PROFILE);
   }
   if (!used.length) {
     let error: string;
@@ -356,20 +380,20 @@ function deploymentsFor(
     }
     return {error};
   }
-  return {...model, deployments: used};
+  return {model: {...model, deployments: used}, owner};
 }
 
 
 // The deployments whose targets are `uris`, for a message, or nothing when
-// the targets come from a GOOGLE block, which names none.
+// the targets come from a GOOGLE block, which names none. `owner` is the
+// profile they are for.
 function deploymentNames(
-    model: SemanticModel, uris: string[], profile?: string): string {
+    model: SemanticModel, uris: string[], owner: string): string {
   const deployments = model.deployments;
   if (!deployments) return '';
   const names =
       uris.map(uri => deployments.find(d => d.target === uri)?.name ?? uri);
-  const scope = profile === undefined ? '' : ` for profile '${profile}'`;
-  return `${scope} (${names.join(', ')})`;
+  return ` for profile '${owner}' (${names.join(', ')})`;
 }
 
 
@@ -422,6 +446,8 @@ export async function withPrimaryInstance(
     store: ChosenStore,
     client: AlloyDbClient): Promise<Store|{error: string}> {
   if (store.kind !== 'alloydb') return store;
+  // A legacy target names its instance. The spread gives the type that says
+  // so.
   if (store.instance !== undefined) return {...store, instance: store.instance};
   const cluster = `projects/${store.project}/locations/${
       store.location}/clusters/${store.cluster}`;
@@ -441,18 +467,18 @@ export async function withPrimaryInstance(
           apiError(res)}`,
     };
   }
-  const primary = (res.result ?? []).find(i => i.instanceType === 'PRIMARY');
+  const primary = res.result?.find(i => i.instanceType === 'PRIMARY');
   const instance = primary?.name?.split('/').pop();
-  if (!instance) {
+  if (!primary || !instance) {
     return {
       error: `AlloyDB cluster '${cluster}' has no primary instance, so there ` +
           `is no instance to connect to database '${store.database}' through.`,
     };
   }
-  if (primary?.state !== 'READY') {
+  if (primary.state !== 'READY') {
     return {
       error: `AlloyDB cluster '${cluster}' has primary instance '${
-          instance}' in state ${primary?.state ?? 'STATE_UNSPECIFIED'}; it ` +
+          instance}' in state ${primary.state ?? 'STATE_UNSPECIFIED'}; it ` +
           `must be READY to connect to database '${
               store.database}' through it.`,
     };

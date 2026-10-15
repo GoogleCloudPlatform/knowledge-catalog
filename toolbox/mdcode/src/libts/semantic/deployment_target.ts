@@ -115,7 +115,8 @@ export interface AlloyDbTarget {
 }
 
 export interface GoogleDeploymentTargets {
-  // Every declared target, as written, in declaration order.
+  // Every declared target, in declaration order. A GOOGLE block target is
+  // trimmed, and a non-string one is kept as its JSON text.
   uris: string[];
   // The subset that parse as BigQuery Graph targets.
   bigQuery: BigQueryGraphTarget[];
@@ -233,6 +234,17 @@ export function googleBlockTargetError(
       target);
 }
 
+/**
+ * Why the target in a `deployment_target` key is not accepted. The loader
+ * turns the key into a deployment named `default`, which the author did not
+ * write.
+ */
+export function deploymentTargetKeyError(
+    model: SemanticModel, target: string): string {
+  return targetError(
+      `Model '${model.name}' sets 'deployment_target' to '${target}'`, target);
+}
+
 // Why `target` is not accepted. `at` says where it is written.
 function targetError(at: string, target: string): string {
   const legacy = target.match(LEGACY_ALLOYDB_TARGET);
@@ -341,10 +353,12 @@ function extensionTargets(model: SemanticModel): string[] {
   return googleBlockTargets(model.customExtensions, model.name);
 }
 
-// The targets listed in the GOOGLE blocks among `exts`, in order, each
-// trimmed, with blank ones dropped. A padded target is the same target, so
-// trimming here keeps the duplicate check and the stored list in step. Throws
-// when a GOOGLE block's data is not valid JSON.
+// The targets listed in the GOOGLE blocks among `exts`, in order. A string
+// target is trimmed, and a blank one is dropped. A padded target is the same
+// target, so trimming here keeps the duplicate check and the stored list in
+// step. An entry that is not a string is kept as its JSON text, which parses
+// as no supported destination. Throws when a GOOGLE block's data is not valid
+// JSON.
 export function googleBlockTargets(
     exts: readonly CustomExtension[]|undefined, modelName: string): string[] {
   const uris: string[] = [];
@@ -366,7 +380,11 @@ export function googleBlockTargets(
       continue;
     }
     for (const uri of list) {
-      if (typeof uri === 'string' && uri.trim() !== '') uris.push(uri.trim());
+      if (typeof uri !== 'string') {
+        uris.push(JSON.stringify(uri));
+      } else if (uri.trim() !== '') {
+        uris.push(uri.trim());
+      }
     }
   }
   return uris;

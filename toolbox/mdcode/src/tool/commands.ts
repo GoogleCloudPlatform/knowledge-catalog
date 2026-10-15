@@ -182,8 +182,9 @@ export function declaresGraphTarget(text: string): boolean {
       if (ext?.vendor_name !== 'GOOGLE' || typeof ext?.data !== 'string') {
         continue;
       }
-      // The rule every other reader uses: blank and non-string targets name
-      // nothing.
+      // The rule every other reader uses: a blank target names nothing, and
+      // a non-string one is a target in no accepted form, which the target
+      // checks reject.
       try {
         if (googleBlockTargets([{vendorName: 'GOOGLE', data: ext.data}], '')
                 .length) {
@@ -1181,20 +1182,14 @@ async function printStore(options: ProfilesOptions): Promise<number> {
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
 
-  const opened = await createSemanticRuntimes({profile: named, ctx});
-  if ('error' in opened) {
-    console.error(`Error: ${opened.error}`);
-    return 1;
-  }
-
   // One line, because the caller is `STORE=$(kcmd profiles --print-store)` and
   // a second line makes that variable address the wrong database. A scope
-  // holding several models has no single answer, so it says so instead.
-  if (opened.length > 1) {
-    console.error(
-        `Error: this scope holds ${opened.length} models, which may name ` +
-        `different databases, so --print-store has no single answer. Narrow ` +
-        `the scope to one model.`);
+  // holding several models has no single answer, so it says so instead,
+  // before any AlloyDB lookup.
+  const opened =
+      await createSemanticRuntimes({profile: named, ctx, oneModel: true});
+  if ('error' in opened) {
+    console.error(`Error: ${opened.error}`);
     return 1;
   }
   for (const {store, storeError} of opened) {
@@ -1222,7 +1217,9 @@ function printProfileReport(
     // none rather than abort the listing.
   }
   // A profile file names no deployment target, and push refuses a graph
-  // push of one, so the model file's target is not this profile's.
+  // push of one. Push also refuses a deployment that names a profile, so the
+  // report shows no target for a profile file even when a deployment names
+  // it, which --print-store uses.
   console.log(
       fileForm ?
           '    target: (none; a profile file names no deployment target)' :
@@ -2065,16 +2062,12 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const claimed = new Map<string, string>();
   let failed = false;
   for (const runtime of opened) {
-    // The profile's deployments name a store and none results from them, so
-    // a skill saying the model has none would be wrong.
-    if (runtime.storeFailed) {
-      console.error(`Error: [${runtime.model.name}] ${runtime.storeError}`);
-      failed = true;
-      continue;
-    }
     const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
-      console.error(`Error: [${runtime.model.name}] ${generated.error}`);
+      // A store error already names the model.
+      const named = generated.error.startsWith(`Model '`);
+      console.error(`Error: ${named ? '' : `[${runtime.model.name}] `}${
+          generated.error}`);
       failed = true;
       continue;
     }
