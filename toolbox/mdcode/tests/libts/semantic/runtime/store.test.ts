@@ -169,6 +169,18 @@ describe('a binding that disagrees with the target', () => {
         `          - {name: id, datatype: Integer}\n`));
     expect('error' in store).toBe(false);
   });
+
+  // A BigQuery graph may read tables in another dataset, and push accepts
+  // that, so the store gives none and does not fail.
+  test('a BigQuery table in another dataset gives no store and does not fail it',
+       () => {
+         const store = resolveStore(bound(
+             `${DATASET}/propertyGraphs/g`,
+             '//bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'));
+         expect(store).toEqual({
+           error: expect.stringContaining("binds 'Customer' to p.raw.customer"),
+         });
+       });
 });
 
 
@@ -178,10 +190,11 @@ describe('a binding that disagrees with the target', () => {
 // not in doubt -- only Spanner accepts a write -- so the pair resolves. Two
 // destinations of the SAME backend is the case nothing here can decide.
 describe('a model that declares more than one deployment target', () => {
-  // The targets sit in a GOOGLE block, as a vanilla model's do.
+  // A vanilla model, whose targets sit in a GOOGLE block.
   function targets(uris: string[], source: string): SemanticModel {
     return {
       ...bound(`${DB}/propertyGraphs/g`, source),
+      version: '0.2.0.dev0',
       deployments: undefined,
       customExtensions: [{
         vendorName: 'GOOGLE',
@@ -207,7 +220,8 @@ describe('a model that declares more than one deployment target', () => {
          expect('error' in store).toBe(true);
          if (!('error' in store)) return;
          expect(store.error).toContain('2 Spanner deployment targets');
-         expect(store.error).toContain("in 'deployments'");
+         expect(store.error)
+             .toContain("in its GOOGLE block's 'deploymentTargets'");
          expect(store.error).toContain('the runtime uses exactly one deployment for now.');
        });
 
@@ -222,7 +236,8 @@ describe('a model that declares more than one deployment target', () => {
     if (!('error' in store)) return;
     expect(store.error).toContain('1 Spanner and 1 AlloyDB');
     expect(store.error).toContain('two operational backends');
-    expect(store.error).toContain("in 'deployments'");
+    expect(store.error)
+        .toContain("in its GOOGLE block's 'deploymentTargets'");
     expect(store.error).toContain('the runtime uses exactly one deployment for now.');
   });
 
@@ -265,6 +280,63 @@ describe('a model that declares more than one deployment target', () => {
     expect('error' in store && store.error)
         .toContain('2 AlloyDB deployment targets');
   });
+
+  // A vanilla model cannot write 'deployments', so the message names the
+  // GOOGLE block and gives no advice about 'deployments'.
+  test('a GOOGLE block with no target names the block', () => {
+    expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
+      error: "Model 'm' declares no deployment target in its GOOGLE block's " +
+          "'deploymentTargets', so there is no store to run against.",
+    });
+  });
+
+  // A GOOGLE block names no deployment, so the message names the block. Push
+  // rejects each of these models, so the store fails rather than being none.
+  test('a GOOGLE block target in no accepted form is reported, alone or beside one that gives a store',
+       () => {
+         const typo =
+             '//spanner.googleapis.com/projects/p/instance/i/databases/d/propertyGraphs/g';
+         const notAccepted = {
+           error: `Model 'm': the GOOGLE custom_extension's ` +
+               `'deploymentTargets' lists '${typo}', which is not a BigQuery ` +
+               `graph, a Spanner graph or an AlloyDB database. Write a ` +
+               `resource URI: ` +
+               `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>', ` +
+               `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>' ` +
+               `or '//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.`,
+           named: true,
+         };
+         expect(resolveStore(targets(
+                    [`${DB}/propertyGraphs/g`, typo], `${DB}/tables/Customer`)))
+             .toEqual(notAccepted);
+         expect(resolveStore(targets([typo], `${DB}/tables/Customer`)))
+             .toEqual(notAccepted);
+         expect(resolveStore(targets(
+                    ['spanner:graph:p.regional-us.i.d.g'],
+                    `${DB}/tables/Customer`)))
+             .toEqual({
+               error: `Model 'm': the GOOGLE custom_extension's ` +
+                   `'deploymentTargets' lists 'spanner:graph:p.regional-us.i.d.g', ` +
+                   `which is a Knowledge Catalog name. Write the resource URI ` +
+                   `instead: ` +
+                   `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>'.`,
+               named: true,
+             });
+       });
+
+  // Push reports the same JSON error.
+  test('a GOOGLE block whose data is not valid JSON is reported, not thrown',
+       () => {
+         const broken: SemanticModel = {
+           ...bound(`${DB}/propertyGraphs/g`, `${DB}/tables/Customer`),
+           deployments: undefined,
+           customExtensions: [{vendorName: 'GOOGLE', data: '{not-json'}],
+         };
+         expect(resolveStore(broken)).toEqual({
+           error: "Model 'm': GOOGLE custom_extension 'data' is not valid JSON.",
+           named: true,
+         });
+       });
 });
 
 
@@ -424,6 +496,16 @@ describe('the store a profile uses', () => {
         });
   });
 
+  // An empty list names no deployment, the same as no list.
+  test('an empty deployments list gives no store to a named profile', () => {
+    const emptyDeployments: SemanticModel = {...threeProfiles, deployments: []};
+    expect(resolveStore(emptyDeployments, 'prod'))
+        .toEqual({
+          error: "binding profile 'prod' is a profile file, which names no " +
+              'deployment target, so there is no database to run it against',
+        });
+  });
+
   // A legacy wrapper is merged into the model file, and push deploys it to
   // the model file's deployments when none names it.
   test('a legacy wrapper no deployment names takes the unprofiled ones', () => {
@@ -440,6 +522,25 @@ describe('the store a profile uses', () => {
         resolveStore(twoProfiles, 'analytical', {legacyWrapper: true});
     expect('error' in analytical && analytical.error)
         .toContain('deployment target is projects/p/datasets/s');
+  });
+
+  // A blank `deployment_target` names no target, as push reads it, so the
+  // loader makes no deployment of it.
+  test('an empty deployment_target names no target', () => {
+    for (const blank of ['""', '"   "']) {
+      const store = resolveStore(
+          model(
+              `    deployment_target: ${blank}\n` +
+              `    entities:\n` +
+              `      - name: Customer\n` +
+              `        primary_key: [id]\n` +
+              `        fields:\n` +
+              `          - {name: id, datatype: Integer}\n`),
+          'prod', {legacyWrapper: true});
+      expect(store).toEqual({
+        error: expect.stringContaining('declares no deployment target'),
+      });
+    }
   });
 });
 

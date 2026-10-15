@@ -126,9 +126,13 @@ cluster has no primary instance, when the primary is not READY, or when the
 instance listing fails. It also fails without writing anything when the
 profile's deployments name a target and still give no store. That happens
 when a target is in no accepted form, when several targets leave the store
-ambiguous, or when the model binds an entity outside the store. A profile
-whose deployments name no target gets a skill whose store line says there is
-none.
+ambiguous, or when the model binds a table outside its Spanner or AlloyDB
+store. A BigQuery graph may read tables in other datasets, as push allows, so
+such a model gets a skill whose store line says there is none. A vanilla
+model lists its targets in a `GOOGLE` block. The command fails the same way
+when one of them is in no accepted form, or when the block's data is not valid
+JSON. A profile whose deployments name no target gets a skill whose store line
+says there is none.
 
 A skill's `name` and the directory it sits in have to match, or a client skips
 it. So the directory is named from what was generated rather than from anything

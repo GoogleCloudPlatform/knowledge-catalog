@@ -17,7 +17,7 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, destinationKey, googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, deploymentTargetError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 import {databaseOf} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
@@ -177,7 +177,10 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  * Why resolveStore gives no store. `named` is set when the profile's
  * deployments name a target and still no store results: a target is in no
  * accepted form, several targets leave the store ambiguous, or the model
- * binds an entity elsewhere. It is unset when the profile binds no store.
+ * binds a table outside its Spanner or AlloyDB store. It is also set when the
+ * targets cannot be read because a GOOGLE block's data is not valid JSON. It
+ * is unset when the profile binds no store, and when a BigQuery model binds a
+ * table outside the graph's dataset, which push accepts.
  */
 export interface StoreError {
   error: string;
@@ -201,28 +204,48 @@ export interface StoreError {
  * those deployments with it.
  *
  * With several targets, the store is the single operational one, Spanner or
- * AlloyDB. Fails five ways: no deployment uses the profile; one of its
- * deployments names no supported destination; there are several targets and
- * no single operational one, so which store is meant is ambiguous; none of
- * them parses, so there is nothing to run against; or the model binds an
- * entity somewhere else, so a write would land in the wrong place.
+ * AlloyDB. Fails six ways: no deployment uses the profile; a GOOGLE block's
+ * data is not valid JSON, so its targets cannot be read; a target names no
+ * supported destination; there are several targets and no single operational
+ * one, so which store is meant is ambiguous; there is no target, so there is
+ * nothing to run against; or the model binds a table outside the store, so a
+ * write would land in the wrong place. That last error is named only for a
+ * Spanner or AlloyDB store. A BigQuery graph may read tables in any dataset,
+ * and push accepts that.
  */
 export function resolveStore(
     model: SemanticModel, profile: string = DEFAULT_PROFILE,
     opts: {legacyWrapper?: boolean} = {}): ChosenStore|StoreError {
   const scoped = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
   if ('error' in scoped) return scoped;
-  const targets = googleDeploymentTargets(scoped);
+  let targets: GoogleDeploymentTargets;
+  try {
+    targets = googleDeploymentTargets(scoped);
+  } catch (err: any) {
+    // It throws when a GOOGLE block's data is not valid JSON. Push reports
+    // that as an error, so the store fails.
+    return {error: `${err?.message || err}`, named: true};
+  }
   const {spanner, bigQuery, malformed} = targets;
   const alloyDb = mergeUriPairs(targets.alloyDb);
   const declared = spanner.length + alloyDb.length + bigQuery.length;
 
-  // A deployment whose target is in no accepted form is reported, alone or
-  // beside one that gives a store.
-  const unparsed =
-      scoped.deployments?.find(d => malformed.includes(d.target));
-  if (unparsed) {
-    return {error: deploymentTargetError(model, unparsed), named: true};
+  // A vanilla model lists its targets in a GOOGLE block, which names no
+  // deployment, so a message names the block.
+  const inGoogleBlock =
+      scoped.deployments === undefined && model.version === '0.2.0.dev0';
+  const where =
+      inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` : `'deployments'`;
+
+  // A target in no accepted form is reported, alone or beside one that gives
+  // a store.
+  if (malformed.length) {
+    const unparsed = scoped.deployments?.find(d => d.target === malformed[0]);
+    return {
+      error: unparsed ? deploymentTargetError(model, unparsed) :
+                        googleBlockTargetError(model, malformed[0]),
+      named: true,
+    };
   }
 
   const operational = [...spanner, ...alloyDb];
@@ -239,24 +262,20 @@ export function resolveStore(
         `${counted[0]} deployment targets`;
     const names = deploymentNames(scoped, contenders.map(t => t.uri), profile);
     return {
-      error: `Model '${model.name}' declares ${what} in 'deployments'${
+      error: `Model '${model.name}' declares ${what} in ${where}${
                  names}, so which store it runs against is ambiguous; the ` +
           `runtime uses exactly one deployment for now.`,
       named: true,
     };
   }
   if (!declared) {
+    const declare = inGoogleBlock ?
+        '' :
+        ` Declare one deployment in 'deployments' whose target names a ` +
+            `database (the runtime uses exactly one deployment for now).`;
     return {
-      error: `Model '${model.name}' declares no deployment target in ` +
-          `'deployments', so there is no store to run against` +
-          (malformed.length ?
-               ` (it declares ${malformed.length} target ${
-                   malformed.length === 1 ? 'URI' :
-                                            'URIs'} that name no supported ` +
-                   `destination: ${malformed.join(', ')})` :
-               '') +
-          `. Declare one deployment in 'deployments' whose target names ` +
-          `a database (the runtime uses exactly one deployment for now).`,
+      error: `Model '${model.name}' declares no deployment target in ${
+                 where}, so there is no store to run against.${declare}`,
     };
   }
 
@@ -270,7 +289,10 @@ export function resolveStore(
           `address a table by name alone, so the write would land in the ` +
           `target store's table of that name rather than in the bound one. ` +
           `Bind both to the same store.`,
-      named: true,
+      // A BigQuery graph may read tables in any dataset, BigLake included,
+      // and push accepts that. The model then has no store, and a caller
+      // does not fail.
+      ...(store.kind === 'bigquery' ? {} : {named: true}),
     };
   }
   return store;
@@ -299,15 +321,16 @@ function mergeUriPairs(targets: AlloyDbTarget[]): AlloyDbTarget[] {
 
 
 // The model with only the deployments for `profile`, or why there are none.
-// A model with no `deployments` list keeps every target for `default` and for
-// a legacy wrapper, and has none for any other profile.
+// A model with no `deployments` list keeps every target in its GOOGLE block
+// for `default` and for a legacy wrapper. An empty list names no deployment.
+// Either way, any other profile has none.
 function deploymentsFor(
     model: SemanticModel, profile: string,
     legacyWrapper: boolean): SemanticModel|{error: string} {
   const nothingToRun = `so there is no database to run it against`;
   const profileFile = `binding profile '${profile}' is a profile file, ` +
       `which names no deployment target`;
-  if (model.deployments === undefined) {
+  if (!model.deployments?.length) {
     return profile === DEFAULT_PROFILE || legacyWrapper ?
         model :
         {error: `${profileFile}, ${nothingToRun}`};
@@ -317,7 +340,7 @@ function deploymentsFor(
   if (!used.length && legacyWrapper) {
     used = model.deployments.filter(d => d.profile === undefined);
   }
-  if (!used.length && model.deployments.length) {
+  if (!used.length) {
     let error: string;
     if (profile === DEFAULT_PROFILE) {
       error = `Model '${model.name}' declares no deployment without a ` +

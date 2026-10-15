@@ -1410,7 +1410,8 @@ function convertModel(
     }
     seenTargets.set(d.target, d.name);
   }
-  if (!deployments.length && m.deployment_target !== undefined) {
+  // A blank `deployment_target` names no target, as push reads it.
+  if (!deployments.length && m.deployment_target?.trim()) {
     deployments.push({name: 'default', target: m.deployment_target});
   }
 

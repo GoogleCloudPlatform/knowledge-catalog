@@ -458,6 +458,73 @@ ${deployments}    entities:
          }
        });
 
+  // A vanilla model lists its targets in a GOOGLE block. Push rejects a target
+  // in no accepted form and a block that is not JSON, so no skill is written
+  // that says the model has no store.
+  test('skills-generate fails when a GOOGLE block lists a target in no accepted form or is not JSON',
+       async () => {
+         const typo = `${SPANNER}/database/commerce/propertyGraphs/commerce`;
+         const vanilla = (data: string) => `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${data}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`;
+         const listed = (uris: string[]) =>
+             JSON.stringify({deploymentTargets: uris});
+         const notAccepted = `Error: [commerce] Model 'commerce': the GOOGLE ` +
+             `custom_extension's 'deploymentTargets' lists '${typo}', which ` +
+             'is not a BigQuery graph, a Spanner graph or an AlloyDB database';
+         for (const [data, error] of [
+                [listed([typo]), notAccepted],
+                [
+                  listed([`${SPANNER_DB}/propertyGraphs/commerce`, typo]),
+                  notAccepted,
+                ],
+                [
+                  '{not-json',
+                  "Error: [commerce] Model 'commerce': GOOGLE " +
+                      "custom_extension 'data' is not valid JSON.",
+                ],
+              ]) {
+           logs = [];
+           writeModel('commerce.yaml', vanilla(data));
+           expect(await skillsGenerate({out: 'skills'})).toBe(1);
+           expect(logs.join('\n')).toContain(error);
+           expect(fs.existsSync(path.join('skills', 'commerce'))).toBe(false);
+         }
+       });
+
+  // A BigQuery graph may read tables in another dataset, and push accepts
+  // that. The skill is written, and its store line says there is none.
+  test('a BigQuery graph over tables in another dataset still gets its skill',
+       async () => {
+         writeModel(
+             'commerce.yaml',
+             modelText('commerce', 'IssueCredit')
+                 .replace(
+                     `${SPANNER}/databases/commerce/propertyGraphs/commerce`,
+                     `${BQ}/propertyGraphs/commerce`)
+                 .replace(
+                     `${SPANNER}/databases/commerce/tables/Orders`,
+                     '//bigquery.googleapis.com/projects/acme-analytics/' +
+                         'datasets/raw/tables/orders'));
+         expect(await skillsGenerate({out: 'skills'})).toBe(0);
+         const skill = fs.readFileSync(
+             path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
+         expect(skill).toContain(
+             "- Store: none. Model 'commerce' binds 'Order' to " +
+             'acme-analytics.raw.orders');
+       });
+
   test('a skill generated from a profile file names that profile\'s store',
        async () => {
          writeModel(

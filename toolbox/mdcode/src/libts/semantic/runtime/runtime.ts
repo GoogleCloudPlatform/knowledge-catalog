@@ -47,9 +47,10 @@ export interface SemanticRuntime {
   /**
    * Set when the profile's deployments name a target and still no store
    * results. A target may be in no accepted form, several targets may leave
-   * the store ambiguous, the model may bind an entity elsewhere, or finding
-   * how to connect may fail, such as the lookup of an AlloyDB cluster's
-   * primary instance. `storeError` says why.
+   * the store ambiguous, the model may bind a table outside its Spanner or
+   * AlloyDB store, or finding how to connect may fail, such as the lookup of
+   * an AlloyDB cluster's primary instance. Also set when a GOOGLE block's data
+   * is not valid JSON, so its targets cannot be read. `storeError` says why.
    */
   storeFailed?: boolean;
   /** Which binding profile produced this. Provenance, for messages. */
