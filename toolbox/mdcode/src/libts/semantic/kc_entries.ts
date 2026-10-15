@@ -195,13 +195,37 @@ export function collectOwnedEntries(
   return entries.filter(e => isEntryOwner(owner, e));
 }
 
+const LINK_CONTAINER_RE =
+    /^(projects\/[^/]+\/locations\/[^/]+\/entryGroups\/[^/]+\/)entryLinks\//;
+
 /**
- * Returns true when both endpoints of `link` are owned by `owner`
- * (`KcResources` or `KcAnchor`).
+ * Returns the endpoint references of `link` that belong to `link`'s own entry
+ * group (when `link.name` carries a full resource container) and are owned by
+ * `owner` (`KcResources` or `KcAnchor`).
+ *
+ * `link.name` and its references must spell the project the same way.
+ */
+export function collectOwnedReferences(
+    owner: KcOwner, link: EntryLink): EntryReference[] {
+  // A reference `r` in `link.entryReferences` is owned by `owner` when:
+  //   1. Either `link.name` has no container prefix, or `r.name` starts with
+  //      `${m[1]}entries/` (`projects/<project>/locations/<location>/
+  //      entryGroups/<entryGroup>/entries/`). A different prefix means `r`
+  //      points to another entry group or project.
+  //   2. `isEntryOwner(owner, r)` is true (`r`'s entry ID belongs to `owner`).
+  const m = link.name?.match(LINK_CONTAINER_RE);
+  return link.entryReferences.filter(
+      r => (!m || r.name.startsWith(`${m[1]}entries/`)) &&
+          isEntryOwner(owner, r));
+}
+
+/**
+ * Returns true when both endpoints of `link` are in `link`'s entry group and
+ * owned by `owner` (`KcResources` or `KcAnchor`).
  */
 export function isLinkOwner(owner: KcOwner, link: EntryLink): boolean {
   return link.entryReferences.length === 2 &&
-      link.entryReferences.every(r => isEntryOwner(owner, r));
+      collectOwnedReferences(owner, link).length === 2;
 }
 
 // ---------------------------------------------------------------------------

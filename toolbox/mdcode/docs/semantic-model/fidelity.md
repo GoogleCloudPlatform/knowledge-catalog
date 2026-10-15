@@ -125,13 +125,14 @@ agree on every structural row and differ only where a Spanner target has no
     binding — the one named by `--profile`, else the default binding, which is
     what an `--all-profiles` run always records, the two flags being mutually
     exclusive. See [Binding profiles](profiles.md).
-15. **Relationships with no link.** Knowledge Catalog keeps one link between
-    two entries, so when several relationships join the same two entities,
-    push links the first and skips the rest with a warning. Knowledge Catalog
-    does not support a relationship from an entity to itself, so push skips it
-    with a warning. The catalog metadata holds no link for a skipped
-    relationship. `pull` still returns it from the stored copy of the model
-    file, and leaves it out only when it rebuilds the file from the metadata.
+15. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
+    link between two entries, so when several relationships join the same two
+    entities, push links the first one it can publish and skips the rest with
+    a warning. Knowledge Catalog does not support a relationship from an entity
+    to itself, so push skips it with a warning. The catalog metadata holds no
+    link for a skipped relationship. `pull` still returns it from the stored
+    copy of the model file, and leaves it out only when it rebuilds the file
+    from the metadata.
 
 ## To Knowledge Catalog
 

@@ -765,6 +765,105 @@ describe('relationships map to schema-join entry links', () => {
       });
 
   test(
+      'an unpublishable relationship after a valid relationship on the same ' +
+          'entity pair or on a self-relationship warns with its ' +
+          'unpublishable reason',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'placed',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'assoc',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+            association: {
+              dataSource: 'p.d.order_customer',
+              keys: ['id'],
+              sourceColumns: ['o_key'],
+              destinationColumns: ['c_key'],
+            },
+          },
+          {
+            name: 'self_assoc',
+            source: {entity: 'orders', columns: ['o_key']},
+            destination: {entity: 'orders', columns: ['o_key']},
+            association: {
+              dataSource: 'p.d.order_related',
+              keys: ['id'],
+              sourceColumns: ['o_key'],
+              destinationColumns: ['related_key'],
+            },
+          },
+        ];
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-placed',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'assoc\': many-to-many (association) edges are not ' +
+              'published to Knowledge Catalog yet; the edge lives in the ' +
+              'BigQuery property graph.',
+          'relationship \'self_assoc\': many-to-many (association) edges are ' +
+              'not published to Knowledge Catalog yet; the edge lives in the ' +
+              'BigQuery property graph.',
+        ]);
+      });
+
+  test(
+      'a column-less relationship after a valid one on the same pair warns ' +
+          'about its join columns, a self relationship on an unpublished ' +
+          'entity warns about that entity, and a column-less self ' +
+          'relationship gets the self warning',
+      () => {
+        // Adding join columns does not publish a relationship from an entity
+        // to itself, so the self warning is the one that applies to it.
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'placed',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'logical',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customer', columns: []},
+          },
+          {
+            name: 'ghost_self',
+            source: {entity: 'ghost', columns: ['parent_key']},
+            destination: {entity: 'ghost', columns: ['g_key']},
+          },
+          {
+            name: 'logical_self',
+            source: {entity: 'customer', columns: []},
+            destination: {entity: 'customer', columns: []},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-placed',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'logical\': no join columns, so it is not published ' +
+              'to Knowledge Catalog yet; add its from_columns and to_columns ' +
+              'to the relationship in the model to publish the link.',
+          'relationship \'ghost_self\': endpoint entity \'ghost\' is not a ' +
+              'published entity; the relationship link is skipped.',
+          'relationship \'logical_self\': skipped because Knowledge Catalog ' +
+              'does not support a relationship from an entity to itself.',
+        ]);
+      });
+
+  test(
       'under v2Aspects, two relationships between the same pair of ' +
           'entities both emit a link, and Dataplex refuses the second',
       () => {

@@ -296,16 +296,13 @@ export function generateCatalogResources(
   const seenLinks = new Set<string>();
   const seenPairs = new Map<string, string>();
   for (const rel of relationships) {
-    // Dataplex refuses a link whose two references name the same entry, so the
-    // flag-off path skips a relationship from an entity to itself. Such a
-    // relationship never reaches the pair check below, so a second one on the
-    // same entity gets this warning and not the pair warning. Under v2Aspects
-    // the link is still emitted, and Dataplex refuses it. The V2 design for
-    // that case is not settled.
-    if (!opts.v2Aspects && rel.source.entity === rel.destination.entity) {
-      warnings.push(
-          `relationship '${rel.name}': skipped because Knowledge Catalog ` +
-          `does not support a relationship from an entity to itself.`);
+    // A relationship that cannot be published gets the warning that says why,
+    // whatever its place in the model, so this check runs before the pair
+    // check below. A second relationship from an entity to itself gets only
+    // the self warning.
+    const reason = unpublishedReason(rel, entityEntryName, !!opts.v2Aspects);
+    if (reason) {
+      warnings.push(`relationship '${rel.name}': ${reason}`);
       continue;
     }
     // Dataplex allows one link of a type between two entries. The flag-off
@@ -326,8 +323,14 @@ export function generateCatalogResources(
         continue;
       }
     }
-    const link = relationshipLink(
-        names, model, rel, entityEntryName, seenLinks, warnings);
+    // `unpublishedReason` has checked that both endpoint entities have an
+    // entry.
+    const ends: [string, string] = [
+      entityEntryName.get(rel.source.entity)!,
+      entityEntryName.get(rel.destination.entity)!,
+    ];
+    const link =
+        relationshipLink(names, model, rel, ends, seenLinks, warnings);
     if (link) {
       seenPairs.set(pairKey, rel.name);
       entryLinks.push(link);
@@ -343,33 +346,37 @@ export function generateCatalogResources(
 }
 
 
-// Builds the schema-join entry link for one relationship, or undefined when it
-// cannot be published. Skipped, each with a warning: a many-to-many
-// (association) edge -- a junction is two joins, which the single source/target
-// schema-join does not model; an edge whose endpoint entity was not emitted
-// (e.g. skipped for a duplicate id); and a column-less (purely logical) edge,
+// Returns why `rel` cannot be published as a schema-join entry link, or
+// undefined when it can. The reasons, in the order checked: a many-to-many
+// (association) edge, since a junction is two joins, which the single
+// source/target schema-join does not model; an edge whose endpoint entity was
+// not emitted, for example one skipped for a duplicate id; with v2Aspects off,
+// an edge from an entity to itself; and a column-less (purely logical) edge,
 // whose join columns must be added to the model before it can publish. The
-// BigQuery property graph still carries the association and (once bound) direct
-// edges.
-function relationshipLink(
-    names: Namer, model: SemanticModel, rel: Relationship,
-    entityEntryName: Map<string, string>, seenLinks: Set<string>,
-    warnings: string[]): EntryLink|undefined {
+// BigQuery property graph still carries the association and, once bound,
+// direct edges.
+function unpublishedReason(
+    rel: Relationship, entityEntryName: ReadonlyMap<string, string>,
+    v2Aspects: boolean): string|undefined {
   if (rel.association) {
-    warnings.push(
-        `relationship '${rel.name}': many-to-many (association) edges are not ` +
-        `published to Knowledge Catalog yet; the edge lives in the BigQuery ` +
-        `property graph.`);
-    return undefined;
+    return `many-to-many (association) edges are not published to ` +
+        `Knowledge Catalog yet; the edge lives in the BigQuery property graph.`;
   }
-  const src = entityEntryName.get(rel.source.entity);
-  const dst = entityEntryName.get(rel.destination.entity);
-  if (!src || !dst) {
-    const missing = !src ? rel.source.entity : rel.destination.entity;
-    warnings.push(
-        `relationship '${rel.name}': endpoint entity '${missing}' is not a ` +
-        `published entity; the relationship link is skipped.`);
-    return undefined;
+  const missing = [rel.source.entity, rel.destination.entity].find(
+      entity => !entityEntryName.get(entity));
+  if (missing !== undefined) {
+    return `endpoint entity '${missing}' is not a published entity; the ` +
+        `relationship link is skipped.`;
+  }
+  // Dataplex refuses a link whose two references name the same entry, so the
+  // flag-off path skips a relationship from an entity to itself. This check
+  // runs before the join-column check, because adding join columns does not
+  // publish such a relationship. The V2 design gives such a relationship its
+  // own entry and no link. Until V2 emission does that, v2Aspects still emits
+  // the link here, and Dataplex refuses it.
+  if (!v2Aspects && rel.source.entity === rel.destination.entity) {
+    return `skipped because Knowledge Catalog does not support a ` +
+        `relationship from an entity to itself.`;
   }
   // A purely logical edge (an OWL import) carries no join columns. schema-join
   // is a server-defined CLOSED metadataTemplate whose `fields` requirement we
@@ -378,12 +385,22 @@ function relationshipLink(
   // to_columns to the model and it publishes; the edge still lives in the model
   // (and, once bound, the BigQuery/Spanner graph).
   if (!rel.source.columns.length || !rel.destination.columns.length) {
-    warnings.push(
-        `relationship '${rel.name}': no join columns, so it is not published ` +
-        `to Knowledge Catalog yet; add its from_columns and to_columns to the ` +
-        `relationship in the model to publish the link.`);
-    return undefined;
+    return `no join columns, so it is not published to Knowledge Catalog ` +
+        `yet; add its from_columns and to_columns to the relationship in the ` +
+        `model to publish the link.`;
   }
+  return undefined;
+}
+
+// Builds the schema-join entry link for a relationship that
+// `unpublishedReason` accepts, or undefined when another resource already
+// claimed its link id. `ends` holds the entry names of its source and
+// destination entities.
+function relationshipLink(
+    names: Namer, model: SemanticModel, rel: Relationship,
+    ends: readonly [string, string], seenLinks: Set<string>,
+    warnings: string[]): EntryLink|undefined {
+  const [src, dst] = ends;
   const linkId = names.linkId(model, rel);
   if (!claim(
           seenLinks, linkId, 'entry link', `relationship '${rel.name}'`,

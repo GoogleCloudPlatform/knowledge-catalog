@@ -1552,6 +1552,9 @@ async function pushKnowledgeCatalog(
           'Pushing semantic model (Knowledge Catalog)...');
   // The deploy passes its warnings to `onWarnings` before the first catalog
   // write. A run that stops before then returns them in the result instead.
+  // `result.warnings` starts with the warnings `onWarnings` got, because
+  // applyKnowledgeCatalog copies them and adds none. The slice below then
+  // skips the ones already printed.
   let printed = 0;
   const printWarnings = (warnings: readonly string[]) => {
     for (const w of warnings.slice(printed)) console.warn(`Warning: ${w}`);
