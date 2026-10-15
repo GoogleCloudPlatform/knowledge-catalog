@@ -24,7 +24,7 @@ import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, DocumentProfile, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
-import {storeLine} from '../libts/semantic/runtime/store';
+import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
@@ -1209,21 +1209,16 @@ async function printStore(options: ProfilesOptions): Promise<number> {
 function printProfileReport(
     model: SemanticModel, name: string, fileForm: boolean): void {
   const {report} = pruneUnavailable(model, name);
+  // The targets the profile's deployments name, as --print-store reads them.
   let targets: string[] = [];
   try {
-    targets = deploy.deploymentTargetUris(model);
+    targets = profileTargets(model, name, {legacyWrapper: !fileForm});
   } catch {
-    // A malformed deployment target is a push-time error; here just show
-    // none rather than abort the listing.
+    // A GOOGLE block that is not valid JSON is a push-time error; here just
+    // show none rather than abort the listing.
   }
-  // A profile file names no deployment target, and push refuses a graph
-  // push of one. Push also refuses a deployment that names a profile, so the
-  // report shows no target for a profile file even when a deployment names
-  // it, which --print-store uses.
-  console.log(
-      fileForm ?
-          '    target: (none; a profile file names no deployment target)' :
-          `    target: ${targets.length ? targets.join(', ') : '(none)'}`);
+  const none = fileForm ? '(none; no deployment names this profile)' : '(none)';
+  console.log(`    target: ${targets.length ? targets.join(', ') : none}`);
   console.log('    sources:');
   for (const e of model.entities ?? []) {
     console.log(`      ${e.name} -> ${e.dataSource || '(unbound)'}`);

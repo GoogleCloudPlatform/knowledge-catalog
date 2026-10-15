@@ -44,8 +44,8 @@ export interface AlloyDbDatabase {
    * `projects/<p>/locations/<l>/clusters/<c>/databases/<d>`. The store's
    * identity, which on AlloyDB reaches all the way down to the PostgreSQL
    * database: one cluster holds several, and two of them are two stores. A
-   * legacy instance-based target keeps its instance in the name,
-   * `projects/<p>/locations/<l>/clusters/<c>/instances/<i>/databases/<d>`.
+   * legacy instance-based target takes the same name, and its instance is in
+   * `instance`.
    */
   name: string;
   project: string;
@@ -384,6 +384,21 @@ function deploymentsFor(
 }
 
 
+/**
+ * The targets binding profile `profile` uses, as resolveStore reads them: its
+ * deployments' targets, or every target in a GOOGLE block for `default` and
+ * for a legacy wrapper when the model has no `deployments` list. Empty when no
+ * deployment is for the profile. Set `legacyWrapper` as for resolveStore.
+ * Throws when a GOOGLE block's data is not valid JSON.
+ */
+export function profileTargets(
+    model: SemanticModel, profile: string,
+    opts: {legacyWrapper?: boolean} = {}): string[] {
+  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+  return 'error' in used ? [] : googleDeploymentTargets(used.model).uris;
+}
+
+
 // The deployments whose targets are `uris`, for a message, or nothing when
 // the targets come from a GOOGLE block, which names none. `owner` is the
 // profile they are for.
@@ -412,12 +427,10 @@ function storeFor(
     };
   }
   if (alloyDb) {
-    const instance =
-        alloyDb.instance !== undefined ? `/instances/${alloyDb.instance}` : '';
     return {
       kind: 'alloydb',
       name: `projects/${alloyDb.project}/locations/${
-          alloyDb.location}/clusters/${alloyDb.cluster}${instance}/databases/${
+          alloyDb.location}/clusters/${alloyDb.cluster}/databases/${
           alloyDb.database}`,
       project: alloyDb.project,
       location: alloyDb.location,

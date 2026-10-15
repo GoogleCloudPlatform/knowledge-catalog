@@ -76,8 +76,10 @@ describe('where a model says it lives', () => {
     expect(store.cluster).toBe('c');
     expect(store.instance).toBe('i');
     expect(store.database).toBe('d');
+    // The instance-based URI names the same database as the cluster-based
+    // one, so the store takes the same name.
     expect(store.name).toBe(
-        'projects/p/locations/us-central1/clusters/c/instances/i/databases/d');
+        'projects/p/locations/us-central1/clusters/c/databases/d');
   });
 
   // The instance-based URI names the instance to connect through, so it is
@@ -98,6 +100,28 @@ describe('where a model says it lives', () => {
       if ('error' in store) throw new Error(store.error);
       expect(store.kind === 'alloydb' && store.instance).toBe('i');
     }
+  });
+
+  // Two profiles that name one AlloyDB database describe one store, whichever
+  // URI each uses.
+  test('one AlloyDB database has one store name in every profile', () => {
+    const m = model(
+        `    deployments:\n` +
+        `      - {name: old, target: "${PG}", profile: legacy}\n` +
+        `      - {name: new, target: "//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d"}\n` +
+        `    entities:\n` +
+        `      - name: Customer\n` +
+        `        primary_key: [id]\n` +
+        `        source: ${PG}/tables/customer\n` +
+        `        fields:\n` +
+        `          - {name: id, datatype: Integer, expression: id}\n`);
+    const byInstance = resolveStore(m, 'legacy');
+    const byCluster = resolveStore(m, 'default');
+    if ('error' in byInstance) throw new Error(byInstance.error);
+    if ('error' in byCluster) throw new Error(byCluster.error);
+    expect(byInstance.name)
+        .toBe('projects/p/locations/us-central1/clusters/c/databases/d');
+    expect(byCluster.name).toBe(byInstance.name);
   });
 
   // An AlloyDB target names a DATABASE, not a graph, because AlloyDB has no

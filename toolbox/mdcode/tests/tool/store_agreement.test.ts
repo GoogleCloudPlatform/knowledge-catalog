@@ -513,6 +513,40 @@ semantic_model:
 });
 
 
+// The report and --print-store describe one profile's store the same way.
+describe('kcmd profiles: the report and --print-store on one profile', () => {
+  test('the report names the target --print-store prints', async () => {
+    writeScope({
+      'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+        profile: prod
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+      'commerce.profile.prod.yaml': `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+    });
+    const r = await runAll('prod');
+    expect(r.printStore.out).toBe('acme-ops/prod/commerce');
+    expect(r.report.out).not.toContain(
+        'target: (none; a profile file names no deployment target)');
+    expect(r.report.out).toContain(
+        `target: ${SPANNER_DB}/propertyGraphs/commerce`);
+  });
+});
+
+
 // --print-store refuses a scope of several models before it looks up any
 // AlloyDB cluster in it.
 describe('kcmd profiles --print-store over several models', () => {

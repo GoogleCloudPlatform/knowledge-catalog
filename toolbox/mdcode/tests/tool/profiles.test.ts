@@ -494,7 +494,7 @@ entities:
     const out = logs.join('\n');
     expect(out).toContain("profile 'analytical'");
     expect(out).toContain(
-        'target: (none; a profile file names no deployment target)');
+        'target: (none; no deployment names this profile)');
     expect(out).toContain('Customer -> acme-analytics.sales.customer');
     expect(out).toContain('field Customer.availableCredit (excluded)');
   });
@@ -825,7 +825,7 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
     expect(logs).toEqual([
       "Model 'commerce' (commerce_eg):",
       "  profile 'prod'",
-      '    target: (none; a profile file names no deployment target)',
+      '    target: (none; no deployment names this profile)',
       '    sources:',
       '      customer -> acme.prod.customer',
       '      purchase -> acme.dev.purchase',
@@ -977,7 +977,7 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
     expect(logs).toEqual([
       "Model 'commerce' (commerce_eg):",
       "  profile 'prod'",
-      '    target: (none; a profile file names no deployment target)',
+      '    target: (none; no deployment names this profile)',
       '    sources:',
       '      customer -> acme.prod.customer',
       '      purchase -> acme.dev.purchase',

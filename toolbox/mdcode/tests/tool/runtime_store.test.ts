@@ -10,7 +10,7 @@ import * as path from 'node:path';
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
-import {skillsGenerate} from '../../src/tool/commands';
+import {profiles, skillsGenerate} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SPANNER_DB =
@@ -22,6 +22,8 @@ const CLUSTER =
 let dir = '';
 let cwd = '';
 let logs: string[] = [];
+// What console.log printed, which is the report and --print-store output.
+let out: string[] = [];
 
 function writeModel(file: string, text: string): void {
   fs.writeFileSync(
@@ -64,11 +66,16 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-runtime-store-'));
   process.chdir(dir);
   logs = [];
+  out = [];
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(globalThis, 'fetch').mockImplementation((() => {
     throw new Error('unexpected network call');
   }) as any);
-  for (const channel of ['log', 'warn', 'error'] as const) {
+  spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
+    out.push(a.join(' '));
+    logs.push(a.join(' '));
+  });
+  for (const channel of ['warn', 'error'] as const) {
     spyOn(console, channel).mockImplementation((...a: unknown[]) => {
       logs.push(a.join(' '));
     });
@@ -107,6 +114,58 @@ describe('a model with no actions', () => {
             `${CLUSTER}/databases/commerce/schemas/public/tables/orders`,
             false));
     expect(await skillsGenerate({out: 'skills'})).toBe(0);
+  });
+});
+
+
+// `kcmd profiles` and `kcmd profiles --print-store` read the same binding.
+describe('the profiles report and --print-store', () => {
+  test('agree on the target of a profile file a deployment names', async () => {
+    writeModel(
+        'commerce.yaml',
+        model(
+            `      - name: prod\n` +
+                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        profile: prod\n`,
+            `${SPANNER_DB}/tables/Orders`, false));
+    writeModel(
+        'commerce.profile.prod.yaml',
+        `name: prod\nentities:\n  - name: Order\n    source: ${
+            SPANNER_DB}/tables/Orders\n`);
+    expect(await profiles({printStore: true, profile: 'prod'})).toBe(0);
+    expect(out).toEqual(['acme-ops/prod/commerce']);
+    out = [];
+    await profiles({profile: 'prod'});
+    const target = out.find(l => l.trim().startsWith('target:'));
+    expect(target).toBe(`    target: ${SPANNER_DB}/propertyGraphs/commerce`);
+  });
+
+  test('agree on the target of a legacy wrapper', async () => {
+    writeModel(
+        'commerce.yaml',
+        model(
+            `      - name: analytical\n` +
+                `        target: ${BQ}/datasets/sales/propertyGraphs/commerce\n` +
+                `        profile: analytical\n` +
+                `      - name: prod\n` +
+                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+            `${SPANNER_DB}/tables/Orders`, false));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+    for (const name of ['staging', 'analytical']) {
+      fs.writeFileSync(
+          path.join(eg, 'commerce.profiles', `${name}.yaml`),
+          `semantic_model:\n  - name: commerce\n    entities:\n` +
+              `      - name: Order\n        source: ${
+                  SPANNER_DB}/tables/Orders\n`);
+    }
+    expect(await profiles({printStore: true, profile: 'staging'})).toBe(0);
+    expect(out).toEqual(['acme-ops/prod/commerce']);
+    out = [];
+    await profiles({profile: 'staging'});
+    const target = out.find(l => l.trim().startsWith('target:'));
+    expect(target).toBe(
+        `    target: ${SPANNER_DB}/propertyGraphs/commerce`);
   });
 });
 

@@ -93,8 +93,10 @@ checks on the entry group. Push's lookup of the file-copy type also runs only
 at push time, because it calls a service. It exits non-zero when push would
 reject a binding. Until push accepts a deployment that names a profile, the
 report refuses one, while `--print-store` takes that profile's store from it.
-For an AlloyDB target named by its cluster, `--print-store` calls the AlloyDB
-API to find the cluster's primary instance.
+The report's `target:` line lists the targets of the deployments the profile
+uses, the same ones `--print-store` reads. For an AlloyDB target named by its
+cluster, `--print-store` calls the AlloyDB API to find the cluster's primary
+instance.
 
 | Flag | Effect |
 |------|--------|
