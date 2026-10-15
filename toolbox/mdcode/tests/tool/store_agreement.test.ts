@@ -2,9 +2,12 @@
 // accept. Each case writes one scope and runs `kcmd push --validate-only`, the
 // `kcmd profiles` report, `kcmd profiles --print-store` and
 // `kcmd skills-generate` over it. No runtime command accepts a model push
-// rejects, and none rejects a model push accepts. The exceptions are the ones
-// the docs describe: a deployment that names a profile, an AlloyDB target, and
-// several targets.
+// rejects, and none rejects a model push accepts, apart from a few cases. The
+// docs describe a deployment that names a profile, an AlloyDB target and
+// several targets. Push also accepts a Spanner model that binds a table
+// outside its database today. The runtime refuses it on purpose: a write
+// would land in the target database's table of that name, so --print-store
+// gives no store and skills-generate fails for a model with actions.
 //
 // Live checks are mocked, and no case reaches the network.
 
