@@ -84,7 +84,7 @@ import {AnnotationTarget, EntityPhysical, entityAnnotationAspects, junctionAnnot
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
 import {AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID} from './kc_custom_types';
 import {lowerNodeViews} from './node_views';
-import {DESCRIPTION_MAX, metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, withQueryTrailer} from './read_trailers';
+import {DESCRIPTION_MAX, metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, withContentsTrailer, withQueryTrailer} from './read_trailers';
 import {entityTrailers, withUnitTrailer} from './units_history';
 import {derivedTrailers} from './derived_relationships';
 import {generatesVocabularyView, membersTrailer, vocabularyViewName} from './vocabulary';
@@ -206,7 +206,10 @@ export function generateCatalogResources(
   const entries: Entry[] = [{
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
-    entrySource: source(model.name, model.description),
+    // An agent whose search matched nothing grounds on the anchor, so it also
+    // lists the model's metrics and entities (read_trailers.ts).
+    entrySource: source(
+        model.name, readable ? withContentsTrailer(model) : model.description),
     aspects: aspectsFor(
         names, {'semantic-model': modelAspectData(model)}, model.aiContext),
   }];

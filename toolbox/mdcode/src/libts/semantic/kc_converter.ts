@@ -82,7 +82,7 @@ import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
 import {splitDerivedTrailers} from './derived_relationships';
 import {splitMembersTrailer} from './vocabulary';
 import {splitHydrationTrailer} from './hydration_kc';
-import {splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer} from './read_trailers';
+import {splitContentsTrailer, splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer} from './read_trailers';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -207,7 +207,9 @@ export function modelsFromCatalogResources(
         anchorAi?.relationships ?? []);
 
     const model: SemanticModel = {name, entities, relationships, metrics};
-    const description = anchor.entrySource?.description;
+    // The contents paragraph is derived (push lists the model's metrics and
+    // entities on the anchor), so it is dropped here.
+    const description = splitContentsTrailer(anchor.entrySource?.description).rest;
     if (description !== undefined) model.description = description;
     const actions = childrenOf(anchor.name, actionEntries)
                         .map(e => readAction(e, warnings))

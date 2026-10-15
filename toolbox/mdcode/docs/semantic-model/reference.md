@@ -853,6 +853,7 @@ the entry:
 
 | Entry | Paragraph | Example |
 |---|---|---|
+| Model anchor | `Contents:` every metric, then every entity, by name, so an agent whose search matched nothing can pick the entries to look up. Sized to keep the description within Dataplex's 2,000 characters (`… N more`) | `Contents: metrics revenue, aov; entities Customer, Order, Product.` |
 | Bound entity | `Read through:` its node view (its table under `mode: direct`), its graph and node label | ``Read through: node view `p.d.order`; graph `p.d.shop_graph`, node Order.`` |
 | Bound entity | `Relationships:` every edge from it (`→`) and to it (`←`) with the join columns of the views both ends are read through, this entity's column first; a many-to-many edge names its junction table. Sized to keep the description within Dataplex's 2,000 characters (`… N more`), just before `Hydration:` | `Relationships: placedBy → Customer (customer_id = customer_id).` |
 | Metric | `Query:` its measures composed as its expression over `GRAPH_EXPAND` of the graph that holds them (or its expression over its fallback view), last | `Query: SELECT AGG(Order_revenue) FROM GRAPH_EXPAND("p.d.shop_graph__order_metrics")` |

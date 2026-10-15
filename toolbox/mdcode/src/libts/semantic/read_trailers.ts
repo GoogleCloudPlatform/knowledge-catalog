@@ -19,9 +19,12 @@
 //   Query: SELECT AGG(Order_revenue) FROM GRAPH_EXPAND("p.d.shop_graph")
 //
 // The query runs as written; a reader adds WHERE / GROUP BY over the same
-// GRAPH_EXPAND's `<NodeTable>_<field>` columns. Both paragraphs are derived
-// from the model and its BigQuery target, never authored: pull peels them off
-// and drops them, and the next push writes them again.
+// GRAPH_EXPAND's `<NodeTable>_<field>` columns. An entity also lists its edges
+// (`Relationships:`), and the model anchor lists the model's metrics and
+// entities (`Contents:`), for an agent whose search matched nothing. All these
+// paragraphs are derived from the model and its BigQuery target, never
+// authored: pull peels them off and drops them, and the next push writes them
+// again.
 
 import {googleDeploymentTargets} from './deployment_target';
 import {snakeCase} from './generated_views';
@@ -266,4 +269,68 @@ const RELATIONSHIPS = /^Relationships: .*\S+ [→←] \S+ \(.*\)(?:; … \d+ mor
 export function splitRelationshipsTrailer(text: string|undefined):
     {rest: string|undefined} {
   return peel(text, RELATIONSHIPS);
+}
+
+/** The prefix of the model anchor's contents paragraph. */
+export const CONTENTS_PREFIX = 'Contents: ';
+
+// `names` joined, the first `n` of them, then `… k more` for the rest.
+function nameList(names: string[], n: number): string {
+  const shown = names.slice(0, n);
+  if (n < names.length) shown.push(`… ${names.length - n} more`);
+  return shown.join(', ');
+}
+
+/**
+ * The model anchor's contents paragraph: every metric and every entity, by
+ * name. An agent whose search matched no metric or entity grounds on the anchor
+ * and picks from this list the entries to look up
+ * (`<model>.metrics.<metric>`, `<model>.entities.<Entity>`). At most `budget`
+ * characters: metrics first, then entities, and a list that does not fit is
+ * cut, saying how many are left. Undefined for a model with neither, or when
+ * nothing fits.
+ */
+export function contentsTrailer(model: SemanticModel, budget: number): string|
+    undefined {
+  const metrics = (model.metrics ?? []).map(m => m.name);
+  const entities = (model.entities ?? []).map(e => e.name);
+  if (!metrics.length && !entities.length) return undefined;
+  const render = (m: number, e: number): string => {
+    const parts: string[] = [];
+    if (metrics.length) parts.push(`metrics ${nameList(metrics, m)}`);
+    if (entities.length) parts.push(`entities ${nameList(entities, e)}`);
+    return `${CONTENTS_PREFIX}${parts.join('; ')}.`;
+  };
+  for (let e = entities.length; e >= 0; e--) {
+    const text = render(metrics.length, e);
+    if (text.length <= budget) return text;
+  }
+  for (let m = metrics.length - 1; m >= 0; m--) {
+    const text = render(m, 0);
+    if (text.length <= budget) return text;
+  }
+  return undefined;
+}
+
+/**
+ * The model description with its contents paragraph appended, within the
+ * description cap.
+ */
+export function withContentsTrailer(model: SemanticModel): string|undefined {
+  const head = model.description;
+  const contents =
+      contentsTrailer(model, DESCRIPTION_MAX - (head ? head.length + 2 : 0));
+  if (!contents) return head;
+  return [head, contents].filter((p): p is string => !!p).join('\n\n');
+}
+
+const CONTENTS = /^Contents: (?:metrics|entities) .+\.$/;
+
+/**
+ * Peels the contents paragraph (see contentsTrailer) off a pulled model
+ * description. Text without one is returned untouched.
+ */
+export function splitContentsTrailer(text: string|undefined):
+    {rest: string|undefined} {
+  return peel(text, CONTENTS);
 }

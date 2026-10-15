@@ -12,7 +12,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {ANNOTATION_ASPECT_IDS} from '../../../src/libts/semantic/kc_custom_types';
 import {generateCatalogResources, physicalBindings} from '../../../src/libts/semantic/knowledge_catalog';
-import {metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer, withQueryTrailer} from '../../../src/libts/semantic/read_trailers';
+import {contentsTrailer, metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, splitContentsTrailer, splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer, withContentsTrailer, withQueryTrailer} from '../../../src/libts/semantic/read_trailers';
 
 const OPTS = {project: 'dest', location: 'us', entryGroup: 'eg'};
 const ALL = [...ANNOTATION_ASPECT_IDS];
@@ -184,9 +184,46 @@ describe('relationships paragraph (entity)', () => {
   });
 });
 
+describe('contents paragraph (model anchor)', () => {
+  test('every metric, then every entity, by name', () => {
+    expect(contentsTrailer(shop(), 2000)).toBe(
+        'Contents: metrics revenue, aov; entities Customer, Order, Product.');
+  });
+
+  test('a list that does not fit is cut, metrics kept first', () => {
+    expect(contentsTrailer(shop(), 60))
+        .toBe('Contents: metrics revenue, aov; entities Customer, … 2 more.');
+    expect(contentsTrailer(shop(), 50))
+        .toBe('Contents: metrics revenue, aov; entities … 3 more.');
+    expect(contentsTrailer(shop(), 10)).toBeUndefined();
+  });
+
+  test('a model with no metrics and no entities has none', () => {
+    const empty: SemanticModel = {name: 'empty', entities: [], relationships: [], metrics: []};
+    expect(contentsTrailer(empty, 2000)).toBeUndefined();
+  });
+
+  test('appended after the model description; peel restores it', () => {
+    const d = withContentsTrailer(shop())!;
+    expect(d).toBe(
+        'The shop model.\n\n' +
+        'Contents: metrics revenue, aov; entities Customer, Order, Product.');
+    expect(splitContentsTrailer(d)).toEqual({rest: 'The shop model.'});
+    expect(splitContentsTrailer('The shop model.\n\nContents: see the wiki.'))
+        .toEqual({rest: 'The shop model.\n\nContents: see the wiki.'});
+    expect(splitContentsTrailer(undefined)).toEqual({rest: undefined});
+  });
+});
+
 describe('on the published entries', () => {
   const {entries, entryLinks} =
       generateCatalogResources(shop(), {...OPTS, customAspects: ALL});
+
+  test('the model anchor lists its metrics and entities', () => {
+    expect(descriptionOf(entries, 'shop')).toBe(
+        'The shop model.\n\n' +
+        'Contents: metrics revenue, aov; entities Customer, Order, Product.');
+  });
 
   test('a bound entity ends with Read through and Relationships (before Hydration)', () => {
     expect(descriptionOf(entries, 'shop.entities.Customer')).toBe(
@@ -206,14 +243,16 @@ describe('on the published entries', () => {
 
   test('without the physical layout, nothing is appended', () => {
     const plain = generateCatalogResources(shop(), OPTS).entries;
+    expect(descriptionOf(plain, 'shop')).toBe('The shop model.');
     expect(descriptionOf(plain, 'shop.entities.Customer')).toBe('A buyer.');
     expect(descriptionOf(plain, 'shop.metrics.revenue'))
         .toBe('Gross revenue.\n\nUnit: USD.');
   });
 
-  test('pull drops both paragraphs: the model comes back as authored', () => {
+  test('pull drops the derived paragraphs: the model comes back as authored', () => {
     const back = modelsFromCatalogResources(entries, entryLinks).models[0];
     const src = shop();
+    expect(back.description).toBe(src.description);
     expect(back.entities.map(e => e.description))
         .toEqual(src.entities.map(e => e.description));
     expect(back.metrics.map(m => m.description))
