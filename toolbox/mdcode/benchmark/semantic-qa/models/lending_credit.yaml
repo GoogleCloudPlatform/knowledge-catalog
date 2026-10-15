@@ -1,21 +1,23 @@
-# Benchmark model 5 of 6 -- consumer lending and credit risk.
+# Benchmark model: consumer lending and credit risk.
 #
-# Shape: an inheritance hierarchy at the centre. `credit_account` is abstract
-# and has three concrete subtypes with genuinely different economics -- a
-# revolving card, an amortizing installment loan, and a drawable line of
-# credit. Payments and delinquency snapshots attach to the SUPERTYPE.
+# An inheritance hierarchy at the centre. `credit_account` is abstract and has
+# three concrete subtypes with genuinely different economics -- a revolving
+# card, an amortizing installment loan, and a drawable line of credit.
+# Payments and delinquency snapshots attach to the SUPERTYPE.
 #
 # What it is here to test:
 #   - polymorphic aggregation. "Total exposure" must reach all three subtypes;
-#     "utilization" is meaningful only for the two revolving ones; "remaining
-#     term" only for the installment one. A model that flattens the hierarchy
-#     away gets these wrong in both directions
+#     "utilization" is meaningful only for the two carrying a credit limit;
+#     "remaining term" only for the installment loan. A reader that flattens
+#     the hierarchy away gets these wrong in both directions
 #   - an edge whose endpoint is an abstract entity (payment -> credit_account),
 #     which resolves to a union over the subtypes
 #   - a funnel (application -> decision -> booked account) where the
 #     denominator of approval rate is applications, not accounts
 #   - a daily risk snapshot, where delinquency is a state on a date rather than
 #     an event to be summed over time
+#
+# Questions: ../questions/lending_credit.yaml
 
 version: "0.2.0.dev0/google"
 
@@ -795,7 +797,7 @@ semantic_model:
         ai_context:
           synonyms: ["remaining term", "months left", "weighted life"]
 
-      # --- credit risk -------------------------------------------------------
+      # --- credit risk -----------------------------------------------------
       - name: delinquent_balance_30plus
         datatype: Decimal
         description: Balance on accounts 30 or more days past due, at one as_of_date.
@@ -872,7 +874,7 @@ semantic_model:
         ai_context:
           synonyms: ["loss rate", "charge-off rate", "net credit loss rate"]
 
-      # --- collections and income -------------------------------------------
+      # --- collections and income ------------------------------------------
       - name: payments_received
         datatype: Decimal
         description: Cash received across all accounts.

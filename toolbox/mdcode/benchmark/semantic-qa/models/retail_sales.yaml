@@ -1,17 +1,19 @@
-# Benchmark model 1 of 6 -- retail sales.
+# Benchmark model: retail sales.
 #
-# Shape: classic star schema (one grain-bearing fact, five conformed
-# dimensions) plus one bridge entity for the many-to-many between a sales line
-# and the promotions applied to it.
+# A classic star schema -- sales lines hanging off orders, with customer,
+# product, store and calendar dimensions -- plus one bridge entity for the
+# many-to-many between a sales line and the promotions applied to it.
 #
 # What it is here to test:
-#   - additive metrics over the line grain (gross_revenue, units_sold)
-#   - a metric whose grain is the ORDER, not the line (order_count,
-#     average_order_value) -- counting it off the line table fans out
-#   - ratio metrics whose numerator and denominator sit on different entities
-#     (revenue_per_employee: order_line + store)
+#   - additive measures at line grain (gross_revenue, units_sold)
+#   - a measure whose grain is the ORDER rather than the line (order_count,
+#     average_order_value); counting it off the line table fans out
+#   - ratios whose numerator and denominator sit on different entities
+#     (revenue_per_employee divides an order_line sum by a store attribute)
 #   - a many-to-many hop (order_line -> order_line_promotion -> promotion)
-#     that double-counts revenue if the bridge is joined naively
+#     that double-counts discount if the bridge is joined naively
+#
+# Questions: ../questions/retail_sales.yaml
 
 version: "0.2.0.dev0/google"
 
