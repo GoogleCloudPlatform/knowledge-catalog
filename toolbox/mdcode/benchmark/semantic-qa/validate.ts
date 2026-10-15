@@ -1,13 +1,12 @@
-// Validates the semantic-QA benchmark: every model loads through kcmd's own
-// OSI loader, and every name a question claims to need actually exists in the
-// model it names.
+// Validates the semantic-QA benchmark: both models load, both conform to the
+// OSI schema, and every name a question says it uses actually exists.
 //
-// This is what keeps the benchmark honest. A question whose `requires` block
-// cites `total_revenue` when the model calls it `net_revenue` is a broken
-// grading key, and nothing but a cross-check catches it.
+// This is what keeps the benchmark honest. A question whose `uses` list cites
+// `total_revenue` when the model calls it `net_revenue` is a broken grading
+// key, and nothing but a cross-check catches it.
 //
 // Run:  npx bun benchmark/semantic-qa/validate.ts
-// Exits non-zero on the first category of failure found; prints every failure.
+// Prints every failure and exits non-zero if there are any.
 
 import Ajv2020 from 'ajv/dist/2020';
 import * as fs from 'node:fs';
@@ -21,42 +20,14 @@ const ROOT = path.dirname(new URL(import.meta.url).pathname);
 const MODELS_DIR = path.join(ROOT, 'models');
 const QUESTIONS_DIR = path.join(ROOT, 'questions');
 
-const CATEGORIES = new Set([
-  'single-metric',
-  'metric-by-dimension',
-  'multi-hop',
-  'ratio-metric',
-  'time-filter',
-  'time-series',
-  'many-to-many',
-  'hierarchy',
-  'inheritance',
-  'multi-metric',
-  'fan-out-trap',
-  'filtered-metric',
-  'ranking',
-  'ambiguous',
-  'unanswerable',
-]);
-const DIFFICULTIES = new Set(['easy', 'medium', 'hard']);
+const DIFFICULTIES = ['easy', 'medium', 'hard'];
 
 interface Question {
   id: string;
-  model: string;
-  question: string;
-  category: string;
   difficulty: string;
-  answerable: boolean;
-  requires?: {
-    metrics?: string[];
-    dimensions?: string[];  // "entity.field"
-    relationships?: string[];
-    entities?: string[];
-  };
-  expected_grain?: string;
-  answer_sketch?: string;
-  pitfall?: string;
-  reason?: string;  // why an unanswerable/ambiguous question is so
+  question: string;
+  uses: string[];  // a metric name, or an "entity.field" dimension
+  answer: string;
 }
 
 const failures: string[] = [];
@@ -64,7 +35,7 @@ function fail(msg: string) {
   failures.push(msg);
 }
 
-// --- load every model -------------------------------------------------------
+// --- load both models -------------------------------------------------------
 
 const modelFiles =
     fs.readdirSync(MODELS_DIR).filter(f => f.endsWith('.yaml')).sort();
@@ -78,9 +49,7 @@ interface Loaded {
   model: SemanticModel;
   metrics: Set<string>;
   entities: Set<string>;
-  relationships: Set<string>;
-  dimensions:
-      Set<string>;  // "entity.field", including fields inherited via `extends`
+  dimensions: Set<string>;  // "entity.field", resolving `extends`
 }
 
 const loaded = new Map<string, Loaded>();
@@ -105,13 +74,12 @@ for (const file of modelFiles) {
         stem}'`);
   }
 
-  const byName = new Map<string, Entity>(m.entities.map(e => [e.name, e]));
   // A subtype answers questions with its supertype's fields too, so resolve
   // `extends` transitively when collecting the legal dimension names.
+  const byName = new Map<string, Entity>(m.entities.map(e => [e.name, e]));
   const fieldsOf = (e: Entity, seen = new Set<string>()): string[] => {
     if (seen.has(e.name)) return [];
     seen.add(e.name);
-    const own = e.fields.map(f => f.name);
     const up = (e.extends ?? []).flatMap(sup => {
       const parent = byName.get(sup);
       if (!parent) {
@@ -120,7 +88,7 @@ for (const file of modelFiles) {
       }
       return fieldsOf(parent, seen);
     });
-    return [...own, ...up];
+    return [...e.fields.map(f => f.name), ...up];
   };
 
   const dimensions = new Set<string>();
@@ -133,31 +101,21 @@ for (const file of modelFiles) {
     model: m,
     metrics: new Set(m.metrics.map(x => x.name)),
     entities: new Set(m.entities.map(x => x.name)),
-    relationships: new Set(m.relationships.map(x => x.name)),
     dimensions,
   });
 }
 
-// --- Apache OSI schema conformance ------------------------------------------
+// --- OSI schema conformance -------------------------------------------------
 //
-// Validating against kcmd's loader proves the models work HERE. Validating
-// against the vendored Apache OSI JSON Schema proves they are portable, which
-// is what a benchmark needs: a model only this toolchain can read measures
-// this toolchain.
-//
-// Four of the six models validate against released OSI v0.2.0.dev0 with no
-// deviation at all. The two that need entity inheritance -- saas_subscriptions
-// and lending_credit -- declare kcmd's extended profile
-// (version 0.2.0.dev0/google) and are allowed exactly three departures, each a
-// documented superset rather than a mistake:
+// Both models declare kcmd's extended profile, which they need for `extends`
+// and `abstract` (released OSI has neither). Three departures from the
+// released schema follow from that and are tolerated; everything else -- a bad
+// dialect enum, a misspelled key, a missing required field -- still fails:
 //   - the `/google` version string itself
 //   - `entities` at model level, kcmd's alias for OSI's `datasets`
-//   - `extends` and `abstract` on a dataset, entity-level inheritance
+//   - `extends` and `abstract` on a dataset
 // The allowance is gated on the document actually declaring the extended
-// profile, so a plain OSI model cannot quietly pick it up. Everything else --
-// a bad dialect enum, a misspelled key, a missing required field -- still
-// fails. See tests/libts/semantic/osi_schema.test.ts, which applies the same
-// reasoning to the repo's own fixtures.
+// profile, so a plain OSI model added later cannot quietly pick it up.
 
 const SCHEMA_PATH = path.join(
     ROOT, '..', '..', 'tests', 'libts', 'semantic', 'fixtures', 'ossie',
@@ -178,21 +136,22 @@ if (fs.existsSync(SCHEMA_PATH)) {
     const extended =
         (doc as {version?: string})?.version === GOOGLE_PROFILE_VERSION;
     for (const e of validateSchema.errors ?? []) {
-      const extra =
-          (e.params as {additionalProperty?: string}).additionalProperty;
-      if (e.keyword === 'additionalProperties' && extra &&
-          TOLERATED_EXTRA_PROPERTIES.has(extra)) {
+      const p = e.params as {
+        additionalProperty?: string;
+        missingProperty?: string
+      };
+      if (e.keyword === 'additionalProperties' && p.additionalProperty &&
+          TOLERATED_EXTRA_PROPERTIES.has(p.additionalProperty)) {
         continue;
       }
       if (extended && e.keyword === 'const' && e.instancePath === '/version') {
         continue;  // the extended profile's own version string
       }
       if (extended && e.keyword === 'required' &&
-          (e.params as {missingProperty?: string}).missingProperty ===
-              'datasets') {
+          p.missingProperty === 'datasets') {
         continue;  // satisfied by the `entities` alias, tolerated above
       }
-      fail(`${file}: not valid Apache OSI at '${e.instancePath || '/'}' -- ${
+      fail(`${file}: not valid OSI at '${e.instancePath || '/'}' -- ${
           e.keyword} ${e.message ?? ''}`);
     }
   }
@@ -203,12 +162,9 @@ if (fs.existsSync(SCHEMA_PATH)) {
 
 // --- every metric expression must name only real entities and fields --------
 
-for (const [stem, L] of loaded) {
+for (const L of loaded.values()) {
   for (const metric of L.model.metrics) {
     const expr = metric.expression ?? '';
-    // Pull every `identifier.identifier` pair out of the aggregate and check
-    // it against the model. Qualifiers that are not entity names (e.g. a
-    // function-qualified call) are ignored; only a known entity is checked.
     for (const [, ent, fld] of expr.matchAll(
              /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)\b/g)) {
       if (!L.entities.has(ent)) {
@@ -224,91 +180,71 @@ for (const [stem, L] of loaded) {
   }
 }
 
-// --- load and check every question ------------------------------------------
+// --- questions --------------------------------------------------------------
 
 const questionFiles = fs.existsSync(QUESTIONS_DIR) ?
-    fs.readdirSync(QUESTIONS_DIR).filter(f => f.endsWith('.jsonl')).sort() :
+    fs.readdirSync(QUESTIONS_DIR).filter(f => f.endsWith('.yaml')).sort() :
     [];
 
 const seenIds = new Set<string>();
-let questionCount = 0;
-const perModel = new Map<string, number>();
-const perCategory = new Map<string, number>();
+const perModel = new Map<string, Question[]>();
 
 for (const file of questionFiles) {
-  const stem = file.replace(/\.jsonl$/, '');
+  const stem = file.replace(/\.yaml$/, '');
   const L = loaded.get(stem);
   if (!L) {
     fail(`questions/${file}: no model named '${stem}'`);
     continue;
   }
-  const lines = fs.readFileSync(path.join(QUESTIONS_DIR, file), 'utf8')
-                    .split('\n')
-                    .map(s => s.trim())
-                    .filter(Boolean);
-  for (const [i, line] of lines.entries()) {
-    const where = `questions/${file}:${i + 1}`;
-    let q: Question;
-    try {
-      q = JSON.parse(line);
-    } catch (e) {
-      fail(`${where}: not valid JSON -- ${(e as Error).message}`);
-      continue;
-    }
-    questionCount++;
-    perModel.set(stem, (perModel.get(stem) ?? 0) + 1);
-    perCategory.set(q.category, (perCategory.get(q.category) ?? 0) + 1);
+  const doc =
+      yaml.parse(fs.readFileSync(path.join(QUESTIONS_DIR, file), 'utf8')) as {
+    model?: string;
+    questions?: Question[]
+  };
+  if (doc?.model !== stem) {
+    fail(`questions/${file}: 'model' is '${doc?.model}', expected '${stem}'`);
+  }
+  const questions = doc?.questions ?? [];
+  perModel.set(stem, questions);
 
-    if (seenIds.has(q.id)) fail(`${where}: duplicate question id '${q.id}'`);
-    seenIds.add(q.id);
-    if (!q.id?.startsWith(stem + '.')) {
-      fail(`${where}: id '${q.id}' should be prefixed '${stem}.'`);
-    }
-    if (q.model !== stem)
-      fail(`${where}: model '${q.model}' does not match file '${stem}'`);
-    if (!CATEGORIES.has(q.category))
-      fail(`${where}: unknown category '${q.category}'`);
-    if (!DIFFICULTIES.has(q.difficulty))
-      fail(`${where}: unknown difficulty '${q.difficulty}'`);
-    if (typeof q.answerable !== 'boolean')
-      fail(`${where}: 'answerable' must be a boolean`);
-    if (!q.question?.trim()) fail(`${where}: empty question text`);
+  for (const q of questions) {
+    const where = `questions/${file} [${q?.id ?? '?'}]`;
+    if (!q?.id) fail(`${where}: missing id`);
+    const key = `${stem}.${q?.id}`;
+    if (seenIds.has(key)) fail(`${where}: duplicate id`);
+    seenIds.add(key);
 
-    if (q.answerable) {
-      if (!q.answer_sketch?.trim())
-        fail(`${where}: an answerable question needs an answer_sketch`);
-      if (!q.requires?.metrics?.length && !q.requires?.dimensions?.length) {
-        fail(`${
-            where}: an answerable question must require at least one metric or dimension`);
+    if (!DIFFICULTIES.includes(q?.difficulty)) {
+      fail(`${where}: difficulty '${q?.difficulty}' is not one of ${
+          DIFFICULTIES.join(', ')}`);
+    }
+    if (!q?.question?.trim()) fail(`${where}: empty question text`);
+    if (!q?.answer?.trim()) fail(`${where}: empty answer`);
+    if (!q?.uses?.length) fail(`${where}: 'uses' must name at least one thing`);
+
+    for (const name of q?.uses ?? []) {
+      const ok =
+          name.includes('.') ? L.dimensions.has(name) : L.metrics.has(name);
+      if (!ok) {
+        fail(`${where}: uses '${name}', which the model does not define`);
       }
-    } else {
-      if (!q.reason?.trim())
-        fail(`${where}: a non-answerable question needs a 'reason'`);
     }
+  }
 
-    for (const name of q.requires?.metrics ?? []) {
-      if (!L.metrics.has(name))
-        fail(`${where}: requires unknown metric '${name}'`);
-    }
-    for (const name of q.requires?.entities ?? []) {
-      if (!L.entities.has(name))
-        fail(`${where}: requires unknown entity '${name}'`);
-    }
-    for (const name of q.requires?.relationships ?? []) {
-      if (!L.relationships.has(name))
-        fail(`${where}: requires unknown relationship '${name}'`);
-    }
-    for (const name of q.requires?.dimensions ?? []) {
-      if (!L.dimensions.has(name))
-        fail(`${where}: requires unknown dimension '${name}'`);
-    }
+  // The set is deliberately five per model, spanning difficulties. Both are
+  // checked so the shape cannot drift without someone deciding to change it.
+  if (questions.length !== 5) {
+    fail(`questions/${file}: expected 5 questions, found ${questions.length}`);
+  }
+  const spread = new Set(questions.map(q => q?.difficulty));
+  if (spread.size < 2) {
+    fail(`questions/${file}: all questions are '${
+            [...spread][0]}'; the set should vary in difficulty`);
   }
 }
 
-// --- every model should be exercised ----------------------------------------
-
 for (const stem of loaded.keys()) {
-  if (!perModel.get(stem)) fail(`model '${stem}' has no questions`);
+  if (!perModel.has(stem)) fail(`model '${stem}' has no questions file`);
 }
 
 // --- report -----------------------------------------------------------------
@@ -316,17 +252,17 @@ for (const stem of loaded.keys()) {
 for (const f of failures) console.error('FAIL ' + f);
 
 console.log('');
-console.log(`models:    ${loaded.size}`);
 for (const [stem, L] of loaded) {
+  const qs = perModel.get(stem) ?? [];
+  const mix =
+      DIFFICULTIES
+          .map(d => `${qs.filter(q => q?.difficulty === d).length} ${d}`)
+          .join(', ');
   console.log(
-      `  ${stem.padEnd(22)} ${String(L.entities.size).padStart(2)} entities  ${
-          String(L.relationships.size).padStart(2)} relationships  ${
-          String(L.metrics.size).padStart(2)} metrics  ${
-          String(perModel.get(stem) ?? 0).padStart(3)} questions`);
-}
-console.log(`questions: ${questionCount}`);
-for (const [cat, n] of [...perCategory].sort((a, b) => b[1] - a[1])) {
-  console.log(`  ${cat.padEnd(22)} ${String(n).padStart(3)}`);
+      `${stem.padEnd(16)} ${String(L.entities.size).padStart(2)} entities  ${
+          String(L.model.relationships.length).padStart(2)} relationships  ${
+          String(L.metrics.size).padStart(2)} metrics  |  ${
+          qs.length} questions (${mix})`);
 }
 console.log('');
 
@@ -334,4 +270,5 @@ if (failures.length) {
   console.error(`${failures.length} failure(s)`);
   process.exit(1);
 }
-console.log('all models load and every question reference resolves');
+console.log(
+    'both models load, conform to OSI, and every question reference resolves');

@@ -1,0 +1,64 @@
+# Five questions against models/lending_credit.yaml, easiest first.
+#
+# Three of the five turn on the inheritance hierarchy: credit_account is
+# abstract, and card_account, installment_loan and line_of_credit are its
+# concrete subtypes. Getting the scope wrong -- answering off one subtype, or
+# spanning all three where only one applies -- is the failure these catch.
+
+model: lending_credit
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: What is our application approval rate by channel?
+    uses: [approval_rate, branch.channel_type]
+    answer: >-
+      Approved applications over all applications, grouped by
+      branch.channel_type. The denominator is applications, never booked
+      accounts.
+
+  - id: q2
+    difficulty: easy
+    question: Why are we declining applications?
+    uses: [decline_rate, application.decline_reason]
+    answer: >-
+      Count declined applications grouped by application.decline_reason, and
+      report decline_rate alongside so the volume behind each reason is
+      visible.
+
+  - id: q3
+    difficulty: medium
+    question: What is our credit card utilization?
+    uses: [card_utilization, card_account.credit_limit]
+    answer: >-
+      Card balance over card limit, scoped to card_account alone. Utilization
+      is defined only where a credit limit exists: installment_loan has none,
+      so widening the denominator across all account types pulls in a product
+      that cannot revolve and understates the figure.
+
+  - id: q4
+    difficulty: hard
+    question: What is our total credit exposure?
+    uses: [total_exposure, credit_account.current_balance]
+    answer: >-
+      Sum current_balance across all three concrete subtypes. credit_account
+      is abstract and has no table of its own, so the aggregate is a union
+      over card_account, installment_loan and line_of_credit. Answering off
+      cards alone is the common failure and can miss most of the book.
+
+  - id: q5
+    difficulty: hard
+    question: Which borrower risk bands are driving serious delinquency?
+    uses:
+      [
+        delinquency_rate_90plus,
+        borrower.risk_band,
+        delinquency_snapshot.as_of_date,
+      ]
+    answer: >-
+      Two things have to go right. delinquency_snapshot is a daily state, so
+      it must be read at a single as_of_date rather than summed across
+      history. And it attaches to the abstract supertype, so reaching borrower
+      means resolving through whichever subtype each account is before
+      following credit_account_to_borrower; joining the snapshot to one
+      subtype silently drops the other two products.

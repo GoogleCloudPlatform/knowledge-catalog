@@ -13,7 +13,7 @@
 #   - a many-to-many hop (order_line -> order_line_promotion -> promotion)
 #     that double-counts revenue if the bridge is joined naively
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: retail_sales
@@ -29,7 +29,7 @@ semantic_model:
         promotions, and never sum revenue across that join without
         de-duplicating by order_line_id.
 
-    datasets:
+    entities:
       - name: sales_order
         source: retail.public.sales_order
         primary_key: [order_id]

@@ -1,254 +1,158 @@
 # Semantic-QA benchmark
 
-Six semantic models, and 152 natural-language questions graded against them.
+Two semantic models, and five questions each, graded against them.
 
-Each model is an Apache OSI document declaring datasets (entities),
-relationships between them, and model-level metrics defined over both. Each
-question states, in a machine-readable `requires` block, exactly
-which metrics, dimensions and relationships a correct answer has to use. That
-pairing is the point: a benchmark of questions alone measures whether a system
-produces plausible SQL, while a benchmark of questions plus their required
-model elements measures whether it produces the *right* SQL for the semantics
-it was handed.
+Each model is an OSI document declaring entities, the relationships between
+them, and model-level metrics defined over both. Each question names, in a
+`uses` list, the metrics and dimensions a correct answer has to touch. That
+pairing is the point: a set of questions alone measures whether a system
+produces plausible SQL, while questions plus the model elements they require
+measures whether it took the right path at the right grain.
 
 ## Layout
 
 ```
-models/<name>.yaml        one semantic model, loadable by kcmd's OSI loader
-questions/<name>.jsonl    one question per line, graded against models/<name>.yaml
-validate.ts               checks every model loads and every question reference resolves
-smoke/trap_check.py       runs the metric SQL on real rows; proves the traps diverge
-smoke/snapshot_check.py   the same, for supply_chain's daily stock snapshot
+models/retail_sales.yaml       star schema, many-to-many bridge, grain traps
+models/lending_credit.yaml     abstract supertype over three subtypes
+questions/<name>.yaml          five questions, easiest first
+validate.ts                    both models load, conform, and every name resolves
+smoke/trap_check.py            runs the metric SQL on real rows
 ```
 
-A model file and its question file share a stem, and the model's `name` matches
-that stem. `validate.ts` enforces all three.
+A model file and its question file share a stem, and the model's `name`
+matches that stem. `validate.ts` enforces all three.
 
-## The six models
+## The two models
 
-| Model | Entities | Rel. | Metrics | Q | The shape it tests |
-|---|---|---|---|---|---|
-| `retail_sales` | 8 | 7 | 17 | 24 | Star schema; one many-to-many bridge; order grain vs line grain |
-| `saas_subscriptions` | 10 | 10 | 23 | 25 | Inheritance over billing documents; state entity vs event log |
-| `clinical_encounters` | 11 | 13 | 20 | 25 | Two independent bridges off one fact; four-deep join paths |
-| `supply_chain` | 10 | 15 | 23 | 25 | Recursive bill of materials; two edges to the same entity; snapshots |
-| `lending_credit` | 10 | 9 | 27 | 26 | Abstract supertype with three subtypes; edges onto the supertype |
-| `workforce_org` | 8 | 14 | 27 | 27 | Two self-referential hierarchies that disagree; subject vs reviewer edges |
+**`retail_sales`** — eight entities, seven relationships, seventeen metrics.
+A classic star schema: sales lines hanging off orders, with customer, product,
+store and calendar dimensions, plus one bridge entity for the many-to-many
+between a sales line and the promotions applied to it. It tests the two
+failure modes that dominate real BI: measures living at a grain other than the
+one the question asks about, and joins that silently multiply rows.
 
-The models are deliberately not variations on one schema. Between them they
-cover additive and non-additive measures, ratio metrics whose numerator and
-denominator sit on different entities, stock-versus-flow pairs, snapshot
-entities that must be read at a single date, inheritance, many-to-many bridges,
-and two kinds of recursion.
+**`lending_credit`** — ten entities, nine relationships, twenty-seven metrics.
+`credit_account` is abstract, with three concrete subtypes that have genuinely
+different economics: a revolving card, an amortizing installment loan, and a
+drawable line of credit. Payments and daily delinquency snapshots attach to
+the *supertype*. It tests polymorphic aggregation — reaching all three
+subtypes when the question is about exposure, and exactly one when the
+question is about utilization, which only means something where a credit limit
+exists.
 
-Every dataset carries a `source` pointing at a plausible fully-qualified table,
+Both declare kcmd's extended profile, `version: "0.2.0.dev0/google"`, and use
+`entities` rather than OSI's `datasets`. `lending_credit` needs it for
+`extends` and `abstract`, which released Apache OSI has no equivalent for;
+`retail_sales` uses the same profile so the set is consistent to read.
+
+Every entity carries a `source` pointing at a plausible fully-qualified table,
 so a model is executable in principle, but no data ships with the benchmark.
-Nothing in the models depends on a particular backend.
-
-### Portability
-
-Four of the six — `retail_sales`, `clinical_encounters`, `supply_chain` and
-`workforce_org` — validate against the released Apache OSI v0.2.0.dev0 JSON
-Schema with no deviation whatsoever. They declare `version: "0.2.0.dev0"` and
-use OSI's own `datasets` key.
-
-`saas_subscriptions` and `lending_credit` need entity inheritance, which
-released OSI does not yet have, so they declare kcmd's extended profile
-(`version: "0.2.0.dev0/google"`) and depart from the schema in exactly three
-ways: that version string, `entities` in place of `datasets`, and
-`extends`/`abstract` on a dataset. `validate.ts` permits those three and
-nothing else, and only on a document that declares the extended profile.
-
-One consequence worth knowing: released OSI gives a relationship no
-`description` property. Relationship guidance in these models therefore lives
-in `ai_context.instructions`, which is where a model consumer should be
-reading it anyway.
+Nothing depends on a particular backend.
 
 ## Question format
 
-One JSON object per line:
+```yaml
+model: retail_sales
 
-```json
-{
-  "id": "retail_sales.q07",
-  "model": "retail_sales",
-  "question": "How many orders did each store take last quarter?",
-  "category": "fan-out-trap",
-  "difficulty": "hard",
-  "answerable": true,
-  "requires": {
-    "metrics": ["order_count"],
-    "dimensions": ["store.store_name", "calendar_date.fiscal_quarter"],
-    "relationships": ["sales_order_to_store", "sales_order_to_calendar_date"],
-    "entities": ["sales_order", "store", "calendar_date"]
-  },
-  "expected_grain": "one row per store",
-  "answer_sketch": "Count distinct sales_order.order_id per store. ...",
-  "pitfall": "Joining order_line and counting rows multiplies each order by ..."
-}
+questions:
+  - id: q3
+    difficulty: medium
+    question: What is the average order value by sales channel?
+    uses: [average_order_value, sales_order.channel]
+    answer: >-
+      Line-grain revenue divided by a DISTINCT count of orders, grouped by
+      sales_order.channel. The denominator is the trap: once order_line is in
+      the join, a plain row count counts lines rather than orders.
 ```
 
-`requires` names elements exactly as the model declares them; a dimension is
-`entity.field`, and fields inherited through `extends` count as belonging to
-the subtype. `expected_grain` says how many rows a correct answer has.
-`answer_sketch` is the reference reasoning, not a reference SQL string —
-several correct queries exist for most questions, so grading on SQL text would
-punish the wrong thing. `pitfall`, where present, names the specific wrong
-answer the question is built to catch.
+`uses` entries are either a bare metric name or an `entity.field` dimension,
+written exactly as the model declares them. Fields inherited through `extends`
+count as belonging to the subtype, so `credit_account.current_balance` resolves
+on each of the three subtypes.
 
-Questions with `"answerable": false` carry a `reason` instead of an
-`answer_sketch`.
+`answer` is reference reasoning, not reference SQL. Several correct queries
+exist for most of these, so grading on SQL text would punish the wrong thing;
+where there is a specific wrong answer worth catching, the `answer` names it.
 
-### Categories
+Five questions per model, ordered easiest first, currently two easy, one
+medium and two hard in each. `validate.ts` enforces the count and that the
+difficulties vary, so the shape cannot drift by accident.
 
-| Category | n | What it is |
-|---|---|---|
-| `multi-hop` | 34 | Two or more relationship hops |
-| `ratio-metric` | 20 | A ratio whose parts may sit at different grains |
-| `metric-by-dimension` | 14 | One metric, one grouping |
-| `multi-metric` | 14 | Two or more metrics read together |
-| `unanswerable` | 12 | Out of the model's scope entirely |
-| `inheritance` | 11 | Spans, or must scope to, a supertype or subtype |
-| `many-to-many` | 8 | Crosses a bridge entity |
-| `hierarchy` | 8 | Needs a recursive walk |
-| `single-metric` | 6 | One metric, no grouping |
-| `ranking` | 6 | Order and limit |
-| `ambiguous` | 6 | Underspecified; the model supports several readings |
-| `filtered-metric` | 5 | One metric under a non-trivial filter |
-| `time-filter` | 3 | Correct period or as-of-date selection |
-| `time-series` | 3 | Grouped by a time grain |
-| `fan-out-trap` | 2 | A join that silently multiplies rows |
-
-Difficulty splits 48 `easy`, 66 `medium`, 38 `hard`. It reflects how many ways
-there are to get the question wrong, not how long the query is.
-
-## The negative cases
-
-Nineteen of the 152 questions are not answerable, and they are the most
-discriminating part of the set. They split two ways.
-
-`unanswerable` questions ask for something the model has no entity for — market
-share in `retail_sales`, customer acquisition cost in `saas_subscriptions`,
-timesheet hours in `workforce_org`. A system that answers them anyway is
-hallucinating a schema. The failure mode worth catching is the *plausible*
-substitution: using `purchase_order_value` as a stand-in for cost of goods sold
-when asked for inventory turns produces a number, and the number is wrong.
-
-`ambiguous` questions have several defensible readings that the model supports
-separately and that disagree. "What is our best-selling product?" resolves
-differently by units than by revenue than by margin. A correct response names
-the ambiguity; silently picking one reading and presenting it as the answer is
-the failure.
-
-One question sits in between. `clinical_encounters.q09` is categorized
-`fan-out-trap` but marked unanswerable: joining both the diagnosis and
-procedure bridges to `encounter` at once yields a cross product, so no single
-flat join can answer it correctly, and the only route is to resolve one bridge
-to a set of encounter ids first.
-
-## Running the validator
+## Running the checks
 
 From `toolbox/mdcode`:
 
 ```
 npx bun benchmark/semantic-qa/validate.ts
+python3 -I benchmark/semantic-qa/smoke/trap_check.py
 ```
 
-It loads every model through `src/libts/semantic/loader.ts` — the same loader
-kcmd uses — and checks that:
+`validate.ts` loads both models through `src/libts/semantic/loader.ts` — the
+same loader kcmd uses — and checks that:
 
 - each model loads, declares exactly one semantic model, and matches its filename
-- each model validates against the vendored Apache OSI JSON Schema, allowing
-  only the three extended-profile departures described above
-- every `entity.field` pair appearing in a metric expression exists, resolving
-  `extends` transitively
-- every question id is unique and prefixed with its model
-- every name in every `requires` block resolves against the model
-- answerable questions carry an `answer_sketch`; unanswerable ones carry a `reason`
-- every model has questions
+- each validates against the vendored Apache OSI JSON Schema, allowing only
+  the three departures the extended profile implies (the `/google` version
+  string, `entities` for `datasets`, and `extends`/`abstract` on a dataset),
+  and only on a document that actually declares that profile
+- every `entity.field` pair in a metric expression exists, resolving `extends`
+  transitively
+- every name in every `uses` list resolves
+- each model has five questions spanning more than one difficulty
 
-It exits non-zero and prints each failure on its own line. Run it after editing
-anything here: a `requires` block that cites a metric the model renamed is a
-broken grading key, and nothing else catches that.
-
-## Suggested grading
-
-The benchmark does not prescribe a harness. What the `requires` blocks make
-cheap is a three-part score per question:
-
-1. **Element recall.** Of the metrics, dimensions and relationships in
-   `requires`, how many does the system's query actually use? This is
-   checkable by parsing the generated SQL, and it catches a system that
-   reached the right number down the wrong path.
-2. **Grain.** Does the result have the row count `expected_grain` describes?
-   Most fan-out errors show up here before they show up in the values.
-3. **Refusal.** On the 19 non-answerable questions, did the system decline or
-   ask, rather than answer? Score these separately — a system that scores well
-   on the other 133 by answering everything confidently has not earned it.
-
-Element recall and refusal need no warehouse. Checking values does, and the
-benchmark ships no data; populating the `source` tables is left to whoever
-needs value-level grading.
+Run it after editing anything here. A `uses` entry citing a metric the model
+renamed is a broken grading key, and nothing else catches that.
 
 ## What has been validated, and what has not
 
 Validated:
 
-- **The models are structurally sound.** All six load through kcmd's loader and
-  pass the OSI schema check. Every `requires` name in all 152 questions
-  resolves.
+- **The models are structurally sound.** Both load, both pass the OSI schema
+  check, and every `uses` name resolves.
 - **The metric SQL executes.** `smoke/trap_check.py` builds a SQLite database
   whose views are generated from `retail_sales`'s own field expressions, loads
   a seven-line fixture, and runs all 17 metric expressions. All 17 execute,
-  and the values are small enough to check by hand (net revenue 705, AOV
-  176.25 over four orders).
-- **The traps discriminate.** For each trap question the same script runs the
-  correct query beside the naive one and compares. All five diverge, and not
-  marginally: orders per store reads 4 instead of 2, revenue per employee
-  9.63 instead of 38.50, promotional discount totals 65 instead of 45.
-  `smoke/snapshot_check.py` repeats the exercise on `supply_chain`, where
-  summing a daily snapshot across three days values inventory at 7,180 instead
-  of 1,980. Three of its four cases diverge; the fourth does not because that
-  fixture never has a part dip below safety stock and recover, not because the
-  question is weak.
+  with values small enough to check by hand — net revenue 705, average order
+  value 176.25 over four orders.
+- **The hard questions discriminate.** The same script runs each trap
+  question's correct query beside the naive one. All five diverge, and not
+  marginally: orders per store reads 4 instead of 2 (q4), discount by
+  promotion totals 65 instead of 45 (q5), revenue per employee 9.63 instead of
+  38.50.
 
 Not validated:
 
 - **No QA system has been run against it.** Nothing here tells you whether a
   current text-to-SQL or agent setup scores 40% or 95%. The traps are real,
-  but difficulty calibration is unmeasured and the `easy`/`medium`/`hard`
-  labels are editorial judgment.
+  but difficulty calibration is unmeasured and the labels are editorial
+  judgment.
 - **No gold values.** No data ships, so there is no exact-match answer key.
-  Scoring is element recall, grain and refusal (above).
-- **`requires` is one correct path, not the only one.** Several questions admit
-  more than one legitimate join path. Grade recall with tolerance; strict set
-  equality will produce false negatives.
+  Score on whether the query uses what `uses` names, and whether the result
+  has the right grain.
+- **`uses` is one correct path, not the only one.** Grade with tolerance;
+  strict set equality will produce false negatives.
 
 ### Known caveat: two metrics fan out as written
 
 `retail_sales.revenue_per_employee` and `sales_per_square_foot` divide a
-line-grain numerator by `SUM(store.employee_count)` and `SUM(store.square_feet)`.
-Executed literally over a flat star join, the denominator repeats once per
-sales line: the smoke test returns 8.29 and 0.083 where the grain-correct
-answers are 20.14 and 0.201, a factor of 2.4 on this fixture and worse as
-basket size grows.
+line-grain numerator by `SUM(store.employee_count)` and
+`SUM(store.square_feet)`. Executed literally over a flat star join the
+denominator repeats once per sales line: the smoke test returns 8.29 and 0.083
+where the grain-correct answers are 20.14 and 0.201, a factor of 2.4 on that
+fixture and worse as basket size grows.
 
-Whether that is a defect depends on the consumer. A grain-aware semantic engine
-collapses the denominator and these are right; anything that executes the
-expression as plain SQL gets the fan-out. Each metric's `description` says so,
-and questions q15 and q19 are built around exactly this hazard. Left as is
-deliberately, but if you want the models to be safe to execute naively, rewrite
-both denominators as uncorrelated subqueries over `store` and keep the trap in
-the questions.
+A grain-aware semantic engine collapses the denominator and both are right;
+anything executing the expression as plain SQL gets the fan-out. Each metric's
+`description` says so. Left as is deliberately, but if you want the models safe
+to execute naively, rewrite both denominators as uncorrelated subqueries over
+`store`.
 
 ## Adding to the benchmark
 
 Add a model as `models/<name>.yaml` with `name: <name>` inside, add
-`questions/<name>.jsonl`, and run the validator. Prefer plain `version:
-"0.2.0.dev0"` with OSI's `datasets` key, so the model stays portable; reach for
-`"0.2.0.dev0/google"` only when it genuinely needs `extends`, `abstract` or
-`deployment_target`, which released OSI rejects.
+`questions/<name>.yaml` with five questions, and run the validator.
 
-New categories must be added to the `CATEGORIES` set in `validate.ts` — the
-check is a closed vocabulary on purpose, so a typo in a category name fails
-rather than silently creating a bucket of one.
+Earlier revisions of this set carried six models and 152 questions, including
+unanswerable and deliberately ambiguous cases. Those were cut to keep the set
+small enough to read in one sitting; the git history has them if a wider set
+is ever wanted.

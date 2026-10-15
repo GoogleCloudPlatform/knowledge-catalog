@@ -1,0 +1,59 @@
+# Five questions against models/retail_sales.yaml, easiest first.
+#
+# `uses` names the metrics and `entity.field` dimensions a correct answer has
+# to touch. validate.ts resolves every one against the model, so a renamed
+# metric breaks the build rather than silently breaking the grading key.
+
+model: retail_sales
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: What was our total net revenue in fiscal year 2026?
+    uses: [net_revenue, calendar_date.fiscal_year]
+    answer: >-
+      Sum net_revenue over order_line, joined up to sales_order and across to
+      calendar_date, filtered to fiscal_year 2026. Filtering on
+      sales_order.order_date instead gives the calendar year, which is a
+      different period.
+
+  - id: q2
+    difficulty: easy
+    question: Break net revenue down by product category.
+    uses: [net_revenue, product.category]
+    answer: >-
+      Sum net_revenue over order_line joined to product, grouped by
+      product.category. One hop, and the measure is already at line grain, so
+      nothing fans out.
+
+  - id: q3
+    difficulty: medium
+    question: What is the average order value by sales channel?
+    uses: [average_order_value, sales_order.channel]
+    answer: >-
+      Line-grain revenue divided by a DISTINCT count of orders, grouped by
+      sales_order.channel. The denominator is the trap: once order_line is in
+      the join, a plain row count counts lines rather than orders and the
+      average comes out too low.
+
+  - id: q4
+    difficulty: hard
+    question: How many orders did each store take last quarter?
+    uses: [order_count, store.store_name, calendar_date.fiscal_quarter]
+    answer: >-
+      Count DISTINCT sales_order.order_id per store. The question needs no
+      line-level data at all, so order_line should not appear in the query;
+      joining it multiplies every order by its number of lines. On the smoke
+      fixture that reads 4 orders for a store that took 2.
+
+  - id: q5
+    difficulty: hard
+    question: Which promotions drove the most discount dollars?
+    uses: [promotion_discount, promotion.promotion_name]
+    answer: >-
+      Sum order_line_promotion.allocated_discount across the bridge, grouped
+      by promotion.promotion_name. allocated_discount is the per-promotion
+      share and so is safe across the many-to-many. Summing
+      order_line.discount_amount instead charges a line's whole discount to
+      every promotion on it: on the smoke fixture that totals 65 against a
+      true 45.
