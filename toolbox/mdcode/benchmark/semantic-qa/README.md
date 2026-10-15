@@ -1,53 +1,52 @@
-# Semantic-QA benchmark
+# Semantic-QA retrieval benchmark
 
-Two semantic models, and five questions each, graded against them.
+Six semantic models, 200 Knowledge Catalog entries, and 40 natural-language
+questions labelled with the concepts a correct answer needs.
 
-Each model is an OSI document declaring entities, the relationships between
-them, and model-level metrics defined over both. Each question names, in a
-`uses` list, the metrics and dimensions a correct answer has to touch. That
-pairing is the point: a set of questions alone measures whether a system
-produces plausible SQL, while questions plus the model elements they require
-measures whether it took the right path at the right grain.
+It grades **search**, not SQL. The path under test is the one KC is becoming:
+a question arrives, the catalog is searched, and it must return the entities
+and metrics needed to answer. So the gold labels are KC entry refs, and the
+score is retrieval quality — recall@k, MRR, nDCG — against them.
 
 ## Layout
 
 ```
-models/retail_sales.yaml       star schema, many-to-many bridge, grain traps
-models/lending_credit.yaml     abstract supertype over three subtypes
-questions/<name>.yaml          five questions, easiest first
-validate.ts                    both models load, conform, and every name resolves
-smoke/trap_check.py            runs the metric SQL on real rows
+models/<name>.yaml        6 models: 57 entities, 137 metrics
+questions/<name>.yaml     5 questions per model, labelled with gold entries
+questions/cross_model.yaml  ambiguous and negative questions
+validate.ts               models conform; every gold ref names a real entry
+retrieval_eval.py         builds a KC-shaped index and scores a retriever
+smoke/trap_check.py       side check that the metric SQL is executable
 ```
 
-A model file and its question file share a stem, and the model's `name`
-matches that stem. `validate.ts` enforces all three.
+Every model declares kcmd's extended profile, `version: "0.2.0.dev0/google"`,
+with `entities` rather than OSI's `datasets`. Two of them need it for
+`extends`/`abstract`; the rest use it so the corpus is uniform.
 
-## The two models
+## What is retrievable, and what is not
 
-**`retail_sales`** — eight entities, seven relationships, seventeen metrics.
-A classic star schema: sales lines hanging off orders, with customer, product,
-store and calendar dimensions, plus one bridge entity for the many-to-many
-between a sales line and the promotions applied to it. It tests the two
-failure modes that dominate real BI: measures living at a grain other than the
-one the question asks about, and joins that silently multiply rows.
+Verified against the emitter, because it decides what the gold can even say:
 
-**`lending_credit`** — ten entities, nine relationships, twenty-seven metrics.
-`credit_account` is abstract, with three concrete subtypes that have genuinely
-different economics: a revolving card, an amortizing installment loan, and a
-drawable line of credit. Payments and daily delinquency snapshots attach to
-the *supertype*. It tests polymorphic aggregation — reaching all three
-subtypes when the question is about exposure, and exactly one when the
-question is about utilization, which only means something where a credit limit
-exists.
+| Concept | In KC | Searchable text |
+|---|---|---|
+| Model | `semantic-model` entry | displayName, description, `ai_context.instructions` |
+| Entity | `semantic-entity` entry | the above, plus the schema aspect's field names and descriptions |
+| Metric | `semantic-metric` entry | the above, plus owning entity |
+| Relationship | `schema-join` entry **link** | **none** — endpoints and join columns only |
+| Field | not an entry | text inside its entity's schema aspect |
 
-Both declare kcmd's extended profile, `version: "0.2.0.dev0/google"`, and use
-`entities` rather than OSI's `datasets`. `lending_credit` needs it for
-`extends` and `abstract`, which released Apache OSI has no equivalent for;
-`retail_sales` uses the same profile so the set is consistent to read.
+Two consequences shape the whole benchmark.
 
-Every entity carries a `source` pointing at a plausible fully-qualified table,
-so a model is executable in principle, but no data ships with the benchmark.
-Nothing depends on a particular backend.
+**Relationships are not refs.** They are links, traversed after retrieval
+rather than returned by it, so asking search to return one would grade
+something KC does not do. Questions that need a join path say so in `why`.
+
+**`ai_context.synonyms` never reaches KC.** `knowledge_catalog.ts:467` —
+*"Only `instructions` is routed here; `ai_context.synonyms`/`examples` have no
+home in this aspect."* Synonyms reach the BigQuery graph and not the catalog.
+The models carry rich synonyms (`AOV`, `DPD`, `OTD`, `ALOS`, `logos`), so the
+harness can index them or not, and the difference measures what closing that
+gap is worth. See the numbers below.
 
 ## Question format
 
@@ -55,104 +54,110 @@ Nothing depends on a particular backend.
 model: retail_sales
 
 questions:
-  - id: q3
+  - id: q2
     difficulty: medium
-    question: What is the average order value by sales channel?
-    uses: [average_order_value, sales_order.channel]
-    answer: >-
-      Line-grain revenue divided by a DISTINCT count of orders, grouped by
-      sales_order.channel. The denominator is the trap: once order_line is in
-      the join, a plain row count counts lines rather than orders.
+    question: Which categories have the worst margin percentage?
+    expect:
+      required: [metric:gross_margin_rate, entity:product]
+      supporting: [entity:order_line]
+      confusable: [metric:gross_margin, metric:discount_rate]
+    why: >-
+      gross_margin and gross_margin_rate differ by one word and both match
+      "margin"; only the rate answers a question about a percentage.
 ```
 
-`uses` entries are either a bare metric name or an `entity.field` dimension,
-written exactly as the model declares them. Fields inherited through `extends`
-count as belonging to the subtype, so `credit_account.current_balance` resolves
-on each of the three subtypes.
+Refs are `kind:name` over the three entry kinds — `model`, `entity`, `metric`.
+A bare ref resolves against the file's model; `model.kind:name` reaches
+another's.
 
-`answer` is reference reasoning, not reference SQL. Several correct queries
-exist for most of these, so grading on SQL text would punish the wrong thing;
-where there is a specific wrong answer worth catching, the `answer` names it.
+- `required` — missing one is a failed answer
+- `supporting` — needed to ground or filter; lower cost to miss
+- `confusable` — plausible near-misses that must not outrank the required set
+- `forbidden` — on negatives, what must not come back at all
 
-Five questions per model, ordered easiest first, currently two easy, one
-medium and two hard in each. `validate.ts` enforces the count and that the
-difficulties vary, so the shape cannot drift by accident.
+`cross_model.yaml` holds the two kinds no single model can carry: **ambiguous**
+questions answerable by more than one model (the validator enforces that they
+span 2+ models), and **negatives**, which nothing answers. Negatives are the
+precision half — a retriever that always returns its best five entries scores
+well everywhere else and fails here.
 
-## Running the checks
+## The difficulty axis
+
+Retrieval difficulty is not SQL difficulty, so the questions are built on what
+makes *search* hard:
+
+- **Vocabulary mismatch.** "How much did we sell" → `net_revenue`. "Money out
+  on the street" → `total_exposure`. "Vendors shipping us junk" → `supplier`
+  and `defect_rate`.
+- **Jargon carried only in synonyms.** `AOV`, `UPT`, `ALOS`, `OTD`, `DPD` —
+  the direct probe for the gap above.
+- **Near-misses inside a model.** `gross_margin` vs `gross_margin_rate`,
+  `delinquency_rate_30plus` vs `_90plus`, `encounter_count` vs
+  `unique_patient_count`.
+- **Collisions across models.** `collection_rate` (saas) vs `collection_ratio`
+  (clinical). `card_utilization` vs `seat_utilization`. "Promotion" as a
+  marketing offer in retail and a job change in workforce. "Churn" as revenue
+  in saas and as people in workforce, where that model says *attrition*.
+- **Multi-concept recall.** The widest needs seven entries from one sentence;
+  returning six fails the question.
+
+## Running it
 
 From `toolbox/mdcode`:
 
 ```
 npx bun benchmark/semantic-qa/validate.ts
-python3 -I benchmark/semantic-qa/smoke/trap_check.py
+python3 -I benchmark/semantic-qa/retrieval_eval.py --compare
 ```
 
-`validate.ts` loads both models through `src/libts/semantic/loader.ts` — the
-same loader kcmd uses — and checks that:
+Baseline, BM25 over the KC-shaped index, 35 answerable questions:
 
-- each model loads, declares exactly one semantic model, and matches its filename
-- each validates against the vendored Apache OSI JSON Schema, allowing only
-  the three departures the extended profile implies (the `/google` version
-  string, `entities` for `datasets`, and `extends`/`abstract` on a dataset),
-  and only on a document that actually declares that profile
-- every `entity.field` pair in a metric expression exists, resolving `extends`
-  transitively
-- every name in every `uses` list resolves
-- each model has five questions spanning more than one difficulty
+| | as KC indexes today | with synonyms indexed |
+|---|---|---|
+| recall@5 | 0.360 | 0.471 |
+| recall@10 | 0.505 | 0.629 |
+| all-required@5 | 0.114 | 0.286 |
+| MRR | 0.418 | 0.530 |
+| nDCG@10 | 0.357 | 0.479 |
+| forbidden in top-5 (of 5 negatives) | 2 | 2 |
 
-Run it after editing anything here. A `uses` entry citing a metric the model
-renamed is a broken grading key, and nothing else catches that.
+Two things to read off that. The set is **not saturated** — a strong lexical
+baseline gets a third of the required entries into the top five, so there is
+room to rank approaches. And **indexing synonyms is worth about eleven points
+of recall@5 and twelve of nDCG**, concentrated in the easy questions, which go
+from 0.429 to 0.786 because that is where the jargon probes live.
 
-## What has been validated, and what has not
+### Plugging in real search
 
-Validated:
+`retrieval_eval.py` ships a BM25 baseline so the harness runs today. It is
+**not** Knowledge Catalog search — there is no KC search caller on this branch
+to drive. To score the real thing, write a function with the same shape as
+`bm25_search`, returning `(score, ref)` pairs, and the scoring code takes it
+unchanged. Mapping live results back to refs means reading the entry id, which
+is why the gold is expressed in entry terms rather than field terms.
 
-- **The models are structurally sound.** Both load, both pass the OSI schema
-  check, and every `uses` name resolves.
-- **The metric SQL executes.** `smoke/trap_check.py` builds a SQLite database
-  whose views are generated from `retail_sales`'s own field expressions, loads
-  a seven-line fixture, and runs all 17 metric expressions. All 17 execute,
-  with values small enough to check by hand — net revenue 705, average order
-  value 176.25 over four orders.
-- **The hard questions discriminate.** The same script runs each trap
-  question's correct query beside the naive one. All five diverge, and not
-  marginally: orders per store reads 4 instead of 2 (q4), discount by
-  promotion totals 65 instead of 45 (q5), revenue per employee 9.63 instead of
-  38.50.
+## What is not validated
 
-Not validated:
+- **No live KC run.** Every number above is the local baseline. Nothing here
+  tells you what Dataplex search scores.
+- **40 questions is a seed set,** not a statistically comfortable one.
+  Per-difficulty cells are 10–15 questions, so treat those splits as
+  directional.
+- **Gold is one author's judgement.** `required` is what I believe a correct
+  answer needs; reasonable people would move some entries between `required`
+  and `supporting`.
 
-- **No QA system has been run against it.** Nothing here tells you whether a
-  current text-to-SQL or agent setup scores 40% or 95%. The traps are real,
-  but difficulty calibration is unmeasured and the labels are editorial
-  judgment.
-- **No gold values.** No data ships, so there is no exact-match answer key.
-  Score on whether the query uses what `uses` names, and whether the result
-  has the right grain.
-- **`uses` is one correct path, not the only one.** Grade with tolerance;
-  strict set equality will produce false negatives.
+## Side artifact: `smoke/trap_check.py`
 
-### Known caveat: two metrics fan out as written
+Predates the retrieval framing. It builds a SQLite database from
+`retail_sales`'s own field expressions and checks all 17 metric expressions
+execute, which is still worth knowing — it keeps the corpus honest as
+*realistic* models rather than plausible-looking YAML. It also demonstrates
+query-correctness traps (counting orders off the line table reads 4 instead of
+2), which this benchmark no longer grades.
 
-`retail_sales.revenue_per_employee` and `sales_per_square_foot` divide a
-line-grain numerator by `SUM(store.employee_count)` and
-`SUM(store.square_feet)`. Executed literally over a flat star join the
-denominator repeats once per sales line: the smoke test returns 8.29 and 0.083
-where the grain-correct answers are 20.14 and 0.201, a factor of 2.4 on that
-fixture and worse as basket size grows.
-
-A grain-aware semantic engine collapses the denominator and both are right;
-anything executing the expression as plain SQL gets the fan-out. Each metric's
-`description` says so. Left as is deliberately, but if you want the models safe
-to execute naively, rewrite both denominators as uncorrelated subqueries over
-`store`.
-
-## Adding to the benchmark
-
-Add a model as `models/<name>.yaml` with `name: <name>` inside, add
-`questions/<name>.yaml` with five questions, and run the validator.
-
-Earlier revisions of this set carried six models and 152 questions, including
-unanswerable and deliberately ambiguous cases. Those were cut to keep the set
-small enough to read in one sitting; the git history has them if a wider set
-is ever wanted.
+Two metrics in `retail_sales` fan out when executed as flat SQL —
+`revenue_per_employee` and `sales_per_square_foot` divide a line-grain
+numerator by a `SUM` over a store-grain column, giving 8.29 where the
+grain-correct answer is 20.14. A grain-aware engine collapses the denominator.
+Irrelevant to retrieval; recorded so nobody executes them naively.
