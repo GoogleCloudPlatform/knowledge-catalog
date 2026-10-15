@@ -14,9 +14,11 @@ import * as yaml from 'yaml';
 
 import * as api from '../../gcp/api';
 import * as context from '../../gcp/context';
+import {googleDeploymentTargets} from '../deployment_target';
 import {checkHydration} from '../hydration';
-import {SemanticModel} from '../ir';
+import {Entity, SemanticModel} from '../ir';
 import {loadModels, loadSemanticModels} from '../loader';
+import {lowerNodeViews} from '../node_views';
 import {distinctQueries, evaluateProfile, planBigQueryProfile, ProfileFinding, ProfilePlan, QueryOutcome} from '../profile_bigquery';
 import {mergeProfileOntoDoc} from '../resolve_profiles';
 import {bindChecks, EntityProposals, evaluateRefinements, planRefinements, tablesByRef} from './hydrate';
@@ -185,6 +187,46 @@ export function checkProfile(
   const loaded = loadOne(merged.text, docName, defaultProject);
   if ('error' in loaded) return [loaded.error];
   return loaded.models.flatMap(m => checkHydration(m).errors);
+}
+
+/**
+ * The entities whose node view would apply or report at least one of the
+ * model's constraints under the profile (`kcmd bind --enforce-constraints`
+ * writes `hydration.constraints: enforce` on exactly these). Planned with the
+ * same lowering the push runs, every eligible entity switched on; an entity
+ * bound directly, derived, or left without a node view is not listed.
+ */
+export function enforceableEntities(
+    modelText: string, profileText: string, profileName: string, docName: string,
+    defaultProject?: string): Set<string> {
+  const out = new Set<string>();
+  const merged = mergeProfileOntoDoc(modelText, profileText, profileName);
+  if ('error' in merged) return out;
+  const loaded = loadOne(merged.text, docName, defaultProject);
+  if ('error' in loaded) return out;
+  for (const model of loaded.models) {
+    if (!(model.constraints ?? []).length) continue;
+    const eligible = (e: Entity) => !e.abstract && !e.definition &&
+        e.members === undefined && e.mode !== 'direct' && !e.hydration?.deriveFrom;
+    const all: SemanticModel = {
+      ...model,
+      entities: (model.entities ?? []).map(
+          e => eligible(e) ?
+              {...e, hydration: {...(e.hydration ?? {}), constraints: 'enforce'}} :
+              e),
+    };
+    let target: {project?: string; dataset?: string} = {project: 'p', dataset: 'kcmd_bind'};
+    try {
+      const t = googleDeploymentTargets(model).bigQuery[0];
+      if (t) target = {project: t.project, dataset: t.dataset};
+    } catch {
+      // a malformed target: plan against a placeholder dataset
+    }
+    for (const [name, e] of lowerNodeViews(all, target, []).enforcement) {
+      if (e.plan.rules.length) out.add(name);
+    }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

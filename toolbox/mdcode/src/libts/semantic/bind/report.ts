@@ -40,6 +40,9 @@ export interface BindRunMeta {
   acceptReview: boolean;
   deploymentTarget?: string;
   version?: string;
+  // `--enforce-constraints`: the entities whose node view applies the model's
+  // constraints (`hydration.constraints: enforce`; see run.enforceableEntities).
+  enforceConstraints?: ReadonlySet<string>;
 }
 
 const DEFAULT_VERSION = '0.2.0.dev0/google';
@@ -56,17 +59,20 @@ function sourceOf(c: Candidate): string {
   return tableUri({project, dataset, table: rest.join('.')});
 }
 
-/** The hydration an entity gets: accepted rules only, unless acceptReview. */
+/**
+ * The hydration an entity gets: accepted rules only, unless acceptReview; and
+ * `constraints: enforce` when `enforce` (see BindRunMeta.enforceConstraints).
+ */
 export function entityHydration(
-    b: EntityBinding, p: EntityProposals|undefined, acceptReview: boolean): EntityHydration|undefined {
+    b: EntityBinding, p: EntityProposals|undefined, acceptReview: boolean,
+    enforce = false): EntityHydration|undefined {
   const h: EntityHydration = {};
   if (b.status === 'derived' && b.deriveFrom) {
     h.deriveFrom = {relationship: b.deriveFrom.relationship};
     return h;
   }
-  if (!p) return undefined;
-  if (p.grain) h.grain = p.grain.latestBy ? {latestBy: p.grain.latestBy} : {deterministic: true};
-  if (acceptReview && p.normalize.length) {
+  if (p?.grain) h.grain = p.grain.latestBy ? {latestBy: p.grain.latestBy} : {deterministic: true};
+  if (p && acceptReview && p.normalize.length) {
     h.normalize = p.normalize.map(n => ({
       field: n.field,
       before: n.before,
@@ -74,7 +80,8 @@ export function entityHydration(
       ...(n.on !== undefined ? {on: n.on} : {}),
     }));
   }
-  if (p.resolve.length) h.resolve = p.resolve.map(r => ({field: r.field, match: [...r.match]}));
+  if (p?.resolve.length) h.resolve = p.resolve.map(r => ({field: r.field, match: [...r.match]}));
+  if (enforce) h.constraints = 'enforce';
   return Object.keys(h).length ? h : undefined;
 }
 
@@ -110,10 +117,10 @@ function yamlLines(value: unknown, indent: string): string[] {
 
 function entityBlock(
     b: EntityBinding, p: EntityProposals|undefined, acceptReview: boolean,
-    withSource: boolean): string[] {
+    withSource: boolean, enforce = false): string[] {
   const lines = [`      - name: ${b.entity}`];
   if (withSource && b.chosen) lines.push(`        source: ${sourceOf(b.chosen)}`);
-  const h = entityHydration(b, p, acceptReview);
+  const h = entityHydration(b, p, acceptReview, enforce && withSource);
   if (h) lines.push('        hydration:', ...yamlLines(hydrationToDoc(h), '          '));
   const fields = b.status === 'vocabulary' ?
       (b.vocabFields ?? []).map(v => ({field: v.field, column: v.column})) :
@@ -163,7 +170,9 @@ export function renderProfileYaml(results: ModelBindResult[], meta: BindRunMeta)
       const p = r.proposals.get(b.entity);
       if (b.status === 'auto' || b.status === 'derived' ||
           (b.status === 'needs_review' && meta.acceptReview && b.chosen)) {
-        const block = entityBlock(b, p, meta.acceptReview, b.status !== 'derived');
+        const block = entityBlock(
+            b, p, meta.acceptReview, b.status !== 'derived',
+            !!meta.enforceConstraints?.has(b.entity));
         if (b.status === 'needs_review') {
           body.push(`      # Accepted for review: ${b.reasons.join('; ')}`);
         }

@@ -83,6 +83,7 @@ import {actionEntries, actionOwnedPrefix} from './kc_actions';
 import {AnnotationTarget, EntityPhysical, entityAnnotationAspects, junctionAnnotationAspects, metricAnnotationAspects, modelAnnotationAspects, RelationshipIndexRow} from './kc_annotations';
 import {constraintEntries, constraintOwnedPrefix} from './kc_constraints';
 import {AI_CONTEXT_TYPE_ID, BINDING_TYPE_ID} from './kc_custom_types';
+import {ConstraintRates, constraintsTrailer, PlannedEnforcement} from './constraint_enforcement';
 import {lowerNodeViews} from './node_views';
 import {DESCRIPTION_MAX, metricQueries, readThroughTrailer, relationshipItems, relationshipsTrailer, withContentsTrailer, withQueryTrailer} from './read_trailers';
 import {entityTrailers, withUnitTrailer} from './units_history';
@@ -118,6 +119,11 @@ export interface KcGenerateOptions {
   // the caller (a dataset's location and a project's number are API lookups,
   // and this module is pure). Absent = no binding links.
   bigQueryEntries?: BigQueryEntryLocator;
+  // Per model name, how often each constraint breaks in the node views that
+  // enforce constraints (measured by push after the BigQuery leg; see
+  // constraint_enforcement.measureConstraintRates). Absent = the
+  // `Constraints:` paragraphs name the rules without rates.
+  constraintRates?: ReadonlyMap<string, ConstraintRates>;
 }
 
 /** Resolved names for `@bigquery` entries (see bindingLinksFor). */
@@ -189,6 +195,11 @@ export function generateCatalogResources(
   const physical = readable ? physicalBindings(model) :
                               new Map<string, EntityPhysical>();
   const queries = readable ? metricQueries(model) : new Map<string, string>();
+  // The rules each enforcing node view applies, for the `Constraints:`
+  // paragraph (constraint_enforcement.ts), with the rates push measured.
+  const enforcement = readable ? nodeViewEnforcement(model) :
+                                 new Map<string, PlannedEnforcement>();
+  const rates = opts.constraintRates?.get(model.name);
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -251,7 +262,8 @@ export function generateCatalogResources(
           entity.name,
           entityDescription(
               entity, model, physical.get(entity.name),
-              readable ? relationshipItems(entity, model, physical) : [])),
+              readable ? relationshipItems(entity, model, physical) : [],
+              enforcement.get(entity.name), rates?.get(entity.name))),
       // required_aspects: semantic-entity AND the built-in schema; plus the
       // built-in guidelines aspect when the entity carries ai_context
       // instructions.
@@ -761,7 +773,9 @@ export function oneParagraph(text: string): string {
 // in reverse.
 function entityDescription(
     entity: Entity, model?: SemanticModel, physical?: EntityPhysical,
-    relItems: string[] = []): string|undefined {
+    relItems: string[] = [], enforcement?: PlannedEnforcement,
+    rates?: ReadonlyMap<string, {violations: number; total: number}>):
+    string|undefined {
   const head = [
     entity.description,
     entity.extends?.length ?
@@ -793,16 +807,29 @@ function entityDescription(
       model ? field => resolveRelationship(model, entity, field)
                            ?.destination.entity :
               undefined);
+  // `Constraints: …`: the rules the node view applies and reports, with how
+  // often each breaks (constraint_enforcement.ts), between Relationships and
+  // Hydration; derived, so pull drops it. It gets its room before the
+  // relationships, up to CONSTRAINTS_MAX.
+  const fixed = [...head, hydration].filter(p => !!p).join('\n\n').length;
+  const constraints = constraintsTrailer(
+      enforcement?.plan, rates ? new Map(rates) : undefined,
+      Math.min(CONSTRAINTS_MAX, DESCRIPTION_MAX - fixed - 2));
   // `Relationships: …`: every edge to and from the entity with its join
-  // columns, derived from the model, between Read through and Hydration; it
+  // columns, derived from the model, between Read through and Constraints; it
   // takes only the room the rest of the description leaves (read_trailers.ts).
-  const used = [...head, hydration].filter(p => !!p).join('\n\n').length;
+  const used =
+      [...head, constraints, hydration].filter(p => !!p).join('\n\n').length;
   const relationships =
       relationshipsTrailer(relItems, DESCRIPTION_MAX - used - 2);
-  const parts = [...head, relationships, hydration].filter(
+  const parts = [...head, relationships, constraints, hydration].filter(
       (p): p is string => !!p);
   return parts.length ? parts.join('\n\n') : undefined;
 }
+
+// The most an entity's `Constraints:` paragraph may take, so the
+// relationships paragraph keeps room on an entity with many rules.
+const CONSTRAINTS_MAX = 800;
 
 function entityByName(model: SemanticModel, name: string): Entity|undefined {
   return (model.entities ?? []).find(e => e.name === name);
@@ -857,6 +884,30 @@ export function physicalBindings(model: SemanticModel):
     });
   }
   return out;
+}
+
+/**
+ * Per entity whose binding sets `hydration.constraints: enforce`, the rules its
+ * node view applies and reports, from the same lowering the graph push runs
+ * (on the model's first BigQuery graph target). Empty without one.
+ */
+export function nodeViewEnforcement(model: SemanticModel):
+    Map<string, PlannedEnforcement> {
+  let target: ReturnType<typeof googleDeploymentTargets>['bigQuery'][number]|
+      undefined;
+  try {
+    target = googleDeploymentTargets(model).bigQuery[0];
+  } catch {
+    return new Map();  // malformed extension JSON: validation reports it
+  }
+  if (!target) return new Map();
+  try {
+    return lowerNodeViews(
+               model, {project: target.project, dataset: target.dataset}, [])
+        .enforcement;
+  } catch {
+    return new Map();  // the graph push warns
+  }
 }
 
 /** Entry-link id prefix of a model's binding links (for reconciliation). */

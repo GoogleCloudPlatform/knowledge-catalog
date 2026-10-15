@@ -39,7 +39,7 @@ import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {customAspectKey} from './kc_custom_types';
-import {BigQueryEntryLocator, bindingLinkPrefix, generateCatalogResources, KcResources} from './knowledge_catalog';
+import {BigQueryEntryLocator, bindingLinkPrefix, generateCatalogResources, KcGenerateOptions, KcResources} from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
 
@@ -70,6 +70,9 @@ export interface KcDeployOptions {
   // K3: where the model's BigQuery entries live, resolved by the caller.
   // Present = write binding links (non-fatally) and reconcile stale ones.
   bigQueryEntries?: BigQueryEntryLocator;
+  // Per model, the measured rates of the constraints its node views enforce.
+  // See KcGenerateOptions.constraintRates.
+  constraintRates?: KcGenerateOptions['constraintRates'];
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
@@ -291,6 +294,7 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
         emitExpressions: opts.emitExpressions,
         customAspects: opts.customAspects,
         bigQueryEntries: opts.bigQueryEntries,
+        constraintRates: opts.constraintRates,
       });
     } catch (err: any) {
       return {

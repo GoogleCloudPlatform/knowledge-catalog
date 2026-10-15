@@ -24,6 +24,7 @@ import {generatePropertyGraph} from './bigquery';
 // historical import path.
 import {BigQueryGraphTarget, bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
+import {ConstraintRates, measureConstraintRates} from './constraint_enforcement';
 import {describeMetricGraphPlan, planMetricGraphs} from './metric_slices';
 import {lowerNodeViews, orderGeneratedViews} from './node_views';
 
@@ -47,6 +48,11 @@ export interface DeployOptions {
   // constants.
   maxQueryPolls?: number;
   pollBackoffMs?: number;
+  // After deploying, measure how often each constraint breaks in the node
+  // views that enforce constraints (`hydration.constraints: enforce`), for the
+  // Knowledge Catalog leg's `Constraints:` paragraphs. Off unless true (the
+  // CLI turns it on when the push also publishes to Knowledge Catalog).
+  measureConstraints?: boolean;
 }
 
 export interface DeployResult {
@@ -72,6 +78,9 @@ export interface DeployResult {
   // Number of generated / fallback views actually created (0 for
   // validateOnly).
   views: number;
+  // Per model name, the measured constraint rates of its first target's
+  // enforcing node views (with measureConstraints; never under validateOnly).
+  constraintRates?: Map<string, ConstraintRates>;
 }
 
 
@@ -205,6 +214,7 @@ export async function deployBigQuery(
   const warnings: string[] = [];
   const metricGraphs: string[] = [];
   const nodeViews: string[] = [];
+  const constraintRates = new Map<string, ConstraintRates>();
   let deployed = 0;
   let views = 0;
   let modelsSeen = 0;
@@ -280,7 +290,7 @@ export async function deployBigQuery(
       // so the graph, its edges and the metric graphs all read those views.
       const nodeWarnings: string[] = [];
       const lowering = options.nodeViews === false ?
-          {model, views: [], plan: []} :
+          {model, views: [], plan: [], enforcement: new Map()} :
           lowerNodeViews(
               model, {project: target.project, dataset: target.dataset},
               nodeWarnings);
@@ -372,6 +382,19 @@ export async function deployBigQuery(
         }
         views++;
       }
+
+      // How often each enforced rule breaks, for the catalog's Constraints:
+      // paragraphs. Read-only, and never fatal: an unmeasured rate is left out.
+      if (options.measureConstraints && lowering.enforcement.size &&
+          !constraintRates.has(model.name)) {
+        const measured = await measureConstraintRates(
+            lowering.enforcement, lowering.model, ctx,
+            {project: target.project, location});
+        for (const e of measured.errors) {
+          warnings.push(`${tag} constraint rates not measured for ${e}`);
+        }
+        constraintRates.set(model.name, measured.rates);
+      }
     }
   }
 
@@ -388,5 +411,8 @@ export async function deployBigQuery(
     return fail('No semantic model documents found; nothing to deploy.');
   }
 
-  return {success: true, ddl, warnings, deployed, metricGraphs, nodeViews, views};
+  return {
+    success: true, ddl, warnings, deployed, metricGraphs, nodeViews, views,
+    ...(constraintRates.size ? {constraintRates} : {}),
+  };
 }

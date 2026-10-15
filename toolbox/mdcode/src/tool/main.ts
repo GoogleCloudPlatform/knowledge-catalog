@@ -338,13 +338,14 @@ cli.command(
 
 cli.command(
        'bind',
-       '(Proposed) Propose a binding profile from the raw warehouse: score every concrete entity against every scanned table (name, key, field coverage), match fields to columns, profile the chosen tables and propose hydration (grain, resolve, normalize, derive_from). Writes <model>.profiles/<profile>.yaml and bind_report.md; exits 2 when something needs review')
+       '(Proposed) Propose a binding profile from the raw warehouse: score every concrete entity against every scanned table (name, key, field coverage), match fields to columns, profile the chosen tables and propose hydration (grain, resolve, normalize, derive_from; constraints with --enforce-constraints). Writes <model>.profiles/<profile>.yaml and bind_report.md; exits 2 when something needs review')
     .option('--profile <name>', 'The binding profile to write (default `bigquery`)')
     .option('--scan <pattern>', 'The datasets to scan, as <project>.<dataset glob> (e.g. my-project.ps_*)')
     .option('--scan-file <file>', 'Read the scan from a file instead: a bind_scan.json, or an INFORMATION_SCHEMA.COLUMNS CSV export')
     .option('--model <file>', 'Bind this model document instead of the scope\'s; the profile is written to <file stem>.profiles/ beside it')
     .option('--from-catalog', 'Bind the model pulled from Knowledge Catalog (the scope\'s entry group) instead of the local documents')
     .option('--accept-review', 'Accept every review item: bind each needs-review entity to its best candidate and switch on the proposed normalize rules')
+    .option('--enforce-constraints', 'Write `hydration.constraints: enforce` on every entity whose node view applies or reports one of the model\'s constraints: reads then see reject rules\' failing values withheld (or the row excluded, for a required field or the key) and every broken rule named in `_warnings`')
     .option('--no-profile-data', 'Do not profile the chosen tables (no hydration proposals)')
     .option('--exclude <glob>', 'Leave datasets matching this glob out of the scan; repeatable. The deployment target\'s dataset is always left out')
     .option('--include-views', 'Consider views as well as base tables')

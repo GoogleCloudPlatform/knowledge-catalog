@@ -2,7 +2,8 @@
 // docs/semantic-model/bind.md and src/libts/semantic/bind/).
 //
 //   kcmd bind --profile bigquery --scan my-project.ps_* [--from-catalog]
-//             [--accept-review] [--no-profile-data] [--exclude <glob>]...
+//             [--accept-review] [--enforce-constraints] [--no-profile-data]
+//             [--exclude <glob>]...
 //
 // Reads the logical model (the scope's model documents, a --model file, or
 // the model pulled from Knowledge Catalog with --from-catalog), scans the
@@ -26,7 +27,7 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {BindRunMeta, ModelBindResult, renderBindReport, renderProfileYaml} from '../libts/semantic/bind/report';
-import {bindDocument, catalogSearchHits, checkProfile, QueryFn, runScan} from '../libts/semantic/bind/run';
+import {bindDocument, catalogSearchHits, checkProfile, enforceableEntities, QueryFn, runScan} from '../libts/semantic/bind/run';
 import {CatalogScan, filterScan, parseScanPattern, readScanFile, ScanPattern, targetDataset} from '../libts/semantic/bind/scan';
 import {bindSummary} from '../libts/semantic/bind/score';
 import {bigQueryGraphTargets} from '../libts/semantic/deployment_target';
@@ -52,6 +53,11 @@ export interface BindOptions {
   fromCatalog?: boolean;
   /** Accept every review item (best candidate, proposed normalize rules). */
   acceptReview?: boolean;
+  /**
+   * Write `hydration.constraints: enforce` on every entity whose node view
+   * applies or reports one of the model's constraints.
+   */
+  enforceConstraints?: boolean;
   /** cac's `--no-profile-data`: false skips step 3. */
   profileData?: boolean;
   /** Dataset globs to leave out of the scan; repeatable. */
@@ -306,7 +312,17 @@ export async function bind(options: BindOptions = {}): Promise<number> {
       acceptReview: !!options.acceptReview,
       deploymentTarget: target,
     };
-    const profileText = renderProfileYaml(bound.results, meta);
+    let profileText = renderProfileYaml(bound.results, meta);
+    if (options.enforceConstraints) {
+      // Which entities enforce is read off the profile as bound, so it is
+      // planned exactly as the push will lower it.
+      const enforce = enforceableEntities(
+          doc.text, profileText, profileName, doc.name,
+          pattern?.project ?? scopeProject);
+      meta.enforceConstraints = enforce;
+      profileText = renderProfileYaml(bound.results, meta);
+      console.log(`[${doc.name}] constraints enforced in ${enforce.size} node view(s).`);
+    }
     const reportText = renderBindReport(bound.results, bound.models, meta);
     const outDir = options.out ? path.resolve(root, options.out) : doc.profileDir;
     const reportFile = path.join(outDir, 'bind_report.md');

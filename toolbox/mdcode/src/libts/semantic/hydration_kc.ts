@@ -14,7 +14,7 @@
 // a dedicated aspect later changes only these two functions.
 
 import {Entity, EntityBindingMode, EntityHydration, NormalizeRule, ResolveRule} from './ir';
-import {hydrationClauses} from './hydration';
+import {CONSTRAINTS_ENFORCED_CLAUSE, hydrationClauses} from './hydration';
 
 /** The prefix of the hydration paragraph on a published entity description. */
 export const HYDRATION_PREFIX = 'Hydration: ';
@@ -94,6 +94,8 @@ export function splitHydrationTrailer(text: string|undefined): {
       (h.resolve ??= []).push({field: m[1], match} as ResolveRule);
     } else if ((m = DERIVED.exec(clause))) {
       h.deriveFrom = {relationship: m[1]};
+    } else if (clause === CONSTRAINTS_ENFORCED_CLAUSE) {
+      h.constraints = 'enforce';
     } else {
       return {rest: text};
     }
