@@ -441,6 +441,7 @@ entities:
         - {field: wonAmount, before: "2024-03-25", divide_by: 100}
       resolve:
         - {field: homeMarketUnit, match: [marketUnitCode, unitName]}
+      constraints: enforce                      # apply the model's constraints
     fields: [...]
   - name: AlliancePartner                       # model key: partnerName
     hydration:
@@ -456,6 +457,12 @@ entities:
 | `normalize` | list of `{field, before\|after: <ISO date or timestamp>, divide_by\|multiply_by: <n > 0>, on?: <date column>}` | rescales the field on rows dated before (or from) the bound: `IF(<on> < DATE '<d>', <col> / n, <col>)`; `on` defaults to `grain.latest_by` |
 | `resolve` | list of `{field, match: [<destination field>, …]}` | rewrites a foreign key to the destination's key when the recorded value matches — trimmed, case-insensitively — the destination's key or a listed single-field unique key; the key match wins, a value matching several destinations or none stays as recorded (so a relationship check still reports it): `COALESCE(<resolved key>, <as recorded>)` |
 | `derive_from` | `{relationship: <name>}` | the entity has no table: its rows are the distinct non-null foreign keys of the named relationship (whose destination must be this entity's single-field key), read from the source entity's node view. Stands alone, and the entity has no `source` |
+| `constraints` | `enforce` | after the rules above, applies the model's constraints to the rows the view serves: a `reject` rule's failing value is served as NULL, or the row is left out when the rule is about the record (a required field, or the key); every rule a served row breaks is named in a `_warnings` column; an allowed set (`sh:in`) serves a value in its member's spelling when only case or spaces differ. Relationship rules are reported, never applied. See [Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time) |
+
+Every rule is opt-in, `constraints` included: publishing a constraint changes
+what a read sees only where the binding says `constraints: enforce`, and
+`kcmd bind --enforce-constraints` writes it on every entity whose view would
+apply or report one.
 
 `mode: direct` opts an entity out of its node view; only `resolve` may go with
 it, and is applied in a generated `edge_<relationship>` view instead. A node view
@@ -464,7 +471,9 @@ falls back to direct with a warning. `kcmd push --dry-run` lists every node view
 under `Node views (dry run; nothing created):` with the rules it applies, and
 `--print` shows its DDL ahead of the graph. The view's description, and the
 entity's Knowledge Catalog entry (a trailing `Hydration: …` paragraph), record
-the rules a push applied. Only the BigQuery leg generates node views today; a
+the rules a push applied; under `constraints: enforce` the entry also carries a
+`Constraints: …` paragraph naming each rule, what the view does with it, and
+how often it breaks. Only the BigQuery leg generates node views today; a
 Spanner Graph push binds tables directly and rejects `derive_from`.
 
 ## Command line
@@ -538,9 +547,9 @@ the checks and writes nothing.
   is rejected. Profiles bind declarations; they do not add them. A field counts
   as in the model on an entity that declares it or inherits it through
   `extends` (transitively).
-- **Hydration** — an unknown rule or key, a malformed date or factor, or a
-  `mode` other than `view` / `direct` is rejected when the profile merges,
-  naming the profile and entity. At push, every rule must name what the model
+- **Hydration** — an unknown rule or key, a malformed date or factor, a
+  `constraints` value other than `enforce`, or a `mode` other than `view` /
+  `direct` is rejected when the profile merges, naming the profile and entity. At push, every rule must name what the model
   has: `normalize` a non-key field (and a date to compare), `resolve` the single
   `from_columns` field of a relationship into the destination's key, matched
   against that key or a declared single-field `unique_keys`; `derive_from` a

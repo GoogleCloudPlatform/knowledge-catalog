@@ -697,9 +697,11 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     // Neither a BigQuery nor a Spanner property graph has a construct for an
-    // action or a constraint, so Knowledge Catalog is their only destination. A
-    // push that omits the KC leg (--no-kc) would validate them and then deploy
-    // them nowhere. Warn instead of dropping them silently.
+    // action or a constraint, so Knowledge Catalog is the only place they are
+    // published (a node view applies the constraints its binding enforces, but
+    // publishes none). A push that omits the KC leg (--no-kc) would validate
+    // them and then publish them nowhere. Warn instead of dropping them
+    // silently.
     if (!kcEnabled) {
       // The loop above already loaded every document that contributes a graph.
       // Only the rest need loading, which is usually none, and a model that
@@ -1656,9 +1658,9 @@ export function catalogOnlyWarning(
         n.constraints ? `${n.constraints} constraint(s)` : '',
       ].filter(part => part)
           .join(' and ');
-  return `model '${model}' declares ${declared}, which deploy only to ` +
+  return `model '${model}' declares ${declared}, which publish only to ` +
       `Knowledge Catalog; --no-kc excludes that leg, so they will not be ` +
-      `deployed. Drop --no-kc to deploy them.`;
+      `published. Drop --no-kc to publish them.`;
 }
 
 

@@ -140,6 +140,16 @@ export function planEnforcement(
       // not on every subtype: the rate is measured over that entity's rows.
       const home = info ? info.base : spec.entity;
       if (home !== name) continue;
+      // Only what the validation queries can measure is reported.
+      const check = planBigQueryValidation(
+          {...model, constraints: [c]}, {structural: false, examples: 0});
+      if (!check.checks.length) {
+        plan.skipped.push({
+          constraint: c.name,
+          reason: check.unsupported[0]?.reason ?? 'no query measures it',
+        });
+        continue;
+      }
       plan.rules.push({constraint: c.name, effect: 'report', kind: spec.kind, spec});
       continue;
     }

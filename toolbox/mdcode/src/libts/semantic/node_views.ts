@@ -672,7 +672,7 @@ function tableViewSql(
     if (enforced) body = enforced.body;
     enforcement = {plan, ...(enforced ? {ratesSql: enforced.ratesSql} : {})};
     for (const s of plan.skipped) {
-      warnings.push(`${at}: constraint '${s.constraint}' is not enforced in ` +
+      warnings.push(`${at}: constraint '${s.constraint}' is not checked in ` +
           `its node view: ${s.reason}`);
     }
   }

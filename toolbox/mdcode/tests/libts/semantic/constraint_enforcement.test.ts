@@ -300,7 +300,7 @@ describe('the enforcing node view', () => {
         'node view p.sem.deal_pricing (DealPricing): constraints enforced');
     expect(warnings).toEqual([
       `entity 'DealPricing': constraint 'DealPricing_approver_required' is not ` +
-          `enforced in its node view: 'approver' is not bound on 'DealPricing'`,
+          `checked in its node view: 'approver' is not bound on 'DealPricing'`,
     ]);
   });
 

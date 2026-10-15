@@ -137,8 +137,8 @@ export function constraintEntries(
   if (entries.length)
     warnings.push(
         `model '${model.name}': ${entries.length} constraint(s) published as ` +
-        `${CONSTRAINT_TYPE_ID} entries (Knowledge Catalog is the only ` +
-        `system a constraint reaches).`);
+        `${CONSTRAINT_TYPE_ID} entries (a node view applies them where its ` +
+        `binding sets hydration.constraints: enforce).`);
   return entries;
 }
 
