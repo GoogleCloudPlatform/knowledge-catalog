@@ -168,6 +168,22 @@ const expressionSchema = z.union([
   expressionObjectSchema,
 ]);
 
+// Why a field's expression cannot load, or undefined. It cannot load when its
+// string form, or any of its dialect entries, is empty or only whitespace,
+// since the field would then read no SQL. A field with no `expression` is
+// unbound and passes.
+function blankFieldExpressionProblem(raw: ExpressionDoc|undefined):
+    string|undefined {
+  if (typeof raw === 'string') {
+    return raw.trim() === '' ? `'expression' is blank; write the field's SQL` :
+                               undefined;
+  }
+  const blank = raw?.dialects.find(d => d.expression.trim() === '');
+  if (!blank) return undefined;
+  return `the ${blank.dialect} entry of 'expression' is blank; write the ` +
+      `field's ${blank.dialect} SQL`;
+}
+
 // The format's AI-first annotation. It appears at every level (model, dataset,
 // field, relationship, metric) and is either a bare instructions string or a
 // structured object (Mapping Addendum 4).
@@ -635,7 +651,18 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
             // on it, before generation, so a deployed graph presents only what
             // its binding answers. This is how one logical model serves several
             // stores from different profiles, so it is not a load error under
-            // either `bindingOptional`.
+            // either `bindingOptional`. A blank `expression` is an error: it
+            // binds the field to no SQL.
+            (ds.fields ?? []).forEach((f: any, i: number) => {
+              const problem = blankFieldExpressionProblem(f.expression);
+              if (problem) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ['fields', i, 'expression'],
+                  message: `field '${ds.name}.${f.name}': ${problem}`,
+                });
+              }
+            });
           });
 
   const relationship =
@@ -1581,7 +1608,7 @@ function fieldExpression(
 // file, checked against the loader's schema and read as a load reads a field's
 // expression, with the texts picked for `dialect`. The string form means
 // ANSI_SQL in either flavor. Throws naming `where` and every problem the schema
-// finds.
+// finds, or naming `where` when the expression is blank.
 export function parseFieldExpression(
     raw: unknown, where: string, dialect: string): FieldExpression {
   if (typeof raw !== 'string' &&
@@ -1596,6 +1623,8 @@ export function parseFieldExpression(
     throw new SemanticModelError(
         `${where}: 'expression': ${issueList(result.error)}`);
   }
+  const blank = blankFieldExpressionProblem(result.data);
+  if (blank) throw new SemanticModelError(`${where}: ${blank}`);
   return fieldExpression(result.data, GOOGLE_VERSION, dialect, where);
 }
 

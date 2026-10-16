@@ -2048,6 +2048,21 @@ describe('profile rules', () => {
         .toThrow("field 'a': 'expression': dialects.0: Unrecognized key: \"note\"");
   });
 
+  // A blank expression is rejected, as in a model file.
+  test('a profile expression may not be blank', () => {
+    const file = (expression: string) =>
+        `name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: ${expression}}\n`;
+    expect(() => loadProfileFile(file('""'), 'prod'))
+        .toThrow(
+            "profile 'prod': entity 'o': field 'a': 'expression' is blank; " +
+            "write the field's SQL");
+    expect(() => loadProfileFile(
+               file('{dialects: [{dialect: BIGQUERY, expression: "  "}]}'), 'prod'))
+        .toThrow(
+            "profile 'prod': entity 'o': field 'a': the BIGQUERY entry of " +
+            "'expression' is blank; write the field's BIGQUERY SQL");
+  });
+
   // An abstract entity has no table, so a profile entry for one is rejected.
   test('the merge rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [

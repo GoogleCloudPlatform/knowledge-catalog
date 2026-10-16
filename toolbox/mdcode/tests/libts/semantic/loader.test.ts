@@ -385,6 +385,56 @@ describe('abstract datasets and their source constraint', () => {
   });
 });
 
+describe('a blank field expression is a load error', () => {
+  // The model with its `notes` field written as `notesField`.
+  const shop = (notesField: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [order_id]
+        fields:
+          - {name: order_id, expression: order_id}
+          - ${notesField}
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+`;
+
+  test('an empty or all-space string expression is rejected, naming the entity and field', () => {
+    for (const blank of ['""', '"   "']) {
+      expect(() => loadModels(shop(`{name: notes, expression: ${blank}}`)))
+          .toThrow("field 'orders.notes': 'expression' is blank; write the field's SQL");
+    }
+  });
+
+  test('a dialect entry with an empty expression is rejected, naming the entry', () => {
+    const notes = '{name: notes, expression: {dialects: [' +
+        '{dialect: ANSI_SQL, expression: notes}, {dialect: BIGQUERY, expression: ""}]}}';
+    expect(() => loadModels(shop(notes)))
+        .toThrow(
+            "field 'orders.notes': the BIGQUERY entry of 'expression' is " +
+            "blank; write the field's BIGQUERY SQL");
+  });
+
+  test('a field with no expression still loads unbound', () => {
+    const {models} = loadModels(shop('{name: notes}'));
+    const notes = models[0].entities[0].fields[1];
+    expect(notes.name).toBe('notes');
+    expect(notes.expression).toBeUndefined();
+    expect(notes.dialects).toBeUndefined();
+  });
+
+  test('a field with an expression loads as before', () => {
+    const {models, warnings} = loadModels(shop('{name: notes, expression: " notes "}'));
+    const notes = models[0].entities[0].fields[1];
+    expect(notes.expression).toBe(' notes ');
+    expect(notes.dialects).toEqual([{dialect: 'ANSI_SQL', expression: ' notes '}]);
+    expect(warnings).toEqual([]);
+  });
+});
+
 
 describe('metrics infer their referenced entities from the expression', () => {
   test('a single referenced entity becomes the metric attach entity', () => {

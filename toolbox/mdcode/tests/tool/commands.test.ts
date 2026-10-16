@@ -2238,6 +2238,30 @@ semantic_model:
         .toContain("Note: profile 'default' leaves 1 field(s) unbound.");
   });
 
+  // Unlike a field with no expression, a field with a blank one stops the push
+  // when its model file loads.
+  test('a push stops at a blank field expression and names the field', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: ltv, expression: "" }
+`);
+    const kcSpy = mockKc();
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.error).join('\n'))
+        .toContain("field 'customer.ltv': 'expression' is blank");
+    expect(prints(console.warn)).toEqual([]);
+    expect(kcSpy).not.toHaveBeenCalled();
+  });
+
   test('--transpile fills a vendor-only expression and drops the warning about it', async () => {
     writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
