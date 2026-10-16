@@ -4,8 +4,8 @@
 // The IR (./ir) is pure semantics. This module emits a single `CREATE OR
 // REPLACE PROPERTY GRAPH` statement over the entities' existing base tables:
 // node tables, edge tables, labels, properties, and key and join columns. Both
-// BigQuery and Spanner take that same statement. What differs between the
-// engines is a `GraphEngine`:
+// BigQuery and Spanner take that same statement. A `GraphEngine` carries what
+// differs between the engines:
 //
 //   1. Names. How a table and the graph itself are named (BigQuery writes
 //      `project.dataset.table` and qualifies the graph name; a Spanner graph
