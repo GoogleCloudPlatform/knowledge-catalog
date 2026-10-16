@@ -223,6 +223,33 @@ describe('inherited-expression localization', () => {
         entityOf(r, 'Customer').fields.find(f => f.name === 'email')!;
     expect(inherited.expression).toBe('LOWER(email)');
   });
+
+  test('a comment comes out first, so a quote inside it keeps no qualifier', () => {
+    // Read with its comment, the apostrophe in `party's` opens a string that
+    // the quote before `unknown` closes, and `Person.` inside it stays. An
+    // ANSI_SQL text is read as BigQuery reads it, where `#` starts a comment.
+    const stringForm = (name: string, text: string): Field => ({
+      name,
+      expression: text,
+      dialects: [{dialect: 'ANSI_SQL', expression: text}],
+      stringForm: true,
+    });
+    const {model: r} = resolveInheritance(model([
+      entity('Person', [], undefined, {
+        fields: [
+          stringForm('name', "-- the party's name\nCOALESCE(Person.name, 'unknown')"),
+          stringForm('title', "# the party's title\nCOALESCE(Person.title, 'none')"),
+        ],
+      }),
+      entity('Customer', ['id'], ['Person']),
+    ]));
+    const inherited = (name: string) =>
+        entityOf(r, 'Customer').fields.find(f => f.name === name)!;
+    expect(inherited('name')).toEqual(
+        stringForm('name', "COALESCE(name, 'unknown')"));
+    expect(inherited('title')).toEqual(
+        stringForm('title', "COALESCE(title, 'none')"));
+  });
 });
 
 

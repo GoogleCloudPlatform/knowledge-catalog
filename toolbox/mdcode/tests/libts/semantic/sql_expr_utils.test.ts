@@ -309,4 +309,13 @@ describe('keysCoveredByColumns', () => {
                ['email'], ['id'], [['email']]))
         .toEqual(['unique key 1']);
   });
+
+  test('reads a key field\'s column without its comment, as the generators do', () => {
+    const orders = {
+      name: 'orders',
+      fields: [{name: 'id', expression: 'orders.order_id -- the key'}],
+    };
+    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], []))
+        .toEqual(['the primary key']);
+  });
 });

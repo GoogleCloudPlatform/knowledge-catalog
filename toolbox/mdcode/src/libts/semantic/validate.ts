@@ -20,7 +20,7 @@ import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInherit
 import {expressionSources, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
-import {SqlColumn} from './sql_parser';
+import {SqlColumn, withoutComments} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -1267,7 +1267,9 @@ function validateBigQueryMetrics(
           `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
       continue;
     }
-    const expr = metric.expression ?? metric.importedExpression ?? '';
+    // The generator reads the expression with its comments removed.
+    const expr = withoutComments(
+        metric.expression ?? metric.importedExpression ?? '', 'BIGQUERY');
     let referenced = referencedEntityNames(expr, entityNames);
     if (referenced.length === 0 && metric.entity) {
       referenced = [metric.entity];
@@ -1276,9 +1278,9 @@ function validateBigQueryMetrics(
       errors.push(
           `${prefix} targets a BigQuery graph and references multiple ` +
           `entities (${referenced.join(', ')}); the BigQuery generator ` +
-          `scans raw expression text (including comments and function ` +
-          `namespaces) for '<entity>.' qualifiers, so remove the extra ` +
-          `'<entity>.' match or scope its expression to one entity.`);
+          `reads every '<entity>.' outside comments as a qualifier, ` +
+          `including a function namespace such as 'NET.', so remove the ` +
+          `extra '<entity>.' match or scope its expression to one entity.`);
     } else if (referenced.length === 0) {
       errors.push(
           `${prefix} targets a BigQuery graph but does not resolve to a ` +
