@@ -13,11 +13,8 @@ semantic_model:
           - o_orderkey
         fields:
           - name: o_orderkey
-            datatype: Opaque
           - name: o_custkey
-            datatype: Opaque
           - name: o_totalprice
-            datatype: Opaque
       - name: customer
         source: //bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
         primary_key:
@@ -27,7 +24,6 @@ semantic_model:
             datatype: Integer
             description: The customer's account number.
           - name: c_name
-            datatype: Opaque
     relationships:
       - name: orders-to-customer
         from: orders

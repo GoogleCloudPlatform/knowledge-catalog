@@ -256,7 +256,7 @@ onto one logical type:
 | `time` | `Time` |
 | `dateTime` | `DateTime` |
 | `dateTimeStamp` | `DateTimeTz` |
-| anything else, or no `rdfs:range` | `Opaque` |
+| anything else, or no `rdfs:range` | none (the field is written with no `datatype`) |
 
 A temporal field (`Date` / `Time` / `DateTime` / `DateTimeTz`) is additionally
 marked a **time dimension** (`dimension: { is_time: true }`), so downstream

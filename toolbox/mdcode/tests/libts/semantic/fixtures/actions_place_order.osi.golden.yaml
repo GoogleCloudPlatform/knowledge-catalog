@@ -14,17 +14,17 @@ semantic_model:
           - name: o_orderkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_orderkey
           - name: o_custkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_custkey
           - name: o_totalprice
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_totalprice
       - name: customer
         source: samples.tpch.customer
@@ -34,14 +34,14 @@ semantic_model:
           - name: c_custkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: c_custkey
             datatype: Integer
             description: The customer's account number.
           - name: c_name
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: c_name
     relationships:
       - name: orders_to_customer
@@ -55,7 +55,7 @@ semantic_model:
       - name: total_revenue
         expression:
           dialects:
-            - dialect: BIGQUERY
+            - dialect: ANSI_SQL
               expression: SUM(orders.o_totalprice)
         description: Total order revenue
     actions:

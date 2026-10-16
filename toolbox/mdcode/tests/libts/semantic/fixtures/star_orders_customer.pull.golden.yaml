@@ -16,24 +16,18 @@ semantic_model:
         description: One row per order
         fields:
           - name: o_orderkey
-            datatype: Opaque
             description: Order identifier
           - name: o_custkey
-            datatype: Opaque
           - name: o_orderdate
-            datatype: Opaque
             label: Order Date
           - name: o_totalprice
-            datatype: Opaque
       - name: customer
         source: //bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
         primary_key:
           - c_custkey
         fields:
           - name: c_custkey
-            datatype: Opaque
           - name: c_name
-            datatype: Opaque
             description: Customer name
     relationships:
       - name: orders-to-customer
