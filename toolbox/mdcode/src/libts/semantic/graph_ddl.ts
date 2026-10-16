@@ -47,8 +47,9 @@ export interface GraphEngine {
   // The engine's name as warnings write it ("the BigQuery push ...").
   name: string;
 
-  // 1. Names. `table` names an element table from its `dataSource`;
-  // `graphName` names the graph.
+  // 1. Names. `table` names an element table from its `dataSource`, or from
+  // the entity's name when an edge's source entity is unknown; `graphName`
+  // names the graph.
   table(dataSource: string, warnings: string[], context: string): string;
   graphName(model: SemanticModel): string;
 
