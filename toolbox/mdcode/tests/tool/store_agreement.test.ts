@@ -431,6 +431,36 @@ semantic_model:
 });
 
 
+// An entity extends one the model does not declare. The loader lets it
+// through, and push reports it when it resolves inheritance.
+describe('an entity that extends an unknown entity', () => {
+  test('push rejects it, so skills-generate does too, naming the model',
+       async () => {
+         writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        extends: [Missing]
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`});
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         for (const name of ['push', 'printStore', 'skills']) {
+           expect(r[name].out).toContain("model 'commerce'");
+           expect(r[name].out)
+               .toContain("entity 'Order' extends unknown entity 'Missing'");
+         }
+       });
+});
+
+
 // The differences the docs describe, and cases where every command agrees.
 describe('documented divergences', () => {
   test('a deployment that names a declared profile: push refuses, the runtime uses it',

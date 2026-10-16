@@ -247,3 +247,37 @@ describe('a deployment whose profile is a typo', () => {
     expect(logs.join('\n')).toContain("profile 'prdo'");
   });
 });
+
+
+// Resolving inheritance throws on a cycle. createSemanticRuntimes returns
+// the error, as it does for every other model push refuses before any store.
+describe('an inheritance cycle', () => {
+  test('is returned as an error, naming the document and the model',
+       async () => {
+         writeModel('commerce.yaml', `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: A
+        extends: [B]
+        source: ${SPANNER_DB}/tables/A
+        primary_key: [key]
+        fields:
+          - { name: key, expression: Id }
+      - name: B
+        extends: [A]
+        source: ${SPANNER_DB}/tables/B
+        primary_key: [key]
+        fields:
+          - { name: key, expression: Id }
+`);
+         const rt = await createSemanticRuntimes({ctx: CTX});
+         expect('error' in rt).toBe(true);
+         if (!('error' in rt)) return;
+         expect(rt.error).toStartWith("[commerce] model 'commerce': ");
+         expect(rt.error).toContain('cycle');
+       });
+});

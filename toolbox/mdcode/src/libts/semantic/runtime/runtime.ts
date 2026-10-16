@@ -265,7 +265,18 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       authored.metrics =
           (authored.metrics ?? []).filter(m => !excludedMetrics.has(m.name));
     }
-    const resolved = resolveInheritance(authored);
+    // Resolving throws on an `extends` that names an entity the model does
+    // not declare, on a cycle, and on a field inherited from two unrelated
+    // ancestors. The loader lets each through, and push reports it as an
+    // error.
+    let resolved: ReturnType<typeof resolveInheritance>;
+    try {
+      resolved = resolveInheritance(authored);
+    } catch (err: any) {
+      return {
+        error: `[${document}] model '${authored.name}': ${err?.message ?? err}`,
+      };
+    }
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
     // The store is the one the profile's deployments name. An AlloyDB
     // database is reached through its cluster's primary instance.
