@@ -332,7 +332,7 @@ describe('entity dataSource maps to a resource path', () => {
   });
   test('a source containing / or : is returned unchanged', () => {
     const spUri = '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
-    const mysqlCat = 'mysql:inst.shop.payments';
+    const mysqlCat = 'cloudsql_mysql:acme.us.inst.shop.payments';
     expect(resources(spUri)).toEqual([spUri]);
     expect(resources(mysqlCat)).toEqual([mysqlCat]);
   });
