@@ -21,6 +21,7 @@ import {generateGraphDdl, GraphEngine} from '../../../src/libts/semantic/graph_d
 import {fieldBinding, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {fieldBindingWithoutComments} from '../../../src/libts/semantic/sql_expr_utils';
 import {quoteIdentifier} from '../../../src/libts/semantic/sql_identifiers';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -49,7 +50,7 @@ describe('the graph structure is engine-neutral', () => {
     placeMetrics: () => new Map(),
     elementOptions: () => undefined,
     fieldOptions: () => undefined,
-    fieldExpression: fieldBinding,
+    fieldExpression: fieldBindingWithoutComments,
   };
 
   // The Spanner e2e corpus: a star with metrics, a class hierarchy, a fan-out,
@@ -96,6 +97,46 @@ describe('the graph structure is engine-neutral', () => {
           destinationColumns: ['course_id'],
           fields: [{name: 'grade', expression: 'enrollment.grade'}],
         },
+      }],
+      metrics: [],
+    };
+    expect(generateGraphDdl(model, BARE).ddl)
+        .toBe(generateSpannerPropertyGraph(model).ddl);
+  });
+
+  test('fields with comments and vendor SQL match spanner.ts', () => {
+    // spanner.ts removes a field's comments, and reads imported vendor SQL in
+    // its own dialect, so a PostgreSQL `#` stays. The key and join columns read
+    // the same SQL.
+    const model: SemanticModel = {
+      name: 'star',
+      entities: [
+        {
+          name: 'orders',
+          dataSource: 'orders',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'orders.order_id -- the key'},
+            {name: 'cust', expression: 'orders.cust_id /* the customer */'},
+            {
+              name: 'flags',
+              dialects: [{dialect: 'POSTGRES', expression: 'orders.flags # 1'}],
+              importedExpression: 'orders.flags # 1',
+              importedDialect: 'POSTGRES',
+            },
+          ],
+        },
+        {
+          name: 'customers',
+          dataSource: 'customers',
+          keys: ['cid'],
+          fields: [{name: 'cid', expression: 'customers.customer_id # key'}],
+        },
+      ],
+      relationships: [{
+        name: 'placed_by',
+        source: {entity: 'orders', columns: ['cust']},
+        destination: {entity: 'customers', columns: ['cid']},
       }],
       metrics: [],
     };

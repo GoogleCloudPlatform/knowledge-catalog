@@ -88,6 +88,22 @@ export function fieldTextWithoutComments(
       text, !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect);
 }
 
+// The text the graph generators write for `field`, as fieldBinding gives it,
+// with its comments removed. Undefined when the field is unbound. The target
+// text is read as BigQuery, as the parser also reads Spanner SQL. Imported
+// vendor SQL, written only when there is no target text, is read in its
+// imported dialect, so it keeps what that dialect does not read as a comment.
+export function fieldBindingWithoutComments(
+    field: Pick<Field, 'expression'|'importedExpression'|'importedDialect'>):
+    string|undefined {
+  const text = fieldBinding(field);
+  if (text === undefined) return undefined;
+  const vendor =
+      field.expression === undefined ? field.importedDialect : undefined;
+  return withoutComments(
+      text, !vendor || vendor === 'ANSI_SQL' ? 'BIGQUERY' : vendor);
+}
+
 // The physical column a key or join column names, as the graph generators read
 // it: a name that matches one of the entity's fields is that field's column,
 // read without its comments, and any other name is a column already. Undefined
@@ -96,10 +112,9 @@ export function keyColumn(
     entity: Pick<Entity, 'name'|'fields'>, name: string): string|undefined {
   const field = entity.fields.find(f => f.name === name);
   if (!field) return name;
-  const expr = fieldBinding(field);
-  return expr === undefined ?
-      undefined :
-      stripQualifier(withoutComments(expr, 'BIGQUERY'), entity.name).trim();
+  const expr = fieldBindingWithoutComments(field);
+  return expr === undefined ? undefined :
+                              stripQualifier(expr, entity.name).trim();
 }
 
 // Which keys `toColumns` cover once every name is read as its column (see

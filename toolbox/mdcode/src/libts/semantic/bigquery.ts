@@ -20,8 +20,8 @@
 //
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
-import {AiContext, Entity, Field, fieldBinding, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {AiContext, Entity, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {fieldBindingWithoutComments, referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {withoutComments} from './sql_parser';
 
@@ -436,15 +436,17 @@ function uniqueName(base: string, taken: Set<string>): string {
 
 // The target/canonical expression, falling back to the imported vendor SQL when
 // that is all the IR carries (see the Field/Metric expression-fidelity
-// contract), with its comments removed. The DDL puts ` AS <name>` and a comma
-// after the expression on the same line, and a line comment left in would
-// swallow them.
+// contract), with its comments removed. fieldBindingWithoutComments reads
+// imported vendor SQL in its own dialect, so it keeps an operator BigQuery
+// would read as a comment, such as PostgreSQL's `#`. The DDL puts ` AS <name>`
+// and a comma after the expression on the same line, and a line comment left
+// in would swallow them.
 function fieldExpression(f: Field): string|undefined {
-  // Delegates to the canonical accessor so the shared generator's notion of
-  // "bound" matches availability pruning's (an unbound field yields undefined;
-  // a field awaiting transpilation stays bound via its imported expression).
-  const expr = fieldBinding(f);
-  return expr === undefined ? undefined : withoutComments(expr, 'BIGQUERY');
+  // Reads the canonical accessor, fieldBinding, so the shared generator's
+  // notion of "bound" matches availability pruning's (an unbound field yields
+  // undefined; a field awaiting transpilation stays bound via its imported
+  // expression).
+  return fieldBindingWithoutComments(f);
 }
 function metricExpression(m: Metric): string|undefined {
   const expr = m.expression ?? m.importedExpression;

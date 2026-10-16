@@ -1097,6 +1097,38 @@ describe('a comment in a field expression', () => {
     expect(warnings).toEqual([]);
   });
 
+  test('is read in the dialect of imported vendor SQL', () => {
+    // PostgreSQL reads `--` as a comment and `#` as an operator, so only the
+    // comment comes out of imported vendor SQL. The graph's engine still reads
+    // `# 1` as a comment. Vendor SQL is wrong in a graph either way, and this
+    // keeps what the author wrote. A target text is read as the graph's engine
+    // reads it, even when a PostgreSQL entry holds the same text.
+    const vendor: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'flags', dialects: [{dialect: 'POSTGRES', expression: 'flags # 1'}],
+           importedExpression: 'flags # 1', importedDialect: 'POSTGRES'},
+          {name: 'total', dialects: [{dialect: 'POSTGRES', expression: 'amount -- in cents'}],
+           importedExpression: 'amount -- in cents', importedDialect: 'POSTGRES'},
+          {name: 'net', expression: 'net_amount # in cents',
+           dialects: [{dialect: 'POSTGRES', expression: 'net_amount # in cents'},
+                      {dialect: 'BIGQUERY', expression: 'net_amount # in cents'}]},
+        ],
+      }],
+    };
+    const {ddl} = generatePropertyGraph(vendor, GEN_OPTS);
+    expect(ddl).toContain('flags # 1 AS flags');
+    expect(ddl).toContain('amount AS total');
+    expect(ddl).toContain('net_amount AS net');
+  });
+
   test('next to a dot leaves no space, so the qualifier still comes off', () => {
     const dotted: SemanticModel = {
       name: 'm',
