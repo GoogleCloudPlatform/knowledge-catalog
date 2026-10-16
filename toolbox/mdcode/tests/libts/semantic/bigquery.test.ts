@@ -1096,4 +1096,29 @@ describe('a comment in a field expression', () => {
     expect(ddl).toContain('MEASURE(SUM(total)) AS revenue');
     expect(warnings).toEqual([]);
   });
+
+  test('next to a dot leaves no space, so the qualifier still comes off', () => {
+    const dotted: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [{name: 'revenue', entity: 'orders',
+                 expression: 'SUM(orders/* in cents */.amount)'}],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'orders./* the key */order_id'},
+          {name: 'amount', expression: 'orders/* in cents */.amount'},
+          {name: 'select', expression: 'orders. /* a keyword */ select'},
+        ],
+      }],
+    };
+    const {ddl, warnings} = generatePropertyGraph(dotted, GEN_OPTS);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount,\n      `select`,\n' +
+        '      MEASURE(SUM(amount)) AS revenue\n');
+    expect(warnings).toEqual([]);
+  });
 });

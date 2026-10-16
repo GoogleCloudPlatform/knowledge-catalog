@@ -403,4 +403,27 @@ describe('a comment in a field expression', () => {
     expect(ddl).not.toContain('free text');
     expect(warnings).toEqual([]);
   });
+
+  test('next to a dot leaves no space, so the qualifier still comes off', () => {
+    const dotted: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [{
+        name: 'orders',
+        dataSource: 'Orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'orders./* the key */order_id'},
+          {name: 'amount', expression: 'orders/* in cents */.amount'},
+          {name: 'select', expression: 'orders. /* a keyword */ select'},
+        ],
+      }],
+    };
+    const {ddl, warnings} = generateSpannerPropertyGraph(dotted);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount,\n      `select`\n');
+    expect(warnings).toEqual([]);
+  });
 });

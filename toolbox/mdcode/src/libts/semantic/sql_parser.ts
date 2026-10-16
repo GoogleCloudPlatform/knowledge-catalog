@@ -363,10 +363,12 @@ export function holdsNoSql(expression: string, dialect: string): boolean {
 }
 
 // `expression` with its comments removed, as the engine reads them in
-// `dialect`. Comments between two tokens become one space. Comments before
-// the first token or after the last are dropped. The rest of the text stays as
-// written. Returns `expression` itself when it has no comment or the engine
-// cannot read it. Throws when the engine is not loaded.
+// `dialect`. Comments between two tokens become one space, or nothing when
+// either token is a `.`, so `orders/* c */.amount` reads `orders.amount`.
+// Comments before the first token or after the last are dropped. The rest of
+// the text stays as written. Returns `expression` itself when it has no
+// comment, holds nothing but comments, or the engine cannot read it. Throws
+// when the engine is not loaded.
 export function withoutComments(expression: string, dialect: string): string {
   const tokens = sqlTokens(expression, dialect);
   if (!tokens?.some(t => t.comments.length || t.trailing_comments.length)) {
@@ -375,11 +377,17 @@ export function withoutComments(expression: string, dialect: string): string {
   const chars = Array.from(expression);
   let out = '';
   let end = 0;
+  let previous = '';
   for (const t of tokens) {
     // The text between two tokens is whitespace and comments.
     const between = chars.slice(end, t.span.start).join('');
-    if (out) out += between.trim() === '' ? between : ' ';
-    out += chars.slice(t.span.start, t.span.end).join('');
+    const text = chars.slice(t.span.start, t.span.end).join('');
+    if (out) {
+      if (between.trim() === '') out += between;
+      else if (previous !== '.' && text !== '.') out += ' ';
+    }
+    out += text;
+    previous = text;
     end = t.span.end;
   }
   return out;
