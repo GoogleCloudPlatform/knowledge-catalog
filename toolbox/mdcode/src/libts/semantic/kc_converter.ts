@@ -277,7 +277,7 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
   const sem = fd?.semantics ?? {};
   // An expression with no SQL does not load, so the field is read as unbound.
   const noSql = typeof sem.expression === 'string' ?
-      noSqlReason(sem.expression, 'ANSI_SQL') :
+      noSqlReason(sem.expression, 'ANSI_SQL', entityName) :
       undefined;
   if (noSql) {
     warnings.push(

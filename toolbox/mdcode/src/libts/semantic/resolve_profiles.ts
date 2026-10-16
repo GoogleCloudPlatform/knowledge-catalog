@@ -38,8 +38,8 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, halfBoundJoinMessage, inferMetricEntities, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
-import {InheritanceError, resolveInheritance} from './resolve_inheritance';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblem, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
@@ -1083,6 +1083,18 @@ function applyProfileSpec(
   if (applied.errors.length) {
     return {error: `profile '${profile.name}': ${applied.errors[0]}`};
   }
+  // A field the profile binds is checked on each entity that inherits it, as
+  // a load checks a model file's. A model whose inheritance does not resolve
+  // is reported by validation instead.
+  let concepts;
+  try {
+    concepts = declaredConceptFields(applied.model);
+  } catch (err) {
+    if (!(err instanceof InheritanceError)) throw err;
+  }
+  const inherited =
+      concepts && inheritedNoSqlProblem(applied.model.entities, concepts);
+  if (inherited) return {error: `profile '${profile.name}': ${inherited}`};
   return {
     model: applied.model,
     warnings: warningsAfterProfile(model, applied.model, opts),
@@ -1371,7 +1383,7 @@ function profileStructureErrors(profile: ProfileSpec): string[] {
       if (raw !== undefined) {
         // Checked by the loader's reader, as a profile file's is.
         try {
-          parseFieldExpression(raw, fat, DEFAULT_DIALECT);
+          parseFieldExpression(raw, fat, DEFAULT_DIALECT, pe.name);
         } catch (err) {
           if (!(err instanceof SemanticModelError)) throw err;
           errors.push(err.message);
@@ -1481,7 +1493,7 @@ function applyBindings(
           read(
               () => parseFieldExpression(
                   pf.stringForm ? dialects[0].expression : {dialects},
-                  `field '${e.name}.${pf.name}'`, preferred),
+                  `field '${e.name}.${pf.name}'`, preferred, e.name),
               false) :
           undefined;
       if (dialects?.length && !binding) continue;
@@ -1676,7 +1688,8 @@ function profileEntity(e: any, where: string): ProfileEntityBinding {
           {name: f.name} :
           {
             name: f.name,
-            ...parseFieldExpression(f.expression, fat, DEFAULT_DIALECT),
+            ...parseFieldExpression(
+                f.expression, fat, DEFAULT_DIALECT, e.name),
           };
     });
   }

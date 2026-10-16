@@ -2048,8 +2048,8 @@ describe('profile rules', () => {
         .toThrow("field 'a': 'expression': dialects.0: Unrecognized key: \"note\"");
   });
 
-  // A blank expression, or one that is only a comment, is rejected, as in a
-  // model file.
+  // A blank expression, one that is only a comment and one that is only its
+  // entity's qualifier are rejected, as in a model file.
   test('a profile expression may not be blank', () => {
     const file = (expression: string) =>
         `name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: ${expression}}\n`;
@@ -2066,6 +2066,42 @@ describe('profile rules', () => {
         .toThrow(
             "profile 'prod': entity 'o': field 'a': 'expression' is only a " +
             "comment; write the field's SQL");
+    expect(() => loadProfileFile(file('"o."'), 'prod'))
+        .toThrow(
+            "profile 'prod': entity 'o': field 'a': 'expression' is only the " +
+            "qualifier 'o.'; write the field's SQL");
+  });
+
+  // Inheritance removes `base.` on `orders`, and the graph generators remove
+  // `orders.`, so the binding is checked on the entity that inherits it.
+  test('a profile binding may not leave an inheriting entity only its qualifier', () => {
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: base
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: notes, expression: notes}
+      - name: orders
+        extends: [base]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+`);
+    const profile = (expression: string) =>
+        `name: prod\nentities:\n  - name: base\n    fields:\n      - {name: notes, expression: ${expression}}\n`;
+    expect(applyProfileFile(models[0], profile('"base.orders."'), 'prod')).toEqual({
+      error: "profile 'prod': entity 'orders' inherits field 'notes': read on " +
+          "'orders', 'expression' is only the qualifier 'orders.'; write the " +
+          "field's SQL",
+    });
+    expect(applyProfileFile(models[0], profile('"base.notes"'), 'prod'))
+        .not.toHaveProperty('error');
   });
 
   // An abstract entity has no table, so a profile entry for one is rejected.
@@ -2909,7 +2945,7 @@ describe('a document mistake versus a bug', () => {
   test('the readers throw a SemanticModelError for a mistake', () => {
     expect(() => loader.parseSource('orders', {}, "entity 'orders'"))
         .toThrow(SemanticModelError);
-    expect(() => loader.parseFieldExpression(7, "field 'a'", 'BIGQUERY'))
+    expect(() => loader.parseFieldExpression(7, "field 'a'", 'BIGQUERY', 'e'))
         .toThrow(SemanticModelError);
     expect(() => loader.parseExecutor({mcp: {}}, "action 'a'"))
         .toThrow(SemanticModelError);

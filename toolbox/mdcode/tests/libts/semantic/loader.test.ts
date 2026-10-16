@@ -452,6 +452,46 @@ ${metrics}`;
         .toThrow("field 'orders.notes': 'expression' is only a comment");
   });
 
+  test('an expression that is only its entity\'s qualifier is rejected', () => {
+    // The graph generators remove the qualifier, which would leave nothing.
+    for (const qualifier of ['"orders."', '"orders. /* todo */"', '"`orders`."']) {
+      expect(() => loadModels(shop(`{name: notes, expression: ${qualifier}}`)))
+          .toThrow(`field 'orders.notes': 'expression' is only the qualifier 'orders.'; ${fix}`);
+    }
+    expect(() => loadModels(shop(entries('{dialect: POSTGRES, expression: "orders."}'))))
+        .toThrow("field 'orders.notes': the POSTGRES entry of 'expression' is only the qualifier 'orders.'");
+    expect(() => loadModels(shop('{name: notes, expression: "orders.notes"}'))).not.toThrow();
+  });
+
+  test('an inherited expression left with only the entity\'s qualifier is rejected', () => {
+    // Inheritance removes `base.` on `orders`, and the graph generators remove
+    // `orders.`.
+    const doc = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: base
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: notes, expression: "base.orders."}
+      - name: orders
+        extends: [base]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+`;
+    expect(() => loadModels(doc))
+        .toThrow(
+            "model 'shop': entity 'orders' inherits field 'notes': read on " +
+            "'orders', 'expression' is only the qualifier 'orders.'; write the " +
+            "field's SQL");
+    expect(() => loadModels(doc.replace('base.orders.', 'base.notes'))).not.toThrow();
+  });
+
   test('an expression with SQL and a comment loads as written', () => {
     const {models, warnings} =
         loadModels(shop('{name: notes, expression: "notes -- free text"}'));

@@ -1295,7 +1295,9 @@ describe('an expression with no SQL stored in the catalog', () => {
   });
 
   test('a field pulls unbound with a warning, so the pulled file loads', () => {
-    for (const [text, reason] of [['  ', 'is blank'], ['-- todo', 'is only a comment']]) {
+    for (const [text, reason] of [
+           ['  ', 'is blank'], ['-- todo', 'is only a comment'],
+           ['orders.', "is only the qualifier 'orders.'"]]) {
       const {models, warnings} = roundTripFull(sales(text, 'SUM(orders.amount)'));
       expect(models[0].entities[0].fields[2].expression).toBeUndefined();
       expect(warnings).toContain(
