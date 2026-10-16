@@ -338,6 +338,37 @@ semantic_model:
 });
 
 
+// A vanilla model's GOOGLE block lists a BigQuery target twice beside a
+// Spanner target. The Spanner target alone would give a store, and every push
+// refuses the repeat.
+describe('a vanilla GOOGLE block that lists a target twice', () => {
+  test('beside a Spanner target, push rejects it, so skills-generate does too',
+       async () => {
+         const graph = `${BQ('graphs')}/propertyGraphs/commerce`;
+         writeScope({'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/commerce", "${graph}", "${graph}"]}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`});
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(r.printStore.out)
+             .toContain(`declares duplicate deployment target '${graph}'`);
+         expect(r.skills.out)
+             .toContain(`declares duplicate deployment target '${graph}'`);
+       });
+});
+
+
 // A legacy wrapper that sets `deployment_target` to an empty string. Push
 // reads no graph target and publishes to Knowledge Catalog only, and the
 // loader makes no deployment of it.

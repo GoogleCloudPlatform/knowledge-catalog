@@ -281,20 +281,20 @@ describe('a model that declares more than one deployment target', () => {
     expect(store.error).toContain('2 BigQuery deployment targets');
   });
 
-  // Only the two URIs of one AlloyDB database are merged. A graph listed twice
-  // in a GOOGLE block counts twice.
-  test('one Spanner graph listed twice is ambiguous', () => {
+  // Only the two URIs of one AlloyDB database are merged. A target listed
+  // twice in a GOOGLE block is a duplicate, which every push refuses.
+  test('one Spanner graph listed twice is a duplicate target', () => {
     const store = resolveStore(targets(
         [`${DB}/propertyGraphs/g`, `${DB}/propertyGraphs/g`],
         `${DB}/tables/Customer`));
     expect('error' in store && store.error)
-        .toContain('2 Spanner deployment targets');
+        .toContain(`declares duplicate deployment target '${DB}/propertyGraphs/g'`);
   });
 
-  test('one AlloyDB URI listed twice is ambiguous', () => {
+  test('one AlloyDB URI listed twice is a duplicate target', () => {
     const store = resolveStore(targets([PG, PG], `${PG}/tables/customer`));
     expect('error' in store && store.error)
-        .toContain('2 AlloyDB deployment targets');
+        .toContain(`declares duplicate deployment target '${PG}'`);
   });
 
   test('two instances of one AlloyDB database are ambiguous', () => {

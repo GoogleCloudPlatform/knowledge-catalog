@@ -127,6 +127,25 @@ describe('targets', () => {
          });
        });
 
+  // Every push refuses a target listed twice. So does the runtime under every
+  // profile, even beside a Spanner target that alone would give the store.
+  test('a target a GOOGLE block lists twice fails the store under every profile',
+       () => {
+         const graph =
+             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+         const m = vanilla(
+             JSON.stringify({deploymentTargets: [SPANNER_GRAPH, graph, graph]}));
+         for (const profile of ['default', 'prod']) {
+           expect(resolveStore(m, profile)).toEqual({
+             error: `Model 'm' declares duplicate deployment target '${
+                        graph}' in its GOOGLE block's 'deploymentTargets'; ` +
+                 `each deployment must target a distinct resource.`,
+             named: true,
+             rejected: true,
+           });
+         }
+       });
+
   // The instance-based AlloyDB URI in a `deployments:` list.
   // resolveModelDeployments rejects it, and resolveStore reads it until the
   // legacy forms go.
