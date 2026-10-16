@@ -538,7 +538,7 @@ function readRelationships(
 export function linkDedupKey(link: EntryLink): string {
   if (link.name) return link.name;
   const refs = (link.entryReferences ?? []).map(r => r.name).sort();
-  return `${refs.join(' ')} ${link.entryLinkType ?? ''}`;
+  return `${refs.join('\0')}\0${link.entryLinkType ?? ''}`;
 }
 
 
