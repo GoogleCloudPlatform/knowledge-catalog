@@ -88,7 +88,16 @@ export function validatePushRequirements(
     // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
       const vanilla = model.version === OSSIE_VERSION;
-      if (deployInfo.uris.length !== 1) {
+      if (deployInfo.malformed.length) {
+        // A target in no accepted form is named, alone or beside others, so
+        // the author knows which entry to fix.
+        errors.push(
+            `model '${model.name}' (${document}) target '${
+                deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
+            `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
+            `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
+            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
+      } else if (deployInfo.uris.length !== 1) {
         errors.push(
             `model '${model.name}' (${document}) declares ${
                 deployInfo.uris
@@ -112,14 +121,6 @@ export function validatePushRequirements(
                           `under 'deployments'; `}push uses exactly one ` +
             `deployment for now), or run 'kcmd push --no-profile' to publish ` +
             `to Knowledge Catalog only.`);
-      } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
-        // The single target is present but is not a supported graph URI.
-        errors.push(
-            `model '${model.name}' (${document}) target '${
-                deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
-            `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
-            `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
-            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
       }
     }
 

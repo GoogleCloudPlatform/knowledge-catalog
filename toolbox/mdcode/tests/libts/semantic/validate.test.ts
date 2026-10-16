@@ -180,6 +180,24 @@ describe('validatePushRequirements', () => {
         "'0.2.0.dev0/google' and use 'deployments:'");
   });
 
+  // The entry to fix is named, rather than the count of targets.
+  test('a target in no accepted form beside a valid one is named', () => {
+    const typo = model({}, [googleExt([BQ_TARGET, 'bq-typo'])]);
+    expect(validatePushRequirements([loaded(typo)])).toEqual([
+      "model 'm' (doc) target 'bq-typo' is not a valid BigQuery Graph or " +
+          'Spanner Graph URI; expected //bigquery.googleapis.com/projects/' +
+          '<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/' +
+          'projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.',
+    ]);
+    const nonString = model({version: '0.2.0.dev0'}, [{
+      vendorName: 'GOOGLE',
+      data: JSON.stringify({deploymentTargets: [BQ_TARGET, 42]}),
+    }]);
+    const errs = validatePushRequirements([loaded(nonString)]);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain("target '42' is not a valid BigQuery Graph");
+  });
+
   // A padded target is the same target, so a blank one is dropped and a padded
   // copy is caught as a repeat, on a catalog-only push too.
   test('GOOGLE-block targets are trimmed and blank ones dropped before the repeat check', () => {
