@@ -346,8 +346,9 @@ export function resolveStore(
 // The AlloyDB targets, with each database that is named once by its
 // instance-based URI and once by its cluster-based URI counted once. The
 // instance-based one is kept, whichever is listed first, because it names the
-// instance to connect through. Any other repeat of a database is kept, so the
-// same URI twice, or two instances of one database, count twice.
+// instance to connect through. Any other repeat of a database is kept, so two
+// instances of one database count twice. resolveStore has already refused the
+// same URI listed twice.
 function mergeUriPairs(targets: AlloyDbTarget[]): AlloyDbTarget[] {
   const byDatabase = new Map<string, AlloyDbTarget[]>();
   for (const t of targets) {

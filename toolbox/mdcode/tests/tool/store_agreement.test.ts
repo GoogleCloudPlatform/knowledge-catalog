@@ -11,14 +11,14 @@
 // the target database's table of that name, so --print-store gives no store
 // and skills-generate fails for a model with actions.
 //
-// The runtime runs none of push's checks on the model itself. A model that
-// push refuses for an entity with no source, a relationship with no join
-// columns, a key that is not a column, or a broken expression, action or
-// constraint still gets a store and a skill. The runtime also skips the
-// checks of push's Knowledge Catalog leg: one model per entry group, and
-// with KC_V2_ASPECTS off the checks on the copies of the model and profile
-// files, such as whether each is valid UTF-8. Two models that deploy to one
-// graph each get a skill.
+// Of push's checks on the model itself, the runtime runs only the one on
+// inheritance. A model that push refuses for an entity with no source, a
+// relationship with no join columns, a key that is not a column, or a broken
+// expression, action or constraint still gets a store and a skill. The
+// runtime also skips the checks of push's Knowledge Catalog leg: one model per
+// entry group, and with KC_V2_ASPECTS off the checks on the copies of the
+// model and profile files, such as whether each is valid UTF-8. Two models
+// that deploy to one graph each get a skill.
 //
 // Live checks are mocked, and no case reaches the network.
 
@@ -460,6 +460,60 @@ semantic_model:
        });
 });
 
+
+// A cycle, and a field two unrelated ancestors both declare. Push reports
+// each when it resolves inheritance, and so does the runtime.
+describe('an inheritance cycle or an ambiguous inherited field', () => {
+  const cases: Array<[string, string, string]> = [
+    ['a cycle', `      - name: A
+        extends: [B]
+        source: ${SPANNER_DB}/tables/A
+        primary_key: [key]
+        fields:
+          - { name: key, expression: Id }
+      - name: B
+        extends: [A]
+        source: ${SPANNER_DB}/tables/B
+        primary_key: [key]
+        fields:
+          - { name: key, expression: Id }
+`, "'extends' must not form a cycle"],
+    ['an ambiguous field', `      - name: P
+        abstract: true
+        fields:
+          - { name: f, datatype: string }
+      - name: Q
+        abstract: true
+        fields:
+          - { name: f, datatype: string }
+      - name: C
+        extends: [P, Q]
+        source: ${SPANNER_DB}/tables/C
+        primary_key: [key]
+        fields:
+          - { name: key, expression: Id }
+          - { name: f, expression: F }
+`, "inherits field 'f' from 'P' and from 'Q'"],
+  ];
+  for (const [label, entities, message] of cases) {
+    test(`${label}: push rejects it, so skills-generate does too`, async () => {
+      writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+${entities}`});
+      const r = await runAll();
+      expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+      for (const name of ['push', 'printStore', 'skills']) {
+        expect(r[name].out).toContain("model 'commerce'");
+        expect(r[name].out).toContain(message);
+      }
+    });
+  }
+});
 
 // The differences the docs describe, and cases where every command agrees.
 describe('documented divergences', () => {

@@ -22,7 +22,7 @@ import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
-import {resolveInheritance} from '../resolve_inheritance';
+import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -269,12 +269,14 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     // not declare, on a cycle, and on a field inherited from two unrelated
     // ancestors. The loader lets each through, and push reports it as an
     // error.
-    let resolved: ReturnType<typeof resolveInheritance>;
+    let resolved: ResolveResult;
     try {
       resolved = resolveInheritance(authored);
     } catch (err: any) {
+      const message = `${err?.message ?? err}`;
       return {
-        error: `[${document}] model '${authored.name}': ${err?.message ?? err}`,
+        error: `[${document}] model '${authored.name}': ${message}${
+            message.endsWith('.') ? '' : '.'}`,
       };
     }
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
