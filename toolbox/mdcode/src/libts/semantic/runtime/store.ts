@@ -176,16 +176,18 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
 /**
  * Why resolveStore gives no store.
  *
- * `named` is set when the profile's deployments name a target and still no
+ * `named` is set when the model's deployments name a target and still no
  * store results, so a caller that runs against the store fails. `rejected` is
  * set with it when push rejects those deployments too, so the model is wrong
- * whatever it is used for. That is the case when a target is in no accepted
- * form, when a GOOGLE block's data is not valid JSON, and when several targets
- * leave the store ambiguous. `named` alone means the model binds a table
- * outside its Spanner or AlloyDB store.
+ * whatever it is used for. Push rejects a target in no accepted form in any
+ * deployment, whichever profile the deployment is for. It also rejects a
+ * GOOGLE block whose data is not valid JSON, and several targets for the
+ * profile that leave the store ambiguous. `named` alone means the model binds
+ * a table outside its Spanner or AlloyDB store.
  *
- * Neither is set when the profile names no store. Neither is set either when a
- * BigQuery model binds a table outside the graph's dataset, which push
+ * Neither is set when the profile names no store, unless a target is in no
+ * accepted form or a GOOGLE block is not valid JSON. Neither is set either
+ * when a BigQuery model binds a table outside the graph's dataset, which push
  * accepts.
  */
 export interface StoreError {
@@ -212,9 +214,10 @@ export interface StoreError {
  *
  * Fails six ways:
  *
- * 1. No deployment uses the profile.
- * 2. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
- * 3. A target names no supported destination.
+ * 1. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
+ * 2. A target names no supported destination. Push checks the target of every
+ *    deployment, so this fails the store under every profile.
+ * 3. No deployment uses the profile.
  * 4. There are several targets and no single operational one, so which store
  *    is meant is ambiguous.
  * 5. There is no target, so there is nothing to run against.
@@ -227,18 +230,39 @@ export function resolveStore(
     model: SemanticModel, profile: string = DEFAULT_PROFILE,
     opts: {legacyWrapper?: boolean; deploymentTarget?: boolean} = {}):
     ChosenStore|StoreError {
-  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
-  if ('error' in used) return used;
-  const {model: scoped, owner} = used;
-  let targets: GoogleDeploymentTargets;
+  // Push checks the target of every deployment the model declares, so the
+  // targets of every deployment are read before the profile's are picked.
+  let all: GoogleDeploymentTargets;
   try {
-    targets = googleDeploymentTargets(scoped);
+    all = googleDeploymentTargets(model);
   } catch (err: any) {
     // It throws when a GOOGLE block's data is not valid JSON. Push reports
     // that as an error, so the store fails.
     return {error: `${err?.message || err}`, named: true, rejected: true};
   }
-  const {spanner, bigQuery, malformed} = targets;
+  // A target in no accepted form is reported, alone or beside one that gives
+  // a store, whichever profile its deployment is for.
+  if (all.malformed.length) {
+    const unparsed =
+        model.deployments?.find(d => d.target === all.malformed[0]);
+    let error: string;
+    if (!unparsed) {
+      error = googleBlockTargetError(model, all.malformed[0]);
+    } else if (opts.deploymentTarget) {
+      error = deploymentTargetKeyError(model, unparsed.target);
+    } else {
+      error = deploymentTargetError(model, unparsed);
+    }
+    return {error, named: true, rejected: true};
+  }
+
+  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+  if ('error' in used) return used;
+  const {model: scoped, owner} = used;
+  // The profile's targets are among those read above. So this does not
+  // throw, and none of them is in no accepted form.
+  const targets = googleDeploymentTargets(scoped);
+  const {spanner, bigQuery} = targets;
   const alloyDb = mergeUriPairs(targets.alloyDb);
   const declared = spanner.length + alloyDb.length + bigQuery.length;
 
@@ -248,21 +272,6 @@ export function resolveStore(
       scoped.deployments === undefined && model.version === OSSIE_VERSION;
   const where =
       inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` : `'deployments'`;
-
-  // A target in no accepted form is reported, alone or beside one that gives
-  // a store.
-  if (malformed.length) {
-    const unparsed = scoped.deployments?.find(d => d.target === malformed[0]);
-    let error: string;
-    if (!unparsed) {
-      error = googleBlockTargetError(model, malformed[0]);
-    } else if (opts.deploymentTarget) {
-      error = deploymentTargetKeyError(model, unparsed.target);
-    } else {
-      error = deploymentTargetError(model, unparsed);
-    }
-    return {error, named: true, rejected: true};
-  }
 
   const operational = [...spanner, ...alloyDb];
   const contenders = operational.length ? operational : bigQuery;

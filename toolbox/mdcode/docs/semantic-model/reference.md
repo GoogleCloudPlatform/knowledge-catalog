@@ -101,7 +101,7 @@ instance.
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. A legacy profile in `<model>.profiles/` that no deployment names takes the deployments for `default`, unless it sets its own `deployment_target`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. For a legacy instance-based AlloyDB target, it is the instance the target names. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. A legacy profile in `<model>.profiles/` that no deployment names takes the deployments for `default`, unless it sets its own `deployment_target`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. For a legacy instance-based AlloyDB target, it is the instance the target names. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. A target in no accepted form in any deployment fails it under every profile. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the
@@ -127,11 +127,14 @@ cluster, it calls the AlloyDB API to find the cluster's primary instance.
 
 A skill names the store only for a model with actions, in its "Running an
 action" section. The command fails without writing anything when push rejects
-the deployments: a target is in no accepted form, several targets leave the
-store ambiguous, or a deployment names a profile the model does not declare.
-A vanilla model lists its targets in a `GOOGLE` block. The command fails the
-same way when one of them is in no accepted form, or when the block's data is
-not valid JSON.
+the deployments. That happens when the target of any deployment is in no
+accepted form, whichever profile the deployment is for. It also happens when
+several targets leave the store ambiguous, or when a deployment names a profile
+the model does not declare. Until push accepts a deployment that names a
+profile, the command accepts one that names a declared profile, which push
+refuses. A vanilla model lists its targets in a `GOOGLE` block. The command
+fails the same way when one of them is in no accepted form, or when the block's
+data is not valid JSON.
 
 For a model with actions, it also fails without writing anything when the
 profile names a store that cannot be resolved. That happens when the model

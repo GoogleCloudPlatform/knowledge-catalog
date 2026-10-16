@@ -86,7 +86,7 @@ export interface GenerateSkillOptions {
  * The skill for one model, as files a caller writes out.
  *
  * Returns an error for a name the Agent Skills spec would reject. It also
- * returns the store error when push rejects the profile's deployments, and
+ * returns the store error when push rejects the model's deployments, and
  * when the profile names a store that cannot be resolved for a model with
  * actions, whose skill names the store. A model with no actions is not an
  * error -- it is a skill that says the model declares nothing to act on, which

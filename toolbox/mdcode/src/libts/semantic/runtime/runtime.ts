@@ -45,20 +45,22 @@ export interface SemanticRuntime {
   /** Why there is no store. Set exactly when `store` is absent. */
   storeError?: string;
   /**
-   * Set when the profile's deployments name a target and still no store
-   * results. A target may be in no accepted form, several targets may leave
-   * the store ambiguous, the model may bind a table outside its Spanner or
-   * AlloyDB store, or finding how to connect may fail, such as the lookup of
-   * an AlloyDB cluster's primary instance. Also set when a GOOGLE block's data
-   * is not valid JSON, so its targets cannot be read. `storeError` says why.
+   * Set when the model's deployments name a target and still no store
+   * results. The target of any deployment may be in no accepted form, the
+   * profile's several targets may leave the store ambiguous, the model may
+   * bind a table outside its Spanner or AlloyDB store, or finding how to
+   * connect may fail, such as the lookup of an AlloyDB cluster's primary
+   * instance. Also set when a GOOGLE block's data is not valid JSON, so its
+   * targets cannot be read. `storeError` says why.
    */
   storeFailed?: boolean;
   /**
-   * Set with `storeFailed` when push rejects the profile's deployments too, so
-   * the model is wrong whatever it is used for. A target in no accepted form,
-   * a GOOGLE block that is not valid JSON and several targets with no single
-   * store are such cases. A table bound outside the store and a failed
-   * AlloyDB lookup are not.
+   * Set with `storeFailed` when push rejects the model's deployments too, so
+   * the model is wrong whatever it is used for. One such case is a target in
+   * no accepted form in any deployment. Another is a GOOGLE block that is not
+   * valid JSON. A third is several targets for the profile with no single
+   * store. A table bound outside the store and a failed AlloyDB lookup are
+   * not such cases.
    */
   deploymentsRejected?: boolean;
   /** Which binding profile produced this. Provenance, for messages. */

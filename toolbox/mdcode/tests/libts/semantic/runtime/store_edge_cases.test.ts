@@ -101,6 +101,32 @@ describe('targets', () => {
     });
   });
 
+  // Push checks the target of every deployment a model declares, so a target
+  // in no accepted form fails the store under every profile.
+  test('a target in no accepted form for another profile fails the store',
+       () => {
+         const typo = `${DB}/propertyGraph/typo`;
+         const m = deployed(
+             `      - {name: dev, target: "${SPANNER_GRAPH}"}\n` +
+             `      - {name: prod, target: "${typo}", profile: prod}\n`);
+         expect(resolveStore(m, 'default')).toEqual({
+           error: expect.stringContaining(`deployment 'prod' targets '${typo}'`),
+           named: true,
+           rejected: true,
+         });
+       });
+
+  // So does a GOOGLE block that is not valid JSON, under a profile no
+  // deployment uses.
+  test('a GOOGLE block that is not valid JSON fails the store under every profile',
+       () => {
+         expect(resolveStore(vanilla('{not-json'), 'prod')).toEqual({
+           error: "Model 'm': GOOGLE custom_extension 'data' is not valid JSON.",
+           named: true,
+           rejected: true,
+         });
+       });
+
   // The instance-based AlloyDB URI in a `deployments:` list.
   // resolveModelDeployments rejects it, and resolveStore reads it until the
   // legacy forms go.

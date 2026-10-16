@@ -499,6 +499,81 @@ semantic_model:
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
        });
 
+  // A model with a deployment dev for default, and a deployment prod for the
+  // declared profile prod.
+  function devAndProd(prodTarget: string): Record<string, string> {
+    return {
+      'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: dev
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+      - name: prod
+        target: ${prodTarget}
+        profile: prod
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+      'commerce.profile.prod.yaml': `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+    };
+  }
+
+  test('a malformed deployment for another declared profile: every command refuses',
+       async () => {
+         writeScope(devAndProd(`${SPANNER_DB}/propertyGraph/typo`));
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(r.printStore.out).toContain("deployment 'prod' targets");
+         expect(r.skills.out).toContain("deployment 'prod' targets");
+       });
+
+  // Push refuses a deployment that names a profile, whatever its target. The
+  // runtime uses dev, as the docs say.
+  test('a valid deployment for another declared profile: push refuses, the runtime uses dev',
+       async () => {
+         writeScope(devAndProd(`${SPANNER_DB}2/propertyGraphs/commerce`));
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.printStore.out).toBe('acme-ops/prod/commerce');
+       });
+
+  test('a malformed deployment for default under a profile file: every command refuses',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: dev
+        target: ${SPANNER_DB}/propertyGraph/typo
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profile.prod.yaml': `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+         });
+         const r = await runAll('prod');
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(r.printStore.out).toContain("deployment 'dev' targets");
+         expect(r.skills.out).toContain("deployment 'dev' targets");
+       });
+
   test('a logical model with no deployments: push and skills-generate accept it',
        async () => {
          writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
