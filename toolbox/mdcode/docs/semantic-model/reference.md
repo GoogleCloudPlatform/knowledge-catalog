@@ -131,15 +131,20 @@ the deployments. That happens when the target of any deployment is in no
 accepted form, whichever profile the deployment is for. It also happens when
 several targets leave the store ambiguous, or when a deployment names a profile
 the model does not declare. Until push accepts a deployment that names a
-profile, the command accepts one that names a declared profile, which push
-refuses. A vanilla model lists its targets in a `GOOGLE` block. The command
+profile, the command accepts one that names `default` or a declared profile,
+which push refuses. It also accepts a profile file that no deployment uses,
+which every graph push refuses, and writes a skill whose store line says there
+is none. A vanilla model lists its targets in a `GOOGLE` block. The command
 fails the same way when one of them is in no accepted form, or when the block's
 data is not valid JSON. Like push, it reads every model's profile files first.
 It fails on a profile file that every graph push refuses, such as a file whose
 `name:` does not match its file name, or a profile named `default` in any
 letter case. It does not run push's checks on the copies of the model and
 profile files that push stores in Knowledge Catalog, such as whether each file
-is valid UTF-8.
+is valid UTF-8. It does not check that the entry group holds one model, or that
+two models deploy to different graphs. It runs none of push's checks on the
+model itself, such as a concrete entity with no source or an action guarded by
+a constraint the model lacks.
 
 For a model with actions, it also fails without writing anything when the
 profile names a store that cannot be resolved. That happens when the model

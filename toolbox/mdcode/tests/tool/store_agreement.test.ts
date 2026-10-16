@@ -1,16 +1,24 @@
-// Push and the commands that read a model's store agree on which models they
-// accept. Each case writes one scope and runs `kcmd push --validate-only`, the
-// `kcmd profiles` report, `kcmd profiles --print-store` and
-// `kcmd skills-generate` over it. No runtime command accepts a model push
+// Push and the commands that read a model's store agree on a model's
+// deployments and profile files. Each case writes one scope and runs
+// `kcmd push --validate-only`, the `kcmd profiles` report,
+// `kcmd profiles --print-store` and `kcmd skills-generate` over it. On
+// deployments and profile files, no runtime command accepts a model push
 // rejects, and none rejects a model push accepts, apart from a few cases. The
-// docs describe a deployment that names a profile, an AlloyDB target and
-// several targets. Push also accepts a Spanner model that binds a table
-// outside its database today. The runtime refuses it on purpose: a write
-// would land in the target database's table of that name, so --print-store
-// gives no store and skills-generate fails for a model with actions. With
-// KC_V2_ASPECTS off, push checks the copies of the model and profile files it
-// stores in Knowledge Catalog, such as whether each is valid UTF-8. The
-// runtime stores no copy and does not run those checks.
+// docs describe a deployment that names a profile, `default` included, a
+// profile file that no deployment uses, an AlloyDB target and several
+// targets. Push also accepts a Spanner model that binds a table outside its
+// database today. The runtime refuses it on purpose: a write would land in
+// the target database's table of that name, so --print-store gives no store
+// and skills-generate fails for a model with actions.
+//
+// The runtime runs none of push's checks on the model itself. A model that
+// push refuses for an entity with no source, a relationship with no join
+// columns, a key that is not a column, or a broken expression, action or
+// constraint still gets a store and a skill. The runtime also skips the
+// checks of push's Knowledge Catalog leg: one model per entry group, and
+// with KC_V2_ASPECTS off the checks on the copies of the model and profile
+// files, such as whether each is valid UTF-8. Two models that deploy to one
+// graph each get a skill.
 //
 // Live checks are mocked, and no case reaches the network.
 
@@ -709,6 +717,54 @@ semantic_model:
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
          expect(r.push.out).toContain('is not valid UTF-8');
+       });
+
+  test('a deployment that names profile default: push refuses, the runtime uses it',
+       async () => {
+         writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+        profile: default
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`});
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.printStore.out).toBe('acme-ops/prod/commerce');
+       });
+
+  test('a profile file no deployment uses: push refuses, skills-generate writes a skill with no store',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profile.prod.yaml': `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+         });
+         const r = await runAll('prod');
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
+         expect(r.push.out).toContain("binding profile 'prod' is a profile file");
        });
 
   test('a logical model with no deployments: push and skills-generate accept it',
