@@ -55,6 +55,23 @@ describe('where a model says it lives', () => {
     expect(store.name).toBe('projects/p/instances/i/databases/d');
   });
 
+  // A resource name is the URI without the leading `//`, so a model written
+  // either way, or mixing the two, runs against the same store, and its table
+  // is in that store rather than reported as bound elsewhere.
+  test('a target and a source written as resource names give the same store', () => {
+    const name = DB.slice(2);
+    for (const [target, source] of [
+           [`${name}/propertyGraphs/g`, `${name}/tables/Customer`],
+           [`${DB}/propertyGraphs/g`, `${name}/tables/Customer`],
+           [`${name}/propertyGraphs/g`, `${DB}/tables/Customer`],
+         ]) {
+      const store = resolveStore(bound(target, source));
+      if ('error' in store) throw new Error(store.error);
+      expect(store.kind).toBe('spanner');
+      expect(store.name).toBe('projects/p/instances/i/databases/d');
+    }
+  });
+
   test('a BigQuery target is a store like any other', () => {
     const store = resolveStore(
         bound(`${DATASET}/propertyGraphs/g`, `${DATASET}/tables/Customer`));

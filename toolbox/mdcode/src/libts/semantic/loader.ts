@@ -1417,16 +1417,17 @@ function convertModel(
   }));
   rejectDuplicateNames(
       deployments.map(d => d.name), 'deployment name', `model '${m.name}'`);
+  // A resource name and its URI name the same resource.
   const seenTargets = new Map<string, string>();
   for (const d of deployments) {
-    const first = seenTargets.get(d.target);
+    const first = seenTargets.get(asResourceUri(d.target));
     if (first !== undefined) {
       throw new SemanticModelError(
           `Semantic model load error: model '${m.name}': deployments '${
               first}' and '${d.name}' target the same resource '${
               d.target}'; each deployment must target a distinct resource`);
     }
-    seenTargets.set(d.target, d.name);
+    seenTargets.set(asResourceUri(d.target), d.name);
   }
   // A blank `deployment_target` names no target, as push reads it.
   if (!deployments.length && m.deployment_target?.trim()) {
@@ -2142,6 +2143,19 @@ const ALLOYDB_TABLE_URI =
 const LEGACY_ALLOYDB_INSTANCE_URI =
     /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/instances\/[^/]+\/databases\/([^/]+)\/tables\/([^/]+)$/;
 
+// A GCP resource name: a Google Cloud service host and a path, with no leading
+// `//`, such as `bigquery.googleapis.com/projects/p/datasets/d/tables/t`
+// (Mapping Addendum 5).
+const RESOURCE_NAME = /^[a-z][a-z0-9-]*\.googleapis\.com\//;
+
+// `source` as a resource URI: a GCP resource name gets the leading `//`, and
+// anything else is returned as it is. A resource name and its URI name the
+// same table, so the loader checks and normalizes the URI. Only
+// `authoredSource` keeps the form the author wrote.
+export function asResourceUri(source: string): string {
+  return RESOURCE_NAME.test(source) ? `//${source}` : source;
+}
+
 // A catalog name's dot-separated segments. A segment containing a reserved
 // character, such as a domain-scoped project, is wrapped in backticks, so the
 // dots and colons inside backticks do not split or fail. Returns [] when the
@@ -2232,8 +2246,9 @@ function hasUnquotedWhitespace(source: string): boolean {
 // `postgresql:` name different systems from `cloudsql_mysql:` and
 // `cloudsql_postgresql:`. The segment counts are those of the Knowledge
 // Catalog FQN reference.
-export function databaseOf(source: string): string|undefined {
-  if (hasUnquotedWhitespace(source)) return undefined;
+export function databaseOf(written: string): string|undefined {
+  if (hasUnquotedWhitespace(written)) return undefined;
+  const source = asResourceUri(written);
   if (BIGQUERY_TABLE_URI.test(source) || BIGLAKE_TABLE_URI.test(source)) {
     return 'bigquery';
   }
@@ -2293,7 +2308,7 @@ export function isAcceptedSource(source: string|undefined): boolean {
 // Catalog reader (`dataSourceFromResource`) so `readRelationships` matches
 // `Entity.dataSource` against the `schema-join` aspect's table names.
 export function sourceToDataSource(source: string): string {
-  const value = source.trim();
+  const value = asResourceUri(source.trim());
   const bqUri = value.match(BIGQUERY_TABLE_URI);
   if (bqUri) return `${bqUri[1]}.${bqUri[2]}.${bqUri[3]}`;
   const biglakeUri = value.match(BIGLAKE_TABLE_URI);
@@ -2336,12 +2351,13 @@ export function parseSource(
 
   // Legacy instance-based AlloyDB URI: accepted under opt-in, otherwise
   // reported with a specific migration message.
-  const legacyAlloy = trimmed.match(LEGACY_ALLOYDB_INSTANCE_URI);
+  const legacyAlloy =
+      asResourceUri(trimmed).match(LEGACY_ALLOYDB_INSTANCE_URI);
   if (legacyAlloy) {
     if (opts.allowLegacyBareSource) {
       return {
         authoredSource: trimmed,
-        dataSource: trimmed,
+        dataSource: asResourceUri(trimmed),
       };
     }
     throw new SemanticModelError(
@@ -2362,10 +2378,12 @@ export function parseSource(
             trimmed.length} characters).`);
   }
 
-  // Bare table name (no `//` prefix and no `:` scheme/prefix).
+  // Bare table name (not a resource URI or resource name, and no `:`
+  // scheme/prefix).
   const rawSegs = catalogNameSegments(trimmed);
-  const isBareTableName = trimmed.length > 0 && !trimmed.startsWith('//') &&
-      !trimmed.includes(':') && rawSegs.length > 0;
+  const isBareTableName = trimmed.length > 0 &&
+      !asResourceUri(trimmed).startsWith('//') && !trimmed.includes(':') &&
+      rawSegs.length > 0;
   if (isBareTableName) {
     const segs = rawSegs.map(unquote);
     if (opts.allowLegacyBareSource) {

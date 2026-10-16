@@ -34,6 +34,7 @@
 // validator and named in errors) rather than silently skipped.
 
 import {CustomExtension, DeploymentSpec, SemanticModel} from './ir';
+import {asResourceUri} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
@@ -144,19 +145,21 @@ export type ResolvedDeployment = ParsedDeploymentTarget&{
 };
 
 
-// Parses a deployment target written as a resource URI. Returns undefined for
-// any other form. The legacy instance-based AlloyDB URI parses only when
-// `legacyAlloyDb` is set.
+// Parses a deployment target written as a resource URI or as a GCP resource
+// name, which is the URI without the leading `//`. Returns undefined for any
+// other form. `uri` in the result is the target as written. The legacy
+// instance-based AlloyDB URI parses only when `legacyAlloyDb` is set.
 function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
     ParsedDeploymentTarget|undefined {
-  const bq = uri.match(BQ_GRAPH_TARGET);
+  const resource = asResourceUri(uri);
+  const bq = resource.match(BQ_GRAPH_TARGET);
   if (bq) {
     return {
       engine: 'bigquery',
       coordinates: {project: bq[1], dataset: bq[2], graphName: bq[3], uri},
     };
   }
-  const sp = uri.match(SPANNER_GRAPH_TARGET);
+  const sp = resource.match(SPANNER_GRAPH_TARGET);
   if (sp) {
     return {
       engine: 'spanner',
@@ -169,7 +172,7 @@ function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
       },
     };
   }
-  const ad = uri.match(ALLOYDB_TARGET);
+  const ad = resource.match(ALLOYDB_TARGET);
   if (ad) {
     return {
       engine: 'alloydb',
@@ -182,7 +185,8 @@ function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
       },
     };
   }
-  const legacy = opts.legacyAlloyDb ? uri.match(LEGACY_ALLOYDB_TARGET) : null;
+  const legacy =
+      opts.legacyAlloyDb ? resource.match(LEGACY_ALLOYDB_TARGET) : null;
   if (legacy) {
     return {
       engine: 'alloydb',
@@ -207,13 +211,14 @@ function clusterUri(legacy: RegExpMatchArray): string {
 }
 
 /**
- * The destination a target names. That is the target as written, except for
- * the legacy instance-based AlloyDB URI, which names its database by the
- * cluster-based URI.
+ * The destination a target names: its resource URI, so a resource name and
+ * its URI give the same key. The legacy instance-based AlloyDB URI names its
+ * database by the cluster-based URI.
  */
 export function destinationKey(target: string): string {
-  const legacy = target.match(LEGACY_ALLOYDB_TARGET);
-  return legacy ? clusterUri(legacy) : target;
+  const resource = asResourceUri(target);
+  const legacy = resource.match(LEGACY_ALLOYDB_TARGET);
+  return legacy ? clusterUri(legacy) : resource;
 }
 
 /** Why a deployment's target is not accepted in a `deployments:` list. */
@@ -235,7 +240,7 @@ export function googleBlockTargetError(
 
 // Why `target` is not accepted. `at` says where it is written.
 function targetError(at: string, target: string): string {
-  const legacy = target.match(LEGACY_ALLOYDB_TARGET);
+  const legacy = asResourceUri(target).match(LEGACY_ALLOYDB_TARGET);
   if (legacy) {
     return `${at}, the instance-based AlloyDB URI, which names no real ` +
         `resource. An AlloyDB database belongs to its cluster; write '${

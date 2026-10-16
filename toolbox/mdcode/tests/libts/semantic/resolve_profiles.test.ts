@@ -14,7 +14,7 @@ import {fromDocument, loadModels, loadSemanticModels, SemanticModelError} from '
 import * as inheritance from '../../../src/libts/semantic/resolve_inheritance';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
 import * as sqlUtils from '../../../src/libts/semantic/sql_expr_utils';
-import {applyProfile, applyProfileExclusions, applyProfileFile, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfile, applyProfileExclusions, applyProfileFile, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
 
@@ -2294,6 +2294,69 @@ semantic_model:
     }).join('\n');
     expect(excluding('a')).toContain("field 'orders.x' depends on 'orders.a'");
     expect(excluding('b')).not.toContain("field 'orders.x'");
+  });
+
+  // A source written as a GCP resource name, the URI without the leading
+  // `//`, names the same database, so it implies the same dialect and counts
+  // as the same database for the one-database rule.
+  test('a source written as a resource name implies the same dialect and database', () => {
+    const name = (uri: string) => uri.slice(2);
+    expect(sourcesDialect({entities: [
+      {name: 'orders', dataSource: SP('Orders'), authoredSource: name(SP('Orders')),
+       keys: [], fields: []},
+    ]} as any)).toBe('SPANNER');
+    expect(validateProfileCompleteness(bqOnly(), atSource(name(SP('Orders')))).join('\n'))
+        .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
+    expect(validateProfileCompleteness(bqOnly(), atSource(name(BQ('orders_prod')))))
+        .toEqual([]);
+
+    const model: SemanticModel = {
+      name: 'shop',
+      entities: [
+        {name: 'orders', dataSource: SP('Orders'), keys: ['id'],
+         fields: [{name: 'id', expression: 'id'}]},
+        {name: 'items', dataSource: SP('Items'), keys: ['id'],
+         fields: [{name: 'id', expression: 'id'}]},
+      ],
+      relationships: [], metrics: [],
+    } as any;
+    const spec = (orders: string, items: string): ProfileSpec => ({
+      name: 'p',
+      entities: [{name: 'orders', source: orders}, {name: 'items', source: items}],
+      relationships: [],
+    });
+    expect(validateProfileCompleteness(model, spec(name(SP('Orders')), SP('Items'))).join('\n'))
+        .not.toContain('more than one database');
+    expect(validateProfileCompleteness(
+               model, spec(name(SP('Orders')), name(BQ('items')))).join('\n'))
+        .toContain('more than one database');
+  });
+
+  // A profile's rebinding is read as the model file's source is: a GCP
+  // resource name keeps the form written in `authoredSource`, which push
+  // stores and pull returns, and gets the URI's `dataSource`.
+  test('a profile rebinds a source written as a resource name', () => {
+    const doc = {name: 'shop.yaml', text: `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+`};
+    for (const uri of [SP('Orders'), BQ('orders')]) {
+      const name = uri.slice(2);
+      const rebound = (source: string) => {
+        const res = profileForDocument(
+            doc, [{name: 'p', text: `name: p\nentities:\n  - name: orders\n    source: "${source}"\n`}],
+            'p');
+        if (res.kind !== 'file') throw new Error(JSON.stringify(res));
+        return res.model.entities![0];
+      };
+      expect(rebound(name).authoredSource).toBe(name);
+      expect(rebound(name).dataSource).toBe(rebound(uri).dataSource);
+    }
   });
 
   // Two databases of one system imply that system's dialect.

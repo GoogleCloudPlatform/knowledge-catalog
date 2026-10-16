@@ -737,6 +737,74 @@ describe('data source resource-path parsing', () => {
     expect(sf.dataSource).toBe(snowflake);
     expect(sf.authoredSource).toBe(snowflake);
   });
+
+  // A GCP resource name is the resource URI without the leading `//` (Mapping
+  // Addendum 5). Push stores it as written in `resources`, not as a catalog
+  // name, and pull returns it unchanged, with the same `dataSource` the URI
+  // gives. A target is likewise stored and returned as written.
+  test('a source and target written as resource names round-trip as written', () => {
+    const bqTable = (t: string) =>
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    const spTable =
+        'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Items';
+    const target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const [model] = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    deployments:
+      - { name: default, target: "${target}" }
+    entities:
+      - name: orders
+        source: "${bqTable('orders')}"
+        primary_key: [o_id]
+        fields:
+          - { name: o_id, expression: o_id }
+          - { name: o_custkey, expression: o_custkey }
+      - name: customer
+        source: "${bqTable('customer')}"
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+      - name: items
+        source: "${spTable}"
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_id]
+`).models;
+
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const entityData = (name: string) => entries
+        .find(e => e.entrySource?.displayName === name)!
+        .aspects!['dataplex-types.global.semantic-entity'].data!;
+    expect(entityData('orders').source).toEqual({resources: [bqTable('orders')]});
+    expect(entityData('items').source).toEqual({resources: [spTable]});
+
+    const {models: [read]} = modelsFromCatalogResources(entries, entryLinks);
+    const entity = (name: string) => read.entities.find(e => e.name === name)!;
+    for (const name of ['orders', 'customer', 'items']) {
+      expect(entity(name).authoredSource)
+          .toBe(model.entities.find(e => e.name === name)!.authoredSource);
+      expect(entity(name).dataSource)
+          .toBe(model.entities.find(e => e.name === name)!.dataSource);
+    }
+    expect(read.deployments).toEqual([{name: 'default', target}]);
+    // The relationship keeps its direction, which the reader works out by
+    // matching each join table against an entity's dataSource.
+    expect(read.relationships.map(r => [r.source.entity, r.destination.entity]))
+        .toEqual([['orders', 'customer']]);
+
+    // The pulled model serializes to a file that loads with the same forms.
+    const [again] = loadModels(serializeModel(read).yaml).models;
+    expect(again.entities.map(e => e.authoredSource))
+        .toEqual(model.entities.map(e => e.authoredSource));
+    expect(again.deployments).toEqual([{name: 'default', target}]);
+  });
 });
 
 

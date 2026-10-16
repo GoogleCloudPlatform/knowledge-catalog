@@ -14,7 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {expressionSources, sourcesDialect} from './resolve_profiles';
@@ -61,16 +61,17 @@ export function validatePushRequirements(
       continue;
     }
 
+    // A resource name and its URI name the same resource.
     const seenUris = new Set<string>();
     for (const uri of deployInfo.uris) {
-      if (seenUris.has(uri)) {
+      if (seenUris.has(asResourceUri(uri))) {
         errors.push(
             `model '${model.name}' (${document}) declares duplicate ` +
             `deployment target '${uri}'; each deployment must target a ` +
             `distinct resource.`);
         break;
       }
-      seenUris.add(uri);
+      seenUris.add(asResourceUri(uri));
     }
 
     // A graph push must declare exactly one deployment target -- a single

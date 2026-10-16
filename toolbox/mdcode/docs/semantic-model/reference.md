@@ -485,7 +485,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   be a valid BigQuery Graph or Spanner Graph URI.** A model with more than one is
   rejected, and so is a single target whose URI matches neither
   `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
-  `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
+  `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`,
+  each with or without the leading `//`
   (for example a `propertyGraph`/`propertyGraphs` typo, or a
   `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
   URI and the expected forms. A **logical model that declares no target** is

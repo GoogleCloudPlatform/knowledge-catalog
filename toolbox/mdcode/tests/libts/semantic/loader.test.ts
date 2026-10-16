@@ -2061,6 +2061,56 @@ describe('strict entity sources', () => {
     expect(models[0].entities).toHaveLength(2);
   });
 
+  // Mapping Addendum 5 writes a Google Cloud table as its GCP resource name:
+  // the resource URI without the leading `//`. Both name the same table, so
+  // they give the same database and `dataSource`. `authoredSource` keeps the
+  // form the author wrote, so pull can return it.
+  const RESOURCE_URIS: [string, string][] = [
+    ['BigQuery', '//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
+    ['BigLake', '//biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders'],
+    ['Spanner', '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
+    ['AlloyDB', '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders'],
+  ];
+  for (const [label, uri] of RESOURCE_URIS) {
+    test(`a ${label} source written as a resource name loads like its URI`, () => {
+      const name = uri.slice(2);
+      expect(databaseOf(name)).toBe(databaseOf(uri));
+      expect(databaseOf(name)).toBeDefined();
+      const loaded = (source: string) => load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
+      }).models[0].entities[0];
+      const fromName = loaded(name);
+      expect(fromName.authoredSource).toBe(name);
+      expect(fromName.dataSource).toBe(loaded(uri).dataSource);
+    });
+  }
+
+  test('a resource name and a URI of the same database load together in one model', () => {
+    const { models } = load(GOOGLE, {
+      name: 'm',
+      datasets: [
+        { name: 'orders', source: 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders', primary_key: ['id'], fields: [] },
+        { name: 'customers', source: '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Customers', primary_key: ['id'], fields: [] },
+      ],
+    });
+    expect(models[0].entities).toHaveLength(2);
+  });
+
+  test('a malformed resource name is rejected as a URI with the same mistake is', () => {
+    for (const bad of [
+      'bigquery.googleapis.com/projects/p/datasets/d',
+      'bigquery.googleapis.com/projects/p/datasets/d/tables/a.b',
+      'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g',
+    ]) {
+      expect(databaseOf(bad)).toBeUndefined();
+      expect(() => load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source: bad, primary_key: ['id'], fields: [] }],
+      })).toThrow(/is not a valid table reference/);
+    }
+  });
+
   test('a four-segment Spanner or AlloyDB catalog name is rejected', () => {
     expect(() => load(GOOGLE, {
       name: 'm',
@@ -2087,6 +2137,18 @@ describe('strict entity sources', () => {
     const { models } = load(GOOGLE, doc, { allowLegacyBareSource: true });
     expect(models[0].entities[0].authoredSource).toBe(legacyUri);
     expect(models[0].entities[0].dataSource).toBe(legacyUri);
+
+    // Written as a resource name, it gets the same message, and under the flag
+    // the same `dataSource`, which the runtime reads as a URI.
+    const legacyName = legacyUri.slice(2);
+    const nameDoc = {
+      name: 'm',
+      datasets: [{ name: 'orders', source: legacyName, primary_key: ['id'], fields: [] }],
+    };
+    expect(() => load(GOOGLE, nameDoc)).toThrow(/uses the legacy instance-based AlloyDB URI/);
+    const fromName = load(GOOGLE, nameDoc, { allowLegacyBareSource: true }).models[0].entities[0];
+    expect(fromName.authoredSource).toBe(legacyName);
+    expect(fromName.dataSource).toBe(legacyUri);
   });
 
   test('rejects broken backtick quoting, unquoted colons, unquoted whitespace, and dots in BigQuery dataset/table segments', () => {
