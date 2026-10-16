@@ -6,9 +6,10 @@
 // of the four engine differences -- names, measures, element metadata, SQL
 // text -- comes from the engine, and that an engine with Spanner's names, no
 // measures and no metadata gives spanner.ts's graph on the Spanner test
-// fixtures. It does not everywhere: a subtype that restates a field it inherits
-// from a concrete parent with a different column gets the parent's column
-// (BigQuery's supertype override), where spanner.ts writes the subtype's own.
+// fixtures. One difference is known: a subtype that restates a field it
+// inherits from a concrete parent with a different column gets the parent's
+// column, BigQuery's supertype override, where spanner.ts writes the
+// subtype's own.
 //
 
 import {describe, expect, test} from 'bun:test';
