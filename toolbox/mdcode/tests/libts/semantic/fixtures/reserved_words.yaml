@@ -2,6 +2,10 @@
 # RESERVED KEYWORD as the name, to pin that each is backtick-quoted so the DDL
 # is valid (a bare `AS Order` is a syntax error). Non-reserved names in the same
 # positions must stay bare -- see the goldens.
+#
+# Each expression carries an ANSI_SQL entry beside its BIGQUERY one, because the
+# Spanner goldens share this model and a Spanner graph reads only SPANNER or
+# ANSI_SQL text.
 version: "0.2.0.dev0"
 semantic_model:
   - name: reserved_words
@@ -13,21 +17,21 @@ semantic_model:
         fields:
           - name: id
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: order_id }]
+              dialects: [{ dialect: BIGQUERY, expression: order_id }, { dialect: ANSI_SQL, expression: order_id }]
           - name: groupId
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: group_fk }]
+              dialects: [{ dialect: BIGQUERY, expression: group_fk }, { dialect: ANSI_SQL, expression: group_fk }]
           # `order` is a reserved COLUMN -> quoted on the left of `AS`.
           - name: rank
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: order }]
+              dialects: [{ dialect: BIGQUERY, expression: order }, { dialect: ANSI_SQL, expression: order }]
       - name: Group
         source: proj.ds.groups
         primary_key: [id]
         fields:
           - name: id
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: group_id }]
+              dialects: [{ dialect: BIGQUERY, expression: group_id }, { dialect: ANSI_SQL, expression: group_id }]
     relationships:
       # `from` is a reserved edge label -> quoted alias + REFERENCES targets.
       - name: from
@@ -39,4 +43,4 @@ semantic_model:
       # `range` is a reserved measure name -> quoted `AS` on the MEASURE.
       - name: range
         expression:
-          dialects: [{ dialect: BIGQUERY, expression: COUNT(Order.id) }]
+          dialects: [{ dialect: BIGQUERY, expression: COUNT(Order.id) }, { dialect: ANSI_SQL, expression: COUNT(Order.id) }]
