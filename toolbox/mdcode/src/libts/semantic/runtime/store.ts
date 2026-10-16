@@ -19,7 +19,7 @@ import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
 import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
-import {databaseOf, OSSIE_VERSION} from '../loader';
+import {asResourceUri, databaseOf, OSSIE_VERSION} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
 
 
@@ -252,9 +252,10 @@ export function resolveStore(
       inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` : `'deployments'`;
 
   // Every push refuses a target listed twice, even beside one that gives a
-  // store. The loader refuses a repeat in `deployments`, so a repeat here is
-  // in a GOOGLE block.
-  const repeated = all.uris.find((uri, i) => all.uris.indexOf(uri) < i);
+  // store. A resource name and its URI name the same target. The loader
+  // refuses a repeat in `deployments`, so a repeat here is in a GOOGLE block.
+  const keys = all.uris.map(asResourceUri);
+  const repeated = all.uris.find((uri, i) => keys.indexOf(keys[i]) < i);
   if (repeated !== undefined) {
     return {
       error: `Model '${model.name}' declares duplicate deployment target '${

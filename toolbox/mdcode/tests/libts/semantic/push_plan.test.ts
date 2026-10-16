@@ -720,8 +720,8 @@ semantic_model:
       },
       {
         name: 'mysql_sales',
-        source: 'mysql:inst.shop.payments',
-        expectedDataSource: 'mysql:inst.shop.payments',
+        source: 'cloudsql_mysql:acme.us.inst.shop.payments',
+        expectedDataSource: 'cloudsql_mysql:acme.us.inst.shop.payments',
       },
     ];
 

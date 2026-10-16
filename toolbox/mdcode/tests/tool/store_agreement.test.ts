@@ -395,6 +395,34 @@ semantic_model:
          expect(r.skills.out)
              .toContain(`declares duplicate deployment target '${graph}'`);
        });
+
+  // A resource name and its URI name the same target, so listing the graph
+  // once each way is a repeat too.
+  test('once as its URI and once as its resource name, every command refuses',
+       async () => {
+         const graph = `${BQ('graphs')}/propertyGraphs/commerce`;
+         const name = graph.slice(2);
+         writeScope({'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/commerce", "${graph}", "${name}"]}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`});
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(r.printStore.out)
+             .toContain(`declares duplicate deployment target '${name}'`);
+         expect(r.skills.out)
+             .toContain(`declares duplicate deployment target '${name}'`);
+       });
 });
 
 

@@ -1731,11 +1731,7 @@ const DIALECT_OF_SYSTEM: Record<string, string> = {
   spanner: 'SPANNER',
   alloydb: 'ALLOYDB',
   cloudsql_mysql: 'MYSQL',
-  mysql: 'MYSQL',
   cloudsql_postgresql: 'POSTGRES',
-  postgresql: 'POSTGRES',
-  snowflake: 'SNOWFLAKE',
-  databricks: 'DATABRICKS',
 };
 // Whether a bound field has a text an engine of `dialect` can run: the one
 // textsFor selects for it.

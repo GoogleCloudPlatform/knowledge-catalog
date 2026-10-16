@@ -1302,14 +1302,16 @@ describe('validateProfileCompleteness', () => {
   });
 
   test('a metric is read in its own dialect', () => {
-    // The profile's sources are PostgreSQL tables. In PostgreSQL, double quotes
-    // name a column, so this text reads the excluded field.
-    const PG = (t: string) => `postgresql:host.db.public.${t}`;
+    // The profile's sources are AlloyDB tables, read as PostgreSQL. In
+    // PostgreSQL, double quotes name a column, so this text reads the excluded
+    // field.
+    const PG = (t: string) =>
+        `alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
     const m = irModel();
     const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
     metric.expression = undefined;
     metric.dialects =
-        [{dialect: 'POSTGRES', expression: 'AVG("Customer"."lifetimeValue")'}];
+        [{dialect: 'ALLOYDB', expression: 'AVG("Customer"."lifetimeValue")'}];
     const errors = validateProfileCompleteness(m, profile({
       entities: [{name: 'Customer', source: PG('customer'), fieldsExclude: ['lifetimeValue']},
                  {name: 'Order', source: PG('orders')}],
@@ -1379,20 +1381,21 @@ describe('validateProfileCompleteness', () => {
   });
 
   test('an imported text is read in its imported dialect', () => {
-    // The profile's sources are Snowflake tables, so it evaluates the
-    // Snowflake text.
-    const SF = (t: string) => `snowflake:acct.db.public.${t}`;
+    // The profile's sources are AlloyDB tables, so it evaluates the AlloyDB
+    // text.
+    const PG = (t: string) =>
+        `alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
     const m = irModel();
     const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
-    // The metric as a load gives it: a Snowflake text, kept in its list too.
+    // The metric as a load gives it: an AlloyDB text, kept in its list too.
     metric.expression = undefined;
     metric.importedExpression = 'AVG("Customer"."lifetimeValue")';
-    metric.importedDialect = 'SNOWFLAKE';
+    metric.importedDialect = 'ALLOYDB';
     metric.dialects =
-        [{dialect: 'SNOWFLAKE', expression: 'AVG("Customer"."lifetimeValue")'}];
+        [{dialect: 'ALLOYDB', expression: 'AVG("Customer"."lifetimeValue")'}];
     const errors = validateProfileCompleteness(m, profile({
-      entities: [{name: 'Customer', source: SF('customer'), fieldsExclude: ['lifetimeValue']},
-                 {name: 'Order', source: SF('orders')}],
+      entities: [{name: 'Customer', source: PG('customer'), fieldsExclude: ['lifetimeValue']},
+                 {name: 'Order', source: PG('orders')}],
     }));
     expect(errors.join('\n'))
         .toContain("metric 'avg_lifetime_value' reaches 'Customer.lifetimeValue'");
@@ -1924,7 +1927,7 @@ describe('completeness sees the model as the profile does', () => {
     ])).join('\n');
     for (const bad of [
            'not_a_table', 'acme.raw.customer', 'custom:foo.bar', 'trino:c.s.t',
-           'bigtable:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
+           'oracle:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
            'bigquery:graph:p.d.g', 'bigquery:propertygraph:p.d.g',
            'spanner:graph:p.c.i.db.g',
@@ -1935,32 +1938,49 @@ describe('completeness sees the model as the profile does', () => {
     expect(errorsFor('bigquery:p.raw.customer')).toEqual('');
   });
 
-  // The Knowledge Catalog FQN reference: a self-managed server is named by its
-  // DNS name, a Cloud SQL instance by project, location and instance.
-  test('MySQL and PostgreSQL sources classify by server, instance and database', () => {
+  // A Cloud SQL catalog name gives its instance as project, location and
+  // instance.
+  test('Cloud SQL sources classify by instance and database', () => {
     const errorsFor = (a: string, b: string) => validateProfileCompleteness(model(true), spec([
       {name: 'customer', source: a}, {name: 'vip', source: b},
     ])).join('\n');
-    // One MySQL server or instance is one database, whatever its schemas.
-    expect(errorsFor('mysql:`db.example.com`.sales.c', 'mysql:`db.example.com`.crm.v'))
-        .toEqual('');
+    // One Cloud SQL for MySQL instance is one database, whatever its schemas.
     expect(errorsFor('cloudsql_mysql:acme.us.inst.sales.c', 'cloudsql_mysql:acme.us.inst.crm.v'))
         .toEqual('');
-    // One PostgreSQL database is one; two on one server are two.
-    expect(errorsFor('postgresql:`pg.example.com`.db1.public.c',
-                     'postgresql:`pg.example.com`.db1.sales.v'))
+    // One Cloud SQL for PostgreSQL database is one; two on one instance are two.
+    expect(errorsFor('cloudsql_postgresql:acme.us.inst.db1.public.c',
+                     'cloudsql_postgresql:acme.us.inst.db1.sales.v'))
         .toEqual('');
     expect(errorsFor('cloudsql_postgresql:acme.us.inst.db1.public.c',
                      'cloudsql_postgresql:acme.us.inst.db2.public.v'))
         .toContain('more than one database');
-    // A self-managed server and a Cloud SQL instance are different systems.
-    expect(errorsFor('mysql:acme.sales.c', 'cloudsql_mysql:acme.us.inst.sales.v'))
-        .toContain('more than one database');
-    // Each prefix has its own number of segments.
-    expect(errorsFor('mysql:acme.us.inst.sales.c', 'mysql:acme.us.inst.sales.v'))
-        .toContain("source 'mysql:acme.us.inst.sales.c' is not a valid table reference");
-    expect(errorsFor('postgresql:acme.us.inst.db1.public.c', 'postgresql:acme.us.inst.db1.public.v'))
-        .toContain("source 'postgresql:acme.us.inst.db1.public.c' is not a valid table reference");
+    // A Cloud SQL for MySQL name has exactly five segments.
+    expect(errorsFor('cloudsql_mysql:acme.us.sales.c', 'cloudsql_mysql:acme.us.sales.v'))
+        .toContain("source 'cloudsql_mysql:acme.us.sales.c' is not a valid table reference");
+  });
+
+  // A profile's rebinding is read as the model file's source is, so a
+  // third-party table is rejected there too, and counts as no database.
+  test('a profile that binds a third-party source is rejected', () => {
+    const errors = validateProfileCompleteness(model(true), spec([
+      {name: 'customer', source: 'snowflake:acct.db.public.c'},
+      {name: 'vip', source: 'cloudsql_mysql:acme.us.inst.sales.v'},
+    ])).join('\n');
+    expect(errors).toContain(
+        "source 'snowflake:acct.db.public.c' is a third-party table; the " +
+        "preview supports Google Cloud tables only");
+    expect(errors).not.toContain('more than one database');
+  });
+
+  test('a profile that binds a system entry name is told the resource name', () => {
+    const name = 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/c';
+    const errors = validateProfileCompleteness(model(true), spec([
+      {name: 'customer', source: `projects/acme/locations/us/entryGroups/@bigquery/entries/${name}`},
+      {name: 'vip', source: BQ('vip')},
+    ])).join('\n');
+    expect(errors).toContain(
+        `in the system entry group '@bigquery'; write the table's resource ` +
+        `name instead: '${name}'.`);
   });
 
   test('a BigLake table shares BigQuery\'s database', () => {

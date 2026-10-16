@@ -2239,13 +2239,11 @@ function hasUnquotedWhitespace(source: string): boolean {
 // its system, which DIALECT_OF_SYSTEM maps to the dialect the source infers.
 //
 // A database is what a single query can reach: all of BigQuery, BigLake
-// included because BigQuery reads it; one Spanner, AlloyDB, Cloud SQL for
-// PostgreSQL or self-managed PostgreSQL database; one Cloud SQL for MySQL
-// instance or self-managed MySQL server; one Snowflake account; one Databricks
-// metastore. A self-managed server is named by its DNS name, so `mysql:` and
-// `postgresql:` name different systems from `cloudsql_mysql:` and
-// `cloudsql_postgresql:`. The segment counts are those of the Knowledge
-// Catalog FQN reference.
+// included because BigQuery reads it; one Spanner, AlloyDB or Cloud SQL for
+// PostgreSQL database; one Cloud SQL for MySQL instance. The segment counts
+// are those of the Knowledge Catalog FQN reference. A third-party table is in
+// no accepted form: the preview supports Google Cloud tables only (see
+// thirdPartySourceError).
 export function databaseOf(written: string): string|undefined {
   if (hasUnquotedWhitespace(written)) return undefined;
   const source = asResourceUri(written);
@@ -2258,7 +2256,7 @@ export function databaseOf(written: string): string|undefined {
   m = source.match(ALLOYDB_TABLE_URI);
   if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
   if (source.length > MAX_CATALOG_NAME_LENGTH) return undefined;
-  m = source.match(/^(databricks:table|[a-z_]+):(.+)$/);
+  m = source.match(/^([a-z_]+):(.+)$/);
   if (!m) return undefined;
   const seg = catalogNameSegments(m[2]);
   if (seg.length === 0 || seg.some(s => s.length === 0)) return undefined;
@@ -2277,16 +2275,8 @@ export function databaseOf(written: string): string|undefined {
           undefined;
     case 'cloudsql_mysql':
       return seg.length === 5 ? `cloudsql_mysql/${first(3)}` : undefined;
-    case 'mysql':
-      return seg.length === 3 ? `mysql/${first(1)}` : undefined;
     case 'cloudsql_postgresql':
       return seg.length === 6 ? `cloudsql_postgresql/${first(4)}` : undefined;
-    case 'postgresql':
-      return seg.length === 4 ? `postgresql/${first(2)}` : undefined;
-    case 'snowflake':
-      return seg.length === 4 ? `snowflake/${seg[0]}` : undefined;
-    case 'databricks:table':
-      return seg.length === 4 ? `databricks/${seg[0]}` : undefined;
     default:
       return undefined;
   }
@@ -2325,6 +2315,74 @@ export function sourceToDataSource(source: string): string {
     }
   }
   return value;
+}
+
+// The catalog name prefixes of third-party tables, and the shape of a
+// Knowledge Catalog entry name.
+const THIRD_PARTY_PREFIXES =
+    ['snowflake:', 'databricks:', 'mysql:', 'postgresql:'];
+const ENTRY_NAME =
+    /^projects\/[^/]+\/locations\/[^/]+\/entryGroups\/([^/]+)\/entries\/(.+)$/;
+
+// Why `source` is not accepted when it is a Knowledge Catalog entry name in a
+// system entry group, one whose id starts with `@`, such as `@bigquery`.
+// Undefined for any other source. The entry id of a Google Cloud table in a
+// system entry group is its GCP resource name, so the message names it as the
+// source to write. Any other id, such as a dataset's, gets an example.
+function systemEntrySourceError(source: string, ctx: string): string|undefined {
+  const entry = source.match(ENTRY_NAME);
+  if (!entry?.[1].startsWith('@')) return undefined;
+  const id = entry[2].replace(/^\/\//, '');
+  const write = RESOURCE_NAME.test(id) && /\/tables\/[^/]+$/.test(id) ?
+      `: '${id}'` :
+      `, such as ` +
+          `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>'`;
+  return `Semantic model load error: ${ctx}: source '${source}' is a ` +
+      `Knowledge Catalog entry name in the system entry group '${entry[1]}'; ` +
+      `write the table's resource name instead${write}.`;
+}
+
+// Google Cloud services whose tables the preview does not support yet, each
+// with its resource URI host and its catalog name prefix.
+const UNSUPPORTED_SERVICES:
+    Array<{name: string; host: string; prefix: string}> = [
+  {name: 'Bigtable', host: 'bigtable.googleapis.com', prefix: 'bigtable:'},
+  {
+    name: 'Dataproc Metastore',
+    host: 'metastore.googleapis.com',
+    prefix: 'dataproc_metastore:',
+  },
+];
+
+// Why `source` is not accepted when it names a table of a Google Cloud service
+// the preview does not support yet, as a resource URI, a resource name, a
+// catalog name or an entry name whose id is one of those. Undefined for any
+// other source.
+function unsupportedServiceSourceError(
+    source: string, ctx: string): string|undefined {
+  const uri = asResourceUri(source.match(ENTRY_NAME)?.[2] ?? source);
+  const service = UNSUPPORTED_SERVICES.find(
+      s => uri.startsWith(`//${s.host}/`) || source.startsWith(s.prefix));
+  return service ?
+      `Semantic model load error: ${ctx}: source '${source}' is a ` +
+          `${service.name} resource; the preview does not support ` +
+          `${service.name} sources yet.` :
+      undefined;
+}
+
+// Why `source` is not accepted when it names a third-party table, in any form:
+// a catalog name under a third-party prefix, or a Knowledge Catalog entry name
+// outside a system entry group. Undefined for any other source. The preview
+// supports Google Cloud tables only.
+function thirdPartySourceError(source: string, ctx: string): string|undefined {
+  const entry = source.match(ENTRY_NAME);
+  const thirdParty = THIRD_PARTY_PREFIXES.some(p => source.startsWith(p)) ||
+      (entry !== null && !entry[1].startsWith('@'));
+  return thirdParty ?
+      `Semantic model load error: ${ctx}: source '${source}' is a ` +
+          `third-party table; the preview supports Google Cloud tables ` +
+          `only: BigQuery, BigLake, Spanner, AlloyDB and Cloud SQL.` :
+      undefined;
 }
 
 // Reads an entity's `source` into the dotted name the generators use and the
@@ -2373,6 +2431,11 @@ export function parseSource(
             legacyAlloy[4]}.<schema>.${legacyAlloy[5]}'.`);
   }
 
+  const unsupported = unsupportedServiceSourceError(trimmed, ctx) ??
+      systemEntrySourceError(trimmed, ctx) ??
+      thirdPartySourceError(trimmed, ctx);
+  if (unsupported) throw new SemanticModelError(unsupported);
+
   if (trimmed.length > MAX_CATALOG_NAME_LENGTH) {
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source exceeds the ${
@@ -2400,22 +2463,28 @@ export function parseSource(
         dataSource: parts.join('.'),
       };
     }
-    if (segs.length === 4) {
+    // A name with an empty segment, or with more than four, gets the general
+    // error below.
+    if (segs.length <= 4 && segs.every(s => s.length > 0)) {
+      if (segs.length === 4) {
+        throw new SemanticModelError(
+            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+            `is not a valid source. Write its BigLake resource name ` +
+            `instead:\n` +
+            `  source: biglake.googleapis.com/projects/${segs[0]}/catalogs/${
+                segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}`);
+      }
+      const p = segs.length >= 3 ? segs[0] : '<project>';
+      const d = segs.length >= 3 ? segs[1] :
+          segs.length === 2 ? segs[0] : '<dataset>';
+      const t = segs[segs.length - 1];
       throw new SemanticModelError(
-          `Semantic model load error: ${ctx}: bare table name '${trimmed}' is ` +
-          `not a valid source. Write a BigLake resource URI instead:\n` +
-          `  source: //biglake.googleapis.com/projects/${segs[0]}/catalogs/${
-              segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}`);
+          `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+          `is not a valid source. Write the table's GCP resource name ` +
+          `instead, for example:\n` +
+          `  source: bigquery.googleapis.com/projects/${p}/datasets/${d}/` +
+          `tables/${t}`);
     }
-    const p = segs.length >= 3 ? segs[0] : '<project>';
-    const d = segs.length >= 3 ? segs[1] : segs.length === 2 ? segs[0] : '<dataset>';
-    const t = segs[segs.length - 1] || '<table>';
-    throw new SemanticModelError(
-        `Semantic model load error: ${ctx}: bare table name '${trimmed}' is ` +
-        `not a valid source. Write a GCP resource URI or a Knowledge Catalog ` +
-        `name instead, for example:\n` +
-        `  source: //bigquery.googleapis.com/projects/${p}/datasets/${d}/tables/${t}\n` +
-        `  source: bigquery:${p}.${d}.${t}`);
   }
 
   throw new SemanticModelError(
@@ -2428,8 +2497,9 @@ export function parseSource(
       `or a Knowledge Catalog name ('bigquery:<p>.<d>.<t>', ` +
       `'spanner:<p>.<config>.<i>.<db>.<t>', ` +
       `'alloydb:<p>.<location>.<cluster>.<db>.<schema>.<table>', ` +
-      `'cloudsql_mysql:...', 'mysql:...', 'cloudsql_postgresql:...', ` +
-      `'postgresql:...', 'snowflake:...', or 'databricks:table:...').`);
+      `'cloudsql_mysql:...' or 'cloudsql_postgresql:...'). The preview ` +
+      `supports Google Cloud tables only: BigQuery, BigLake, Spanner, ` +
+      `AlloyDB and Cloud SQL.`);
 }
 
 function unquote(part: string): string {

@@ -732,10 +732,10 @@ describe('data source resource-path parsing', () => {
     const bq = read('bigquery:proj.ds.tbl', 'proj.ds.tbl');
     expect(bq.dataSource).toBe('proj.ds.tbl');
     expect(bq.authoredSource).toBe('bigquery:proj.ds.tbl');
-    const snowflake = 'snowflake:acct.SALES.PUBLIC.ORDERS';
-    const sf = read(snowflake, snowflake);
-    expect(sf.dataSource).toBe(snowflake);
-    expect(sf.authoredSource).toBe(snowflake);
+    const cloudSql = 'cloudsql_mysql:acme.us.inst.shop.payments';
+    const cs = read(cloudSql, cloudSql);
+    expect(cs.dataSource).toBe(cloudSql);
+    expect(cs.authoredSource).toBe(cloudSql);
   });
 
   // A GCP resource name is the resource URI without the leading `//`. Push

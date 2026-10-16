@@ -74,19 +74,25 @@ Each entity names where its data lives with `source`. A Google Cloud table is
 written as its [AIP-122](https://google.aip.dev/122) full resource name, such as
 `//bigquery.googleapis.com/…`, `//biglake.googleapis.com/…`,
 `//spanner.googleapis.com/…` or `//alloydb.googleapis.com/…`, with or without
-the leading `//`, and is read with ambient IAM. Any other table is written as
-its Knowledge Catalog name, under
-one of the prefixes `bigquery:`, `spanner:`, `alloydb:`, `cloudsql_mysql:`,
-`mysql:`, `cloudsql_postgresql:`, `postgresql:`, `snowflake:` or
-`databricks:table:`. A bare table name, a query, and any other prefix are
-rejected. The source also fixes the profile's SQL dialect, so every field the
-profile binds needs an expression in that dialect or in `ANSI_SQL`.
+the leading `//`, and is read with ambient IAM. A BigQuery, Spanner or AlloyDB
+table may also be written as its Knowledge Catalog name, under `bigquery:`,
+`spanner:` or `alloydb:`. A Cloud SQL table is written as its Knowledge Catalog
+name only, under `cloudsql_mysql:` or `cloudsql_postgresql:`. The preview
+supports Google Cloud tables only, so a third-party table is rejected in every
+form: a Knowledge Catalog entry name, or a name under a prefix such as
+`snowflake:`, `databricks:table:`, `mysql:` or `postgresql:`. A Bigtable or
+Dataproc Metastore table is rejected too, since the preview does not support
+them yet. An entry name in a system entry group, such as `@bigquery`, is
+rejected with an error that says what to write instead. A bare table name, a
+query, and any other prefix are rejected. The source also fixes the profile's
+SQL dialect, so every field the profile binds needs an expression in that
+dialect or in `ANSI_SQL`.
 
 A profile's sources all sit in one database, meaning the system one query can
-reach: all of BigQuery, or one Spanner, AlloyDB or PostgreSQL database, or one
-MySQL instance or server, Snowflake account or Databricks metastore. A profile
-moves an entity between stores by swapping its source and, when the two stores
-shape the data differently, the column each field reads.
+reach: all of BigQuery, or one Spanner, AlloyDB or Cloud SQL for PostgreSQL
+database, or one Cloud SQL for MySQL instance. A profile moves an entity
+between stores by swapping its source and, when the two stores shape the data
+differently, the column each field reads.
 
 ## What a profile may change — the contract
 
