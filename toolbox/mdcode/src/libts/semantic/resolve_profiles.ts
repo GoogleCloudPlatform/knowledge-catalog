@@ -1210,6 +1210,22 @@ export function unknownProfileMessage(
                          `no profiles are defined for this model.`);
 }
 
+/**
+ * The error for a model document `docName` whose `profiles` include one named
+ * `default` in any letter case. Push refuses every graph push of such a
+ * model, and the runtime refuses the model too. Undefined when no profile has
+ * that name.
+ */
+export function reservedProfileNameError(
+    docName: string, profiles: {name: string}[]): string|undefined {
+  if (!profiles.some(p => p.name.toLowerCase() === DEFAULT_PROFILE)) {
+    return undefined;
+  }
+  return `[${docName}] a binding profile may not be named '${
+             DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
+      `bindings. Rename the profile file.`;
+}
+
 /** The error for a concrete entity no profile file or model file binds. */
 export function profileSourceMessage(entity: string): string {
   return `entity '${entity}' has no source in this profile or in the model ` +

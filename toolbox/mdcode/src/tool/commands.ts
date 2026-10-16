@@ -22,7 +22,7 @@ import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semant
 import {deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, DocumentProfile, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, DocumentProfile, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -398,19 +398,6 @@ function profileErrorMessage(
     profileName: string): string {
   return res.stage === 'load' ? modelFileAloneMessage(res.error, profileName) :
                                 `[${docName}] ${res.error}`;
-}
-
-// Why push refuses every graph push when the model document `docName` declares
-// a profile named 'default' in any letter case. Undefined when it declares
-// none.
-function reservedProfileNameError(
-    docName: string, profiles: {name: string}[]): string|undefined {
-  if (!profiles.some(p => p.name.toLowerCase() === DEFAULT_PROFILE)) {
-    return undefined;
-  }
-  return `[${docName}] a binding profile may not be named '${
-             DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
-      `bindings. Rename the profile file.`;
 }
 
 // `list` with each document labeled with `profileName`, so an error names the

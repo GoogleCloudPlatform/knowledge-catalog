@@ -23,7 +23,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
 import {resolveInheritance} from '../resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, unknownProfileMessage} from '../resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
 import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store, withPrimaryInstance} from './store';
@@ -144,6 +144,23 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const docs = layout.modelDocuments();
   if (!docs.length) return {error: 'no semantic model documents found.'};
 
+  // Push reads every model's profile files first, whichever profile it
+  // deploys. It refuses the scope when profileDocuments rejects a file, such
+  // as one whose `name:` does not match its file name. It also refuses it
+  // when a model declares a profile named `default` in any letter case.
+  const profilesByDoc = new Map<string, Array<{name: string; text: string}>>();
+  for (const doc of docs) {
+    let available: Array<{name: string; text: string}>;
+    try {
+      available = layout.profileDocuments(doc.name);
+    } catch (err: any) {
+      return {error: err?.message ?? String(err)};
+    }
+    const reserved = reservedProfileNameError(doc.name, available);
+    if (reserved) return {error: reserved};
+    profilesByDoc.set(doc.name, available);
+  }
+
   try {
     await loadSqlEngine();
   } catch (err: any) {
@@ -160,22 +177,14 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // The documents a legacy `semantic_model:` wrapper was merged into, each
   // with whether the merged model names its target with `deployment_target`.
   const wrapped = new Map<string, boolean>();
-  // The profiles each document declares, as read so far.
-  const declaredByDoc = new Map<string, string[]>();
   const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
       merged.push({name: doc.name, text: doc.text});
       continue;
     }
-    let available: Array<{name: string; text: string}>;
-    try {
-      available = layout.profileDocuments(doc.name);
-    } catch (err: any) {
-      return {error: err?.message ?? String(err)};
-    }
-    declaredByDoc.set(doc.name, available.map(p => p.name));
-    const res = profileForDocument(doc, available, profile);
+    const res =
+        profileForDocument(doc, profilesByDoc.get(doc.name) ?? [], profile);
     if (res.kind === 'missing') {
       return {error: unknownProfileMessage(profile, doc.name, res.declared)};
     }
@@ -220,20 +229,8 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   // A deployment that names a profile the model does not declare would be
   // used by no profile. Push refuses every deployment that names a profile.
-  // The profile files are read only for a model with such a deployment.
   for (const {document, model} of models) {
-    const namesProfile = (model.deployments ?? [])
-                             .some(d => (d.profile ?? DEFAULT_PROFILE) !==
-                                       DEFAULT_PROFILE);
-    if (!namesProfile) continue;
-    let declared = declaredByDoc.get(document);
-    if (!declared) {
-      try {
-        declared = layout.profileDocuments(document).map(p => p.name);
-      } catch (err: any) {
-        return {error: err?.message ?? String(err)};
-      }
-    }
+    const declared = (profilesByDoc.get(document) ?? []).map(p => p.name);
     const error = undeclaredProfileError(document, model, declared);
     if (error) return {error};
   }
