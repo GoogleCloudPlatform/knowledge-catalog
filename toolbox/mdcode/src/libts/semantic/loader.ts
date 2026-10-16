@@ -16,7 +16,7 @@ import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, C
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
-import {SqlColumn} from './sql_parser';
+import {holdsNoSql, SqlColumn} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -168,20 +168,33 @@ const expressionSchema = z.union([
   expressionObjectSchema,
 ]);
 
-// Why a field's expression cannot load, or undefined. It cannot load when its
-// string form, or any of its dialect entries, is empty or only whitespace,
-// since the field would then read no SQL. A field with no `expression` is
-// unbound and passes.
-function blankFieldExpressionProblem(raw: ExpressionDoc|undefined):
-    string|undefined {
+// Why `text`, an expression written for `dialect`, holds no SQL: it "is
+// blank" or "is only a comment". Undefined when it holds SQL. The SQL parser
+// decides what is a comment. It reads an ANSI_SQL text as generic SQL and as
+// BigQuery SQL, since the graph generators read that text as BigQuery SQL,
+// where `#` also starts a comment.
+export function noSqlReason(text: string, dialect: string): string|undefined {
+  if (text.trim() === '') return 'is blank';
+  const readers = dialect === 'ANSI_SQL' ? ['ANSI_SQL', 'BIGQUERY'] : [dialect];
+  return readers.some(d => holdsNoSql(text, d)) ? 'is only a comment' :
+                                                  undefined;
+}
+
+// Why an expression cannot load, or undefined. It cannot load when its string
+// form, or any of its dialect entries, holds no SQL. The problem names each
+// such entry. No expression at all passes.
+function noSqlProblem(raw: ExpressionDoc|undefined): string|undefined {
   if (typeof raw === 'string') {
-    return raw.trim() === '' ? `'expression' is blank; write the field's SQL` :
-                               undefined;
+    const reason = noSqlReason(raw, 'ANSI_SQL');
+    return reason && `'expression' ${reason}`;
   }
-  const blank = raw?.dialects.find(d => d.expression.trim() === '');
-  if (!blank) return undefined;
-  return `the ${blank.dialect} entry of 'expression' is blank; write the ` +
-      `field's ${blank.dialect} SQL`;
+  const problems = (raw?.dialects ?? []).flatMap(d => {
+    const reason = noSqlReason(d.expression, d.dialect);
+    return reason ? [`the ${d.dialect} entry of 'expression' ${reason}`] : [];
+  });
+  if (!problems.length) return undefined;
+  const last = problems.pop()!;
+  return problems.length ? `${problems.join(', ')} and ${last}` : last;
 }
 
 // The format's AI-first annotation. It appears at every level (model, dataset,
@@ -651,15 +664,20 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
             // on it, before generation, so a deployed graph presents only what
             // its binding answers. This is how one logical model serves several
             // stores from different profiles, so it is not a load error under
-            // either `bindingOptional`. A blank `expression` is an error: it
-            // binds the field to no SQL.
+            // either `bindingOptional`. An `expression` with no SQL is an
+            // error: it binds the field to nothing. A vanilla document's string
+            // form is reported by convertExpression instead, since that form is
+            // the first thing to fix.
             (ds.fields ?? []).forEach((f: any, i: number) => {
-              const problem = blankFieldExpressionProblem(f.expression);
+              if (!extended && typeof f.expression === 'string') return;
+              const problem = noSqlProblem(f.expression);
               if (problem) {
                 ctx.addIssue({
                   code: z.ZodIssueCode.custom,
                   path: ['fields', i, 'expression'],
-                  message: `field '${ds.name}.${f.name}': ${problem}`,
+                  message: `field '${ds.name}.${f.name}': ${problem}; write ` +
+                      `the field's SQL, or remove 'expression' to leave the ` +
+                      `field unbound`,
                 });
               }
             });
@@ -703,6 +721,19 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
        })
           .strict()
           .superRefine((mt, ctx) => {
+            // A metric's `expression` is required, so one with no SQL is an
+            // error. A vanilla string form is reported as for a field.
+            const problem = !extended && typeof mt.expression === 'string' ?
+                undefined :
+                noSqlProblem(mt.expression);
+            if (problem) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['expression'],
+                message: `metric '${mt.name}': ${problem}; write the ` +
+                    `metric's SQL`,
+              });
+            }
             if (extended || mt.entity === undefined) return;
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
@@ -1608,7 +1639,7 @@ function fieldExpression(
 // file, checked against the loader's schema and read as a load reads a field's
 // expression, with the texts picked for `dialect`. The string form means
 // ANSI_SQL in either flavor. Throws naming `where` and every problem the schema
-// finds, or naming `where` when the expression is blank.
+// finds, or naming `where` when the expression holds no SQL.
 export function parseFieldExpression(
     raw: unknown, where: string, dialect: string): FieldExpression {
   if (typeof raw !== 'string' &&
@@ -1623,8 +1654,10 @@ export function parseFieldExpression(
     throw new SemanticModelError(
         `${where}: 'expression': ${issueList(result.error)}`);
   }
-  const blank = blankFieldExpressionProblem(result.data);
-  if (blank) throw new SemanticModelError(`${where}: ${blank}`);
+  const problem = noSqlProblem(result.data);
+  if (problem) {
+    throw new SemanticModelError(`${where}: ${problem}; write the field's SQL`);
+  }
   return fieldExpression(result.data, GOOGLE_VERSION, dialect, where);
 }
 

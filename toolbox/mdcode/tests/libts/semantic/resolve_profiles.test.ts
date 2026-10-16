@@ -2048,7 +2048,8 @@ describe('profile rules', () => {
         .toThrow("field 'a': 'expression': dialects.0: Unrecognized key: \"note\"");
   });
 
-  // A blank expression is rejected, as in a model file.
+  // A blank expression, or one that is only a comment, is rejected, as in a
+  // model file.
   test('a profile expression may not be blank', () => {
     const file = (expression: string) =>
         `name: prod\nentities:\n  - name: o\n    fields:\n      - {name: a, expression: ${expression}}\n`;
@@ -2060,7 +2061,11 @@ describe('profile rules', () => {
                file('{dialects: [{dialect: BIGQUERY, expression: "  "}]}'), 'prod'))
         .toThrow(
             "profile 'prod': entity 'o': field 'a': the BIGQUERY entry of " +
-            "'expression' is blank; write the field's BIGQUERY SQL");
+            "'expression' is blank; write the field's SQL");
+    expect(() => loadProfileFile(file('"-- todo"'), 'prod'))
+        .toThrow(
+            "profile 'prod': entity 'o': field 'a': 'expression' is only a " +
+            "comment; write the field's SQL");
   });
 
   // An abstract entity has no table, so a profile entry for one is rejected.
@@ -3538,6 +3543,14 @@ entities:
     expect(validateProfileCompleteness(base, spec({
       entities: [{name: 'account'}, {name: 'account'}],
     }))).toContain("profile 'prod' 'entities' lists 'account' twice");
+    // A binding with no dialect list is read as the string form, so a blank
+    // one is rejected as in a profile file.
+    for (const [expression, reason] of [['  ', 'is blank'], ['-- todo', 'is only a comment']]) {
+      expect(() => applyProfile(base, spec({
+               entities: [{name: 'account', fields: [{name: 'note', expression}]}],
+             })))
+          .toThrow(`profile 'prod': entity 'account': field 'note': 'expression' ${reason}`);
+    }
   });
 
   test('a profile held in memory fails first where a profile file would', () => {

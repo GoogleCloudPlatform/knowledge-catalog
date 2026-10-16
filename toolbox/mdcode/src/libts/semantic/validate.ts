@@ -14,7 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {expressionSources, sourcesDialect} from './resolve_profiles';
@@ -1146,13 +1146,13 @@ export function validateExpressionReferences(
       const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
-      if (sources.length === 0) {
-        if (anchor === undefined) {
-          errors.push(
-              `metric '${metric.name}' in model '${model.name}' (${
-                  document}) has no expression and no 'entity' anchor; ` +
-              `supply an expression or set 'entity' on the metric.`);
-        }
+      // An anchor does not make up for missing SQL: the graph would drop the
+      // metric.
+      if (sources.every(s => noSqlReason(s.text, s.dialect) !== undefined)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) has no SQL in 'expression'; write the metric's ` +
+            `SQL.`);
       } else if (
           !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
           !authored && reached.length > 1) {

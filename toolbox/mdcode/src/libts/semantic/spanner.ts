@@ -28,6 +28,7 @@ import {Association, Entity, Field, Relationship, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {withoutComments} from './sql_parser';
 
 export interface GenerateOptions {
   graphName?: string;  // default: model.name
@@ -380,9 +381,12 @@ function renderFieldProperty(field: Field, entity: string): string {
 
 
 // The target/canonical expression, falling back to the imported vendor SQL when
-// that is all the IR carries (see the Field expression-fidelity contract).
+// that is all the IR carries (see the Field expression-fidelity contract), with
+// its comments removed. The DDL puts ` AS <name>` and a comma after the
+// expression on the same line, and a line comment left in would swallow them.
 function fieldExpression(f: Field): string|undefined {
-  return f.expression ?? f.importedExpression;
+  const expr = f.expression ?? f.importedExpression;
+  return expr === undefined ? undefined : withoutComments(expr, 'SPANNER');
 }
 
 

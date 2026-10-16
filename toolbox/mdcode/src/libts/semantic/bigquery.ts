@@ -23,6 +23,7 @@ import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} fro
 import {AiContext, Entity, Field, fieldBinding, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {withoutComments} from './sql_parser';
 
 export interface GenerateOptions {
   project?: string;    // fills the graph name's project
@@ -435,12 +436,15 @@ function uniqueName(base: string, taken: Set<string>): string {
 
 // The target/canonical expression, falling back to the imported vendor SQL when
 // that is all the IR carries (see the Field/Metric expression-fidelity
-// contract).
+// contract), with its comments removed. The DDL puts ` AS <name>` and a comma
+// after the expression on the same line, and a line comment left in would
+// swallow them.
 function fieldExpression(f: Field): string|undefined {
   // Delegates to the canonical accessor so the shared generator's notion of
   // "bound" matches availability pruning's (an unbound field yields undefined;
   // a field awaiting transpilation stays bound via its imported expression).
-  return fieldBinding(f);
+  const expr = fieldBinding(f);
+  return expr === undefined ? undefined : withoutComments(expr, 'BIGQUERY');
 }
 function metricExpression(m: Metric): string|undefined {
   return m.expression ?? m.importedExpression;

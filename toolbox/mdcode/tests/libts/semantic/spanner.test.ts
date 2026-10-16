@@ -370,3 +370,37 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
     expect(ddl).toContain('DESTINATION KEY(id) REFERENCES `Group`(id)');
   });
 });
+
+
+describe('a comment in a field expression', () => {
+  // Left in, a line comment runs to the end of the line and swallows the
+  // ` AS <name>` after the expression, and the comma after that.
+  const model: SemanticModel = {
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'Orders',
+      keys: ['id'],
+      fields: [
+        {name: 'id', expression: 'order_id -- the key'},
+        {name: 'total', expression: 'amount -- in cents'},
+        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'status', expression: 'status # open or closed'},
+        {name: 'code', expression: "CONCAT('--', code)"},
+      ],
+    }],
+  };
+
+  test('is removed before the field is written', () => {
+    const {ddl, warnings} = generateSpannerPropertyGraph(model);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount AS total,\n      notes,\n' +
+        "      status,\n      CONCAT('--', code) AS code\n");
+    expect(ddl).not.toContain('the key');
+    expect(ddl).not.toContain('free text');
+    expect(warnings).toEqual([]);
+  });
+});

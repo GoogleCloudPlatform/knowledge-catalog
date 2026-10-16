@@ -1635,15 +1635,27 @@ describe('field and metric expression references', () => {
           .toContain("set 'entity' in a GOOGLE custom_extensions block on the metric");
     });
 
-    test('rejects a metric with no expression and no entity anchor with a dedicated message', () => {
+    // An anchor does not make up for missing SQL: the graph would drop the
+    // metric.
+    test('rejects a metric with no SQL, with or without an entity anchor', () => {
+      const message = (name: string) =>
+          `metric '${name}' in model 'm' (doc) has no SQL in 'expression'; ` +
+          "write the metric's SQL.";
       const m = model({
         entities: [orders()],
-        metrics: [{name: 'empty_metric'}],
+        metrics: [
+          {name: 'empty_metric'},
+          {name: 'anchored', entity: 'orders', authoredEntity: 'orders'},
+          {name: 'blank', expression: '  '},
+          {name: 'comment', expression: '-- todo', entity: 'orders'},
+        ],
       });
       expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
           .toEqual([
-            "metric 'empty_metric' in model 'm' (doc) has no expression and " +
-            "no 'entity' anchor; supply an expression or set 'entity' on the metric.",
+            message('empty_metric'),
+            message('anchored'),
+            message('blank'),
+            message('comment'),
           ]);
     });
 

@@ -1362,13 +1362,16 @@ function profileStructureErrors(profile: ProfileSpec): string[] {
             `${fat} has no 'expression'; bind it with one, or list it in ` +
             `'fields_exclude'`);
       }
-      if (pf.dialects?.length) {
+      // A binding with no dialect list, which only a profile built in memory
+      // has, is read as the string form.
+      const raw = pf.dialects?.length ?
+          (pf.stringForm ? pf.dialects[0].expression :
+                           {dialects: pf.dialects}) :
+          fieldBinding(pf as Field);
+      if (raw !== undefined) {
         // Checked by the loader's reader, as a profile file's is.
         try {
-          parseFieldExpression(
-              pf.stringForm ? pf.dialects[0].expression :
-                              {dialects: pf.dialects},
-              fat, DEFAULT_DIALECT);
+          parseFieldExpression(raw, fat, DEFAULT_DIALECT);
         } catch (err) {
           if (!(err instanceof SemanticModelError)) throw err;
           errors.push(err.message);

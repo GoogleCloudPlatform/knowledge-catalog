@@ -318,7 +318,11 @@ describe('validatePushRequirements gates constraints', () => {
       judgment: 'Weigh the credit against customer.total_owed.',
       onViolation: 'warn',
     }]);
-    m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
+    m.model.metrics = [{
+      name: 'total_owed',
+      entity: 'customer',
+      expression: 'SUM(customer.balance)',
+    }];
     expect(validatePushRequirements([m])).toEqual([]);
   });
 
@@ -346,7 +350,11 @@ describe('validatePushRequirements gates constraints', () => {
       source: {entity: 'customer', columns: ['id']},
       destination: {entity: 'customer', columns: ['id']},
     }];
-    m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
+    m.model.metrics = [{
+      name: 'total_owed',
+      entity: 'customer',
+      expression: 'SUM(customer.balance)',
+    }];
     const errs = validatePushRequirements([m]);
     expect(errs.some(e => e.includes('declares no field \'blance\'')))
         .toBe(true);
