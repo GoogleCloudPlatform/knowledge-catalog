@@ -2006,29 +2006,9 @@ describe('strict entity sources', () => {
       'cloudsql_mysql:acme.us-central1.inst.db.orders',
     ],
     [
-      'MySQL catalog name',
-      'mysql:inst.db.orders',
-      'mysql:inst.db.orders',
-    ],
-    [
       'Cloud SQL PostgreSQL catalog name',
       'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
       'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
-    ],
-    [
-      'PostgreSQL catalog name',
-      'postgresql:inst.db.public.orders',
-      'postgresql:inst.db.public.orders',
-    ],
-    [
-      'Snowflake catalog name',
-      'snowflake:acct.db.public.orders',
-      'snowflake:acct.db.public.orders',
-    ],
-    [
-      'Databricks catalog name',
-      'databricks:table:metastore.cat.sch.orders',
-      'databricks:table:metastore.cat.sch.orders',
     ],
   ];
 
@@ -2043,6 +2023,82 @@ describe('strict entity sources', () => {
       expect(entity.dataSource).toBe(expectedDataSource);
     });
   }
+
+  // Knowledge Catalog keeps an entry for each Google Cloud table in a system
+  // entry group, one whose id starts with `@`, and the entry id is the table's
+  // resource name. A source written as that entry name is rejected, and the
+  // message names the resource name to write instead.
+  test('an entry name in a system entry group is rejected, naming the resource name', () => {
+    const loadSource = (source: string) => () => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
+    });
+    for (const [group, name] of [
+      ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
+      ['@spanner', 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
+    ]) {
+      const source = `projects/acme/locations/us/entryGroups/${group}/entries/${name}`;
+      expect(databaseOf(source)).toBeUndefined();
+      expect(loadSource(source)).toThrow(
+        `dataset 'orders': source '${source}' is a Knowledge Catalog entry ` +
+        `name in the system entry group '${group}'; write the table's ` +
+        `resource name instead: '${name}'.`);
+    }
+    // An entry id that is not a resource name gets an example instead.
+    const odd = 'projects/acme/locations/us/entryGroups/@bigquery/entries/orders';
+    expect(loadSource(odd)).toThrow(
+      "write the table's resource name instead, such as " +
+      "'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>'.");
+  });
+
+  // Bigtable and Dataproc Metastore are Google Cloud services, but the preview
+  // does not support their tables yet, in any form.
+  test('a Bigtable or Dataproc Metastore source is rejected as not supported yet', () => {
+    for (const [service, sources] of [
+      ['Bigtable', [
+        '//bigtable.googleapis.com/projects/acme/instances/inst/tables/orders',
+        'bigtable.googleapis.com/projects/acme/instances/inst/tables/orders',
+        'bigtable:acme.inst.orders',
+      ]],
+      ['Dataproc Metastore', [
+        '//metastore.googleapis.com/projects/acme/locations/us/services/svc/databases/db/tables/orders',
+        'metastore.googleapis.com/projects/acme/locations/us/services/svc/databases/db/tables/orders',
+        'dataproc_metastore:acme.us.svc.db.orders',
+      ]],
+    ] as const) {
+      for (const source of sources) {
+        expect(databaseOf(source)).toBeUndefined();
+        expect(() => load(GOOGLE, {
+          name: 'm',
+          datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
+        })).toThrow(
+          `dataset 'orders': source '${source}' is a ${service} table; the ` +
+          `preview does not support ${service} sources yet.`);
+      }
+    }
+  });
+
+  // The preview supports Google Cloud tables only, so a third-party table is
+  // rejected in every form: a catalog name under a third-party prefix, and a
+  // Knowledge Catalog entry name, which is how Mapping Addendum 5 writes one.
+  test('a third-party source is rejected in every form', () => {
+    for (const source of [
+      'snowflake:acct.db.public.orders',
+      'databricks:table:metastore.cat.sch.orders',
+      'mysql:inst.db.orders',
+      'postgresql:inst.db.public.orders',
+      'projects/acme/locations/us/entryGroups/snowflake/entries/acct.db.public.orders',
+    ]) {
+      expect(databaseOf(source)).toBeUndefined();
+      expect(() => load(GOOGLE, {
+        name: 'm',
+        datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
+      })).toThrow(
+        `dataset 'orders': source '${source}' is a third-party table; the ` +
+        `preview supports Google Cloud tables only: BigQuery, BigLake, ` +
+        `Spanner, AlloyDB and Cloud SQL.`);
+    }
+  });
 
   test('both AlloyDB spellings load together in the same model and resolve to the same database', () => {
     const uri =
@@ -2178,13 +2234,20 @@ describe('strict entity sources', () => {
       datasets: [{ name: 'orders', source: 'SELECT * FROM orders', primary_key: ['id'], fields: [] }],
     })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
 
-    // 2. Bare table names (1-, 2-, and 3-part)
-    for (const bare of ['orders', 'raw.orders', 'acme.raw.orders']) {
+    // 2. Bare table names (1-, 2-, and 3-part). The hint shows the GCP
+    // resource name (Mapping Addendum 5), filling in what the name gives.
+    for (const [bare, hint] of [
+      ['orders', 'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders'],
+      ['raw.orders', 'bigquery.googleapis.com/projects/<project>/datasets/raw/tables/orders'],
+      ['acme.raw.orders', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
+    ]) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
       })).toThrow(
-        new RegExp(`dataset 'orders': bare table name '${bare}' is not a valid source[\\s\\S]*//bigquery\\.googleapis\\.com/[\\s\\S]*bigquery:`),
+        `dataset 'orders': bare table name '${bare}' is not a valid source. ` +
+        `Write the table's GCP resource name instead, for example:\n` +
+        `  source: ${hint}`,
       );
       // Passes when allowLegacyBareSource is set
       const { models } = load(GOOGLE, {
@@ -2195,12 +2258,12 @@ describe('strict entity sources', () => {
       expect(models[0].entities[0].dataSource).toBe('acme.raw.orders');
     }
 
-    // 3. Four-part bare table name suggests BigLake URI
+    // 3. Four-part bare table name suggests its BigLake resource name
     expect(() => load(GOOGLE, {
       name: 'm',
       datasets: [{ name: 'orders', source: 'acme.lake.sales.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "dataset 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write a BigLake resource URI instead:\n  source: //biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders",
+      "dataset 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write its BigLake resource name instead:\n  source: biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders",
     );
 
     // 4. Overlong source (> 4000 characters)
@@ -2211,7 +2274,7 @@ describe('strict entity sources', () => {
     })).toThrow(/exceeds the 4000-character limit/);
 
     // 5. Unknown prefix / unsupported URI
-    for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'bigtable:p.i.t', '//trino.example.com/anything']) {
+    for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'oracle:p.i.t', '//trino.example.com/anything']) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bad, primary_key: ['id'], fields: [] }],

@@ -1699,7 +1699,10 @@ function stringList(value: unknown, where: string): string[] {
 
 
 // The dialect each system's sources infer, keyed by the
-// system databaseOf puts first.
+// system databaseOf puts first. databaseOf no longer accepts a third-party
+// source (`mysql:`, `postgresql:`, `snowflake:`, `databricks:`), since the
+// preview supports Google Cloud tables only. Their entries stay so those
+// sources infer their dialect again once they are accepted.
 const DIALECT_OF_SYSTEM: Record<string, string> = {
   bigquery: 'BIGQUERY',
   spanner: 'SPANNER',
