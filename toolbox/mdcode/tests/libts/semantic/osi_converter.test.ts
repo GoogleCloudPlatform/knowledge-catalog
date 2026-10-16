@@ -15,7 +15,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
-import {Field, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
+import {ActionParameter, ALLOWED_DIALECTS, CustomExtension, Entity, Field, Metric, Relationship, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
 
@@ -27,33 +27,20 @@ function loadFixture(name: string): SemanticModel[] {
 }
 
 
-// The serializer does not write dialects or stringForm yet, so a round trip
-// cannot keep them.
-function withoutUnserializedFields(m: Omit<SemanticModel, 'version'>) {
-  return {
-    ...m,
-    entities: m.entities.map(({authoredSource: _as, ...e}) => ({
-      ...e,
-      fields: e.fields.map(({dialects: _d, stringForm: _sf, ...f}) => f),
-    })),
-    metrics: m.metrics.map(({dialects: _d, stringForm: _sf, ...mt}) => mt),
-  };
-}
-
 describe('loader <-> serialize round trip is IR-stable', () => {
   // Each fixture exercises a different slice of the format: relationships +
   // ai_context + synonyms + label + dimension; a GOOGLE deployment target;
-  // unique_keys; explicit datatypes; and imported (vendor-dialect) expressions.
-  // Fixtures carrying non-GOOGLE `custom_extensions` (tpcds_retail,
-  // lineitem_databricks_ext) are NOT round-tripped here: the '/google'
-  // serializer drops those (see the "lossy edges" test below), so they cannot
-  // survive an IR-stable round trip.
+  // unique_keys; explicit datatypes; imported (vendor-dialect) expressions;
+  // and third-party `custom_extensions` across model, entity, field,
+  // relationship, and metric levels.
   const fixtures = [
     'star_orders_customer.yaml',
     'sales_google_ext.yaml',
     'vendor_dialects.yaml',
     'sales_bq_graph_target.yaml',
     'actions_place_order.yaml',
+    'tpcds_retail.yaml',
+    'lineitem_databricks_ext.yaml',
   ];
 
   for (const fixture of fixtures) {
@@ -65,16 +52,7 @@ describe('loader <-> serialize round trip is IR-stable', () => {
         const {yaml: text} = serializeModel(model);
         const reloaded = loadModels(text, {allowLegacyBareSource: true}).models;
         expect(reloaded).toHaveLength(1);
-        // The serializer always writes the Google flavor, so a vanilla fixture
-        // reloads as '0.2.0.dev0/google'. Set `version` aside until the
-        // serializer writes `model.version` back out, and pin what it writes.
-        const {version: reloadedVersion, ...reloadedRest} = reloaded[0];
-        const {version: _originalVersion, ...originalRest} = model;
-        expect(reloadedVersion).toBe('0.2.0.dev0/google');
-        // IR-level equality: every other field the loader keeps must match
-        // apart from dialects and stringForm.
-        expect(withoutUnserializedFields(reloadedRest))
-            .toEqual(withoutUnserializedFields(originalRest));
+        expect(reloaded[0]).toEqual(model);
       }
     });
   }
@@ -126,74 +104,116 @@ describe('serialized document structure', () => {
     expect(relDoc.to_columns).toEqual(rel.destination.columns);
   });
 
-  test('the serializer keeps a deployment profile and prints no warning for the GOOGLE target block', () => {
-    const target = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+  const bqTarget =
+      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+  const spTarget =
+      '//spanner.googleapis.com/projects/p/instances/i/databases/db' +
+      '/propertyGraphs/g';
+  const ordersEntity: Entity = {
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    authoredSource: 'bigquery:p.d.orders',
+    keys: ['id'],
+    fields: [{name: 'id', expression: 'id'}],
+  };
+
+  function vanillaTargetsYaml(targets: string[]): string {
+    return [
+      'version: "0.2.0.dev0"',
+      'semantic_model:',
+      '  - name: sales',
+      '    custom_extensions:',
+      '      - vendor_name: GOOGLE',
+      `        data: '${JSON.stringify({deploymentTargets: targets})}'`,
+      '    datasets:',
+      '      - name: orders',
+      '        source: bigquery:p.d.orders',
+      '        primary_key: [id]',
+      '        fields:',
+      '          - name: id',
+      '            expression:',
+      '              dialects:',
+      '                - dialect: ANSI_SQL',
+      '                  expression: id',
+    ].join('\n');
+  }
+
+  test('keeps a deployment profile and omits deploymentTargets', () => {
     const withProfile: SemanticModel = {
       name: 'sales',
-      deployments: [{name: 'staging', target, profile: 'spanner_binding'}],
+      deployments: [
+        {name: 'staging', target: bqTarget, profile: 'spanner_binding'},
+      ],
       customExtensions: [{
         vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [target]}),
+        data: JSON.stringify({deploymentTargets: [bqTarget]}),
       }],
-      entities: [{name: 'orders', dataSource: 'p.d.orders', authoredSource: 'bigquery:p.d.orders', keys: ['id'], fields: []}],
+      entities: [{...ordersEntity, fields: []}],
       relationships: [],
       metrics: [],
     };
+
     const {yaml: text, warnings} = serializeModel(withProfile);
-    expect(warnings).toEqual([]);
     const parsed = yaml.parse(text);
+
+    expect(warnings).toEqual([]);
     expect(parsed.semantic_model[0].deployments).toEqual([
-      {name: 'staging', target, profile: 'spanner_binding'},
+      {name: 'staging', target: bqTarget, profile: 'spanner_binding'},
+    ]);
+    expect(parsed.semantic_model[0].custom_extensions).toBeUndefined();
+    expect(text).not.toContain('deploymentTargets');
+  });
+
+  test('keeps a GOOGLE block verbatim under 0.2.0.dev0', () => {
+    const [vanillaModel] = loadModels(vanillaTargetsYaml([bqTarget])).models;
+
+    const serialized = serializeModel(vanillaModel);
+    const parsed = yaml.parse(serialized.yaml);
+
+    expect(vanillaModel.deployments).toBeUndefined();
+    expect(serialized.warnings).toEqual([]);
+    expect(parsed.version).toBe('0.2.0.dev0');
+    expect(parsed.semantic_model[0].deployments).toBeUndefined();
+    expect(parsed.semantic_model[0].custom_extensions).toEqual([
+      {
+        vendor_name: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [bqTarget]}),
+      },
     ]);
   });
 
-  test('a vanilla model whose targets live only in the GOOGLE custom_extensions block serializes them under deployments', () => {
-    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-    const spTarget = '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
-    const [singleVanilla] = loadModels(`version: "0.2.0.dev0"
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '${JSON.stringify({deploymentTargets: [bqTarget]})}'
-    datasets:
-      - name: orders
-        source: bigquery:p.d.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-`).models;
-    expect(singleVanilla.deployments).toBeUndefined();
-    const singleSer = serializeModel(singleVanilla);
-    expect(singleSer.warnings).toEqual([]);
-    expect(yaml.parse(singleSer.yaml).semantic_model[0].deployments).toEqual([
-      {name: 'default', target: bqTarget},
-    ]);
+  test(
+      'serializes a single GOOGLE target as default under 0.2.0.dev0/google',
+      () => {
+        const [vanillaModel] =
+            loadModels(vanillaTargetsYaml([bqTarget])).models;
+        const googleModel: SemanticModel = {
+          ...vanillaModel,
+          version: '0.2.0.dev0/google',
+        };
 
-    const [multiVanilla] = loadModels(`version: "0.2.0.dev0"
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '${JSON.stringify({deploymentTargets: [spTarget, bqTarget]})}'
-    datasets:
-      - name: orders
-        source: bigquery:p.d.orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression:
-              dialects:
-                - dialect: ANSI_SQL
-                  expression: id
-`).models;
-    const multiSer = serializeModel(multiVanilla);
-    expect(multiSer.warnings).toEqual([]);
-    expect(yaml.parse(multiSer.yaml).semantic_model[0].deployments).toEqual([
+        const serialized = serializeModel(googleModel);
+        const parsed = yaml.parse(serialized.yaml);
+
+        expect(serialized.warnings).toEqual([]);
+        expect(parsed.semantic_model[0].deployments).toEqual([
+          {name: 'default', target: bqTarget},
+        ]);
+      });
+
+  test('numbers multiple GOOGLE targets under 0.2.0.dev0/google', () => {
+    const [vanillaModel] =
+        loadModels(vanillaTargetsYaml([spTarget, bqTarget])).models;
+    const googleModel: SemanticModel = {
+      ...vanillaModel,
+      version: '0.2.0.dev0/google',
+    };
+
+    const serialized = serializeModel(googleModel);
+    const parsed = yaml.parse(serialized.yaml);
+
+    expect(serialized.warnings).toEqual([]);
+    expect(parsed.semantic_model[0].deployments).toEqual([
       {name: 'deployment_1', target: spTarget},
       {name: 'deployment_2', target: bqTarget},
     ]);
@@ -201,79 +221,73 @@ semantic_model:
 
   // A padded repeat of a target is the same target, and a blank one names
   // none. Written out as they are, either gives a file that fails to load.
-  test('a vanilla GOOGLE block with a padded repeat and a blank target serializes to a file that loads', () => {
-    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+  test('deduplicates padded GOOGLE targets and drops blanks', () => {
+    const data =
+        JSON.stringify({deploymentTargets: [bqTarget, '  ', ` ${bqTarget} `]});
     const model: SemanticModel = {
       name: 'sales',
-      version: '0.2.0.dev0',
-      customExtensions: [{
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [bqTarget, '  ', ` ${bqTarget} `]}),
-      }],
-      entities: [{
-        name: 'orders', dataSource: 'p.d.orders',
-        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
-        fields: [{name: 'id', expression: 'id'}],
-      }],
+      version: '0.2.0.dev0/google',
+      customExtensions: [{vendorName: 'GOOGLE', data}],
+      entities: [ordersEntity],
       relationships: [],
       metrics: [],
     };
-    const ser = serializeModel(model);
-    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
-      {name: 'default', target: bqTarget},
-    ]);
-    const reloaded = loadModels(ser.yaml).models[0];
-    expect(reloaded.deployments).toEqual([{name: 'default', target: bqTarget}]);
+
+    const serialized = serializeModel(model);
+    const parsed = yaml.parse(serialized.yaml);
+    const reloaded = loadModels(serialized.yaml).models[0];
+
+    const expected = [{name: 'default', target: bqTarget}];
+    expect(parsed.semantic_model[0].deployments).toEqual(expected);
+    expect(reloaded.deployments).toEqual(expected);
   });
 
-  test('a GOOGLE block whose data is not valid JSON does not drop the targets of another block', () => {
-    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+  test('keeps valid GOOGLE targets past an invalid JSON block', () => {
+    const validData = JSON.stringify({deploymentTargets: [bqTarget]});
     const model: SemanticModel = {
       name: 'sales',
-      version: '0.2.0.dev0',
+      version: '0.2.0.dev0/google',
       customExtensions: [
         {vendorName: 'GOOGLE', data: 'not json'},
-        {vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [bqTarget]})},
+        {vendorName: 'GOOGLE', data: validData},
       ],
-      entities: [{
-        name: 'orders', dataSource: 'p.d.orders',
-        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
-        fields: [{name: 'id', expression: 'id'}],
-      }],
+      entities: [ordersEntity],
       relationships: [],
       metrics: [],
     };
-    const ser = serializeModel(model);
-    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+
+    const serialized = serializeModel(model);
+    const parsed = yaml.parse(serialized.yaml);
+
+    expect(parsed.semantic_model[0].deployments).toEqual([
       {name: 'default', target: bqTarget},
     ]);
-    expect(ser.warnings).toHaveLength(1);
+    expect(serialized.warnings).toHaveLength(1);
   });
 
-  // A non-string target is a target in no accepted form. It is written out as
-  // its JSON text, so a push of the reloaded file rejects it.
-  test('a vanilla GOOGLE block with a non-string target serializes it as its JSON text', () => {
-    const model: SemanticModel = {
-      name: 'sales',
-      version: '0.2.0.dev0',
-      customExtensions: [{
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [7]}),
-      }],
-      entities: [{
-        name: 'orders', dataSource: 'p.d.orders',
-        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
-        fields: [{name: 'id', expression: 'id'}],
-      }],
-      relationships: [],
-      metrics: [],
-    };
-    const ser = serializeModel(model);
-    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
-      {name: 'default', target: '7'},
-    ]);
-    expect(ser.warnings).toEqual([]);
-  });
+  test(
+      'serializes a non-string GOOGLE target as its JSON text under 0.2.0.dev0/google',
+      () => {
+        const model: SemanticModel = {
+          name: 'sales',
+          version: '0.2.0.dev0/google',
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: [7]}),
+          }],
+          entities: [ordersEntity],
+          relationships: [],
+          metrics: [],
+        };
+
+        const serialized = serializeModel(model);
+        const parsed = yaml.parse(serialized.yaml);
+
+        expect(parsed.semantic_model[0].deployments).toEqual([
+          {name: 'default', target: '7'},
+        ]);
+        expect(serialized.warnings).toEqual([]);
+      });
 });
 
 
@@ -404,26 +418,63 @@ describe('lossy edges are flagged', () => {
         expect(relDoc.from_columns).toEqual(['id']);
       });
 
-  test('a non-GOOGLE vendor extension is dropped with a warning', () => {
-    // The extended ('/google') profile has no custom_extensions carrier, so a
-    // non-deployment-target vendor extension has no representation and is
-    // dropped with a warning rather than serialized.
-    const model: SemanticModel = {
-      name: 'm',
-      customExtensions: [{vendorName: 'SALESFORCE', data: '{"crm": true}'}],
-      entities: [{
-        name: 'orders',
-        dataSource: 'p.d.t',
-        keys: ['id'],
-        fields: [{name: 'id', expression: 'orders.id'}],
-      }],
-      relationships: [],
-      metrics: [],
-    };
-    const {yaml: text, warnings} = serializeModel(model);
-    expect(warnings.some(w => /no representation under/i.test(w))).toBe(true);
-    expect(text).not.toContain('custom_extensions');
-  });
+  test(
+      'warns and drops a GOOGLE extension without targets under 0.2.0.dev0/google',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          version: '0.2.0.dev0/google',
+          customExtensions: [{vendorName: 'GOOGLE', data: '{"other": true}'}],
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.t',
+            keys: ['id'],
+            customExtensions: [{vendorName: 'GOOGLE', data: '{"meta": 1}'}],
+            fields: [{name: 'id', expression: 'orders.id'}],
+          }],
+          relationships: [],
+          metrics: [],
+        };
+
+        const {yaml: text, warnings} = serializeModel(model);
+
+        const pattern = /GOOGLE custom_extension.*no representation under/i;
+        expect(warnings.some(w => pattern.test(w))).toBe(true);
+        expect(text).not.toContain('custom_extensions');
+      });
+
+  test(
+      'warns and drops custom_extensions on an action under 0.2.0.dev0/google',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          version: '0.2.0.dev0/google',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.t',
+            keys: ['id'],
+            fields: [{name: 'id', expression: 'orders.id'}],
+          }],
+          relationships: [],
+          metrics: [],
+          actions: [{
+            name: 'Close',
+            executor:
+                {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+            parameters: [],
+            customExtensions: [{vendorName: 'DBT', data: '{"meta": 1}'}],
+          }],
+        };
+
+        const {yaml: text, warnings} = serializeModel(model);
+
+        expect(
+            warnings.some(
+                w => w.includes('action \'Close\'') &&
+                    w.includes('custom_extension(s) have no representation')))
+            .toBe(true);
+        expect(text).not.toContain('custom_extensions');
+      });
 });
 
 
@@ -456,6 +507,29 @@ describe('serialize flags loader-invalid reconstructions', () => {
         .toBe(true);
   });
 
+  test('a metric with no expression warns that one is required', () => {
+    const orphanMetric: Metric = {
+      name: 'orphan_metric',
+      expression: undefined as unknown as string,
+    };
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.t',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [orphanMetric],
+    };
+
+    const {warnings} = serializeModel(model);
+
+    expect(warnings.some(w => /metric 'orphan_metric'.*no expression/i.test(w)))
+        .toBe(true);
+  });
+
   test('a non-abstract entity with no source warns it will not reload', () => {
     // A lossy pull could drop an entity's binding without marking it abstract;
     // the loader requires a source unless abstract, so flag it at write time.
@@ -477,33 +551,62 @@ describe('serialize flags loader-invalid reconstructions', () => {
   });
 
   test(
-      'an imported dialect colliding with the canonical label is relabeled',
+      'suppresses missing-source and missing-expression warnings when logical',
       () => {
         const model: SemanticModel = {
           name: 'm',
           entities: [{
-            name: 'orders',
-            dataSource: 'p.d.t',
+            name: 'logicalEntity',
+            dataSource: '',
             keys: [],
-            fields: [{
-              name: 'amt',
-              expression: 'orders.amt',
-              importedExpression: 'orders.AMT',
-              importedDialect: 'BIGQUERY',
-            }],
+            fields: [{name: 'logicalField'}],
           }],
           relationships: [],
           metrics: [],
         };
-        const doc = modelDocument(model) as any;
-        const labels: string[] =
-            doc.semantic_model[0].entities[0].fields[0].expression.dialects.map(
-                (d: any) => d.dialect);
-        // No duplicate dialect label: the imported form is relabeled off
-        // BIGQUERY so the loader does not pick between two BIGQUERY entries.
-        expect(new Set(labels).size).toBe(labels.length);
-        expect(labels).toContain('BIGQUERY');
+
+        const {warnings} = serializeModel(model, {logical: true});
+
+        expect(warnings).toEqual([]);
       });
+
+  test('omits imported dialect colliding with canonical or unallowed', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.t',
+        keys: [],
+        fields: [
+          {
+            name: 'amt',
+            expression: 'orders.amt',
+            importedExpression: 'orders.AMT',
+            importedDialect: 'BIGQUERY',
+          },
+          {
+            name: 'unknown_dialect',
+            expression: 'orders.id',
+            importedExpression: 'orders.ID',
+            importedDialect: 'IMPORTED',
+          },
+        ],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+
+    const doc = modelDocument(model);
+    const fields = doc.semantic_model[0].entities[0].fields;
+
+    const allowed: ReadonlySet<string> = new Set(ALLOWED_DIALECTS);
+    for (const f of fields) {
+      const labels =
+          f.expression.dialects.map((d: {dialect: string}) => d.dialect);
+      expect(labels).toEqual(['BIGQUERY']);
+      expect(labels.every((l: string) => allowed.has(l))).toBe(true);
+    }
+  });
 });
 
 
@@ -617,5 +720,492 @@ describe('a projection is only emitted when it will supply a type', () => {
     expect(param.field).toBe('key');
     expect(param.datatype).toBeUndefined();
     expect(warnings.some(w => w.includes('parameter \'order\''))).toBe(false);
+  });
+
+  const projectionModel =
+      (entity: Partial<Entity>,
+       parameters: ActionParameter[]): SemanticModel => ({
+        name: 'm',
+        entities: [{
+          name: 'Order',
+          dataSource: 'p.d.o',
+          keys: ['key'],
+          fields: [{name: 'key', type: 'String', expression: 'key'}],
+          ...entity,
+        }],
+        relationships: [],
+        metrics: [],
+        actions: [{
+          name: 'Close',
+          executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+          parameters,
+        }],
+      });
+
+  test('falls back when a projected field carries datatype Opaque', () => {
+    const model = projectionModel(
+        {fields: [{name: 'key', type: 'Opaque', expression: 'key'}]}, [
+          {name: 'fallback', concept: 'Order', field: 'key', type: 'String'},
+          {name: 'opaque', concept: 'Order', field: 'key', type: 'Opaque'},
+        ]);
+    const warnings: string[] = [];
+
+    const doc = modelDocument(model, warnings);
+    const [withFallback, withOpaque] =
+        doc.semantic_model[0].actions[0].parameters;
+
+    expect(withFallback.concept).toBeUndefined();
+    expect(withFallback.field).toBeUndefined();
+    expect(withFallback.type).toBe('String');
+    expect(withOpaque.concept).toBeUndefined();
+    expect(withOpaque.field).toBeUndefined();
+    expect(withOpaque.type).toBeUndefined();
+    expect(doc.semantic_model[0].entities[0].fields[0].datatype)
+        .toBeUndefined();
+    expect(warnings.some(w => w.includes('parameter \'fallback\'')))
+        .toBe(false);
+    expect(warnings.some(w => w.includes('parameter \'opaque\''))).toBe(true);
+  });
+
+  test(
+      'keeps projections as authored when inheritance fails to resolve', () => {
+        const model = projectionModel({extends: ['MissingSuper']}, [
+          {name: 'order', concept: 'Order', field: 'key', type: 'String'},
+        ]);
+        const warnings: string[] = [];
+
+        const doc = modelDocument(model, warnings);
+        const param = doc.semantic_model[0].actions[0].parameters[0];
+
+        expect(param.concept).toBe('Order');
+        expect(param.field).toBe('key');
+        expect(param.type).toBeUndefined();
+      });
+});
+
+
+describe('dual-version model serialization', () => {
+  const idField: Field = {name: 'id', expression: 'id'};
+  const baseOrders: Entity = {
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    keys: ['id'],
+    fields: [idField],
+  };
+  const emptyModel: SemanticModel = {
+    name: 'm',
+    entities: [],
+    relationships: [],
+    metrics: [],
+  };
+
+  function firstModelDoc(model: SemanticModel, warnings?: string[]) {
+    return modelDocument(model, warnings).semantic_model[0];
+  }
+
+  test('selects output format from model.version', () => {
+    const base: SemanticModel = {...emptyModel, entities: [baseOrders]};
+
+    const fromUndefined = modelDocument(base);
+    const fromGoogle = modelDocument({...base, version: '0.2.0.dev0/google'});
+    const fromVanilla = modelDocument({...base, version: '0.2.0.dev0'});
+
+    expect(fromUndefined.version).toBe('0.2.0.dev0/google');
+    expect(fromUndefined.semantic_model[0].entities).toBeDefined();
+    expect(fromUndefined.semantic_model[0].datasets).toBeUndefined();
+    expect(fromGoogle.version).toBe('0.2.0.dev0/google');
+    expect(fromGoogle.semantic_model[0].entities).toBeDefined();
+    expect(fromGoogle.semantic_model[0].datasets).toBeUndefined();
+    expect(fromVanilla.version).toBe('0.2.0.dev0');
+    expect(fromVanilla.semantic_model[0].datasets).toBeDefined();
+    expect(fromVanilla.semantic_model[0].entities).toBeUndefined();
+  });
+
+  test('formats stringForm expressions per version', () => {
+    const entity: Entity = {
+      ...baseOrders,
+      fields: [
+        {
+          ...idField,
+          stringForm: true,
+          dialects: [{dialect: 'ANSI_SQL', expression: 'id'}],
+        },
+        {name: 'doubled', expression: 'amount * 2', stringForm: true},
+      ],
+    };
+    const base: SemanticModel = {...emptyModel, entities: [entity]};
+
+    const googleDoc = firstModelDoc({...base, version: '0.2.0.dev0/google'});
+    const vanillaDoc = firstModelDoc({...base, version: '0.2.0.dev0'});
+
+    expect(googleDoc.entities[0].fields[0].expression).toBe('id');
+    expect(googleDoc.entities[0].fields[1].expression).toBe('amount * 2');
+    expect(vanillaDoc.datasets[0].fields[0].expression).toEqual({
+      dialects: [{dialect: 'ANSI_SQL', expression: 'id'}],
+    });
+    expect(vanillaDoc.datasets[0].fields[1].expression).toEqual({
+      dialects: [{dialect: 'ANSI_SQL', expression: 'amount * 2'}],
+    });
+  });
+
+  for (const version of ['0.2.0.dev0/google', '0.2.0.dev0'] as const) {
+    test(
+        `preserves dialect order and filters unallowed labels in ${version}`,
+        () => {
+          const badDialect = 'ORACLE' as unknown as SqlDialect;
+          const mixedMetric: Metric = {
+            name: 'total',
+            expression: 'SUM(x)',
+            dialects: [
+              {dialect: 'POSTGRES', expression: 'SUM(x)'},
+              {dialect: badDialect, expression: 'SUM(x)'},
+              {dialect: 'ANSI_SQL', expression: 'SUM(x)'},
+            ],
+          };
+          const allUnallowedMetric: Metric = {
+            name: 'fallback_metric',
+            expression: 'COUNT(x)',
+            dialects: [{dialect: badDialect, expression: 'COUNT(x)'}],
+          };
+          const model: SemanticModel = {
+            ...emptyModel,
+            version,
+            metrics: [mixedMetric, allUnallowedMetric],
+          };
+
+          const doc = firstModelDoc(model);
+
+          expect(doc.metrics[0].expression).toEqual({
+            dialects: [
+              {dialect: 'POSTGRES', expression: 'SUM(x)'},
+              {dialect: 'ANSI_SQL', expression: 'SUM(x)'},
+            ],
+          });
+          expect(doc.metrics[1].expression).toEqual({
+            dialects: [{dialect: 'BIGQUERY', expression: 'COUNT(x)'}],
+          });
+        });
+  }
+
+  test('formats ai_context additionalProperties per version', () => {
+    const modelWithAi =
+        (aiContext: SemanticModel['aiContext'],
+         version?: SemanticModel['version']): SemanticModel => ({
+          ...emptyModel,
+          version,
+          aiContext,
+        });
+    const both = modelWithAi({
+      instructions: 'use carefully',
+      additionalProperties: {team: 'analytics', empty: undefined},
+    });
+    const customOnly =
+        modelWithAi({additionalProperties: {owner: 'data-team'}});
+    const onlyUndefined = modelWithAi(
+        {instructions: 'only', additionalProperties: {x: undefined}},
+        '0.2.0.dev0/google');
+    const emptyContext = modelWithAi(
+        {additionalProperties: {x: undefined}}, '0.2.0.dev0/google');
+
+    const googleDoc = firstModelDoc({...both, version: '0.2.0.dev0/google'});
+    const vanillaDoc = firstModelDoc({...both, version: '0.2.0.dev0'});
+    const customGoogle =
+        firstModelDoc({...customOnly, version: '0.2.0.dev0/google'});
+    const customVanilla = firstModelDoc({...customOnly, version: '0.2.0.dev0'});
+    const onlyUndefinedDoc = firstModelDoc(onlyUndefined);
+    const emptyContextDoc = firstModelDoc(emptyContext);
+
+    expect(googleDoc.ai_context).toEqual({
+      instructions: 'use carefully',
+      custom: {team: 'analytics'},
+    });
+    expect(vanillaDoc.ai_context).toEqual({
+      instructions: 'use carefully',
+      team: 'analytics',
+    });
+    expect(customGoogle.ai_context).toEqual({custom: {owner: 'data-team'}});
+    expect(customVanilla.ai_context).toEqual({owner: 'data-team'});
+    expect(onlyUndefinedDoc.ai_context).toEqual({instructions: 'only'});
+    expect(emptyContextDoc.ai_context).toBeUndefined();
+  });
+
+  test(
+      'emits metric entity only from authoredEntity under 0.2.0.dev0/google',
+      () => {
+        const model: SemanticModel = {
+          ...emptyModel,
+          entities: [{
+            ...baseOrders,
+            fields: [idField, {name: 'amt', expression: 'amt'}],
+          }],
+          metrics: [
+            {
+              name: 'authored',
+              entity: 'orders',
+              authoredEntity: 'orders',
+              expression: 'SUM(orders.amt)',
+            },
+            {name: 'derived', entity: 'orders', expression: 'SUM(orders.amt)'},
+          ],
+        };
+
+        const googleDoc =
+            firstModelDoc({...model, version: '0.2.0.dev0/google'});
+        const vanillaDoc = firstModelDoc({...model, version: '0.2.0.dev0'});
+
+        expect(googleDoc.metrics[0].entity).toBe('orders');
+        expect(googleDoc.metrics[1].entity).toBeUndefined();
+        expect(vanillaDoc.metrics[0].entity).toBeUndefined();
+        expect(vanillaDoc.metrics[1].entity).toBeUndefined();
+      });
+
+  test(
+      'omits Google-only keys under 0.2.0.dev0 and warns on missing source',
+      () => {
+        const target =
+            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const model: SemanticModel = {
+          ...emptyModel,
+          version: '0.2.0.dev0',
+          deployments: [{name: 'prod', target}],
+          entities: [
+            {...baseOrders, name: 'base', dataSource: '', abstract: true},
+            {...baseOrders, extends: ['base']},
+          ],
+          relationships: [{
+            name: 'rel',
+            source: {entity: 'orders', columns: ['id']},
+            destination: {entity: 'base', columns: ['id']},
+            description: 'rel desc',
+          }],
+          actions: [{
+            name: 'act',
+            executor:
+                {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+            parameters: [],
+          }],
+          constraints: [{
+            name: 'con',
+            judgment: 'orders.id is valid',
+            onViolation: 'reject',
+          }],
+        };
+        const warnings: string[] = [];
+
+        const doc = firstModelDoc(model, warnings);
+
+        expect(doc.deployments).toBeUndefined();
+        expect(doc.actions).toBeUndefined();
+        expect(doc.constraints).toBeUndefined();
+        expect(doc.datasets[0].abstract).toBeUndefined();
+        expect(doc.datasets[0].source).toBeUndefined();
+        expect(doc.datasets[1].extends).toBeUndefined();
+        expect(doc.relationships[0].description).toBeUndefined();
+        expect(warnings.some(w => w.includes('entity \'base\' has no source')))
+            .toBe(true);
+      });
+
+  for (const version of ['0.2.0.dev0/google', '0.2.0.dev0'] as const) {
+    test(`omits datatype Opaque on fields and metrics in ${version}`, () => {
+      const model: SemanticModel = {
+        ...emptyModel,
+        version,
+        entities: [{
+          ...baseOrders,
+          fields: [
+            {...idField, type: 'String'},
+            {name: 'payload', type: 'Opaque', expression: 'payload'},
+          ],
+        }],
+        metrics: [{name: 'm1', type: 'Opaque', expression: 'COUNT(orders.id)'}],
+      };
+
+      const doc = firstModelDoc(model);
+      const list = doc.entities ?? doc.datasets;
+
+      expect(list[0].fields[0].datatype).toBe('String');
+      expect(list[0].fields[1].datatype).toBeUndefined();
+      expect(doc.metrics[0].datatype).toBeUndefined();
+    });
+  }
+
+  for (const version of ['0.2.0.dev0/google', '0.2.0.dev0'] as const) {
+    test(
+        `round-trips custom_extensions across all 5 IR types in ${version}`,
+        () => {
+          const ext: CustomExtension[] = [
+            {vendorName: 'DBT', data: '{"meta":"v"}'},
+          ];
+          const stringForm = version === '0.2.0.dev0/google';
+          const typedId: Field = {
+            ...idField,
+            type: 'String',
+            stringForm,
+            dialects: [{dialect: 'ANSI_SQL', expression: 'id'}],
+          };
+          const model: SemanticModel = {
+            ...emptyModel,
+            version,
+            customExtensions: ext,
+            entities: [
+              {
+                ...baseOrders,
+                authoredSource: 'bigquery:p.d.orders',
+                customExtensions: ext,
+                fields: [{...typedId, customExtensions: ext}],
+              },
+              {
+                ...baseOrders,
+                name: 'customers',
+                dataSource: 'p.d.customers',
+                authoredSource: 'bigquery:p.d.customers',
+                fields: [typedId],
+              },
+            ],
+            relationships: [{
+              name: 'orders_customer',
+              source: {entity: 'orders', columns: ['id']},
+              destination: {entity: 'customers', columns: ['id']},
+              customExtensions: ext,
+            }],
+            metrics: [{
+              name: 'total',
+              entity: 'orders',
+              expression: 'COUNT(orders.id)',
+              stringForm,
+              dialects: [
+                {dialect: 'ANSI_SQL', expression: 'COUNT(orders.id)'},
+              ],
+              customExtensions: ext,
+            }],
+          };
+
+          const serialized = serializeModel(model);
+          const reloaded = loadModels(serialized.yaml).models[0];
+
+          expect(serialized.warnings).toEqual([]);
+          expect(reloaded).toEqual(model);
+        });
+  }
+
+  test('warns for each Google-only IR construct dropped under 0.2.0.dev0', () => {
+    const model: SemanticModel = {
+      ...emptyModel,
+      version: '0.2.0.dev0',
+      deployments: [{name: 'prod', target: 'bigquery:p.d'}],
+      entities: [{...baseOrders, extends: ['base']}],
+      relationships: [{
+        name: 'rel',
+        source: {entity: 'orders', columns: ['id']},
+        destination: {entity: 'orders', columns: ['id']},
+        description: 'rel desc',
+      }],
+      metrics: [{
+        name: 'total',
+        authoredEntity: 'orders',
+        expression: 'COUNT(*)',
+      }],
+      actions: [{
+        name: 'act',
+        executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+        parameters: [],
+      }],
+      constraints: [{
+        name: 'con',
+        judgment: 'orders.id is valid',
+        onViolation: 'reject',
+      }],
+    };
+
+    const {warnings} = serializeModel(model);
+
+    expect(warnings).toEqual([
+      `model 'm': 'deployments' has no representation under '0.2.0.dev0' and is not serialized`,
+      `model 'm': 'actions' has no representation under '0.2.0.dev0' and is not serialized`,
+      `model 'm': 'constraints' has no representation under '0.2.0.dev0' and is not serialized`,
+      `entity 'orders': 'extends' has no representation under '0.2.0.dev0' and is not serialized`,
+      `relationship 'rel': 'description' has no representation under '0.2.0.dev0' and is not serialized`,
+      `metric 'total': 'entity' has no representation under '0.2.0.dev0' and is not serialized`,
+    ]);
+  });
+
+  test(
+      'warns when an imported expression has a dialect outside ALLOWED_DIALECTS',
+      () => {
+        const model: SemanticModel = {
+          ...emptyModel,
+          entities: [{
+            ...baseOrders,
+            fields: [
+              {
+                name: 'amt',
+                expression: 'orders.amt',
+                importedExpression: 'orders.AMT',
+                importedDialect: 'BIGQUERY',
+              },
+              {
+                name: 'unknown_dialect',
+                expression: 'orders.id',
+                importedExpression: 'orders.ID',
+                importedDialect: 'IMPORTED',
+              },
+            ],
+          }],
+        };
+
+        const {warnings} = serializeModel(model);
+
+        expect(warnings).toEqual([
+          `field 'unknown_dialect': imported expression in dialect 'IMPORTED' is not a dialect the loader accepts and is not serialized`,
+        ]);
+      });
+
+  test('warns when a 0.2.0.dev0 relationship has no join columns', () => {
+    const model: SemanticModel = {
+      ...emptyModel,
+      version: '0.2.0.dev0',
+      entities: [
+        baseOrders,
+        {...baseOrders, name: 'customers', dataSource: 'p.d.customers'},
+      ],
+      relationships: [{
+        name: 'orders_customer',
+        source: {entity: 'orders', columns: []},
+        destination: {entity: 'customers', columns: []},
+      }],
+    };
+
+    const {warnings} = serializeModel(model);
+
+    expect(warnings).toEqual([
+      `relationship 'orders_customer': no join columns; a '0.2.0.dev0' document requires from_columns and to_columns and will not load until they are set.`,
+    ]);
+  });
+
+  test('0.2.0.dev0 output drops a field-level GOOGLE block with a warning', () => {
+    const google: CustomExtension[] = [
+      {vendorName: 'GOOGLE', data: '{"label":"Id"}'},
+    ];
+    const model: SemanticModel = {
+      ...emptyModel,
+      version: '0.2.0.dev0',
+      entities: [{
+        ...baseOrders,
+        authoredSource: 'bigquery:p.d.orders',
+        fields: [{
+          name: 'id',
+          expression: 'id',
+          dialects: [{dialect: 'ANSI_SQL', expression: 'id'}],
+          customExtensions: google,
+        }],
+      }],
+    };
+
+    const {yaml: text, warnings} = serializeModel(model);
+
+    expect(() => loadModels(text)).not.toThrow();
+    expect(warnings).toEqual([
+      `field 'id': 1 GOOGLE custom_extension(s) have no representation on a field under '0.2.0.dev0' and are not serialized`,
+    ]);
   });
 });

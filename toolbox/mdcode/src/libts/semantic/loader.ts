@@ -115,7 +115,7 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 //     it would carry is a native key here.
 // Both parse into the same IR, so a downstream leg never sees the difference.
 export const OSSIE_VERSION = '0.2.0.dev0';
-const GOOGLE_VERSION = '0.2.0.dev0/google';
+export const GOOGLE_VERSION = '0.2.0.dev0/google';
 // How a vanilla author gets the `deployments:` key: the end of every message
 // that asks a vanilla model for something only the Google flavor can say.
 export const DEPLOYMENTS_VERSION_HINT =

@@ -51,10 +51,10 @@ agree on every structural row and differ only where a Spanner target has no
 
 1. **Field type source.** The graph uses the source column's own type; a
    field's authored `datatype` is not carried.
-2. **Field type collapses.** Field types round-trip except two collapses: no
-   type → `Opaque`, and `String` → un-typed. Both store as `dataType STRING`,
-   disambiguated by `metadataType` (`OTHER` → read back as `Opaque`; `STRING` →
-   read back un-typed) — which is what lets them round-trip differently.
+2. **Field type collapse.** Field types round-trip except one collapse:
+   `String` → un-typed. A field with no type and a `String` field both store
+   `dataType STRING` (with `metadataType` `OTHER` and `STRING` respectively),
+   and `pull` writes no `datatype` for either, so only `String` is lost.
 3. **Dimension role.** The default push omits the per-field `semantics` block,
    so the dimension role is written only with `--emit-expressions` — and then
    comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
@@ -81,10 +81,8 @@ agree on every structural row and differ only where a Spanner target has no
 9. **Other custom extensions.** Under the vanilla `0.2.0.dev0` profile a
    `custom_extensions` block (other than a GOOGLE deployment target) is the only
    carrier for vendor metadata; it is inert on push and not persisted to
-   Knowledge Catalog, so `pull` never recovers it. `pull` also emits the extended
-   `0.2.0.dev0/google` profile, which has no `custom_extensions` carrier, so such
-   a block is not re-serialized either — keep your authored file. The OWL importer
-   emits none: it is import-only (see [Importing an OWL
+   Knowledge Catalog, so `pull` never recovers it — keep your authored file. The
+   OWL importer emits none: it is import-only (see [Importing an OWL
    ontology](owl-import.md)).
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
@@ -314,10 +312,9 @@ returns that view. Two things about *how* it comes back:
 - Relationship *names* come back lowercased/hyphenated (`Places Order` →
   `places-order`); the catalog stores the name only in the link id. See
   [Writer-side follow-up](#writer-side-follow-up).
-- Field types round-trip except two collapses: a field authored with no type
-  comes back as `Opaque`, and a field authored as `String` comes back un-typed
-  (both store `dataType STRING`, kept distinct by a field's `metadataType` — see
-  footnote ²). A metric's data
+- Field types round-trip except one collapse: a field authored as `String`
+  comes back un-typed (both no type and `String` store `dataType STRING`, kept
+  distinct by a field's `metadataType` — see footnote ²). A metric's data
   type round-trips only for a concrete type (e.g. `Decimal`); an untyped,
   `String`, or `Opaque` metric comes back un-typed, because the metric aspect
   stores a data type but no metadata type to mark it `Opaque`.

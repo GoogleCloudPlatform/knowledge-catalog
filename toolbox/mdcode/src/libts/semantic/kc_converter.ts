@@ -337,6 +337,14 @@ function readMetric(
     // fall back to the attach entity the emitter persisted (metricAspectData)
     // rather than dropping it.
     metric.entity = persistedEntity;
+    // A recovered expression that cannot re-derive the anchor means the author
+    // wrote it; mark it authored so the serializer writes `entity:` back. Not
+    // when the anchor names a dataset this pull did not rebuild: a derived
+    // anchor is persisted too, and `entity:` naming no dataset would not load.
+    // With no expression (a default push) the metric cannot reload either way.
+    if (exprForRefs && entityNames.includes(persistedEntity)) {
+      metric.authoredEntity = persistedEntity;
+    }
   } else if (cols !== undefined && exprForRefs && !referenced.length) {
     // Parity with the loader's convertMetric: an expression that qualifies no
     // known entity is flagged as potentially unplaceable downstream.

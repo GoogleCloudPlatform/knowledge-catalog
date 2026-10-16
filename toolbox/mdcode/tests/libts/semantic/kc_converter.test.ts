@@ -917,6 +917,86 @@ describe('metric attach entity is re-derived from the expression', () => {
       });
 
   test(
+      'push -> pull -> serialize keeps an authored metric entity the expression cannot pin',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [
+            {
+              name: 'orders',
+              authoredSource: 'bigquery:p.d.orders',
+              dataSource: 'p.d.orders',
+              keys: ['id'],
+              fields: [
+                {name: 'id', expression: 'orders.id'},
+                {name: 'amt', expression: 'orders.amt'},
+              ],
+            },
+            {
+              name: 'customer',
+              authoredSource: 'bigquery:p.d.customer',
+              dataSource: 'p.d.customer',
+              keys: ['id'],
+              fields: [
+                {name: 'id', expression: 'customer.id'},
+                {name: 'region', expression: 'customer.region'},
+              ],
+            },
+          ],
+          relationships: [],
+          metrics: [{
+            name: 'mix',
+            entity: 'orders',
+            expression: 'SUM(orders.amt) / COUNT(customer.region)',
+          }],
+        };
+
+        const {models} = roundTripFull(model);
+        const {yaml} = serializeModel(models[0]);
+        const reloaded = loadModels(yaml).models[0];
+
+        expect(models[0].metrics[0].authoredEntity).toBe('orders');
+        expect(reloaded.metrics[0].entity).toBe('orders');
+      });
+
+  test(
+      'a persisted metric entity the pull did not reconstruct is not marked authored',
+      () => {
+        const authored = [
+          'version: 0.2.0.dev0/google',
+          'semantic_model:',
+          '  - name: m',
+          '    entities:',
+          '      - name: orders',
+          '        source: bigquery:p.d.orders',
+          '        primary_key: [amt]',
+          '        fields: [{name: amt, expression: orders.amt}]',
+          '      - name: customer',
+          '        source: bigquery:p.d.customer',
+          '        primary_key: [region]',
+          '        fields: [{name: region, expression: customer.region}]',
+          '    metrics:',
+          '      - name: total',
+          '        expression: SUM(orders.amt)',
+        ].join('\n');
+        const [source] = loadModels(authored).models;
+
+        const {entries, entryLinks} =
+            generateCatalogResources(source, {...OPTS, emitExpressions: true});
+        const kept = entries.filter(
+            e =>
+                !(e.entryType?.endsWith('/semantic-entity') &&
+                  e.name?.endsWith('.orders')));
+        const [pulled] = modelsFromCatalogResources(kept, entryLinks).models;
+        const {yaml: text} = serializeModel(pulled);
+
+        expect(source.metrics[0].authoredEntity).toBeUndefined();
+        expect(pulled.entities.map(e => e.name)).toEqual(['customer']);
+        expect(pulled.metrics[0].authoredEntity).toBeUndefined();
+        expect(() => loadModels(text)).not.toThrow();
+      });
+
+  test(
       'infers metric entity from the leading qualifier of a struct path and ignores function namespaces like NET.HOST',
       () => {
         const model: SemanticModel = {
