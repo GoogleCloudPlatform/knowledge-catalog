@@ -209,6 +209,35 @@ semantic_model:
 });
 
 
+// A BigQuery table name may hold characters a dataset name may not, such as a
+// `$` or a letter outside ASCII. The loader accepts them. The table is still
+// in the graph's dataset, so the runtime gives that store.
+describe('a BigQuery table name with $ or a non-ASCII letter', () => {
+  for (const table of ['orders$20260101', 'bestellungen_ä']) {
+    test(`'${table}' in the graph dataset: every command accepts it`,
+         async () => {
+           writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${BQ('graphs')}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${BQ('graphs')}/tables/${table}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: order_id }
+`});
+           const r = await runAll();
+           expect(codes(r))
+               .toEqual({push: 0, report: 0, printStore: 0, skills: 0});
+           expect(r.printStore.out).toBe('bigquery:acme/graphs');
+         });
+  }
+});
+
+
 // A deployment whose `profile` names no profile the model declares. Push
 // refuses any deployment that names a profile, and the runtime refuses one
 // that names an undeclared profile.

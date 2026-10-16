@@ -94,9 +94,10 @@ const LEGACY_ALLOYDB_TABLE_SOURCE =
 
 // A BigQuery table an entity is bound to. The loader rewrites the resource-name
 // URI an author may write into `project.dataset.table`, which is the form the
-// generator emits and the only one that reaches here.
-const BIGQUERY_TABLE_SOURCE =
-    /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.[A-Za-z0-9_-]+$/;
+// generator emits and the only one that reaches here. The table name takes any
+// character the loader allows in one, which is anything but a dot or a slash,
+// so a name with `$` or a letter outside ASCII is still a table here.
+const BIGQUERY_TABLE_SOURCE = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.[^./]+$/;
 
 
 // The database a bound table sits in, or undefined when the source names no
