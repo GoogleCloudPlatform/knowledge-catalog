@@ -59,7 +59,7 @@
 // Many-to-many (association / junction-table) edges are not emitted yet: a
 // junction is two joins through a third table, which schema-join's single
 // source/target pair does not model; the emitter warns and skips them (the edge
-// still lives in the BigQuery property graph, see bigquery.ts).
+// still lives in the BigQuery property graph, see graph_ddl.ts).
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';

@@ -200,7 +200,7 @@ export function generateGraphDdl(
   // it). The result is keyed by entity name; entries on a skipped entity simply
   // never render.
   const entityByName = new Map(entities.map(e => [e.name, e]));
-  const measuresByEntity = engine.placeMetrics(
+  const measurePropertiesByEntity = engine.placeMetrics(
       metrics, {entityByName, skipped, ancestorsUsed}, warnings);
 
   // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
@@ -218,8 +218,8 @@ export function generateGraphDdl(
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
-          entity, measuresByEntity.get(entity.name) ?? [], labelByName,
-          ancestorsUsed.has(entity.name), engine, warnings));
+          entity, measurePropertiesByEntity.get(entity.name) ?? [],
+          labelByName, ancestorsUsed.has(entity.name), engine, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -256,7 +256,7 @@ export function generateGraphDdl(
 
 
 function renderNodeTable(
-    entity: Entity, measures: string[],
+    entity: Entity, measureProperties: string[],
     labelByName: Map<string, Entity>, isSupertype: boolean,
     engine: GraphEngine, warnings: string[]): string {
   const table =
@@ -342,7 +342,7 @@ function renderNodeTable(
         `model in Knowledge Catalog instead)`);
     return false;
   });
-  const properties = [...boundFields.map(renderOwn), ...measures];
+  const properties = [...boundFields.map(renderOwn), ...measureProperties];
 
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
