@@ -378,7 +378,7 @@ concrete leaves).
 
 When the deployment target is a Spanner Graph URI, `push` executes the same
 `CREATE OR REPLACE PROPERTY GRAPH` — but generated for Spanner Graph, which
-differs from BigQuery Graph in four ways:
+differs from BigQuery Graph in five ways:
 
 | Model element | Spanner construct | Notes |
 |---|---|---|
@@ -398,6 +398,8 @@ differs from BigQuery Graph in four ways:
   the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See
   [What push and pull preserve](fidelity.md#to-spanner).
+- **Its own SQL.** A field reads its `SPANNER` expression, else its `ANSI_SQL`
+  one, and is left out with a warning when it has neither.
 - **Async DDL.** The statement is applied through the Spanner Admin
   `updateDatabaseDdl` long-running operation, polled to completion (BigQuery runs
   its DDL through `jobs.query`). No region detection is needed — the DDL runs in

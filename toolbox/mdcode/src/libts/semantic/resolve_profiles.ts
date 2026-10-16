@@ -647,7 +647,7 @@ export interface AvailabilityReport {
  * no executor dropped. A field counts whether the entity declares or inherits
  * it. What a field or metric reads comes from the text `dialect` evaluates,
  * which defaults to the dialect the model's sources imply, and from the text
- * the Spanner graph generator emits (see prunedTexts). When the sources are in
+ * `fieldBinding` gives (see prunedTexts). When the sources are in
  * systems of different dialects, or one names no system, there is no dialect
  * and every text counts.
  * The input is never mutated. The report names each dropped block
@@ -1332,8 +1332,7 @@ export function profileSourceMessage(entity: string): string {
 // entityAndMetricWarnings, which builds them with the helpers the load uses,
 // then the model file's other load warnings, about actions, which a profile
 // does not change. That is the order a load gives them. The applied model is
-// judged in the load's dialect, which picked the text each field holds and
-// the generators emit.
+// judged in the load's dialect, which picked the text each field holds.
 function warningsAfterProfile(
     model: SemanticModel, applied: SemanticModel,
     opts: Omit<ApplyProfileOptions, 'warnings'>): string[] {
@@ -1903,11 +1902,8 @@ function evaluatedTexts(
 }
 
 // The texts pruning reads: those a profile of `dialect` evaluates, and the text
-// the Spanner graph generator emits today, which is `fieldBinding` whatever the
-// engine. Reading both keeps a deployed graph from reading a field the profile
-// leaves unbound. The BigQuery generator already emits its own engine's text;
-// once Spanner does too, the emitted text adds nothing and this can read
-// `textsFor` alone.
+// `fieldBinding` gives. The BigQuery graph emits that text when push's
+// `--transpile` pass wrote it for an item that had only vendor text.
 function prunedTexts(
     f: Pick<
         Field,
@@ -2385,7 +2381,7 @@ export function validateProfileConsistency(
 
   const byName = new Map(entities.map(e => [e.name, e]));
   // Each binding's fields, so a key or join column that names a field is read
-  // as that field's column, as the graph generators read it. A value the
+  // as that field's column, as the BigQuery graph reads it. A value the
   // loader's readers reject is left unapplied; the completeness check reports
   // it.
   const baseFields = fieldsByEntity(baseModel);

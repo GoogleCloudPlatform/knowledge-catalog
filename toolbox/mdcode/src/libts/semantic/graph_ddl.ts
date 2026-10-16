@@ -17,8 +17,7 @@
 //   4. SQL text. Which SQL a field binds to: the engine's own dialect entry
 //      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one.
 //
-// ./bigquery supplies the BigQuery engine; spanner.ts still writes its own
-// graph.
+// ./bigquery supplies the BigQuery engine, and ./spanner the Spanner engine.
 //
 
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';

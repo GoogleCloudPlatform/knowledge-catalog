@@ -82,10 +82,10 @@ export function sqlWithoutComments(text: string, dialect?: string): string {
 
 // `field`'s binding, as fieldBinding gives it, with its comments removed.
 // Undefined when the field is unbound. The target text is read in
-// `targetDialect`, BigQuery unless given, which is how the Spanner generator
-// reads it. The parser reads Spanner SQL as BigQuery. Imported vendor SQL, the
-// binding only when there is no target text, is read in its imported dialect,
-// so it keeps what that dialect does not read as a comment.
+// `targetDialect`, BigQuery unless given. The parser reads Spanner SQL as
+// BigQuery. Imported vendor SQL, the binding only when there is no target
+// text, is read in its imported dialect, so it keeps what that dialect does
+// not read as a comment.
 export function fieldBindingWithoutComments(
     field: Pick<Field, 'expression'|'importedExpression'|'importedDialect'>,
     targetDialect?: string): string|undefined {
@@ -96,7 +96,7 @@ export function fieldBindingWithoutComments(
       field.expression === undefined ? field.importedDialect : targetDialect);
 }
 
-// The physical column a key or join column names, as the graph generators read
+// The physical column a key or join column names, as the BigQuery graph reads
 // it: a name that matches one of the entity's fields is that field's column,
 // read without its comments, and any other name is a column already. Undefined
 // when the name is a field with no column in this binding.

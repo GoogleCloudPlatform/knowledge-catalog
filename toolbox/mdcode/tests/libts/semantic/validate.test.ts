@@ -2227,8 +2227,8 @@ ${extraMetric}`;
             {dialect: 'POSTGRES' as const, expression: ' '},
           ],
         },
-        // The graph generators write `expression`, which here is not the
-        // text of any dialect entry.
+        // `expression` is not the text of any dialect entry here. Knowledge
+        // Catalog stores `expression` when push runs with --emit-expressions.
         {
           name: 'stale',
           expression: '/* old */',
@@ -2283,8 +2283,8 @@ ${extraMetric}`;
       const m = model({entities: [base, sub]});
       expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
           .toEqual(expected);
-      // The graph generators write `expression`, which here is not the text
-      // of the dialect entry.
+      // `expression` is not the text of the dialect entry here. Knowledge
+      // Catalog stores `expression` when push runs with --emit-expressions.
       const stale: Entity = {
         ...base,
         fields: [

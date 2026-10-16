@@ -291,8 +291,8 @@ interface BoundField {
 // names the column `order_id` on the entity and on every entity that inherits
 // it. On a PostgreSQL store the binding is the text the database runs, the
 // field's ALLOYDB or ANSI_SQL entry, read as PostgreSQL, where `#` starts no
-// comment. A field with neither keeps the text the Spanner graph generator
-// writes, read the same way.
+// comment. A field with neither keeps its binding as fieldBinding gives it,
+// read the same way.
 function boundFields(entity: Entity, dialect: SqlDialect): BoundField[] {
   const postgres = dialect.name === 'PostgreSQL';
   const bound: BoundField[] = [];

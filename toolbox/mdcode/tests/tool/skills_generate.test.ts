@@ -634,10 +634,9 @@ semantic_model:
   });
 
   test('an AlloyDB store reads the text that database runs', async () => {
-    // The BIGQUERY entry is the text the graph generators write. An AlloyDB
+    // The BIGQUERY entry is the text the BigQuery graph writes. An AlloyDB
     // database runs the ALLOYDB entry, or else the ANSI_SQL one. A field with
-    // neither, such as one with only a POSTGRES entry, keeps the text the
-    // generators write.
+    // neither, such as one with only a POSTGRES entry, keeps its binding.
     const model = (amount: string) => hierarchy(
         `${CLUSTER}/databases/commerce`,
         name => `${CLUSTER}/databases/commerce/schemas/public/tables/${name}`,

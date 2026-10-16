@@ -285,7 +285,7 @@ expression:                               # explicit per-dialect
     - { dialect: ANSI_SQL, expression: "SUM(orders.net_amount)" }
 ```
 
-The shorthand string normalizes to a single `BIGQUERY` dialect. `ANSI_SQL` is the
+The shorthand string normalizes to a single `ANSI_SQL` dialect. `ANSI_SQL` is the
 portable fallback. An `expression` references logical fields as
 `entity.field`; the qualifiers are what let a metric's entity be derived
 ([§2.3](#23-metric)).

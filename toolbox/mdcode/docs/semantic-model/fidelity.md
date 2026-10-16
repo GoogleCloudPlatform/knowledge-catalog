@@ -47,7 +47,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
 | Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
 | Binding profile (alternate physical binding)                   | — only the selected one¹⁴       | —¹⁴                                            | one graph per BigQuery-bound profile                                 | one graph per Spanner-bound profile                                  |
-| Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | — not used; a field or metric with only vendor text is left out     | fallback — builds the DDL only when no canonical `expression` exists |
+| Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | — not used; a field or metric with only vendor text is left out     | — not used; a field with only vendor text is left out               |
 | `custom_extensions` from a vendor other than GOOGLE            | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
 1. **Field type source.** The graph uses the source column's own type; a
@@ -98,9 +98,8 @@ agree on every structural row and differ only where a Spanner target has no
     SQL `push --transpile` translated from the vendor text. It never emits the
     vendor text. A field with none of these is left out of its node table with
     a warning. A metric with none, or one that aggregates such a field, is
-    skipped with a warning. A Spanner graph builds from the canonical
-    (BigQuery/ANSI) variant and uses the vendor text verbatim when no canonical
-    variant exists. See
+    skipped with a warning. A Spanner graph reads a field's `SPANNER` entry,
+    else its `ANSI_SQL` one, and leaves out a field with neither. See
     [Model spec §2.5](model_spec.md#25-expressions).
 12. **Actions.** An action reaches Knowledge Catalog only, as one
     `semantic-action` entry under the model entry, and `pull` reads it back from
@@ -188,8 +187,7 @@ templates gain the fields. The catalog never stores `ai_context.synonyms` /
 `instructions` have a home, in the `guidelines` aspect), or the original vendor
 SQL (`importedExpression` — for example the MAQL or Snowflake form a metric was
 imported from). Those stay in your authored document. The expressions build the
-graph SQL. The vendor SQL builds only Spanner graph SQL, when no canonical
-expression exists.
+graph SQL.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
@@ -276,7 +274,7 @@ warning.
 A Spanner target keeps the queryable **structure** and drops the descriptive
 metadata. The node tables, edge tables, and labels (including the `extends`
 hierarchy, with fields flattened down) deploy exactly as they do for BigQuery,
-but with bare table and graph names. Two things do not make the trip, both by
+but with bare table and graph names. Three things do not make the trip, all by
 design:
 
 - **Metrics.** Spanner has no `MEASURE`, so every model-level metric is
@@ -291,6 +289,8 @@ design:
   on their entries and the `guidelines` aspect), so the descriptive layer lives in
   the catalog rather than in the Spanner graph. This mirrors how BigQuery drops
   its graph-*statement* `OPTIONS` while keeping per-element ones.
+- **Another engine's SQL.** A field reads its `SPANNER` expression, else its
+  `ANSI_SQL` one, and is left out with a warning when it has neither.
 
 Everything else — keys, relationships, the label hierarchy — matches the
 **→ BigQuery** column above.

@@ -296,8 +296,8 @@ export function isTimeDimension(field: Field): boolean {
 // `expression` wins; a field awaiting transpilation falls back to its imported
 // vendor expression, which still names a real column. Undefined here is not
 // the same as unbound: a field bound only through a `dialects` list has no
-// text here yet counts as bound (see isFieldBound). The BigQuery generator
-// asks for its own engine's text through `expressionForDialect` instead.
+// text here yet counts as bound (see isFieldBound). The graph generators ask
+// for their own engine's text through `expressionForDialect` instead.
 export function fieldBinding(
     field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
