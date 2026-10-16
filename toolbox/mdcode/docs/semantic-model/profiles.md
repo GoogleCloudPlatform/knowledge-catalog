@@ -71,10 +71,11 @@ and physical is visible on disk.
 ## Sources
 
 Each entity names where its data lives with `source`. A Google Cloud table is
-written as its [AIP-122](https://google.aip.dev/122) resource name, such as
+written as its [AIP-122](https://google.aip.dev/122) full resource name, such as
 `//bigquery.googleapis.com/…`, `//biglake.googleapis.com/…`,
-`//spanner.googleapis.com/…` or `//alloydb.googleapis.com/…`, and is read with
-ambient IAM. Any other table is written as its Knowledge Catalog name, under
+`//spanner.googleapis.com/…` or `//alloydb.googleapis.com/…`, with or without
+the leading `//`, and is read with ambient IAM. Any other table is written as
+its Knowledge Catalog name, under
 one of the prefixes `bigquery:`, `spanner:`, `alloydb:`, `cloudsql_mysql:`,
 `mysql:`, `cloudsql_postgresql:`, `postgresql:`, `snowflake:` or
 `databricks:table:`. A bare table name, a query, and any other prefix are

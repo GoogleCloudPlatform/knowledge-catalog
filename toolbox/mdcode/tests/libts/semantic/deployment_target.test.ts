@@ -141,6 +141,51 @@ describe('resolveModelDeployments: resource URIs', () => {
 });
 
 
+// A target may be written as its GCP resource name: the resource
+// URI without the leading `//`. It parses to the same engine and coordinates,
+// and `uri` keeps the form the author wrote, which is what pull returns.
+describe('resolveModelDeployments: GCP resource names', () => {
+  for (const [label, uri] of [
+         ['BigQuery graph', BQ_URI],
+         ['Spanner graph', SPANNER_URI],
+         ['AlloyDB database', ALLOY_URI],
+       ]) {
+    test(`a ${label} written as a resource name parses like its URI`, () => {
+      const name = uri.slice(2);
+      const [fromName] = resolved(modelWith([{name: 'prod', target: name}]));
+      const [fromUri] = resolved(modelWith([{name: 'prod', target: uri}]));
+      expect(fromName.engine).toBe(fromUri.engine);
+      expect(fromName.coordinates).toEqual({...fromUri.coordinates, uri: name});
+    });
+  }
+
+  test('the instance-based AlloyDB resource name gets the same message', () => {
+    const name = ALLOY_INSTANCE_URI.slice(2);
+    const error = errorOf(modelWith([{name: 'alloy_prod', target: name}]));
+    expect(error).toContain('the instance-based AlloyDB URI');
+    expect(error).toContain(`write '${ALLOY_URI}'.`);
+  });
+
+  test('a resource name of no supported destination is rejected', () => {
+    const target =
+        'bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders';
+    expect(errorOf(modelWith([{name: 'bq_prod', target}])))
+        .toContain(
+            `deployment 'bq_prod' targets '${target}', which is not a ` +
+            'BigQuery graph, a Spanner graph or an AlloyDB database');
+  });
+
+  test('a resource name and its URI are the same target', () => {
+    expect(() => modelWith([
+      {name: 'a', target: BQ_URI},
+      {name: 'b', target: BQ_URI.slice(2)},
+    ])).toThrow(
+        `deployments 'a' and 'b' target the same resource '${
+            BQ_URI.slice(2)}'`);
+  });
+});
+
+
 // kcmd accepts no Knowledge Catalog name as a target, and the error names the
 // resource URI form to write.
 describe('resolveModelDeployments: Knowledge Catalog names', () => {
@@ -180,7 +225,7 @@ describe('resolveModelDeployments: Knowledge Catalog names', () => {
 
 
 describe('destinationKey', () => {
-  test('is the target as written', () => {
+  test('is the resource URI of a target written as one', () => {
     expect(destinationKey(BQ_URI)).toBe(BQ_URI);
     expect(destinationKey(SPANNER_URI)).toBe(SPANNER_URI);
     expect(destinationKey(ALLOY_URI)).toBe(ALLOY_URI);
@@ -189,6 +234,12 @@ describe('destinationKey', () => {
 
   test('names a legacy AlloyDB database by its cluster-based URI', () => {
     expect(destinationKey(ALLOY_INSTANCE_URI)).toBe(ALLOY_URI);
+  });
+
+  test('is the same for a resource name and its URI', () => {
+    expect(destinationKey(BQ_URI.slice(2))).toBe(BQ_URI);
+    expect(destinationKey(ALLOY_URI.slice(2))).toBe(ALLOY_URI);
+    expect(destinationKey(ALLOY_INSTANCE_URI.slice(2))).toBe(ALLOY_URI);
   });
 });
 
@@ -302,5 +353,23 @@ semantic_model:
       database: 'sales',
       uri: ALLOY_INSTANCE_URI,
     }]);
+
+    // Written as a resource name, it parses the same and keeps its spelling.
+    const name = ALLOY_INSTANCE_URI.slice(2);
+    const fromName = loadModels(
+                         `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: retail
+    deployment_target: ${name}
+    entities:
+      - name: Order
+        primary_key: [id]
+        fields:
+          - { name: id }
+`,
+                         {bindingOptional: true, allowLegacyBareSource: true})
+                         .models[0];
+    expect(googleDeploymentTargets(fromName).alloyDb)
+        .toEqual([{...googleDeploymentTargets(model).alloyDb[0], uri: name}]);
   });
 });

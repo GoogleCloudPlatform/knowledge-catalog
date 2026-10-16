@@ -195,6 +195,21 @@ describe('validatePushRequirements', () => {
     expect(validatePushRequirements([loaded(blank)])).toEqual([]);
   });
 
+  // A resource name and its URI name the same graph, so listing both is a
+  // repeat, and a single resource name is a valid target.
+  test('a resource name and its URI are the same target', () => {
+    const both = model({version: '0.2.0.dev0'},
+                       [googleExt([BQ_TARGET, BQ_TARGET.slice(2)])]);
+    expect(validatePushRequirements([loaded(both)], {targetOptional: true}))
+        .toEqual([
+          `model 'm' (doc) declares duplicate deployment target '${
+              BQ_TARGET.slice(2)}'; each deployment must target a distinct ` +
+              `resource.`,
+        ]);
+    const name = model({}, [googleExt([BQ_TARGET.slice(2)])]);
+    expect(validatePushRequirements([loaded(name)])).toEqual([]);
+  });
+
   test('malformed GOOGLE extension JSON is reported, not thrown', () => {
     const m = model({}, [{vendorName: 'GOOGLE', data: '{not json'}]);
     const errs = validatePushRequirements([loaded(m)]);

@@ -500,6 +500,41 @@ semantic_model:
             "'//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
+  // A resource name and its URI name the same graph.
+  test('push refuses two model files that deploy one graph written two ways', async () => {
+    const eg = setupWorkspace();
+    spyOn(globalThis, 'fetch').mockImplementation((() => {
+      throw new Error('unexpected network call');
+    }) as any);
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation(() => {});
+    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
+    const graph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const modelFile = (name: string, target: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: ${name}
+    deployments:
+      - name: prod
+        target: ${target}
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`;
+    fs.writeFileSync(path.join(eg, 'a.yaml'), modelFile('a', `//${graph}`));
+    fs.writeFileSync(path.join(eg, 'b.yaml'), modelFile('b', graph));
+
+    expect(await push({kc: false, validateOnly: true})).toBe(1);
+    expect(bqSpy).not.toHaveBeenCalled();
+    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
+        .toContain(
+            "model 'a' under binding profile 'default' and model 'b' under " +
+            "binding profile 'default' both deploy to the same graph " +
+            `'${graph}'`);
+  });
+
   test('push refuses a deployment naming a profile when it sits in the second of two model files', async () => {
     const eg = setupWorkspace();
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});

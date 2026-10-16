@@ -380,8 +380,9 @@ function irDataType(dataType: string|undefined, metadataType: string|undefined):
 
 
 // The inverse of entityAspectData, through the loader's own conversion: a
-// BigQuery or BigLake resource URI or a `bigquery:` catalog name becomes the
-// dot-separated table string; anything else is returned trimmed. An absent
+// BigQuery or BigLake resource URI or resource name, or a `bigquery:` catalog
+// name, becomes the dot-separated table string. A Spanner or AlloyDB resource
+// name becomes its resource URI. Anything else is returned trimmed. An absent
 // resource reads as ''.
 function dataSourceFromResource(resource: string|undefined): string {
   return sourceToDataSource(resource ?? '');

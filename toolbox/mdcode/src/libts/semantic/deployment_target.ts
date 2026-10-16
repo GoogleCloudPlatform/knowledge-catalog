@@ -5,7 +5,7 @@
 // loader also folds every target into `deploymentTargets` in a GOOGLE
 // `custom_extensions` block, which is also where a vanilla document's GOOGLE
 // block carries them. Three destination types are recognized here, each an
-// AIP-122 resource name:
+// AIP-122 full resource name, written with or without its leading `//`:
 //
 //   BigQuery Graph:
 //     //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
@@ -34,6 +34,7 @@
 // validator and named in errors) rather than silently skipped.
 
 import {CustomExtension, DeploymentSpec, SemanticModel} from './ir';
+import {asResourceUri} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
@@ -144,19 +145,21 @@ export type ResolvedDeployment = ParsedDeploymentTarget&{
 };
 
 
-// Parses a deployment target written as a resource URI. Returns undefined for
-// any other form. The legacy instance-based AlloyDB URI parses only when
-// `legacyAlloyDb` is set.
+// Parses a deployment target written as a resource URI or as a GCP resource
+// name, which is the URI without the leading `//`. Returns undefined for any
+// other form. `uri` in the result is the target as written. The legacy
+// instance-based AlloyDB URI parses only when `legacyAlloyDb` is set.
 function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
     ParsedDeploymentTarget|undefined {
-  const bq = uri.match(BQ_GRAPH_TARGET);
+  const resource = asResourceUri(uri);
+  const bq = resource.match(BQ_GRAPH_TARGET);
   if (bq) {
     return {
       engine: 'bigquery',
       coordinates: {project: bq[1], dataset: bq[2], graphName: bq[3], uri},
     };
   }
-  const sp = uri.match(SPANNER_GRAPH_TARGET);
+  const sp = resource.match(SPANNER_GRAPH_TARGET);
   if (sp) {
     return {
       engine: 'spanner',
@@ -169,7 +172,7 @@ function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
       },
     };
   }
-  const ad = uri.match(ALLOYDB_TARGET);
+  const ad = resource.match(ALLOYDB_TARGET);
   if (ad) {
     return {
       engine: 'alloydb',
@@ -182,7 +185,8 @@ function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
       },
     };
   }
-  const legacy = opts.legacyAlloyDb ? uri.match(LEGACY_ALLOYDB_TARGET) : null;
+  const legacy =
+      opts.legacyAlloyDb ? resource.match(LEGACY_ALLOYDB_TARGET) : null;
   if (legacy) {
     return {
       engine: 'alloydb',
@@ -207,13 +211,14 @@ function clusterUri(legacy: RegExpMatchArray): string {
 }
 
 /**
- * The destination a target names. That is the target as written, except for
- * the legacy instance-based AlloyDB URI, which names its database by the
- * cluster-based URI.
+ * The destination a target names: its resource URI, so a resource name and
+ * its URI give the same key. The legacy instance-based AlloyDB URI names its
+ * database by the cluster-based URI.
  */
 export function destinationKey(target: string): string {
-  const legacy = target.match(LEGACY_ALLOYDB_TARGET);
-  return legacy ? clusterUri(legacy) : target;
+  const resource = asResourceUri(target);
+  const legacy = resource.match(LEGACY_ALLOYDB_TARGET);
+  return legacy ? clusterUri(legacy) : resource;
 }
 
 /** Why a deployment's target is not accepted in a `deployments:` list. */
@@ -235,7 +240,7 @@ export function googleBlockTargetError(
 
 // Why `target` is not accepted. `at` says where it is written.
 function targetError(at: string, target: string): string {
-  const legacy = target.match(LEGACY_ALLOYDB_TARGET);
+  const legacy = asResourceUri(target).match(LEGACY_ALLOYDB_TARGET);
   if (legacy) {
     return `${at}, the instance-based AlloyDB URI, which names no real ` +
         `resource. An AlloyDB database belongs to its cluster; write '${
@@ -375,12 +380,18 @@ export function googleBlockTargets(
 // Deployments for targets whose names are not known: a pull reads only the
 // targets back from the catalog, and a vanilla model lists only targets in
 // its GOOGLE block. One target is `default`; several are `deployment_1`,
-// `deployment_2`, and so on. Targets are trimmed, and blank and repeated ones
-// dropped, so the list loads as a `deployments:` list.
+// `deployment_2`, and so on. Targets are trimmed, and blank ones dropped. A
+// repeated target is dropped too, and a resource name repeats its URI, so the
+// list loads as a `deployments:` list.
 export function unnamedDeployments(targets: readonly string[]):
     Array<{name: string; target: string}> {
-  const kept =
-      [...new Set(targets.map(t => t.trim()).filter(t => t !== ''))];
+  const seen = new Set<string>();
+  const kept = targets.map(t => t.trim()).filter(t => {
+    const key = asResourceUri(t);
+    if (t === '' || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
   return kept.map((target, i) => ({
     name: kept.length === 1 ? 'default' : `deployment_${i + 1}`,
     target,

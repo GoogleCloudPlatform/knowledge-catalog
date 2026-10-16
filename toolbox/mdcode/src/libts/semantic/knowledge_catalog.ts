@@ -70,7 +70,7 @@ import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
 import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
 import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
-import {isAcceptedSource} from './loader';
+import {asResourceUri, isAcceptedSource} from './loader';
 import {InheritanceError, resolveInheritance} from './resolve_inheritance';
 
 export interface KcGenerateOptions {
@@ -560,8 +560,9 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
 }
 
 // semantic-entity: the base table backing the entity. A source written as a
-// catalog name, `<system>:...`, is stored whole in `importedResource`;
-// importedSystem is left unset.
+// resource URI or a GCP resource name is stored as written in `resources`. One
+// written as a catalog name, `<system>:...`, is stored whole in
+// `importedResource`; importedSystem is left unset.
 function entityAspectData(entity: Entity): Record<string, any> {
   // A logical-only entity has no physical table (empty dataSource). Still emit
   // the `source` block with an empty `resources` array rather than a bogus
@@ -571,13 +572,19 @@ function entityAspectData(entity: Entity): Record<string, any> {
   // (dataSource becomes '').
   const authored = entity.authoredSource?.trim();
   if (authored !== undefined && isAcceptedSource(authored)) {
-    // Every accepted source is a resource URI, which starts with `//`, or a
-    // catalog name. A catalog name leaves `resources` empty.
-    return authored.startsWith('//') ?
+    // An accepted source is a resource URI, a GCP resource name or a catalog
+    // name. A resource URI or resource name is stored as written in
+    // `resources`, so pull returns it unchanged. A catalog name goes in
+    // `importedResource` and leaves `resources` empty.
+    return asResourceUri(authored).startsWith('//') ?
         {source: {resources: [authored]}} :
         {source: {resources: [], importedResource: authored}};
   }
-  const path = resourcePath(entity.dataSource);
+  // A legacy instance-based AlloyDB URI is stored as written too.
+  const legacy = authored !== undefined &&
+      asResourceUri(authored) === entity.dataSource &&
+      entity.dataSource.startsWith('//');
+  const path = resourcePath(legacy ? authored : entity.dataSource);
   return compact({
     source: {resources: path ? [path] : []},
   });

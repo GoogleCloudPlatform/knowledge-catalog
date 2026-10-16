@@ -19,7 +19,7 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleBlockTargets, googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, DocumentProfile, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
@@ -944,7 +944,8 @@ export async function push(options: PushOptions): Promise<number> {
       noteCatalogOnly(prepared.models);
       for (const m of prepared.models) {
         for (const uri of deploy.deploymentTargetUris(m.model)) {
-          const first = claimedTargets.get(uri);
+          // A resource name and its URI name the same graph.
+          const first = claimedTargets.get(asResourceUri(uri));
           if (first !== undefined) {
             console.error(
                 `Error: model '${first.model}' under binding profile '${
@@ -954,7 +955,8 @@ export async function push(options: PushOptions): Promise<number> {
                 `deployment target (the second would overwrite the first).`);
             return 1;
           }
-          claimedTargets.set(uri, {profile: profileName, model: m.model.name});
+          claimedTargets.set(
+              asResourceUri(uri), {profile: profileName, model: m.model.name});
         }
       }
       graphPlans.push({profileName, prepared});
