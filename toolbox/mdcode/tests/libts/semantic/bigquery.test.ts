@@ -1097,6 +1097,19 @@ describe('a comment in a field expression', () => {
     expect(warnings).toEqual([]);
   });
 
+  test('a metric whose aggregate has no operand is skipped with a warning', () => {
+    // Lowered, it would give a measure input property with no SQL.
+    for (const expression of [
+           'SUM()', 'SUM(/* in cents */)', 'SUM(orders.)', 'COUNT(DISTINCT)',
+           'SUM(DISTINCT orders.)', 'COUNT(DISTINCT /* in cents */)']) {
+      const {ddl, warnings} = generatePropertyGraph(
+          {...model, metrics: [{name: 'revenue', entity: 'orders', expression}]},
+          GEN_OPTS);
+      expect(ddl).not.toContain('revenue');
+      expect(warnings.some(w => w.startsWith("metric 'revenue' expression"))).toBe(true);
+    }
+  });
+
   test('is read in the dialect of imported vendor SQL', () => {
     // PostgreSQL reads `--` as a comment and `#` as an operator, so only the
     // comment comes out of imported vendor SQL. The graph's engine still reads

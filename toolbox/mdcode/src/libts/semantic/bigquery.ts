@@ -333,9 +333,9 @@ function exposeOperand(
 
 // Extracts the function name and operand from a single-aggregate expression, or
 // returns null when the body is not exactly one supported aggregate wrapping
-// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, or a
-// multi-argument call). `COUNT(DISTINCT x)` is recognized, yielding operand `x`
-// with distinct.
+// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, a call with no
+// operand, or a multi-argument call). `COUNT(DISTINCT x)` is recognized,
+// yielding operand `x` with distinct.
 function extractAggregate(body: string):
     {fn: string; operand: string; distinct: boolean}|null {
   const s = body.trim();
@@ -382,12 +382,13 @@ function extractAggregate(body: string):
 
   let operand = s.slice(start, end).trim();
   let distinct = false;
-  const dm = operand.match(/^DISTINCT\s+(.*)$/is);
+  const dm = operand.match(/^DISTINCT(?:\s+(.*))?$/is);
   if (dm) {
     distinct = true;
-    operand = dm[1].trim();
+    operand = (dm[1] ?? '').trim();
   }
 
+  if (operand === '') return null;  // no operand, as in SUM() or SUM(DISTINCT)
   if (operand !== '*' && hasTopLevelComma(operand))
     return null;  // multi-arg aggregate
   return {fn, operand, distinct};
