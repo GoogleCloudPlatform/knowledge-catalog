@@ -32,9 +32,10 @@
 // and unique keys, data sources, field datatypes (omitting `Opaque`) / labels /
 // dimension flags, expressions, relationship join columns, and
 // `custom_extensions`. Output format follows `model.version`: GOOGLE_VERSION
-// ('0.2.0.dev0/google' or unset) writes native extension keys, whereas
-// OSSIE_VERSION ('0.2.0.dev0') writes strict Ossie keys and preserves `GOOGLE`
-// blocks verbatim.
+// ('0.2.0.dev0/google' or unset) writes native extension keys, and
+// `serializeModelFiles` adds one `<model>.profile.<name>.yaml` sidecar file per
+// profile, whereas OSSIE_VERSION ('0.2.0.dev0') writes strict Ossie keys,
+// preserves `GOOGLE` blocks verbatim and writes no profile files.
 //
 // An `association` (junction-table) relationship has no open-format syntax (the
 // loader cannot produce one), so only its direct foreign-key view (from/to +
@@ -43,9 +44,11 @@
 import * as yaml from 'yaml';
 
 import {googleBlockTargets, unnamedDeployments} from './deployment_target';
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, Relationship, SemanticModel, SqlDialect} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {GOOGLE_VERSION, isAcceptedSource, OSSIE_VERSION} from './loader';
+import {nameProblem} from './names';
 import {declaredConceptFields} from './resolve_inheritance';
+import {DEFAULT_PROFILE} from './resolve_profiles';
 
 // The vendor tag for Google-specific extension blocks on the IR (kept in sync
 // with loader.GOOGLE_VENDOR). In the Google flavor, a model-level deployment
@@ -61,6 +64,16 @@ const CANONICAL_DIALECT = 'BIGQUERY';
 // Only dialect labels the loader accepts are ever written out.
 const ALLOWED_DIALECT_SET: ReadonlySet<string> = new Set(ALLOWED_DIALECTS);
 
+export interface SerializedFile {
+  fileName: string;
+  content: string;
+}
+
+export interface SerializeFilesResult {
+  files: SerializedFile[];
+  warnings: string[];
+}
+
 export interface SerializeResult {
   yaml: string;
   warnings: string[];
@@ -72,10 +85,68 @@ export interface SerializeOptions {
 }
 
 /**
+ * Serializes a semantic model and its sidecar profile files. The returned
+ * `files` list always starts with `<model.name>.yaml`. Under `GOOGLE_VERSION`,
+ * each entry in `model.profiles` follows as
+ * `<model.name>.profile.<profile.name>.yaml`, except that a reserved
+ * (`default`), invalid, or case-insensitively repeated name is skipped with a
+ * warning. Under `OSSIE_VERSION`, no profile files are emitted.
+ */
+export function serializeModelFiles(
+    model: SemanticModel, opts: SerializeOptions = {}): SerializeFilesResult {
+  const warnings: string[] = [];
+  const document = modelDocument(model, warnings, opts.logical);
+  const files: SerializedFile[] = [
+    {fileName: `${model.name}.yaml`, content: render(document, opts)},
+  ];
+
+  const isGoogleVersion = model.version !== OSSIE_VERSION;
+  if (isGoogleVersion) {
+    // Profile names are unique ignoring case, as the layout reads them; each
+    // lowercased name maps to the spelling serialized first.
+    const seen = new Map<string, string>();
+    for (const profile of model.profiles ?? []) {
+      const lower = profile.name.toLowerCase();
+      if (lower === DEFAULT_PROFILE) {
+        warnings.push(
+            `model '${model.name}': profile '${profile.name}' uses the name ` +
+            `reserved for the model's inline bindings and is not serialized`);
+        continue;
+      }
+      if (nameProblem('profile', profile.name)) {
+        warnings.push(
+            `model '${model.name}': profile '${profile.name}' is not a valid ` +
+            `profile name and is not serialized`);
+        continue;
+      }
+      const first = seen.get(lower);
+      if (first !== undefined) {
+        // Only a case-only repeat needs the ignoring-case rule explained.
+        const repeat = first === profile.name ?
+            `profile '${first}' is listed more than once` :
+            `profiles '${first}' and '${profile.name}' name the same ` +
+                `profile (profile names are unique ignoring case)`;
+        warnings.push(
+            `model '${model.name}': ${repeat}; only '${first}' is serialized`);
+        continue;
+      }
+      seen.set(lower, profile.name);
+      files.push({
+        fileName: `${model.name}.profile.${profile.name}.yaml`,
+        content: render(profileDocument(profile, warnings), opts),
+      });
+    }
+  }
+
+  return {files, warnings: [...new Set(warnings)]};
+}
+
+/**
  * Serializes a single semantic model to a YAML document string in the open
  * AI-first semantics format. The document contains exactly this one model;
  * `pull` writes one file per model
- * (catalog/EntryGroups/<entryGroup>/<model>.yaml).
+ * (catalog/EntryGroups/<entryGroup>/<model>.yaml). It is the first file
+ * `serializeModelFiles` returns, with the warnings for every file it builds.
  *
  * Warnings flag IR content that has no loadable representation (an association
  * relationship's junction detail, an imported expression in an unknown dialect,
@@ -95,16 +166,22 @@ export interface SerializeOptions {
  */
 export function serializeModel(
     model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
-  const warnings: string[] = [];
-  const document = modelDocument(model, warnings, opts.logical);
-  // `compat: 'yaml-1.1'` quotes strings that a YAML 1.1 parser (PyYAML,
-  // ruamel's 1.1 mode) would read as booleans or dates (`'yes'`, `'on'`,
-  // `'2001-12-14'`), so arbitrary values in `custom_extensions` or `ai_context`
-  // round-trip across tools.
-  const text = opts.compactFlow ?
-      renderCompact(document) :
-      yaml.stringify(document, {compat: 'yaml-1.1'});
-  return {yaml: text, warnings: [...new Set(warnings)]};
+  const {files, warnings} = serializeModelFiles(model, opts);
+  return {yaml: files[0].content, warnings};
+}
+
+// Renders one document as YAML. `aliasDuplicateObjects: false` writes an IR
+// array that two keys share (an entity's key reused as a relationship's
+// `to_columns`, say) out in full at each key, rather than as an `&a1` anchor
+// and `*a1` alias, so editing one binding never silently edits another.
+// `compat: 'yaml-1.1'` quotes strings that a YAML 1.1 parser (PyYAML,
+// ruamel's 1.1 mode) would read as booleans or dates (`'yes'`, `'on'`,
+// `'2001-12-14'`), so arbitrary values in `custom_extensions` or `ai_context`
+// round-trip across tools.
+function render(doc: Record<string, any>, opts: SerializeOptions): string {
+  return opts.compactFlow ?
+      renderCompact(doc) :
+      yaml.stringify(doc, {aliasDuplicateObjects: false, compat: 'yaml-1.1'});
 }
 
 // Renders "leaf" collections in flow style so the output matches the compact
@@ -133,7 +210,8 @@ function scalarWidth(node: unknown): number {
 }
 
 function renderCompact(document: Record<string, any>): string {
-  const doc = new yaml.Document(document, {compat: 'yaml-1.1'});
+  const doc = new yaml.Document(
+      document, {aliasDuplicateObjects: false, compat: 'yaml-1.1'});
   yaml.visit(doc, {
     Seq(_, node) {
       if (!node.items.every(item => yaml.isScalar(item))) return;
@@ -143,6 +221,8 @@ function renderCompact(document: Record<string, any>): string {
       if (width <= FLOW_WIDTH_BUDGET) node.flow = true;
     },
     Map(_, node) {
+      // The document's own mapping stays block, as a hand-written file has it.
+      if (node === doc.contents) return;
       const pairs = node.items as yaml.Pair[];
       if (!pairs.every(pair => yaml.isScalar(pair.value))) return;
       // `{` + each `key: value, ` + `}`, approximated for the width gate.
@@ -166,6 +246,63 @@ export function modelDocument(
     version: isGoogleVersion ? GOOGLE_VERSION : OSSIE_VERSION,
     semantic_model: [modelDoc(model, warnings, logical, isGoogleVersion)],
   };
+}
+
+// Builds a sidecar profile document matching the schema `loadProfileFile` in
+// `resolve_profiles.ts` reads: a top-level mapping with no `version` or
+// `semantic_model` wrapper. Optional lists (`primary_key`, `unique_keys`,
+// `fields`, `fields_exclude`, `metrics_exclude`, `actions`) are written
+// whenever defined, even when empty, so a ProfileSpec that loadProfileFile read
+// comes back the same from this file.
+function profileDocument(
+    profile: ProfileSpec, warnings: string[]): Record<string, any> {
+  return compact({
+    name: profile.name,
+    entities: nonEmpty(profile.entities.map(
+        pe => compact({
+          name: pe.name,
+          source: pe.source,
+          primary_key: pe.primaryKey,
+          unique_keys: pe.uniqueKeys,
+          fields: pe.fields?.map(pf => {
+            const where = `profile '${profile.name}': entity '${
+                pe.name}': field '${pf.name}'`;
+            const expression =
+                expressionDoc(pf, /* isGoogleVersion= */ true, where, warnings);
+            // loadProfileFile rejects an entry with nothing to bind, and
+            // (like a model load) any blank SQL text.
+            const texts = typeof expression === 'string' ?
+                [expression] :
+                (expression?.dialects ?? []).map(d => d.expression);
+            if (expression === undefined) {
+              warnings.push(
+                  `${where}: no expression; the profile file will not load ` +
+                  `until it is set or the field is listed in ` +
+                  `'fields_exclude'.`);
+            } else if (texts.some(t => t.trim() === '')) {
+              warnings.push(
+                  `${where}: expression is blank; the profile file will not ` +
+                  `load until its SQL is written.`);
+            }
+            return compact({name: pf.name, expression});
+          }),
+          fields_exclude: pe.fieldsExclude,
+        }))),
+    relationships: nonEmpty(
+        profile.relationships.map(pr => compact({
+                                    name: pr.name,
+                                    from_columns: nonEmpty(pr.fromColumns),
+                                    to_columns: nonEmpty(pr.toColumns),
+                                  }))),
+    metrics_exclude: profile.metricsExclude,
+    actions: profile.actions?.map(
+        pa => compact({
+          name: pa.name,
+          executor: pa.executor === null ?
+              null :
+              (pa.executor ? executorDoc(pa.executor) : undefined),
+        })),
+  });
 }
 
 function modelDoc(
@@ -236,22 +373,29 @@ function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
   const drop = (where: string, what: string) => warnings.push(
       `${where}: ${what} has no representation under '${OSSIE_VERSION}' and ` +
       `is not serialized`);
+  // A construct a '0.2.0.dev0' document carries in a GOOGLE block, under the
+  // key the Google flavor uses, which this serializer does not write yet.
+  // TODO(b/573772924): write the payload.
+  const unwritten = (where: string, what: string) => warnings.push(
+      `${where}: ${what} goes in a ${GOOGLE_VENDOR} payload under '${
+          OSSIE_VERSION}', which this serializer does not write yet, and is ` +
+      `not serialized`);
   const where = `model '${model.name}'`;
-  if (model.deployments?.length) drop(where, `'deployments'`);
+  if (model.deployments?.length) unwritten(where, `'deployments'`);
   if (model.profiles?.length && !keptBlockListsProfiles(model)) {
-    drop(where, `'profiles'`);
+    unwritten(where, `'profiles'`);
   }
   if (model.actions?.length) drop(where, `'actions'`);
   if (model.constraints?.length) drop(where, `'constraints'`);
   for (const e of model.entities ?? []) {
-    if (e.extends?.length) drop(`entity '${e.name}'`, `'extends'`);
+    if (e.extends?.length) unwritten(`entity '${e.name}'`, `'extends'`);
     if (e.abstract) drop(`entity '${e.name}'`, `'abstract'`);
   }
   for (const r of model.relationships ?? []) {
-    if (r.description) drop(`relationship '${r.name}'`, `'description'`);
+    if (r.description) unwritten(`relationship '${r.name}'`, `'description'`);
   }
   for (const m of model.metrics ?? []) {
-    if (m.authoredEntity) drop(`metric '${m.name}'`, `'entity'`);
+    if (m.authoredEntity) unwritten(`metric '${m.name}'`, `'entity'`);
   }
 }
 
