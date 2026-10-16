@@ -1031,9 +1031,10 @@ function relationshipKeyErrors(
 
 // Validates field and metric expressions when inheritance resolved cleanly:
 //   - For each metric:
-//     1. Reject a metric with no `authoredEntity` (or vanilla GOOGLE block
-//        `entity`) when its expressions, read together, reach no entity or
-//        more than one (or when the metric has no expression and no anchor).
+//     1. Reject a metric whose expressions hold no SQL, with or without an
+//        anchor. Otherwise, reject a metric with no `authoredEntity` (or
+//        vanilla GOOGLE block `entity`) when its expressions, read together,
+//        reach no entity or more than one.
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
 //        entity (runs on every push).
 //     3. When `authoredEntity` is set and the expressions reference at least

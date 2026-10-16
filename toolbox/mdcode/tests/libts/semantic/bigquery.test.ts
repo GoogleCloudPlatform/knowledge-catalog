@@ -1085,4 +1085,15 @@ describe('a comment in a field expression', () => {
     expect(ddl).not.toContain('free text');
     expect(warnings).toEqual([]);
   });
+
+  test('is removed from a metric before it is lowered', () => {
+    const withMetric: SemanticModel = {
+      ...model,
+      metrics: [{name: 'revenue', entity: 'orders',
+                 expression: 'SUM(orders.amount -- in cents\n)'}],
+    };
+    const {ddl, warnings} = generatePropertyGraph(withMetric, GEN_OPTS);
+    expect(ddl).toContain('MEASURE(SUM(total)) AS revenue');
+    expect(warnings).toEqual([]);
+  });
 });

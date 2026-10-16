@@ -447,7 +447,8 @@ function fieldExpression(f: Field): string|undefined {
   return expr === undefined ? undefined : withoutComments(expr, 'BIGQUERY');
 }
 function metricExpression(m: Metric): string|undefined {
-  return m.expression ?? m.importedExpression;
+  const expr = m.expression ?? m.importedExpression;
+  return expr === undefined ? undefined : withoutComments(expr, 'BIGQUERY');
 }
 
 
