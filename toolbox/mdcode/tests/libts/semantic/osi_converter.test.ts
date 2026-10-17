@@ -12,12 +12,15 @@
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
-import {ActionParameter, ALLOWED_DIALECTS, CustomExtension, Entity, Field, Metric, Relationship, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
+import {SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
+import {ActionParameter, ALLOWED_DIALECTS, CustomExtension, Entity, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
-import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
+import {modelDocument, serializeModel, serializeModelFiles} from '../../../src/libts/semantic/osi_converter';
+import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -1207,5 +1210,363 @@ describe('dual-version model serialization', () => {
     expect(warnings).toEqual([
       `field 'id': 1 GOOGLE custom_extension(s) have no representation on a field under '0.2.0.dev0' and are not serialized`,
     ]);
+  });
+});
+
+
+describe('serializeModelFiles and profile sidecar files', () => {
+  const baseEntity: Entity = {
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    keys: ['id'],
+    fields: [{name: 'id', expression: 'id'}],
+  };
+
+  const prodProfile: ProfileSpec = {
+    name: 'prod',
+    entities: [
+      {
+        name: 'orders',
+        source: 'bigquery:prod.sales.orders',
+        primaryKey: ['order_id'],
+        uniqueKeys: [['order_code', 'region']],
+        fields: [
+          {
+            name: 'id',
+            expression: 'order_id',
+            stringForm: true,
+            dialects: [{dialect: 'ANSI_SQL', expression: 'order_id'}],
+          },
+          {
+            name: 'total',
+            expression: 'SAFE_CAST(total AS FLOAT64)',
+            importedExpression: 'TRY_CAST(total AS DOUBLE)',
+            importedDialect: 'SNOWFLAKE',
+            stringForm: false,
+            dialects: [
+              {
+                dialect: 'BIGQUERY',
+                expression: 'SAFE_CAST(total AS FLOAT64)',
+              },
+              {
+                dialect: 'SNOWFLAKE',
+                expression: 'TRY_CAST(total AS DOUBLE)',
+              },
+            ],
+          },
+        ],
+        fieldsExclude: ['internal_note'],
+      },
+      {name: 'bare', source: 'bigquery:prod.sales.bare'},
+    ],
+    relationships: [
+      {
+        name: 'orders_customer',
+        fromColumns: ['customer_id'],
+        toColumns: ['id'],
+      },
+      {name: 'partial_rel', fromColumns: ['id'], toColumns: []},
+    ],
+    metricsExclude: ['draft_revenue', 'debug_count'],
+    actions: [
+      {
+        name: 'CloseMcp',
+        executor: {kind: 'mcp', mcp: {server: '//x/mcpServers/s', tool: 't'}},
+      },
+      {
+        name: 'CloseRest',
+        executor: {
+          kind: 'rest',
+          rest: {endpoint: 'https://api.example/x', method: 'POST'}
+        },
+      },
+      {
+        name: 'CloseGrpc',
+        executor: {kind: 'grpc', grpc: {service: 'OrderSvc', method: 'Close'}},
+      },
+      {
+        name: 'CloseSql',
+        executor: {kind: 'sql', sql: {statements: ['DELETE FROM orders']}},
+      },
+      {name: 'KeepInherited'},
+      {name: 'WithdrawExecutor', executor: null},
+    ],
+  };
+
+  const stagingProfile: ProfileSpec = {
+    name: 'staging',
+    entities: [{
+      name: 'orders',
+      primaryKey: [],
+      uniqueKeys: [],
+      fields: [],
+      fieldsExclude: [],
+    }],
+    relationships: [],
+    metricsExclude: '*',
+    actions: [],
+  };
+
+  const minimalProfile: ProfileSpec = {
+    name: 'minimal',
+    entities: [],
+    relationships: [],
+  };
+
+  test(
+      'emits the model file and one sidecar file per profile in Google version',
+      () => {
+        const model: SemanticModel = {
+          name: 'retail',
+          entities: [baseEntity],
+          relationships: [],
+          metrics: [],
+          profiles: [prodProfile, stagingProfile],
+        };
+
+        const result = serializeModelFiles(model);
+        const single = serializeModel(model);
+        const compactResult = serializeModelFiles(model, {compactFlow: true});
+
+        expect(result.files.map(f => f.fileName)).toEqual([
+          'retail.yaml',
+          'retail.profile.prod.yaml',
+          'retail.profile.staging.yaml',
+        ]);
+        expect(single.yaml).toBe(result.files[0].content);
+        expect(single.warnings).toEqual(result.warnings);
+        expect(compactResult.files[1].content)
+            .toContain('primary_key: [order_id]');
+        expect(loadProfileFile(compactResult.files[1].content, 'prod'))
+            .toEqual(prodProfile);
+      });
+
+  test('omits profile sidecar files under 0.2.0.dev0', () => {
+    const model: SemanticModel = {
+      name: 'retail',
+      version: '0.2.0.dev0',
+      entities: [baseEntity],
+      relationships: [],
+      metrics: [],
+      profiles: [prodProfile, stagingProfile],
+    };
+
+    const result = serializeModelFiles(model);
+
+    expect(result.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+    expect(result.warnings).toEqual([
+      `model 'retail': 'profiles' goes in a GOOGLE payload under '0.2.0.dev0', which this serializer does not write yet, and is not serialized`,
+    ]);
+  });
+
+  test('round-trips every profile feature through loadProfileFile', () => {
+    const profiles = [prodProfile, stagingProfile, minimalProfile];
+    const model: SemanticModel = {
+      name: 'retail',
+      version: '0.2.0.dev0/google',
+      entities: [baseEntity],
+      relationships: [],
+      metrics: [],
+      profiles,
+    };
+
+    const {files} = serializeModelFiles(model);
+
+    for (let i = 0; i < profiles.length; i++) {
+      const profile = profiles[i];
+      const file = files[i + 1];
+      const raw = yaml.parse(file.content);
+
+      expect(file.fileName).toBe(`retail.profile.${profile.name}.yaml`);
+      expect(raw.version).toBeUndefined();
+      expect(raw.semantic_model).toBeUndefined();
+      expect(loadProfileFile(file.content, profile.name)).toEqual(profile);
+    }
+  });
+
+  test('skips duplicate, reserved, or invalid profile names with warnings', () => {
+    const model: SemanticModel = {
+      name: 'retail',
+      entities: [baseEntity],
+      relationships: [],
+      metrics: [],
+      profiles: [
+        {
+          name: 'prod',
+          entities: [{name: 'orders', source: 'bigquery:prod.sales.orders'}],
+          relationships: [],
+        },
+        {
+          name: 'Prod',
+          entities: [{name: 'orders', source: 'bigquery:stale.sales.orders'}],
+          relationships: [],
+        },
+        {name: 'Default', entities: [], relationships: []},
+        {name: 'bad/name', entities: [], relationships: []},
+      ],
+    };
+
+    const {files, warnings} = serializeModelFiles(model);
+
+    expect(files.map(f => f.fileName)).toEqual([
+      'retail.yaml',
+      'retail.profile.prod.yaml',
+    ]);
+    expect(files[1].content).toContain('bigquery:prod.sales.orders');
+    expect(warnings).toEqual([
+      `model 'retail': profiles 'prod' and 'Prod' name the same profile (profile names are unique ignoring case); only 'prod' is serialized`,
+      `model 'retail': profile 'Default' uses the name reserved for the model's inline bindings and is not serialized`,
+      `model 'retail': profile 'bad/name' is not a valid profile name and is not serialized`,
+    ]);
+  });
+
+  test(
+      'names the entity in profile field warnings and flags missing expressions',
+      () => {
+        const imported = {
+          expression: 'id',
+          importedExpression: 'CAST(id AS INT)',
+          importedDialect: 'TERADATA',
+        };
+        const model: SemanticModel = {
+          name: 'retail',
+          entities: [baseEntity],
+          relationships: [],
+          metrics: [],
+          profiles: [{
+            name: 'prod',
+            entities: [
+              {
+                name: 'orders',
+                fields: [{name: 'id', ...imported}, {name: 'note'}],
+              },
+              {name: 'items', fields: [{name: 'id', ...imported}]},
+            ],
+            relationships: [],
+          }],
+        };
+
+        const {warnings} = serializeModelFiles(model);
+
+        expect(warnings).toEqual([
+          `profile 'prod': entity 'orders': field 'id': imported expression in dialect 'TERADATA' is not a dialect the loader accepts and is not serialized`,
+          `profile 'prod': entity 'orders': field 'note': no expression; the profile file will not load until it is set or the field is listed in 'fields_exclude'.`,
+          `profile 'prod': entity 'items': field 'id': imported expression in dialect 'TERADATA' is not a dialect the loader accepts and is not serialized`,
+        ]);
+      });
+
+  test('does not write YAML anchors for shared IR arrays', () => {
+    const cols = ['id'];
+    const profile: ProfileSpec = {
+      name: 'prod',
+      entities: [{name: 'customers', primaryKey: cols}],
+      relationships: [{
+        name: 'placed_by',
+        fromColumns: ['cust'],
+        toColumns: cols,
+      }],
+    };
+    const model: SemanticModel = {
+      name: 'retail',
+      entities: [
+        {
+          ...baseEntity,
+          keys: ['oid'],
+          fields: [{name: 'oid', expression: 'oid'}]
+        },
+        {
+          name: 'customers',
+          dataSource: 'p.d.customers',
+          keys: cols,
+          fields: [{name: 'id', expression: 'id'}],
+        },
+      ],
+      relationships: [{
+        name: 'placed_by',
+        source: {entity: 'orders', columns: ['cust']},
+        destination: {entity: 'customers', columns: cols},
+      }],
+      metrics: [],
+      profiles: [profile],
+    };
+
+    const blockFiles = serializeModelFiles(model).files;
+    const compactFiles = serializeModelFiles(model, {compactFlow: true}).files;
+
+    for (const f of [...blockFiles, ...compactFiles]) {
+      expect(f.content).not.toMatch(/[&*]a\d/);
+    }
+  });
+
+  test(
+      'serializeModel does not report warnings for profile files it does not return',
+      () => {
+        const model: SemanticModel = {
+          name: 'retail',
+          entities: [baseEntity],
+          relationships: [],
+          metrics: [],
+          profiles: [{
+            name: 'prod',
+            entities: [{
+              name: 'orders',
+              fields: [{
+                name: 'id',
+                expression: 'id',
+                importedExpression: 'CAST(id AS INT)',
+                importedDialect: 'TERADATA',
+              }],
+            }],
+            relationships: [],
+          }],
+        };
+
+        const single = serializeModel(model);
+        const all = serializeModelFiles(model);
+
+        expect(single.warnings).toEqual([]);
+        expect(all.warnings).toHaveLength(1);
+      });
+
+  test('accepts exactly the profile names the layout can write', () => {
+    const names = [
+      'prod',
+      'p-1_x',
+      '1x',
+      'a.b',
+      'a/b',
+      '',
+      'x'.repeat(500),
+      'x'.repeat(501),
+    ];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kc-'));
+    try {
+      const layout = new SemanticModelLayout(dir, 'eg');
+      const layoutAccepts = (name: string) => {
+        try {
+          layout.profilePath('retail', name);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      const actual = names.map(
+          name => ({
+            name: name.slice(0, 12),
+            accepted: serializeModelFiles({
+                        name: 'retail',
+                        entities: [baseEntity],
+                        relationships: [],
+                        metrics: [],
+                        profiles: [{name, entities: [], relationships: []}],
+                      }).files.length === 2,
+          }));
+
+      expect(actual).toEqual(names.map(
+          name => ({name: name.slice(0, 12), accepted: layoutAccepts(name)})));
+    } finally {
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
   });
 });
