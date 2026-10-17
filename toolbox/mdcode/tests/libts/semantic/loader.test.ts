@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
 import { deploymentTargetUris } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
@@ -2088,6 +2088,99 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
     expect(checks(vanilla, vanilla.profiles!)).toEqual(checks(google_, files));
     expect(validateProfileCompleteness(vanilla, vanilla.profiles![0])).toEqual([]);
     expect(validateProfileCompleteness(vanilla, vanilla.profiles![1])).not.toEqual([]);
+  });
+
+  test('googleBlockProfiles reads the profiles without loading the rest of the model', () => {
+    const doc = (version: string, model: object) => JSON.stringify({ version, semantic_model: [model] });
+    const unloadable = doc(VANILLA, { name: 'm', custom_extensions: [google({ profiles: [PROD] })], datasets: [] });
+    expect(() => loadModels(unloadable)).toThrow();
+    expect(googleBlockProfiles(unloadable)).toEqual([loadProfileFile(JSON.stringify(PROD), 'prod')]);
+    expect(googleBlockProfiles(doc(GOOGLE, fullModel()))).toEqual([]);
+    expect(googleBlockProfiles('{not yaml')).toEqual([]);
+    expect(() => googleBlockProfiles(doc(VANILLA, { name: 'm', custom_extensions: [google('[]')] })))
+      .toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block must be a JSON object.");
+  });
+
+  test('googleBlockProfiles skips a block the load rejects for its shape', () => {
+    const beside = (block: object) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: [google({ profiles: [PROD] }), block] })] });
+    for (const block of [
+      { vendor_name: 'GOOGLE', data: 123 },
+      { ...google({}), note: 'x' },
+      { vendor_name: 'GOOGLE', data: { entity: 'orders' } },
+      { vendor_name: 'ACME', data: 123 },
+    ]) {
+      expect(() => loadModels(beside(block))).toThrow('custom_extensions');
+      expect(googleBlockProfiles(beside(block)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles reads the profiles in a GOOGLE block whose shape the load rejects', () => {
+    const doc = (exts: unknown) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: exts })] });
+    for (const exts of [
+      [{ vendor_name: 'GOOGLE', data: { profiles: [PROD] } }],
+      [{ ...google({ profiles: [PROD] }), note: 'x' }],
+      google({ profiles: [PROD] }),
+      [{ vendor_name: 'GOOGLE', profiles: [PROD] }],
+      [{ vendor_name: 'GOOGLE', data: null, profiles: [PROD] }],
+    ]) {
+      expect(() => loadModels(doc(exts))).toThrow('custom_extensions');
+      expect(googleBlockProfiles(doc(exts)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  // As a profile file is found beside a model file the load rejects, a key
+  // other than `profiles` that the load rejects does not hide the profiles.
+  test('googleBlockProfiles reads only the profiles of a GOOGLE block whose shape the load accepts', () => {
+    const doc = (exts: object[]) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: exts })] });
+    for (const exts of [
+      [google({ profiles: [PROD], deployments: [{ name: 'main' }] })],
+      [google({ profiles: [PROD] }), google({ deployments: [{ name: 'main' }] })],
+      [google({ profiles: [PROD], bogus: 1 })],
+      [google({ profiles: [PROD], deploymentTargets: [G], deployments: [] })],
+      [google({ profiles: [PROD] }), google('{"deployments": [{"name": "a", "name": "b"}]}')],
+      [google(`{"x": 1, "profiles": ${JSON.stringify([PROD])}, "x": 2}`)],
+    ]) {
+      expect(() => loadModels(doc(exts))).toThrow("model 'm'");
+      expect(googleBlockProfiles(doc(exts)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles rejects data that sets profiles twice or a key twice inside them, whatever the shape of its block', () => {
+    const doc = (block: object) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: [block] })] });
+    for (const data of [
+      `{"profiles": ${JSON.stringify([PROD])}, "profiles": []}`,
+      `{"profiles": [{"name": "prod", "name": "dev"}]}`,
+    ]) {
+      for (const block of [google(data), { ...google(data), note: 'x' }]) {
+        expect(() => googleBlockProfiles(doc(block))).toThrow(
+          "model 'm': the 'data' of a GOOGLE custom_extensions block sets a key twice");
+      }
+    }
+  });
+
+  test('googleBlockProfiles reads a semantic_model written as one mapping', () => {
+    const text = JSON.stringify({ version: VANILLA, semantic_model: {
+      name: 'm', custom_extensions: [google({ profiles: [PROD] })] } });
+    expect(() => loadModels(text)).toThrow('semantic_model');
+    expect(googleBlockProfiles(text).map(p => p.name)).toEqual(['prod']);
+  });
+
+  test('googleBlockProfiles skips profiles with no JSON form, such as a recursive alias', () => {
+    const text = (block: string) => `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    custom_extensions:
+${block}`;
+    for (const block of [
+      '      - vendor_name: GOOGLE\n        profiles: &p\n          - name: prod\n            self: *p\n',
+      '      - vendor_name: GOOGLE\n        data: &d\n          profiles:\n            - name: prod\n              self: *d\n',
+    ]) {
+      expect(googleBlockProfiles(text(block))).toEqual([]);
+    }
   });
 });
 

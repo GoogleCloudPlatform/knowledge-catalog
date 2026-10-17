@@ -936,7 +936,7 @@ entities:
          });
          const r = await runAll('prod');
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
-         expect(r.push.out).toContain("binding profile 'prod' is a profile file");
+         expect(r.push.out).toContain("binding profile 'prod' is a named profile");
        });
 
   test('a logical model with no deployments: push and skills-generate accept it',
@@ -1026,4 +1026,151 @@ semantic_model:
     await skillsGenerate({out});
     expect(list).toHaveBeenCalled();
   });
+});
+
+
+// A vanilla model carries its profiles, deployments and `extends` in GOOGLE
+// blocks. Each case writes the Google-flavor scope, with deployments and a
+// profile file, then the equivalent vanilla scope, and expects every command
+// to give the same result for both.
+describe('a vanilla model with GOOGLE blocks agrees with the Google flavor', () => {
+  type Deployment = {name: string; target: string; profile?: string};
+
+  const prodProfile = `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`;
+
+  function googleScope(deployments: Deployment[], extendsList?: string[]):
+      Record<string, string> {
+    const lines = deployments.map(
+        d => `      - name: ${d.name}\n        target: ${d.target}\n` +
+            (d.profile ? `        profile: ${d.profile}\n` : ''));
+    return {
+      'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+${lines.join('')}    entities:
+      - name: Order
+${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+      'commerce.profile.prod.yaml': prodProfile,
+    };
+  }
+
+  function vanillaScope(deployments: Deployment[], extendsList?: string[]):
+      Record<string, string> {
+    const model = JSON.stringify({
+      profiles: [{
+        name: 'prod',
+        entities: [{name: 'Order', source: `${SPANNER_DB}/tables/Orders`}],
+      }],
+      deployments,
+    });
+    const dataset = extendsList ?
+        `        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '${JSON.stringify({extends: extendsList})}'
+` :
+        '';
+    return {
+      'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${model}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+${dataset}        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`,
+    };
+  }
+
+  // Runs the four commands over each flavor's scope, in a fresh directory.
+  async function bothFlavors(
+      deployments: Deployment[], profile?: string, extendsList?: string[]):
+      Promise<{google: Record<string, Outcome>; vanilla: Record<string, Outcome>}> {
+    writeScope(googleScope(deployments, extendsList));
+    const google = await runAll(profile);
+    fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+    writeScope(vanillaScope(deployments, extendsList));
+    const vanilla = await runAll(profile);
+    return {google, vanilla};
+  }
+
+  const dev = {name: 'dev', target: `${SPANNER_DB}/propertyGraphs/commerce`};
+  const prod = (target: string) => ({name: 'prod', target, profile: 'prod'});
+
+  // The runtime checks that each deployment's profile is declared. A vanilla
+  // model declares prod in its GOOGLE block.
+  test('a deployment for a declared profile, under default: the runtime uses dev',
+       async () => {
+         const {google, vanilla} = await bothFlavors(
+             [dev, prod(`${SPANNER_DB}2/propertyGraphs/commerce`)]);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(vanilla)).toEqual(codes(google));
+         // The vanilla expression form adds a dialect warning on its own line.
+         expect(vanilla.printStore.out.split('\n').pop())
+             .toBe(google.printStore.out);
+       });
+
+  test('a deployment for a declared profile, under it: the runtime uses it',
+       async () => {
+         const {google, vanilla} = await bothFlavors(
+             [prod(`${SPANNER_DB}/propertyGraphs/commerce`)], 'prod');
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(vanilla)).toEqual(codes(google));
+         expect(vanilla.printStore.out.split('\n').pop())
+             .toBe('acme-ops/prod/commerce');
+       });
+
+  test('a deployment for an undeclared profile: every runtime command refuses',
+       async () => {
+         const {google, vanilla} = await bothFlavors([
+           dev,
+           {name: 'prod', target: `${SPANNER_DB}2/propertyGraphs/commerce`,
+            profile: 'prdo'},
+         ]);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(codes(vanilla)).toEqual(codes(google));
+         expect(vanilla.printStore.out).toContain(
+             "deployment 'prod' names unknown binding profile 'prdo'; " +
+             'defined profiles: prod.');
+       });
+
+  test('a malformed deployment for another declared profile: every command refuses',
+       async () => {
+         const {google, vanilla} = await bothFlavors(
+             [dev, prod(`${SPANNER_DB}/propertyGraph/typo`)]);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(codes(vanilla)).toEqual(codes(google));
+         expect(vanilla.printStore.out).toContain("deployment 'prod' targets");
+       });
+
+  test('an extends that names an unknown entity: every command refuses',
+       async () => {
+         const {google, vanilla} = await bothFlavors([dev], undefined, ['Missing']);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(codes(vanilla)).toEqual(codes(google));
+         for (const name of ['printStore', 'skills']) {
+           expect(vanilla[name].out)
+               .toContain("entity 'Order' extends unknown entity 'Missing'");
+         }
+       });
 });

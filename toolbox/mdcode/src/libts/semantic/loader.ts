@@ -1401,6 +1401,105 @@ export function setsAKeyTwice(data: string): boolean {
       .errors.some(err => err.code === 'DUPLICATE_KEY');
 }
 
+// Whether the JSON text `data` sets `profiles` twice, or sets a key twice
+// inside its profiles.
+function setsAProfilesKeyTwice(data: string): boolean {
+  const doc = yaml.parseDocument(data, YAML_OPTIONS);
+  if (!yaml.isMap(doc.contents)) return false;
+  const pairs = doc.contents.items.filter(
+      p => yaml.isScalar(p.key) && p.key.value === 'profiles');
+  const range = yaml.isNode(pairs[0]?.value) ? pairs[0].value.range : undefined;
+  return pairs.length > 1 ||
+      (!!range && setsAKeyTwice(data.slice(range[0], range[1])));
+}
+
+// `v` as a list: a list as it is, one value as a list of it, and nothing as an
+// empty list.
+function asList(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : v === undefined || v === null ? [] : [v];
+}
+
+// The profiles the GOOGLE block `e` lists, whatever its shape: in data written
+// as a JSON string or as a YAML mapping, or beside `vendor_name` with no data.
+// `json` is them as the data of a block that lists only them. 'none' when the
+// block lists no profiles. 'unread' when its data is not a JSON object, or its
+// profiles have no JSON form, as with a recursive alias.
+function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
+    'unread' {
+  let data: unknown = e.data == null ? {profiles: e.profiles} : e.data;
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return 'unread';
+    }
+  }
+  if (!isRecord(data)) return 'unread';
+  if (data.profiles === undefined) return 'none';
+  try {
+    return {json: JSON.stringify({profiles: data.profiles})};
+  } catch {
+    return 'unread';
+  }
+}
+
+/**
+ * The profiles the model in a vanilla document carries in its GOOGLE blocks,
+ * read as a load reads them, without loading the rest of the model. So a
+ * caller finds a profile even in a model that does not load, as it finds a
+ * profile file. Only the profiles in the model's GOOGLE blocks are read, and
+ * the load reports a problem with any other key. Empty for a document that is
+ * not a vanilla model.
+ *
+ * A profile's field binding that is not blank needs the SQL parser, so call
+ * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
+ *
+ * A GOOGLE block whose shape the load rejects is read too, and the load
+ * reports its shape. Its profiles may be in data written as a JSON string or
+ * as a YAML mapping, or listed beside `vendor_name` with no data. Throws
+ * SemanticModelError on profiles a load rejects, on data that sets `profiles`
+ * twice or a key twice inside them, and on data that is not a JSON object in
+ * a block whose shape the load accepts.
+ *
+ * Empty for text that is not valid YAML. The load reports the error.
+ */
+export function googleBlockProfiles(text: string): ProfileSpec[] {
+  let doc: unknown;
+  try {
+    doc = yaml.parse(text, YAML_OPTIONS);
+  } catch {
+    return [];
+  }
+  if (!isRecord(doc) || doc.version !== OSSIE_VERSION) return [];
+  // The load rejects a `semantic_model` written as one mapping, and reports it.
+  const m = asList(doc.semantic_model)[0];
+  if (!isRecord(m)) return [];
+  const blocks: CustomExtensionDoc[] = [];
+  // The load rejects a `custom_extensions` written as one mapping, and reports
+  // it. The mapping is read as one block.
+  for (const e of asList(m.custom_extensions)) {
+    if (!isRecord(e) || e.vendor_name !== GOOGLE_VENDOR) continue;
+    const ext = customExtensionSchema.safeParse(e);
+    const listed = listedProfiles(e);
+    if (typeof listed === 'object') {
+      // Data that sets `profiles` twice, or a key twice inside them, is
+      // rejected as for any block.
+      const data =
+          typeof e.data === 'string' && setsAProfilesKeyTwice(e.data) ?
+          e.data :
+          listed.json;
+      blocks.push({vendor_name: GOOGLE_VENDOR, data});
+    } else if (listed === 'unread' && ext.success) {
+      // Data that is not a JSON object, rejected as for any block.
+      blocks.push(ext.data);
+    }
+  }
+  const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
+  return readGoogleBlocks(blocks, OSSIE_VERSION, 'model', label)
+             .values.profiles ??
+      [];
+}
+
 // Ossie's Relationship has no `description` key and its objects are closed, so
 // a vanilla document that writes one is no longer valid Ossie. The description
 // is still expressible there, inside a GOOGLE block; say so, with the notation.

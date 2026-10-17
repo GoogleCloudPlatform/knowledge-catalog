@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1177,6 +1177,24 @@ function applyToDocument(
 export type DeclaredProfile = {name: string; text: string}|
     {name: string; spec: ProfileSpec};
 
+/**
+ * The profiles the model document `doc` declares: `files`, its profile files,
+ * then the profiles a vanilla model carries in its GOOGLE block, by name, as
+ * the layout orders profile files. Push, `kcmd profiles` and the runtime all
+ * read them here, so they agree. Throws SemanticModelError when
+ * googleBlockProfiles does, such as on block profiles a load rejects.
+ */
+export function declaredProfiles(
+    doc: {text: string},
+    files: Array<{name: string; text: string}>): DeclaredProfile[] {
+  return [
+    ...files,
+    ...googleBlockProfiles(doc.text)
+        .map(spec => ({name: spec.name, spec}))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+  ];
+}
+
 /** A profile, in either form, applied to one model document. */
 export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
   // A legacy `semantic_model:` wrapper, merged into the document's text.
@@ -1252,7 +1270,7 @@ export function reservedProfileNameError(
   }
   return `[${docName}] a binding profile may not be named '${
              DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
-      `bindings. Rename the profile file.`;
+      `bindings. Rename the profile.`;
 }
 
 /** The error for a concrete entity no profile file or model file binds. */

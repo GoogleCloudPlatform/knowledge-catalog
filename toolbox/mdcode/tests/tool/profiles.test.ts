@@ -1525,7 +1525,7 @@ entities:
     const code = await profiles({printStore: true, profile: 'prod'});
     expect(code).not.toBe(0);
     expect(logs.join('\n')).toContain(
-        "binding profile 'prod' is a profile file, which names no deployment " +
+        "binding profile 'prod' is a named profile, which names no deployment " +
         'target');
   });
 });

@@ -23,7 +23,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
+import {applyProfileExclusions, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
 import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store, withPrimaryInstance} from './store';
@@ -144,27 +144,31 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const docs = layout.modelDocuments();
   if (!docs.length) return {error: 'no semantic model documents found.'};
 
-  // Push reads every model's profile files first, whichever profile it
-  // deploys. It refuses the scope when profileDocuments rejects a file, such
-  // as one whose `name:` does not match its file name. It also refuses it
-  // when a model declares a profile named `default` in any letter case.
-  const profilesByDoc = new Map<string, Array<{name: string; text: string}>>();
+  // Reading a GOOGLE block profile checks its field bindings for SQL, which
+  // needs the SQL parser.
+  try {
+    await loadSqlEngine();
+  } catch (err: any) {
+    return {error: `${err?.message ?? err}`};
+  }
+
+  // Push reads every model's profiles first, whichever profile it deploys:
+  // its profile files, then the profiles a vanilla model carries in its
+  // GOOGLE block. It refuses the scope when profileDocuments rejects a file,
+  // such as one whose `name:` does not match its file name, or when a GOOGLE
+  // block profile does not load. It also refuses it when a model declares a
+  // profile named `default` in any letter case.
+  const profilesByDoc = new Map<string, DeclaredProfile[]>();
   for (const doc of docs) {
-    let available: Array<{name: string; text: string}>;
+    let available: DeclaredProfile[];
     try {
-      available = layout.profileDocuments(doc.name);
+      available = declaredProfiles(doc, layout.profileDocuments(doc.name));
     } catch (err: any) {
       return {error: err?.message ?? String(err)};
     }
     const reserved = reservedProfileNameError(doc.name, available);
     if (reserved) return {error: reserved};
     profilesByDoc.set(doc.name, available);
-  }
-
-  try {
-    await loadSqlEngine();
-  } catch (err: any) {
-    return {error: `${err?.message ?? err}`};
   }
 
   const merged: Array<{
@@ -233,13 +237,8 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   // A deployment that names a profile the model does not declare would be
   // used by no profile. Push refuses every deployment that names a profile.
-  // A vanilla model declares its profiles in its GOOGLE block, which the
-  // loader puts on the model.
   for (const {document, model} of models) {
-    const declared = [
-      ...(profilesByDoc.get(document) ?? []).map(p => p.name),
-      ...(model.profiles ?? []).map(p => p.name),
-    ];
+    const declared = (profilesByDoc.get(document) ?? []).map(p => p.name);
     const error = undeclaredProfileError(document, model, declared);
     if (error) return {error};
   }

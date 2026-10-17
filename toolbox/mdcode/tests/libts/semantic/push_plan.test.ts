@@ -281,7 +281,7 @@ describe('a graph push of a profile file', () => {
   test('is refused before any deploy, since a profile file names no target', () => {
     expect(profileFileGraphError(
                [{name: 'retail', text: '', applied: {} as any}], 'prod'))
-        .toContain("binding profile 'prod' is a profile file, which names no deployment target");
+        .toContain("binding profile 'prod' is a named profile, which names no deployment target");
     expect(profileFileGraphError([{name: 'retail', text: ''}], 'prod'))
         .toBeUndefined();
   });
@@ -474,7 +474,7 @@ semantic_model:
     expect(profErrors.split('names profile').length - 1).toBe(1);
     for (const name of ['other', 'spanner_binding']) {
       expect(profErrors).toContain(
-          `[sales] binding profile '${name}' is a profile file, which names ` +
+          `[sales] binding profile '${name}' is a named profile, which names ` +
           'no deployment target');
     }
   });
