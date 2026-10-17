@@ -16,7 +16,7 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {googleBlockTargets, googleDeploymentTargets} from '../libts/semantic/deployment_target';
+import {googleBlockTargets, googleDeploymentTargets, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice} from '../libts/semantic/loader';
@@ -220,20 +220,24 @@ export function declaresGraphTarget(text: string): boolean {
 }
 
 
-// True when a loaded model declares a deployment target of the given graph type
-// ('bigquery' or 'spanner'). Used to route each model to the leg that can
-// deploy it. Safe by the time it runs: validatePushRequirements has already
-// rejected a malformed GOOGLE extension, so googleDeploymentTargets does not
-// throw; the try/catch is a defensive fallback that routes an unparseable model
-// nowhere.
+// True when a model declares a deployment target of the given graph type. The
+// loader rejects a GOOGLE block that makes googleDeploymentTargets throw, so
+// only a model built in memory reaches the catch.
 function hasTargetType(
-    loaded: LoadedModel, type: 'bigquery'|'spanner'): boolean {
+    loaded: Pick<LoadedModel, 'model'>, type: 'bigquery'|'spanner'): boolean {
   try {
     const t = googleDeploymentTargets(loaded.model);
     return type === 'bigquery' ? t.bigQuery.length > 0 : t.spanner.length > 0;
   } catch {
     return false;
   }
+}
+
+// The dialect pruning reads a model's SQL in: SPANNER when the model has a
+// Spanner graph target, since that graph reads SPANNER text first, else the
+// dialect its sources imply.
+function pruningDialect(model: SemanticModel): string|undefined {
+  return hasTargetType({model}, 'spanner') ? 'SPANNER' : sourcesDialect(model);
 }
 
 
@@ -828,7 +832,8 @@ async function prepareModels(
     ];
     const availability: AvailabilityReport[] = [];
     models = marked.map(({document, model}) => {
-      const {model: pruned, report: r} = pruneUnavailable(model, profileName);
+      const {model: pruned, report: r} =
+          pruneUnavailable(model, profileName, pruningDialect(model));
       availability.push(r);
       return {document, model: pruned};
     });
@@ -1446,7 +1451,6 @@ async function printStore(options: ProfilesOptions): Promise<number> {
 // run.
 function printProfileReport(
     model: SemanticModel, name: string, fileForm: boolean): void {
-  const {report} = pruneUnavailable(model, name);
   // The targets the profile's deployments name, as --print-store reads them.
   let targets: string[] = [];
   try {
@@ -1455,6 +1459,10 @@ function printProfileReport(
     // A GOOGLE block that is not valid JSON is a push-time error; here just
     // show none rather than abort the listing.
   }
+  // Pruned for the graphs this profile's own deployments name.
+  const {report} = pruneUnavailable(
+      model, name,
+      pruningDialect({...model, deployments: unnamedDeployments(targets)}));
   const none = fileForm ? '(none; no deployment names this profile)' : '(none)';
   console.log(`    target: ${targets.length ? targets.join(', ') : none}`);
   console.log('    sources:');

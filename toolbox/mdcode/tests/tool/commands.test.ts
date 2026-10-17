@@ -706,24 +706,34 @@ relationships:
 });
 
 
+// A Spanner graph reads a field's SPANNER text, else its ANSI_SQL one.
+// Pruning reads the text each profile's graph reads, even when a legacy
+// wrapper's bare source name implies BigQuery.
 // Until each graph generator emits its own engine's text, a field's
 // `expression` is what lands in the DDL, so pruning judges that text too.
-describe('a Spanner graph push prunes by the text the generator emits', () => {
-  test('a field whose emitted text reads an unbound field is dropped', async () => {
+describe('a model with a Spanner graph target is pruned in the Spanner dialect', () => {
+  test('push and kcmd profiles drop a field by the text its graph reads', async () => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
-        'scope: semantic-model.test-project.us.commerce_eg\n');
+        'scope: semantic-model.test-project.us.commerce_eg\n' +
+            'default_profile: spprof\n');
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
-    fs.mkdirSync(eg, {recursive: true});
+    fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+    const table =
+        '//bigquery.googleapis.com/projects/test-project/datasets/ds/tables/orders';
+    const spGraph =
+        '//spanner.googleapis.com/projects/test-project/instances/i/databases/db/propertyGraphs/g';
+    const bqGraph =
+        '//bigquery.googleapis.com/projects/test-project/datasets/ds/propertyGraphs/g';
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployments:
-      - name: prod
-        target: //spanner.googleapis.com/projects/test-project/instances/i/databases/db/propertyGraphs/g
+      - { name: sp, target: "${spGraph}" }
+      - { name: bq, target: "${bqGraph}", profile: bqprof }
     entities:
       - name: orders
-        source: //spanner.googleapis.com/projects/test-project/instances/i/databases/db/tables/orders
+        source: ${table}
         primary_key: [order_id]
         fields:
           - { name: order_id, expression: order_id }
@@ -732,19 +742,51 @@ semantic_model:
           - name: net
             expression:
               dialects:
+                - { dialect: BIGQUERY, expression: "orders.gross" }
+                - { dialect: SPANNER, expression: "orders.gross - orders.tax" }
+          - name: total
+            expression:
+              dialects:
                 - { dialect: SPANNER, expression: "orders.gross" }
                 - { dialect: ANSI_SQL, expression: "orders.gross - orders.tax" }
 `);
+    // Push refuses a deployment that names a profile. spprof's
+    // deployment_target replaces the model file's deployments, so a push of
+    // spprof never reads the one that names bqprof.
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'spprof.yaml'), `semantic_model:
+  - name: commerce
+    deployment_target: ${spGraph}
+    entities:
+      - name: orders
+        source: demo.sales.Orders
+`);
+    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'bqprof.yaml'), `semantic_model:
+  - name: commerce
+    entities:
+      - name: orders
+        source: ${table}
+`);
     spyOn(console, 'warn').mockImplementation(() => {});
-    spyOn(console, 'log').mockImplementation(() => {});
-    const deploySpy = spyOn(spannerLeg, 'deploySpanner').mockResolvedValue(
-        {success: true, warnings: [], ddl: [], deployed: 0} as any);
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    const deploySpy = spyOn(spannerLeg, 'deploySpanner');
 
     const code = await push({validateOnly: true, kc: false});
 
     expect(code).toBe(0);
     const orders = deploySpy.mock.calls[0][0][0].model.entities[0];
     expect(orders.fields.map(f => f.name)).toEqual(['order_id', 'gross']);
+
+    logSpy.mockClear();
+    await profiles();
+    const out = logSpy.mock.calls.map(c => String(c[0]));
+    const at = out.indexOf("  profile 'spprof' (default)");
+    const [bqReport, spReport] = [out.slice(0, at), out.slice(at)];
+    const unavailable = (f: string) =>
+        `      field orders.${f} (reads orders.tax, which is unavailable)`;
+    expect(bqReport).toContain(`    target: ${bqGraph}`);
+    expect(bqReport).not.toContain(unavailable('net'));
+    expect(spReport).toContain(unavailable('net'));
+    expect(spReport).toContain(unavailable('total'));
   });
 });
 
