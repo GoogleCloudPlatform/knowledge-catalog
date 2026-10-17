@@ -49,10 +49,11 @@ runs in both directions:
 > Ossie constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model
 > and it is a valid Ossie document.
 
-Under vanilla, `kcmd`'s deployment and binding additions ride in a `custom_extensions`
-block an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so those never
-fork the document; inheritance and the `entities` spelling have no vanilla form and
-exist only under `0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile trades that wire
+Under vanilla, `kcmd`'s deployment, binding and inheritance additions ride in a
+`custom_extensions` block an Ossie-only tool ignores (see
+[§6](#6-the-extension-mechanism)), so those never fork the document; `abstract` and
+the `entities` spelling have no vanilla form and exist only under
+`0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile trades that wire
 compatibility for readable native keys; it is `kcmd`'s own surface, converted to or
 from vanilla by choosing the `version`.
 
@@ -438,9 +439,10 @@ reads the document ([§6](#6-the-extension-mechanism)).
   vanilla Ossie the key is not accepted; use `datasets`. `kcmd`'s pull always emits
   `entities`.
 
-- **`extends` on a dataset (extended profile only).** Class inheritance — a
-  subtype names its supertype datasets. Ossie `0.2.0.dev0` has no inheritance
-  construct, so it is accepted only under `0.2.0.dev0/google`. See
+- **`extends` on a dataset.** Class inheritance — a subtype names its supertype
+  datasets. Ossie `0.2.0.dev0` has no inheritance construct, so `extends` is a
+  native key only under `0.2.0.dev0/google`. A vanilla document writes it in a
+  `GOOGLE` block on the dataset ([§6](#6-the-extension-mechanism)). See
   [§2.1.2](#212-inheritance-extends).
 
 - **`abstract: true` on a dataset (extended profile only).** Marks a concept with
@@ -451,10 +453,11 @@ reads the document ([§6](#6-the-extension-mechanism)).
 
 - **`deployment_target` (extended profile only).** The physical destination — one
   graph in one store — as a first-class model-level (or profile-level) key, accepted
-  under `0.2.0.dev0/google`. Under vanilla Ossie there is no native key; the same
-  target is written as a `GOOGLE` `custom_extensions` block carrying
-  `{"deploymentTargets": ["…"]}` ([§6](#6-the-extension-mechanism)). Grammar in
-  [§7](#7-the-binding-layer).
+  under `0.2.0.dev0/google`. Under vanilla Ossie there is no native key; the
+  model's deployments are written as a `GOOGLE` `custom_extensions` block carrying
+  `{"deployments": [{"name": "…", "target": "…"}]}`, and the older
+  `{"deploymentTargets": ["…"]}` form is still read
+  ([§6](#6-the-extension-mechanism)). Grammar in [§7](#7-the-binding-layer).
 
 - **`actions` (extended profile only).** Model-level write operations, the
   write-side counterpart to a metric. An action names an operation, points at the
@@ -602,12 +605,14 @@ custom_extensions:
 ```
 
 `custom_extensions` MAY appear on the model, a dataset, a field, a relationship,
-and a metric. `data` is opaque at the format level: nothing is interpreted when the
-document is parsed, and it round-trips verbatim. An Ossie-only tool treats a
-`GOOGLE` block as a vendor extension it does not recognize and passes it through
-unchanged — so a vanilla `kcmd` model is still a valid Ossie document, and stripping
-the `GOOGLE` blocks yields plain Ossie. A model's deployment target rides here as a
-`GOOGLE` block carrying `{"deploymentTargets": ["…"]}`. The native keys (`entities`,
+and a metric. `data` is opaque to Ossie. `kcmd` reads a `GOOGLE` block's payload
+into the model when it parses the document, and carries any other vendor's block
+verbatim. An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
+not recognize and passes it through unchanged — so a vanilla `kcmd` model is still
+a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
+model's deployments ride here as a `GOOGLE` block carrying
+`{"deployments": [{"name": "…", "target": "…"}]}`. The older form,
+`{"deploymentTargets": ["…"]}`, is still read. The native keys (`entities`,
 `deployment_target`, `extends`, `abstract`) are **not accepted** under vanilla —
 each is an unknown key and rejected ([§4.1](#41-narrowings-stricter-than-ossie)).
 
@@ -620,10 +625,10 @@ own tools emit: readable, but no longer a vanilla-Ossie document.
 
 **Converting between the two** is the `version` plus a mechanical fold: a vanilla
 `GOOGLE` deployment-target block becomes a native `deployment_target:` key under
-`/google`, and back. Both parse to the identical IR. Constructs that exist only as
-native keys (inheritance, the `entities` spelling) have no vanilla form and are
-simply unavailable there. What survives a push and a pull through each surface is in
-[What push and pull preserve](fidelity.md).
+`/google`, and back. Both parse to the identical IR. Vanilla writes inheritance in
+a `GOOGLE` block on the dataset, as `{"extends": ["…"]}`. The `entities` spelling
+and `abstract` have no vanilla form. What survives a push and a pull through each
+surface is in [What push and pull preserve](fidelity.md).
 
 ## 7. The binding layer
 
@@ -713,8 +718,10 @@ The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
 beside it as `catalog/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`, and
 a profile file's `name:` MUST equal its `<name>`. The older
 `<model>.profiles/<name>.yaml` directory is still read when a model has no sibling
-profile file. The name `default` is reserved for the model's own inline bindings
-and MUST NOT be used as a profile name. A
+profile file. A vanilla `0.2.0.dev0` model lists its profiles instead in a
+`GOOGLE` block on the model, as `{"profiles": [...]}`, each with the keys a
+profile file takes. The name `default` is reserved for the model's own inline
+bindings and MUST NOT be used as a profile name. A
 `default_profile` in `catalog.yaml` selects which profile the default push uses.
 The full merge behavior and worked examples are in
 [Binding profiles](profiles.md).
@@ -736,7 +743,7 @@ The full merge behavior and worked examples are in
   candidate to upstream into Ossie (e.g. `deployment_target`, `entities`) or a
   Google-store specific that stays `kcmd`'s own. The vanilla version stays a strict
   Ossie superset: its only extension is the `GOOGLE` `custom_extensions` carrier,
-  and constructs with no vanilla form (inheritance, the `entities` spelling) are
+  and constructs with no vanilla form (`abstract`, the `entities` spelling) are
   simply unavailable there — a model that needs them uses `0.2.0.dev0/google`.
 
 - **Reserved constructs.** `association` (M:N) is reserved. It is under
