@@ -2315,7 +2315,6 @@ semantic_model:
         ['Error: the SQL parser could not be loaded: engine missing']);
   });
 
-  // Push reserves the name 'default' in any letter case.
   // The yaml library expands at most 100 aliases. Push reports the load's
   // error for the text.
   test('a push reports a model file with more aliases than a load expands', async () => {
@@ -2326,6 +2325,7 @@ semantic_model:
         'could not parse input: Excessive alias count');
   });
 
+  // Push reserves the name 'default' in any letter case.
   test('a push refuses a legacy profile named Default', async () => {
     const eg = writeModel(MODEL_YAML);
     fs.mkdirSync(path.join(eg, 'commerce.profiles'));
