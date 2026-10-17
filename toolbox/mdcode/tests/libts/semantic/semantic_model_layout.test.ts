@@ -337,6 +337,22 @@ describe('SemanticModelLayout profile file rules', () => {
     expect(l.profileDocuments('other')).toEqual([]);
   });
 
+  // A YAML error can change the name the text seems to declare. The load
+  // reports the error.
+  test('the model name is not checked in a model file that is not valid YAML', async () => {
+    writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
+    for (const model of ['  - name: retail\n    name: sales\n',
+                         '  - name: "retail\n    description: x\n']) {
+      writeToGroup('retail.yaml', `version: 0.2.0.dev0/google\nsemantic_model:\n${model}`);
+      expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
+          .toEqual(['prod']);
+      writeToGroup('retail.yaml', `version: 0.2.0.dev0\nsemantic_model:\n${model}`);
+      const l = await layout('eg');
+      expect(() => l.profileDocuments('retail'))
+          .toThrow("sits beside 'retail.yaml', which is a 0.2.0.dev0 document");
+    }
+  });
+
   test('profileDocument reads one profile by name, under the same rules', async () => {
     writeToGroup('retail.yaml', MODEL('retail'));
     writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
