@@ -22,7 +22,7 @@ import * as pullKc from '../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
-import {kcV2Aspects, profiles, pull, push} from '../../src/tool/commands';
+import {kcV2Aspects, profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -231,7 +231,7 @@ entities:
 
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
-        .toContain("binding profile 'prod' is a profile file, which names no deployment target");
+        .toContain("binding profile 'prod' is a named profile, which names no deployment target");
   });
 
   test('when default_profile names the profile file, the refusal points at --profile default', async () => {
@@ -278,7 +278,7 @@ entities:
     errorSpy.mockClear();
     await push({validateOnly: true, kc: false, profile: 'default'});
     expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
-        .not.toContain('is a profile file');
+        .not.toContain('is a named profile');
     expect(bqSpy).toHaveBeenCalledTimes(1);
     expect(bqSpy.mock.calls[0][0][0].model.entities?.[0].dataSource)
         .toBe('test-project.d.customer');
@@ -2315,6 +2315,16 @@ semantic_model:
         ['Error: the SQL parser could not be loaded: engine missing']);
   });
 
+  // The yaml library expands at most 100 aliases. Push reports the load's
+  // error for the text.
+  test('a push reports a model file with more aliases than a load expands', async () => {
+    writeModel(MODEL_YAML.replace(
+        'semantic_model:\n', `x: &a 1\nys:\n${'  - *a\n'.repeat(101)}semantic_model:\n`));
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.error).join('\n')).toContain(
+        'could not parse input: Excessive alias count');
+  });
+
   // Push reserves the name 'default' in any letter case.
   test('a push refuses a legacy profile named Default', async () => {
     const eg = writeModel(MODEL_YAML);
@@ -2330,7 +2340,7 @@ semantic_model:
     expect(prints(console.error)).toEqual([
       "Error: [commerce] a binding profile may not be named 'default' -- " +
           "that name refers to the model's inline bindings. Rename the " +
-          'profile file.',
+          'profile.',
     ]);
   });
 
@@ -2377,12 +2387,14 @@ entities:
   }
 });
 
-describe('a vanilla model\'s GOOGLE block', () => {
+describe('a vanilla model\'s profiles in its GOOGLE block', () => {
   const BQ = '//bigquery.googleapis.com/projects/test-project/datasets';
-  function writeModel(block: string): void {
+  const prod = (source: string) => JSON.stringify(
+      {profiles: [{name: 'prod', entities: [{name: 'Customer', source}]}]});
+  function writeModel(block: string, catalogExtra = ''): void {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
-        'scope: semantic-model.test-project.us.commerce_eg\n');
+        'scope: semantic-model.test-project.us.commerce_eg\n' + catalogExtra);
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0"
@@ -2401,28 +2413,432 @@ semantic_model:
 `);
   }
 
-  // The loader puts the profiles in the block on the model, so the runtime
-  // reads them as declared when it checks the profile a deployment names.
-  test('the runtime accepts a deployment that names a profile in the block', async () => {
-    const block = (profile: string) => JSON.stringify({
-      profiles: [{name: 'prod', entities: [{name: 'Customer', source: `${BQ}/prod/tables/customer`}]}],
-      deployments: [
-        {name: 'main', target: `${BQ}/raw/propertyGraphs/g`},
-        {name: 'prodgraph', target: `${BQ}/prod/propertyGraphs/g`, profile},
-      ],
-    });
+  test('push applies one as it applies a profile file', async () => {
+    writeModel(prod(`${BQ}/prod/tables/customer`));
+    const deploySpy = spyOn(kc, 'deployKnowledgeCatalog');
+
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(0);
+    const customer = deploySpy.mock.calls[0][0][0].model.entities[0];
+    expect(customer.dataSource).toBe('test-project.prod.customer');
+  });
+
+  test('kcmd profiles lists one, and reports what push rejects', async () => {
+    writeModel(prod(`${BQ}/prod/tables/customer`));
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+
+    expect(await profiles()).toBe(0);
+    expect(messages(logSpy)).toContain(
+        "  profile 'prod'\n" +
+        '    target: (none; no deployment names this profile)\n' +
+        '    sources:\n' +
+        '      Customer -> test-project.prod.customer');
+
+    // A source push rejects is reported under the profile, as for a file.
+    writeModel(prod('not a source'));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    expect(await profiles()).toBe(1);
+    expect(messages(errorSpy)).toContain(
+        "    push rejects:\n" +
+        "      [commerce] profile 'prod': entity 'Customer': source 'not a source'");
+  });
+
+  test('a GOOGLE block that does not load stops push and kcmd profiles', async () => {
+    writeModel('[]');
+    const error = "model 'commerce': the 'data' of a GOOGLE custom_extensions " +
+        'block must be a JSON object.';
+    await expect(push({validateOnly: true})).rejects.toThrow(error);
+    await expect(profiles()).rejects.toThrow(error);
+  });
+
+  // Push reads the GOOGLE block before the load under every profile. Beside a
+  // third-party block that fails the load, the runtime names the same problem.
+  test('a GOOGLE block that does not load stops the runtime with the error push gives', async () => {
+    writeModel('{');
+    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+        '    datasets:\n', '      - vendor_name: ACME\n        data: 123\n    datasets:\n'));
+    const error = "Semantic model load error: model 'commerce': the 'data' of " +
+        'a GOOGLE custom_extensions block must be a JSON object.';
+    await expect(push({validateOnly: true})).rejects.toThrow(error);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-    writeModel(block('prod'));
-    expect(await profiles({printStore: true})).toBe(0);
-    expect(messages(logSpy)).toBe('bigquery:test-project/raw');
-
-    writeModel(block('prdo'));
     expect(await profiles({printStore: true})).toBe(1);
+    expect(messages(errorSpy)).toBe(`Error: ${error}`);
+    errorSpy.mockClear();
+    expect(await skillsGenerate({out: 'skills'})).toBe(1);
+    expect(messages(errorSpy)).toBe(`Error: ${error}`);
+  });
+
+  // The runtime reads every model's profiles before it applies one, as push
+  // does, so a later model's GOOGLE block is reported under a named profile
+  // too, whichever model comes first.
+  test("the runtime reads every model's GOOGLE block before it applies a profile", async () => {
+    for (const bad of ['alpha', 'beta']) {
+      writeModel('{}');
+      const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+      const text = fs.readFileSync(path.join(eg, 'commerce.yaml'), 'utf8');
+      fs.rmSync(path.join(eg, 'commerce.yaml'));
+      for (const name of ['alpha', 'beta']) {
+        fs.writeFileSync(path.join(eg, `${name}.yaml`), text
+            .replace('  - name: commerce\n', `  - name: ${name}\n`)
+            .replace("data: '{}'", name === bad ? "data: '{'" : "data: '{}'"));
+      }
+      const error = `model '${bad}': the 'data' of a GOOGLE custom_extensions ` +
+          'block must be a JSON object.';
+
+      await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(error);
+      const opened = await createSemanticRuntimes(
+          {ctx: CTX, profile: 'prod', onWarning: () => {}});
+      expect('error' in opened && opened.error).toContain(error);
+    }
+  });
+
+  const PROD_SOURCE = `${BQ}/prod/tables/customer`;
+  const NO_TARGET = "binding profile 'prod' is a named profile, which names no " +
+      'deployment target';
+
+  // As a profile file is found beside a model file that does not load. The
+  // load rejects each of these blocks for its shape.
+  const rejected = [
+    ['a third-party block the loader rejects', '      - vendor_name: ACME\n        data: 123\n'],
+    ['a GOOGLE block whose data is a number', '      - vendor_name: GOOGLE\n        data: 123\n'],
+    ['a GOOGLE block with a key other than data',
+     "      - vendor_name: GOOGLE\n        data: '{}'\n        note: x\n"],
+    ['a GOOGLE block whose data is a YAML mapping',
+     '      - vendor_name: GOOGLE\n        data:\n          entity: x\n'],
+  ];
+  for (const [what, block] of rejected) {
+    test(`${what} does not hide one`, async () => {
+      writeModel(prod(PROD_SOURCE));
+      const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+          '    datasets:\n', `${block}    datasets:\n`));
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      const alone = "(under profile 'prod', the model file must load on its " +
+          'own before the profile applies)';
+
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(alone);
+      errorSpy.mockClear();
+      expect(await profiles({profile: 'prod'})).toBe(1);
+      expect(messages(logSpy)).toContain("  profile 'prod'");
+      expect(messages(errorSpy)).toContain(alone);
+      errorSpy.mockClear();
+      expect(await profiles({printStore: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(alone);
+    });
+  }
+
+  // A model file with a YAML error elsewhere in it. The load rejects it.
+  const yamlErrors = [
+    ['sets a key twice', '        description: a\n        description: b\n',
+     'Map keys must be unique'],
+    ['has a YAML syntax error', '        description: [x\n', 'could not parse input'],
+    ['has an alias whose anchor is not set', '        description: *nope\n',
+     'Unresolved alias'],
+  ];
+  for (const [what, extra, problem] of yamlErrors) {
+    const writeBroken = () => {
+      writeModel(prod(PROD_SOURCE));
+      const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+          '        primary_key: [key]\n', `        primary_key: [key]\n${extra}`));
+    };
+
+    // As a profile file is found beside a model file the load rejects.
+    test(`a model file that ${what} does not hide one`, async () => {
+      writeBroken();
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+      expect(messages(errorSpy)).toContain(
+          "(under profile 'prod', the model file must load on its own before " +
+          'the profile applies)');
+    });
+
+    // The layout reads the model file's version as the block lookup reads the
+    // file, so it still refuses a sibling profile file, and the profile is not
+    // listed twice.
+    test(`a sibling profile file beside a model file that ${what} is refused`, async () => {
+      writeBroken();
+      fs.writeFileSync(
+          path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.profile.prod.yaml'),
+          `name: prod\nentities:\n  - name: Customer\n    source: ${PROD_SOURCE}\n`);
+      const beside = "Profile file 'commerce.profile.prod.yaml' sits beside " +
+          "'commerce.yaml', which is a 0.2.0.dev0 document";
+
+      await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(beside);
+      await expect(profiles()).rejects.toThrow(beside);
+    });
+  }
+
+  // With a YAML syntax error in the text, each GOOGLE block is read for its
+  // profiles alone, so a key the block may not set does not hide one.
+  test('a model file with a YAML syntax error does not hide one beside a key the block may not set', async () => {
+    writeModel(JSON.stringify({...JSON.parse(prod(PROD_SOURCE)), bogus: 1}));
+    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+        '        primary_key: [key]\n', '        primary_key: [key]\n        description: [x\n'));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toContain('could not parse input');
     expect(messages(errorSpy)).toContain(
-        "deployment 'prodgraph' names unknown binding profile 'prdo'; " +
-        'defined profiles: prod.');
+        "(under profile 'prod', the model file must load on its own before " +
+        'the profile applies)');
+  });
+
+  // As a profile file is found beside a model file the load rejects, a key
+  // other than profiles that the load rejects does not hide one.
+  const otherKeys = [
+    ['a deployment with no target beside it', () => writeModel(JSON.stringify(
+         {...JSON.parse(prod(PROD_SOURCE)), deployments: [{name: 'main'}]})),
+     "'deployments' in a GOOGLE custom_extensions block"],
+    ['a deployment with no target in a second block', () => {
+       writeModel(prod(PROD_SOURCE));
+       const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+       fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+           '    datasets:\n',
+           '      - vendor_name: GOOGLE\n' +
+               `        data: '{"deployments": [{"name": "main"}]}'\n    datasets:\n`));
+     },
+     "'deployments' in a GOOGLE custom_extensions block"],
+    ['a key the block may not set beside it', () => writeModel(JSON.stringify(
+         {...JSON.parse(prod(PROD_SOURCE)), bogus: 1})),
+     "'bogus' is not a key a GOOGLE custom_extensions block takes"],
+    ['a key set twice outside the profiles', () => writeModel(
+         prod(PROD_SOURCE).replace('{', '{"x": 1, "x": 2, ')),
+     'block sets a key twice'],
+  ] as const;
+  for (const [what, write, problem] of otherKeys) {
+    test(`a GOOGLE block with ${what} does not hide one`, async () => {
+      write();
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      const alone = "(under profile 'prod', the model file must load on its " +
+          'own before the profile applies)';
+
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+      expect(messages(errorSpy)).toContain(alone);
+      errorSpy.mockClear();
+      expect(await profiles({profile: 'prod'})).toBe(1);
+      expect(messages(logSpy)).toContain("  profile 'prod'");
+      expect(messages(errorSpy)).toContain(alone);
+      errorSpy.mockClear();
+      expect(await profiles({printStore: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+      expect(messages(errorSpy)).toContain(alone);
+      errorSpy.mockClear();
+      expect(await skillsGenerate({out: 'skills', profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(alone);
+    });
+  }
+
+  // The GOOGLE block that holds the profile has a shape the load rejects. The
+  // profile is still read from it, and the load reports the shape.
+  const misshapen = [
+    ['has data written as a YAML mapping', (text: string, json: string) => text.replace(
+        `        data: '${json}'\n`,
+        '        data:\n          profiles:\n            - name: prod\n' +
+            `              entities: [{name: Customer, source: '${PROD_SOURCE}'}]\n`)],
+    ['has a key other than data', (text: string, json: string) => text.replace(
+        `        data: '${json}'\n`, `        data: '${json}'\n        note: x\n`)],
+    ['is not in a list', (text: string, json: string) => text.replace(
+        `      - vendor_name: GOOGLE\n        data: '${json}'\n`,
+        `      vendor_name: GOOGLE\n      data: '${json}'\n`)],
+    ['lists it with no data', (text: string, json: string) => text.replace(
+        `        data: '${json}'\n`,
+        '        profiles:\n          - name: prod\n' +
+            `            entities: [{name: Customer, source: '${PROD_SOURCE}'}]\n`)],
+  ] as const;
+  for (const [what, edit] of misshapen) {
+    test(`one is found when the GOOGLE block that holds it ${what}`, async () => {
+      const json = prod(PROD_SOURCE);
+      writeModel(json);
+      const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+      const text = fs.readFileSync(file, 'utf8');
+      expect(edit(text, json)).not.toBe(text);
+      fs.writeFileSync(file, edit(text, json));
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+      const alone = "(under profile 'prod', the model file must load on its " +
+          'own before the profile applies)';
+
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain('custom_extensions');
+      expect(messages(errorSpy)).toContain(alone);
+      errorSpy.mockClear();
+      expect(await profiles({profile: 'prod'})).toBe(1);
+      expect(messages(logSpy)).toContain("  profile 'prod'");
+      expect(messages(errorSpy)).toContain(alone);
+    });
+  }
+
+  // Other model files that are not valid YAML. The load rejects each.
+  const invalidYaml = [
+    ['is written twice', (text: string) => text + text, 'Map keys must be unique'],
+    ['has a GOOGLE block that sets data twice', (text: string) =>
+        text.replace(/( {8}data: '.*'\n)/, "$1        data: '{}'\n"),
+     'Map keys must be unique'],
+    ['has an alias whose anchor is not set, and a key the GOOGLE block may not set',
+     (text: string) => text
+         .replace('"profiles"', '"bogus":1,"profiles"')
+         .replace('        primary_key: [key]\n',
+                  '        primary_key: [key]\n        description: *nope\n'),
+     'Unresolved alias'],
+  ] as const;
+  for (const [what, edit, problem] of invalidYaml) {
+    test(`a model file that ${what} does not hide one`, async () => {
+      writeModel(prod(PROD_SOURCE));
+      const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+      const text = fs.readFileSync(file, 'utf8');
+      expect(edit(text)).not.toBe(text);
+      fs.writeFileSync(file, edit(text));
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+      expect(messages(errorSpy)).toContain(
+          "(under profile 'prod', the model file must load on its own before " +
+          'the profile applies)');
+      errorSpy.mockClear();
+      expect(await push({validateOnly: true})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+    });
+  }
+
+  // A quote left open in the GOOGLE block's data cuts the block short, so its
+  // profile cannot be read. The YAML error is reported instead.
+  test('a model file whose GOOGLE block a YAML error cuts short reports the error', async () => {
+    writeModel(prod(PROD_SOURCE));
+    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/}'\n/, '}\n'));
+
+    await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(
+        'Semantic model load error: could not parse input: Missing closing');
+    await expect(profiles({profile: 'prod'})).rejects.toThrow(
+        'could not parse input: Missing closing');
+  });
+
+  // The profile is under the second of two semantic_model keys.
+  test('a GOOGLE block under a later semantic_model does not hide one', async () => {
+    writeModel(prod(PROD_SOURCE));
+    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+        'semantic_model:\n', 'semantic_model:\n  - name: commerce\nsemantic_model:\n'));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toContain('Map keys must be unique');
+    expect(messages(errorSpy)).toContain(
+        "(under profile 'prod', the model file must load on its own before " +
+        'the profile applies)');
+  });
+
+  // The profile is in the first of two custom_extensions keys, which the load
+  // rejects as a key set twice.
+  test('a GOOGLE block in an earlier custom_extensions does not hide one', async () => {
+    writeModel(prod(PROD_SOURCE));
+    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+        '    datasets:\n',
+        "    custom_extensions:\n      - vendor_name: ACME\n        data: '{}'\n    datasets:\n"));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toContain('Map keys must be unique');
+    expect(messages(errorSpy)).toContain(
+        "(under profile 'prod', the model file must load on its own before " +
+        'the profile applies)');
+  });
+
+  test('they are listed by name, as profile files are', async () => {
+    const bind = (name: string) =>
+        ({name, entities: [{name: 'Customer', source: PROD_SOURCE}]});
+    writeModel(JSON.stringify({profiles: [bind('prod'), bind('dev')]}));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    const defined = 'defined profiles: dev, prod.';
+
+    expect(await push({validateOnly: true, profile: 'qa'})).toBe(1);
+    expect(messages(errorSpy)).toContain(defined);
+    errorSpy.mockClear();
+    expect(await profiles({printStore: true, profile: 'qa'})).toBe(1);
+    expect(messages(errorSpy)).toContain(defined);
+    expect(await profiles()).toBe(0);
+    const report = messages(logSpy);
+    expect(report.indexOf("  profile 'dev'"))
+        .toBeLessThan(report.indexOf("  profile 'prod'"));
+  });
+
+  test('a graph push of one is refused as a named profile, alone or under --all-profiles', async () => {
+    writeModel(JSON.stringify({
+      deployments: [{name: 'main', target: `${BQ}/raw/propertyGraphs/g`}],
+      profiles: [{name: 'prod', entities: [{name: 'Customer', source: PROD_SOURCE}]}],
+    }));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toContain(`[commerce] ${NO_TARGET}`);
+    errorSpy.mockClear();
+    expect(await push({validateOnly: true, allProfiles: true})).toBe(1);
+    expect(messages(errorSpy)).toContain(`[commerce] ${NO_TARGET}`);
+  });
+
+  test('default_profile naming one applies it to a push with no --profile', async () => {
+    writeModel(prod(PROD_SOURCE), 'default_profile: prod\n');
+    const deploySpy = spyOn(kc, 'deployKnowledgeCatalog');
+
+    expect(await push({validateOnly: true})).toBe(0);
+    const customer = deploySpy.mock.calls[0][0][0].model.entities[0];
+    expect(customer.dataSource).toBe('test-project.prod.customer');
+  });
+
+  test('the runtime applies one, under --profile or default_profile', async () => {
+    writeModel(prod(PROD_SOURCE));
+    const named = await createSemanticRuntimes(
+        {ctx: CTX, profile: 'prod', onWarning: () => {}});
+    if ('error' in named) throw new Error(named.error);
+    expect(named[0].model.entities[0].dataSource)
+        .toBe('test-project.prod.customer');
+    expect(named[0].storeError)
+        .toBe(`${NO_TARGET}, so there is no database to run it against`);
+
+    writeModel(prod(PROD_SOURCE), 'default_profile: prod\n');
+    const byDefault =
+        await createSemanticRuntimes({ctx: CTX, onWarning: () => {}});
+    if ('error' in byDefault) throw new Error(byDefault.error);
+    expect(byDefault[0].profile).toBe('prod');
+    expect(byDefault[0].model.entities[0].dataSource)
+        .toBe('test-project.prod.customer');
+  });
+
+  test('kcmd profiles --print-store and skills-generate find one', async () => {
+    writeModel(prod(PROD_SOURCE));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await profiles({printStore: true, profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy))
+        .toBe(`Error: ${NO_TARGET}, so there is no database to run it against`);
+    errorSpy.mockClear();
+    expect(await skillsGenerate({out: 'skills', profile: 'prod'})).toBe(0);
+    expect(messages(errorSpy)).toBe('');
+    expect(fs.existsSync(path.join('skills', 'commerce', 'SKILL.md'))).toBe(true);
+  });
+
+  test("one named 'default' in any letter case stops push and the runtime", async () => {
+    writeModel(JSON.stringify(
+        {profiles: [{name: 'Default', entities: [{name: 'Customer', source: PROD_SOURCE}]}]}));
+    const error = "model 'commerce': a profile in a GOOGLE custom_extensions " +
+        "block may not be named 'Default'; 'default' names the model's " +
+        'inline bindings.';
+
+    await expect(push({validateOnly: true})).rejects.toThrow(error);
+    const opened = await createSemanticRuntimes({ctx: CTX, onWarning: () => {}});
+    expect('error' in opened && opened.error).toContain(error);
   });
 
   // The loader keeps a GOOGLE block on the model only when it lists
