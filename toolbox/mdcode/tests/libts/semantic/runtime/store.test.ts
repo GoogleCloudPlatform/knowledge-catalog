@@ -322,12 +322,27 @@ describe('a model that declares more than one deployment target', () => {
         .toContain('2 AlloyDB deployment targets');
   });
 
-  // A vanilla model cannot write 'deployments', so the message names the
-  // GOOGLE block and gives no advice about 'deployments'.
+  // A vanilla model whose GOOGLE block lists 'deploymentTargets' is told about
+  // that key, and how to list a deployment in the block.
   test('a GOOGLE block with no target names the block', () => {
     expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
       error: "Model 'm' declares no deployment target in its GOOGLE block's " +
-          "'deploymentTargets', so there is no store to run against.",
+          "'deploymentTargets', so there is no store to run against. In a " +
+          "GOOGLE custom_extensions block on the model, declare a " +
+          "deployment in 'deployments' whose target names a database.",
+    });
+  });
+
+  // The loader removes a GOOGLE block that lists no 'deploymentTargets', so a
+  // vanilla model with no target and no such block is told about
+  // 'deployments'.
+  test('a vanilla model with no deploymentTargets block is told about deployments', () => {
+    const none = {...targets([], `${DB}/tables/Customer`), customExtensions: undefined};
+    expect(resolveStore(none)).toEqual({
+      error: "Model 'm' declares no deployment target in 'deployments', so " +
+          'there is no store to run against. In a GOOGLE custom_extensions ' +
+          "block on the model, declare a deployment in 'deployments' whose " +
+          'target names a database.',
     });
   });
 

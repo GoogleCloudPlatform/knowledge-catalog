@@ -94,7 +94,12 @@ export function validatePushRequirements(
     // model), one, or even several backends (whose KC aspect records all of
     // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
-      const vanilla = model.version === OSSIE_VERSION;
+      // Where the model lists its deployments. A vanilla model that lists
+      // none is told how to declare them instead.
+      const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
+          model.deployments?.length ?
+          `under 'deployments' in its GOOGLE custom_extensions block` :
+          undefined;
       if (deployInfo.malformed.length) {
         // A target in no accepted form is named, alone or beside others, so
         // the author knows which entry to fix.
@@ -111,8 +116,7 @@ export function validatePushRequirements(
                     .length} deployments; push uses ` +
             `exactly one deployment for now, with a BigQuery Graph or ` +
             `Spanner Graph target${
-                vanilla ? `; ${DEPLOYMENTS_VERSION_HINT}` :
-                          ` under 'deployments'.`}`);
+                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
@@ -124,8 +128,7 @@ export function validatePushRequirements(
             `model runs against rather than deploys to; AlloyDB has no ` +
             `property graph for a push to publish. Declare a BigQuery or ` +
             `Spanner Graph target (${
-                vanilla ? `${DEPLOYMENTS_VERSION_HINT}; ` :
-                          `under 'deployments'; `}push uses exactly one ` +
+                where ?? DEPLOYMENTS_VERSION_HINT}; push uses exactly one ` +
             `deployment for now), or run 'kcmd push --no-profile' to publish ` +
             `to Knowledge Catalog only.`);
       }
@@ -1362,11 +1365,13 @@ function validateBigQueryMetrics(
           `including a function namespace such as 'NET.', so remove the ` +
           `extra '<entity>.' match or scope its expression to one entity.`);
     } else if (referenced.length === 0) {
+      const anchor = model.version === OSSIE_VERSION ?
+          `'entity' in a GOOGLE custom_extensions block on the metric` :
+          `top-level 'entity'`;
       errors.push(
           `${prefix} targets a BigQuery graph but does not resolve to a ` +
           `single entity; the BigQuery generator reads '<entity>.' ` +
-          `qualifiers in the expression or top-level 'entity' (in ` +
-          `'0.2.0.dev0/google', not a GOOGLE custom_extensions block).`);
+          `qualifiers in the expression or ${anchor}.`);
     }
   }
   return errors;

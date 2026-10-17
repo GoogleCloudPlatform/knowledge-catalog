@@ -203,10 +203,11 @@ export interface StoreError {
  * defaults to `default`, the model file's own bindings. It is the one the
  * deployments for that profile name: those that name it in `profile`, or that
  * name none or `default` for `default`. A model with no `deployments` list,
- * such as a vanilla model, names no profile for any of its targets, so they
- * are all for `default`. The instance-based and cluster-based URIs of one
- * AlloyDB database are one store. With several targets, the store is the
- * single operational one, Spanner or AlloyDB.
+ * such as a vanilla model that lists `deploymentTargets` in its GOOGLE block,
+ * names no profile for any of its targets, so they are all for `default`. The
+ * instance-based and cluster-based URIs of one AlloyDB database are one store.
+ * With several targets, the store is the single operational one, Spanner or
+ * AlloyDB.
  *
  * Set `legacyWrapper` for a model a legacy `semantic_model:` wrapper was
  * merged into. Set `deploymentTarget` when the model's deployment comes from a
@@ -244,10 +245,13 @@ export function resolveStore(
     return {error: `${err?.message || err}`, named: true, rejected: true};
   }
 
-  // A vanilla model lists its targets in a GOOGLE block, which names no
-  // deployment, so a message names the block.
-  const inGoogleBlock =
-      model.deployments === undefined && model.version === OSSIE_VERSION;
+  // The loader reads a vanilla model's `deployments` out of its GOOGLE block.
+  // It keeps a GOOGLE block on the model only when the block lists
+  // `deploymentTargets`, the older form, whose targets carry no deployment
+  // name. A message names that key only for such a block.
+  const vanilla = model.version === OSSIE_VERSION;
+  const inGoogleBlock = vanilla && model.deployments === undefined &&
+      (model.customExtensions ?? []).some(e => e.vendorName === 'GOOGLE');
   const where =
       inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` : `'deployments'`;
 
@@ -314,8 +318,9 @@ export function resolveStore(
     };
   }
   if (!declared) {
-    const declare = inGoogleBlock ?
-        '' :
+    const declare = vanilla ?
+        ` In a GOOGLE custom_extensions block on the model, declare a ` +
+            `deployment in 'deployments' whose target names a database.` :
         ` Declare a deployment in 'deployments' whose target names a ` +
             `database.`;
     return {
