@@ -59,19 +59,15 @@ function entryName(id: string, project = 'dest'): string {
   return `projects/${project}/locations/us/entryGroups/eg/entries/${id}`;
 }
 
-// A loader-valid VANILLA (0.2.0.dev0) model whose model-level GOOGLE
-// custom_extension carries invalid JSON: the doc parses, yet the emitter (via
-// googleDeploymentTargets) throws while building the semantic-model aspect.
-// Under the extended profile the deployment target is a native key with no JSON
-// to corrupt, so the malformed-carrier case is a vanilla document (which is the
-// version that carries the target in a GOOGLE custom_extension at all).
-const MALFORMED_EXTENSION = `
+// A loader-valid VANILLA (0.2.0.dev0) model. The loader rejects a GOOGLE
+// custom_extension whose data is not JSON, so the test that needs one sets it
+// on the loaded model, as a model built in memory could carry it. The emitter
+// (via googleDeploymentTargets) then throws while building the semantic-model
+// aspect.
+const VANILLA_SALES = `
 version: "0.2.0.dev0"
 semantic_model:
   - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: 'not valid json'
     datasets:
       - name: orders
         source: demo.sales.orders
@@ -1214,12 +1210,15 @@ describe('deployKnowledgeCatalog: failures', () => {
   test(
       'a model that throws during emit fails with the model + document named',
       async () => {
-        // A parseable doc whose GOOGLE extension is invalid JSON makes the
-        // emitter throw; the publisher must report it, not crash the push.
+        // A model whose GOOGLE extension is invalid JSON makes the emitter
+        // throw; the publisher must report it, not crash the push.
         const {create} = stubClient();
-        const docs = [{name: 'broken.yaml', text: MALFORMED_EXTENSION}];
+        const loaded =
+            models([{name: 'broken.yaml', text: VANILLA_SALES}]);
+        loaded[0].model.customExtensions =
+            [{vendorName: 'GOOGLE', data: 'not valid json'}];
 
-        const result = await deployKnowledgeCatalog(models(docs), CTX, OPTS);
+        const result = await deployKnowledgeCatalog(loaded, CTX, OPTS);
 
         expect(result.success).toBe(false);
         expect(result.details).toContain('broken.yaml');

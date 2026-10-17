@@ -13,7 +13,7 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -1031,9 +1031,9 @@ function relationshipKeyErrors(
 
 // Validates field and metric expressions when inheritance resolved cleanly:
 //   - For each metric:
-//     1. Reject a metric with no `authoredEntity` (or vanilla GOOGLE block
-//        `entity`) when its expressions, read together, reach no entity or
-//        more than one (or when the metric has no expression and no anchor).
+//     1. Reject a metric with no `authoredEntity` when its expressions, read
+//        together, reach no entity or more than one (or when the metric has
+//        no expression and no anchor).
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
 //        entity (runs on every push).
 //     3. When `authoredEntity` is set and the expressions reference at least
@@ -1141,8 +1141,7 @@ export function validateExpressionReferences(
       addUnreadableWarning(
           `metric '${metric.name}'`, sources.length, unreadDialects);
 
-      const googleEntity = googleMetricEntity(metric);
-      const authored = metric.authoredEntity ?? googleEntity;
+      const authored = metric.authoredEntity;
       const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
@@ -1287,25 +1286,6 @@ function validateBigQueryMetrics(
     }
   }
   return errors;
-}
-
-// In a vanilla 0.2.0.dev0 document a metric states its anchor inside its
-// GOOGLE custom_extensions block until b/568397001 teaches the loader to read
-// it.
-function googleMetricEntity(metric: Metric): string|undefined {
-  for (const ext of metric.customExtensions ?? []) {
-    if (ext.vendorName !== 'GOOGLE') continue;
-    try {
-      const parsed = JSON.parse(ext.data);
-      if (parsed && typeof parsed === 'object' &&
-          typeof parsed.entity === 'string' && parsed.entity.trim()) {
-        return parsed.entity;
-      }
-    } catch {
-      // Ignore malformed JSON here; if relevant, other checks report it.
-    }
-  }
-  return undefined;
 }
 
 // Every field each entity has, inherited and profile-excluded ones included so

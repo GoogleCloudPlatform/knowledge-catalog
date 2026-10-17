@@ -1795,8 +1795,8 @@ describe('field and metric expression references', () => {
         name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))', entity: 'orders',
       })).toContain('references multiple entities (NET, orders)');
 
-      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` unset:
-      // KC-only push accepts it, while BigQuery graph push rejects it naming what the BigQuery generator reads.
+      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` set
+      // from the block, so a KC-only push and a BigQuery graph push both accept it.
       const vanillaDoc = loadModels(`version: "0.2.0.dev0"
 semantic_model:
   - name: sales
@@ -1819,9 +1819,9 @@ semantic_model:
         expression:
           dialects: [{ dialect: BIGQUERY, expression: "COUNT(*)" }]
 `).models[0];
+      expect(vanillaDoc.metrics[0].entity).toBe('orders');
       expect(validatePushRequirements([loaded(vanillaDoc)], {targetOptional: true})).toEqual([]);
-      expect(validatePushRequirements([loaded(vanillaDoc)]).join('\n'))
-          .toContain("the BigQuery generator reads '<entity>.' qualifiers in the expression or top-level 'entity'");
+      expect(validatePushRequirements([loaded(vanillaDoc)])).toEqual([]);
 
       // Metric with only a non-BigQuery dialect expression is rejected without --transpile.
       expect(bqPush([orders()], {
