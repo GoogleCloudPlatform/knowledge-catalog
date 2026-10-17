@@ -1,0 +1,864 @@
+# Benchmark model: inbound supply chain and inventory.
+#
+# Shape: a procurement chain (supplier -> purchase_order -> line -> shipment)
+# alongside a periodic inventory snapshot, plus a SELF-REFERENTIAL
+# bill-of-materials edge: part contains part, to arbitrary depth.
+#
+# What it is here to test:
+#   - a recursive hierarchy. "Which suppliers does the X assembly depend on,
+#     including sub-assemblies" cannot be answered by a fixed number of joins;
+#     it needs a transitive closure over bill_of_materials
+#   - two edges between the same pair of entities (bom -> parent part and
+#     bom -> child part). A question must pick the right one, and picking
+#     wrong inverts the answer
+#   - a snapshot entity, where summing across dates double-counts stock and
+#     the only correct reading is at one as_of_date
+#   - ordered-vs-received reasoning, where fill rate and on-time delivery are
+#     different ratios over the same two entities
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: supply_chain
+    description: >-
+      Inbound procurement, inbound shipments, warehouse inventory snapshots and
+      the bill of materials relating parts to their components.
+    ai_context:
+      instructions: >-
+        Inventory lives in inventory_snapshot, one row per part per warehouse
+        per as_of_date. Never sum stock across as_of_date: pick a single date,
+        or the latest. Ordered quantity is on purchase_order_line and received
+        quantity on shipment_line; the two are different grains joined through
+        the purchase order. bill_of_materials is recursive, so component
+        questions that say "including sub-assemblies" need a transitive walk,
+        not one join.
+
+    entities:
+      - name: supplier
+        source: scm.public.supplier
+        primary_key: [supplier_id]
+        description: One row per vendor the business buys from.
+        ai_context:
+          synonyms: ["supplier", "vendor", "source", "manufacturer"]
+        fields:
+          - name: supplier_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: supplier_id}]
+          - name: supplier_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: supplier_name}]
+          - name: country
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: country}]
+            ai_context:
+              synonyms: ["country", "where they are", "sourcing country"]
+          - name: supplier_tier
+            datatype: String
+            description: One of STRATEGIC, PREFERRED, APPROVED, PROBATION.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: supplier_tier}]
+            ai_context:
+              synonyms: ["tier", "vendor status", "relationship level"]
+          - name: quality_rating
+            datatype: Float
+            description: Scorecard rating from 0 to 100.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: quality_rating}]
+            ai_context:
+              synonyms: ["quality score", "scorecard", "rating"]
+          - name: contracted_lead_time_days
+            datatype: Integer
+            description: Lead time the contract commits to, against which actuals are judged.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: contracted_lead_time_days}]
+            ai_context:
+              synonyms: ["promised lead time", "committed lead time"]
+          - name: is_single_source
+            datatype: Boolean
+            description: True when no alternate supplier is qualified for their parts.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_single_source}]
+            ai_context:
+              synonyms: ["single source", "sole source", "no alternative"]
+
+      - name: part
+        source: scm.public.part
+        primary_key: [part_id]
+        description: >-
+          One row per part, whether a raw component or a finished assembly.
+          Both ends of bill_of_materials point here.
+        ai_context:
+          synonyms: ["part", "component", "material", "SKU", "assembly"]
+        fields:
+          - name: part_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: part_id}]
+          - name: part_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: part_name}]
+          - name: part_class
+            datatype: String
+            description: One of RAW, COMPONENT, SUBASSEMBLY, FINISHED.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: part_class}]
+            ai_context:
+              synonyms: ["part type", "classification", "raw or finished"]
+          - name: commodity_group
+            datatype: String
+            description: Sourcing commodity, e.g. Electronics, Fasteners, Polymers.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: commodity_group}]
+            ai_context:
+              synonyms: ["commodity", "category", "sourcing group"]
+          - name: standard_cost
+            datatype: Decimal
+            description: Standard unit cost used to value inventory.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: standard_cost}]
+            ai_context:
+              synonyms: ["cost", "unit cost", "standard cost"]
+          - name: unit_of_measure
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: unit_of_measure}]
+          - name: primary_supplier_id
+            datatype: String
+            description: Default supplier for the part.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: primary_supplier_id}]
+          - name: is_hazardous
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_hazardous}]
+          - name: safety_stock_units
+            datatype: Integer
+            description: Buffer the planner intends to hold.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: safety_stock_units}]
+            ai_context:
+              synonyms: ["safety stock", "buffer", "minimum stock"]
+
+      - name: bill_of_materials
+        source: scm.public.bill_of_materials
+        primary_key: [parent_part_id, child_part_id]
+        description: >-
+          One row per direct parent-child part pair. Self-referential and
+          recursive: a child may itself be a parent in another row.
+        ai_context:
+          synonyms: ["BOM", "bill of materials", "component list", "recipe", "explosion"]
+        fields:
+          - name: parent_part_id
+            datatype: String
+            description: The assembly.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: parent_part_id}]
+            ai_context:
+              synonyms: ["assembly", "parent", "what it goes into"]
+          - name: child_part_id
+            datatype: String
+            description: The component consumed by the assembly.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: child_part_id}]
+            ai_context:
+              synonyms: ["component", "child", "what it is made of"]
+          - name: quantity_per_assembly
+            datatype: Float
+            description: Units of the child consumed per unit of the parent.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: quantity_per_assembly}]
+            ai_context:
+              synonyms: ["quantity per", "usage", "how many needed"]
+          - name: bom_level
+            datatype: Integer
+            description: >-
+              Depth of this edge below its top-level assembly. Level 1 is a
+              direct component, so a question about direct components only can
+              filter on it instead of walking the hierarchy.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: bom_level}]
+            ai_context:
+              synonyms: ["level", "depth", "tier in the BOM"]
+          - name: is_optional
+            datatype: Boolean
+            description: True when the component appears only in some configurations.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_optional}]
+
+      - name: warehouse
+        source: scm.public.warehouse
+        primary_key: [warehouse_id]
+        description: One row per stocking location.
+        ai_context:
+          synonyms: ["warehouse", "DC", "distribution center", "stocking location"]
+        fields:
+          - name: warehouse_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: warehouse_id}]
+          - name: warehouse_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: warehouse_name}]
+          - name: region
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: region}]
+            ai_context:
+              synonyms: ["region", "network area"]
+          - name: country
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: country}]
+          - name: capacity_pallets
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: capacity_pallets}]
+            ai_context:
+              synonyms: ["capacity", "size", "pallet positions"]
+          - name: is_automated
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_automated}]
+
+      - name: carrier
+        source: scm.public.carrier
+        primary_key: [carrier_id]
+        description: One row per freight carrier.
+        ai_context:
+          synonyms: ["carrier", "freight company", "shipper", "logistics provider"]
+        fields:
+          - name: carrier_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: carrier_id}]
+          - name: carrier_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: carrier_name}]
+          - name: transport_mode
+            datatype: String
+            description: One of OCEAN, AIR, RAIL, TRUCK, PARCEL.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: transport_mode}]
+            ai_context:
+              synonyms: ["mode", "how it ships", "transport mode"]
+
+      - name: purchase_order
+        source: scm.public.purchase_order
+        primary_key: [po_id]
+        description: One row per purchase order header.
+        ai_context:
+          synonyms: ["PO", "purchase order", "order to supplier"]
+        fields:
+          - name: po_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: po_id}]
+          - name: supplier_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: supplier_id}]
+          - name: destination_warehouse_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: destination_warehouse_id}]
+          - name: order_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_date}]
+            ai_context:
+              synonyms: ["when ordered", "PO date"]
+          - name: promised_date
+            datatype: Date
+            description: Date the supplier committed to deliver.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: promised_date}]
+            ai_context:
+              synonyms: ["promised date", "commit date", "due date"]
+          - name: po_status
+            datatype: String
+            description: One of OPEN, PARTIAL, RECEIVED, CANCELLED.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: po_status}]
+            ai_context:
+              synonyms: ["status", "open or received"]
+          - name: buyer_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: buyer_name}]
+          - name: is_expedited
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_expedited}]
+            ai_context:
+              synonyms: ["expedited", "rush order", "premium freight"]
+
+      - name: purchase_order_line
+        source: scm.public.purchase_order_line
+        primary_key: [po_line_id]
+        description: One row per part on a purchase order. The ORDERED grain.
+        ai_context:
+          synonyms: ["PO line", "order line", "ordered item"]
+        fields:
+          - name: po_line_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: po_line_id}]
+          - name: po_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: po_id}]
+          - name: part_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: part_id}]
+          - name: ordered_quantity
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: ordered_quantity}]
+            ai_context:
+              synonyms: ["ordered", "quantity ordered", "demand placed"]
+          - name: unit_price
+            datatype: Decimal
+            description: Negotiated price for this line, which may differ from standard cost.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: unit_price}]
+          - name: line_status
+            datatype: String
+            description: One of OPEN, PARTIAL, CLOSED, CANCELLED.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: line_status}]
+
+      - name: shipment
+        source: scm.public.shipment
+        primary_key: [shipment_id]
+        description: One row per inbound shipment against a purchase order.
+        ai_context:
+          synonyms: ["shipment", "delivery", "inbound", "receipt"]
+        fields:
+          - name: shipment_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: shipment_id}]
+          - name: po_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: po_id}]
+          - name: carrier_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: carrier_id}]
+          - name: destination_warehouse_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: destination_warehouse_id}]
+          - name: shipped_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: shipped_date}]
+          - name: received_date
+            datatype: Date
+            description: Date received at the warehouse; null while in transit.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: received_date}]
+            ai_context:
+              synonyms: ["received", "arrival date", "delivered"]
+          - name: days_late
+            datatype: Integer
+            description: >-
+              Received date minus the PO promised date. Negative means early,
+              zero or less counts as on time.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: days_late}]
+            ai_context:
+              synonyms: ["lateness", "delay", "days late"]
+          - name: freight_cost
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: freight_cost}]
+            ai_context:
+              synonyms: ["freight", "shipping cost", "transport cost"]
+
+      - name: shipment_line
+        source: scm.public.shipment_line
+        primary_key: [shipment_line_id]
+        description: One row per part received on a shipment. The RECEIVED grain.
+        ai_context:
+          synonyms: ["receipt line", "shipment line", "received item"]
+        fields:
+          - name: shipment_line_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: shipment_line_id}]
+          - name: shipment_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: shipment_id}]
+          - name: po_line_id
+            datatype: String
+            description: The ordered line this receipt satisfies.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: po_line_id}]
+          - name: part_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: part_id}]
+          - name: received_quantity
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: received_quantity}]
+            ai_context:
+              synonyms: ["received", "quantity received", "delivered units"]
+          - name: rejected_quantity
+            datatype: Integer
+            description: Units failed at inbound inspection.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: rejected_quantity}]
+            ai_context:
+              synonyms: ["rejected", "defects", "failed inspection", "scrap"]
+
+      - name: inventory_snapshot
+        source: scm.public.inventory_snapshot
+        primary_key: [as_of_date, warehouse_id, part_id]
+        description: >-
+          Stock on hand, one row per part per warehouse per day. A SNAPSHOT:
+          summing across as_of_date counts the same stock repeatedly.
+        ai_context:
+          synonyms: ["inventory", "stock on hand", "stock level", "position"]
+        fields:
+          - name: as_of_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: as_of_date}]
+            ai_context:
+              synonyms: ["as of", "snapshot date", "position date"]
+          - name: warehouse_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: warehouse_id}]
+          - name: part_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: part_id}]
+          - name: on_hand_units
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: on_hand_units}]
+            ai_context:
+              synonyms: ["on hand", "stock", "units available"]
+          - name: on_order_units
+            datatype: Integer
+            description: Units on open purchase orders not yet received.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: on_order_units}]
+            ai_context:
+              synonyms: ["on order", "incoming", "in the pipeline"]
+          - name: allocated_units
+            datatype: Integer
+            description: On-hand units already committed to demand.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: allocated_units}]
+          - name: daily_demand_units
+            datatype: Float
+            description: Trailing average daily consumption, the denominator of days of supply.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: daily_demand_units}]
+            ai_context:
+              synonyms: ["demand", "burn rate", "consumption"]
+          - name: is_stockout
+            datatype: Boolean
+            description: True when on-hand units reached zero on that date.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_stockout}]
+            ai_context:
+              synonyms: ["stockout", "out of stock", "zero stock"]
+
+    relationships:
+      - name: part_to_primary_supplier
+        from: part
+        to: supplier
+        from_columns: [primary_supplier_id]
+        to_columns: [supplier_id]
+        ai_context:
+          instructions: >-
+            Each part has one default supplier.
+      - name: bill_of_materials_to_parent_part
+        from: bill_of_materials
+        to: part
+        from_columns: [parent_part_id]
+        to_columns: [part_id]
+        ai_context:
+          instructions: >-
+            The assembly end of the BOM edge. Use this to go from a component
+            UP to what it is used in.
+          synonyms: ["where used", "goes into", "parent assembly"]
+      - name: bill_of_materials_to_child_part
+        from: bill_of_materials
+        to: part
+        from_columns: [child_part_id]
+        to_columns: [part_id]
+        ai_context:
+          instructions: >-
+            The component end of the BOM edge. Use this to go from an assembly
+            DOWN to what it is made of.
+          synonyms: ["made of", "components of", "explode the BOM"]
+      - name: purchase_order_to_supplier
+        from: purchase_order
+        to: supplier
+        from_columns: [supplier_id]
+        to_columns: [supplier_id]
+        ai_context:
+          instructions: >-
+            Each PO goes to one supplier.
+      - name: purchase_order_to_warehouse
+        from: purchase_order
+        to: warehouse
+        from_columns: [destination_warehouse_id]
+        to_columns: [warehouse_id]
+        ai_context:
+          instructions: >-
+            Each PO names one destination warehouse.
+      - name: purchase_order_line_to_purchase_order
+        from: purchase_order_line
+        to: purchase_order
+        from_columns: [po_id]
+        to_columns: [po_id]
+        ai_context:
+          instructions: >-
+            Each ordered line belongs to one PO.
+      - name: purchase_order_line_to_part
+        from: purchase_order_line
+        to: part
+        from_columns: [part_id]
+        to_columns: [part_id]
+        ai_context:
+          instructions: >-
+            Each ordered line names one part.
+      - name: shipment_to_purchase_order
+        from: shipment
+        to: purchase_order
+        from_columns: [po_id]
+        to_columns: [po_id]
+        ai_context:
+          instructions: >-
+            Each shipment fulfils one PO; a PO may take several shipments.
+      - name: shipment_to_carrier
+        from: shipment
+        to: carrier
+        from_columns: [carrier_id]
+        to_columns: [carrier_id]
+        ai_context:
+          instructions: >-
+            Each shipment moves on one carrier.
+      - name: shipment_to_warehouse
+        from: shipment
+        to: warehouse
+        from_columns: [destination_warehouse_id]
+        to_columns: [warehouse_id]
+        ai_context:
+          instructions: >-
+            Each shipment arrives at one warehouse.
+      - name: shipment_line_to_shipment
+        from: shipment_line
+        to: shipment
+        from_columns: [shipment_id]
+        to_columns: [shipment_id]
+        ai_context:
+          instructions: >-
+            Each receipt line belongs to one shipment.
+      - name: shipment_line_to_purchase_order_line
+        from: shipment_line
+        to: purchase_order_line
+        from_columns: [po_line_id]
+        to_columns: [po_line_id]
+        ai_context:
+          instructions: >-
+            Ties what was received to what was ordered. The join that makes
+            fill rate computable.
+      - name: shipment_line_to_part
+        from: shipment_line
+        to: part
+        from_columns: [part_id]
+        to_columns: [part_id]
+        ai_context:
+          instructions: >-
+            Each receipt line names one part.
+      - name: inventory_snapshot_to_part
+        from: inventory_snapshot
+        to: part
+        from_columns: [part_id]
+        to_columns: [part_id]
+        ai_context:
+          instructions: >-
+            Each stock position is for one part.
+      - name: inventory_snapshot_to_warehouse
+        from: inventory_snapshot
+        to: warehouse
+        from_columns: [warehouse_id]
+        to_columns: [warehouse_id]
+        ai_context:
+          instructions: >-
+            Each stock position is at one warehouse.
+
+    metrics:
+      # --- procurement ------------------------------------------------------
+      - name: ordered_quantity
+        datatype: Integer
+        description: Units placed on purchase orders.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(purchase_order_line.ordered_quantity)
+        ai_context:
+          synonyms: ["ordered units", "demand placed", "quantity ordered"]
+      - name: purchase_order_value
+        datatype: Decimal
+        description: Committed spend across purchase order lines.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(purchase_order_line.ordered_quantity * purchase_order_line.unit_price)
+        ai_context:
+          synonyms: ["PO value", "committed spend", "purchase value"]
+      - name: open_po_value
+        datatype: Decimal
+        description: Committed spend on lines not yet closed.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN purchase_order_line.line_status IN ('OPEN', 'PARTIAL')
+                    THEN purchase_order_line.ordered_quantity * purchase_order_line.unit_price
+                    ELSE 0 END)
+        ai_context:
+          synonyms: ["open commitments", "outstanding POs", "unreceived value"]
+      - name: purchase_order_count
+        datatype: Integer
+        description: Distinct purchase orders.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT purchase_order.po_id)
+        ai_context:
+          synonyms: ["number of POs", "orders placed"]
+      - name: supplier_count
+        datatype: Integer
+        description: Distinct suppliers used.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT purchase_order.supplier_id)
+        ai_context:
+          synonyms: ["vendors used", "how many suppliers", "supply base"]
+
+      # --- delivery performance --------------------------------------------
+      - name: received_quantity
+        datatype: Integer
+        description: Units actually received.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(shipment_line.received_quantity)
+        ai_context:
+          synonyms: ["receipts", "units received", "delivered quantity"]
+      - name: fill_rate
+        datatype: Float
+        description: >-
+          Received over ordered. Numerator is at shipment-line grain and
+          denominator at PO-line grain, joined through
+          shipment_line_to_purchase_order_line.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(shipment_line.received_quantity)
+                / NULLIF(SUM(purchase_order_line.ordered_quantity), 0)
+        ai_context:
+          synonyms: ["fill rate", "order completion", "percent delivered"]
+      - name: shipment_count
+        datatype: Integer
+        description: Distinct inbound shipments.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT shipment.shipment_id)
+        ai_context:
+          synonyms: ["deliveries", "number of shipments", "inbound volume"]
+      - name: on_time_delivery_rate
+        datatype: Float
+        description: >-
+          Share of received shipments that arrived by the promised date.
+          Early counts as on time.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN shipment.days_late <= 0
+                      THEN shipment.shipment_id END)
+                / NULLIF(COUNT(DISTINCT shipment.shipment_id), 0)
+        ai_context:
+          synonyms: ["OTD", "on-time delivery", "delivery performance", "on time"]
+      - name: late_shipment_count
+        datatype: Integer
+        description: Shipments that arrived after the promised date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN shipment.days_late > 0
+                      THEN shipment.shipment_id END)
+        ai_context:
+          synonyms: ["late deliveries", "misses", "delayed shipments"]
+      - name: average_days_late
+        datatype: Float
+        description: Mean lateness across shipments; negative means early on average.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(shipment.days_late) / NULLIF(COUNT(DISTINCT shipment.shipment_id), 0)
+        ai_context:
+          synonyms: ["average delay", "mean lateness", "how late"]
+      - name: total_freight_cost
+        datatype: Decimal
+        description: Freight spend across shipments.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(shipment.freight_cost)
+        ai_context:
+          synonyms: ["freight spend", "logistics cost", "shipping cost"]
+      - name: defect_rate
+        datatype: Float
+        description: Rejected units as a share of units received.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(shipment_line.rejected_quantity)
+                / NULLIF(SUM(shipment_line.received_quantity), 0)
+        ai_context:
+          synonyms: ["defect rate", "reject rate", "quality failures", "PPM"]
+
+      # --- inventory, all read at ONE as_of_date ---------------------------
+      - name: on_hand_units
+        datatype: Integer
+        description: >-
+          Units in stock. Only meaningful at a single as_of_date; summing
+          across dates counts the same stock repeatedly.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(inventory_snapshot.on_hand_units)
+        ai_context:
+          synonyms: ["stock on hand", "inventory units", "what we have"]
+      - name: inventory_value
+        datatype: Decimal
+        description: On-hand units valued at standard cost, at one as_of_date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(inventory_snapshot.on_hand_units * part.standard_cost)
+        ai_context:
+          synonyms: ["inventory value", "stock value", "working capital in stock"]
+      - name: available_units
+        datatype: Integer
+        description: On-hand units not yet committed to demand.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(inventory_snapshot.on_hand_units - inventory_snapshot.allocated_units)
+        ai_context:
+          synonyms: ["available to promise", "unallocated stock", "free stock"]
+      - name: days_of_supply
+        datatype: Float
+        description: On-hand units over average daily demand.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(inventory_snapshot.on_hand_units)
+                / NULLIF(SUM(inventory_snapshot.daily_demand_units), 0)
+        ai_context:
+          synonyms: ["days of supply", "coverage", "how long stock lasts", "DOS"]
+      - name: stockout_rate
+        datatype: Float
+        description: Share of part-warehouse-day positions that were out of stock.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN inventory_snapshot.is_stockout THEN 1 ELSE 0 END)
+                / NULLIF(COUNT(inventory_snapshot.part_id), 0)
+        ai_context:
+          synonyms: ["stockout rate", "out of stock", "availability failures"]
+      - name: below_safety_stock_parts
+        datatype: Integer
+        description: Distinct parts whose on-hand stock is under their safety level.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE
+                      WHEN inventory_snapshot.on_hand_units < part.safety_stock_units
+                      THEN inventory_snapshot.part_id END)
+        ai_context:
+          synonyms: ["below safety stock", "at risk parts", "short parts"]
+
+      # --- bill of materials ------------------------------------------------
+      - name: component_edge_count
+        datatype: Integer
+        description: Parent-child edges in the bill of materials.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(bill_of_materials.child_part_id)
+        ai_context:
+          synonyms: ["BOM lines", "component relationships", "BOM size"]
+      - name: distinct_components
+        datatype: Integer
+        description: Distinct parts appearing as a component of something.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT bill_of_materials.child_part_id)
+        ai_context:
+          synonyms: ["unique components", "parts used"]
+      - name: max_bom_depth
+        datatype: Integer
+        description: Deepest level reached in the bill of materials.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: MAX(bill_of_materials.bom_level)
+        ai_context:
+          synonyms: ["BOM depth", "how deep", "levels"]
+      - name: extended_component_cost
+        datatype: Decimal
+        description: >-
+          Component usage valued at standard cost, one BOM level at a time.
+          A full rolled-up cost needs a recursive walk and is not this metric.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(bill_of_materials.quantity_per_assembly * part.standard_cost)
+        ai_context:
+          synonyms: ["component cost", "material cost", "BOM cost at this level"]

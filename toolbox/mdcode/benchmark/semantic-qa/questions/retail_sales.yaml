@@ -1,0 +1,86 @@
+# Retrieval questions for models/retail_sales.yaml.
+#
+# These grade SEARCH, not SQL. The task under test is: a natural-language
+# question arrives, Knowledge Catalog is searched, and it must return the
+# concepts needed to answer it. So the gold is a set of KC entries.
+#
+# Refs are `kind:name`, where kind is model, entity or metric -- the three
+# things kcmd publishes as entries. A bare name resolves against this file's
+# model; `model.name` reaches another model's entry. Relationships are NOT
+# refs: they become schema-join entry links, so they are traversed after
+# retrieval rather than returned by it.
+#
+#   required     must be retrieved; missing one is a failed answer
+#   supporting   needed to ground or filter, lower cost to miss
+#   confusable   plausible near-misses that must NOT outrank the required set
+
+model: retail_sales
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: How much did we sell last quarter?
+    expect:
+      required: [metric:net_revenue, entity:order_line]
+      supporting: [entity:calendar_date, entity:sales_order]
+      confusable: [metric:gross_revenue, metric:units_sold]
+    why: >-
+      Vocabulary mismatch at its simplest: the user says "sell", the model
+      says revenue, and nothing in the question contains the string
+      "revenue". "How much" means money rather than units, which is what
+      separates net_revenue from units_sold.
+
+  - id: q2
+    difficulty: medium
+    question: Which categories have the worst margin percentage?
+    expect:
+      required: [metric:gross_margin_rate, entity:product]
+      supporting: [entity:order_line]
+      confusable: [metric:gross_margin, metric:discount_rate]
+    why: >-
+      A near-miss inside one model. gross_margin and gross_margin_rate differ
+      by one word and both match "margin"; only the rate answers a question
+      about a percentage. Ranking the absolute above the ratio is the failure.
+
+  - id: q3
+    difficulty: medium
+    question: Do our loyalty members spend more per basket when they buy online?
+    expect:
+      required:
+        [metric:average_order_value, entity:customer, entity:sales_order]
+      supporting: [entity:order_line]
+      confusable: [metric:units_per_order, metric:net_revenue]
+    why: >-
+      Four concepts from one sentence, none named directly. "Loyalty members"
+      is customer.loyalty_tier, "per basket" is average_order_value, "online"
+      is sales_order.channel. Tests multi-concept recall, where returning
+      three of four still fails the question.
+
+  - id: q4
+    difficulty: hard
+    question: Show me AOV and UPT by store.
+    expect:
+      required: [metric:average_order_value, metric:units_per_order, entity:store]
+      confusable: [metric:net_revenue, metric:units_sold]
+    why: >-
+      Trade jargon with no lexical overlap at all: AOV and UPT appear only in
+      ai_context.synonyms, never in a name or description. This question is
+      the direct probe for whether synonym text is reachable by search -- it
+      is currently dropped on the KC push, so expect it to fail there and
+      pass once synonyms have a home.
+
+  - id: q5
+    difficulty: hard
+    question: What did our promotions cost us last year?
+    expect:
+      required: [metric:promotion_discount, entity:promotion]
+      supporting: [entity:order_line_promotion, entity:calendar_date]
+      confusable:
+        [metric:total_discount, workforce_org.metric:promotion_count]
+    why: >-
+      "Promotion" means a marketing offer here and a job change in
+      workforce_org, which has promotion_count, promotion_recommendation_rate
+      and internal_mobility_count all matching the word. A lexical search with
+      no domain signal will pull the workforce entries in. Within this model,
+      total_discount is the wrong answer because it includes markdowns no
+      promotion drove.
