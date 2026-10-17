@@ -13,7 +13,7 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -88,7 +88,12 @@ export function validatePushRequirements(
     // model), one, or even several backends (whose KC aspect records all of
     // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
-      const vanilla = model.version === OSSIE_VERSION;
+      // Where the model lists its deployments. A vanilla model that lists
+      // none is told how to declare them instead.
+      const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
+          model.deployments?.length ?
+          `under 'deployments' in its GOOGLE custom_extensions block` :
+          undefined;
       if (deployInfo.malformed.length) {
         // A target in no accepted form is named, alone or beside others, so
         // the author knows which entry to fix.
@@ -105,8 +110,7 @@ export function validatePushRequirements(
                     .length} deployments; push uses ` +
             `exactly one deployment for now, with a BigQuery Graph or ` +
             `Spanner Graph target${
-                vanilla ? `; ${DEPLOYMENTS_VERSION_HINT}` :
-                          ` under 'deployments'.`}`);
+                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
@@ -118,8 +122,7 @@ export function validatePushRequirements(
             `model runs against rather than deploys to; AlloyDB has no ` +
             `property graph for a push to publish. Declare a BigQuery or ` +
             `Spanner Graph target (${
-                vanilla ? `${DEPLOYMENTS_VERSION_HINT}; ` :
-                          `under 'deployments'; `}push uses exactly one ` +
+                where ?? DEPLOYMENTS_VERSION_HINT}; push uses exactly one ` +
             `deployment for now), or run 'kcmd push --no-profile' to publish ` +
             `to Knowledge Catalog only.`);
       }
@@ -1031,9 +1034,9 @@ function relationshipKeyErrors(
 
 // Validates field and metric expressions when inheritance resolved cleanly:
 //   - For each metric:
-//     1. Reject a metric with no `authoredEntity` (or vanilla GOOGLE block
-//        `entity`) when its expressions, read together, reach no entity or
-//        more than one (or when the metric has no expression and no anchor).
+//     1. Reject a metric with no `authoredEntity` when its expressions, read
+//        together, reach no entity or more than one (or when the metric has
+//        no expression and no anchor).
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
 //        entity (runs on every push).
 //     3. When `authoredEntity` is set and the expressions reference at least
@@ -1141,8 +1144,7 @@ export function validateExpressionReferences(
       addUnreadableWarning(
           `metric '${metric.name}'`, sources.length, unreadDialects);
 
-      const googleEntity = googleMetricEntity(metric);
-      const authored = metric.authoredEntity ?? googleEntity;
+      const authored = metric.authoredEntity;
       const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
@@ -1279,33 +1281,16 @@ function validateBigQueryMetrics(
           `namespaces) for '<entity>.' qualifiers, so remove the extra ` +
           `'<entity>.' match or scope its expression to one entity.`);
     } else if (referenced.length === 0) {
+      const anchor = model.version === OSSIE_VERSION ?
+          `'entity' in a GOOGLE custom_extensions block on the metric` :
+          `top-level 'entity'`;
       errors.push(
           `${prefix} targets a BigQuery graph but does not resolve to a ` +
           `single entity; the BigQuery generator reads '<entity>.' ` +
-          `qualifiers in the expression or top-level 'entity' (in ` +
-          `'0.2.0.dev0/google', not a GOOGLE custom_extensions block).`);
+          `qualifiers in the expression or ${anchor}.`);
     }
   }
   return errors;
-}
-
-// In a vanilla 0.2.0.dev0 document a metric states its anchor inside its
-// GOOGLE custom_extensions block until b/568397001 teaches the loader to read
-// it.
-function googleMetricEntity(metric: Metric): string|undefined {
-  for (const ext of metric.customExtensions ?? []) {
-    if (ext.vendorName !== 'GOOGLE') continue;
-    try {
-      const parsed = JSON.parse(ext.data);
-      if (parsed && typeof parsed === 'object' &&
-          typeof parsed.entity === 'string' && parsed.entity.trim()) {
-        return parsed.entity;
-      }
-    } catch {
-      // Ignore malformed JSON here; if relevant, other checks report it.
-    }
-  }
-  return undefined;
 }
 
 // Every field each entity has, inherited and profile-excluded ones included so

@@ -2376,3 +2376,83 @@ entities:
     });
   }
 });
+
+describe('a vanilla model\'s GOOGLE block', () => {
+  const BQ = '//bigquery.googleapis.com/projects/test-project/datasets';
+  function writeModel(block: string): void {
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'),
+        'scope: semantic-model.test-project.us.commerce_eg\n');
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${block}'
+    datasets:
+      - name: Customer
+        source: ${BQ}/raw/tables/customer
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: c_key}]}
+`);
+  }
+
+  // The loader puts the profiles in the block on the model, so the runtime
+  // reads them as declared when it checks the profile a deployment names.
+  test('the runtime accepts a deployment that names a profile in the block', async () => {
+    const block = (profile: string) => JSON.stringify({
+      profiles: [{name: 'prod', entities: [{name: 'Customer', source: `${BQ}/prod/tables/customer`}]}],
+      deployments: [
+        {name: 'main', target: `${BQ}/raw/propertyGraphs/g`},
+        {name: 'prodgraph', target: `${BQ}/prod/propertyGraphs/g`, profile},
+      ],
+    });
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    writeModel(block('prod'));
+    expect(await profiles({printStore: true})).toBe(0);
+    expect(messages(logSpy)).toBe('bigquery:test-project/raw');
+
+    writeModel(block('prdo'));
+    expect(await profiles({printStore: true})).toBe(1);
+    expect(messages(errorSpy)).toContain(
+        "deployment 'prodgraph' names unknown binding profile 'prdo'; " +
+        'defined profiles: prod.');
+  });
+
+  // The loader keeps a GOOGLE block on the model only when it lists
+  // deploymentTargets, so the runtime names that key only for such a block.
+  const noTarget = [
+    ['no GOOGLE block', '{}', (text: string) => text.replace(
+        "    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '{}'\n", ''),
+     "'deployments'"],
+    ['an empty deployments list', '{"deployments": []}', (text: string) => text,
+     "'deployments'"],
+    ['an empty deployments list beside a third-party block', '{"deployments": []}',
+     (text: string) => text.replace(
+         '    datasets:\n', "      - vendor_name: ACME\n        data: '{}'\n    datasets:\n"),
+     "'deployments'"],
+    ['only deploymentTargets', '{"deploymentTargets": []}', (text: string) => text,
+     "its GOOGLE block's 'deploymentTargets'"],
+  ] as const;
+  for (const [what, block, edit, where] of noTarget) {
+    test(`the runtime's no-target error names ${where} for ${what}`, async () => {
+      writeModel(block);
+      const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+      fs.writeFileSync(file, edit(fs.readFileSync(file, 'utf8')));
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(await profiles({printStore: true})).toBe(1);
+      expect(messages(errorSpy)).toBe(
+          `Error: Model 'commerce' declares no deployment target in ${where}, ` +
+          'so there is no store to run against. In a GOOGLE custom_extensions ' +
+          "block on the model, declare a deployment in 'deployments' whose " +
+          'target names a database.');
+    });
+  }
+});

@@ -14,6 +14,7 @@ import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
+import {PROFILE_NAME} from '../semantic/resolve_profiles';
 import {YAML_OPTIONS} from '../semantic/yaml_options';
 
 // Sidecar suffixes that are NOT model documents.
@@ -25,10 +26,6 @@ const PROFILE_FILE = /^(.+)\.profile\.([^.]+)\.yaml$/;
 // Any file shaped like a profile file, including a nameless one and one whose
 // profile name has a dot, which is never a model either.
 const ANY_PROFILE_FILE = /\.profile\.(.*\.)?yaml$/;
-// A profile name: a letter, then letters, digits, underscores and hyphens, at
-// most 500 characters. A profile name never appears in SQL, so a hyphen is
-// safe.
-const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,499}$/;
 
 // The profile name reserved for the inline bindings in the model file.
 const DEFAULT_PROFILE_NAME = 'default';

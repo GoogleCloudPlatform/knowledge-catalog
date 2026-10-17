@@ -79,7 +79,7 @@ agree on every structural row and differ only where a Spanner target has no
    carries no `OPTIONS` at all — so the model's `description` and
    `ai_context.instructions` are carried into Knowledge Catalog instead.
 9. **Other custom extensions.** Under the vanilla `0.2.0.dev0` profile a
-   `custom_extensions` block (other than a GOOGLE deployment target) is the only
+   `custom_extensions` block from a vendor other than GOOGLE is the only
    carrier for vendor metadata; it is inert on push and not persisted to
    Knowledge Catalog, so `pull` never recovers it. `pull` also emits the extended
    `0.2.0.dev0/google` profile, which has no `custom_extensions` carrier, so such

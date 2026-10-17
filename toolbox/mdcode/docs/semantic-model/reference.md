@@ -134,12 +134,12 @@ the model does not declare. Until push accepts a deployment that names a
 profile, the command accepts one that names `default` or a declared profile,
 which push refuses. It also accepts a profile file that no deployment uses,
 which every graph push refuses, and writes a skill whose store line says there
-is none. A vanilla model lists its targets in a `GOOGLE` block. The command
-fails the same way when one of them is in no accepted form or listed twice, or
-when the block's data is not valid JSON. Like push, it reads every model's
-profile files first. It fails on a profile file that every graph push refuses,
-such as a file whose `name:` does not match its file name, or a profile named
-`default` in any letter case. It does not run push's checks on the copies of
+is none. A vanilla model lists its deployments or targets in a `GOOGLE` block.
+The command fails the same way when a target there is in no accepted form or
+listed twice, or when the block's data is not valid JSON. Like push, it reads
+every model's profile files first. It fails on a profile file that every graph
+push refuses, such as a file whose `name:` does not match its file name, or a
+profile named `default` in any letter case. It does not run push's checks on the copies of
 the model and profile files that push stores in Knowledge Catalog, such as
 whether each file is valid UTF-8. It does not check that the entry group holds
 one model, or that two models deploy to different graphs. Of push's checks on

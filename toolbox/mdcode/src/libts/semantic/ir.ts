@@ -37,7 +37,7 @@ export interface AiContext {
  * `data` is opaque to the IR — a vendor-serialized payload (typically a JSON
  * string) — and is preserved unparsed so nothing is lost and a 1P round-trip
  * stays lossless. Typed views over specific vendors are derived by the
- * consumers that need them, from this same source (e.g. the GOOGLE block).
+ * consumers that need them, from this same source.
  */
 export interface CustomExtension {
   vendorName: string;
@@ -49,9 +49,10 @@ export interface CustomExtension {
  * (edges), with model-level metrics defined over them.
  *
  * The IR is primarily semantics. The loader reads a model's named
- * `deployments:` list onto `deployments` and folds its target URIs into a
- * model-level GOOGLE `custom_extensions` block (alongside any authored
- * `custom_extensions` on a vanilla document) for the consumers that read it.
+ * `deployments:` list onto `deployments`. In the Google flavor it also folds
+ * their target URIs into a model-level GOOGLE `custom_extensions` block for the
+ * consumers that read it. A vanilla model lists its deployments in its GOOGLE
+ * block, which the loader reads and does not fold.
  */
 export interface SemanticModel {
   name: string;
@@ -76,13 +77,13 @@ export interface SemanticModel {
   // absent on models authored before constraints existed, so consumers read it
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
-  // Vendor extension blocks carried verbatim (round-trip fidelity), including the
-  // model-level GOOGLE block.
+  // Vendor extension blocks carried verbatim (round-trip fidelity), including a
+  // vanilla model's GOOGLE block that holds `deploymentTargets`.
   customExtensions?: CustomExtension[];
   version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
   // Named profiles. A Google-flavor model's come from its
-  // <model>.profile.<name>.yaml files and a vanilla model's from its GOOGLE
-  // block; the loader does not fill this yet.
+  // <model>.profile.<name>.yaml files, which the loader does not attach yet,
+  // and a vanilla model's from its GOOGLE block, which the loader reads.
   profiles?: ProfileSpec[];
   // Named targets from `deployments:`, each naming the profile it deploys.
   deployments?: DeploymentSpec[];

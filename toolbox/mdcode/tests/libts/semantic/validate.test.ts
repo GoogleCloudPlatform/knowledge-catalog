@@ -76,8 +76,32 @@ describe('validatePushRequirements', () => {
         validatePushRequirements([loaded(model({version: '0.2.0.dev0'}))]);
     expect(vanillaErrs).toHaveLength(1);
     expect(vanillaErrs[0]).toEndWith(
-        "; set version: '0.2.0.dev0/google' and use 'deployments:'");
+        "; list 'deployments' in a GOOGLE custom_extensions block on the " +
+        "model, or set version: '0.2.0.dev0/google' and use 'deployments:'");
     expect(vanillaErrs[0]).not.toContain("under 'deployments'");
+  });
+
+  // A vanilla model that lists deployments has them in its GOOGLE block, so
+  // the message says where they are instead of how to declare them.
+  test('a vanilla model is told its GOOGLE block holds its deployments', () => {
+    const twice = model({
+      version: '0.2.0.dev0',
+      deployments: [
+        {name: 'a', target: BQ_TARGET},
+        {name: 'b', target: SPANNER_TARGET},
+      ],
+    });
+    expect(validatePushRequirements([loaded(twice)])[0]).toEndWith(
+        'with a BigQuery Graph or Spanner Graph target under ' +
+        "'deployments' in its GOOGLE custom_extensions block.");
+    const alloy = model({
+      version: '0.2.0.dev0',
+      deployments: [{name: 'a', target: ALLOYDB_TARGET}],
+    });
+    expect(validatePushRequirements([loaded(alloy)])[0]).toContain(
+        "Declare a BigQuery or Spanner Graph target (under 'deployments' in " +
+        'its GOOGLE custom_extensions block; push uses exactly one ' +
+        'deployment for now)');
   });
 
   test(
@@ -143,7 +167,8 @@ describe('validatePushRequirements', () => {
     // The version hint goes with the graph target it enables, not with the
     // catalog-only option.
     expect(vanillaErrs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (set version: " +
+        "Declare a BigQuery or Spanner Graph target (list 'deployments' in " +
+        "a GOOGLE custom_extensions block on the model, or set version: " +
         "'0.2.0.dev0/google' and use 'deployments:'; push uses exactly one " +
         "deployment for now), or run 'kcmd push --no-profile' to publish to " +
         "Knowledge Catalog only.");
@@ -176,7 +201,8 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs).toHaveLength(1);
     expect(errs[0]).toEndWith(
-        "with a BigQuery Graph or Spanner Graph target; set version: " +
+        "with a BigQuery Graph or Spanner Graph target; list 'deployments' " +
+        "in a GOOGLE custom_extensions block on the model, or set version: " +
         "'0.2.0.dev0/google' and use 'deployments:'");
   });
 
@@ -1795,8 +1821,8 @@ describe('field and metric expression references', () => {
         name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))', entity: 'orders',
       })).toContain('references multiple entities (NET, orders)');
 
-      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` unset:
-      // KC-only push accepts it, while BigQuery graph push rejects it naming what the BigQuery generator reads.
+      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` set
+      // from the block, so a KC-only push and a BigQuery graph push both accept it.
       const vanillaDoc = loadModels(`version: "0.2.0.dev0"
 semantic_model:
   - name: sales
@@ -1819,9 +1845,9 @@ semantic_model:
         expression:
           dialects: [{ dialect: BIGQUERY, expression: "COUNT(*)" }]
 `).models[0];
+      expect(vanillaDoc.metrics[0].entity).toBe('orders');
       expect(validatePushRequirements([loaded(vanillaDoc)], {targetOptional: true})).toEqual([]);
-      expect(validatePushRequirements([loaded(vanillaDoc)]).join('\n'))
-          .toContain("the BigQuery generator reads '<entity>.' qualifiers in the expression or top-level 'entity'");
+      expect(validatePushRequirements([loaded(vanillaDoc)])).toEqual([]);
 
       // Metric with only a non-BigQuery dialect expression is rejected without --transpile.
       expect(bqPush([orders()], {
@@ -1832,6 +1858,39 @@ semantic_model:
         authoredEntity: 'orders',
         dialects: [{dialect: 'POSTGRES', expression: 'SUM("orders"."net_amount")'}],
       })).toContain("targets a BigQuery graph with only a 'POSTGRES' expression");
+    });
+
+    test('the BigQuery placement error offers the anchor the flavor writes', () => {
+      // The generator reads no entity from this expression, so only an anchor
+      // places the metric.
+      const vanilla = (metricBlock: string) => loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deployments: [{name: 'g', target: BQ_TARGET}]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_id }]
+    metrics:
+      - name: n
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "COUNT(o.id) FROM orders o" }]
+${metricBlock}`).models[0];
+      expect(validatePushRequirements([loaded(vanilla(''))])).toContain(
+          "metric 'n' in model 'sales' (doc) targets a BigQuery graph but does not resolve to a " +
+          "single entity; the BigQuery generator reads '<entity>.' qualifiers in the expression " +
+          "or 'entity' in a GOOGLE custom_extensions block on the metric.");
+      // The block anchor the error offers places the metric.
+      expect(validatePushRequirements([loaded(vanilla(`        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity": "orders"}'
+`))])).toEqual([]);
     });
   });
 
