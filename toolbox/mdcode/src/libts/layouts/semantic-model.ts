@@ -461,6 +461,15 @@ export class SemanticModelLayout implements CatalogLayout {
   }
 }
 
+// The name push gives a model file or profile file of the model `model`: its
+// path relative to the entry group directory, with `/` between segments.
+export function fileNameOf(
+    layout: SemanticModelLayout, model: string, localPath: string): string {
+  return path.relative(path.dirname(layout.modelPath(model)), localPath)
+      .split(path.sep)
+      .join('/');
+}
+
 // The `name` a profile file declares at its top level, or undefined when it
 // declares none. A file that does not parse throws, naming the file.
 function parseProfileName(text: string, file: string): string|undefined {

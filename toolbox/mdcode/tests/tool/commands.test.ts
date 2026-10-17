@@ -388,22 +388,23 @@ entities:
         .toContain("deployment 'g' names profile 'prod'");
   });
 
-  // A catalog-only push publishes the whole logical model, so an entity the
-  // profile file leaves without a source does not stop it.
-  test('an entity left without a source does not stop a catalog-only push', async () => {
+  // A named profile binds every concrete entity, whether or not a push
+  // deploys it, so an entity the profile file leaves without a source stops a
+  // catalog-only push too.
+  test('an entity left without a source stops a catalog-only push', async () => {
     setup('', CUSTOMER + `      - name: Orders
         primary_key: [id]
         fields:
           - { name: id, expression: o_id }
 `);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const deploySpy = spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue(KC_OK);
 
-    expect(await push({validateOnly: true, profile: false})).toBe(0);
-    expect(deploySpy).toHaveBeenCalledTimes(1);
-    const entities = deploySpy.mock.calls[0][0][0].model.entities;
-    expect(entities.map(e => [e.name, e.dataSource])).toEqual([
-      ['Customer', 'test-project.prod.customer'],
-      ['Orders', ''],
+    expect(await push({validateOnly: true, profile: false})).toBe(1);
+    expect(deploySpy).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.map(c => String(c[0]))).toEqual([
+      "Error: [commerce.profile.prod.yaml] profile 'prod': entity 'Orders' " +
+          'has no source in this profile',
     ]);
   });
 
@@ -647,8 +648,8 @@ entities:
     expect(code).toBe(1);
     expect(errorSpy.mock.calls.map(c => String(c[0])).join('\n'))
         .toContain(
-            "[commerce] profile 'prod': entity 'Customer': bare table name " +
-            "'prod.customer' is not a valid source");
+            "[commerce.profile.prod.yaml] profile 'prod': entity 'Customer': " +
+            "bare table name 'prod.customer' is not a valid source");
   });
 });
 
@@ -1258,15 +1259,19 @@ semantic_model:
          expect(fs.readFileSync(rebuilt, 'utf8')).toContain('name: commerce');
        });
 
-  test('with KC_V2_ASPECTS on, push reads no profile file and stores no copy',
-       async () => {
-         process.env.KC_V2_ASPECTS = '1';
-         writeRoundTripWorkspace('name: [unterminated\n');
-         const {entries} = fakeCatalog();
+  // Push still reads each profile file, to check it.
+  test('with KC_V2_ASPECTS on, push stores no copy', async () => {
+    process.env.KC_V2_ASPECTS = '1';
+    writeRoundTripWorkspace();
+    const {entries} = fakeCatalog();
+    expect(await push({profile: false})).toBe(0);
+    expect(storedCopies(entries)).toEqual({});
 
-         expect(await push({profile: false})).toBe(0);
-         expect(storedCopies(entries)).toEqual({});
-       });
+    writeRoundTripWorkspace('name: [unterminated\n');
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    expect(await push({profile: false})).toBe(1);
+    expect(messages(errorSpy)).toContain('commerce.profile.prod.yaml');
+  });
 });
 
 
@@ -1850,11 +1855,14 @@ describe('push checks each file before anything is stored', () => {
          expect(create).not.toHaveBeenCalled();
        });
 
-  // The catalog takes one model per entry group.
-  test('with two model documents, that is reported before a profile file ' +
+  // The catalog takes one model per entry group, so push stores no copy then.
+  // A profile file the layout rejects is reported sooner, since push checks
+  // each profile file.
+  test('with two model documents, that is reported before a file copy ' +
            'problem',
        async () => {
-         writeRoundTripWorkspace('name: staging\n');
+         writeRoundTripWorkspace(
+             `${ROUND_TRIP_PROFILE}# ${'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`);
          fs.writeFileSync(
              path.join(entryGroupDir(), 'other.yaml'),
              MODEL_YAML.replace('name: commerce', 'name: other'));
@@ -1865,7 +1873,7 @@ describe('push checks each file before anything is stored', () => {
          const errors = messages(errorSpy);
          expect(errors).toContain(
              'entry group \'commerce_eg\' would receive 2 models');
-         expect(errors).not.toContain('does not match filename suffix');
+         expect(errors).not.toContain('too large');
        });
 });
 

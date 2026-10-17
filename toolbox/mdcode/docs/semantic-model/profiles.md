@@ -108,7 +108,7 @@ leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, metrics, or actions exist, and what each means |
 | a field's column or computation (its `expression`), for a field the entity declares or inherits | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile (`fields_exclude`) | the graph shape (`from`/`to`) and the cardinality a relationship's join columns imply |
-| an entity's key columns (`primary_key`, `unique_keys`): restated with the model file's shape where it states keys, and stated alike in every profile where it states none | an entity's key shape once the model file states a key: how many keys and how wide each is |
+| an entity's key columns (`primary_key`, `unique_keys`): restated with the model file's shape where it states keys, and stated alike in every profile where it states none | an entity's key shape once the model file states a key: how many keys and how wide each is. An empty unique key counts as none. |
 | a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
 | the deployment target, in the older `<model>.profiles/` layout only | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
@@ -480,6 +480,9 @@ writes nothing.
   the offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
+- **Incomplete profile** — every push checks every profile file, whichever
+  binding it deploys. A profile that leaves an entity without a source or a
+  relationship without join columns fails the push.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is

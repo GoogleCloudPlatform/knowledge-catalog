@@ -14,7 +14,7 @@ import {fromDocument, loadModels, loadSemanticModels, SemanticModelError} from '
 import * as inheritance from '../../../src/libts/semantic/resolve_inheritance';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
 import * as sqlUtils from '../../../src/libts/semantic/sql_expr_utils';
-import {applyProfile, applyProfileExclusions, applyProfileFile, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfile, applyProfileExclusions, applyProfileFile, CompletenessOptions, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
@@ -1199,6 +1199,22 @@ describe('validateProfileCompleteness', () => {
     expect(errors.join('\n')).toContain("entity 'Order' has no source");
   });
 
+  test('leaves out, when applied, the rules push checks on the applied model', () => {
+    const p = profile({
+      entities: [
+        {...profile().entities[0], primaryKey: ['LOWER(c_custkey)'],
+         fields: [{name: 'lifetimeValue', expression: 'Order.total'}]},
+        {name: 'Order'},
+      ],
+    });
+    const errors = validateProfileCompleteness(irModel(), p).join('\n');
+    expect(errors).toContain("key column 'LOWER(c_custkey)' is not a physical");
+    expect(errors).toContain("field 'Customer.lifetimeValue' reads entity 'Order'");
+    expect(validateProfileCompleteness(irModel(), p, [], {applied: true})).toEqual([
+      "profile 'prod': entity 'Order' has no source in this profile",
+    ]);
+  });
+
   test('BigQuery datasets are one database; two Spanner databases are not', () => {
     const twoDatasets = profile({
       entities: [
@@ -1433,6 +1449,38 @@ describe('validateProfileCompleteness', () => {
       "'avg_lifetime_value', so the fields it reads were not checked",
     ]);
   });
+
+  test('with ownSqlOnly, warns about the model file SQL the caller does not read as this profile does', () => {
+    // BigQuery reads a hex literal and PostgreSQL does not.
+    const AL = (t: string) =>
+        `//alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
+    const m = irModel();
+    m.entities[0].fields.push({name: 'code', expression: 'Customer.name + 0x1F'});
+    const pg = profile({
+      name: 'pg',
+      entities: [
+        {name: 'Customer', source: AL('customer'),
+         fields: [{name: 'lifetimeValue', expression: 'ltv'}], fieldsExclude: ['name']},
+        {name: 'Order', source: AL('orders')},
+      ],
+    });
+    const warned = (ownSqlOnly: CompletenessOptions['ownSqlOnly']) => {
+      const warnings: string[] = [];
+      validateProfileCompleteness(m, pg, warnings, {ownSqlOnly});
+      return warnings;
+    };
+    const unread =
+        "profile 'pg': kcmd could not read the SQL of field 'Customer.code', " +
+        'so the fields it reads were not checked';
+    // The caller reads the model file's SQL as BigQuery.
+    expect(warned({dialect: sourcesDialect(m)})).toEqual([unread]);
+    // The caller reads it as PostgreSQL too, and warns about it itself.
+    expect(warned({dialect: 'ALLOYDB'})).toEqual([]);
+    // The caller applies a profile that rebinds the field, so it never reads
+    // the model file's text.
+    expect(warned({dialect: 'ALLOYDB', rebound: ['Customer.code']}))
+        .toEqual([unread]);
+  });
 });
 
 
@@ -1570,6 +1618,31 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
       entities: [{...base().entities[0], uniqueKeys: [['a', 'b']]}, base().entities[1]],
     }));
     expect(errors.join('\n')).toContain('restates its unique keys as [2]');
+  });
+
+  test('an empty unique key counts as none', () => {
+    const m = irModel();
+    // Order states no key in the model file, so a profile may give it one.
+    m.entities[1].keys = [];
+    m.entities[1].uniqueKeys = [[]];
+    expect(validateProfileCompleteness(m, base({
+      entities: [base().entities[0], {...base().entities[1], uniqueKeys: [['o_id']]}],
+    }))).toEqual([]);
+    m.entities[0].uniqueKeys = [['email'], []];
+    expect(validateProfileCompleteness(m, base({
+      entities: [{...base().entities[0], uniqueKeys: [[], ['e']]}, base().entities[1]],
+    }))).toEqual([]);
+    expect(validateProfileCompleteness(m, base({
+      entities: [{...base().entities[0], uniqueKeys: [['a', 'b'], []]}, base().entities[1]],
+    }))).toEqual([
+      "profile 'prod': entity 'Customer' restates its unique keys as [2]; the " +
+          "model file's are [1]",
+    ]);
+    // A profile that states only an empty unique key restates none.
+    delete m.entities[0].uniqueKeys;
+    expect(validateProfileCompleteness(m, base({
+      entities: [{...base().entities[0], uniqueKeys: [[]]}, base().entities[1]],
+    }))).toEqual([]);
   });
 
   test('association relationships are not checked for join columns', () => {
@@ -1971,6 +2044,36 @@ describe('completeness sees the model as the profile does', () => {
         "source 'snowflake:acct.db.public.c' is a third-party table; the " +
         "preview supports Google Cloud tables only");
     expect(errors).not.toContain('more than one database');
+  });
+
+  // A source the loader's reader rejects is reported, and names no
+  // database. So its entity's fields are not held to the dialect of the
+  // profile's other sources, which its table may not have. The other
+  // entities' fields still are.
+  test('a profile source the reader rejects leaves its entity\'s fields out of the dialect rule', () => {
+    const m = model(true);
+    // email as a load gives it: a SNOWFLAKE text, kept in its list too.
+    m.entities[0].fields[1] = {
+      name: 'email',
+      importedExpression: 'email',
+      importedDialect: 'SNOWFLAKE',
+      dialects: [{dialect: 'SNOWFLAKE', expression: 'email'}],
+    };
+    const errorsFor = (customer: string) => validateProfileCompleteness(m, spec([
+      {name: 'customer', source: customer},
+      {name: 'vip', source: 'cloudsql_mysql:acme.us.inst.sales.v'},
+    ])).join('\n');
+    for (const rejected of ['snowflake:acct.db.public.c', 'acme.sales.c', '']) {
+      const errors = errorsFor(rejected);
+      expect({rejected, errors})
+          .toEqual({rejected, errors: expect.not.stringContaining("'customer.email'")});
+      // vip inherits email, and its own table is in the MySQL instance.
+      expect(errors).toContain(
+          "field 'vip.email' has no expression for MYSQL or ANSI_SQL");
+    }
+    // A source in the same instance gives the profile its dialect.
+    expect(errorsFor('cloudsql_mysql:acme.us.inst.sales.c')).toContain(
+        "field 'customer.email' has no expression for MYSQL or ANSI_SQL");
   });
 
   test('a profile that binds a system entry name is told the resource name', () => {
@@ -2626,6 +2729,94 @@ relationships: []
       "profile 'prod': field 'vip.net' depends on 'vip.discount', which this profile " +
           "excludes; exclude 'vip.net' too, or rebind it",
     ]);
+  });
+
+  // leaf extends root directly and through mid. Inheritance gives leaf the
+  // binding of the ancestor with the most ancestors, mid, though root is
+  // nearer by breadth. The check reads that binding.
+  describe('an inherited field reads the binding inheritance keeps', () => {
+    const model = (rootB: string, midB: string): SemanticModel => ({
+      name: 'm',
+      entities: [
+        {name: 'root', dataSource: 'p.d.r', keys: ['r_id'], fields: [
+          {name: 'r_id', expression: 'r_id'}, {name: 'a', expression: 'col_a'},
+          {name: 'b', expression: rootB},
+        ]},
+        {name: 'mid', extends: ['root'], dataSource: 'p.d.m', keys: ['m_id'],
+         fields: [{name: 'm_id', expression: 'm_id'}, {name: 'b', expression: midB}]},
+        {name: 'leaf', extends: ['root', 'mid'], dataSource: 'p.d.l',
+         keys: ['l_id'], fields: [{name: 'l_id', expression: 'l_id'}]},
+      ],
+      relationships: [],
+    } as any);
+    const prod: ProfileSpec = {
+      name: 'prod',
+      entities: [
+        {name: 'root', source: BQ('r')}, {name: 'mid', source: BQ('m')},
+        {name: 'leaf', source: BQ('l'), fieldsExclude: ['a']},
+      ],
+      relationships: [],
+    };
+
+    test('and reports a dependency only that binding has', () => {
+      expect(validateProfileCompleteness(model('col_b', 'mid.a + 1'), prod))
+          .toEqual([
+            "profile 'prod': field 'leaf.b' depends on 'leaf.a', which this " +
+                "profile excludes; exclude 'leaf.b' too, or rebind it",
+          ]);
+    });
+
+    test('and does not report one only a nearer ancestor\'s binding has', () => {
+      expect(validateProfileCompleteness(model('root.a + 1', 'col_b'), prod))
+          .toEqual([]);
+    });
+
+    // Pruning reads the same binding. D inherits shout from X, whose
+    // binding reads email, which D leaves unbound.
+    test('and pruning drops a field whose kept binding reads an unbound one', () => {
+      const diamond: SemanticModel = {
+        name: 'm',
+        entities: [
+          {name: 'A', dataSource: 'p.d.a', keys: ['id'], fields: [
+            {name: 'id', expression: 'id'}, {name: 'p'},
+            {name: 'shout', expression: 'UPPER(A.p)'},
+          ]},
+          {name: 'X', extends: ['A'], dataSource: 'p.d.x', keys: ['id'], fields: [
+            {name: 'email'}, {name: 'shout', expression: 'UPPER(X.email)'},
+          ]},
+          {name: 'D', extends: ['A', 'X'], dataSource: 'p.d.d', keys: ['id'],
+           fields: [{name: 'p', expression: 'p'}]},
+        ],
+        relationships: [],
+      } as any;
+      const {report} = pruneUnavailable(diamond, 'prod');
+      expect(report.droppedFields).toContainEqual(
+          {name: 'D.shout', reason: 'reads D.email, which is unavailable'});
+    });
+
+    // Here X binds email, and A leaves p unbound. D inherits shout from X,
+    // whose binding reads only email, so pruning keeps it.
+    test('and pruning keeps a field whose kept binding reads only bound ones', () => {
+      const diamond: SemanticModel = {
+        name: 'm',
+        entities: [
+          {name: 'A', dataSource: 'p.d.a', keys: ['id'], fields: [
+            {name: 'id', expression: 'id'}, {name: 'p'},
+            {name: 'shout', expression: 'UPPER(A.p)'},
+          ]},
+          {name: 'X', extends: ['A'], dataSource: 'p.d.x', keys: ['id'], fields: [
+            {name: 'email', expression: 'email'},
+            {name: 'shout', expression: 'UPPER(X.email)'},
+          ]},
+          {name: 'D', extends: ['A', 'X'], dataSource: 'p.d.d', keys: ['id'],
+           fields: []},
+        ],
+        relationships: [],
+      } as any;
+      const {report} = pruneUnavailable(diamond, 'prod');
+      expect(report.droppedFields.map(f => f.name)).not.toContain('D.shout');
+      expect(report.droppedFields.map(f => f.name)).toContain('A.shout');
+    });
   });
 });
 

@@ -14,7 +14,10 @@
 // Of push's checks on the model itself, the runtime runs only the one on
 // inheritance. A model that push refuses for an entity with no source, a
 // relationship with no join columns, a key that is not a column, or a broken
-// expression, action or constraint still gets a store and a skill. The
+// expression, action or constraint still gets a store and a skill. Nor does
+// the runtime run push's checks that every profile file loads, applies to the
+// model and is complete. So a model beside a profile file that those checks
+// refuse still gets a store and a skill under the default profile. The
 // runtime also skips the checks of push's Knowledge Catalog leg: one model per
 // entry group, and with KC_V2_ASPECTS off the checks on the copies of the
 // model and profile files, such as whether each is valid UTF-8. Two models
@@ -831,11 +834,11 @@ entities:
          expect(r.skills.out).toBe(`Error: ${mismatch}`);
        });
 
-  // Push applies only the profile it deploys, so under the default profile it
-  // accepts a profile file that names an entity the model lacks. The report
-  // checks every profile and refuses it. When push checks every profile, as
-  // b/573773340 plans, the runtime has to check them too.
-  test('a profile file that does not apply: push accepts it under default, and so does the runtime',
+  // Push checks every profile file, whichever profile it deploys, so under the
+  // default profile it refuses a profile file that names an entity the model
+  // lacks. The report refuses it too. The runtime applies only the profile it
+  // is given, so --print-store and skills-generate accept the file.
+  test('a profile file that does not apply: push refuses it under default, the runtime accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -858,7 +861,10 @@ entities:
 `,
          });
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 0, report: 1, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.push.out).toContain(
+             "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
+             "'Nope' is not in the logical model");
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
        });
 

@@ -305,12 +305,12 @@ relationships:
         'the profile applies)');
   });
 
-  test('the runtime names the document of a profile that cannot apply', async () => {
+  test('the runtime names the profile file that cannot apply', async () => {
     writeModel(LOGICAL, 'name: prod\nentities:\n  - name: Ghost\n');
     const runtimes = await createSemanticRuntimes(
         {path: dir, profile: 'prod', ctx: CTX, onWarning: () => {}});
     expect('error' in runtimes && runtimes.error)
-        .toBe("[commerce] profile 'prod': entity 'Ghost' is not in the logical model");
+        .toBe("[commerce.profile.prod.yaml] profile 'prod': entity 'Ghost' is not in the logical model");
     // `kcmd profiles` names the profile once, since the error already does.
     logs.length = 0;
     expect(await profiles()).toBe(1);
@@ -340,9 +340,9 @@ relationships:
         .toContain("profile 'legacy': warning: [commerce] dataset 'Order': no primary_key");
   });
 
-  // A catalog-only push needs no source, so `kcmd profiles` shows the entity
-  // unbound and passes it.
-  test('a concrete entity with a source in neither file passes beside a model with no graph target', async () => {
+  // A named profile binds every concrete entity, whether or not a push
+  // deploys it, so `kcmd profiles` shows the entity unbound and rejects it.
+  test('a concrete entity with a source in neither file is rejected beside a model with no graph target', async () => {
     writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -357,15 +357,19 @@ entities:
     fields:
       - { name: key, expression: cust_key }
 `);
-    expect(await profiles()).toBe(0);
+    const error = "[commerce.profile.prod.yaml] profile 'prod': entity " +
+        "'Customer' has no source in this profile";
+    expect(await profiles()).toBe(1);
     expect(logs).toContain('      Customer -> (unbound)');
-    expect(logs.join('\n')).not.toContain('has no source');
+    expect(errs).toContain(`      ${error}`);
     // Push checks that the file-copy type exists; that lookup passes.
     spyOn(CatalogClient.prototype, 'getEntryType')
         .mockResolvedValue({status: 200, result: {}} as any);
     spyOn(CatalogClient.prototype, 'getAspectType')
         .mockResolvedValue({status: 200, result: {}} as any);
-    expect(await push({validateOnly: true, profile: 'prod'})).toBe(0);
+    errs.length = 0;
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+    expect(errs).toEqual([`Error: ${error}`]);
   });
 });
 
@@ -710,13 +714,20 @@ ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : 
   const customerUnbound = (model: string) =>
       model.replace(`        source: ${BQ('dev', 'customer')}\n`, '');
 
-  // A profile file that binds customer to the prod table with key `key`.
+  // A profile file that binds both entities to the prod tables, customer with
+  // key `key`, and the join between them.
   function profileFile(name: string, key = 'c_id'): string {
     return `name: ${name}
 entities:
   - name: customer
     source: ${BQ('prod', 'customer')}
     primary_key: ["${key}"]
+  - name: purchase
+    source: ${BQ('prod', 'purchase')}
+relationships:
+  - name: placed_by
+    from_columns: [p_customer]
+    to_columns: [c_id]
 `;
   }
 
@@ -828,23 +839,13 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
       '    target: (none; no deployment names this profile)',
       '    sources:',
       '      customer -> acme.prod.customer',
-      '      purchase -> acme.dev.purchase',
+      '      purchase -> acme.prod.purchase',
       '    cannot answer: nothing withheld.',
     ]);
   });
 
   // Push accepts each of these profiles, so `kcmd profiles` must too.
   const accepted: Array<[string, Record<string, string>]> = [
-    [
-      'a profile file leaves an entity without a source beside a model with ' +
-          'no graph target',
-      {
-        'commerce.yaml': customerUnbound(commerce()),
-        'commerce.profile.prod.yaml':
-            `name: prod\nentities:\n  - name: purchase\n    source: ${
-                BQ('prod', 'purchase')}\n`,
-      },
-    ],
     [
       'a legacy profile with no graph target leaves an entity without a source',
       {
@@ -947,6 +948,16 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
   // Each scope makes `kcmd push --profile prod` fail. A new check push gains
   // needs only a new row here.
   const rejected: Array<[string, Record<string, string>]> = [
+    [
+      'a profile file leaves an entity without a source beside a model with ' +
+          'no graph target',
+      {
+        'commerce.yaml': customerUnbound(commerce()),
+        'commerce.profile.prod.yaml':
+            `name: prod\nentities:\n  - name: purchase\n    source: ${
+                BQ('prod', 'purchase')}\n`,
+      },
+    ],
     [
       'a profile file sets a primary key the join does not cover',
       {
@@ -1054,6 +1065,9 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     });
     const pushed = await pushResult('prod');
     expect(pushed.errors).toHaveLength(1);
+    // A push of the inline bindings checks the profile file too.
+    const inline = await pushResult();
+    expect(inline.errors).toHaveLength(1);
     expect(await profiles()).toBe(1);
     expect(logs).toEqual([
       "Model 'commerce' (commerce_eg):",
@@ -1061,12 +1075,18 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       '    target: (none; no deployment names this profile)',
       '    sources:',
       '      customer -> acme.prod.customer',
-      '      purchase -> acme.dev.purchase',
+      '      purchase -> acme.prod.purchase',
       '    cannot answer: nothing withheld.',
       '    push rejects:',
       `      ${pushed.errors[0]}`,
+      INLINE,
+      '    push rejects:',
+      `      ${inline.errors[0]}`,
     ]);
-    expect(errs).toEqual(['    push rejects:', `      ${pushed.errors[0]}`]);
+    expect(errs).toEqual([
+      '    push rejects:', `      ${pushed.errors[0]}`, '    push rejects:',
+      `      ${inline.errors[0]}`
+    ]);
   });
 
   test('checks a profile that names a graph as a graph push, and one that does not as a catalog-only push', async () => {
@@ -1177,15 +1197,15 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
          async () => {
            writeScope(
                {
-                 'commerce.yaml':
-                     commerce().replace('to_columns: [c_id]', 'to_columns: [c_email]'),
-                 'commerce.profile.prod.yaml':
-                     'name: prod\nrelationships:\n  - name: placed_by\n    to_columns: [c_id]\n',
+                 'commerce.yaml': commerce().replace(
+                     'to_columns: [c_id]', 'to_columns: [c_email]'),
+                 'commerce.profile.prod.yaml': profileFile('prod'),
                },
                defaultProfile);
            expect(await pushResult('prod')).toEqual({code: 0, errors: []});
            const pushed = await pushResult('default');
-           expect(pushed.errors).not.toEqual([]);
+           expect(pushed.errors).toEqual(
+               [expect.stringContaining("(commerce): its to_columns")]);
            expect(await profiles()).toBe(1);
            expect(errs.some(l => l.includes("profile 'prod'"))).toBe(false);
            expect(rejects(section(INLINE))).toEqual(pushed.errors);
@@ -1477,6 +1497,636 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     spyOn(sqlParser, 'loadSqlEngine').mockRejectedValue(new Error('simulated'));
     expect(await profiles()).toBe(1);
     expect(errs).toContain('Error: the SQL parser could not be loaded: simulated');
+  });
+
+  // Push checks every named profile the model declares, whichever binding it
+  // deploys.
+  describe('push checks every named profile', () => {
+    const STAGING = `name: staging\nentities:\n  - name: customer\n    source: ${
+        BQ('staging', 'customer')}\n`;
+    const incomplete = (file: string) => [
+      `[${file}] profile 'staging': entity 'purchase' has no source in this ` +
+          'profile',
+      `[${file}] profile 'staging': relationship 'placed_by' has no join ` +
+          "columns in this profile; a named profile states both " +
+          "'from_columns' and 'to_columns' itself",
+    ];
+
+    test('when the push deploys another binding', async () => {
+      writeScope({
+        'commerce.yaml': commerce({targets: 1}),
+        'commerce.profile.staging.yaml': STAGING,
+      });
+      const errors = incomplete('commerce.profile.staging.yaml');
+      expect(await pushResult()).toEqual({code: 1, errors});
+      expect(await profiles()).toBe(1);
+      expect(rejects(section(INLINE))).toEqual(errors);
+    });
+
+    // The completeness check also requires each field a profile binds to hold
+    // SQL on each entity that inherits it, as applying the profile does. A
+    // push of another binding reports such a field once, in the words a push
+    // of the profile gives.
+    test('when a profile file leaves an inherited field with no SQL', async () => {
+      writeScope({
+        'commerce.yaml': PARTIES,
+        'commerce.profile.prod.yaml': partiesProfile(false),
+      });
+      const errors =
+          [`[commerce.profile.prod.yaml] profile 'prod': ${NOTES_INHERITED}`];
+      expect(await pushResult('prod')).toEqual({code: 1, errors});
+      expect(await pushResult()).toEqual({code: 1, errors});
+      expect(await profiles()).toBe(1);
+      expect(rejects(profileSection('prod'))).toEqual(errors);
+      expect(rejects(section(INLINE))).toEqual(errors);
+    });
+
+    test('in the legacy profiles directory too', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profiles/staging.yaml': STAGING,
+      });
+      const errors = incomplete('commerce.profiles/staging.yaml');
+      expect(await pushResult()).toEqual({code: 1, errors});
+      expect(await pushResult('staging')).toEqual({code: 1, errors});
+      expect(await profiles()).toBe(1);
+      expect(rejects(profileSection('staging'))).toEqual(errors);
+    });
+
+    // A push that selects a legacy wrapper checks the other profiles against
+    // the model file loaded on its own.
+    test('when the push selects a legacy wrapper', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profiles/prod.yaml': legacyProfile(false),
+        'commerce.profiles/staging.yaml': STAGING,
+      });
+      expect(await pushResult('prod')).toEqual(
+          {code: 1, errors: incomplete('commerce.profiles/staging.yaml')});
+    });
+
+    // No profile file can apply to a model file that loads only with a legacy
+    // wrapper merged in, so a push of the wrapper gives each profile file the
+    // error a push that selects it gives.
+    test('when the pushed wrapper completes the model file', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace('        to_columns: [c_id]\n', ''),
+        'commerce.profiles/legacy.yaml': `semantic_model:
+  - name: commerce
+    relationships:
+      - name: placed_by
+        to_columns: [c_id]
+`,
+        'commerce.profiles/staging.yaml': profileFile('staging'),
+      });
+      const staging = await pushResult('staging');
+      expect(staging).toEqual({
+        code: 1,
+        errors: [expect.stringContaining(
+            "(under profile 'staging', the model file must load on its own")],
+      });
+      expect(await pushResult('legacy')).toEqual(staging);
+    });
+
+    // A profile file that does not load gives its own error there, as it
+    // does beside a model file that loads on its own.
+    test('and a profile file there that does not load gives its own error', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace('        to_columns: [c_id]\n', ''),
+        'commerce.profiles/legacy.yaml': `semantic_model:
+  - name: commerce
+    relationships:
+      - name: placed_by
+        to_columns: [c_id]
+`,
+        'commerce.profiles/staging.yaml': 'name: staging\nbogus: 1\n',
+      });
+      const error = "[commerce.profiles/staging.yaml] profile 'staging' sets " +
+          "'bogus', which a profile may not set; a profile carries only " +
+          'physical bindings, and the logical model owns everything else';
+      expect(await pushResult('legacy')).toEqual({code: 1, errors: [error]});
+      expect(await profiles({profile: 'legacy'})).toBe(1);
+      expect(rejects(profileSection('legacy'))).toEqual([error]);
+    });
+
+    test('and reports a legacy profile file that does not parse', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profiles/staging.yaml': 'name: [unterminated\n',
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [expect.stringContaining(
+            "[commerce.profiles/staging.yaml] profile 'staging' does not parse")],
+      });
+    });
+
+    // The rules push leaves out for the profile it applies still run on
+    // every other profile.
+    test('and checks every rule on a profile the push does not apply', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.a.yaml': profileFile('a'),
+        'commerce.profile.b.yaml': profileFile('b', 'LOWER(c_id)'),
+      });
+      expect(await pushResult('a')).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profile.b.yaml] profile 'b': entity 'customer' key " +
+              "column 'LOWER(c_id)' is not a physical column name",
+        ],
+      });
+    });
+
+    // leaf extends root directly and through mid, so it inherits mid's
+    // binding of b, the one inheritance keeps. Profile prod excludes a on
+    // leaf. Only the binding of b given here as `kept` reads a.
+    describe('and reads the binding of an inherited field that inheritance keeps', () => {
+      const scope = (rootB: string, midB: string) => ({
+        'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: root
+        source: ${BQ('dev', 'root')}
+        primary_key: [r_id]
+        fields:
+          - { name: r_id, expression: r_id }
+          - { name: a, expression: col_a }
+          - { name: b, expression: "${rootB}" }
+      - name: mid
+        extends: [root]
+        source: ${BQ('dev', 'mid')}
+        primary_key: [m_id]
+        fields:
+          - { name: m_id, expression: m_id }
+          - { name: b, expression: "${midB}" }
+      - name: leaf
+        extends: [root, mid]
+        source: ${BQ('dev', 'leaf')}
+        primary_key: [l_id]
+        fields:
+          - { name: l_id, expression: l_id }
+`,
+        'commerce.profile.prod.yaml': `name: prod
+entities:
+  - name: root
+    source: ${BQ('prod', 'root')}
+  - name: mid
+    source: ${BQ('prod', 'mid')}
+  - name: leaf
+    source: ${BQ('prod', 'leaf')}
+    fields_exclude: [a]
+`,
+      });
+
+      test('when the kept binding reads the excluded field', async () => {
+        writeScope(scope('col_b', 'mid.a + 1'));
+        const errors = [
+          "[commerce.profile.prod.yaml] profile 'prod': field 'leaf.b' " +
+              "depends on 'leaf.a', which this profile excludes; exclude " +
+              "'leaf.b' too, or rebind it",
+        ];
+        expect(await pushResult()).toEqual({code: 1, errors});
+        expect(await pushResult('prod')).toEqual({code: 1, errors});
+      });
+
+      test('when only a nearer ancestor\'s binding reads it', async () => {
+        writeScope(scope('root.a + 1', 'col_b'));
+        expect(await pushResult()).toEqual({code: 0, errors: []});
+        expect(await pushResult('prod')).toEqual({code: 0, errors: []});
+      });
+    });
+
+    test('and still pushes when they are complete', async () => {
+      writeScope({
+        'commerce.yaml': commerce({targets: 1}),
+        'commerce.profile.a.yaml': profileFile('a'),
+        'commerce.profile.b.yaml': profileFile('b'),
+      });
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+    });
+
+    // An empty unique key counts as none, so purchase states no key in the
+    // model file and a profile may give it one.
+    test('and counts an empty unique key as none', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace(
+            'primary_key: [p_id]', 'unique_keys: [[]]'),
+        'commerce.profile.a.yaml': profileFile('a').replace(
+            `    source: ${BQ('prod', 'purchase')}\n`,
+            `    source: ${BQ('prod', 'purchase')}\n    unique_keys: [[p_id]]\n`),
+      });
+      for (const profile of [undefined, 'a']) {
+        expect(await pushResult(profile)).toEqual({code: 0, errors: []});
+      }
+    });
+
+    // Push warns about the SQL it cannot read in the model it deploys, so a
+    // profile's check warns only about the SQL the profile writes.
+    test('and warns once for each SQL text the parser cannot read', async () => {
+      writeScope({
+        'commerce.yaml': `${commerce()}    metrics:
+      - name: bad
+        entity: purchase
+        expression: "SUM(purchase.p_id"
+`,
+        'commerce.profile.a.yaml': profileFile('a'),
+        'commerce.profile.b.yaml': profileFile('b').replace(
+            '    primary_key: ["c_id"]\n',
+            '    primary_key: ["c_id"]\n    fields:\n' +
+                '      - { name: c_id, expression: "LOWER(c_id" }\n'),
+      });
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+      const unread = warn.mock.calls.map(c => String(c[0]))
+                         .filter(w => w.includes('could not read'));
+      expect(unread).toEqual([
+        expect.stringContaining("profile 'b': kcmd could not read the SQL of " +
+                                "field 'customer.c_id'"),
+        expect.stringContaining("metric 'bad'"),
+      ]);
+    });
+
+    // Actions are out of scope for the preview, so a `sql` executor in the
+    // model file still fails only a push that applies a profile.
+    test('but leaves actions to a push that applies the profile', async () => {
+      writeScope({
+        'commerce.yaml': `${commerce()}    actions:
+      - name: refund
+        executor:
+          sql:
+            statements:
+              - UPDATE purchase SET p_id = p_id WHERE p_id = @order
+        parameters:
+          - {name: order, type: Integer}
+        affects:
+          - {concept: purchase, operation: modify}
+`,
+        'commerce.profile.prod.yaml': profileFile('prod'),
+      });
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+      expect((await pushResult('prod')).errors).toEqual(
+          [expect.stringContaining("declares a 'sql' executor")]);
+    });
+
+    // Actions are out of scope for the preview, so the actions of a profile
+    // file the push does not apply are not read.
+    test('and leaves the actions of a profile it does not apply unread', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.a.yaml': profileFile('a') +
+            'actions:\n  - name: refund\n    executor: {bogus: {}}\n',
+      });
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+      expect((await pushResult('a')).errors).toEqual(
+          [expect.stringContaining("action 'refund'")]);
+    });
+
+    // Push reads the SQL of the profile it applies, so it never reads the
+    // model file's text of a field that profile rebinds. Another profile's
+    // check warns about that text.
+    test('and warns about the model file SQL the applied profile replaces', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace(
+            '          - { name: c_id, expression: c_id }\n',
+            '          - { name: c_id, expression: c_id }\n' +
+                '          - { name: c_code, expression: "LOWER(c_id" }\n'),
+        'commerce.profile.a.yaml': profileFile('a').replace(
+            '    primary_key: ["c_id"]\n',
+            '    primary_key: ["c_id"]\n    fields:\n' +
+                '      - { name: c_code, expression: c_id }\n'),
+        'commerce.profile.b.yaml': profileFile('b'),
+      });
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await pushResult('a')).toEqual({code: 0, errors: []});
+      const unread = warn.mock.calls.map(c => String(c[0]))
+                         .filter(w => w.includes('could not read'));
+      expect(unread).toEqual([
+        expect.stringContaining("profile 'b': kcmd could not read the SQL of " +
+                                "field 'customer.c_code'"),
+      ]);
+    });
+
+    // Applying a profile that excludes a field an entity redeclares drops the
+    // redeclaration, so push never reads the model file's text for it.
+    test('and warns about the model file SQL of a redeclared field the applied profile excludes', async () => {
+      writeScope({
+        'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: id }
+          - { name: code }
+      - name: customer
+        extends: [party]
+        source: ${BQ('dev', 'customer')}
+        primary_key: [c_id]
+        fields:
+          - { name: id, expression: c_id }
+          - { name: code, expression: "LOWER(c_id" }
+`,
+        'commerce.profile.a.yaml': `name: a
+entities:
+  - name: customer
+    source: ${BQ('prod', 'customer')}
+    fields_exclude: [code]
+`,
+        'commerce.profile.b.yaml': `name: b
+entities:
+  - name: customer
+    source: ${BQ('prod', 'customer')}
+`,
+      });
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await pushResult('a')).toEqual({code: 0, errors: []});
+      const unread = warn.mock.calls.map(c => String(c[0]))
+                         .filter(w => w.includes('could not read'));
+      expect(unread).toEqual([
+        expect.stringContaining("profile 'b': kcmd could not read the SQL of " +
+                                "field 'customer.code'"),
+      ]);
+    });
+
+    // No push deploys a profile named 'default', and a graph push rejects
+    // the file by name.
+    test('but not a legacy file under the reserved name', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profiles/default.yaml': 'name: default\n',
+      });
+      expect(await push({validateOnly: true, profile: false})).toBe(0);
+      expect(errs).toEqual([]);
+      expect(await profiles()).toBe(1);
+      expect(errs.join('\n')).toContain("may not be named 'default'");
+      expect(errs.join('\n')).not.toContain("profile 'default': entity");
+    });
+
+    // A --no-profile push publishes the catalog under default_profile, so it
+    // refuses a reserved name there as a graph push does.
+    test('and refuses a --no-profile push whose default_profile has the reserved name', async () => {
+      writeScope(
+          {
+            'commerce.yaml': commerce(),
+            'commerce.profiles/Default.yaml':
+                STAGING.replace('name: staging', 'name: Default'),
+          },
+          'Default');
+      const bare = await pushResult();
+      expect(bare.errors).toEqual(
+          [expect.stringContaining("may not be named 'default'")]);
+      expect(await push({validateOnly: true, profile: false})).toBe(1);
+      expect(errs).toEqual(bare.errors.map(e => `Error: ${e}`));
+    });
+
+    // A file with a `semantic_model` key is a legacy wrapper only when it
+    // carries nothing but `version` and a `semantic_model` list. Any other is
+    // no profile a push can apply.
+    test('and reports a file that is neither a profile file nor a legacy wrapper', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.staging.yaml': 'name: staging\nsemantic_model: []\n',
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profile.staging.yaml] profile 'staging' is not a " +
+              'profile file',
+        ],
+      });
+      expect(await pushResult('staging')).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profile.staging.yaml] profile 'staging': a " +
+              "'semantic_model:' profile carries only 'version' and " +
+              "'semantic_model', not 'name'",
+        ],
+      });
+      fs.rmSync(path.join(
+          dir, 'catalog', 'EntryGroups', 'commerce_eg',
+          'commerce.profile.staging.yaml'));
+      writeScope({'commerce.profiles/staging.yaml': 'semantic_model: null\n'});
+      const errors =
+          ["[commerce.profiles/staging.yaml] profile 'staging' is not a " +
+           'profile file'];
+      expect(await pushResult()).toEqual({code: 1, errors});
+      expect(await pushResult('staging')).toEqual({code: 1, errors});
+    });
+
+    // A push that selects a file in neither profile form reads the file
+    // without loading the model file, so the file's own error comes first.
+    test('and reports a file in neither form beside a wrapper the model file needs', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace('        to_columns: [c_id]\n', ''),
+        'commerce.profiles/legacy.yaml': `semantic_model:
+  - name: commerce
+    relationships:
+      - name: placed_by
+        to_columns: [c_id]
+`,
+        'commerce.profiles/staging.yaml': 'name: staging\nsemantic_model: []\n',
+      });
+      expect(await pushResult('legacy')).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profiles/staging.yaml] profile 'staging' is not a " +
+              'profile file',
+        ],
+      });
+    });
+
+    // Push prepares each binding --all-profiles names, and each one checks
+    // every profile file.
+    test('and warns once about a profile when a push prepares several bindings', async () => {
+      const wrapper = (graph: string) => legacyProfile(true).replace(
+          '/propertyGraphs/commerce', `/propertyGraphs/${graph}`);
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profiles/w1.yaml': wrapper('w1'),
+        'commerce.profiles/w2.yaml': wrapper('w2'),
+        'commerce.profiles/b.yaml': profileFile('b').replace(
+            '    primary_key: ["c_id"]\n',
+            '    primary_key: ["c_id"]\n    fields:\n' +
+                '      - { name: c_id, expression: "LOWER(c_id" }\n'),
+      });
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await push({validateOnly: true, allProfiles: true})).toBe(0);
+      const unread = warn.mock.calls.map(c => String(c[0])).filter(
+          w => w.includes("profile 'b': kcmd could not read"));
+      expect(unread).toHaveLength(1);
+    });
+
+    // Under --transpile, push fills in BigQuery SQL for a text written only
+    // in a vendor dialect, so a BigQuery profile can run it.
+    test('and lets --transpile fill in a vendor-only metric for a BigQuery profile', async () => {
+      writeScope({
+        'commerce.yaml': `${commerce()}    metrics:
+      - name: positive_spend
+        entity: purchase
+        expression:
+          dialects:
+            - { dialect: SNOWFLAKE, expression: "SUM(IFF(purchase.p_id > 0, purchase.p_id, 0))" }
+`,
+        'commerce.profile.prod.yaml': profileFile('prod'),
+      });
+      expect(await push({validateOnly: true, transpile: true})).toBe(0);
+      expect(await push({validateOnly: true, profile: 'prod', transpile: true}))
+          .toBe(0);
+      expect(errs).toEqual([]);
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profile.prod.yaml] profile 'prod': metric " +
+              "'positive_spend' has no expression for BIGQUERY or ANSI_SQL, " +
+              "and this profile's sources are BIGQUERY; give it one, or add " +
+              "it to 'metrics_exclude'",
+        ],
+      });
+    });
+
+    // Under --transpile, a BigQuery profile runs the text written only in a
+    // vendor dialect, so the check reads what that text reads.
+    test('and under --transpile reads what a vendor-only text reads', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace(
+            '          - { name: p_id, expression: p_id }\n',
+            '          - { name: p_id, expression: p_id }\n' +
+                '          - { name: p_amount, expression: amount }\n' +
+                '          - name: p_tax\n' +
+                '            expression:\n' +
+                '              dialects:\n' +
+                '                - { dialect: SNOWFLAKE, expression: ' +
+                '"IFF(purchase.p_amount > 0, purchase.p_amount, 0)" }\n') +
+            `    metrics:
+      - name: spend
+        entity: purchase
+        expression:
+          dialects:
+            - { dialect: SNOWFLAKE, expression: "SUM(purchase.p_amount)" }
+`,
+        'commerce.profile.prod.yaml': profileFile('prod').replace(
+            `    source: ${BQ('prod', 'purchase')}\n`,
+            `    source: ${BQ('prod', 'purchase')}\n` +
+                '    fields_exclude: [p_amount]\n'),
+      });
+      const errors = [
+        "[commerce.profile.prod.yaml] profile 'prod': field 'purchase.p_tax' " +
+            "depends on 'purchase.p_amount', which this profile excludes; " +
+            "exclude 'purchase.p_tax' too, or rebind it",
+        "[commerce.profile.prod.yaml] profile 'prod': metric 'spend' reaches " +
+            "'purchase.p_amount', which this profile excludes; add 'spend' " +
+            "to 'metrics_exclude'",
+      ].map(e => `Error: ${e}`);
+      for (const profile of [undefined, 'prod']) {
+        errs.length = 0;
+        expect(await push({validateOnly: true, profile, transpile: true}))
+            .toBe(1);
+        expect(errs).toEqual(errors);
+      }
+    });
+
+    // A profile file push cannot read gives one error, which names the file,
+    // whichever binding the push deploys.
+    test('and names the profile file in an error, whichever binding the push deploys', async () => {
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.prod.yaml':
+            `version: "0.2.0.dev0/google"\n${profileFile('prod')}`,
+      });
+      const errors = [
+        "[commerce.profile.prod.yaml] profile 'prod' sets 'version'; a " +
+            'profile file takes its version from the model file beside it, ' +
+            'so remove the line',
+      ];
+      expect(await pushResult()).toEqual({code: 1, errors});
+      expect(await pushResult('prod')).toEqual({code: 1, errors});
+      expect(await profiles()).toBe(1);
+      expect(rejects(profileSection('prod'))).toEqual(errors);
+      expect(rejects(section(INLINE))).toEqual(errors);
+    });
+
+    // A GCP resource name is a resource URI without the leading `//`. A
+    // source written as one names the same table as that URI. The checks of
+    // a profile the push does not apply read it as that URI, for its
+    // database and for its dialect.
+    test('and reads a source written as a resource name as its URI', async () => {
+      const table = (db: string, name: string) =>
+          `spanner.googleapis.com/projects/acme/instances/prod/databases/${
+              db}/tables/${name}`;
+      const ops = (customer: string, purchase: string) =>
+          profileFile('ops')
+              .replace(BQ('prod', 'customer'), customer)
+              .replace(BQ('prod', 'purchase'), purchase);
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.ops.yaml': ops(
+            `//${table('commerce', 'Customer')}`, table('commerce', 'Purchase')),
+      });
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+
+      writeScope({
+        'commerce.yaml': commerce(),
+        'commerce.profile.ops.yaml': ops(
+            `//${table('commerce', 'Customer')}`, table('other', 'Purchase')),
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profile.ops.yaml] profile 'ops' binds entities in more " +
+              "than one database ('customer', 'purchase'); a profile reads " +
+              'from one system a single query can reach',
+        ],
+      });
+
+      writeScope({
+        'commerce.yaml': commerce().replace(
+            '{ name: c_id, expression: c_id }',
+            '{ name: c_id, expression: ' +
+                '{ dialects: [{ dialect: BIGQUERY, expression: c_id }] } }'),
+        'commerce.profile.ops.yaml':
+            ops(table('commerce', 'Customer'), table('commerce', 'Purchase')),
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [
+          "[commerce.profile.ops.yaml] profile 'ops': field 'customer.c_id' " +
+              "has no expression for SPANNER or ANSI_SQL, and this profile's " +
+              'sources are SPANNER',
+        ],
+      });
+    });
+
+    // A source the loader's reader rejects names no database, so its
+    // entity's fields are not held to the dialect of the profile's other
+    // sources. Push reports the source alone here, as a push that selects
+    // the profile does.
+    test('and reports a source the reader rejects alone', async () => {
+      const spanner = (name: string) =>
+          'spanner.googleapis.com/projects/acme/instances/prod/databases/' +
+          `commerce/tables/${name}`;
+      for (const rejected of ['snowflake:acct.db.public.customer', 'acme.prod.customer']) {
+        writeScope({
+          'commerce.yaml': commerce().replace(
+              '{ name: c_id, expression: c_id }',
+              '{ name: c_id, expression: ' +
+                  '{ dialects: [{ dialect: BIGQUERY, expression: c_id }] } }'),
+          'commerce.profile.ops.yaml':
+              profileFile('ops')
+                  .replace(BQ('prod', 'customer'), rejected)
+                  .replace(BQ('prod', 'purchase'), spanner('Purchase')),
+        });
+        const {code, errors} = await pushResult();
+        expect({rejected, code, errors}).toEqual({
+          rejected,
+          code: 1,
+          errors: [expect.stringContaining(
+              "[commerce.profile.ops.yaml] profile 'ops': entity 'customer': ")],
+        });
+      }
+    });
   });
 });
 

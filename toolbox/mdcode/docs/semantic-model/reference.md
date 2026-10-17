@@ -101,7 +101,7 @@ instance.
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. A legacy profile in `<model>.profiles/` that no deployment names takes the deployments for `default`, unless it sets its own `deployment_target`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. For a legacy instance-based AlloyDB target, it is the instance the target names. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile, and so does a target a `GOOGLE` block lists twice. Like push, it reads every model's profiles first: its profile files, and the profiles a vanilla model carries in its `GOOGLE` block. It errors on a profile that every graph push refuses, such as a file whose `name:` does not match its file name, a `GOOGLE` block profile that does not load, or a profile named `default` in any letter case. It does not run push's checks on the copies of the model and profile files that push stores in Knowledge Catalog, such as whether each file is valid UTF-8. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. A legacy profile in `<model>.profiles/` that no deployment names takes the deployments for `default`, unless it sets its own `deployment_target`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target named by its cluster, the instance printed is the cluster's primary instance. For a legacy instance-based AlloyDB target, it is the instance the target names. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile, and so does a target a `GOOGLE` block lists twice. Like push, it reads every model's profiles first: its profile files, and the profiles a vanilla model carries in its `GOOGLE` block. It errors on a profile file that breaks one of the layout's file rules, such as a `<model>.profile.<name>.yaml` file whose `name:` does not match its file name, on a `GOOGLE` block profile that does not load, and on a profile named `default` in any letter case. It does not run push's checks that every profile file loads, applies to the model and is complete. So a profile file that leaves an entity without a source does not stop it. It errors on a file in `<model>.profiles/` whose `name:` does not match its file name only when it reads that file's profile, from `--profile` or `default_profile`. It does not run push's checks on the copies of the model and profile files that push stores in Knowledge Catalog, such as whether each file is valid UTF-8. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the
@@ -138,12 +138,18 @@ is none. A vanilla model lists its deployments or targets in a `GOOGLE` block.
 The command fails the same way when a target there is in no accepted form or
 listed twice, or when the block's data is not valid JSON. Like push, it reads
 every model's profiles first: its profile files, and the profiles a vanilla
-model carries in its `GOOGLE` block. It fails on a profile that every graph
-push refuses, such as a file whose `name:` does not match its file name, a
-`GOOGLE` block profile that does not load, or a profile named `default` in any
-letter case. It does not run push's checks on the copies of
-the model and profile files that push stores in Knowledge Catalog, such as
-whether each file is valid UTF-8. It does not check that the entry group holds
+model carries in its `GOOGLE` block. It fails on a profile file that breaks one
+of the layout's file rules, such as a `<model>.profile.<name>.yaml` file whose
+`name:` does not match its file name, on a `GOOGLE` block profile that does not
+load, and on a profile named `default` in any letter case. It does not run
+push's checks that every profile file loads, applies to the model and is
+complete. So it still writes a skill when a profile file leaves an entity
+without a source. It fails on a file in
+`<model>.profiles/` whose `name:` does not match its file name only when it
+reads that file's profile, from `--profile` or `default_profile`. It does not
+run push's checks on the copies of the model and profile files that push
+stores in Knowledge Catalog, such as whether each file is valid UTF-8. It does
+not check that the entry group holds
 one model, or that two models deploy to different graphs. Of push's checks on
 the model itself, it runs only the one on inheritance. It fails when an
 `extends` names an entity the model does not declare, when `extends` forms a
