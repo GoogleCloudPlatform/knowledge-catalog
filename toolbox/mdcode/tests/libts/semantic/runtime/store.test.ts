@@ -446,7 +446,7 @@ describe('the store a profile uses', () => {
     const store = resolveStore(threeProfiles, 'staging');
     expect('error' in store && store.error)
         .toBe(
-            "binding profile 'staging' is a profile file, which names no " +
+            "binding profile 'staging' is a named profile, which names no " +
             "deployment target, and no deployment in 'deployments' uses it, so " +
             'there is no database to run it against');
   });
@@ -539,7 +539,7 @@ describe('the store a profile uses', () => {
     };
     expect(resolveStore(vanilla, 'prod'))
         .toEqual({
-          error: "binding profile 'prod' is a profile file, which names no " +
+          error: "binding profile 'prod' is a named profile, which names no " +
               'deployment target, so there is no database to run it against',
         });
     const store = resolveStore(vanilla, 'default');
@@ -567,7 +567,7 @@ describe('the store a profile uses', () => {
     const emptyDeployments: SemanticModel = {...threeProfiles, deployments: []};
     expect(resolveStore(emptyDeployments, 'prod'))
         .toEqual({
-          error: "binding profile 'prod' is a profile file, which names no " +
+          error: "binding profile 'prod' is a named profile, which names no " +
               'deployment target, so there is no database to run it against',
         });
   });
