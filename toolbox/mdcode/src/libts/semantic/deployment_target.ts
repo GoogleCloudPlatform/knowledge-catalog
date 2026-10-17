@@ -419,8 +419,8 @@ export function unnamedDeployments(targets: readonly string[]):
 // Reads a model's deployment targets in a single pass and returns the facts
 // every caller derives from them. The targets come from `model.deployments`
 // when the model has it, and otherwise from its GOOGLE custom_extension(s).
-// Never both: the loader's GOOGLE block holds a copy of the list. Throws on
-// malformed extension JSON.
+// Never both: in the Google flavor, the loader's GOOGLE block holds a copy of
+// the list. Throws on malformed extension JSON.
 export function googleDeploymentTargets(model: SemanticModel):
     GoogleDeploymentTargets {
   const cached = targetsCache.get(model);

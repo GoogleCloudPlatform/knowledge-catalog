@@ -130,6 +130,22 @@ semantic_model:
     expect(declaresGraphTarget(withExtension)).toBe(true);
   });
 
+  test('detects a GOOGLE custom_extension deployments list, unless it is empty', () => {
+    const vanilla = (deployments: object[]) => `
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deployments})}'
+`;
+    expect(declaresGraphTarget(vanilla([{
+      name: 'prod',
+      target: '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+    }]))).toBe(true);
+    expect(declaresGraphTarget(vanilla([]))).toBe(false);
+  });
+
   test('a purely logical model declares no graph target', () => {
     expect(declaresGraphTarget(logicalOnly)).toBe(false);
   });

@@ -12,9 +12,9 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, ProfileExclusion, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, PROFILE_NAME, ProfileExclusion, profileSpecOf, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {YAML_OPTIONS} from './yaml_options';
@@ -417,10 +417,9 @@ const aiContextSchema = googleAiContextSchema;
 
 // A vendor-scoped extension block: opaque `data` (a JSON string) tagged by
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
-// relationship, metric). All are preserved verbatim on the IR (see
-// toCustomExtensions) for lossless round-trip; no vendor block is interpreted
-// at load time -- typed views (e.g. off the GOOGLE block) are a consumer
-// concern.
+// relationship, metric). A vanilla document's GOOGLE blocks are read into the
+// IR (see readGoogleBlocks); every other block is preserved verbatim (see
+// toCustomExtensions).
 const customExtensionSchema = z.object({
   vendor_name: z.string(),
   data: z.string(),
@@ -1020,8 +1019,7 @@ function aiContextOrUndefined(ai: AiContextDoc|undefined): AiContext|undefined {
 
 // Preserves vendor `custom_extensions` verbatim on the IR (`vendor_name` ->
 // `vendorName`; `data` kept as the opaque, vendor-serialized string) so nothing
-// is lost and a 1P round-trip stays lossless. Typed views over specific vendors
-// are derived by the consumers that need them, not here.
+// is lost and a 1P round-trip stays lossless.
 function toCustomExtensions(exts: CustomExtensionDoc[]|undefined):
     CustomExtension[]|undefined {
   if (!exts || !exts.length) return undefined;
@@ -1202,6 +1200,189 @@ function rejectGoogleBlock(
         `field; the format defines a ${GOOGLE_VENDOR} payload only on a ` +
         `model, dataset, relationship or metric.`);
   }
+}
+
+// The levels a GOOGLE block carries keys on.
+type BlockLevel = Exclude<ExtensionLevel, 'field'>;
+
+// The keys a GOOGLE block takes at each level of a vanilla document. Each is
+// the Google flavor's native key of the same name.
+const GOOGLE_BLOCK_KEYS: Record<BlockLevel, readonly string[]> = {
+  model: ['profiles', 'deployments'],
+  dataset: ['extends'],
+  relationship: ['description'],
+  metric: ['entity'],
+};
+
+// How the Google flavor validates each of those native keys. A profile is read
+// as a profile file is instead (readBlockProfiles).
+const GOOGLE_BLOCK_SCHEMAS: Record<string, z.ZodTypeAny> = {
+  deployments: z.array(deploymentSchema),
+  extends: z.array(z.string()),
+  description: z.string(),
+  entity: z.string(),
+};
+
+// What the GOOGLE blocks on one object of a vanilla document carry.
+interface GoogleBlockValues {
+  profiles?: ProfileSpec[];
+  deployments?: Array<z.infer<typeof deploymentSchema>>;
+  extends?: string[];
+  description?: string;
+  entity?: string;
+}
+
+// Reads the GOOGLE blocks among `exts`, the `custom_extensions` of the object
+// `ctx` at `level`, and returns the values they carry and the blocks the object
+// keeps. Only a vanilla document gives a GOOGLE block meaning, and
+// rejectGoogleBlock rejects one in the Google flavor. Each key is validated as
+// the Google flavor validates its native key. A block that is read is not
+// kept, so an object keeps its third-party blocks, and a model keeps a block
+// that carries `deploymentTargets`, which the deploy code still reads. Throws,
+// naming the object, on data that is not a JSON object, a key one block sets
+// twice, a key the level does not take, `abstract` included, a key two blocks
+// both set, a value the Google flavor rejects, and `deployments` beside
+// `deploymentTargets`.
+function readGoogleBlocks(
+    exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
+    level: BlockLevel, ctx: string):
+    {values: GoogleBlockValues; kept?: CustomExtension[]} {
+  rejectGoogleBlock(exts, version, level, ctx);
+  const error = (problem: string) =>
+      new SemanticModelError(`Semantic model load error: ${ctx}: ${problem}`);
+  const block = `${GOOGLE_VENDOR} custom_extensions block`;
+  const values: Record<string, unknown> = {};
+  const kept: CustomExtension[] = [];
+  let hasTargets = false;
+  for (const e of exts ?? []) {
+    const ext = {vendorName: e.vendor_name, data: e.data};
+    if (e.vendor_name !== GOOGLE_VENDOR) {
+      kept.push(ext);
+      continue;
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(e.data);
+    } catch {
+      // Reported below, as data that is not an object is.
+    }
+    if (!isRecord(data)) {
+      throw error(`the 'data' of a ${block} must be a JSON object.`);
+    }
+    // JSON.parse keeps the last of a repeated key. The YAML a native key is
+    // read from rejects a repeated key, so a block does too.
+    if (setsAKeyTwice(e.data)) {
+      throw error(
+          `the 'data' of a ${block} sets a key twice; set each key once.`);
+    }
+    let keep = false;
+    for (const [key, value] of Object.entries(data)) {
+      if (level === 'model' && key === 'deploymentTargets') {
+        keep = true;
+        hasTargets = true;
+        continue;
+      }
+      if (level === 'dataset' && key === 'abstract') {
+        throw error(
+            `a ${block} cannot declare 'abstract' in a '${OSSIE_VERSION}' ` +
+            `document. An abstract dataset has no table, and every ` +
+            `'${OSSIE_VERSION}' dataset needs a 'source'. A model that needs ` +
+            `an abstract entity uses '${GOOGLE_VERSION}'.`);
+      }
+      const allowed = GOOGLE_BLOCK_KEYS[level];
+      if (!allowed.includes(key)) {
+        throw error(
+            `'${key}' is not a key a ${block} takes on a ${level}; it takes ` +
+            `${allowed.map(k => `'${k}'`).join(' and ')}.`);
+      }
+      if (Object.hasOwn(values, key)) {
+        throw error(
+            `two ${block}s both set '${key}'; set it in one block` +
+            (key === 'extends' ? `, listing every parent there.` : `.`));
+      }
+      if (key === 'profiles') {
+        values.profiles = readBlockProfiles(value, error, ctx);
+        continue;
+      }
+      const parsed = GOOGLE_BLOCK_SCHEMAS[key].safeParse(value);
+      if (!parsed.success) {
+        throw error(`'${key}' in a ${block}: ${issueList(parsed.error)}`);
+      }
+      values[key] = parsed.data;
+    }
+    if (keep) kept.push(ext);
+  }
+  if (hasTargets && values.deployments !== undefined) {
+    throw error(
+        `set either 'deployments' or 'deploymentTargets' in its ${block}s, ` +
+        `not both.`);
+  }
+  return {
+    values: values as GoogleBlockValues,
+    kept: kept.length ? kept : undefined,
+  };
+}
+
+// Reads a GOOGLE block's `profiles`: a list of profiles, each read as a profile
+// file is. A name follows the rules the layout gives a profile file's name: it
+// matches PROFILE_NAME, it is not `default` in any letter case, and no two
+// names are equal ignoring case.
+function readBlockProfiles(
+    value: unknown, error: (problem: string) => SemanticModelError,
+    ctx: string): ProfileSpec[] {
+  const block = `${GOOGLE_VENDOR} custom_extensions block`;
+  if (!Array.isArray(value)) {
+    throw error(`'profiles' in a ${block} must be a list.`);
+  }
+  const profiles = value.map(p => {
+    if (!isRecord(p) || typeof p.name !== 'string') {
+      throw error(
+          `each profile in a ${block} must be a mapping with a 'name'.`);
+    }
+    if (!PROFILE_NAME.test(p.name)) {
+      throw error(
+          `profile name '${p.name}' in a ${block} is not valid; a profile ` +
+          `name is a letter followed by up to 499 letters, digits, ` +
+          `underscores and hyphens.`);
+    }
+    if (p.name.toLowerCase() === DEFAULT_PROFILE) {
+      throw error(
+          `a profile in a ${block} may not be named '${p.name}'; ` +
+          `'${DEFAULT_PROFILE}' names the model's inline bindings.`);
+    }
+    // profileSpecOf rejects these two keys too, in words about a profile file.
+    for (const key of ['version', 'semantic_model']) {
+      if (p[key] !== undefined) {
+        throw error(
+            `profile '${p.name}' in a ${block} sets '${key}', which a ` +
+            `profile may not set.`);
+      }
+    }
+    try {
+      return profileSpecOf(p, p.name);
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      throw error(err.message);
+    }
+  });
+  rejectDuplicateNames(profiles.map(p => p.name), 'profile name', ctx);
+  const byLowerName = new Map<string, string>();
+  for (const {name} of profiles) {
+    const twin = byLowerName.get(name.toLowerCase());
+    if (twin !== undefined) {
+      throw error(
+          `profiles '${twin}' and '${name}' in a ${block} name the same ` +
+          `profile; profile names are unique ignoring case.`);
+    }
+    byLowerName.set(name.toLowerCase(), name);
+  }
+  return profiles;
+}
+
+// Whether the JSON text `data` sets a key twice.
+function setsAKeyTwice(data: string): boolean {
+  return yaml.parseDocument(data, YAML_OPTIONS)
+      .errors.some(err => err.code === 'DUPLICATE_KEY');
 }
 
 // Ossie's Relationship has no `description` key and its objects are closed, so
@@ -1409,8 +1590,8 @@ function keyWarning(entity: Pick<Entity, 'name'|'keys'|'abstract'>):
 // Infers the entities a metric's expressions reach across all dialect entries,
 // and returns the warning the metric gives when an expression could not be
 // parsed or when it states no `entity` and its expressions name none. An
-// authored anchor (Google flavor only) settles which entity the metric belongs
-// to, so a `COUNT(*)` with one is not warned about.
+// authored anchor, which vanilla writes in a GOOGLE block, settles which entity
+// the metric belongs to, so a `COUNT(*)` with one is not warned about.
 export function inferMetricEntities(
     metric: Pick<
         Metric,
@@ -1531,7 +1712,8 @@ function convertModel(
     warnings: string[]): SemanticModel {
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
 
-  rejectGoogleBlock(m.custom_extensions, version, 'model', `model '${m.name}'`);
+  const block = readGoogleBlocks(
+      m.custom_extensions, version, 'model', `model '${m.name}'`);
   if (version === OSSIE_VERSION) {
     requireVanillaBindings(m);
   }
@@ -1612,7 +1794,8 @@ function convertModel(
   rejectDuplicateNames(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
 
-  const deployments = (m.deployments ?? []).map(d => ({
+  const deploymentDocs = m.deployments ?? block.values.deployments ?? [];
+  const deployments = deploymentDocs.map(d => ({
     name: d.name,
     target: d.target,
     ...(d.profile !== undefined ? {profile: d.profile} : {}),
@@ -1645,16 +1828,18 @@ function convertModel(
   if (actions.length) model.actions = actions;
   if (constraints.length) model.constraints = constraints;
   if (deployments.length) model.deployments = deployments;
+  if (block.values.profiles?.length) model.profiles = block.values.profiles;
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
-  // Authored custom extensions are carried verbatim. Under the extended
+  // The blocks the model keeps are carried verbatim. Under the extended
   // profile the native `deployments` list (or legacy `deployment_target` key)
   // is folded into a GOOGLE block appended after them; no authored GOOGLE block
   // can collide with it, since that flavor rejects one (see rejectGoogleBlock).
-  const ce = toCustomExtensions(m.custom_extensions);
-  if (ce) model.customExtensions = ce;
-  const foldedTargets = deployments.map(d => d.target);
+  // Vanilla deployments, read from a GOOGLE block, are not folded.
+  if (block.kept) model.customExtensions = block.kept;
+  const foldedTargets =
+      version === GOOGLE_VERSION ? deployments.map(d => d.target) : [];
   if (foldedTargets.length) {
     model.customExtensions = [
       ...(model.customExtensions ?? []),
@@ -1687,15 +1872,16 @@ function convertDataset(
   if (parsedSource) entity.authoredSource = parsedSource.authoredSource;
   if (ds.unique_keys && ds.unique_keys.length)
     entity.uniqueKeys = ds.unique_keys;
-  if (ds.extends && ds.extends.length) entity.extends = ds.extends;
+  const block =
+      readGoogleBlocks(ds.custom_extensions, version, 'dataset', ctxLabel);
+  const parents = ds.extends ?? block.values.extends;
+  if (parents && parents.length) entity.extends = parents;
   if (ds.abstract) entity.abstract = true;
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);
   if (ai) entity.aiContext = ai;
-  rejectGoogleBlock(ds.custom_extensions, version, 'dataset', ctxLabel);
-  const ce = toCustomExtensions(ds.custom_extensions);
-  if (ce) entity.customExtensions = ce;
+  if (block.kept) entity.customExtensions = block.kept;
   return entity;
 }
 
@@ -1909,13 +2095,14 @@ function convertRelationship(
     source: {entity: r.from, columns: fromColumns},
     destination: {entity: r.to, columns: toColumns},
   };
-  const description = composeDescription(r.description);
+  const block =
+      readGoogleBlocks(r.custom_extensions, version, 'relationship', ctx);
+  const description =
+      composeDescription(r.description ?? block.values.description);
   if (description) relationship.description = description;
   const ai = aiContextOrUndefined(r.ai_context);
   if (ai) relationship.aiContext = ai;
-  rejectGoogleBlock(r.custom_extensions, version, 'relationship', ctx);
-  const ce = toCustomExtensions(r.custom_extensions);
-  if (ce) relationship.customExtensions = ce;
+  if (block.kept) relationship.customExtensions = block.kept;
   return relationship;
 }
 
@@ -1923,6 +2110,9 @@ function convertMetric(
     mt: MetricDoc, version: FormatVersion, entityNames: string[],
     warnings: string[], dialect: string, impliedDialect?: string): Metric {
   const ctx = `metric '${mt.name}'`;
+  const block = readGoogleBlocks(mt.custom_extensions, version, 'metric', ctx);
+  // The anchor the author wrote, natively or in a vanilla GOOGLE block.
+  const authored = mt.entity ?? block.values.entity;
   const {dialects, stringForm, picked} =
       convertExpression(mt.expression, version, dialect, ctx);
   const ew = expressionWarning({dialects, stringForm}, ctx, dialect);
@@ -1931,7 +2121,7 @@ function convertMetric(
   const {referenced, warning: mw} = inferMetricEntities(
       {
         name: mt.name,
-        authoredEntity: mt.entity,
+        authoredEntity: authored,
         expression: picked.expression,
         importedExpression: picked.importedExpression,
         importedDialect: picked.importedDialect,
@@ -1940,18 +2130,18 @@ function convertMetric(
       entityNames, dialect, impliedDialect, version);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};
-  if (mt.entity !== undefined) {
+  if (authored !== undefined) {
     // Like a relationship endpoint, an anchor must name a dataset the model
     // declares; a dangling one would attach the metric to nothing downstream.
-    if (!entityNames.includes(mt.entity)) {
+    if (!entityNames.includes(authored)) {
       throw new SemanticModelError(
-          `Semantic model load error: ${ctx}: 'entity' names '${mt.entity}', ` +
+          `Semantic model load error: ${ctx}: 'entity' names '${authored}', ` +
           `which is not a dataset in this model.`);
     }
     // What the author wrote wins over inference. `authoredEntity` records that
     // it was written, so a pull can write it back rather than re-infer it.
-    metric.authoredEntity = mt.entity;
-    metric.entity = mt.entity;
+    metric.authoredEntity = authored;
+    metric.entity = authored;
   } else if (referenced.length === 1) {
     // Attach only when the reference is unambiguous; a cross-entity metric is
     // left unattached (its qualifiers stay inline in the expression for
@@ -1969,9 +2159,7 @@ function convertMetric(
   if (description) metric.description = description;
   const ai = aiContextOrUndefined(mt.ai_context);
   if (ai) metric.aiContext = ai;
-  rejectGoogleBlock(mt.custom_extensions, version, 'metric', ctx);
-  const ce = toCustomExtensions(mt.custom_extensions);
-  if (ce) metric.customExtensions = ce;
+  if (block.kept) metric.customExtensions = block.kept;
   return metric;
 }
 

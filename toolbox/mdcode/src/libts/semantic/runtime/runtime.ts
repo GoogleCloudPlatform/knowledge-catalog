@@ -233,8 +233,13 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   // A deployment that names a profile the model does not declare would be
   // used by no profile. Push refuses every deployment that names a profile.
+  // A vanilla model declares its profiles in its GOOGLE block, which the
+  // loader puts on the model.
   for (const {document, model} of models) {
-    const declared = (profilesByDoc.get(document) ?? []).map(p => p.name);
+    const declared = [
+      ...(profilesByDoc.get(document) ?? []).map(p => p.name),
+      ...(model.profiles ?? []).map(p => p.name),
+    ];
     const error = undeclaredProfileError(document, model, declared);
     if (error) return {error};
   }

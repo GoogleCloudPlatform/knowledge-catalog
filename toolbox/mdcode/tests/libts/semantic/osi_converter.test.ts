@@ -41,7 +41,6 @@ describe('loader <-> serialize round trip is IR-stable', () => {
     'vendor_dialects.yaml',
     'sales_bq_graph_target.yaml',
     'actions_place_order.yaml',
-    'tpcds_retail.yaml',
     'lineitem_databricks_ext.yaml',
   ];
 
@@ -58,6 +57,32 @@ describe('loader <-> serialize round trip is IR-stable', () => {
       }
     });
   }
+
+  // The loader reads a vanilla metric's anchor out of its GOOGLE block, and a
+  // '0.2.0.dev0' write does not put it back in one yet. Two metrics in this
+  // fixture read two datasets each and are anchored that way, so they come back
+  // unanchored, each with a warning. Everything else survives.
+  test('tpcds_retail.yaml survives IR -> YAML -> IR apart from its GOOGLE block anchors', () => {
+    const [model] = loadFixture('tpcds_retail.yaml');
+    const anchored = model.metrics.filter(m => m.authoredEntity !== undefined);
+    expect(anchored.map(m => m.name)).toEqual(['customer_lifetime_value', 'store_productivity']);
+
+    const {yaml: text, warnings} = serializeModel(model);
+    const reloaded = loadModels(text, {allowLegacyBareSource: true}).models;
+    const unanchored = model.metrics.map(m => {
+      const copy = {...m};
+      if (copy.authoredEntity !== undefined) {
+        delete copy.authoredEntity;
+        delete copy.entity;
+      }
+      return copy;
+    });
+    expect(reloaded).toEqual([{...model, metrics: unanchored}]);
+    for (const {name} of anchored) {
+      expect(warnings).toContain(
+          `metric '${name}': 'entity' has no representation under '0.2.0.dev0' and is not serialized`);
+    }
+  });
 });
 
 
@@ -1117,6 +1142,7 @@ describe('dual-version model serialization', () => {
       ...emptyModel,
       version: '0.2.0.dev0',
       deployments: [{name: 'prod', target: 'bigquery:p.d'}],
+      profiles: [{name: 'prod', entities: [], relationships: []}],
       entities: [{...baseOrders, extends: ['base']}],
       relationships: [{
         name: 'rel',
@@ -1145,6 +1171,7 @@ describe('dual-version model serialization', () => {
 
     expect(warnings).toEqual([
       `model 'm': 'deployments' has no representation under '0.2.0.dev0' and is not serialized`,
+      `model 'm': 'profiles' has no representation under '0.2.0.dev0' and is not serialized`,
       `model 'm': 'actions' has no representation under '0.2.0.dev0' and is not serialized`,
       `model 'm': 'constraints' has no representation under '0.2.0.dev0' and is not serialized`,
       `entity 'orders': 'extends' has no representation under '0.2.0.dev0' and is not serialized`,

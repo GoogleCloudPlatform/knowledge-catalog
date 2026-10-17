@@ -505,8 +505,9 @@ semantic_model:
                 ],
                 [
                   '{not-json',
-                  "Error: Model 'commerce': GOOGLE custom_extension 'data' " +
-                      'is not valid JSON.',
+                  "Error: Model document 'commerce': Semantic model load " +
+                      "error: model 'commerce': the 'data' of a GOOGLE " +
+                      'custom_extensions block must be a JSON object.',
                 ],
               ]) {
            logs = [];

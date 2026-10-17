@@ -49,6 +49,11 @@ import {YAML_OPTIONS} from './yaml_options';
 // authored -- so a bare `kcmd push` behaves as it always has.
 export const DEFAULT_PROFILE = 'default';
 
+// A profile name: a letter, then letters, digits, underscores and hyphens, at
+// most 500 characters. A profile name never appears in SQL, so a hyphen is
+// safe.
+export const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,499}$/;
+
 export interface MergeResult {
   // The merged authoring document (still in the sugared form), ready to feed
   // through the normal loader.
@@ -1602,9 +1607,10 @@ function entitiesWithDescendants(model: SemanticModel): Set<string> {
 }
 
 // Reads a parsed profile file into a ProfileSpec, throwing on anything a
-// profile may not say. Shared by loadProfileFile and mergeProfileFile, so the
-// two agree on what a valid profile file is.
-function profileSpecOf(doc: any, profileName: string): ProfileSpec {
+// profile may not say. Shared by loadProfileFile, mergeProfileFile and the
+// loader's reading of a vanilla GOOGLE block's profiles, so the three agree on
+// what a valid profile is.
+export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
   const where = `profile '${profileName}'`;
   if (!doc || typeof doc !== 'object' || Array.isArray(doc) ||
       doc.semantic_model !== undefined) {

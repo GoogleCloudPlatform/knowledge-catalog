@@ -10,7 +10,10 @@
 
 import { describe, test, expect } from 'bun:test';
 import { databaseOf, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { deploymentTargetUris } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
+import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
+import { loadProfileFile, validateProfileCompleteness, validateProfileConsistency } from '../../../src/libts/semantic/resolve_profiles';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -806,17 +809,14 @@ describe('richer IR fields carry through from the format', () => {
     ]);
   });
 
-  test('a malformed GOOGLE block is kept verbatim without warning (not parsed)', () => {
-    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
+  test('a malformed GOOGLE block is rejected, naming the model', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         custom_extensions: [{ vendor_name: 'GOOGLE', data: '{not json' }],
         datasets: [{ name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] }],
       }],
-    });
-    // The loader never parses the block, so malformed JSON is not its concern.
-    expect(models[0].customExtensions).toEqual([{ vendorName: 'GOOGLE', data: '{not json' }]);
-    expect(warnings).toEqual([]);
+    })).toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block must be a JSON object.");
   });
 
   test('ai_context instructions and synonyms are structural, not folded into description', () => {
@@ -1627,8 +1627,7 @@ describe('custom_extensions: where each vendor block is accepted', () => {
       if (level === 'field') {
         expect(run).toThrow(/cannot carry a 'GOOGLE' custom_extensions block on a field/);
       } else {
-        expect(irAt(run().models[0], level).customExtensions)
-          .toEqual([{ vendorName: 'GOOGLE', data: '{}' }]);
+        expect(irAt(run().models[0], level).customExtensions).toBeUndefined();
       }
     }
   });
@@ -1666,8 +1665,8 @@ describe('relationship description', () => {
     const m = load(VANILLA, fullModel('relationship', {
       custom_extensions: [{ vendor_name: 'GOOGLE', data: '{"description": "d"}' }],
     })).models[0];
-    expect(m.relationships[0].customExtensions)
-      .toEqual([{ vendorName: 'GOOGLE', data: '{"description": "d"}' }]);
+    expect(m.relationships[0].description).toBe('d');
+    expect(m.relationships[0].customExtensions).toBeUndefined();
   });
 });
 
@@ -1787,6 +1786,269 @@ semantic_model:
         "metric 'order_count': expression could not be parsed; entity inference was " +
         "skipped (use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
         "backtick-quote a reserved qualifier, such as `Date`.amount)");
+  });
+});
+
+describe('vanilla: GOOGLE blocks are read into the model', () => {
+  const google = (data: object|string) => ({
+    vendor_name: 'GOOGLE', data: typeof data === 'string' ? data : JSON.stringify(data),
+  });
+  const ACME = { vendor_name: 'ACME', data: '{"a":1}' };
+  const G = '//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail';
+  const PROD = { name: 'prod', entities: [{ name: 'orders', source: 'bigquery:p.prod.orders' }] };
+  const LABEL = {
+    model: "model 'm'", dataset: "dataset 'orders'",
+    relationship: "relationship 'orders_to_customers'", metric: "metric 'order_count'",
+  } as const;
+  const atLevel = (level: keyof typeof LABEL, ...blocks: object[]) =>
+    fullModel(level, { custom_extensions: blocks });
+
+  // fullModel, with `orders` extending a `base_order` that declares a field,
+  // and each key at its own level either in a GOOGLE block beside a
+  // third-party block or, in the Google flavor, natively.
+  function retail(version: string): any {
+    const m = fullModel();
+    const vanilla = version === VANILLA;
+    m.datasets.push({ name: 'base_order', source: 'bigquery:p.d.base_order', primary_key: ['id'],
+      fields: [{ name: 'placed_at', expression: expr('placed_at') }] });
+    const keys: [any, object][] = [
+      [m, { deployments: [{ name: 'bq_prod', target: G }] }],
+      [m.datasets[0], { extends: ['base_order'] }],
+      [m.relationships[0], { description: 'who placed it' }],
+      [m.metrics[0], { entity: 'orders' }],
+    ];
+    for (const [o, key] of keys) {
+      if (vanilla) o.custom_extensions = [google(key), ACME];
+      else Object.assign(o, key);
+    }
+    if (vanilla) m.custom_extensions[0] = google({ profiles: [PROD], deployments: [{ name: 'bq_prod', target: G }] });
+    return m;
+  }
+
+  test('each key loads, its block is removed, and a third-party block stays', () => {
+    const m = load(VANILLA, retail(VANILLA)).models[0];
+    expect(m.profiles).toEqual([loadProfileFile(JSON.stringify(PROD), 'prod')]);
+    expect(m.deployments).toEqual([{ name: 'bq_prod', target: G }]);
+    expect(deploymentTargetUris(m)).toEqual([G]);
+    expect(m.entities[0].extends).toEqual(['base_order']);
+    expect(m.relationships[0].description).toBe('who placed it');
+    expect(m.metrics[0].authoredEntity).toBe('orders');
+    expect(m.metrics[0].entity).toBe('orders');
+    // No folded `deploymentTargets` copy joins the model's blocks.
+    for (const o of [m, m.entities[0], m.relationships[0], m.metrics[0]]) {
+      expect(o.customExtensions).toEqual([{ vendorName: 'ACME', data: '{"a":1}' }]);
+    }
+  });
+
+  test('the keys load as the Google flavor loads them, and extends is read before inheritance resolves', () => {
+    const vanilla = load(VANILLA, retail(VANILLA)).models[0];
+    const google = load(GOOGLE, retail(GOOGLE)).models[0];
+    const withoutBlocks = (o: any) => { const { customExtensions, ...rest } = o; return rest; };
+    for (const key of ['entities', 'relationships', 'metrics'] as const) {
+      expect(vanilla[key].map(withoutBlocks)).toEqual(google[key].map(withoutBlocks));
+    }
+    expect(vanilla.deployments).toEqual(google.deployments);
+    const fields = (m: any) => resolveInheritance(m).model.entities[0].fields.map((f: any) => f.name);
+    expect(fields(vanilla)).toEqual(['id', 'customer_id', 'placed_at']);
+    expect(fields(vanilla)).toEqual(fields(google));
+  });
+
+  test('data that is not a JSON object fails, naming the object', () => {
+    for (const level of ['model', 'dataset', 'relationship', 'metric'] as const) {
+      for (const data of ['{not json', '[]', '"x"', 'null']) {
+        expect(() => load(VANILLA, atLevel(level, google(data)))).toThrow(
+          `${LABEL[level]}: the 'data' of a GOOGLE custom_extensions block must be a JSON object.`);
+      }
+    }
+  });
+
+  test('a key the level does not take fails, naming the object', () => {
+    const cases = [
+      ['model', 'extends', "'profiles' and 'deployments'"],
+      ['dataset', 'entity', "'extends'"],
+      ['dataset', 'deploymentTargets', "'extends'"],
+      ['relationship', 'deployments', "'description'"],
+      ['metric', 'description', "'entity'"],
+    ] as const;
+    for (const [level, key, takes] of cases) {
+      expect(() => load(VANILLA, atLevel(level, google({ [key]: 'x' })))).toThrow(
+        `${LABEL[level]}: '${key}' is not a key a GOOGLE custom_extensions block takes on a ` +
+        `${level}; it takes ${takes}.`);
+    }
+  });
+
+  test('abstract fails, naming the dataset and the Google flavor', () => {
+    expect(() => load(VANILLA, atLevel('dataset', google({ abstract: true })))).toThrow(
+      "dataset 'orders': a GOOGLE custom_extensions block cannot declare 'abstract' in a " +
+      "'0.2.0.dev0' document. An abstract dataset has no table, and every '0.2.0.dev0' " +
+      "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
+  });
+
+  test('a value the Google flavor rejects for the same key fails', () => {
+    const cases = [
+      ['model', { deployments: [{ name: 'a' }] }],
+      ['model', { deployments: [{ name: 'a', target: G, extra: 1 }] }],
+      ['dataset', { extends: 'base_order' }],
+      ['relationship', { description: 5 }],
+      ['metric', { entity: ['orders'] }],
+    ] as const;
+    for (const [level, data] of cases) {
+      expect(() => load(VANILLA, atLevel(level, google(data)))).toThrow(
+        `${LABEL[level]}: '${Object.keys(data)[0]}' in a GOOGLE custom_extensions block: `);
+    }
+    expect(() => load(VANILLA, atLevel('metric', google({ entity: 'nope' })))).toThrow(
+      "metric 'order_count': 'entity' names 'nope', which is not a dataset in this model.");
+    expect(() => load(VANILLA, atLevel('model', google({ deployments: [
+      { name: 'a', target: G }, { name: 'b', target: G }] })))).toThrow(
+      "deployments 'a' and 'b' target the same resource");
+  });
+
+  test('each profile is read as a profile file is, and two may not share a name', () => {
+    const fileError = (text: string) => {
+      try {
+        loadProfileFile(text, 'prod');
+      } catch (err: any) {
+        return err.message;
+      }
+    };
+    for (const profile of [{ name: 'prod', datasets: [] }, { name: 'prod', entities: 'orders' }]) {
+      expect(() => load(VANILLA, atLevel('model', google({ profiles: [profile] })))).toThrow(
+        `model 'm': ${fileError(JSON.stringify(profile))}`);
+    }
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: PROD })))).toThrow(
+      "model 'm': 'profiles' in a GOOGLE custom_extensions block must be a list.");
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: [{ entities: [] }] })))).toThrow(
+      "model 'm': each profile in a GOOGLE custom_extensions block must be a mapping with a 'name'.");
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: [PROD, PROD] })))).toThrow(
+      "model 'm': duplicate profile name 'prod'");
+  });
+
+  test('a profile name follows the rules the layout gives a profile file name', () => {
+    const loadProfile = (name: string) => load(VANILLA, atLevel('model', google({ profiles: [{ name }] })));
+    for (const name of ['', '1prod', 'a b', 'a/../b', 'x'.repeat(501)]) {
+      expect(() => loadProfile(name)).toThrow(
+        `model 'm': profile name '${name}' in a GOOGLE custom_extensions block is not valid; a ` +
+        'profile name is a letter followed by up to 499 letters, digits, underscores and hyphens.');
+    }
+    for (const name of ['prod-eu_2', 'x'.repeat(500)]) {
+      expect(loadProfile(name).models[0].profiles?.map(p => p.name)).toEqual([name]);
+    }
+    for (const name of ['default', 'Default']) {
+      expect(() => loadProfile(name)).toThrow(
+        `model 'm': a profile in a GOOGLE custom_extensions block may not be named '${name}'; ` +
+        "'default' names the model's inline bindings.");
+    }
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: [{ name: 'Prod' }, { name: 'prod' }] }))))
+      .toThrow("model 'm': profiles 'Prod' and 'prod' in a GOOGLE custom_extensions block name the " +
+        'same profile; profile names are unique ignoring case.');
+  });
+
+  test("a profile that sets 'version' or 'semantic_model' is told so without mention of a file", () => {
+    for (const key of ['version', 'semantic_model']) {
+      expect(() => load(VANILLA, atLevel('model', google({ profiles: [{ name: 'prod', [key]: VANILLA }] }))))
+        .toThrow(`model 'm': profile 'prod' in a GOOGLE custom_extensions block sets '${key}', which a ` +
+          'profile may not set.');
+    }
+  });
+
+  test('a key two GOOGLE blocks on one object both set fails, naming the key', () => {
+    expect(() => load(VANILLA, atLevel('metric', google({ entity: 'orders' }), google({ entity: 'orders' }))))
+      .toThrow("metric 'order_count': two GOOGLE custom_extensions blocks both set 'entity'; set it " +
+        'in one block.');
+    expect(() => load(VANILLA, atLevel('dataset', google({ extends: ['customers'] }), google({ extends: ['customers'] }))))
+      .toThrow("dataset 'orders': two GOOGLE custom_extensions blocks both set 'extends'; set it in " +
+        'one block, listing every parent there.');
+  });
+
+  test('a key one GOOGLE block sets twice fails, as a repeated YAML key does', () => {
+    expect(() => load(VANILLA, atLevel('metric', google('{"entity": "nope", "entity": "orders"}'))))
+      .toThrow("metric 'order_count': the 'data' of a GOOGLE custom_extensions block sets a key " +
+        'twice; set each key once.');
+    expect(() => load(VANILLA, atLevel('model', google('{"profiles": [{"name": "prod", "name": "dev"}]}'))))
+      .toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block sets a key twice");
+  });
+
+  test('a value error is reported on one line', () => {
+    expect(() => load(VANILLA, atLevel('model', google({ deployments: null })))).toThrow(
+      "model 'm': 'deployments' in a GOOGLE custom_extensions block: Invalid input: expected array, " +
+      'received null');
+  });
+
+  test('deploymentTargets stays in its block on the model, and deployments beside it fail', () => {
+    const targets = google({ deploymentTargets: [G] });
+    const m = load(VANILLA, atLevel('model', targets)).models[0];
+    expect(m.customExtensions).toEqual([{ vendorName: 'GOOGLE', data: targets.data }]);
+    expect(m.deployments).toBeUndefined();
+    expect(deploymentTargetUris(m)).toEqual([G]);
+    const deployments = { deployments: [{ name: 'a', target: G }] };
+    for (const blocks of [[google({ deploymentTargets: [G], ...deployments })], [targets, google(deployments)]]) {
+      expect(() => load(VANILLA, atLevel('model', ...blocks))).toThrow(
+        "model 'm': set either 'deployments' or 'deploymentTargets' in its GOOGLE custom_extensions blocks, not both.");
+    }
+  });
+
+  test("a metric's block entity fills authoredEntity and entity, so COUNT(*) gives no warning", () => {
+    const { models, warnings } = load(VANILLA, fullModel('metric', {
+      expression: expr('COUNT(*)'), custom_extensions: [google({ entity: 'orders' })],
+    }));
+    expect(models[0].metrics[0].authoredEntity).toBe('orders');
+    expect(models[0].metrics[0].entity).toBe('orders');
+    expect(warnings.some(w => w.includes('references no known entity'))).toBe(false);
+  });
+
+  test("a 'Google' block is a third-party block: neither read nor removed", () => {
+    const block = { vendor_name: 'Google', data: '{"entity": "nope", "abstract": true}' };
+    for (const level of ['dataset', 'metric'] as const) {
+      const m = load(VANILLA, atLevel(level, block)).models[0];
+      expect(irAt(m, level).customExtensions).toEqual([{ vendorName: 'Google', data: block.data }]);
+      expect(m.metrics[0].authoredEntity).toBeUndefined();
+    }
+  });
+
+  test('a block profile, a block extends and a block anchor get the checks for an expression with no SQL', () => {
+    // A block profile's binding is rejected as a profile file's is.
+    for (const expression of ['  ', '-- todo', 'orders.']) {
+      const profile = { name: 'prod', entities: [{ name: 'orders', fields: [{ name: 'customer_id', expression }] }] };
+      let fileError = '';
+      try {
+        loadProfileFile(JSON.stringify(profile), 'prod');
+      } catch (err: any) {
+        fileError = err.message;
+      }
+      expect(fileError).toContain("write the field's SQL");
+      expect(() => load(VANILLA, atLevel('model', google({ profiles: [profile] })))).toThrow(
+        `model 'm': ${fileError}`);
+    }
+    // An inherited field is checked on the entity that extends its parent in a
+    // block, as it is with a native extends.
+    for (const version of [VANILLA, GOOGLE]) {
+      const m = retail(version);
+      m.datasets[2].fields[0].expression = expr('base_order.orders.');
+      expect(() => load(version, m)).toThrow(
+        "model 'm': entity 'orders' inherits field 'placed_at': read on 'orders', the BIGQUERY entry of " +
+        "'expression' is only the qualifier 'orders.'; write the field's SQL");
+    }
+    // A metric anchored in its block still needs SQL.
+    expect(() => load(VANILLA, fullModel('metric', {
+      expression: expr(' '), custom_extensions: [google({ entity: 'orders' })],
+    }))).toThrow("metric 'order_count': the BIGQUERY entry of 'expression' is blank; write the metric's SQL");
+  });
+
+  test('profiles from the block get the checks profile files get', () => {
+    const join = { name: 'orders_to_customers', from_columns: ['customer_id'], to_columns: ['id'] };
+    const prod = { name: 'prod', relationships: [join], entities: [
+      { name: 'orders', source: 'bigquery:p.prod.orders' },
+      { name: 'customers', source: 'bigquery:p.prod.customers' }] };
+    const dev = { name: 'dev', relationships: [{ ...join, to_columns: undefined }] };
+    const vanilla = load(VANILLA, atLevel('model', google({ profiles: [prod, dev] }))).models[0];
+    const google_ = load(GOOGLE, fullModel()).models[0];
+    const files = [prod, dev].map(p => loadProfileFile(JSON.stringify(p), p.name));
+    expect(vanilla.profiles).toEqual(files);
+    const checks = (m: any, specs: any[]) =>
+      [...specs.map(p => validateProfileCompleteness(m, p)), validateProfileConsistency(m, specs)];
+    expect(checks(vanilla, vanilla.profiles!)).toEqual(checks(google_, files));
+    expect(validateProfileCompleteness(vanilla, vanilla.profiles![0])).toEqual([]);
+    expect(validateProfileCompleteness(vanilla, vanilla.profiles![1])).not.toEqual([]);
   });
 });
 

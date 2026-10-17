@@ -238,6 +238,7 @@ function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
       `is not serialized`);
   const where = `model '${model.name}'`;
   if (model.deployments?.length) drop(where, `'deployments'`);
+  if (model.profiles?.length) drop(where, `'profiles'`);
   if (model.actions?.length) drop(where, `'actions'`);
   if (model.constraints?.length) drop(where, `'constraints'`);
   for (const e of model.entities ?? []) {
