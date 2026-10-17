@@ -1959,6 +1959,21 @@ entities:
       expect(unread).toHaveLength(1);
     });
 
+    // Under --no-kc, a model that deploys no graph is checked before any
+    // graph deploys, so its profile errors leave every graph as it was.
+    test('before any graph deploys, under --no-kc with two models', async () => {
+      writeScope({
+        'commerce.yaml': commerce({targets: 1}),
+        'inventory.yaml': commerce().replace('name: commerce', 'name: inventory'),
+        'inventory.profile.staging.yaml': STAGING,
+      });
+      const deploy = spyOn(bigQueryDeploy, 'deployBigQuery');
+      expect(await push({validateOnly: true, kc: false})).toBe(1);
+      expect(deploy).not.toHaveBeenCalled();
+      expect(logs).toEqual(expect.arrayContaining(
+          incomplete('inventory.profile.staging.yaml').map(e => `Error: ${e}`)));
+    });
+
     // Under --transpile, push fills in BigQuery SQL for a text written only
     // in a vendor dialect, so a BigQuery profile can run it.
     test('and lets --transpile fill in a vendor-only metric for a BigQuery profile', async () => {

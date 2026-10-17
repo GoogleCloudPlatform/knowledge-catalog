@@ -1177,6 +1177,24 @@ export async function push(options: PushOptions): Promise<number> {
     // errors then come before the file-copy type lookup below, which needs
     // the network.
     if (kcEnabled && !graphPlans.length && !await prepareKc()) return 1;
+    // Under --no-kc, the loop above already loaded every document that
+    // contributes a graph. The rest load here, before any graph deploys, so a
+    // push that fails one of their checks replaces no graph. That is usually
+    // none, and a model that does not define this profile is skipped rather
+    // than failing a warning.
+    if (!kcEnabled) {
+      const rest = (docsOnce(kcProfileName, true) ?? [])
+                       .filter(d => !loadedDocs.has(d.name));
+      if (rest.length) {
+        const prepared = await prepareOnce(rest, kcProfileName, false);
+        // prepareModels has already printed why it failed. Ignoring that here
+        // would report a successful push over its own error output, and the
+        // same document fails the default push through the Knowledge Catalog
+        // leg, so --no-kc fails on it too.
+        if (!prepared) return 1;
+        noteCatalogOnly(prepared.models);
+      }
+    }
 
     // With KC_V2_ASPECTS off, the catalog leg stores the model file and every
     // profile file as read, whichever profile this push selects, so a pull
@@ -1267,20 +1285,6 @@ export async function push(options: PushOptions): Promise<number> {
     // push that omits the KC leg (--no-kc) would validate them and then deploy
     // them nowhere. Warn instead of dropping them silently.
     if (!kcEnabled) {
-      // The loop above already loaded every document that contributes a graph.
-      // Only the rest need loading, which is usually none, and a model that
-      // does not define this profile is skipped rather than failing a warning.
-      const rest = (docsOnce(kcProfileName, true) ?? [])
-                       .filter(d => !loadedDocs.has(d.name));
-      if (rest.length) {
-        const prepared = await prepareOnce(rest, kcProfileName, false);
-        // prepareModels has already printed why it failed. Ignoring that here
-        // would report a successful push over its own error output, and the
-        // same document fails the default push through the Knowledge Catalog
-        // leg, so --no-kc fails on it too.
-        if (!prepared) return 1;
-        noteCatalogOnly(prepared.models);
-      }
       for (const [name, n] of catalogOnly) {
         console.warn(`Warning: ${catalogOnlyWarning(name, n)}`);
       }
