@@ -1908,6 +1908,176 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
     }
   });
 
+  test('googleBlockProfiles reads past a YAML error elsewhere in the text', () => {
+    const text = (extra: string) => `version: "${VANILLA}"
+semantic_model:
+  - name: m
+${extra}    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({ profiles: [PROD] })}'
+`;
+    for (const [extra, problem] of [
+      ['    description: a\n    description: b\n', 'Map keys must be unique'],
+      ['    description: [a\n', 'could not parse input'],
+      ['    description: *nope\n', 'Unresolved alias'],
+    ]) {
+      expect(() => loadModels(text(extra))).toThrow(problem);
+      expect(googleBlockProfiles(text(extra)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles reads the blocks under each semantic_model a document sets', () => {
+    const model = (exts: object[]) => JSON.stringify([{ name: 'm', custom_extensions: exts }]);
+    const text = (first: object[], second: object[]) =>
+      `version: "${VANILLA}"\nsemantic_model: ${model(first)}\nsemantic_model: ${model(second)}\n`;
+    const block = google({ profiles: [PROD] });
+    for (const [first, second] of [[[block], []], [[], [block]]]) {
+      expect(() => loadModels(text(first, second))).toThrow('Map keys must be unique');
+      expect(googleBlockProfiles(text(first, second)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles reads the blocks in each custom_extensions of a model that sets the key twice', () => {
+    const text = (first: object, second: object) => `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    custom_extensions: ${JSON.stringify([first])}
+    custom_extensions: ${JSON.stringify([second])}
+`;
+    const block = google({ profiles: [PROD] });
+    for (const [first, second] of [[block, ACME], [ACME, block]]) {
+      expect(() => loadModels(text(first, second))).toThrow('Map keys must be unique');
+      expect(googleBlockProfiles(text(first, second)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles reads only the profiles of each block in text with a YAML syntax error', () => {
+    const text = `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    description: [a
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({ profiles: [PROD], bogus: 1 })}'
+`;
+    expect(() => loadModels(text)).toThrow('could not parse input');
+    expect(googleBlockProfiles(text).map(p => p.name)).toEqual(['prod']);
+  });
+
+  test('googleBlockProfiles reports the YAML error when it cuts the GOOGLE block short', () => {
+    const text = `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"profiles": [
+    datasets: [
+`;
+    expect(() => loadModels(text)).toThrow('could not parse input');
+    expect(() => googleBlockProfiles(text)).toThrow(
+      'Semantic model load error: could not parse input: ');
+  });
+
+  describe('googleBlockProfiles in text that is not valid YAML', () => {
+    const data = (v: object) => `'${JSON.stringify(v)}'`;
+    const blockYaml = (d: string) => `      - vendor_name: GOOGLE\n        data: ${d}\n`;
+    const PROD_BLOCK = blockYaml(data({ profiles: [PROD] }));
+    const section = (exts: string, extra = '') =>
+      `  - name: m\n${extra}    custom_extensions:\n${exts}`;
+    const vanilla = (exts: string, extra = '') =>
+      `version: "${VANILLA}"\nsemantic_model:\n${section(exts, extra)}`;
+    const names = (text: string) => googleBlockProfiles(text).map(p => p.name);
+    const cases: [string, string, string][] = [
+      ['a repeated semantic_model section',
+        `version: "${VANILLA}"\nsemantic_model:\n${section(PROD_BLOCK)}semantic_model:\n${section(PROD_BLOCK)}`,
+        'Map keys must be unique'],
+      ['a document written twice', vanilla(PROD_BLOCK).repeat(2), 'Map keys must be unique'],
+      ['a repeated custom_extensions section',
+        vanilla(`${PROD_BLOCK}    custom_extensions:\n${PROD_BLOCK}`), 'Map keys must be unique'],
+      ['a later semantic_model that is empty', `${vanilla(PROD_BLOCK)}semantic_model: []\n`,
+        'Map keys must be unique'],
+      ['a block that sets data twice, the profiles in the first',
+        vanilla(`${PROD_BLOCK}        data: '{}'\n`), 'Map keys must be unique'],
+      ['an alias whose anchor is not set, beside a key the block may not set',
+        vanilla(blockYaml(data({ profiles: [PROD], bogus: 1 })), '    description: *nope\n'),
+        'Unresolved alias'],
+      ['a syntax error, beside data that sets another key twice',
+        vanilla(blockYaml(`'{"profiles": ${JSON.stringify([PROD])}, "x": 1, "x": 2}'`),
+          '    description: [x\n'),
+        'could not parse input'],
+    ];
+    for (const [what, text, problem] of cases) {
+      test(`finds the profile past ${what}`, () => {
+        expect(() => loadModels(text)).toThrow(problem);
+        expect(names(text)).toEqual(['prod']);
+      });
+    }
+
+    // Each text sets `description` twice, so it is not valid YAML.
+    const aliasedKeys: [string, string][] = [
+      ['a data key written as an alias', `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    label: &k data
+    description: a
+    description: b
+    custom_extensions:
+      - vendor_name: GOOGLE
+        *k : ${data({ profiles: [PROD] })}
+`],
+      ['a custom_extensions key written as an alias', `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    label: &k custom_extensions
+    description: a
+    description: b
+    *k :
+${PROD_BLOCK}`],
+      ['a block that takes its data from a merge key', `%YAML 1.1
+---
+base: &base
+  vendor_name: GOOGLE
+  data: ${data({ profiles: [PROD] })}
+version: "${VANILLA}"
+semantic_model:
+  - name: m
+    description: a
+    description: b
+    custom_extensions:
+      - <<: *base
+`],
+    ];
+    for (const [what, text] of aliasedKeys) {
+      test(`finds the profile past ${what}`, () => {
+        expect(() => loadModels(text)).toThrow('could not parse input');
+        expect(names(text)).toEqual(['prod']);
+      });
+    }
+
+    // Profile names are unique ignoring case.
+    test('keeps the later of two profiles in two blocks whose names differ only in case', () => {
+      const named = (name: string) => blockYaml(data({ profiles: [{ ...PROD, name }] }));
+      const text = vanilla(named('Prod') + named('prod'), '    description: a\n    description: b\n');
+      expect(() => loadModels(text)).toThrow('Map keys must be unique');
+      expect(names(text)).toEqual(['prod']);
+    });
+
+    // The yaml library expands at most 100 aliases.
+    test('gives no profiles, and does not throw, for text with more aliases than a load expands', () => {
+      for (const version of [VANILLA, GOOGLE]) {
+        const text = `version: "${version}"\nx: &a 1\nys:\n${'  - *a\n'.repeat(101)}` +
+          `semantic_model:\n${section(PROD_BLOCK)}`;
+        expect(() => loadModels(text)).toThrow('could not parse input: Excessive alias count');
+        expect(googleBlockProfiles(text)).toEqual([]);
+      }
+    });
+
+    test('reports the YAML error when the profiles are an alias whose anchor is not set', () => {
+      const text = vanilla('      - vendor_name: GOOGLE\n        data:\n          profiles: *nope\n');
+      expect(() => googleBlockProfiles(text)).toThrow('could not parse input: Unresolved alias');
+    });
+  });
+
   test('googleBlockProfiles reads a semantic_model written as one mapping', () => {
     const text = JSON.stringify({ version: VANILLA, semantic_model: {
       name: 'm', custom_extensions: [google({ profiles: [PROD] })] } });

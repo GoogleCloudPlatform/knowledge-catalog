@@ -17,7 +17,7 @@ import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, PROFILE_NAME, profileSpecOf, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
-import {YAML_OPTIONS} from './yaml_options';
+import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -1262,14 +1262,18 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  * twice or a key twice inside them, and on data that is not a JSON object in
  * a block whose shape the load accepts.
  *
- * Empty for text that is not valid YAML. The load reports the error.
+ * Text that is not valid YAML, such as text that sets a key twice or has a bad
+ * indent, is read as far as it parses, and each GOOGLE block in it for its
+ * profiles alone. No block error is thrown then, since the YAML error may have
+ * cut a block short. When a block cannot be read and no profile is found, it
+ * throws the error a load reports for the text instead.
  */
 export function googleBlockProfiles(text: string): ProfileSpec[] {
   let doc: unknown;
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
-  } catch {
-    return [];
+  } catch (err: any) {
+    return googleBlockProfilesPastYamlError(text, err?.message ?? String(err));
   }
   if (!isRecord(doc) || doc.version !== OSSIE_VERSION) return [];
   // The load rejects a `semantic_model` written as one mapping, and reports it.
@@ -1299,6 +1303,79 @@ export function googleBlockProfiles(text: string): ProfileSpec[] {
   return readGoogleBlocks(blocks, OSSIE_VERSION, 'model', label)
              .values.profiles ??
       [];
+}
+
+// The profiles the model in a vanilla document carries in its GOOGLE blocks,
+// when its text is not valid YAML. `parseError` is the error a load reports
+// for the text. The text is read as far as it parses, with the last value of
+// a key set twice. The blocks under each value of a key set twice are read:
+// each `semantic_model`, each model `custom_extensions` and each block `data`.
+// Each block is read for its profiles alone. Of two profiles whose names are
+// equal ignoring case, the later one is kept. No block error is thrown, since
+// the YAML error may have cut a block short. When a GOOGLE block cannot be
+// read and no profile is found, throws the load's error for the text instead.
+function googleBlockProfilesPastYamlError(
+    text: string, parseError: string): ProfileSpec[] {
+  const parsed = parseLeniently(text);
+  const js = (v: unknown) => yaml.isNode(v) ? v.toJS(parsed) : v;
+  const resolve = (v: unknown) => yaml.isAlias(v) ? v.resolve(parsed) : v;
+  const values = (node: unknown, key: string): unknown[] => {
+    const map = resolve(node);
+    if (!yaml.isMap(map)) return [];
+    return map.items
+        .filter(p => {
+          const k = resolve(p.key);
+          return yaml.isScalar(k) && k.value === key;
+        })
+        .map(p => resolve(p.value));
+  };
+  let doc: unknown;
+  try {
+    doc = js(parsed.contents);
+  } catch {
+    // More aliases than a load expands. Empty, as for a document that is not
+    // a vanilla model.
+    return [];
+  }
+  if (!isRecord(doc) || doc.version !== OSSIE_VERSION) return [];
+  const blockNodes =
+      values(parsed.contents, 'semantic_model')
+          .map(s => yaml.isSeq(s) ? s.get(0, true) : s)
+          .flatMap(model => values(model, 'custom_extensions'))
+          .flatMap(list => yaml.isSeq(list) ? list.items : [list]);
+  const byName = new Map<string, ProfileSpec>();
+  let unread = false;
+  for (const node of blockNodes) {
+    const e = js(node);
+    if (!isRecord(e) || e.vendor_name !== GOOGLE_VENDOR) continue;
+    const datas = values(node, 'data').map(js);
+    // A block with no `data` key of its own may still take one from a merge
+    // key.
+    for (const data of datas.length ? datas : [e.data]) {
+      const listed = listedProfiles({...e, data});
+      if (listed === 'none') continue;
+      if (listed === 'unread') {
+        unread = true;
+        continue;
+      }
+      try {
+        const read = readGoogleBlocks(
+            [{vendor_name: GOOGLE_VENDOR, data: listed.json}], OSSIE_VERSION,
+            'model', 'model');
+        for (const p of read.values.profiles ?? []) {
+          byName.set(p.name.toLowerCase(), p);
+        }
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        unread = true;
+      }
+    }
+  }
+  if (!byName.size && unread) {
+    throw new SemanticModelError(
+        `Semantic model load error: could not parse input: ${parseError}`);
+  }
+  return [...byName.values()];
 }
 
 // Ossie's Relationship has no `description` key and its objects are closed, so
