@@ -110,9 +110,11 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 // Both parse into the same IR, so a downstream leg never sees the difference.
 export const OSSIE_VERSION = '0.2.0.dev0';
 const GOOGLE_VERSION = '0.2.0.dev0/google';
-// How a vanilla author gets the `deployments:` key: the end of every message
-// that asks a vanilla model for something only the Google flavor can say.
+// How a vanilla author declares deployments: in a GOOGLE block on the model,
+// or under `deployments:` after a switch to the Google flavor. The end of
+// every message that asks a vanilla model for a deployment.
 export const DEPLOYMENTS_VERSION_HINT =
+    `list 'deployments' in a GOOGLE custom_extensions block on the model, or ` +
     `set version: '${GOOGLE_VERSION}' and use 'deployments:'`;
 // The declared flavor, as stored on the IR (SemanticModel.version).
 type FormatVersion = NonNullable<SemanticModel['version']>;
@@ -682,8 +684,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
               message: `metric '${mt.name}': 'entity' is a ` +
                   `'${GOOGLE_VERSION}' extension. A '${OSSIE_VERSION}' ` +
                   `metric takes its entity from the fields it reads, as in ` +
-                  `'COUNT(orders.id)'. To anchor it explicitly, set the ` +
-                  `document version to '${GOOGLE_VERSION}'.`,
+                  `'COUNT(orders.id)'. To anchor it explicitly, set 'entity' ` +
+                  `in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
+                  `metric, or set the document version to ` +
+                  `'${GOOGLE_VERSION}'.`,
             });
           });
 
@@ -1437,7 +1441,9 @@ export function inferMetricEntities(
   const referenced = entitiesReached(allCols, entityNames);
   if (metric.authoredEntity === undefined && !referenced.length) {
     const entityHint = version === OSSIE_VERSION ?
-        `use version '${GOOGLE_VERSION}' and set 'entity' on the metric` :
+        `set 'entity' in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
+            `metric, or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
+            `the metric` :
         `set 'entity' on the metric`;
     return {
       referenced,

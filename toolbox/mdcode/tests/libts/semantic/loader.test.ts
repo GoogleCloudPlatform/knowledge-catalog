@@ -1591,7 +1591,8 @@ semantic_model:
     const vanillaUnparseable = load(VANILLA, fullModel('metric', { expression: expr('SUM(orders.id') }));
     expect(vanillaUnparseable.warnings).toContain(
         "metric 'order_count': expression could not be parsed; entity inference was " +
-        "skipped (use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
+        "skipped (set 'entity' in a GOOGLE custom_extensions block on the metric, " +
+        "or use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
         "backtick-quote a reserved qualifier, such as `Date`.amount)");
   });
 });
@@ -1801,6 +1802,12 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
     expect(models[0].metrics[0].authoredEntity).toBe('orders');
     expect(models[0].metrics[0].entity).toBe('orders');
     expect(warnings.some(w => w.includes('references no known entity'))).toBe(false);
+  });
+
+  test("the native anchor error offers the GOOGLE block", () => {
+    expect(() => load(VANILLA, fullModel('metric', { entity: 'orders' }))).toThrow(
+      "To anchor it explicitly, set 'entity' in a GOOGLE custom_extensions block on the " +
+      "metric, or set the document version to '0.2.0.dev0/google'.");
   });
 
   test("a 'Google' block is a third-party block: neither read nor removed", () => {
@@ -2618,7 +2625,9 @@ describe('deployments and inline profiles', () => {
       deployment_target: BQ_TARGET,
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "model 'sales': 'deployment_target' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
+      "model 'sales': 'deployment_target' is not in the open format ('0.2.0.dev0'); list " +
+      "'deployments' in a GOOGLE custom_extensions block on the model, or set version: " +
+      "'0.2.0.dev0/google' and use 'deployments:'",
     );
 
     expect(() => load(VANILLA, {
@@ -2626,7 +2635,9 @@ describe('deployments and inline profiles', () => {
       deployments: [{ name: 'prod', target: BQ_TARGET }],
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "model 'sales': 'deployments' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
+      "model 'sales': 'deployments' is not in the open format ('0.2.0.dev0'); list " +
+      "'deployments' in a GOOGLE custom_extensions block on the model, or set version: " +
+      "'0.2.0.dev0/google' and use 'deployments:'",
     );
   });
 
