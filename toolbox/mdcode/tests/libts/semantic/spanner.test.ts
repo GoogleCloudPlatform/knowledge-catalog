@@ -533,6 +533,65 @@ NODE TABLES (
           noKey('orders')));
     }
   });
+
+  // A field written only for the other engine is left out. A table or label
+  // that this leaves with nothing to list gets NO PROPERTIES, since a missing
+  // clause would expose every column of its table.
+  test('NO PROPERTIES on an abstract label, a concrete parent\'s label and a table outside any hierarchy', () => {
+    for (const [engine, generate, q] of ENGINES) {
+      const otherOnly = (column: string) =>
+          texts({[engine === 'Spanner' ? 'BIGQUERY' : 'SPANNER']: column});
+      expect(generate(modelOf('parties', [
+        entity('Party', '', [], {email: {}}, {abstract: true}),
+        entity('Customer', 'Customer', ['id'],
+               {id: 'id', email: otherOnly('c_email')}, {extends: ['Party']}),
+        entity('Supplier', 'Supplier', ['id'], {id: 'id', email: 's_email'},
+               {extends: ['Party']}),
+        entity('Person', 'Person', ['id'],
+               {id: otherOnly('person_id'), email: otherOnly('p_email')}),
+        entity('Employee', 'Employee', ['id'], {tier: 'tier'},
+               {extends: ['Person']}),
+        entity('Orders', 'Orders', ['id'],
+               {id: otherOnly('order_id'), status: otherOnly('order_status')}),
+      ])).ddl).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}parties${q}
+NODE TABLES (
+  ${q}Customer${q} AS Customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id
+    )
+    LABEL Party
+    NO PROPERTIES,
+  ${q}Supplier${q} AS Supplier
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id,
+      s_email AS email
+    )
+    LABEL Party
+    NO PROPERTIES,
+  ${q}Person${q} AS Person
+    KEY(person_id)
+    DEFAULT LABEL
+    NO PROPERTIES,
+  ${q}Employee${q} AS Employee
+    KEY(person_id)
+    DEFAULT LABEL
+    PROPERTIES(
+      tier
+    )
+    LABEL Person
+    NO PROPERTIES,
+  ${q}Orders${q} AS Orders
+    KEY(order_id)
+    NO PROPERTIES
+);
+`);
+    }
+  });
 });
 
 
