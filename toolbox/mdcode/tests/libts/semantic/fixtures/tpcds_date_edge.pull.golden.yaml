@@ -12,24 +12,16 @@ semantic_model:
         description: Fact table containing all store sales transactions
         fields:
           - name: ss_item_sk
-            datatype: Opaque
           - name: ss_ticket_number
-            datatype: Opaque
           - name: ss_customer_sk
-            datatype: Opaque
           - name: ss_store_sk
-            datatype: Opaque
           - name: ss_quantity
-            datatype: Opaque
             description: Quantity of items sold
           - name: ss_sales_price
-            datatype: Opaque
             description: Sales price per unit
           - name: ss_ext_sales_price
-            datatype: Opaque
             description: Extended sales price (quantity * price)
           - name: ss_net_profit
-            datatype: Opaque
             description: Net profit from the sale
       - name: customer
         source: //bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer
@@ -38,12 +30,9 @@ semantic_model:
         description: Customer dimension with demographic information
         fields:
           - name: c_customer_sk
-            datatype: Opaque
           - name: c_first_name
-            datatype: Opaque
             description: Customer first name
           - name: c_last_name
-            datatype: Opaque
             description: Customer last name
       - name: item
         source: //bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item
@@ -52,13 +41,9 @@ semantic_model:
         description: Item/Product dimension
         fields:
           - name: i_item_sk
-            datatype: Opaque
           - name: i_brand
-            datatype: Opaque
           - name: i_category
-            datatype: Opaque
           - name: i_current_price
-            datatype: Opaque
             description: Current price of the item
       - name: store
         source: //bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store
@@ -67,15 +52,10 @@ semantic_model:
         description: Store dimension with location attributes
         fields:
           - name: s_store_sk
-            datatype: Opaque
           - name: s_store_name
-            datatype: Opaque
           - name: s_city
-            datatype: Opaque
           - name: s_state
-            datatype: Opaque
           - name: s_number_employees
-            datatype: Opaque
             description: Number of employees at the store
       - name: date_dim
         source: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim

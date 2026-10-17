@@ -12,8 +12,6 @@ semantic_model:
           - o_orderkey
         fields:
           - name: o_orderkey
-            datatype: Opaque
           - name: o_totalprice
-            datatype: Opaque
     metrics:
       - name: total_revenue
