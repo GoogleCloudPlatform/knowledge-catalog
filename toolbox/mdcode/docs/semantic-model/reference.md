@@ -499,8 +499,11 @@ Before these checks even run, the document must **load**, and the loader is stri
 `version` is required and must be `0.2.0.dev0` (vanilla Ossie) or
 `0.2.0.dev0/google` (the extended profile); every object is closed, so an unknown
 key — including a native key under vanilla, or a `custom_extensions` block under
-`/google` — is rejected; names must be unique within their scope; and every
-`extends` must name an entity defined in the model. A load failure is reported the
+`/google` — is rejected; names must be unique within their scope; every
+`extends` must name an entity defined in the model; a field's or metric's
+`expression`, in the string form and in each dialect entry, may not be empty,
+only whitespace or only a comment; and a field's `expression` may not be only
+its entity's qualifier, such as `orders.`. A load failure is reported the
 same way as a validation failure — nothing is touched, non-zero exit — and is
 defined in [model spec §1](model_spec.md#1-status-and-baseline),
 [§2](model_spec.md#2-document-shape), [§6](model_spec.md#6-the-extension-mechanism),

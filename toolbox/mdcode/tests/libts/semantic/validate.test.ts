@@ -1064,6 +1064,15 @@ describe('a relationship joins on a key of its target', () => {
     expect(check(ent('customer'), ['`id`'])).toEqual([]);
   });
 
+  test('a key field\'s column is read without its comment, as the generators read it', () => {
+    // The generators emit `KEY(cust_id)` for this field, so a join on
+    // `cust_id` covers the key.
+    const commented = ent('customer', {
+      fields: [{name: 'id', expression: 'cust_id -- the customer number'}],
+    });
+    expect(check(commented, ['cust_id'])).toEqual([]);
+  });
+
   test('a join name matches a field exactly, as the generators read it', () => {
     // The generators read `ID` as a column, not as field `id`, so the join
     // does not reach the key they emit, `cust_id`.
@@ -1635,15 +1644,27 @@ describe('field and metric expression references', () => {
           .toContain("set 'entity' in a GOOGLE custom_extensions block on the metric");
     });
 
-    test('rejects a metric with no expression and no entity anchor with a dedicated message', () => {
+    // An anchor does not make up for missing SQL: the graph would drop the
+    // metric.
+    test('rejects a metric with no SQL, with or without an entity anchor', () => {
+      const message = (name: string) =>
+          `metric '${name}' in model 'm' (doc) has no SQL in 'expression'; ` +
+          "write the metric's SQL.";
       const m = model({
         entities: [orders()],
-        metrics: [{name: 'empty_metric'}],
+        metrics: [
+          {name: 'empty_metric'},
+          {name: 'anchored', entity: 'orders', authoredEntity: 'orders'},
+          {name: 'blank', expression: '  '},
+          {name: 'comment', expression: '-- todo', entity: 'orders'},
+        ],
       });
       expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
           .toEqual([
-            "metric 'empty_metric' in model 'm' (doc) has no expression and " +
-            "no 'entity' anchor; supply an expression or set 'entity' on the metric.",
+            message('empty_metric'),
+            message('anchored'),
+            message('blank'),
+            message('comment'),
           ]);
     });
 
@@ -1773,13 +1794,12 @@ describe('field and metric expression references', () => {
               [loaded(model({version, entities, metrics: [metric]}, [googleExt([BQ_TARGET])]))])
               .join('\n');
 
-      // Comment naming a second entity or function namespace matching an entity name trips the BQ regex,
-      // and passes on a KC-only push or Spanner graph push.
+      // A function namespace matching an entity name trips the BQ regex. A comment naming a second entity
+      // passes on every push, because the generator reads the expression without its comments.
       const commentMetric: Metric = {
         name: 'rev', expression: 'SUM(orders.net_amount) -- customer.id', entity: 'orders',
       };
-      expect(bqPush([orders(), customer()], commentMetric))
-          .toContain("references multiple entities (orders, customer); the BigQuery generator scans raw expression text");
+      expect(bqPush([orders(), customer()], commentMetric)).toBe('');
       expect(validatePushRequirements(
                  [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([BQ_TARGET])]))],
                  {targetOptional: true}))
@@ -1793,7 +1813,9 @@ describe('field and metric expression references', () => {
       };
       expect(bqPush([orders(), netEntity], {
         name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))', entity: 'orders',
-      })).toContain('references multiple entities (NET, orders)');
+      })).toContain(
+          "references multiple entities (NET, orders); the BigQuery generator reads every '<entity>.' " +
+          "outside comments as a qualifier, including a function namespace such as 'NET.'");
 
       // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` unset:
       // KC-only push accepts it, while BigQuery graph push rejects it naming what the BigQuery generator reads.

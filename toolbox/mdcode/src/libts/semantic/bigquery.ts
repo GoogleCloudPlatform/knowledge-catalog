@@ -20,9 +20,10 @@
 //
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
-import {AiContext, Entity, Field, fieldBinding, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {AiContext, Entity, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {fieldBindingWithoutComments, referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {withoutComments} from './sql_parser';
 
 export interface GenerateOptions {
   project?: string;    // fills the graph name's project
@@ -332,9 +333,9 @@ function exposeOperand(
 
 // Extracts the function name and operand from a single-aggregate expression, or
 // returns null when the body is not exactly one supported aggregate wrapping
-// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, or a
-// multi-argument call). `COUNT(DISTINCT x)` is recognized, yielding operand `x`
-// with distinct.
+// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, a call with no
+// operand, or a multi-argument call). `COUNT(DISTINCT x)` is recognized,
+// yielding operand `x` with distinct.
 function extractAggregate(body: string):
     {fn: string; operand: string; distinct: boolean}|null {
   const s = body.trim();
@@ -381,12 +382,13 @@ function extractAggregate(body: string):
 
   let operand = s.slice(start, end).trim();
   let distinct = false;
-  const dm = operand.match(/^DISTINCT\s+(.*)$/is);
+  const dm = operand.match(/^DISTINCT(?:\s+(.*))?$/is);
   if (dm) {
     distinct = true;
-    operand = dm[1].trim();
+    operand = (dm[1] ?? '').trim();
   }
 
+  if (operand === '') return null;  // no operand, as in SUM() or SUM(DISTINCT)
   if (operand !== '*' && hasTopLevelComma(operand))
     return null;  // multi-arg aggregate
   return {fn, operand, distinct};
@@ -435,15 +437,21 @@ function uniqueName(base: string, taken: Set<string>): string {
 
 // The target/canonical expression, falling back to the imported vendor SQL when
 // that is all the IR carries (see the Field/Metric expression-fidelity
-// contract).
+// contract), with its comments removed. fieldBindingWithoutComments reads
+// imported vendor SQL in its own dialect, so it keeps an operator BigQuery
+// would read as a comment, such as PostgreSQL's `#`. The DDL puts ` AS <name>`
+// and a comma after the expression on the same line, and a line comment left
+// in would swallow them.
 function fieldExpression(f: Field): string|undefined {
-  // Delegates to the canonical accessor so the shared generator's notion of
-  // "bound" matches availability pruning's (an unbound field yields undefined;
-  // a field awaiting transpilation stays bound via its imported expression).
-  return fieldBinding(f);
+  // Reads the canonical accessor, fieldBinding, so the shared generator's
+  // notion of "bound" matches availability pruning's (an unbound field yields
+  // undefined; a field awaiting transpilation stays bound via its imported
+  // expression).
+  return fieldBindingWithoutComments(f);
 }
 function metricExpression(m: Metric): string|undefined {
-  return m.expression ?? m.importedExpression;
+  const expr = m.expression ?? m.importedExpression;
+  return expr === undefined ? undefined : withoutComments(expr, 'BIGQUERY');
 }
 
 

@@ -35,7 +35,7 @@
 // A diamond is not that case: two paths reaching ONE declaration resolve to it.
 
 import {Entity, Field, FIELD_BINDING_KEYS, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel} from './ir';
-import {stripQualifier} from './sql_expr_utils';
+import {fieldTextWithoutComments, stripQualifier} from './sql_expr_utils';
 
 /**
  * Why inheritance cannot be resolved. `unknown-parent` can be a pruning
@@ -220,18 +220,24 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
 // child's own qualifier uniformly for every field (see
 // graph_ddl.renderFieldPropertyCore). Both route through the same
 // `stripQualifier` primitive; they differ only in which qualifier they remove.
+//
+// Comments come out first, read as fieldTextWithoutComments reads them. A quote
+// inside a comment would otherwise pair with a string literal's, and the
+// qualifier between them would stay. Equal texts stay equal, which dialectOf in
+// resolve_profiles relies on.
 function localizeInheritedField(field: Field, ancestor: string): Field {
   const clone = structuredClone(field);
+  const local = (text: string) =>
+      stripQualifier(fieldTextWithoutComments(field, text), ancestor);
   if (clone.expression !== undefined) {
-    clone.expression = stripQualifier(clone.expression, ancestor);
+    clone.expression = local(clone.expression);
   }
   if (clone.importedExpression !== undefined) {
-    clone.importedExpression =
-        stripQualifier(clone.importedExpression, ancestor);
+    clone.importedExpression = local(clone.importedExpression);
   }
   if (clone.dialects) {
-    clone.dialects = clone.dialects.map(
-        d => ({...d, expression: stripQualifier(d.expression, ancestor)}));
+    clone.dialects =
+        clone.dialects.map(d => ({...d, expression: local(d.expression)}));
   }
   return clone;
 }

@@ -59,7 +59,7 @@ import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
 import {unnamedDeployments} from './deployment_target';
-import {sourceToDataSource} from './loader';
+import {noSqlReason, sourceToDataSource} from './loader';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -275,7 +275,17 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
   }
   const field: Field = {name};
   const sem = fd?.semantics ?? {};
-  if (sem.expression !== undefined) field.expression = sem.expression;
+  // An expression with no SQL does not load, so the field is read as unbound.
+  const noSql = typeof sem.expression === 'string' ?
+      noSqlReason(sem.expression, 'ANSI_SQL', entityName) :
+      undefined;
+  if (noSql) {
+    warnings.push(
+        `entity '${entityName}': field '${name}': its expression in the ` +
+        `catalog ${noSql}, so the field is read as unbound`);
+  } else if (sem.expression !== undefined) {
+    field.expression = sem.expression;
+  }
   const type = irDataType(fd?.dataType, fd?.metadataType);
   if (type !== undefined) field.type = type;
   if (sem.role === 'DIMENSION') field.dimension = {};
@@ -299,8 +309,14 @@ function readMetric(
   const data = aspectData(entry, 'semantic-metric');
 
   const metric: Metric = {name};
-  if (data.expression !== undefined) metric.expression = data.expression;
-  const exprForRefs = data.expression ?? '';
+  // An expression with no SQL does not load, so it is read as absent, and the
+  // serializer warns that the metric needs one.
+  const expression = typeof data.expression === 'string' &&
+          noSqlReason(data.expression, 'ANSI_SQL') ?
+      undefined :
+      data.expression;
+  if (expression !== undefined) metric.expression = expression;
+  const exprForRefs = expression ?? '';
   const cols = exprForRefs ? columnReferences(exprForRefs, 'BIGQUERY') : [];
   const referenced = entitiesReached(cols ?? [], entityNames);
   const persistedEntity =
@@ -538,7 +554,7 @@ function readRelationships(
 export function linkDedupKey(link: EntryLink): string {
   if (link.name) return link.name;
   const refs = (link.entryReferences ?? []).map(r => r.name).sort();
-  return `${refs.join(' ')} ${link.entryLinkType ?? ''}`;
+  return `${refs.join('\0')}\0${link.entryLinkType ?? ''}`;
 }
 
 

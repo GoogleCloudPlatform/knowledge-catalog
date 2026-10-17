@@ -2238,6 +2238,81 @@ semantic_model:
         .toContain("Note: profile 'default' leaves 1 field(s) unbound.");
   });
 
+  // Unlike a field with no expression, a field with a blank one stops the push
+  // when its model file loads.
+  test('a push stops at a blank field expression and names the field', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: ltv, expression: "" }
+`);
+    const kcSpy = mockKc();
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.error).join('\n'))
+        .toContain("field 'customer.ltv': 'expression' is blank");
+    expect(prints(console.warn)).toEqual([]);
+    expect(kcSpy).not.toHaveBeenCalled();
+  });
+
+  // BigQuery read `-- x AS notes,` as a comment, so the graph deployed without
+  // the field and with no error.
+  test('a push stops at a field whose expression is only a comment', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: notes, expression: "-- x" }
+          - { name: ltv, expression: ltv }
+`);
+    const kcSpy = mockKc();
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(prints(console.error).join('\n'))
+        .toContain("field 'customer.notes': 'expression' is only a comment");
+    expect(kcSpy).not.toHaveBeenCalled();
+  });
+
+  // Setting 'entity' on a metric with no SQL let the push pass, and the graph
+  // dropped the metric.
+  test('a push stops at a blank metric expression and does not ask for an entity', async () => {
+    writeModel(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+    entities:
+      - name: customer
+        source: //${BQ}/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: ltv, expression: ltv }
+    metrics:
+      - { name: total, expression: "  " }
+`);
+    const kcSpy = mockKc();
+    expect(await push({validateOnly: true})).toBe(1);
+    const errors = prints(console.error).join('\n');
+    expect(errors).toContain(
+        "metric 'total': 'expression' is blank; write the metric's SQL");
+    expect(errors).not.toContain("'entity'");
+    expect(kcSpy).not.toHaveBeenCalled();
+  });
+
   test('--transpile fills a vendor-only expression and drops the warning about it', async () => {
     writeModel(`version: "0.2.0.dev0/google"
 semantic_model:

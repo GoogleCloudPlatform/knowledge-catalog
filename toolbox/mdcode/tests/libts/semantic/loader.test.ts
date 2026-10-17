@@ -385,6 +385,174 @@ describe('abstract datasets and their source constraint', () => {
   });
 });
 
+describe('a field or metric expression with no SQL is a load error', () => {
+  // The model with its `notes` field written as `notesField`, followed by
+  // `metrics`, when given.
+  const shop = (notesField: string, metrics = '') => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [order_id]
+        fields:
+          - {name: order_id, expression: order_id}
+          - {name: amount, expression: amount}
+          - ${notesField}
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+${metrics}`;
+  const fix =
+      "write the field's SQL, or remove 'expression' to leave the field unbound";
+  const entries = (...list: string[]) =>
+      `{name: notes, expression: {dialects: [${list.join(', ')}]}}`;
+
+  test('an empty or whitespace string expression is rejected, naming the entity and field', () => {
+    for (const blank of ['""', '"   "', '"\\t\\n"']) {
+      expect(() => loadModels(shop(`{name: notes, expression: ${blank}}`)))
+          .toThrow(`field 'orders.notes': 'expression' is blank; ${fix}`);
+    }
+  });
+
+  test('a dialect entry with an empty expression is rejected, naming the entry', () => {
+    const notes = entries(
+        '{dialect: ANSI_SQL, expression: notes}', '{dialect: BIGQUERY, expression: ""}');
+    expect(() => loadModels(shop(notes)))
+        .toThrow(
+            `field 'orders.notes': the BIGQUERY entry of 'expression' is blank; ${fix}`);
+  });
+
+  test('a blank entry is rejected when the load dialect picks another entry', () => {
+    const notes = entries(
+        '{dialect: BIGQUERY, expression: notes}', '{dialect: SNOWFLAKE, expression: ""}');
+    expect(() => loadModels(shop(notes)))
+        .toThrow("field 'orders.notes': the SNOWFLAKE entry of 'expression' is blank");
+  });
+
+  test('every blank entry of a field is named in one message', () => {
+    const notes = entries(
+        '{dialect: BIGQUERY, expression: ""}', '{dialect: SPANNER, expression: " "}',
+        '{dialect: ANSI_SQL, expression: notes}');
+    expect(() => loadModels(shop(notes)))
+        .toThrow(
+            "field 'orders.notes': the BIGQUERY entry of 'expression' is blank " +
+            `and the SPANNER entry of 'expression' is blank; ${fix}`);
+  });
+
+  test('an expression that is only a comment is rejected', () => {
+    for (const comment of ['"-- todo"', '"/* todo */"', '"-- a\\n-- b"']) {
+      expect(() => loadModels(shop(`{name: notes, expression: ${comment}}`)))
+          .toThrow(`field 'orders.notes': 'expression' is only a comment; ${fix}`);
+    }
+    // BigQuery reads `#` as a comment.
+    expect(() => loadModels(shop(entries('{dialect: BIGQUERY, expression: "# todo"}'))))
+        .toThrow("field 'orders.notes': the BIGQUERY entry of 'expression' is only a comment");
+    expect(() => loadModels(shop('{name: notes, expression: "# todo"}')))
+        .toThrow("field 'orders.notes': 'expression' is only a comment");
+  });
+
+  test('an expression that is only its entity\'s qualifier is rejected', () => {
+    // The graph generators remove the qualifier, which would leave nothing.
+    for (const qualifier of ['"orders."', '"orders. /* todo */"', '"`orders`."']) {
+      expect(() => loadModels(shop(`{name: notes, expression: ${qualifier}}`)))
+          .toThrow(`field 'orders.notes': 'expression' is only the qualifier 'orders.'; ${fix}`);
+    }
+    expect(() => loadModels(shop(entries('{dialect: POSTGRES, expression: "orders."}'))))
+        .toThrow("field 'orders.notes': the POSTGRES entry of 'expression' is only the qualifier 'orders.'");
+    expect(() => loadModels(shop('{name: notes, expression: "orders.notes"}'))).not.toThrow();
+  });
+
+  test('an inherited expression left with only the entity\'s qualifier is rejected', () => {
+    // Inheritance removes `base.` on `orders`, and the graph generators remove
+    // `orders.`.
+    const doc = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: base
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: notes, expression: "base.orders."}
+      - name: orders
+        extends: [base]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+`;
+    expect(() => loadModels(doc))
+        .toThrow(
+            "model 'shop': entity 'orders' inherits field 'notes': read on " +
+            "'orders', 'expression' is only the qualifier 'orders.'; write the " +
+            "field's SQL");
+    expect(() => loadModels(doc.replace('base.orders.', 'base.notes'))).not.toThrow();
+  });
+
+  test('an expression with SQL and a comment loads as written', () => {
+    const {models, warnings} =
+        loadModels(shop('{name: notes, expression: "notes -- free text"}'));
+    expect(models[0].entities[0].fields[2].expression).toBe('notes -- free text');
+    expect(warnings).toEqual([]);
+  });
+
+  test('a field with no expression still loads unbound', () => {
+    const {models} = loadModels(shop('{name: notes}'));
+    const notes = models[0].entities[0].fields[2];
+    expect(notes.name).toBe('notes');
+    expect(notes.expression).toBeUndefined();
+    expect(notes.dialects).toBeUndefined();
+  });
+
+  test('a field with an expression loads as before', () => {
+    const {models, warnings} = loadModels(shop('{name: notes, expression: " notes "}'));
+    const notes = models[0].entities[0].fields[2];
+    expect(notes.expression).toBe(' notes ');
+    expect(notes.dialects).toEqual([{dialect: 'ANSI_SQL', expression: ' notes '}]);
+    expect(warnings).toEqual([]);
+  });
+
+  test('a vanilla model rejects a blank dialect entry, and reports a string form as a string form', () => {
+    const vanilla = (notesExpression: string) => `version: "0.2.0.dev0"
+semantic_model:
+  - name: shop
+    datasets:
+      - name: orders
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [order_id]
+        fields:
+          - {name: order_id, expression: {dialects: [{dialect: ANSI_SQL, expression: order_id}]}}
+          - {name: notes, expression: ${notesExpression}}
+`;
+    expect(() => loadModels(vanilla('{dialects: [{dialect: ANSI_SQL, expression: ""}]}')))
+        .toThrow("field 'orders.notes': the ANSI_SQL entry of 'expression' is blank");
+    // A vanilla document takes no string form, so that is the first thing to fix.
+    expect(() => loadModels(vanilla('""')))
+        .toThrow("does not support the bare-string 'expression' shorthand");
+  });
+
+  test('a metric expression with no SQL is rejected, naming the metric', () => {
+    const withMetric = (expression: string) => shop(
+        '{name: notes, expression: notes}',
+        `    metrics:\n      - {name: total, entity: orders, expression: ${expression}}\n`);
+    for (const [expression, problem] of [
+           ['""', "'expression' is blank"],
+           ['"  "', "'expression' is blank"],
+           ['"-- todo"', "'expression' is only a comment"],
+           ['{dialects: [{dialect: ANSI_SQL, expression: SUM(orders.amount)}, ' +
+                '{dialect: BIGQUERY, expression: ""}]}',
+            "the BIGQUERY entry of 'expression' is blank"],
+         ]) {
+      expect(() => loadModels(withMetric(expression)))
+          .toThrow(`metric 'total': ${problem}; write the metric's SQL`);
+    }
+    expect(() => loadModels(withMetric('SUM(orders.amount)'))).not.toThrow();
+  });
+});
+
 
 describe('metrics infer their referenced entities from the expression', () => {
   test('a single referenced entity becomes the metric attach entity', () => {

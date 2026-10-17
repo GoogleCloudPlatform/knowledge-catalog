@@ -7,6 +7,7 @@ import * as path from 'node:path';
 
 import {Action, Constraint, Entity, SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
+import {resolveInheritance} from '../../../../src/libts/semantic/resolve_inheritance';
 import {actionTools, modelTools, readableEntities} from '../../../../src/libts/semantic/runtime/agent_tools';
 import {dialectFor} from '../../../../src/libts/semantic/runtime/dialect';
 import {SemanticRuntime} from '../../../../src/libts/semantic/runtime/runtime';
@@ -401,5 +402,70 @@ describe('an entity whose fields await transpilation', () => {
             rt({...model, entities: untranspiled('customer')}), dialect)
             .find(r => r.entity.name === 'customer')!;
     expect(after.fields).toEqual(before.fields);
+  });
+});
+
+
+describe('a column binding with a comment', () => {
+  const model: SemanticModel = {
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'orders',
+      keys: ['id'],
+      fields: [
+        {name: 'id', expression: 'order_id -- the key'},
+        {name: 'amount', expression: '/* in cents */ amount'},
+        {name: 'status', expression: 'status # open or closed'},
+      ],
+    }],
+  };
+  const columns = (runtime: SemanticRuntime) =>
+      readableEntities(runtime, dialectFor(runtime.store))
+          .flatMap(r => r.fields.map(f => f.column));
+
+  test('still names its column', () => {
+    expect(columns(rt(model))).toEqual(['order_id', 'amount', 'status']);
+  });
+
+  test('is read in the dialect it is written in, on every entity that has it', () => {
+    // An ANSI_SQL text is read as BigQuery reads it, where `#` starts a
+    // comment. PostgreSQL reads `#` as an operator, so `flags # 1` names no
+    // single column, whatever the store.
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: person
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/person
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: status, expression: "status # open or closed"}
+          - name: flags
+            expression:
+              dialects: [{dialect: POSTGRES, expression: "flags # 1"}]
+      - name: customer
+        extends: [person]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        primary_key: [id]
+`);
+    const alloyDb = rt(resolveInheritance(models[0]).model, {
+      store: {
+        kind: 'alloydb',
+        name: 'projects/p/locations/l/clusters/c/databases/d',
+        project: 'p',
+        location: 'l',
+        cluster: 'c',
+        instance: 'i',
+        database: 'd',
+      },
+    });
+    const byEntity = Object.fromEntries(
+        readableEntities(alloyDb, dialectFor(alloyDb.store))
+            .map(r => [r.entity.name, r.fields.map(f => f.column)]));
+    expect(byEntity).toEqual({person: ['id', 'status'], customer: ['id', 'status']});
   });
 });

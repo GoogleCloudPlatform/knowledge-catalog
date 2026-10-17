@@ -309,4 +309,43 @@ describe('keysCoveredByColumns', () => {
                ['email'], ['id'], [['email']]))
         .toEqual(['unique key 1']);
   });
+
+  test('reads a key field\'s column without its comment, as the generators do', () => {
+    const orders = {
+      name: 'orders',
+      fields: [{name: 'id', expression: 'orders.order_id -- the key'}],
+    };
+    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], []))
+        .toEqual(['the primary key']);
+  });
+
+  test('reads a key field\'s vendor SQL in its own dialect, as the generators do', () => {
+    // PostgreSQL reads `#` as an operator, so the key's column is the whole
+    // text, which no join column names.
+    const orders = {
+      name: 'orders',
+      fields: [{
+        name: 'id',
+        dialects: [{dialect: 'POSTGRES' as const, expression: 'order_id # 1'}],
+        importedExpression: 'order_id # 1',
+        importedDialect: 'POSTGRES' as const,
+      }],
+    };
+    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], [])).toEqual([]);
+    // A target text is read as BigQuery, even when a PostgreSQL entry holds
+    // the same text.
+    const shared = {
+      name: 'orders',
+      fields: [{
+        name: 'id',
+        expression: 'order_id # pk',
+        dialects: [
+          {dialect: 'POSTGRES' as const, expression: 'order_id # pk'},
+          {dialect: 'BIGQUERY' as const, expression: 'order_id # pk'},
+        ],
+      }],
+    };
+    expect(keysCoveredByColumns(shared, ['order_id'], ['id'], []))
+        .toEqual(['the primary key']);
+  });
 });

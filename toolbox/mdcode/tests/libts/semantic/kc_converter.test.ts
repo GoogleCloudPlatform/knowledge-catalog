@@ -1274,6 +1274,49 @@ function floorAiContext(obj: {aiContext?: {instructions?: string}}): void {
 }
 
 
+describe('an expression with no SQL stored in the catalog', () => {
+  // A push made with --emit-expressions before the loader rejected an
+  // expression with no SQL could store one in the catalog.
+  const sales = (fieldExpression: string, metricExpression: string): SemanticModel => ({
+    name: 'sales',
+    entities: [{
+      name: 'orders',
+      authoredSource: '//bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders',
+      dataSource: 'demo.sales.orders',
+      keys: ['id'],
+      fields: [
+        {name: 'id', expression: 'id'},
+        {name: 'amount', expression: 'amount'},
+        {name: 'notes', expression: fieldExpression},
+      ],
+    }],
+    relationships: [],
+    metrics: [{name: 'total', expression: metricExpression, entity: 'orders'}],
+  });
+
+  test('a field pulls unbound with a warning, so the pulled file loads', () => {
+    for (const [text, reason] of [
+           ['  ', 'is blank'], ['-- todo', 'is only a comment'],
+           ['orders.', "is only the qualifier 'orders.'"]]) {
+      const {models, warnings} = roundTripFull(sales(text, 'SUM(orders.amount)'));
+      expect(models[0].entities[0].fields[2].expression).toBeUndefined();
+      expect(warnings).toContain(
+          `entity 'orders': field 'notes': its expression in the catalog ${
+              reason}, so the field is read as unbound`);
+      expect(() => loadModels(serializeModel(models[0]).yaml)).not.toThrow();
+    }
+  });
+
+  test('a metric pulls with no expression, and the serializer says it needs one', () => {
+    const {models} = roundTripFull(sales('notes', '  '));
+    expect(models[0].metrics[0].expression).toBeUndefined();
+    expect(serializeModel(models[0]).warnings)
+        .toContain(
+            "metric 'total': no expression; the loader requires one per metric " +
+            'and the document will not load until it is set.');
+  });
+});
+
 // The inverse-canonical of the emitter's deployment-target persistence,
 // matching the reader's readDeploymentTargets: keep only GOOGLE
 // deploymentTargets and re-serialize them so an authored block and its

@@ -18,6 +18,18 @@ export interface PolyglotEngine {
       {success: boolean; sql?: string[]; error?: string};
   parse(sql: string, dialect: string):
       {success: boolean; ast?: unknown[]; error?: string};
+  tokenize(sql: string, dialect: string):
+      {success: boolean; tokens?: SqlToken[]; error?: string};
+}
+
+// A token the engine reads, as the engine returns it. `span` counts Unicode
+// code points from the start of the text, end exclusive. The comments the
+// tokenizer skipped are attached to the token after them or before them.
+interface SqlToken {
+  text: string;
+  span: {start: number; end: number};
+  comments: string[];
+  trailing_comments: string[];
 }
 
 // The engine, initialized once and shared process-wide. The Rust/WASM blob is
@@ -329,4 +341,54 @@ function isNamePath(node: unknown): boolean {
   if (keys.length !== 1) return false;
   if (keys[0] === 'column') return true;
   return keys[0] === 'dot' && isNamePath(obj.dot?.this);
+}
+
+// The tokens of `expression` in `dialect`, or undefined when the engine cannot
+// tokenize it. Throws when the engine is not loaded.
+function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
+  if (!loadedEngine) {
+    throw new Error(
+        'the SQL parser is not loaded; call loadSqlEngine() first');
+  }
+  const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
+  const res = loadedEngine.tokenize(expression, engineDialect);
+  return res.success ? res.tokens ?? [] : undefined;
+}
+
+// Whether `expression` holds no SQL in `dialect`: it is empty, only whitespace
+// or only comments. False when the engine cannot read it. Throws when the
+// engine is not loaded.
+export function holdsNoSql(expression: string, dialect: string): boolean {
+  return sqlTokens(expression, dialect)?.length === 0;
+}
+
+// `expression` with its comments removed, as the engine reads them in
+// `dialect`. Comments between two tokens become one space, or nothing when
+// either token is a `.`, so `orders/* c */.amount` reads `orders.amount`.
+// Comments before the first token or after the last are dropped. The rest of
+// the text stays as written. Returns `expression` itself when it has no
+// comment, holds nothing but comments, or the engine cannot read it. Throws
+// when the engine is not loaded.
+export function withoutComments(expression: string, dialect: string): string {
+  const tokens = sqlTokens(expression, dialect);
+  if (!tokens?.some(t => t.comments.length || t.trailing_comments.length)) {
+    return expression;
+  }
+  const chars = Array.from(expression);
+  let out = '';
+  let end = 0;
+  let previous = '';
+  for (const t of tokens) {
+    // The text between two tokens is whitespace and comments.
+    const between = chars.slice(end, t.span.start).join('');
+    const text = chars.slice(t.span.start, t.span.end).join('');
+    if (out) {
+      if (between.trim() === '') out += between;
+      else if (previous !== '.' && text !== '.') out += ' ';
+    }
+    out += text;
+    previous = text;
+    end = t.span.end;
+  }
+  return out;
 }

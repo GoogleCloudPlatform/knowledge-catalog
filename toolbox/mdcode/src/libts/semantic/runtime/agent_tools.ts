@@ -10,6 +10,7 @@
 
 import {boundTable} from '../binding';
 import {Action, ActionParameter, Entity, fieldBinding, SemanticModel} from '../ir';
+import {fieldTextWithoutComments} from '../sql_expr_utils';
 
 import {SqlDialect} from './dialect';
 import {runtimeStoreError, SemanticRuntime} from './runtime';
@@ -285,10 +286,16 @@ interface BoundField {
 }
 
 
+// The fields of `entity` bound to one column each. A binding is read without
+// its comments, as inheritance reads it, so `order_id -- the key` names the
+// column `order_id` on the entity and on every entity that inherits it.
 function boundFields(entity: Entity): BoundField[] {
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
-    const expr = (fieldBinding(field) ?? '').trim();
+    const binding = fieldBinding(field);
+    const expr = binding === undefined ?
+        '' :
+        fieldTextWithoutComments(field, binding).trim();
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
     const said = field.description?.trim();
     bound.push({

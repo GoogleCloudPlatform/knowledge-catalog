@@ -1052,3 +1052,118 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
     expect(ddl).toContain('DESTINATION KEY(id) REFERENCES `Group`(id)');
   });
 });
+
+
+describe('a comment in a field expression', () => {
+  // Left in, a line comment runs to the end of the line and swallows the
+  // ` AS <name>` after the expression, and the comma after that.
+  const model: SemanticModel = {
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'p.d.orders',
+      keys: ['id'],
+      fields: [
+        {name: 'id', expression: 'order_id -- the key'},
+        {name: 'total', expression: 'amount -- in cents'},
+        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'status', expression: 'status # open or closed'},
+        {name: 'code', expression: "CONCAT('--', code)"},
+      ],
+    }],
+  };
+
+  test('is removed before the field is written', () => {
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount AS total,\n      notes,\n' +
+        "      status,\n      CONCAT('--', code) AS code\n");
+    expect(ddl).not.toContain('the key');
+    expect(ddl).not.toContain('free text');
+    expect(warnings).toEqual([]);
+  });
+
+  test('is removed from a metric before it is lowered', () => {
+    const withMetric: SemanticModel = {
+      ...model,
+      metrics: [{name: 'revenue', entity: 'orders',
+                 expression: 'SUM(orders.amount -- in cents\n)'}],
+    };
+    const {ddl, warnings} = generatePropertyGraph(withMetric, GEN_OPTS);
+    expect(ddl).toContain('MEASURE(SUM(total)) AS revenue');
+    expect(warnings).toEqual([]);
+  });
+
+  test('a metric whose aggregate has no operand is skipped with a warning', () => {
+    // Lowered, it would give a measure input property with no SQL.
+    for (const expression of [
+           'SUM()', 'SUM(/* in cents */)', 'SUM(orders.)', 'COUNT(DISTINCT)',
+           'SUM(DISTINCT orders.)', 'COUNT(DISTINCT /* in cents */)']) {
+      const {ddl, warnings} = generatePropertyGraph(
+          {...model, metrics: [{name: 'revenue', entity: 'orders', expression}]},
+          GEN_OPTS);
+      expect(ddl).not.toContain('revenue');
+      expect(warnings.some(w => w.startsWith("metric 'revenue' expression"))).toBe(true);
+    }
+  });
+
+  test('is read in the dialect of imported vendor SQL', () => {
+    // PostgreSQL reads `--` as a comment and `#` as an operator, so only the
+    // comment comes out of imported vendor SQL. The graph's engine still reads
+    // `# 1` as a comment. Vendor SQL is wrong in a graph either way, and this
+    // keeps what the author wrote. A target text is read as the graph's engine
+    // reads it, even when a PostgreSQL entry holds the same text.
+    const vendor: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'flags', dialects: [{dialect: 'POSTGRES', expression: 'flags # 1'}],
+           importedExpression: 'flags # 1', importedDialect: 'POSTGRES'},
+          {name: 'total', dialects: [{dialect: 'POSTGRES', expression: 'amount -- in cents'}],
+           importedExpression: 'amount -- in cents', importedDialect: 'POSTGRES'},
+          {name: 'net', expression: 'net_amount # in cents',
+           dialects: [{dialect: 'POSTGRES', expression: 'net_amount # in cents'},
+                      {dialect: 'BIGQUERY', expression: 'net_amount # in cents'}]},
+        ],
+      }],
+    };
+    const {ddl} = generatePropertyGraph(vendor, GEN_OPTS);
+    expect(ddl).toContain('flags # 1 AS flags');
+    expect(ddl).toContain('amount AS total');
+    expect(ddl).toContain('net_amount AS net');
+  });
+
+  test('next to a dot leaves no space, so the qualifier still comes off', () => {
+    const dotted: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [{name: 'revenue', entity: 'orders',
+                 expression: 'SUM(orders/* in cents */.amount)'}],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'orders./* the key */order_id'},
+          {name: 'amount', expression: 'orders/* in cents */.amount'},
+          {name: 'select', expression: 'orders. /* a keyword */ select'},
+        ],
+      }],
+    };
+    const {ddl, warnings} = generatePropertyGraph(dotted, GEN_OPTS);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount,\n      `select`,\n' +
+        '      MEASURE(SUM(amount)) AS revenue\n');
+    expect(warnings).toEqual([]);
+  });
+});

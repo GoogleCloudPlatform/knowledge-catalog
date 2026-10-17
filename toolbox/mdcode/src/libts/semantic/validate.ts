@@ -14,13 +14,13 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {expressionSources, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
-import {SqlColumn} from './sql_parser';
+import {SqlColumn, withoutComments} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -1031,9 +1031,10 @@ function relationshipKeyErrors(
 
 // Validates field and metric expressions when inheritance resolved cleanly:
 //   - For each metric:
-//     1. Reject a metric with no `authoredEntity` (or vanilla GOOGLE block
-//        `entity`) when its expressions, read together, reach no entity or
-//        more than one (or when the metric has no expression and no anchor).
+//     1. Reject a metric whose expressions hold no SQL, with or without an
+//        anchor. Otherwise, reject a metric with no `authoredEntity` (or
+//        vanilla GOOGLE block `entity`) when its expressions, read together,
+//        reach no entity or more than one.
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
 //        entity (runs on every push).
 //     3. When `authoredEntity` is set and the expressions reference at least
@@ -1146,13 +1147,13 @@ export function validateExpressionReferences(
       const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
-      if (sources.length === 0) {
-        if (anchor === undefined) {
-          errors.push(
-              `metric '${metric.name}' in model '${model.name}' (${
-                  document}) has no expression and no 'entity' anchor; ` +
-              `supply an expression or set 'entity' on the metric.`);
-        }
+      // An anchor does not make up for missing SQL: the graph would drop the
+      // metric.
+      if (sources.every(s => noSqlReason(s.text, s.dialect) !== undefined)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) has no SQL in 'expression'; write the metric's ` +
+            `SQL.`);
       } else if (
           !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
           !authored && reached.length > 1) {
@@ -1266,7 +1267,9 @@ function validateBigQueryMetrics(
           `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
       continue;
     }
-    const expr = metric.expression ?? metric.importedExpression ?? '';
+    // The generator reads the expression with its comments removed.
+    const expr = withoutComments(
+        metric.expression ?? metric.importedExpression ?? '', 'BIGQUERY');
     let referenced = referencedEntityNames(expr, entityNames);
     if (referenced.length === 0 && metric.entity) {
       referenced = [metric.entity];
@@ -1275,9 +1278,9 @@ function validateBigQueryMetrics(
       errors.push(
           `${prefix} targets a BigQuery graph and references multiple ` +
           `entities (${referenced.join(', ')}); the BigQuery generator ` +
-          `scans raw expression text (including comments and function ` +
-          `namespaces) for '<entity>.' qualifiers, so remove the extra ` +
-          `'<entity>.' match or scope its expression to one entity.`);
+          `reads every '<entity>.' outside comments as a qualifier, ` +
+          `including a function namespace such as 'NET.', so remove the ` +
+          `extra '<entity>.' match or scope its expression to one entity.`);
     } else if (referenced.length === 0) {
       errors.push(
           `${prefix} targets a BigQuery graph but does not resolve to a ` +
