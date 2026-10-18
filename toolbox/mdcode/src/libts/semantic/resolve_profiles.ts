@@ -1484,16 +1484,15 @@ function applyBindings(
       // rejects one, and validateProfileCompleteness reports it, through
       // profileStructureErrors.
       if (!pf.dialects?.length && !isFieldBound(pf as Field)) continue;
-      // Read as a load reads the same expression in a model file.
-      const dialects = pf.dialects;
-      const binding = dialects?.length ?
-          read(
-              () => parseFieldExpression(
-                  pf.stringForm ? dialects[0].expression : {dialects},
-                  `field '${e.name}.${pf.name}'`, preferred, e.name),
-              false) :
-          undefined;
-      if (dialects?.length && !binding) continue;
+      // Read as a load reads the same expression in a model file. One the
+      // reader rejects is left unapplied, also when a profile built in memory
+      // gives it with no dialect list.
+      const binding = read(
+          () => parseFieldExpression(
+              expressionDocOf(pf), `field '${e.name}.${pf.name}'`, preferred,
+              e.name),
+          false);
+      if (!binding) continue;
       let f = e.fields.find(x => x.name === pf.name);
       if (!f) {
         if (!inherited.has(pf.name)) continue;
@@ -1503,10 +1502,11 @@ function applyBindings(
         e.fields.push(f);
       }
       for (const k of FIELD_BINDING_KEYS) delete f[k];
-      if (binding) {
+      if (pf.dialects?.length) {
         Object.assign(f, binding);
       } else {
-        // A profile built in memory may carry a binding with no dialect list.
+        // A profile built in memory may carry a binding with no dialect list,
+        // which is applied as written.
         for (const k of FIELD_BINDING_KEYS) {
           if (pf[k] !== undefined) (f as any)[k] = structuredClone(pf[k]);
         }

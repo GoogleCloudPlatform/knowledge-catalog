@@ -2137,6 +2137,22 @@ entities:
         ]);
     expect(validateProfileCompleteness(models[0], profile('notes_col')))
         .toEqual([]);
+    // A binding the reader rejects is reported once, where the profile writes
+    // it, also when a profile built in memory gives it with no dialect list.
+    for (const notes of [
+           {name: 'notes', expression: '-- todo'},
+           {name: 'notes', importedExpression: '-- todo', importedDialect: 'POSTGRES'},
+         ]) {
+      expect(validateProfileCompleteness(models[0], {
+        name: 'prod',
+        relationships: [],
+        entities: [
+          {name: 'base', source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/base', fields: [notes]},
+          {name: 'orders', source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders'},
+        ],
+      })).toEqual([expect.stringMatching(
+          /^profile 'prod': entity 'base': field 'notes': .* is only a comment; write the field's SQL$/)]);
+    }
   });
 
   // An abstract entity has no table, so a profile entry for one is rejected.
