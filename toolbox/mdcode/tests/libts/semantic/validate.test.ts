@@ -2243,6 +2243,47 @@ ${extraMetric}`;
           .toEqual(expected);
     });
 
+    // Neither check needs inheritance resolved, so neither waits for the
+    // author to fix it.
+    test('rejects a field and a metric with no SQL when inheritance does not resolve', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          extends: ['gone'],
+          fields: [...orders().fields, {name: 'memo', expression: '-- todo'}],
+        }],
+        metrics: [
+          {name: 'k', expression: '-- x', entity: 'orders'},
+          {
+            name: 'total',
+            expression: 'SUM(orders.net_amount)',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+              {dialect: 'POSTGRES', expression: '-- todo'},
+            ],
+          },
+        ],
+      });
+      const expected = [
+        "field 'orders.memo' in model 'm' (doc): 'expression' is only a " +
+            "comment; write the field's SQL, or remove 'expression' to leave " +
+            'the field unbound.',
+        "metric 'k' in model 'm' (doc) has no SQL in 'expression'; write " +
+            "the metric's SQL.",
+        "metric 'total' in model 'm' (doc): the POSTGRES entry of " +
+            "'expression' is only a comment; write the metric's SQL.",
+      ];
+      const errors =
+          validatePushRequirements([loaded(m)], {targetOptional: true});
+      expect(errors.join('\n')).toContain("extends unknown entity 'gone'");
+      for (const e of expected) expect(errors).toContain(e);
+      // The BigQuery metric check reports each metric once.
+      const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
+      expect(validatePushRequirements([loaded(graph)], {fieldsPruned: true})
+                 .filter(e => e.startsWith('metric ')))
+          .toEqual(expected.slice(1));
+    });
+
     test('rejects an association field with no SQL, which the graph writes as an edge property', () => {
       const m = model(
           {

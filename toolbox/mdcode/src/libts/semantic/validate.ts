@@ -1067,14 +1067,29 @@ function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
   return errors;
 }
 
+// The error for a metric with no SQL, or undefined. A metric is rejected when
+// none of its texts holds SQL, with or without an anchor, since the graph
+// would drop it. It is also rejected when any one of its texts holds none, as
+// the loader rejects it, since a model built in memory skips the loader.
+function metricNoSqlError(
+    metric: Metric, model: SemanticModel, document: string): string|undefined {
+  const where = `metric '${metric.name}' in model '${model.name}' (${document})`;
+  const readable = expressionSources(metric).filter(
+      s => noSqlReason(s.text, s.dialect) === undefined);
+  if (!readable.length) {
+    return `${where} has no SQL in 'expression'; write the metric's SQL.`;
+  }
+  const problem = noSqlProblemOf(metric);
+  return problem && `${where}: ${problem}; write the metric's SQL.`;
+}
+
 // Validates field and metric expressions:
-//   - Reject a field with no SQL, as the loader does, since a model built in
-//     memory skips the loader (see fieldNoSqlErrors).
+//   - Reject a field or a metric with no SQL, as the loader does, since a
+//     model built in memory skips the loader (see fieldNoSqlErrors and
+//     metricNoSqlError).
 // The rules below run when inheritance resolved cleanly:
 //   - For each metric:
-//     1. Reject a metric whose expressions hold no SQL, with or without an
-//        anchor, and one with a text the loader would reject for holding no
-//        SQL. Otherwise, reject a metric with no `authoredEntity` (or
+//     1. Unless it has no SQL, reject a metric with no `authoredEntity` (or
 //        vanilla GOOGLE block `entity`) when its expressions, read together,
 //        reach no entity or more than one.
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
@@ -1102,7 +1117,15 @@ export function validateExpressionReferences(
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
     const fieldsByEntity = ifResolvable(() => declaredFields(model));
-    if (!fieldsByEntity) continue;
+    if (!fieldsByEntity) {
+      for (const metric of model.metrics ?? []) {
+        const noSql = metricNoSqlError(metric, model, document);
+        if (!noSql) continue;
+        errors.push(noSql);
+        flaggedMetrics?.add(metric.name);
+      }
+      continue;
+    }
     const entityNames = [...fieldsByEntity.keys()];
     const impliedDialect = sourcesDialect(model);
     const addUnreadableWarning =
@@ -1196,19 +1219,10 @@ export function validateExpressionReferences(
       const reached = entitiesReached(allColumns, entityNames);
 
       // An anchor does not make up for missing SQL: the graph would drop the
-      // metric. A metric with SQL in some text is also checked as the loader
-      // checks it, since a model built in memory skips the loader.
-      const noSql = readable.length === 0;
-      const sqlProblem = noSql ? undefined : noSqlProblemOf(metric);
+      // metric.
+      const noSql = metricNoSqlError(metric, model, document);
       if (noSql) {
-        errors.push(
-            `metric '${metric.name}' in model '${model.name}' (${
-                document}) has no SQL in 'expression'; write the metric's ` +
-            `SQL.`);
-      } else if (sqlProblem) {
-        errors.push(
-            `metric '${metric.name}' in model '${model.name}' (${
-                document}): ${sqlProblem}; write the metric's SQL.`);
+        errors.push(noSql);
       } else if (
           !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
           !authored && reached.length > 1) {
