@@ -631,6 +631,33 @@ semantic_model:
         .toEqual({person: ['id', 'flags'], customer: ['id', 'flags']});
   });
 
+  test('an AlloyDB store reads the text that database runs', async () => {
+    // The BIGQUERY entry is the text the graph generators write. An AlloyDB
+    // database runs the ALLOYDB entry, or else the ANSI_SQL one. A field with
+    // neither, such as one with only a POSTGRES entry, keeps the text the
+    // generators write.
+    const model = (amount: string) => hierarchy(
+        `${CLUSTER}/databases/commerce`,
+        name => `${CLUSTER}/databases/commerce/schemas/public/tables/${name}`,
+        'flags').replace(
+        '          - { name: flags, expression: "flags" }\n',
+        `          - name: amount\n            expression:\n              dialects: ${amount}\n`);
+    writeModel('commerce.yaml', model(
+        '[{dialect: BIGQUERY, expression: "amount_usd -- in dollars"}, ' +
+        '{dialect: ALLOYDB, expression: amount_cents}]'));
+    expect(await columns())
+        .toEqual({person: ['id', 'amount_cents'], customer: ['id', 'amount_cents']});
+    writeModel('commerce.yaml', model(
+        '[{dialect: BIGQUERY, expression: amount_usd}, ' +
+        '{dialect: ANSI_SQL, expression: amount_cents}]'));
+    expect(await columns())
+        .toEqual({person: ['id', 'amount_cents'], customer: ['id', 'amount_cents']});
+    writeModel('commerce.yaml', model(
+        '[{dialect: POSTGRES, expression: "amount -- in cents"}]'));
+    expect(await columns())
+        .toEqual({person: ['id', 'amount'], customer: ['id', 'amount']});
+  });
+
   test('GoogleSQL reads `#` as a comment', async () => {
     writeModel('commerce.yaml', hierarchy(
         `${SPANNER_DB}/propertyGraphs/commerce`,
