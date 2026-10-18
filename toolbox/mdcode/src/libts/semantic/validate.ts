@@ -1073,7 +1073,8 @@ function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
 // The rules below run when inheritance resolved cleanly:
 //   - For each metric:
 //     1. Reject a metric whose expressions hold no SQL, with or without an
-//        anchor. Otherwise, reject a metric with no `authoredEntity` (or
+//        anchor, and one with a text the loader would reject for holding no
+//        SQL. Otherwise, reject a metric with no `authoredEntity` (or
 //        vanilla GOOGLE block `entity`) when its expressions, read together,
 //        reach no entity or more than one.
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
@@ -1190,12 +1191,20 @@ export function validateExpressionReferences(
       const reached = entitiesReached(allColumns, entityNames);
 
       // An anchor does not make up for missing SQL: the graph would drop the
-      // metric.
-      if (sources.every(s => noSqlReason(s.text, s.dialect) !== undefined)) {
+      // metric. A metric with SQL in some text is also checked as the loader
+      // checks it, since a model built in memory skips the loader.
+      const noSql =
+          sources.every(s => noSqlReason(s.text, s.dialect) !== undefined);
+      const sqlProblem = noSql ? undefined : noSqlProblemOf(metric);
+      if (noSql) {
         errors.push(
             `metric '${metric.name}' in model '${model.name}' (${
                 document}) has no SQL in 'expression'; write the metric's ` +
             `SQL.`);
+      } else if (sqlProblem) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}): ${sqlProblem}; write the metric's SQL.`);
       } else if (
           !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
           !authored && reached.length > 1) {

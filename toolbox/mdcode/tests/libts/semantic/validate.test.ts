@@ -1668,6 +1668,46 @@ describe('field and metric expression references', () => {
           ]);
     });
 
+    // A model built in memory skips the loader, which rejects these.
+    test('rejects a metric with no SQL in one of its texts in a model built in memory, as the loader does', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [
+          {
+            name: 'vendor',
+            expression: 'SUM(orders.net_amount)',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+              {dialect: 'POSTGRES', expression: '-- todo'},
+            ],
+          },
+          // The graph generator writes `expression`, which here is not the
+          // text of the dialect entry.
+          {
+            name: 'stale',
+            expression: '',
+            entity: 'orders',
+            dialects: [
+              {dialect: 'POSTGRES', expression: 'SUM(orders.net_amount)'},
+            ],
+          },
+        ],
+      });
+      const expected = [
+        "metric 'vendor' in model 'm' (doc): the POSTGRES entry of " +
+            "'expression' is only a comment; write the metric's SQL.",
+        "metric 'stale' in model 'm' (doc): 'expression' is blank; write " +
+            "the metric's SQL.",
+      ];
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual(expected);
+      // The BigQuery metric check reports each metric once.
+      const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
+      expect(validatePushRequirements([loaded(graph)], {fieldsPruned: true})
+                 .filter(e => e.startsWith('metric ')))
+          .toEqual(expected);
+    });
+
     test('rejects a metric whose anchor names an undeclared entity before and after pruning', () => {
       const m = model({
         entities: [orders()],
