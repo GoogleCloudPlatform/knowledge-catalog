@@ -3622,6 +3622,20 @@ entities:
              })))
           .toThrow(`profile 'prod': entity 'account': field 'note': 'expression' ${reason}`);
     }
+    // An imported text with no dialect list is read in its imported dialect,
+    // as the generators read it. PostgreSQL reads `#` as an operator, so
+    // `# path`, which counts a path's points, holds SQL there.
+    const imported = (text: string) => spec({
+      entities: [{
+        name: 'account',
+        fields: [{name: 'note', importedExpression: text, importedDialect: 'POSTGRES'}],
+      }],
+    });
+    expect(() => applyProfile(base, imported('# path'))).not.toThrow();
+    expect(() => applyProfile(base, imported('-- todo')))
+        .toThrow(
+            "profile 'prod': entity 'account': field 'note': the POSTGRES " +
+            "entry of 'expression' is only a comment");
   });
 
   test('a profile held in memory fails first where a profile file would', () => {

@@ -205,6 +205,31 @@ function noSqlProblem(
   return problems.length ? `${problems.join(', ')} and ${last}` : last;
 }
 
+// `f`'s expression as a document writes it: its string form or its dialect
+// list. A binding built in memory with no dialect list gives its target text
+// as the string form, or else its imported text as an entry of its imported
+// dialect, which is how the graph generators read it. Undefined when `f`
+// carries no text.
+export function expressionDocOf(
+    f: Pick<
+        Field,
+        'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>): string|{dialects: DialectExpression[]}|undefined {
+  if (f.dialects?.length) {
+    return f.stringForm ? f.dialects[0].expression : {dialects: f.dialects};
+  }
+  if (f.expression !== undefined || f.importedExpression === undefined ||
+      !f.importedDialect) {
+    return f.expression ?? f.importedExpression;
+  }
+  return {
+    dialects: [{
+      dialect: f.importedDialect as SqlDialect,
+      expression: f.importedExpression,
+    }],
+  };
+}
+
 // Why a field an entity inherits holds no SQL on that entity, or undefined.
 // `concepts` gives each entity's fields with inheritance resolved, so an
 // inherited text has lost its ancestor's qualifier. That can leave only the
@@ -217,10 +242,7 @@ export function inheritedNoSqlProblem(
   for (const e of entities) {
     if (!e.extends?.length) continue;
     for (const f of concepts.get(e.name)?.fields.values() ?? []) {
-      const raw = f.dialects?.length ?
-          (f.stringForm ? f.dialects[0].expression : {dialects: f.dialects}) :
-          f.expression ?? f.importedExpression;
-      const problem = noSqlProblem(raw, e.name);
+      const problem = noSqlProblem(expressionDocOf(f), e.name);
       if (problem) {
         return `entity '${e.name}' inherits field '${f.name}': read on '${
             e.name}', ${problem}; write the field's SQL`;

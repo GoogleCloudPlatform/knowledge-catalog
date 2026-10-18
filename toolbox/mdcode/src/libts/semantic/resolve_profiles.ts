@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblem, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblem, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1375,11 +1375,8 @@ function profileStructureErrors(profile: ProfileSpec): string[] {
             `'fields_exclude'`);
       }
       // A binding with no dialect list, which only a profile built in memory
-      // has, is read as the string form.
-      const raw = pf.dialects?.length ?
-          (pf.stringForm ? pf.dialects[0].expression :
-                           {dialects: pf.dialects}) :
-          fieldBinding(pf as Field);
+      // has, is read as expressionDocOf gives it.
+      const raw = expressionDocOf(pf);
       if (raw !== undefined) {
         // Checked by the loader's reader, as a profile file's is.
         try {
