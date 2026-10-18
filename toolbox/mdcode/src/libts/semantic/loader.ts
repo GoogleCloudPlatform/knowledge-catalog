@@ -274,20 +274,21 @@ export function noSqlProblemOf(
 // so an inherited text has lost its ancestor's qualifier. That can leave only
 // the entity's own qualifier, as `base.orders.` does on `orders`, which the
 // graph generators also remove. A field the entity binds itself keeps its own
-// text, which is checked where it is declared, so it is left out. So is every
-// field of an entity that extends no other. `problemOf` says why one field
-// holds no SQL on one entity. Unless given, it reads the field as a document
-// writes it.
+// text, which is checked where it is declared, so it is left out. So is a
+// text with no SQL on any entity, such as `-- todo`, which fails where it is
+// declared, and every field of an entity that extends no other. `problemOf`
+// says why one field holds no SQL, on one entity when one is named. Unless
+// given, it reads the field as a document writes it.
 export function inheritedNoSqlProblems(
     entities: Entity[], concepts: Map<string, DeclaredConcept>,
-    problemOf: (f: Field, entity: string) => string | undefined =
+    problemOf: (f: Field, entity?: string) => string | undefined =
         (f, entity) => noSqlProblem(expressionDocOf(f), entity)): string[] {
   const problems: string[] = [];
   for (const e of entities) {
     if (!e.extends?.length) continue;
     const own = new Set((e.fields ?? []).filter(isFieldBound).map(f => f.name));
     for (const f of concepts.get(e.name)?.fields.values() ?? []) {
-      if (own.has(f.name)) continue;
+      if (own.has(f.name) || problemOf(f)) continue;
       const problem = problemOf(f, e.name);
       if (problem) {
         problems.push(`entity '${e.name}' inherits field '${

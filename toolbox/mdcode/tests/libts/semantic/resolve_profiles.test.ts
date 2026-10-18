@@ -2175,6 +2175,8 @@ entities:
             {name: 'label', expression: 'label'},
             {name: 'tag', expression: 'tag'},
             {name: 'memo', expression: 'memo'},
+            // It holds no SQL where it is declared, which push reports.
+            {name: 'old', expression: '-- old'},
           ],
         },
         {

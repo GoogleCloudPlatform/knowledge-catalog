@@ -2342,6 +2342,39 @@ ${extraMetric}`;
           ]);
     });
 
+    // Inheritance removes only the ancestor's qualifier, so a text with no
+    // SQL where it is declared has none on any entity that inherits it.
+    test('rejects a field with no SQL where it is declared, and not again on each entity that inherits it', () => {
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'memo', expression: '-- todo'},
+          {name: 'own', expression: 'base.'},
+        ],
+      };
+      const sub = (name: string): Entity => ({
+        name,
+        extends: ['base'],
+        dataSource: `p.d.${name}`,
+        keys: ['id'],
+        fields: [],
+      });
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [base, sub('a'), sub('b')]}))],
+                 {targetOptional: true}))
+          .toEqual([
+            "field 'base.memo' in model 'm' (doc): 'expression' is only a " +
+                "comment; write the field's SQL, or remove 'expression' to " +
+                'leave the field unbound.',
+            "field 'base.own' in model 'm' (doc): 'expression' is only the " +
+                "qualifier 'base.'; write the field's SQL, or remove " +
+                "'expression' to leave the field unbound.",
+          ]);
+    });
+
     // Neither check needs inheritance resolved, so neither waits for the
     // author to fix it.
     test('rejects a field and a metric with no SQL when inheritance does not resolve', () => {
