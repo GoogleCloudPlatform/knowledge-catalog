@@ -1853,7 +1853,8 @@ function dialectOfSources(sources: string[]): string|undefined {
 /**
  * Returns one message per reason `profile` cannot be deployed against
  * `baseModel`, or an empty list. Checks a single profile: nothing unknown,
- * every concrete entity bound and all in one database, key shapes matching the
+ * every field it binds holding SQL on each entity that inherits it, every
+ * concrete entity bound and all in one database, key shapes matching the
  * model file's where it states keys, every relationship bound, every field the
  * model file leaves unbound accounted for, and exclusions closed under
  * dependency, metrics included. Rules that compare profiles with each other
@@ -1886,6 +1887,13 @@ export function validateProfileCompleteness(
   if (profiledError && !inheritanceErrorOf(baseModel)) {
     errors.push(`${at}: ${profiledError}`);
     return errors;
+  }
+  // A field the profile binds is checked on each entity that inherits it, as
+  // applyProfile checks it.
+  if (!profiledError) {
+    const inherited = inheritedNoSqlProblem(
+        profiled.entities, declaredConceptFields(profiled));
+    if (inherited) errors.push(`${at}: ${inherited}`);
   }
   const seenOf = fieldsByEntity(profiled);
   const bindingOf = new Map(profile.entities.map(e => [e.name, e]));

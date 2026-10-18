@@ -2104,6 +2104,41 @@ semantic_model:
         .not.toHaveProperty('error');
   });
 
+  test('completeness reports a profile binding that leaves an inheriting entity only its qualifier, as the apply does', () => {
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: base
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: notes, expression: notes}
+      - name: orders
+        extends: [base]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+`);
+    const profile = (expression: string) => loadProfileFile(`name: prod
+entities:
+  - name: base
+    source: //bigquery.googleapis.com/projects/p/datasets/prod/tables/base
+    fields:
+      - {name: notes, expression: ${expression}}
+  - name: orders
+    source: //bigquery.googleapis.com/projects/p/datasets/prod/tables/orders
+`, 'prod');
+    expect(validateProfileCompleteness(models[0], profile('"base.orders."')))
+        .toEqual([
+          "profile 'prod': entity 'orders' inherits field 'notes': read on " +
+          "'orders', 'expression' is only the qualifier 'orders.'; write the " +
+          "field's SQL",
+        ]);
+    expect(validateProfileCompleteness(models[0], profile('notes_col')))
+        .toEqual([]);
+  });
+
   // An abstract entity has no table, so a profile entry for one is rejected.
   test('the merge rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [
