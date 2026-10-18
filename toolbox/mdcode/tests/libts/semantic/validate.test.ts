@@ -2241,6 +2241,12 @@ ${extraMetric}`;
                  [loaded(model({entities: [stale, sub]}))],
                  {targetOptional: true}))
           .toEqual(expected);
+      // A catalog-only push lifts a profile's exclusions to publish every
+      // field. A field the profile excludes on `sub` is not read there.
+      expect(validatePushRequirements([loaded(m)], {
+        targetOptional: true,
+        liftedExclusions: [{model: 'm', entity: 'sub', field: 'label'}],
+      })).toEqual([]);
     });
 
     // serializeModel writes both texts, and the loader rejects either one with

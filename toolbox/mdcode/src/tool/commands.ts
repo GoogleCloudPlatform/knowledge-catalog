@@ -418,6 +418,13 @@ function withoutExclusions(model: SemanticModel): SemanticModel {
   return out;
 }
 
+// The fields a profile marked as excluded on `model`.
+function fieldExclusionsOf(model: SemanticModel): ProfileExclusion[] {
+  return (model.entities ?? []).flatMap(
+      e => (e.excludedFields ?? [])
+               .map(field => ({model: model.name, entity: e.name, field})));
+}
+
 // Why a graph push of `profileName` cannot go ahead because the profile is a
 // profile file, or undefined when it can. A profile file names no deployment
 // target, and a deployment cannot name a profile yet, so a graph push of one
@@ -653,13 +660,21 @@ async function prepareModels(
     }
   }
   const pushWarnings: string[] = [];
+  // The field exclusions taken off above, which the check that each
+  // inherited field holds SQL still honors.
+  const liftedExclusions = prune ?
+      [] :
+      docs.flatMap(d => d.applied ? fieldExclusionsOf(d.applied) : []);
   // The pruned model can only repeat an unpruned error, so each is
   // reported once.
   const validationErrors = [...new Set([
     ...unprunedErrors,
-    ...validatePushRequirements(
-        labeled(models),
-        {targetOptional: !prune, fieldsPruned: prune, warnings: pushWarnings}),
+    ...validatePushRequirements(labeled(models), {
+      targetOptional: !prune,
+      fieldsPruned: prune,
+      warnings: pushWarnings,
+      liftedExclusions,
+    }),
   ])];
   for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
     report.warning(w);

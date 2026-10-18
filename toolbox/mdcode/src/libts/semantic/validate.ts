@@ -17,7 +17,7 @@ import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_
 import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {expressionSources, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, expressionSources, ProfileExclusion, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -40,12 +40,18 @@ import {SqlColumn, withoutComments} from './sql_parser';
 // `warnings` collects non-fatal messages (such as an expression the SQL parser
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
+//
+// `liftedExclusions` are the fields a binding profile excludes, which a
+// catalog-only push takes off the model so that it publishes every field. The
+// check that each inherited field holds SQL still leaves each one off the
+// entity that excludes it, as applying the profile does.
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
       targetOptional?: boolean;
       fieldsPruned?: boolean;
       warnings?: string[];
+      liftedExclusions?: ReadonlyArray<ProfileExclusion>;
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
@@ -155,7 +161,7 @@ export function validatePushRequirements(
     const flaggedMetrics = new Set<string>();
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
-        flaggedMetrics));
+        flaggedMetrics, opts.liftedExclusions));
     if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
       errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
     }
@@ -1031,9 +1037,12 @@ function relationshipKeyErrors(
 
 // Why each field of `model` holds no SQL, in the loader's words. Each field
 // is read on the entity that declares it, and each field an entity inherits
-// is read on that entity, as the loader does. An association's field is an
-// edge property, read on its relationship.
-function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
+// is read on that entity, as the loader does, less each field in
+// `liftedExclusions` on the entity that excludes it. An association's field
+// is an edge property, read on its relationship.
+function fieldNoSqlErrors(
+    model: SemanticModel, document: string,
+    liftedExclusions: ReadonlyArray<ProfileExclusion> = []): string[] {
   const where = `in model '${model.name}' (${document})`;
   const errors: string[] = [];
   for (const e of model.entities ?? []) {
@@ -1047,9 +1056,10 @@ function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
     }
   }
   if ((model.entities ?? []).some(e => e.extends?.length)) {
-    const concepts = ifResolvable(() => declaredConcepts(model));
+    const marked = applyProfileExclusions(model, liftedExclusions);
+    const concepts = ifResolvable(() => declaredConcepts(marked));
     const inherited = concepts ?
-        inheritedNoSqlProblems(model.entities ?? [], concepts, noSqlProblemOf) :
+        inheritedNoSqlProblems(marked.entities ?? [], concepts, noSqlProblemOf) :
         [];
     for (const problem of inherited) {
       errors.push(`model '${model.name}' (${document}): ${problem}.`);
@@ -1111,12 +1121,14 @@ function metricNoSqlError(
 // Exported so `commands.ts` can also run it on the unpruned model before
 // `pruneUnavailable` drops unbound fields and metrics on a graph push. When
 // given, `flaggedMetrics` collects the name of each metric it reports.
+// `liftedExclusions` is as validatePushRequirements takes it.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>): string[] {
+    flaggedMetrics?: Set<string>,
+    liftedExclusions?: ReadonlyArray<ProfileExclusion>): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
-    errors.push(...fieldNoSqlErrors(model, document));
+    errors.push(...fieldNoSqlErrors(model, document, liftedExclusions));
     const fieldsByEntity = ifResolvable(() => declaredFields(model));
     if (!fieldsByEntity) {
       for (const metric of model.metrics ?? []) {
