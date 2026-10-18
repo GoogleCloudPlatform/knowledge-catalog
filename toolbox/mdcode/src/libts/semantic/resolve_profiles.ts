@@ -870,17 +870,27 @@ function inheritedNamesOf(
     model: SemanticModel, entityName: string,
     byName = new Map((model.entities ?? []).map(e => [e.name, e]))):
     Set<string> {
-  const names = new Set<string>();
+  return new Set(ancestorsOf(entityName, byName)
+                     .flatMap(a => (a.fields ?? []).map(f => f.name)));
+}
+
+// Every ancestor `entityName`'s `extends` reaches, each once. `byName` is the
+// model's entities by name.
+function ancestorsOf(
+    entityName: string, byName: Map<string, Entity>): Entity[] {
+  const ancestors: Entity[] = [];
   const seen = new Set<string>([entityName]);
   const queue = [...(byName.get(entityName)?.extends ?? [])];
   while (queue.length) {
-    const ancestor = queue.shift()!;
-    if (seen.has(ancestor)) continue;
-    seen.add(ancestor);
-    for (const f of byName.get(ancestor)?.fields ?? []) names.add(f.name);
-    queue.push(...(byName.get(ancestor)?.extends ?? []));
+    const name = queue.shift()!;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const ancestor = byName.get(name);
+    if (!ancestor) continue;
+    ancestors.push(ancestor);
+    queue.push(...(ancestor.extends ?? []));
   }
-  return names;
+  return ancestors;
 }
 
 // The first unbound "Entity.field" among the columns a metric expression
@@ -2037,9 +2047,15 @@ export function validateProfileCompleteness(
     for (const name of pe?.fieldsExclude ?? []) {
       excluded.add(`${e.name}.${name}`);
     }
-    // A field the profile lists in `fields` is bound by it; one whose
-    // expression the reader rejected is reported once, as that.
-    const rebound = new Set((pe?.fields ?? []).map(f => f.name));
+    // A field the profile lists in `fields`, on this entity or on a concrete
+    // ancestor that has the field, is bound by it. One whose expression the
+    // reader rejected is reported once, as that, where the profile lists it.
+    const listedOn = [e, ...ancestorsOf(e.name, byName).filter(
+                             a => !a.abstract)];
+    const rebound = new Set(listedOn.flatMap(
+        x => (bindingOf.get(x.name)?.fields ?? [])
+                 .map(f => f.name)
+                 .filter(n => x === e || fieldsOf.get(x.name)?.has(n))));
     for (const f of seenOf.get(e.name)?.values() ?? []) {
       if (!isFieldBound(f) && !rebound.has(f.name)) {
         errors.push(

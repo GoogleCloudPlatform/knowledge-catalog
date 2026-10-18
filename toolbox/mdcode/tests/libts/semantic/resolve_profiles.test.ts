@@ -3980,6 +3980,109 @@ entities:
     }
   });
 
+  // A profile file with such a binding does not load, so only a profile
+  // built in memory reaches completeness with it.
+  test('completeness reports a rejected binding on an ancestor once, and not again on each entity that inherits it', () => {
+    const shop = (abstract: boolean): SemanticModel => ({
+      name: 'shop',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: abstract ? '' : 'p.d.base',
+          ...(abstract ? {abstract} : {}),
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}, {name: 'note'}],
+        },
+        {
+          name: 'orders',
+          extends: ['base'],
+          dataSource: 'p.d.orders',
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}],
+        },
+      ],
+    });
+    const BQ = (t: string) =>
+        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    const profile = (note: Partial<Field>): ProfileSpec => ({
+      name: 'prod',
+      relationships: [],
+      entities: [
+        {name: 'base', source: BQ('base'), fields: [{name: 'note', ...note}]},
+        {name: 'orders', source: BQ('orders')},
+      ],
+    });
+    const note = (errors: string[]) => errors.filter(e => e.includes('note'));
+    expect(note(validateProfileCompleteness(
+               shop(false), profile({expression: '-- todo'}))))
+        .toEqual([
+          "profile 'prod': entity 'base': field 'note': 'expression' is " +
+              "only a comment; write the field's SQL",
+        ]);
+    expect(note(validateProfileCompleteness(
+               shop(false),
+               profile({dialects: [{dialect: 'NOPE' as any, expression: 'n'}]}))))
+        .toEqual([
+          "profile 'prod': entity 'base': field 'note': 'expression': " +
+              "dialects.0.dialect: Unknown dialect 'NOPE' in expression " +
+              'dialects. Expected one of ANSI_SQL, BIGQUERY, SPANNER, MYSQL, ' +
+              'POSTGRES, ALLOYDB, SNOWFLAKE, DATABRICKS.',
+        ]);
+    // No profile binds an abstract entity, so `orders` still needs its own
+    // binding.
+    expect(note(validateProfileCompleteness(
+               shop(true), profile({expression: 'n'}))))
+        .toEqual([
+          "profile 'prod': field 'orders.note' has no binding in the model " +
+              "file; bind it in 'fields' or leave it out in 'fields_exclude'",
+        ]);
+  });
+
+  // A field the profile lists on an ancestor that does not have it binds
+  // nothing on the entity that declares it.
+  test('completeness still reports a field that a listing on an ancestor does not reach', () => {
+    const shop: SemanticModel = {
+      name: 'shop',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'p.d.base',
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}],
+        },
+        {
+          name: 'orders',
+          extends: ['base'],
+          dataSource: 'p.d.orders',
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}, {name: 'extra'}],
+        },
+      ],
+    };
+    const BQ = (t: string) =>
+        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    const profile = loadProfileFile(`name: prod
+entities:
+  - name: base
+    source: ${BQ('base')}
+    fields:
+      - {name: extra, expression: x}
+  - name: orders
+    source: ${BQ('orders')}
+`, 'prod');
+    expect(validateProfileCompleteness(shop, profile)
+               .filter(e => e.includes('extra')))
+        .toEqual([
+          "profile 'prod': field 'base.extra' is not in the logical model",
+          "profile 'prod': field 'orders.extra' has no binding in the model " +
+              "file; bind it in 'fields' or leave it out in 'fields_exclude'",
+        ]);
+  });
+
   test('a profile held in memory fails first where a profile file would', () => {
     const base = loadModels(SHOP, {...LOAD, bindingOptional: true}).models[0];
     const firstError = (spec: ProfileSpec, file: string) => {
