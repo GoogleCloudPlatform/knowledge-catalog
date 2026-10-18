@@ -2275,6 +2275,52 @@ ${extraMetric}`;
           'SQL.');
       expect(errors.join('\n')).not.toContain("field 'qty'");
     });
+
+    // The error says what is wrong. The warning would say kcmd could not read
+    // SQL that is not there.
+    test('a field or metric rejected for no SQL gets no warning that its SQL could not be read', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'memo', expression: '-- todo'},
+            {name: 'own', expression: 'orders.'},
+            {
+              name: 'vendor',
+              expression: 'o_vendor',
+              dialects: [
+                {dialect: 'BIGQUERY', expression: 'o_vendor'},
+                {dialect: 'POSTGRES', expression: '/* todo */'},
+              ],
+            },
+          ],
+        }],
+        metrics: [
+          {name: 'k', expression: '-- x', entity: 'orders'},
+          {
+            name: 'total',
+            expression: 'SUM(orders.net_amount)',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+              {dialect: 'POSTGRES', expression: '-- todo'},
+            ],
+          },
+        ],
+      });
+      const warnings: string[] = [];
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true, warnings});
+      expect(errors.map(e => e.slice(0, e.indexOf(' in model'))))
+          .toEqual([
+            "field 'orders.memo'",
+            "field 'orders.own'",
+            "field 'orders.vendor'",
+            "metric 'k'",
+            "metric 'total'",
+          ]);
+      expect(warnings).toEqual([]);
+    });
   });
 
   describe('across dialects', () => {

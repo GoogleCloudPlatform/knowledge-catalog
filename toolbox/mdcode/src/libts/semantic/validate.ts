@@ -1128,7 +1128,9 @@ export function validateExpressionReferences(
       const others = entityNames.filter(n => n !== entity.name);
       const knownFields = fieldsByEntity.get(entity.name)!;
       for (const field of entity.fields ?? []) {
-        const sources = expressionSources(field);
+        // A text with no SQL has nothing to read, so it gets no warning.
+        const sources = expressionSources(field).filter(
+            s => noSqlReason(s.text, s.dialect, entity.name) === undefined);
         const allColumns: SqlColumn[] = [];
         const unreadDialects: string[] = [];
         for (const {text, dialect} of sources) {
@@ -1172,9 +1174,12 @@ export function validateExpressionReferences(
     for (const metric of model.metrics ?? []) {
       const before = errors.length;
       const sources = expressionSources(metric);
+      // A text with no SQL has nothing to read, so it gets no warning.
+      const readable =
+          sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
       const allColumns: SqlColumn[] = [];
       const unreadDialects: string[] = [];
-      for (const {text, dialect} of sources) {
+      for (const {text, dialect} of readable) {
         const columns = columnsForSource(text, dialect, impliedDialect);
         if (!columns) {
           unreadDialects.push(dialect);
@@ -1183,7 +1188,7 @@ export function validateExpressionReferences(
         allColumns.push(...columns);
       }
       addUnreadableWarning(
-          `metric '${metric.name}'`, sources.length, unreadDialects);
+          `metric '${metric.name}'`, readable.length, unreadDialects);
 
       const googleEntity = googleMetricEntity(metric);
       const authored = metric.authoredEntity ?? googleEntity;
@@ -1193,8 +1198,7 @@ export function validateExpressionReferences(
       // An anchor does not make up for missing SQL: the graph would drop the
       // metric. A metric with SQL in some text is also checked as the loader
       // checks it, since a model built in memory skips the loader.
-      const noSql =
-          sources.every(s => noSqlReason(s.text, s.dialect) !== undefined);
+      const noSql = readable.length === 0;
       const sqlProblem = noSql ? undefined : noSqlProblemOf(metric);
       if (noSql) {
         errors.push(
