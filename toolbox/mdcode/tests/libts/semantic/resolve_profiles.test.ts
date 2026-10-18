@@ -16,6 +16,7 @@ import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritanc
 import * as sqlUtils from '../../../src/libts/semantic/sql_expr_utils';
 import {applyProfile, applyProfileExclusions, applyProfileFile, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
 
 beforeAll(async () => {
@@ -2212,6 +2213,79 @@ entities:
     expect(() => applyProfile(base, profile)).toThrow(inherited('tag'));
     expect(validateProfileCompleteness(base, profile))
         .toEqual([inherited('tag'), inherited('label')]);
+  });
+
+  // A dialect list cannot hold an imported text with no imported dialect, or
+  // one marked BIGQUERY beside a target text. A model built in memory can
+  // also carry an imported text beside its dialect list. Push reads each such
+  // text, and so do the profile checks.
+  test('the inherited check of the profile checks reads an imported text outside the dialect list, as push does', () => {
+    // Each imported text holds SQL on `base` and is only the qualifier
+    // `orders.` on `orders`.
+    const loose = {expression: 'loose', importedExpression: 'base.orders.'};
+    const marked = {
+      expression: 'marked',
+      importedExpression: 'base.orders.',
+      importedDialect: 'BIGQUERY',
+    };
+    const shop = (bound: boolean): SemanticModel => ({
+      name: 'shop',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'p.d.base',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'loose', ...(bound ? loose : {})},
+            {name: 'marked', ...(bound ? marked : {})},
+            {
+              name: 'listed',
+              dialects: [{dialect: 'BIGQUERY', expression: 'listed'}],
+              expression: 'listed',
+              importedExpression: 'base.orders.',
+              importedDialect: 'POSTGRES',
+            },
+          ],
+        },
+        {
+          name: 'orders',
+          extends: ['base'],
+          dataSource: 'p.d.orders',
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}],
+        },
+      ],
+    });
+    const BQ = (t: string) =>
+        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    const profile: ProfileSpec = {
+      name: 'prod',
+      relationships: [],
+      entities: [
+        {
+          name: 'base',
+          source: BQ('base'),
+          fields: [{name: 'loose', ...loose}, {name: 'marked', ...marked}],
+        },
+        {name: 'orders', source: BQ('orders')},
+      ],
+    };
+    const problem = (field: string) =>
+        `entity 'orders' inherits field '${field}': read on 'orders', ` +
+        `'importedExpression' is only the qualifier 'orders.'; write the ` +
+        `field's SQL`;
+    const fields = ['loose', 'marked', 'listed'];
+    expect(validatePushRequirements(
+               [{document: 'shop.yaml', model: shop(true)}],
+               {targetOptional: true}))
+        .toEqual(fields.map(f => `model 'shop' (shop.yaml): ${problem(f)}.`));
+    expect(() => applyProfile(shop(false), profile))
+        .toThrow(`profile 'prod': ${problem('loose')}`);
+    expect(validateProfileCompleteness(shop(false), profile))
+        .toEqual(fields.map(f => `profile 'prod': ${problem(f)}`));
   });
 
   // The warning would say kcmd could not read SQL that is not there.
