@@ -167,7 +167,10 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     return {error: `${err?.message ?? err}`};
   }
 
-  const merged: Array<{name: string; text: string; allowLegacyBareSource?: boolean}> = [];
+  const merged: Array<{
+    name: string; text: string; allowLegacyBareSource?: boolean;
+    excluded?: ProfileExclusion[];
+  }> = [];
   const excludedByDoc = new Map<string, ProfileExclusion[]>();
   // A profile file applies to its model file loaded on its own, with its
   // exclusions already marked.
@@ -206,6 +209,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       // A legacy `semantic_model:` wrapper may still carry
       // `deployment_target:` and bare sources.
       allowLegacyBareSource: true,
+      excluded: res.excluded,
     });
     excludedByDoc.set(doc.name, res.excluded);
     wrapped.set(doc.name, res.deploymentTarget);

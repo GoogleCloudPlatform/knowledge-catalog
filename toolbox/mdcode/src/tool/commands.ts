@@ -660,11 +660,13 @@ async function prepareModels(
     }
   }
   const pushWarnings: string[] = [];
-  // The field exclusions taken off above, which the check that each
-  // inherited field holds SQL still honors.
+  // The exclusions a catalog-only push does not apply: a profile file's,
+  // taken off above, and a legacy wrapper's. The check that each inherited
+  // field holds SQL still honors them.
   const liftedExclusions = prune ?
       [] :
-      docs.flatMap(d => d.applied ? fieldExclusionsOf(d.applied) : []);
+      docs.flatMap(
+          d => d.applied ? fieldExclusionsOf(d.applied) : d.excluded ?? []);
   // The pruned model can only repeat an unpruned error, so each is
   // reported once.
   const validationErrors = [...new Set([
@@ -1420,7 +1422,13 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
           // `deployment_target:` and bare sources, and one with no graph
           // target needs no sources. Push reports a load that fails.
           const loaded = loadSemanticModels(
-              [{name: doc.name, text: res.text, allowLegacyBareSource: true}], {
+              [{
+                name: doc.name,
+                text: res.text,
+                allowLegacyBareSource: true,
+                excluded: res.excluded,
+              }],
+              {
                 defaultProject,
                 bindingOptional: !declaresGraphTarget(res.text),
               });

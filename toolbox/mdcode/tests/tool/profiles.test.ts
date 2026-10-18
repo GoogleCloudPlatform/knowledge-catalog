@@ -903,11 +903,45 @@ ${exclude ? '    fields_exclude: [notes]\n' : ''}`;
     });
     expect(await pushResult('prod')).toEqual({code: 0, errors: []});
     expect(await profiles()).toBe(0);
+    expect(profileSection('prod')).toContain('      customer -> acme.prod.customer');
     expect(errs).toEqual([]);
     writeScope({'commerce.profile.prod.yaml': partiesProfile(false)});
     const {code, errors} = await pushResult('prod');
     expect(code).toBe(1);
     expect(errors.join('\n')).toContain(NOTES_INHERITED);
+  });
+
+  // The text merged from a legacy wrapper cannot say what the wrapper
+  // excludes, so the load is told.
+  test('exits 0 when a legacy profile excludes an inherited field that holds no SQL on the entity', async () => {
+    const legacy = (exclude: boolean, target: boolean) => `semantic_model:
+  - name: commerce
+${target ? `    deployment_target: ${GRAPH}\n` : ''}\
+    entities:
+      - name: party
+        source: ${BQ('prod', 'party')}
+        fields:
+          - { name: notes, expression: "party.customer." }
+      - name: customer
+        source: ${BQ('prod', 'customer')}
+${exclude ? '        fields_exclude: [notes]\n' : ''}`;
+    for (const target of [false, true]) {
+      writeScope({
+        'commerce.yaml': PARTIES,
+        'commerce.profiles/prod.yaml': legacy(true, target),
+      });
+      expect(await pushResult('prod')).toEqual({code: 0, errors: []});
+      expect(await profiles()).toBe(0);
+      expect(profileSection('prod')).toContain('      customer -> acme.prod.customer');
+      expect(errs).toEqual([]);
+      const runtimes = await createSemanticRuntimes(
+          {path: dir, profile: 'prod', ctx: CTX, onWarning: () => {}});
+      if ('error' in runtimes) throw new Error(runtimes.error);
+      writeScope({'commerce.profiles/prod.yaml': legacy(false, target)});
+      const {code, errors} = await pushResult('prod');
+      expect(code).toBe(1);
+      expect(errors.join('\n')).toContain(NOTES_INHERITED);
+    }
   });
 
   // Each scope makes `kcmd push --profile prod` fail. A new check push gains
