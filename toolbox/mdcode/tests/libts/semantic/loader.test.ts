@@ -492,6 +492,31 @@ semantic_model:
     expect(() => loadModels(doc.replace('base.orders.', 'base.notes'))).not.toThrow();
   });
 
+  test('an inherited field is read as the document writes it, in any load dialect', () => {
+    // PostgreSQL reads `#` as an operator, so `# path` holds SQL. A load in
+    // the POSTGRES dialect makes it the field's `expression`.
+    const doc = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: base
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - name: points
+            expression:
+              dialects:
+                - {dialect: POSTGRES, expression: "# path"}
+      - name: orders
+        extends: [base]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+`;
+    expect(() => loadModels(doc, {dialect: 'POSTGRES'})).not.toThrow();
+    expect(() => loadModels(doc)).not.toThrow();
+  });
+
   test('an expression with SQL and a comment loads as written', () => {
     const {models, warnings} =
         loadModels(shop('{name: notes, expression: "notes -- free text"}'));

@@ -2109,6 +2109,132 @@ ${extraMetric}`;
         "field 'member.broken' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
       ]);
     });
+
+    // A model built in memory skips the loader, which rejects these.
+    test('rejects a field with no SQL in a model built in memory, as the loader does', () => {
+      const message = (field: string, problem: string) =>
+          `field 'orders.${field}' in model 'm' (doc): ${problem}; write ` +
+          "the field's SQL, or remove 'expression' to leave the field unbound.";
+      const fields = [
+        ...orders().fields,
+        {name: 'notes', expression: ''},
+        {name: 'memo', expression: '-- todo'},
+        {name: 'own', expression: 'orders.'},
+        {
+          name: 'vendor',
+          expression: 'o_vendor',
+          dialects: [
+            {dialect: 'BIGQUERY' as const, expression: 'o_vendor'},
+            {dialect: 'POSTGRES' as const, expression: ' '},
+          ],
+        },
+        // The graph generators write `expression`, which here is not the
+        // text of any dialect entry.
+        {
+          name: 'stale',
+          expression: '/* old */',
+          dialects: [{dialect: 'BIGQUERY' as const, expression: 'o_stale'}],
+        },
+        {name: 'pg_note', importedExpression: '-- todo', importedDialect: 'POSTGRES'},
+        // PostgreSQL reads `#` as an operator, so this text holds SQL there.
+        {name: 'pg_points', importedExpression: '# path', importedDialect: 'POSTGRES'},
+      ];
+      const expected = [
+        message('notes', "'expression' is blank"),
+        message('memo', "'expression' is only a comment"),
+        message('own', "'expression' is only the qualifier 'orders.'"),
+        message('vendor', "the POSTGRES entry of 'expression' is blank"),
+        message('stale', "'expression' is only a comment"),
+        message('pg_note', "the POSTGRES entry of 'expression' is only a comment"),
+      ];
+      const kcOnly = model({entities: [{...orders(), fields}]});
+      expect(validatePushRequirements([loaded(kcOnly)], {targetOptional: true}))
+          .toEqual(expected);
+      const graph =
+          model({entities: [{...orders(), fields}]}, [googleExt([BQ_TARGET])]);
+      const errors =
+          validatePushRequirements([loaded(graph)], {fieldsPruned: true});
+      for (const e of expected) expect(errors).toContain(e);
+    });
+
+    test('rejects a field an entity inherits when it has no SQL on that entity', () => {
+      // On `base` the text reads the column `sub`. On `sub`, inheritance
+      // removes `base.` and leaves only the qualifier `sub.`.
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'label', expression: 'base.sub.'},
+        ],
+      };
+      const sub: Entity = {
+        name: 'sub',
+        extends: ['base'],
+        dataSource: 'p.d.sub',
+        keys: ['id'],
+        fields: [],
+      };
+      const expected = [
+        "model 'm' (doc): entity 'sub' inherits field 'label': read on " +
+            "'sub', 'expression' is only the qualifier 'sub.'; write the " +
+            "field's SQL.",
+      ];
+      const m = model({entities: [base, sub]});
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual(expected);
+      // The graph generators write `expression`, which here is not the text
+      // of the dialect entry.
+      const stale: Entity = {
+        ...base,
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {
+            name: 'label',
+            expression: 'base.sub.',
+            dialects: [{dialect: 'BIGQUERY', expression: 'b_label'}],
+          },
+        ],
+      };
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [stale, sub]}))],
+                 {targetOptional: true}))
+          .toEqual(expected);
+    });
+
+    test('rejects an association field with no SQL, which the graph writes as an edge property', () => {
+      const m = model(
+          {
+            entities: [orders(), customer()],
+            relationships: [{
+              name: 'bought',
+              source: {entity: 'orders', columns: []},
+              destination: {entity: 'customer', columns: []},
+              association: {
+                dataSource: 'p.d.bought',
+                keys: ['k'],
+                sourceColumns: ['order_id'],
+                destinationColumns: ['customer_id'],
+                fields: [
+                  {name: 'qty', expression: 'b_qty'},
+                  {name: 'note', expression: '# todo'},
+                  {name: 'tag', expression: 'bought.'},
+                ],
+              },
+            }],
+          },
+          [googleExt([BQ_TARGET])]);
+      const errors = validatePushRequirements([loaded(m)]);
+      expect(errors).toContain(
+          "relationship 'bought' field 'note' in model 'm' (doc): " +
+          "'expression' is only a comment; write the field's SQL.");
+      expect(errors).toContain(
+          "relationship 'bought' field 'tag' in model 'm' (doc): " +
+          "'expression' is only the qualifier 'bought.'; write the field's " +
+          'SQL.');
+      expect(errors.join('\n')).not.toContain("field 'qty'");
+    });
   });
 
   describe('across dialects', () => {

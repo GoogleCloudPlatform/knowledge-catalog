@@ -14,7 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, joinLengthProblem, LoadedModel, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblem, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {expressionSources, sourcesDialect} from './resolve_profiles';
@@ -1029,7 +1029,48 @@ function relationshipKeyErrors(
   return errors;
 }
 
-// Validates field and metric expressions when inheritance resolved cleanly:
+// Why each field of `model` holds no SQL, in the loader's words. Each field
+// is read on the entity that declares it. When all of those hold SQL, each
+// inherited field is read on each entity that inherits it, as the loader
+// does. An association's field is an edge property, read on its relationship.
+function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
+  const where = `in model '${model.name}' (${document})`;
+  const errors: string[] = [];
+  for (const e of model.entities ?? []) {
+    for (const f of e.fields ?? []) {
+      const problem = noSqlProblemOf(f, e.name);
+      if (problem) {
+        errors.push(
+            `field '${e.name}.${f.name}' ${where}: ${problem}; write the ` +
+            `field's SQL, or remove 'expression' to leave the field unbound.`);
+      }
+    }
+  }
+  if (!errors.length && (model.entities ?? []).some(e => e.extends?.length)) {
+    const concepts = ifResolvable(() => declaredConcepts(model));
+    const inherited = concepts &&
+        inheritedNoSqlProblem(model.entities ?? [], concepts, noSqlProblemOf);
+    if (inherited) {
+      errors.push(`model '${model.name}' (${document}): ${inherited}.`);
+    }
+  }
+  for (const rel of model.relationships ?? []) {
+    for (const f of rel.association?.fields ?? []) {
+      const problem = noSqlProblemOf(f, rel.name);
+      if (problem) {
+        errors.push(
+            `relationship '${rel.name}' field '${f.name}' ${where}: ${
+                problem}; write the field's SQL.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// Validates field and metric expressions:
+//   - Reject a field with no SQL, as the loader does, since a model built in
+//     memory skips the loader (see fieldNoSqlErrors).
+// The rules below run when inheritance resolved cleanly:
 //   - For each metric:
 //     1. Reject a metric whose expressions hold no SQL, with or without an
 //        anchor. Otherwise, reject a metric with no `authoredEntity` (or
@@ -1058,6 +1099,7 @@ export function validateExpressionReferences(
     flaggedMetrics?: Set<string>): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
+    errors.push(...fieldNoSqlErrors(model, document));
     const fieldsByEntity = ifResolvable(() => declaredFields(model));
     if (!fieldsByEntity) continue;
     const entityNames = [...fieldsByEntity.keys()];

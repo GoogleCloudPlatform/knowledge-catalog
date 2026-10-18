@@ -230,19 +230,48 @@ export function expressionDocOf(
   };
 }
 
+// Why a field or metric holds no SQL, or undefined. Its expression is read as
+// a document writes it, as expressionDocOf gives it. Then the text the graph
+// generators write is read as they read it to remove its comments: the target
+// text as BigQuery, and the imported text in its imported dialect. That text
+// can be outside the dialect list when the field or metric was built in
+// memory, or when push filled `expression` by transpiling. `entity` is the
+// entity a field belongs to, and is absent for a metric.
+export function noSqlProblemOf(
+    x: Pick<
+        Field,
+        'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>,
+    entity?: string): string|undefined {
+  const problem = noSqlProblem(expressionDocOf(x), entity);
+  if (problem) return problem;
+  const imported = x.expression === undefined;
+  const text = x.expression ?? x.importedExpression;
+  if (text === undefined) return undefined;
+  const reason = noSqlReason(
+      text, imported && x.importedDialect ? x.importedDialect : 'BIGQUERY',
+      entity);
+  return reason &&
+      `'${imported ? 'importedExpression' : 'expression'}' ${reason}`;
+}
+
 // Why a field an entity inherits holds no SQL on that entity, or undefined.
 // `concepts` gives each entity's fields with inheritance resolved, so an
 // inherited text has lost its ancestor's qualifier. That can leave only the
 // entity's own qualifier, as `base.orders.` does on `orders`, which the graph
 // generators also remove. Only an entity that extends another is checked,
-// since the load checks every field where it is declared.
+// since the load checks every field where it is declared. `problemOf` says
+// why one field holds no SQL on one entity. Unless given, it reads the field
+// as a document writes it.
 export function inheritedNoSqlProblem(
-    entities: Entity[], concepts: Map<string, DeclaredConcept>): string|
+    entities: Entity[], concepts: Map<string, DeclaredConcept>,
+    problemOf: (f: Field, entity: string) => string | undefined =
+        (f, entity) => noSqlProblem(expressionDocOf(f), entity)): string|
     undefined {
   for (const e of entities) {
     if (!e.extends?.length) continue;
     for (const f of concepts.get(e.name)?.fields.values() ?? []) {
-      const problem = noSqlProblem(expressionDocOf(f), e.name);
+      const problem = problemOf(f, e.name);
       if (problem) {
         return `entity '${e.name}' inherits field '${f.name}': read on '${
             e.name}', ${problem}; write the field's SQL`;
