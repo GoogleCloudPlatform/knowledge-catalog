@@ -1140,6 +1140,28 @@ describe('a comment in a field expression', () => {
     expect(ddl).toContain('flags # 1 AS flags');
     expect(ddl).toContain('amount AS total');
     expect(ddl).toContain('net_amount AS net');
+    // A metric's imported vendor SQL is read the same way. Removing `# 1`
+    // would sum `bits` in place of the PostgreSQL `bits # 1`.
+    const vendorMetric = (text: string) => generatePropertyGraph(
+        {
+          ...vendor,
+          entities: [{
+            ...vendor.entities[0],
+            fields: [...vendor.entities[0].fields, {name: 'bits', expression: 'bits'}],
+          }],
+          metrics: [{
+            name: 'xor_bits',
+            entity: 'orders',
+            dialects: [{dialect: 'POSTGRES', expression: text}],
+            importedExpression: text,
+            importedDialect: 'POSTGRES',
+          }],
+        },
+        GEN_OPTS);
+    expect(vendorMetric('SUM(orders.bits # 1\n)').ddl)
+        .toContain('bits # 1 AS xor_bits_input');
+    expect(vendorMetric('SUM(orders.bits -- in cents\n)').ddl)
+        .toContain('MEASURE(SUM(bits)) AS xor_bits');
   });
 
   test('next to a dot leaves no space, so the qualifier still comes off', () => {

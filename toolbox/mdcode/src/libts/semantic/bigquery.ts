@@ -23,7 +23,6 @@ import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} fro
 import {AiContext, Entity, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {fieldBindingWithoutComments, referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
-import {withoutComments} from './sql_parser';
 
 export interface GenerateOptions {
   project?: string;    // fills the graph name's project
@@ -441,7 +440,7 @@ function uniqueName(base: string, taken: Set<string>): string {
 // imported vendor SQL in its own dialect, so it keeps an operator BigQuery
 // would read as a comment, such as PostgreSQL's `#`. The DDL puts ` AS <name>`
 // and a comma after the expression on the same line, and a line comment left
-// in would swallow them.
+// in would swallow them. A metric's SQL is read the same way.
 function fieldExpression(f: Field): string|undefined {
   // Reads the canonical accessor, fieldBinding, so the shared generator's
   // notion of "bound" matches availability pruning's (an unbound field yields
@@ -450,8 +449,7 @@ function fieldExpression(f: Field): string|undefined {
   return fieldBindingWithoutComments(f);
 }
 function metricExpression(m: Metric): string|undefined {
-  const expr = m.expression ?? m.importedExpression;
-  return expr === undefined ? undefined : withoutComments(expr, 'BIGQUERY');
+  return fieldBindingWithoutComments(m);
 }
 
 
