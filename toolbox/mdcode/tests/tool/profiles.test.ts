@@ -1977,6 +1977,114 @@ entities:
           incomplete('inventory.profile.staging.yaml').map(e => `Error: ${e}`)));
     });
 
+    // A profile that binds an inherited field on two unrelated branches
+    // breaks the hierarchy. The rest of the profile is still checked.
+    test('and checks the rest of a profile that breaks the hierarchy', async () => {
+      writeScope({
+        'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: code, datatype: String }
+      - name: customer
+        extends: [party]
+        source: ${BQ('dev', 'customer')}
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+      - name: supplier
+        extends: [party]
+        source: ${BQ('dev', 'supplier')}
+        primary_key: [s_id]
+        fields:
+          - { name: s_id, expression: s_id }
+          - { name: code, expression: s_code }
+      - name: partner
+        extends: [customer, supplier]
+        source: ${BQ('dev', 'partner')}
+        primary_key: [p_id]
+        fields:
+          - { name: p_id, expression: p_id }
+`,
+        'commerce.profile.prod.yaml': `name: prod
+entities:
+  - name: customer
+    source: ${BQ('prod', 'customer')}
+    fields:
+      - { name: code, expression: c_code }
+  - name: supplier
+    source: ${BQ('prod', 'supplier')}
+`,
+      });
+      const conflict = "entity 'partner' inherits field 'code' from " +
+          "'customer' and from 'supplier'";
+      const noSource = "[commerce.profile.prod.yaml] profile 'prod': entity " +
+          "'partner' has no source in this profile";
+      const bare = await pushResult();
+      expect(bare).toEqual({
+        code: 1,
+        errors: [
+          expect.stringContaining(
+              `[commerce.profile.prod.yaml] profile 'prod': ${conflict}`),
+          noSource,
+        ],
+      });
+      const prod = await pushResult('prod');
+      expect(prod).toEqual({
+        code: 1,
+        errors: [
+          noSource,
+          expect.stringContaining(
+              `model 'commerce' (commerce, profile 'prod'): ${conflict}`),
+        ],
+      });
+      expect(await profiles()).toBe(1);
+      expect(rejects(section(INLINE))).toEqual(bare.errors);
+      expect(rejects(profileSection('prod'))).toEqual(prod.errors);
+    });
+
+    // Push's own check of the SQL it reads stands down when the model file's
+    // hierarchy does not resolve. The profile check then reads what the
+    // fields of the profile push applies read, and warns about the SQL it
+    // cannot read for every profile.
+    test('and checks what push leaves out when the hierarchy does not resolve', async () => {
+      writeScope({
+        'commerce.yaml': `${commerce().replace(
+            '      - name: customer\n',
+            '      - name: customer\n        extends: [person]\n')}    metrics:
+      - name: bad
+        entity: purchase
+        expression: "SUM(purchase.p_id"
+`,
+        'commerce.profile.a.yaml': profileFile('a').replace(
+            '    primary_key: ["c_id"]\n',
+            '    primary_key: ["c_id"]\n    fields:\n' +
+                '      - { name: c_id, expression: purchase.p_id }\n'),
+      });
+      const reads = "[commerce.profile.a.yaml] profile 'a': field " +
+          "'customer.c_id' reads entity 'purchase'; a field expression reads " +
+          'only its own entity';
+      const unknown = "entity 'customer' extends unknown entity 'person'";
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      const unread = () => warn.mock.calls.map(c => String(c[0]))
+                               .filter(w => w.includes('could not read'));
+      for (const profile of [undefined, 'a']) {
+        warn.mockClear();
+        expect(await pushResult(profile)).toEqual({
+          code: 1,
+          errors: [reads, expect.stringContaining(unknown)],
+        });
+        expect(unread()).toEqual([
+          "Warning: [commerce.profile.a.yaml] profile 'a': kcmd could not " +
+              "read the SQL of metric 'bad', so the fields it reads were " +
+              'not checked',
+        ]);
+      }
+    });
+
     // Under --transpile, push fills in BigQuery SQL for a text written only
     // in a vendor dialect, so a BigQuery profile can run it.
     test('and lets --transpile fill in a vendor-only metric for a BigQuery profile', async () => {

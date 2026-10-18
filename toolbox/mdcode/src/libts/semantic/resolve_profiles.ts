@@ -1954,9 +1954,12 @@ export interface CompletenessOptions {
   // whether the hierarchy still resolves, what the profile's field
   // expressions read, and whether its key and join columns are column names.
   // No warning is given for SQL the parser cannot read, since the caller's
-  // check gives it.
+  // check gives it. When the hierarchy does not resolve with the profile
+  // applied, the caller stops reading what the SQL reads. This check then
+  // reads what the profile's field expressions read, and gives the warning.
   applied?: boolean;
-  // The caller warns about the model file's SQL that it reads. It reads an
+  // The caller warns about the model file's SQL that it reads, which it does
+  // only when the hierarchy of the model it checks resolves. It reads an
   // ANSI_SQL text in `dialect`, or as generic SQL when that is unset. It does
   // not read the model file's text of a field in `rebound`, written as
   // 'Entity.field', because the profile it applies rebinds or excludes that
@@ -2001,15 +2004,21 @@ export function validateProfileCompleteness(
   // left off the entity that names it. Push reports a broken hierarchy in the
   // model file. A profile breaks the hierarchy itself when it binds a field on
   // two unrelated branches. That is reported here, unless `applied`, since
-  // push then reports it.
+  // push then reports it. The rules below still run on a broken hierarchy,
+  // apart from the check that each inherited field holds SQL, which push
+  // also skips then. An entity whose own ancestors do not resolve shows only
+  // its declared fields, so the rules that need what it inherits leave it
+  // out.
   const fieldsOf = fieldsByEntity(baseModel);
+  // The entities whose own ancestors do not resolve in the model file, so
+  // what they inherit is not known.
+  const unknownAncestry = unresolvedEntities(baseModel);
   const {model: profiled, errors: unread} =
       applyBindings(baseModel, profile, {});
   errors.push(...unread.map(e => `${at}: ${e}`));
   const profiledError = inheritanceErrorOf(profiled);
-  if (profiledError && !inheritanceErrorOf(baseModel)) {
-    if (!applied) errors.push(`${at}: ${profiledError}`);
-    return errors;
+  if (profiledError && !inheritanceErrorOf(baseModel) && !applied) {
+    errors.push(`${at}: ${profiledError}`);
   }
   // A field the profile binds is checked on each entity that inherits it, as
   // applyProfile checks it. A binding the reader rejects only for holding no
@@ -2061,8 +2070,9 @@ export function validateProfileCompleteness(
   const dialect = dialectOfSources(stated);
 
 
-  // The expressions of each entity the profile may bind, unless `applied`.
-  for (const pe of applied ? [] : profile.entities) {
+  // The expressions of each entity the profile may bind, unless `applied` and
+  // the hierarchy resolves, when the caller reads them.
+  for (const pe of applied && !profiledError ? [] : profile.entities) {
     const e = byName.get(pe.name);
     if (!e || e.abstract) continue;
     const known = fieldsOf.get(pe.name)!;
@@ -2095,7 +2105,7 @@ export function validateProfileCompleteness(
           }
         }
         for (const ref of fieldsReadOn(columns, pe.name)) {
-          if (!known.has(ref)) {
+          if (!known.has(ref) && !unknownAncestry.has(pe.name)) {
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
                     ref}', which is not a field of '${pe.name}'`);
@@ -2166,6 +2176,9 @@ export function validateProfileCompleteness(
   // are closed under dependency. An exclusion applies to the entity that names
   // it, not to that entity's descendants.
   const excluded = new Set<string>();
+  // The entities whose own ancestors do not resolve with the profile applied.
+  // A line on one that restates an inherited field is not judged unbound.
+  const unknownProfiled = unresolvedEntities(profiled);
   for (const e of entities) {
     if (e.abstract) continue;
     const pe = bindingOf.get(e.name);
@@ -2182,7 +2195,9 @@ export function validateProfileCompleteness(
                  .map(f => f.name)
                  .filter(n => x === e || fieldsOf.get(x.name)?.has(n))));
     for (const f of seenOf.get(e.name)?.values() ?? []) {
-      if (!isFieldBound(f) && !rebound.has(f.name)) {
+      if (!isFieldBound(f) && !rebound.has(f.name) &&
+          !(unknownProfiled.has(e.name) &&
+            inheritedNamesOf(profiled, e.name).has(f.name))) {
         errors.push(
             `${at}: field '${e.name}.${f.name}' has no binding in the model ` +
             `file; bind it in 'fields' or leave it out in 'fields_exclude'`);
@@ -2291,7 +2306,9 @@ export function validateProfileCompleteness(
       caller.dialect === dialect &&
       !(caller.rebound ?? []).some(f => what === `field '${f}'`);
   for (const what of unreadable) {
-    if (applied || (!own.has(what) && callerWarns(what))) continue;
+    if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
+      continue;
+    }
     warnings.push(
         `${at}: kcmd could not read the SQL of ${what}, so the fields it ` +
         `reads were not checked`);
@@ -2405,17 +2422,18 @@ export function validateProfileConsistency(
 }
 
 // Each entity's fields, declared plus inherited, by name. Resolution throws on a
-// broken hierarchy, which push reports elsewhere; this then falls back to
-// declared fields.
+// broken hierarchy, which push reports elsewhere. Each entity is then resolved
+// with only its own ancestors, and one whose own ancestors do not resolve
+// keeps its declared fields.
 function fieldsByEntity(model: SemanticModel): Map<string, Map<string, Field>> {
   let resolved: Entity[] = model.entities ?? [];
   if (resolved.some(e => e.extends?.length)) {
     try {
       resolved = resolveInheritance(model).model.entities ?? resolved;
     } catch (err) {
-      // A broken hierarchy keeps the declared fields; it is reported
-      // elsewhere. Anything else is a bug.
+      // Anything but a broken hierarchy is a bug.
       if (!(err instanceof InheritanceError)) throw err;
+      resolved = resolved.map(e => resolvedAlone(model, e.name) ?? e);
     }
   }
   // Resolution already leaves excluded fields off; this covers a model with no
@@ -2429,9 +2447,41 @@ function fieldsByEntity(model: SemanticModel): Map<string, Map<string, Field>> {
   }));
 }
 
+// The entity `name` resolved with only its ancestors, or undefined when its
+// own ancestors do not resolve.
+function resolvedAlone(model: SemanticModel, name: string): Entity|undefined {
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const line = new Set<string>();
+  const queue = [name];
+  while (queue.length) {
+    const n = queue.shift()!;
+    if (line.has(n)) continue;
+    line.add(n);
+    queue.push(...(byName.get(n)?.extends ?? []));
+  }
+  try {
+    const entities = (model.entities ?? []).filter(e => line.has(e.name));
+    return resolveInheritance({...model, entities})
+        .model.entities?.find(e => e.name === name);
+  } catch (err) {
+    if (!(err instanceof InheritanceError)) throw err;
+    return undefined;
+  }
+}
+
+// The entities of `model` whose own ancestors do not resolve, so what they
+// inherit is not known. Empty when the hierarchy resolves.
+function unresolvedEntities(model: SemanticModel): Set<string> {
+  if (!inheritanceErrorOf(model)) return new Set();
+  return new Set((model.entities ?? [])
+                     .filter(e => e.extends?.length &&
+                                 !resolvedAlone(model, e.name))
+                     .map(e => e.name));
+}
+
 // The message of the inheritance error resolving `model` throws, or undefined
 // when it resolves.
-function inheritanceErrorOf(model: SemanticModel): string|undefined {
+export function inheritanceErrorOf(model: SemanticModel): string|undefined {
   if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
   try {
     resolveInheritance(model);

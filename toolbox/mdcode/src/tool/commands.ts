@@ -22,7 +22,7 @@ import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semant
 import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -658,12 +658,14 @@ function namedProfileErrors(
     const logical = {...base, actions: []};
     // Push warns about the SQL it cannot read in the model it checks, so
     // these checks leave out a warning about model file SQL that push reads
-    // in the same dialect.
+    // in the same dialect. Push stops reading what the SQL reads when that
+    // model's hierarchy does not resolve, and these checks then give every
+    // warning.
     const pushed = checkedByDoc.get(d.name);
-    const ownSqlOnly = pushed && {
+    const ownSqlOnly = pushed && !inheritanceErrorOf(pushed) ? {
       dialect: sourcesDialect(pushed),
       rebound: reboundFields(base, pushed),
-    };
+    } : undefined;
     for (const p of files) {
       const at = (m: string) => `[${p.fileName}] ${m}`;
       let spec: ProfileSpec;

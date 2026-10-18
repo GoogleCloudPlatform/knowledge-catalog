@@ -2663,6 +2663,135 @@ relationships: []
     expect(errors.join('\n')).toContain("entity 'E' inherits field 'x' from 'B' and from 'D'");
   });
 
+  // E extends B and D, which both extend the abstract A. The model file binds
+  // the inherited x only on D, so its hierarchy resolves. A profile that binds
+  // x on B too breaks it.
+  const diamond = (more: object[] = []): SemanticModel => ({
+    name: 'm',
+    entities: [
+      {name: 'A', abstract: true, dataSource: '', keys: [], fields: [{name: 'x', type: 'String'}]},
+      {name: 'B', extends: ['A'], dataSource: '', keys: ['b'], fields: [{name: 'b', expression: 'b'}]},
+      {name: 'D', extends: ['A'], dataSource: '', keys: ['d'],
+       fields: [{name: 'd', expression: 'd'}, {name: 'x', expression: 'd_x'}]},
+      {name: 'E', extends: ['B', 'D'], dataSource: '', keys: ['e'], fields: [{name: 'e', expression: 'e'}]},
+      ...more,
+    ],
+    relationships: [],
+  }) as any;
+  const bindsXOnB = (more: object[] = []): ProfileSpec => ({
+    name: 'prod',
+    entities: [{name: 'B', source: BQ('b'), fields: [{name: 'x', expression: 'b_x'}]},
+               {name: 'D', source: BQ('d')}, ...more] as any,
+    relationships: [],
+  });
+  const conflict = expect.stringContaining(
+      "profile 'prod': entity 'E' inherits field 'x' from 'B' and from 'D'");
+
+  // Push reports the inheritance error itself for the profile it applies.
+  test('and its other rules still run', () => {
+    const noSource = "profile 'prod': entity 'E' has no source in this profile";
+    expect(validateProfileCompleteness(diamond(), bindsXOnB()))
+        .toEqual([conflict, noSource]);
+    expect(validateProfileCompleteness(
+               diamond(), bindsXOnB(), [], {applied: true}))
+        .toEqual([noSource]);
+  });
+
+  // On a broken hierarchy each entity is resolved with only its own
+  // ancestors, so an entity outside the conflict keeps its inherited fields.
+  // R restates the bound b with only its name, and V leaves x unbound.
+  test('and reads the inherited fields of each entity outside the conflict', () => {
+    const model = diamond([
+      {name: 'R', extends: ['B'], dataSource: '', keys: ['r'],
+       fields: [{name: 'r', expression: 'r'}, {name: 'b'}]},
+      {name: 'V', extends: ['A'], dataSource: '', keys: ['v'], fields: [{name: 'v', expression: 'v'}]},
+    ]);
+    const spec = bindsXOnB([
+      {name: 'E', source: BQ('e')}, {name: 'R', source: BQ('r')},
+      {name: 'V', source: BQ('v')},
+    ]);
+    expect(validateProfileCompleteness(model, spec)).toEqual([
+      conflict,
+      "profile 'prod': field 'V.x' has no binding in the model file; bind it " +
+          "in 'fields' or leave it out in 'fields_exclude'",
+    ]);
+  });
+
+  // Push's own check of the SQL it reads stands down on a broken hierarchy, so
+  // this check gives the warning for the profile push applies too.
+  test('and warns about SQL it cannot read for the profile push applies', () => {
+    const model = diamond([
+      {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'LOWER(f'}]},
+    ]);
+    const spec =
+        bindsXOnB([{name: 'E', source: BQ('e')}, {name: 'F', source: BQ('f')}]);
+    const warnings: string[] = [];
+    expect(validateProfileCompleteness(model, spec, warnings, {applied: true}))
+        .toEqual([]);
+    expect(warnings).toEqual([
+      "profile 'prod': kcmd could not read the SQL of field 'F.f', so the " +
+          'fields it reads were not checked',
+    ]);
+  });
+
+  // Push's own check of what a field reads stands down on a broken hierarchy
+  // too, so this check reads the fields of the profile push applies.
+  test('and reads what the fields of the profile push applies read', () => {
+    const model = diamond([
+      {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'f'}]},
+    ]);
+    const spec = bindsXOnB([
+      {name: 'E', source: BQ('e'), fields: [{name: 'e', expression: 'F.f'}]},
+      {name: 'F', source: BQ('f')},
+    ]);
+    expect(validateProfileCompleteness(model, spec, [], {applied: true}))
+        .toEqual([
+          "profile 'prod': field 'E.e' reads entity 'F'; a field expression " +
+              'reads only its own entity',
+        ]);
+  });
+
+  // E inherits x from both A and B, so the model file's hierarchy does not
+  // resolve, and what E inherits is not known. E inherits a from A.
+  const unknownAncestry = (eFields: object[]): SemanticModel => ({
+    name: 'm',
+    entities: [
+      {name: 'A', dataSource: '', keys: ['a'],
+       fields: [{name: 'a', expression: 'a'}, {name: 'x', expression: 'ax'}]},
+      {name: 'B', dataSource: '', keys: ['b'],
+       fields: [{name: 'b', expression: 'b'}, {name: 'x', expression: 'bx'}]},
+      {name: 'E', extends: ['A', 'B'], dataSource: '', keys: ['e'],
+       fields: [{name: 'e', expression: 'e'}, ...eFields]},
+    ],
+    relationships: [],
+  }) as any;
+  const bindsAll = (eFields?: object[]): ProfileSpec => ({
+    name: 'prod',
+    entities: [
+      {name: 'A', source: BQ('a')}, {name: 'B', source: BQ('b')},
+      {name: 'E', source: BQ('e'), ...(eFields ? {fields: eFields} : {})},
+    ],
+    relationships: [],
+  }) as any;
+
+  test('does not call a field unknown on an entity whose own ancestors do not resolve', () => {
+    const spec = bindsAll([{name: 'e', expression: 'UPPER(E.a)'}]);
+    for (const applied of [false, true]) {
+      expect(validateProfileCompleteness(unknownAncestry([]), spec, [], {applied}))
+          .toEqual([]);
+    }
+  });
+
+  // Restating an inherited field by its name alone is not a binding, and push
+  // reports that line once the hierarchy resolves.
+  test('does not call unbound a restated inherited field on such an entity', () => {
+    for (const applied of [false, true]) {
+      expect(validateProfileCompleteness(
+                 unknownAncestry([{name: 'a'}]), bindsAll(), [], {applied}))
+          .toEqual([]);
+    }
+  });
+
   // A binding is a per-table fact, so an exclusion applies to the entity that
   // names it.
   test('an applied exclusion leaves the field off that entity only', () => {
