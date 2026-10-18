@@ -2390,6 +2390,61 @@ ${extraMetric}`;
           ]);
     });
 
+    // A dialect list cannot hold an imported text with no imported dialect,
+    // or one marked BIGQUERY beside a target text, and a model built in
+    // memory can carry an imported text beside its list. Such a text is read
+    // also when the target text has no SQL.
+    test('rejects an inherited field whose imported text outside the dialect list is only the qualifier, beside a target text with no SQL', () => {
+      // Each imported text holds SQL on `base` and is only the qualifier
+      // `a.` on `a`.
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'loose', expression: '-- todo', importedExpression: 'base.a.'},
+          {
+            name: 'marked',
+            expression: '-- todo',
+            importedExpression: 'base.a.',
+            importedDialect: 'BIGQUERY',
+          },
+          {
+            name: 'listed',
+            dialects: [{dialect: 'BIGQUERY', expression: '-- todo'}],
+            expression: '-- todo',
+            importedExpression: 'base.a.',
+            importedDialect: 'POSTGRES',
+          },
+        ],
+      };
+      const a: Entity = {
+        name: 'a',
+        extends: ['base'],
+        dataSource: 'p.d.a',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'a_id'}],
+      };
+      const target = (field: string) =>
+          field === 'listed' ? "the BIGQUERY entry of 'expression'" :
+                               "'expression'";
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [base, a]}))],
+                 {targetOptional: true}))
+          .toEqual([
+            ...['loose', 'marked', 'listed'].map(
+                f => `field 'base.${f}' in model 'm' (doc): ${
+                         target(f)} is only a comment; write the field's ` +
+                    "SQL, or remove 'expression' to leave the field unbound."),
+            ...['loose', 'marked', 'listed'].map(
+                f => `model 'm' (doc): entity 'a' inherits field '${
+                         f}': read on 'a', ${target(f)} is only a comment ` +
+                    "and 'importedExpression' is only the qualifier 'a.'; " +
+                    "write the field's SQL."),
+          ]);
+    });
+
     // Neither check needs inheritance resolved, so neither waits for the
     // author to fix it.
     test('rejects a field and a metric with no SQL when inheritance does not resolve', () => {

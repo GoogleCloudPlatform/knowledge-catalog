@@ -202,13 +202,31 @@ function noSqlProblem(
     const reason = noSqlReason(raw, 'ANSI_SQL', entity);
     return reason && `'expression' ${reason}`;
   }
-  const problems = (raw?.dialects ?? []).flatMap(d => {
+  return listed((raw?.dialects ?? []).flatMap(d => {
     const reason = noSqlReason(d.expression, d.dialect, entity);
     return reason ? [`the ${d.dialect} entry of 'expression' ${reason}`] : [];
-  });
-  if (!problems.length) return undefined;
-  const last = problems.pop()!;
-  return problems.length ? `${problems.join(', ')} and ${last}` : last;
+  }));
+}
+
+// `problems` as one list, "a, b and c", or undefined when there are none.
+function listed(problems: string[]): string|undefined {
+  if (problems.length < 2) return problems[0];
+  return `${problems.slice(0, -1).join(', ')} and ${
+      problems[problems.length - 1]}`;
+}
+
+// Whether reading `doc` for a field of `entity` names `text`, or finds every
+// problem that reading `text` in `dialect` finds. The string form and an
+// ANSI_SQL entry are read both as ANSI_SQL and as BigQuery.
+function docReads(
+    doc: ExpressionDoc|undefined, text: string, dialect: string,
+    entity?: string): boolean {
+  const covers = (read: string) => read === dialect ||
+      read === 'ANSI_SQL' && dialect === 'BIGQUERY' ||
+      noSqlReason(text, read, entity) !== undefined;
+  if (typeof doc === 'string') return doc === text && covers('ANSI_SQL');
+  return (doc?.dialects ?? [])
+      .some(d => d.expression === text && covers(d.dialect));
 }
 
 // `f`'s expression as a document writes it: its string form or its dialect
@@ -247,29 +265,30 @@ export function expressionDocOf(
 // Why a field or metric holds no SQL, or undefined. Its expression is read as
 // a document writes it, as expressionDocOf gives it. Then its target text is
 // read as BigQuery, and its imported text in its imported dialect, or as
-// BigQuery with none. The graph generators read each text in that dialect
-// when they write it, and serializeModel writes both. Either text can be
-// outside the dialect list when the field or metric was built in memory, or
-// when push filled `expression` by transpiling. `entity` is the entity a
-// field belongs to, and is absent for a metric.
+// BigQuery with none, unless that reading already read or named it. The
+// graph generators read each text in that dialect when they write it, and
+// serializeModel writes both. Either text can be outside the dialect list
+// when the field or metric was built in memory, or when push filled
+// `expression` by transpiling. The problem names each text that holds no
+// SQL. `entity` is the entity a field belongs to, and is absent for a metric.
 export function noSqlProblemOf(
     x: Pick<
         Field,
         'expression'|'dialects'|'stringForm'|'importedExpression'|
         'importedDialect'>,
     entity?: string): string|undefined {
-  const problem = noSqlProblem(expressionDocOf(x), entity);
-  if (problem) return problem;
+  const doc = expressionDocOf(x);
+  const problems = [noSqlProblem(doc, entity)];
   const texts = [
     ['expression', x.expression, 'BIGQUERY'],
     ['importedExpression', x.importedExpression, x.importedDialect ?? 'BIGQUERY'],
   ] as const;
   for (const [key, text, dialect] of texts) {
-    const reason =
-        text === undefined ? undefined : noSqlReason(text, dialect, entity);
-    if (reason) return `'${key}' ${reason}`;
+    if (text === undefined || docReads(doc, text, dialect, entity)) continue;
+    const reason = noSqlReason(text, dialect, entity);
+    problems.push(reason && `'${key}' ${reason}`);
   }
-  return undefined;
+  return listed(problems.filter((p): p is string => p !== undefined));
 }
 
 // Why each field an entity inherits holds no SQL on that entity, one message

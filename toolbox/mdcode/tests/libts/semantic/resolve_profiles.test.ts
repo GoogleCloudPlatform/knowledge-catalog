@@ -2248,6 +2248,13 @@ entities:
               importedExpression: 'base.orders.',
               importedDialect: 'POSTGRES',
             },
+            // Its target text has no SQL where it is declared, which push
+            // reports there.
+            {
+              name: 'todo',
+              expression: '-- todo',
+              importedExpression: 'base.orders.',
+            },
           ],
         },
         {
@@ -2275,17 +2282,76 @@ entities:
     };
     const problem = (field: string) =>
         `entity 'orders' inherits field '${field}': read on 'orders', ` +
+        (field === 'todo' ? `'expression' is only a comment and ` : '') +
         `'importedExpression' is only the qualifier 'orders.'; write the ` +
         `field's SQL`;
-    const fields = ['loose', 'marked', 'listed'];
+    const fields = ['loose', 'marked', 'listed', 'todo'];
     expect(validatePushRequirements(
                [{document: 'shop.yaml', model: shop(true)}],
                {targetOptional: true}))
-        .toEqual(fields.map(f => `model 'shop' (shop.yaml): ${problem(f)}.`));
+        .toEqual([
+          "field 'base.todo' in model 'shop' (shop.yaml): 'expression' is " +
+              "only a comment; write the field's SQL, or remove 'expression' " +
+              'to leave the field unbound.',
+          ...fields.map(f => `model 'shop' (shop.yaml): ${problem(f)}.`),
+        ]);
     expect(() => applyProfile(shop(false), profile))
         .toThrow(`profile 'prod': ${problem('loose')}`);
     expect(validateProfileCompleteness(shop(false), profile))
         .toEqual(fields.map(f => `profile 'prod': ${problem(f)}`));
+  });
+
+  // A load dialect other than BigQuery picks the target text from that
+  // dialect's entry. The entry already names the text, so it is not named
+  // again.
+  test('the inherited check names a text once when the load dialect picks it from a dialect entry', () => {
+    const shop: SemanticModel = {
+      name: 'shop',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'p.d.base',
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}, {name: 'note'}],
+        },
+        {
+          name: 'orders',
+          extends: ['base'],
+          dataSource: 'p.d.orders',
+          keys: ['id'],
+          fields: [{name: 'id', expression: 'id'}],
+        },
+      ],
+    };
+    const note = {
+      name: 'note',
+      dialects: [{dialect: 'SPANNER' as const, expression: 'base.orders.'}],
+    };
+    const BQ = (t: string) =>
+        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    const profile: ProfileSpec = {
+      name: 'prod',
+      relationships: [],
+      entities: [
+        {name: 'base', source: BQ('base'), fields: [note]},
+        {name: 'orders', source: BQ('orders')},
+      ],
+    };
+    const problem = "entity 'orders' inherits field 'note': read on " +
+        "'orders', the SPANNER entry of 'expression' is only the qualifier " +
+        "'orders.'; write the field's SQL";
+    expect(() => applyProfile(shop, profile, {load: {dialect: 'SPANNER'}}))
+        .toThrow(`profile 'prod': ${problem}`);
+    // Push reads the field as a load with the SPANNER dialect gives it.
+    const loaded = structuredClone(shop);
+    loaded.entities[0].fields[1] =
+        {...note, stringForm: false, expression: 'base.orders.'};
+    expect(validatePushRequirements(
+               [{document: 'shop.yaml', model: loaded}],
+               {targetOptional: true}))
+        .toEqual([`model 'shop' (shop.yaml): ${problem}.`]);
   });
 
   // The warning would say kcmd could not read SQL that is not there.
