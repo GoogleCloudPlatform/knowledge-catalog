@@ -328,12 +328,14 @@ function renderNodeTable(
   // properties synthesized for measures, then the measures themselves, which
   // reference those operand properties).
   // Defense in depth: availability pruning normally strips every unbound field
-  // (it has no column) before generation. Pruning tests isFieldBound, and the
-  // BigQuery engine's fieldExpression reads fieldBinding, the same test, so
-  // the two never disagree. But a caller that generates DDL straight from a
-  // bindingOptional load without pruning could still reach here with an
-  // unbound (e.g. purely logical) field. Skip it with a warning rather than
-  // emit `<name>` as a phantom bare column the source table does not have.
+  // (it has no column) before generation. Pruning tests isFieldBound. The
+  // BigQuery engine's fieldExpression returns undefined exactly when
+  // fieldBinding does, so the two agree on which fields are bound. The text it
+  // returns is fieldBinding's with the comments removed. But a caller that
+  // generates DDL straight from a bindingOptional load without pruning could
+  // still reach here with an unbound field, such as a purely logical one. Skip
+  // it with a warning rather than emit `<name>` as a phantom bare column the
+  // source table does not have.
   const boundFields = entity.fields.filter(f => {
     if (engine.fieldExpression(f) !== undefined) return true;
     warnings.push(
