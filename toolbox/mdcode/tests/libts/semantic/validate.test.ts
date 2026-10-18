@@ -2353,6 +2353,14 @@ ${extraMetric}`;
           {name: 'id', expression: 'b_id'},
           {name: 'memo', expression: '-- todo'},
           {name: 'own', expression: 'base.'},
+          // Its imported text holds SQL on `base` and on `b`, and is only
+          // the qualifier `a.` on `a`.
+          {
+            name: 'mixed',
+            expression: '-- todo',
+            importedExpression: 'base.a.',
+            importedDialect: 'POSTGRES',
+          },
         ],
       };
       const sub = (name: string): Entity => ({
@@ -2372,6 +2380,13 @@ ${extraMetric}`;
             "field 'base.own' in model 'm' (doc): 'expression' is only the " +
                 "qualifier 'base.'; write the field's SQL, or remove " +
                 "'expression' to leave the field unbound.",
+            "field 'base.mixed' in model 'm' (doc): the BIGQUERY entry of " +
+                "'expression' is only a comment; write the field's SQL, or " +
+                "remove 'expression' to leave the field unbound.",
+            "model 'm' (doc): entity 'a' inherits field 'mixed': read on " +
+                "'a', the BIGQUERY entry of 'expression' is only a comment " +
+                "and the POSTGRES entry of 'expression' is only the " +
+                "qualifier 'a.'; write the field's SQL.",
           ]);
     });
 
