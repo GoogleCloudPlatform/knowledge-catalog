@@ -1279,6 +1279,10 @@ function protoMemberError(doc: unknown, google: boolean): string|undefined {
 /**
  * Loads YAML or JSON text (a document in the AI-first semantics format) into
  * the Semantic Model IR. `yaml.parse` accepts JSON too, so both are supported.
+ *
+ * A document with a field or metric expression that is not blank needs the SQL
+ * parser, so call `loadSqlEngine()` first. Without it, this throws a plain
+ * Error instead of a SemanticModelError.
  */
 export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   let doc: unknown;
@@ -2621,6 +2625,9 @@ export interface LoadedModels {
  * A parse/schema error is returned as `error` (naming the document) rather than
  * thrown, mirroring how the deploy legs previously reported it; loader warnings
  * are prefixed with their document name.
+ *
+ * Each document needs the SQL parser as loadModels does, so call
+ * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
  */
 export function loadSemanticModels(
     docs: {name: string; text: string; allowLegacyBareSource?: boolean}[],
