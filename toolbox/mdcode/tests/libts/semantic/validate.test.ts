@@ -2243,6 +2243,56 @@ ${extraMetric}`;
           .toEqual(expected);
     });
 
+    // serializeModel writes both texts, and the loader rejects either one with
+    // no SQL, so push reads both.
+    test('rejects an imported text with no SQL beside a target text in a model built in memory', () => {
+      const fieldMessage = (field: string, problem: string) =>
+          `field 'orders.${field}' in model 'm' (doc): ${problem}; write ` +
+          "the field's SQL, or remove 'expression' to leave the field unbound.";
+      const fields = [
+        ...orders().fields,
+        {
+          name: 'notes',
+          expression: 'o_notes',
+          importedExpression: '-- todo',
+          importedDialect: 'POSTGRES',
+        },
+        {name: 'memo', expression: 'o_memo', importedExpression: '/* todo */'},
+        {
+          name: 'tag',
+          expression: 'o_tag',
+          dialects: [{dialect: 'BIGQUERY' as const, expression: 'o_tag'}],
+          importedExpression: ' ',
+          importedDialect: 'POSTGRES',
+        },
+        // PostgreSQL reads `#` as an operator, so this text holds SQL there.
+        {
+          name: 'points',
+          expression: 'o_points',
+          importedExpression: '# path',
+          importedDialect: 'POSTGRES',
+        },
+      ];
+      const m = model({
+        entities: [{...orders(), fields}],
+        metrics: [{
+          name: 'revenue',
+          expression: 'SUM(orders.net_amount)',
+          importedExpression: '-- todo',
+          importedDialect: 'POSTGRES',
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([
+            fieldMessage(
+                'notes', "the POSTGRES entry of 'expression' is only a comment"),
+            fieldMessage('memo', "'importedExpression' is only a comment"),
+            fieldMessage('tag', "'importedExpression' is blank"),
+            "metric 'revenue' in model 'm' (doc): the POSTGRES entry of " +
+                "'expression' is only a comment; write the metric's SQL.",
+          ]);
+    });
+
     // A field an entity binds itself is reported where it is declared, and
     // every field an entity inherits is read on it, whatever else is wrong.
     test('rejects every inherited field with no SQL beside a field rejected where it is declared', () => {

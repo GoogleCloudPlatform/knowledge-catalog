@@ -206,10 +206,12 @@ function noSqlProblem(
 }
 
 // `f`'s expression as a document writes it: its string form or its dialect
-// list. A binding built in memory with no dialect list gives its target text
-// as the string form, or else its imported text as an entry of its imported
-// dialect, which is how the graph generators read it. Undefined when `f`
-// carries no text.
+// list. A binding built in memory with no dialect list gives its imported
+// text as an entry of its imported dialect, which is how the graph generators
+// read it. When it also has a target text, that text is a BIGQUERY entry
+// beside it, as serializeModel writes the two. A target text alone is the
+// string form, and so is one beside an imported text marked BIGQUERY, since a
+// dialect list names each dialect once. Undefined when `f` carries no text.
 export function expressionDocOf(
     f: Pick<
         Field,
@@ -218,25 +220,29 @@ export function expressionDocOf(
   if (f.dialects?.length) {
     return f.stringForm ? f.dialects[0].expression : {dialects: f.dialects};
   }
-  if (f.expression !== undefined || f.importedExpression === undefined ||
-      !f.importedDialect) {
+  if (f.importedExpression === undefined || !f.importedDialect ||
+      f.expression !== undefined && f.importedDialect === 'BIGQUERY') {
     return f.expression ?? f.importedExpression;
   }
+  const imported = {
+    dialect: f.importedDialect as SqlDialect,
+    expression: f.importedExpression,
+  };
   return {
-    dialects: [{
-      dialect: f.importedDialect as SqlDialect,
-      expression: f.importedExpression,
-    }],
+    dialects: f.expression === undefined ?
+        [imported] :
+        [{dialect: 'BIGQUERY', expression: f.expression}, imported],
   };
 }
 
 // Why a field or metric holds no SQL, or undefined. Its expression is read as
-// a document writes it, as expressionDocOf gives it. Then the text the graph
-// generators write is read as they read it to remove its comments: the target
-// text as BigQuery, and the imported text in its imported dialect. That text
-// can be outside the dialect list when the field or metric was built in
-// memory, or when push filled `expression` by transpiling. `entity` is the
-// entity a field belongs to, and is absent for a metric.
+// a document writes it, as expressionDocOf gives it. Then its target text is
+// read as BigQuery, and its imported text in its imported dialect, as the
+// graph generators read them to remove their comments. Either text can be
+// outside the dialect list when the field or metric was built in memory, or
+// when push filled `expression` by transpiling, and serializeModel writes
+// both. `entity` is the entity a field belongs to, and is absent for a
+// metric.
 export function noSqlProblemOf(
     x: Pick<
         Field,
@@ -245,14 +251,16 @@ export function noSqlProblemOf(
     entity?: string): string|undefined {
   const problem = noSqlProblem(expressionDocOf(x), entity);
   if (problem) return problem;
-  const imported = x.expression === undefined;
-  const text = x.expression ?? x.importedExpression;
-  if (text === undefined) return undefined;
-  const reason = noSqlReason(
-      text, imported && x.importedDialect ? x.importedDialect : 'BIGQUERY',
-      entity);
-  return reason &&
-      `'${imported ? 'importedExpression' : 'expression'}' ${reason}`;
+  const texts = [
+    ['expression', x.expression, 'BIGQUERY'],
+    ['importedExpression', x.importedExpression, x.importedDialect ?? 'BIGQUERY'],
+  ] as const;
+  for (const [key, text, dialect] of texts) {
+    const reason =
+        text === undefined ? undefined : noSqlReason(text, dialect, entity);
+    if (reason) return `'${key}' ${reason}`;
+  }
+  return undefined;
 }
 
 // Why each field an entity inherits holds no SQL on that entity, one message

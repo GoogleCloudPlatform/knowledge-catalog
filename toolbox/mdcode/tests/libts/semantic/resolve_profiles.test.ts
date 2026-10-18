@@ -3709,6 +3709,25 @@ entities:
         .toThrow(
             "profile 'prod': entity 'account': field 'note': the POSTGRES " +
             "entry of 'expression' is only a comment");
+    // Beside a target text, the imported text is read too, as a profile file
+    // with both entries is.
+    const both = (text: string) => spec({
+      entities: [{
+        name: 'account',
+        fields: [{
+          name: 'note',
+          expression: 'a_note',
+          importedExpression: text,
+          importedDialect: 'POSTGRES',
+        }],
+      }],
+    });
+    expect(() => applyProfile(base, both('# path'))).not.toThrow();
+    const bothProblem = "profile 'prod': entity 'account': field 'note': the " +
+        "POSTGRES entry of 'expression' is only a comment";
+    expect(() => applyProfile(base, both('-- todo'))).toThrow(bothProblem);
+    expect(validateProfileCompleteness(base, both('-- todo')))
+        .toContain(`${bothProblem}; write the field's SQL`);
   });
 
   test('a profile held in memory fails first where a profile file would', () => {
