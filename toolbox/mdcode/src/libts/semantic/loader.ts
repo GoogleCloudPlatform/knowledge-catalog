@@ -216,8 +216,11 @@ function noSqlProblem(
 // text as an entry of its imported dialect, which is how the graph generators
 // read it. When it also has a target text, that text is a BIGQUERY entry
 // beside it, as serializeModel writes the two. A target text alone is the
-// string form, and so is one beside an imported text marked BIGQUERY, since a
-// dialect list names each dialect once. Undefined when `f` carries no text.
+// string form. So is a target text beside an imported text that a dialect
+// list cannot hold: one with no imported dialect, or one marked BIGQUERY,
+// since a list names each dialect once. An imported text with no imported
+// dialect and no target text is the string form too. Undefined when `f`
+// carries no text.
 export function expressionDocOf(
     f: Pick<
         Field,
@@ -243,12 +246,12 @@ export function expressionDocOf(
 
 // Why a field or metric holds no SQL, or undefined. Its expression is read as
 // a document writes it, as expressionDocOf gives it. Then its target text is
-// read as BigQuery, and its imported text in its imported dialect, as the
-// graph generators read them to remove their comments. Either text can be
+// read as BigQuery, and its imported text in its imported dialect, or as
+// BigQuery with none. The graph generators read each text in that dialect
+// when they write it, and serializeModel writes both. Either text can be
 // outside the dialect list when the field or metric was built in memory, or
-// when push filled `expression` by transpiling, and serializeModel writes
-// both. `entity` is the entity a field belongs to, and is absent for a
-// metric.
+// when push filled `expression` by transpiling. `entity` is the entity a
+// field belongs to, and is absent for a metric.
 export function noSqlProblemOf(
     x: Pick<
         Field,
@@ -1781,6 +1784,28 @@ export function parseFieldExpression(
     throw new SemanticModelError(`${where}: ${problem}; write the field's SQL`);
   }
   return fieldExpression(result.data, GOOGLE_VERSION, dialect, where);
+}
+
+// A profile's binding of a field, read as parseFieldExpression reads a
+// profile file's expression. A binding built in memory with no dialect list
+// is read as expressionDocOf gives it, and then its target and imported texts
+// as noSqlProblemOf reads them, since a dialect list cannot hold an imported
+// text with no imported dialect, or one marked BIGQUERY beside a target text.
+// Throws as parseFieldExpression does.
+export function parseFieldBinding(
+    binding: Pick<
+        Field,
+        'expression'|'dialects'|'stringForm'|'importedExpression'|
+        'importedDialect'>,
+    where: string, dialect: string, entity: string): FieldExpression {
+  const parsed =
+      parseFieldExpression(expressionDocOf(binding), where, dialect, entity);
+  const problem =
+      binding.dialects?.length ? undefined : noSqlProblemOf(binding, entity);
+  if (problem) {
+    throw new SemanticModelError(`${where}: ${problem}; write the field's SQL`);
+  }
+  return parsed;
 }
 
 function convertField(

@@ -2208,7 +2208,7 @@ entities:
         `profile 'prod': entity 'orders' inherits field '${field}': read on ` +
         `'orders', 'expression' is only the qualifier 'orders.'; write the ` +
         `field's SQL`;
-    // The entity's own lines come first.
+    // Fields the entity declares come first.
     expect(() => applyProfile(base, profile)).toThrow(inherited('tag'));
     expect(validateProfileCompleteness(base, profile))
         .toEqual([inherited('tag'), inherited('label')]);
@@ -3810,6 +3810,27 @@ entities:
     expect(() => applyProfile(base, both('-- todo'))).toThrow(bothProblem);
     expect(validateProfileCompleteness(base, both('-- todo')))
         .toContain(`${bothProblem}; write the field's SQL`);
+    // With no imported dialect, or one a dialect list cannot hold beside the
+    // target text, the imported text is read as push reads it.
+    for (const importedDialect of [undefined, 'BIGQUERY']) {
+      const odd = spec({
+        entities: [{
+          name: 'account',
+          fields: [{
+            name: 'note',
+            expression: 'a_note',
+            importedExpression: '-- todo',
+            ...(importedDialect ? {importedDialect} : {}),
+          }],
+        }],
+      });
+      const problem = "profile 'prod': entity 'account': field 'note': " +
+          "'importedExpression' is only a comment; write the field's SQL";
+      expect(() => applyProfile(base, odd)).toThrow(problem);
+      expect(validateProfileCompleteness(base, odd)
+                 .filter(e => e.includes("field 'note'")))
+          .toEqual([problem]);
+    }
   });
 
   test('a profile held in memory fails first where a profile file would', () => {

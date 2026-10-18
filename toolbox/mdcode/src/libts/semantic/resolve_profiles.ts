@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1376,13 +1376,12 @@ function profileStructureErrors(profile: ProfileSpec): string[] {
             `${fat} has no 'expression'; bind it with one, or list it in ` +
             `'fields_exclude'`);
       }
-      // A binding with no dialect list, which only a profile built in memory
-      // has, is read as expressionDocOf gives it.
-      const raw = expressionDocOf(pf);
-      if (raw !== undefined) {
-        // Checked by the loader's reader, as a profile file's is.
+      // Checked by the loader's reader, as a profile file's is. A binding
+      // with no dialect list, which only a profile built in memory has, is
+      // read as parseFieldBinding reads it.
+      if (expressionDocOf(pf) !== undefined) {
         try {
-          parseFieldExpression(raw, fat, DEFAULT_DIALECT, pe.name);
+          parseFieldBinding(pf, fat, DEFAULT_DIALECT, pe.name);
         } catch (err) {
           if (!(err instanceof SemanticModelError)) throw err;
           errors.push(err.message);
@@ -1490,9 +1489,8 @@ function applyBindings(
       // reader rejects is left unapplied, also when a profile built in memory
       // gives it with no dialect list.
       const binding = read(
-          () => parseFieldExpression(
-              expressionDocOf(pf), `field '${e.name}.${pf.name}'`, preferred,
-              e.name),
+          () => parseFieldBinding(
+              pf, `field '${e.name}.${pf.name}'`, preferred, e.name),
           false);
       if (!binding) continue;
       let f = e.fields.find(x => x.name === pf.name);
