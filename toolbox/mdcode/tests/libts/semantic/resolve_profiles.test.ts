@@ -2212,6 +2212,86 @@ entities:
         .toEqual([inherited('tag'), inherited('label')]);
   });
 
+  // The warning would say kcmd could not read SQL that is not there.
+  test('the profile checks and pruning give a text with no SQL no unread-SQL warning', () => {
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - {name: notes}
+          - {name: memo, expression: memo}
+`);
+    // A profile built in memory skips the profile-file reader.
+    const warnings: string[] = [];
+    expect(validateProfileCompleteness(
+               models[0], {
+                 name: 'prod',
+                 relationships: [],
+                 entities: [{
+                   name: 'orders',
+                   source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
+                   fields: [
+                     {name: 'notes', expression: '-- todo'},
+                     {name: 'memo', expression: 'orders.'},
+                   ],
+                 }],
+               },
+               warnings))
+        .toEqual([
+          "profile 'prod': entity 'orders': field 'notes': 'expression' is " +
+              "only a comment; write the field's SQL",
+          "profile 'prod': entity 'orders': field 'memo': 'expression' is " +
+              "only the qualifier 'orders.'; write the field's SQL",
+        ]);
+    expect(warnings).toEqual([]);
+    // A model built in memory skips the loader. `u` is unbound, so pruning
+    // reads what each other field reads.
+    const inMemory: SemanticModel = {
+      name: 'shop',
+      relationships: [],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'u'},
+          {name: 'memo', expression: '-- todo'},
+        ],
+      }],
+      metrics: [
+        {name: 'total', expression: '/* todo */', entity: 'orders'},
+        {
+          name: 'count',
+          expression: 'COUNT(orders.id)',
+          dialects: [
+            {dialect: 'BIGQUERY', expression: 'COUNT(orders.id)'},
+            {dialect: 'POSTGRES', expression: '-- todo'},
+          ],
+        },
+      ],
+    };
+    expect(pruneUnavailable(inMemory, 'prod').report.warnings).toEqual([]);
+    const modelWarnings: string[] = [];
+    validateProfileCompleteness(
+        inMemory, {
+          name: 'prod',
+          relationships: [],
+          entities: [{
+            name: 'orders',
+            source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
+            fieldsExclude: ['u'],
+          }],
+        },
+        modelWarnings);
+    expect(modelWarnings).toEqual([]);
+  });
+
   // An abstract entity has no table, so a profile entry for one is rejected.
   test('the merge rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [

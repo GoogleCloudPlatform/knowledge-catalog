@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldExpression, parseSource, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -790,7 +790,9 @@ export function pruneUnavailable(
       continue;
     }
     const columns: SqlColumn[] = [];
-    const sources = prunedTexts(mt, dialect);
+    // A text with no SQL has nothing to read.
+    const sources = prunedTexts(mt, dialect)
+                        .filter(s => noSqlReason(s.text, s.dialect) === undefined);
     let unread = 0;
     for (const {text, dialect} of sources) {
       const read = columnReferences(text, dialect);
@@ -1939,7 +1941,10 @@ export function validateProfileCompleteness(
     // as the profile's own SQL.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
-      for (const {text, dialect: written} of expressionSources(pf)) {
+      // A text with no SQL is reported above, and has nothing to read.
+      const readable = expressionSources(pf).filter(
+          s => noSqlReason(s.text, s.dialect, pe.name) === undefined);
+      for (const {text, dialect: written} of readable) {
         const columns = columnReferences(
             text, written === 'ANSI_SQL' && dialect ? dialect : written);
         if (!columns) {
@@ -2111,6 +2116,8 @@ export function validateProfileCompleteness(
       if (metricExcluded.has(m.name)) continue;
       const read: Array<ReadonlyArray<SqlColumn>> = [];
       for (const text of textsFor(m as Field, dialect)) {
+        // A text with no SQL has nothing to read.
+        if (noSqlReason(text.text, text.dialect) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);
         if (columns) {
           read.push(columns);
@@ -2302,6 +2309,8 @@ function fieldDependencies(
     if (own) {
       const deps = new Set<string>();
       for (const text of texts(own, dialect)) {
+        // A text with no SQL has nothing to read.
+        if (noSqlReason(text.text, text.dialect, name) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);
         if (!columns) {
           unreadable.add(`field '${name}.${field}'`);
