@@ -2155,6 +2155,63 @@ entities:
     }
   });
 
+  // A field an entity binds itself is checked where it is declared, so the
+  // inherited check reads only the fields the entity takes from an ancestor.
+  test('the inherited check of the profile checks reads only what an entity inherits, and completeness lists every field', () => {
+    const BQ = (t: string) =>
+        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    // A model built in memory skips the loader, so `own` holds no SQL.
+    const base: SemanticModel = {
+      name: 'shop',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'p.d.base',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'label', expression: 'label'},
+            {name: 'tag', expression: 'tag'},
+            {name: 'memo', expression: 'memo'},
+          ],
+        },
+        {
+          name: 'orders',
+          extends: ['base'],
+          dataSource: 'p.d.orders',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'own', expression: '-- todo'},
+            {name: 'memo', expression: '/* todo */'},
+            // A line that binds nothing takes the ancestor's binding.
+            {name: 'tag'},
+          ],
+        },
+      ],
+    };
+    const profile = loadProfileFile(`name: prod
+entities:
+  - name: base
+    source: ${BQ('base')}
+    fields:
+      - {name: label, expression: "base.orders."}
+      - {name: tag, expression: "base.orders."}
+  - name: orders
+    source: ${BQ('orders')}
+`, 'prod');
+    const inherited = (field: string) =>
+        `profile 'prod': entity 'orders' inherits field '${field}': read on ` +
+        `'orders', 'expression' is only the qualifier 'orders.'; write the ` +
+        `field's SQL`;
+    // The entity's own lines come first.
+    expect(() => applyProfile(base, profile)).toThrow(inherited('tag'));
+    expect(validateProfileCompleteness(base, profile))
+        .toEqual([inherited('tag'), inherited('label')]);
+  });
+
   // An abstract entity has no table, so a profile entry for one is rejected.
   test('the merge rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [

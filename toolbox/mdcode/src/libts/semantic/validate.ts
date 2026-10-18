@@ -14,7 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblem, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {expressionSources, sourcesDialect} from './resolve_profiles';
@@ -1030,9 +1030,9 @@ function relationshipKeyErrors(
 }
 
 // Why each field of `model` holds no SQL, in the loader's words. Each field
-// is read on the entity that declares it. When all of those hold SQL, each
-// inherited field is read on each entity that inherits it, as the loader
-// does. An association's field is an edge property, read on its relationship.
+// is read on the entity that declares it, and each field an entity inherits
+// is read on that entity, as the loader does. An association's field is an
+// edge property, read on its relationship.
 function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
   const where = `in model '${model.name}' (${document})`;
   const errors: string[] = [];
@@ -1046,12 +1046,13 @@ function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
       }
     }
   }
-  if (!errors.length && (model.entities ?? []).some(e => e.extends?.length)) {
+  if ((model.entities ?? []).some(e => e.extends?.length)) {
     const concepts = ifResolvable(() => declaredConcepts(model));
-    const inherited = concepts &&
-        inheritedNoSqlProblem(model.entities ?? [], concepts, noSqlProblemOf);
-    if (inherited) {
-      errors.push(`model '${model.name}' (${document}): ${inherited}.`);
+    const inherited = concepts ?
+        inheritedNoSqlProblems(model.entities ?? [], concepts, noSqlProblemOf) :
+        [];
+    for (const problem of inherited) {
+      errors.push(`model '${model.name}' (${document}): ${problem}.`);
     }
   }
   for (const rel of model.relationships ?? []) {

@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, Metric, normalizeDataType, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
@@ -255,30 +255,33 @@ export function noSqlProblemOf(
       `'${imported ? 'importedExpression' : 'expression'}' ${reason}`;
 }
 
-// Why a field an entity inherits holds no SQL on that entity, or undefined.
-// `concepts` gives each entity's fields with inheritance resolved, so an
-// inherited text has lost its ancestor's qualifier. That can leave only the
-// entity's own qualifier, as `base.orders.` does on `orders`, which the graph
-// generators also remove. Only an entity that extends another is checked,
-// since the load checks every field where it is declared. `problemOf` says
-// why one field holds no SQL on one entity. Unless given, it reads the field
-// as a document writes it.
-export function inheritedNoSqlProblem(
+// Why each field an entity inherits holds no SQL on that entity, one message
+// per field. `concepts` gives each entity's fields with inheritance resolved,
+// so an inherited text has lost its ancestor's qualifier. That can leave only
+// the entity's own qualifier, as `base.orders.` does on `orders`, which the
+// graph generators also remove. A field the entity binds itself keeps its own
+// text, which is checked where it is declared, so it is left out. So is every
+// field of an entity that extends no other. `problemOf` says why one field
+// holds no SQL on one entity. Unless given, it reads the field as a document
+// writes it.
+export function inheritedNoSqlProblems(
     entities: Entity[], concepts: Map<string, DeclaredConcept>,
     problemOf: (f: Field, entity: string) => string | undefined =
-        (f, entity) => noSqlProblem(expressionDocOf(f), entity)): string|
-    undefined {
+        (f, entity) => noSqlProblem(expressionDocOf(f), entity)): string[] {
+  const problems: string[] = [];
   for (const e of entities) {
     if (!e.extends?.length) continue;
+    const own = new Set((e.fields ?? []).filter(isFieldBound).map(f => f.name));
     for (const f of concepts.get(e.name)?.fields.values() ?? []) {
+      if (own.has(f.name)) continue;
       const problem = problemOf(f, e.name);
       if (problem) {
-        return `entity '${e.name}' inherits field '${f.name}': read on '${
-            e.name}', ${problem}; write the field's SQL`;
+        problems.push(`entity '${e.name}' inherits field '${
+            f.name}': read on '${e.name}', ${problem}; write the field's SQL`);
       }
     }
   }
-  return undefined;
+  return problems;
 }
 
 // The format's AI-first annotation. It appears at every level (model, dataset,
@@ -1545,7 +1548,7 @@ function convertModel(
     });
   }
   const inheritedProblem =
-      inheritanceResolved && inheritedNoSqlProblem(entities, concepts);
+      inheritanceResolved && inheritedNoSqlProblems(entities, concepts)[0];
   if (inheritedProblem) {
     throw new SemanticModelError(`Semantic model load error: model '${
         m.name}': ${inheritedProblem}`);

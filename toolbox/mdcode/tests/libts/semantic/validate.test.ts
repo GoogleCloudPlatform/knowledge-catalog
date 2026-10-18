@@ -2243,6 +2243,49 @@ ${extraMetric}`;
           .toEqual(expected);
     });
 
+    // A field an entity binds itself is reported where it is declared, and
+    // every field an entity inherits is read on it, whatever else is wrong.
+    test('rejects every inherited field with no SQL beside a field rejected where it is declared', () => {
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'label', expression: 'base.sub.'},
+          {name: 'tag', expression: 'base.sub.'},
+          {name: 'memo', expression: 'b_memo'},
+        ],
+      };
+      const sub: Entity = {
+        name: 'sub',
+        extends: ['base'],
+        dataSource: 'p.d.sub',
+        keys: ['id'],
+        fields: [
+          {name: 'own', expression: '-- todo'},
+          {name: 'memo', expression: '/* todo */'},
+        ],
+      };
+      const own = (field: string) =>
+          `field 'sub.${field}' in model 'm' (doc): 'expression' is only a ` +
+          "comment; write the field's SQL, or remove 'expression' to leave " +
+          'the field unbound.';
+      const inherited = (field: string) =>
+          `model 'm' (doc): entity 'sub' inherits field '${field}': read on ` +
+          "'sub', 'expression' is only the qualifier 'sub.'; write the " +
+          "field's SQL.";
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [base, sub]}))],
+                 {targetOptional: true}))
+          .toEqual([
+            own('own'),
+            own('memo'),
+            inherited('label'),
+            inherited('tag'),
+          ]);
+    });
+
     // Neither check needs inheritance resolved, so neither waits for the
     // author to fix it.
     test('rejects a field and a metric with no SQL when inheritance does not resolve', () => {
