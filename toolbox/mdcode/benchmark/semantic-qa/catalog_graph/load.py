@@ -81,7 +81,7 @@ def ansi(block):
   return None
 
 
-def parse(models_dir):
+def parse(models_dir, corpus):
   rows = {
       k: []
       for k in (
@@ -107,6 +107,7 @@ def parse(models_dir):
         doc.get("description"),
         ai.get("instructions"),
         m.get("version"),
+        corpus,
     ])
 
     ents = doc.get("entities") or doc.get("datasets") or []
@@ -199,7 +200,14 @@ def parse(models_dir):
 COLUMNS = {
     "model": (
         "SemanticModel",
-        ["model_id", "name", "description", "instructions", "osi_version"],
+        [
+            "model_id",
+            "name",
+            "description",
+            "instructions",
+            "osi_version",
+            "corpus",
+        ],
     ),
     "entity": (
         "Entity",
@@ -278,6 +286,11 @@ def main():
   ap.add_argument("--instance", required=True)
   ap.add_argument("--database", default="semantic_catalog")
   ap.add_argument("--models", default=DEFAULT_MODELS)
+  ap.add_argument(
+      "--corpus",
+      default="benchmark",
+      help="tag for this source; reloading a corpus replaces only its rows",
+  )
   ap.add_argument("--chunk", type=int, default=80)
   args = ap.parse_args()
 
@@ -303,9 +316,11 @@ def main():
       print(out.stderr[:1200], file=sys.stderr)
       sys.exit(1)
 
-  rows = parse(args.models)
-  # Everything else is interleaved in SemanticModel ON DELETE CASCADE.
-  run("DELETE FROM SemanticModel WHERE TRUE")
+  rows = parse(args.models, args.corpus)
+  # Entities, fields and metrics interleave in SemanticModel ON DELETE
+  # CASCADE, so dropping one corpus's models drops everything under them and
+  # leaves the other corpora alone.
+  run(f"DELETE FROM SemanticModel WHERE corpus = {lit(args.corpus)}")
   for key, (table, cols) in COLUMNS.items():
     data = rows[key]
     for i in range(0, len(data), args.chunk):

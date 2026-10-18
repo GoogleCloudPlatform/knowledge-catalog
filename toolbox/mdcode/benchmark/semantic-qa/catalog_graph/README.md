@@ -8,20 +8,42 @@ reading documentation.
 
 ```
 schema.sql        tables, full-text search indexes, the property graph
-load.py           reads ../models/*.yaml and populates it
-queries.sql       nine canonical queries, each named
+load.py           reads a directory of OSI models and populates it
+queries.sql       twelve canonical queries, each named
 run_queries.py    runs them all, so the file stays honest
 ```
 
 ```
 gcloud spanner databases create semantic_catalog \
   --instance=my-instance --ddl-file=schema.sql
-python3 -I load.py        --instance my-instance
+
+# the six benchmark models
+python3 -I load.py --instance my-instance --corpus benchmark
+# the repo's own test models
+python3 -I load.py --instance my-instance --corpus fixtures \
+  --models ../../../tests/libts/semantic/fixtures
+# the commerce demo
+python3 -I load.py --instance my-instance --corpus demo \
+  --models ../../../demo/semantic-model/skill/catalog/EntryGroups/commerce_demo
+
 python3 -I run_queries.py --instance my-instance
 ```
 
-Loaded from the six benchmark models: 6 models, 57 entities, 374 fields,
-137 metrics, 265 `READS` edges, 68 `JOINS`, 5 `EXTENDS`.
+Three corpora share one graph. Each is tagged on `SemanticModel.corpus` and
+reloading one replaces only its own rows, so the repo's test models can sit
+beside the curated ones as extra distractors without mixing into them.
+
+| corpus | models | entities | metrics |
+|---|---|---|---|
+| `benchmark` | 6 | 57 | 137 |
+| `fixtures` | 21 | 48 | 38 |
+| `demo` | 1 | 3 | 0 |
+| **total** | **28** | **108** | **175** |
+
+Plus 287 `READS` edges, 92 `JOINS` and 9 `EXTENDS`. All 21 repo fixtures load
+without modification, including the deliberately degenerate ones
+(`keyless_dimension`, `sales_bad_target`); they are test scaffolding rather
+than realistic models, which is why they are tagged apart.
 
 ## This is not the graph kcmd already deploys
 
@@ -95,11 +117,48 @@ which is the part that genuinely needs a graph rather than a few tables.
 `retail_sales.order_line.discount_amount`; traversing `READS` from the field
 rather than the metric lists them.
 
-**Lexical search misses idiom, and that is worth knowing.** "total outstanding
-exposure book" finds `total_exposure`. "Money out on the street" returns
-nothing — no token overlap with anything in the corpus. Full-text search has a
-floor here that only embeddings or query expansion will lift, and the
-`idiom-miss` query is kept in `queries.sql` as a standing reminder.
+**`SEARCH()` is AND semantics, and this is the biggest constraint on the whole
+idea.** Every token in the query must be present, so one unknown word zeroes
+the result:
+
+| query | hits |
+|---|---|
+| `revenue` | 30 |
+| `net revenue` | 10 |
+| `net revenue zzz` | **0** |
+| `How much did we sell last quarter` | **0** |
+| `sell OR revenue` | 31 |
+
+A raw natural-language question therefore retrieves nothing. Anything wiring
+this to an NL front end has to extract content words first, or rewrite the
+question as an `OR` query. `OR` lifts recall but does not fix the underlying
+problem: "sell" matches nothing however it is combined, because no model in
+the corpus uses that word. That is vocabulary mismatch, and it needs synonyms
+or embeddings, not a better operator.
+
+**Which makes the synonym gap matter here too.** "average order basket" finds
+`average_order_value` only because its synonyms are indexed — they are column
+values in this schema. The Knowledge Catalog push drops `ai_context.synonyms`
+entirely, so the same question against KC would miss.
+
+**Lexical search misses idiom.** "Total outstanding exposure book" finds
+`total_exposure`; "money out on the street" returns nothing. The `idiom-miss`
+query is kept in `queries.sql` as a standing reminder.
+
+**Loading the repo's own fixtures exposed a real discovery problem.** Seven
+separate documents declare a model *named* `sales`:
+
+```
+sales  7  actions_place_order, sales_bad_target, sales_bq_graph_target,
+          sales_no_target, sales_spanner_graph_target,
+          sales_unqualified_source, star_orders_customer
+```
+
+They coexist because the catalog keys on the document id, but nothing in the
+name distinguishes them to a user searching for "sales". `commerce` and
+`tpcds_retail_model` each appear twice as well. A catalog serving many teams
+will hit this constantly, and it argues for ranking that can prefer a curated
+corpus over scaffolding — which is what the `corpus` column is for.
 
 ## Open
 

@@ -94,3 +94,53 @@ GRAPH SemanticCatalog
 MATCH (m:Metric)
 WHERE SEARCH(m.search_tokens, 'money out on the street')
 RETURN m.model_id, m.name;
+
+-- name: corpus-totals
+-- What is loaded. Three corpora share one graph: the six benchmark models,
+-- the repo's own test fixtures, and the commerce demo.
+SELECT corpus, COUNT(*) AS models
+FROM SemanticModel
+GROUP BY corpus
+ORDER BY corpus;
+
+-- name: duplicate-model-names
+-- A real discovery problem the fixtures expose: several documents declare a
+-- model NAMED the same thing. The catalog keys on the document id, so they
+-- coexist, but a user searching for "sales" gets all of them and nothing in
+-- the name distinguishes them.
+SELECT name, COUNT(*) AS documents,
+       STRING_AGG(model_id, ', ' ORDER BY model_id) AS model_ids
+FROM SemanticModel
+GROUP BY name
+HAVING COUNT(*) > 1
+ORDER BY documents DESC, name;
+
+-- name: search-across-corpora
+-- One search over everything, reporting which corpus each hit came from so a
+-- caller can prefer curated models over test scaffolding.
+GRAPH SemanticCatalog
+MATCH (m:Metric)
+WHERE SEARCH(m.search_tokens, 'total revenue')
+RETURN m.model_id, m.name
+ORDER BY m.model_id, m.name
+LIMIT 10;
+
+-- name: search-semantics
+-- SEARCH() is AND semantics: every token must be present, so one word the
+-- corpus does not know zeroes the result. A raw natural-language question
+-- therefore returns nothing, which is the single most important constraint on
+-- wiring this to an NL front end. The OR operator lifts recall but does not
+-- fix vocabulary mismatch -- "sell" matches nothing whichever way it is
+-- combined, because no model uses the word.
+SELECT 'raw question (AND)' AS probe,
+       (SELECT COUNT(*) FROM Metric
+        WHERE SEARCH(search_tokens, 'How much did we sell last quarter')) AS hits
+UNION ALL SELECT 'revenue',
+       (SELECT COUNT(*) FROM Metric WHERE SEARCH(search_tokens, 'revenue'))
+UNION ALL SELECT 'net revenue',
+       (SELECT COUNT(*) FROM Metric WHERE SEARCH(search_tokens, 'net revenue'))
+UNION ALL SELECT 'net revenue + one unknown token',
+       (SELECT COUNT(*) FROM Metric WHERE SEARCH(search_tokens, 'net revenue zzz'))
+UNION ALL SELECT 'sell OR revenue',
+       (SELECT COUNT(*) FROM Metric WHERE SEARCH(search_tokens, 'sell OR revenue'))
+ORDER BY probe;
