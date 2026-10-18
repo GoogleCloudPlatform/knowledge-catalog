@@ -73,21 +73,6 @@ export function stripQualifier(expression: string, entity: string): string {
   return mapOutsideStringLiterals(expression, seg => seg.replace(re, ''));
 }
 
-// `text`, one of `field`'s expressions, with its comments removed. The text is
-// read in the dialect of the first dialect entry that holds it. A text in no
-// entry is read in the imported dialect when it is the imported text. An
-// ANSI_SQL text, or a text with no dialect at all, is read as BigQuery, as the
-// loader and the graph generators read it. Equal texts of one field give equal
-// results.
-export function fieldTextWithoutComments(
-    field: Pick<Field, 'dialects'|'importedExpression'|'importedDialect'>,
-    text: string): string {
-  const dialect = field.dialects?.find(d => d.expression === text)?.dialect ??
-      (text === field.importedExpression ? field.importedDialect : undefined);
-  return withoutComments(
-      text, !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect);
-}
-
 // `text`, written in `dialect`, with its comments removed. An ANSI_SQL text, or
 // a text with no dialect, is read as BigQuery, as the loader and the graph
 // generators read it.

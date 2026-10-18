@@ -468,4 +468,42 @@ semantic_model:
             .map(r => [r.entity.name, r.fields.map(f => f.column)]));
     expect(byEntity).toEqual({person: ['id', 'status'], customer: ['id', 'status']});
   });
+
+  test('is read as the graph generators read it, even when a vendor entry holds the same text', () => {
+    // PostgreSQL reads `#` as an operator, and the bundled parser does not read
+    // it as a comment in MySQL. The BIGQUERY and ANSI_SQL texts are read as
+    // BigQuery reads them, where `#` starts a comment.
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: person
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/person
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - name: amount
+            expression:
+              dialects:
+                - {dialect: POSTGRES, expression: "amount # in cents"}
+                - {dialect: BIGQUERY, expression: "amount # in cents"}
+          - name: status
+            expression:
+              dialects:
+                - {dialect: MYSQL, expression: "status # open or closed"}
+                - {dialect: ANSI_SQL, expression: "status # open or closed"}
+      - name: customer
+        extends: [person]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        primary_key: [id]
+`);
+    const runtime = rt(resolveInheritance(models[0]).model);
+    const byEntity = Object.fromEntries(
+        readableEntities(runtime, dialectFor(runtime.store))
+            .map(r => [r.entity.name, r.fields.map(f => f.column)]));
+    expect(byEntity).toEqual({
+      person: ['id', 'amount', 'status'],
+      customer: ['id', 'amount', 'status'],
+    });
+  });
 });
