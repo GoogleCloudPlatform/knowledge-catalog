@@ -301,10 +301,12 @@ export function noSqlProblemOf(
 // entity, such as a `-- todo` text, is reported where the field is declared,
 // so a field is reported on the entity only when the entity adds to it.
 // `problemOf` says why one field holds no SQL, on one entity when one is
-// named.
+// named. Unless given, it reads the field as a document writes it, each
+// dialect entry in its own dialect, whatever dialect picked the target text.
 export function inheritedNoSqlProblems(
     entities: Entity[], concepts: Map<string, DeclaredConcept>,
-    problemOf: (f: Field, entity?: string) => string | undefined): string[] {
+    problemOf: (f: Field, entity?: string) => string | undefined =
+        (f, entity) => noSqlProblem(expressionDocOf(f), entity)): string[] {
   const problems: string[] = [];
   for (const e of entities) {
     if (!e.extends?.length) continue;
@@ -1592,10 +1594,7 @@ function convertModel(
         declaredConceptFields(applyProfileExclusions(
             {name: m.name, entities, relationships, metrics}, opts.excluded)) :
         concepts;
-    // A field read from a document carries every text in its dialect list.
-    inheritedProblem = inheritedNoSqlProblems(
-        entities, checked,
-        (f, entity) => noSqlProblem(expressionDocOf(f), entity))[0];
+    inheritedProblem = inheritedNoSqlProblems(entities, checked)[0];
   }
   if (inheritedProblem) {
     throw new SemanticModelError(`Semantic model load error: model '${

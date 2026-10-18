@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlProblemOf, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1096,17 +1096,16 @@ function applyProfileSpec(
     return {error: `profile '${profile.name}': ${applied.errors[0]}`};
   }
   // A field the profile binds is checked on each entity that inherits it, as
-  // push checks it. A model whose inheritance does not resolve is reported by
-  // validation instead.
+  // a load checks a model file's. A model whose inheritance does not resolve
+  // is reported by validation instead.
   let concepts;
   try {
     concepts = declaredConceptFields(applied.model);
   } catch (err) {
     if (!(err instanceof InheritanceError)) throw err;
   }
-  const inherited = concepts &&
-      inheritedNoSqlProblems(
-          applied.model.entities, concepts, noSqlProblemOf)[0];
+  const inherited =
+      concepts && inheritedNoSqlProblems(applied.model.entities, concepts)[0];
   if (inherited) return {error: `profile '${profile.name}': ${inherited}`};
   return {
     model: applied.model,
@@ -1905,15 +1904,16 @@ export function validateProfileCompleteness(
     return errors;
   }
   // A field the profile binds is checked on each entity that inherits it, as
-  // push checks it. A binding the reader rejects only for holding no SQL is
-  // reported where the profile writes it and left unapplied above. Applied
-  // here, it is also reported on an entity where it has a further problem.
+  // applyProfile checks it. A binding the reader rejects only for holding no
+  // SQL is reported where the profile writes it and left unapplied above.
+  // Applied here, it is also reported on an entity where its expression, read
+  // as a document writes it, has a further problem.
   if (!profiledError) {
     const asWritten =
         applyBindings(baseModel, profile, {noSqlAsWritten: true}).model;
     const checked = inheritanceErrorOf(asWritten) ? profiled : asWritten;
-    const inherited = inheritedNoSqlProblems(
-        checked.entities, declaredConceptFields(checked), noSqlProblemOf);
+    const inherited =
+        inheritedNoSqlProblems(checked.entities, declaredConceptFields(checked));
     errors.push(...inherited.map(p => `${at}: ${p}`));
   }
   const seenOf = fieldsByEntity(profiled);
