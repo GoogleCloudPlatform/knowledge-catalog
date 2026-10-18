@@ -114,8 +114,12 @@ export function declaredConceptFields(model: SemanticModel):
  * fields, less any a profile excludes on that entity. The input is never
  * mutated. An entity with no `extends` keeps its own fields, so a model with no
  * inheritance and no exclusions resolves to an equivalent model.
+ * `targetDialect` is the SQL that an inherited field's target text and its
+ * ANSI_SQL entries are read in to find their comments. It is BigQuery unless
+ * given, as the graph generators read the target text.
  */
-export function resolveInheritance(model: SemanticModel): ResolveResult {
+export function resolveInheritance(
+    model: SemanticModel, targetDialect?: string): ResolveResult {
   const clone: SemanticModel = structuredClone(model);
   const warnings: string[] = [];
   const entities = clone.entities ?? [];
@@ -174,13 +178,17 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
       const chain = declarers.get(f.name);
       flattened.push(
           chain ? mergeBinding(
-                      mergeChain(f.name, chain, ownFields, ancestorsOf), f) :
+                      mergeChain(
+                          f.name, chain, ownFields, ancestorsOf,
+                          targetDialect),
+                      f) :
                   f);
     }
     for (const [name, chain] of declarers) {
       if (seenField.has(name)) continue;
       seenField.add(name);
-      flattened.push(mergeChain(name, chain, ownFields, ancestorsOf));
+      flattened.push(
+          mergeChain(name, chain, ownFields, ancestorsOf, targetDialect));
     }
     // A field the binding profile excludes on this entity is left off it.
     // Descendants read the snapshot of declared fields, so they still inherit
@@ -222,24 +230,28 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
 // `stripQualifier` primitive; they differ only in which qualifier they remove.
 //
 // Comments come out first. A quote inside a comment would otherwise pair with a
-// string literal's, and the qualifier between them would stay. Each text is
-// read in its own dialect: the target text as BigQuery, the imported text in
-// its imported dialect, and each dialect entry in its own. A vendor entry that
-// holds the same text as the target does not change how the target is read.
-function localizeInheritedField(field: Field, ancestor: string): Field {
+// string literal's, and the qualifier between them would stay. The target text
+// is read in `targetDialect`, BigQuery unless given, and so are the ANSI_SQL
+// entries, which a database of that dialect runs as its own SQL. The imported
+// text is read in its imported dialect, and every other dialect entry in its
+// own. A vendor entry that holds the same text as the target does not change
+// how the target is read.
+function localizeInheritedField(
+    field: Field, ancestor: string, targetDialect?: string): Field {
   const clone = structuredClone(field);
   const local = (text: string, dialect?: string) =>
       stripQualifier(sqlWithoutComments(text, dialect), ancestor);
   if (clone.expression !== undefined) {
-    clone.expression = local(clone.expression);
+    clone.expression = local(clone.expression, targetDialect);
   }
   if (clone.importedExpression !== undefined) {
     clone.importedExpression =
         local(clone.importedExpression, clone.importedDialect);
   }
   if (clone.dialects) {
+    const read = (d: string) => d === 'ANSI_SQL' ? targetDialect : d;
     clone.dialects = clone.dialects.map(
-        d => ({...d, expression: local(d.expression, d.dialect)}));
+        d => ({...d, expression: local(d.expression, read(d.dialect))}));
   }
   return clone;
 }
@@ -271,15 +283,16 @@ function mergeBinding(base: Field, over: Field): Field {
 // distance is not that order when two paths to the entity differ in length, so
 // the chain is sorted by how many ancestors each member has; requireOneChain
 // has already checked that every member descends from the next. Every
-// expression is localized to the declaring ancestor's frame first.
+// expression is localized to the declaring ancestor's frame first, its target
+// text read in `targetDialect`.
 function mergeChain(
     name: string, chain: string[], ownFields: Map<string, Field[]>,
-    ancestorsOf: Map<string, string[]>): Field {
+    ancestorsOf: Map<string, string[]>, targetDialect?: string): Field {
   const depth = (n: string) => (ancestorsOf.get(n) ?? []).length;
   let merged: Field|undefined;
   for (const anc of [...chain].sort((a, b) => depth(a) - depth(b))) {
     const own = (ownFields.get(anc) ?? []).find(f => f.name === name)!;
-    const local = localizeInheritedField(own, anc);
+    const local = localizeInheritedField(own, anc, targetDialect);
     merged = merged ? mergeBinding(merged, local) : local;
   }
   return merged!;

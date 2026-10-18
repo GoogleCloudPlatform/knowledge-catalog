@@ -289,11 +289,13 @@ interface BoundField {
 // The fields of `entity` bound to one column each. A binding is read without
 // its comments, as the graph generators read it, so `order_id -- the key`
 // names the column `order_id` on the entity and on every entity that inherits
-// it.
-function boundFields(entity: Entity): BoundField[] {
+// it. On a PostgreSQL store the target text is read as PostgreSQL, where `#`
+// starts no comment.
+function boundFields(entity: Entity, dialect: SqlDialect): BoundField[] {
+  const target = dialect.name === 'PostgreSQL' ? 'POSTGRES' : undefined;
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
-    const expr = fieldBindingWithoutComments(field)?.trim() ?? '';
+    const expr = fieldBindingWithoutComments(field, target)?.trim() ?? '';
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
     const said = field.description?.trim();
     bound.push({
@@ -326,7 +328,7 @@ export function readableEntities(
   const readable: ReadableEntity[] = [];
   for (const entity of runtime.model.entities ?? []) {
     if (entity.abstract) continue;
-    const fields = boundFields(entity);
+    const fields = boundFields(entity, dialect);
     if (!fields.length) continue;
     const warnings: string[] = [];
     const table =

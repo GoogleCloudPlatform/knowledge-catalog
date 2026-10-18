@@ -16,6 +16,8 @@ import * as path from 'node:path';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {readableEntities} from '../../src/libts/semantic/runtime/agent_tools';
+import {dialectFor} from '../../src/libts/semantic/runtime/dialect';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {storeLine} from '../../src/libts/semantic/runtime/store';
 import {skillsGenerate} from '../../src/tool/commands';
@@ -562,4 +564,78 @@ actions:
              path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
          expect(skill).toContain('- Store: `acme-ops/prod/commerce`');
        });
+});
+
+
+describe('createSemanticRuntimes: a column binding is read in the store\'s SQL', () => {
+  const CLUSTER =
+      '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+  const SPANNER_DB = `${SPANNER}/databases/commerce`;
+
+  beforeEach(() => {
+    spyOn(globalThis, 'fetch').mockImplementation((() => {
+      throw new Error('unexpected network call');
+    }) as any);
+    spyOn(AlloyDbClient.prototype, 'listInstances').mockResolvedValue({
+      status: 200,
+      result: [{
+        name: 'projects/acme-ops/locations/us-central1/clusters/main/' +
+            'instances/main-primary',
+        instanceType: 'PRIMARY',
+        state: 'READY',
+      }],
+    });
+  });
+
+  // A supertype, and a subtype that inherits its field `flags`.
+  function hierarchy(target: string, table: (name: string) => string,
+                     flags: string): string {
+    return `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${target}
+    entities:
+      - name: person
+        source: ${table('person')}
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: flags, expression: ${JSON.stringify(flags)} }
+      - name: customer
+        extends: [person]
+        source: ${table('customer')}
+        primary_key: [id]
+`;
+  }
+
+  async function columns() {
+    const runtimes = await createSemanticRuntimes({ctx: CTX, onWarning: () => {}});
+    if ('error' in runtimes) throw new Error(runtimes.error);
+    const [runtime] = runtimes;
+    return Object.fromEntries(
+        readableEntities(runtime, dialectFor(runtime.store))
+            .map(r => [r.entity.name, r.fields.map(f => f.column)]));
+  }
+
+  test('PostgreSQL reads `#` as an operator, on every entity that has the field', async () => {
+    const alloyDb = (flags: string) => hierarchy(
+        `${CLUSTER}/databases/commerce`,
+        name => `${CLUSTER}/databases/commerce/schemas/public/tables/${name}`,
+        flags);
+    writeModel('commerce.yaml', alloyDb('flags # mask'));
+    expect(await columns()).toEqual({person: ['id'], customer: ['id']});
+    writeModel('commerce.yaml', alloyDb('flags -- a note'));
+    expect(await columns())
+        .toEqual({person: ['id', 'flags'], customer: ['id', 'flags']});
+  });
+
+  test('GoogleSQL reads `#` as a comment', async () => {
+    writeModel('commerce.yaml', hierarchy(
+        `${SPANNER_DB}/propertyGraphs/commerce`,
+        name => `${SPANNER_DB}/tables/${name}`, 'flags # a note'));
+    expect(await columns())
+        .toEqual({person: ['id', 'flags'], customer: ['id', 'flags']});
+  });
 });

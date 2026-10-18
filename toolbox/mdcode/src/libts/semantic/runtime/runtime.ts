@@ -265,13 +265,24 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       authored.metrics =
           (authored.metrics ?? []).filter(m => !excludedMetrics.has(m.name));
     }
+    // The store is the one the profile's deployments name. Finding it reads
+    // only the deployment targets and the tables the model binds, which
+    // inheritance does not change.
+    const chosen = resolveStore(authored, profile, {
+      legacyWrapper: wrapped.has(document),
+      deploymentTarget: wrapped.get(document),
+    });
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, and on a field inherited from two unrelated
     // ancestors. The loader lets each through, and push reports it as an
-    // error.
+    // error. An AlloyDB database runs an inherited text as PostgreSQL, where
+    // `#` starts no comment.
     let resolved: ResolveResult;
     try {
-      resolved = resolveInheritance(authored);
+      resolved = resolveInheritance(
+          authored,
+          !('error' in chosen) && chosen.kind === 'alloydb' ? 'POSTGRES' :
+                                                              undefined);
     } catch (err: any) {
       const message = `${err?.message ?? err}`;
       return {
@@ -280,18 +291,13 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       };
     }
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
-    // The store is the one the profile's deployments name. An AlloyDB
-    // database is reached through its cluster's primary instance.
+    // An AlloyDB database is reached through its cluster's primary instance.
     const runtime: SemanticRuntime = {
       model: resolved.model,
       document,
       profile,
       entryGroup: source.entryGroup,
     };
-    const chosen = resolveStore(resolved.model, profile, {
-      legacyWrapper: wrapped.has(document),
-      deploymentTarget: wrapped.get(document),
-    });
     if ('error' in chosen) {
       runtime.storeError = chosen.error;
       if (chosen.named) runtime.storeFailed = true;

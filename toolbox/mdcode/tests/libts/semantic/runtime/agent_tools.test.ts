@@ -430,10 +430,12 @@ describe('a column binding with a comment', () => {
     expect(columns(rt(model))).toEqual(['order_id', 'amount', 'status']);
   });
 
-  test('is read in the dialect it is written in, on every entity that has it', () => {
-    // An ANSI_SQL text is read as BigQuery reads it, where `#` starts a
-    // comment. PostgreSQL reads `#` as an operator, so `flags # 1` names no
-    // single column, whatever the store.
+  test('is read in the store\'s SQL, on every entity that has it', () => {
+    // GoogleSQL reads `#` as a comment and PostgreSQL reads it as an operator,
+    // so on an AlloyDB store `status # open or closed` names no single column.
+    // An imported text is read in its own dialect, so the PostgreSQL
+    // `flags # 1` names no single column on any store. The runtime resolves
+    // inheritance in the store's SQL too.
     const {models} = loadModels(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: m
@@ -452,7 +454,12 @@ semantic_model:
         source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
         primary_key: [id]
 `);
-    const alloyDb = rt(resolveInheritance(models[0]).model, {
+    const byEntity = (runtime: SemanticRuntime) => Object.fromEntries(
+        readableEntities(runtime, dialectFor(runtime.store))
+            .map(r => [r.entity.name, r.fields.map(f => f.column)]));
+    expect(byEntity(rt(resolveInheritance(models[0]).model)))
+        .toEqual({person: ['id', 'status'], customer: ['id', 'status']});
+    const alloyDb = rt(resolveInheritance(models[0], 'POSTGRES').model, {
       store: {
         kind: 'alloydb',
         name: 'projects/p/locations/l/clusters/c/databases/d',
@@ -463,10 +470,7 @@ semantic_model:
         database: 'd',
       },
     });
-    const byEntity = Object.fromEntries(
-        readableEntities(alloyDb, dialectFor(alloyDb.store))
-            .map(r => [r.entity.name, r.fields.map(f => f.column)]));
-    expect(byEntity).toEqual({person: ['id', 'status'], customer: ['id', 'status']});
+    expect(byEntity(alloyDb)).toEqual({person: ['id'], customer: ['id']});
   });
 
   test('is read as the graph generators read it, even when a vendor entry holds the same text', () => {
