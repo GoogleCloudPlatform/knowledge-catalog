@@ -3951,25 +3951,32 @@ entities:
     expect(validateProfileCompleteness(base, both('-- todo')))
         .toContain(`${bothProblem}; write the field's SQL`);
     // With no imported dialect, or one a dialect list cannot hold beside the
-    // target text, the imported text is read as push reads it.
+    // target text, the imported text is read as push reads it, also when the
+    // target text has no SQL.
     for (const importedDialect of [undefined, 'BIGQUERY']) {
-      const odd = spec({
-        entities: [{
-          name: 'account',
-          fields: [{
-            name: 'note',
-            expression: 'a_note',
-            importedExpression: '-- todo',
-            ...(importedDialect ? {importedDialect} : {}),
+      for (const [expression, target] of [
+             ['a_note', ''],
+             ['/* todo */', "'expression' is only a comment and "],
+           ]) {
+        const odd = spec({
+          entities: [{
+            name: 'account',
+            fields: [{
+              name: 'note',
+              expression,
+              importedExpression: '-- todo',
+              ...(importedDialect ? {importedDialect} : {}),
+            }],
           }],
-        }],
-      });
-      const problem = "profile 'prod': entity 'account': field 'note': " +
-          "'importedExpression' is only a comment; write the field's SQL";
-      expect(() => applyProfile(base, odd)).toThrow(problem);
-      expect(validateProfileCompleteness(base, odd)
-                 .filter(e => e.includes("field 'note'")))
-          .toEqual([problem]);
+        });
+        const problem = "profile 'prod': entity 'account': field 'note': " +
+            `${target}'importedExpression' is only a comment; write the ` +
+            "field's SQL";
+        expect(() => applyProfile(base, odd)).toThrow(problem);
+        expect(validateProfileCompleteness(base, odd)
+                   .filter(e => e.includes("field 'note'")))
+            .toEqual([problem]);
+      }
     }
   });
 

@@ -1789,6 +1789,15 @@ function fieldExpression(
 export function parseFieldExpression(
     raw: unknown, where: string, dialect: string,
     entity: string): FieldExpression {
+  return readFieldExpression(
+      raw, where, dialect, doc => noSqlProblem(doc, entity));
+}
+
+// parseFieldExpression's work. `problemOf` says why an expression the schema
+// accepts holds no SQL.
+function readFieldExpression(
+    raw: unknown, where: string, dialect: string,
+    problemOf: (doc: ExpressionDoc) => string | undefined): FieldExpression {
   if (typeof raw !== 'string' &&
       (raw === null || typeof raw !== 'object' || Array.isArray(raw))) {
     throw new SemanticModelError(
@@ -1801,7 +1810,7 @@ export function parseFieldExpression(
     throw new SemanticModelError(
         `${where}: 'expression': ${issueList(result.error)}`);
   }
-  const problem = noSqlProblem(result.data, entity);
+  const problem = problemOf(result.data);
   if (problem) {
     throw new SemanticModelError(`${where}: ${problem}; write the field's SQL`);
   }
@@ -1810,9 +1819,9 @@ export function parseFieldExpression(
 
 // A profile's binding of a field, read as parseFieldExpression reads a
 // profile file's expression. A binding built in memory with no dialect list
-// is read as expressionDocOf gives it, and then its target and imported texts
-// as noSqlProblemOf reads them, since a dialect list cannot hold an imported
-// text with no imported dialect, or one marked BIGQUERY beside a target text.
+// is read as expressionDocOf gives it, and is checked for SQL as
+// noSqlProblemOf checks it, since a dialect list cannot hold an imported text
+// with no imported dialect, or one marked BIGQUERY beside a target text.
 // Throws as parseFieldExpression does.
 export function parseFieldBinding(
     binding: Pick<
@@ -1820,14 +1829,12 @@ export function parseFieldBinding(
         'expression'|'dialects'|'stringForm'|'importedExpression'|
         'importedDialect'>,
     where: string, dialect: string, entity: string): FieldExpression {
-  const parsed =
-      parseFieldExpression(expressionDocOf(binding), where, dialect, entity);
-  const problem =
-      binding.dialects?.length ? undefined : noSqlProblemOf(binding, entity);
-  if (problem) {
-    throw new SemanticModelError(`${where}: ${problem}; write the field's SQL`);
+  const doc = expressionDocOf(binding);
+  if (binding.dialects?.length) {
+    return parseFieldExpression(doc, where, dialect, entity);
   }
-  return parsed;
+  return readFieldExpression(
+      doc, where, dialect, () => noSqlProblemOf(binding, entity));
 }
 
 function convertField(
