@@ -1793,9 +1793,9 @@ export function parseFieldExpression(
       raw, where, dialect, doc => noSqlProblem(doc, entity));
 }
 
-// parseFieldExpression's work. `problemOf` says why an expression the schema
-// accepts holds no SQL.
-function readFieldExpression(
+// A field expression read as parseFieldExpression reads it, with `problemOf`
+// saying why one the schema accepts holds no SQL.
+export function readFieldExpression(
     raw: unknown, where: string, dialect: string,
     problemOf: (doc: ExpressionDoc) => string | undefined): FieldExpression {
   if (typeof raw !== 'string' &&

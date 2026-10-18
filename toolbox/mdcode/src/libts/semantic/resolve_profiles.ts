@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlProblemOf, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlProblemOf, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1436,10 +1436,12 @@ function sqlExecutorMessage(
 
 // Applies what `profile` sets on the names `model` declares, and skips any
 // name it does not. applyProfile checks the names first; the profile checks
-// report each unknown name themselves.
+// report each unknown name themselves. With `noSqlAsWritten`, a field binding
+// the reader rejects only for holding no SQL is applied as a valid one is.
 function applyBindings(
     model: SemanticModel, profile: ProfileSpec,
-    opts: ApplyProfileOptions): {model: SemanticModel; errors: string[]} {
+    opts: ApplyProfileOptions&{noSqlAsWritten?: boolean}):
+    {model: SemanticModel; errors: string[]} {
   const errors: string[] = [];
   const out: SemanticModel = structuredClone(model);
   const load = opts.load ?? {};
@@ -1498,11 +1500,17 @@ function applyBindings(
       if (!pf.dialects?.length && !isFieldBound(pf as Field)) continue;
       // Read as a load reads the same expression in a model file. One the
       // reader rejects is left unapplied, also when a profile built in memory
-      // gives it with no dialect list.
-      const binding = read(
-          () => parseFieldBinding(
-              pf, `field '${e.name}.${pf.name}'`, preferred, e.name),
-          false);
+      // gives it with no dialect list. Under `noSqlAsWritten`, one the reader
+      // rejects only for holding no SQL is read as the schema accepts it.
+      const where = `field '${e.name}.${pf.name}'`;
+      const binding =
+          read(() => parseFieldBinding(pf, where, preferred, e.name), false) ??
+          (opts.noSqlAsWritten ?
+               read(
+                   () => readFieldExpression(
+                       expressionDocOf(pf), where, preferred, () => undefined),
+                   false) :
+               undefined);
       if (!binding) continue;
       let f = e.fields.find(x => x.name === pf.name);
       if (!f) {
@@ -1897,10 +1905,15 @@ export function validateProfileCompleteness(
     return errors;
   }
   // A field the profile binds is checked on each entity that inherits it, as
-  // applyProfile checks it.
+  // push checks it. A binding the reader rejects only for holding no SQL is
+  // reported where the profile writes it and left unapplied above. Applied
+  // here, it is also reported on an entity where it has a further problem.
   if (!profiledError) {
+    const asWritten =
+        applyBindings(baseModel, profile, {noSqlAsWritten: true}).model;
+    const checked = inheritanceErrorOf(asWritten) ? profiled : asWritten;
     const inherited = inheritedNoSqlProblems(
-        profiled.entities, declaredConceptFields(profiled), noSqlProblemOf);
+        checked.entities, declaredConceptFields(checked), noSqlProblemOf);
     errors.push(...inherited.map(p => `${at}: ${p}`));
   }
   const seenOf = fieldsByEntity(profiled);
