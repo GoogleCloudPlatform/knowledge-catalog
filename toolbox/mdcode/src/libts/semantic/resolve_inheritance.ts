@@ -35,7 +35,7 @@
 // A diamond is not that case: two paths reaching ONE declaration resolve to it.
 
 import {Entity, Field, FIELD_BINDING_KEYS, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel} from './ir';
-import {fieldTextWithoutComments, stripQualifier} from './sql_expr_utils';
+import {sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 
 /**
  * Why inheritance cannot be resolved. `unknown-parent` can be a pruning
@@ -221,23 +221,25 @@ export function resolveInheritance(model: SemanticModel): ResolveResult {
 // graph_ddl.renderFieldPropertyCore). Both route through the same
 // `stripQualifier` primitive; they differ only in which qualifier they remove.
 //
-// Comments come out first, read as fieldTextWithoutComments reads them. A quote
-// inside a comment would otherwise pair with a string literal's, and the
-// qualifier between them would stay. Equal texts stay equal, which dialectOf in
-// resolve_profiles relies on.
+// Comments come out first. A quote inside a comment would otherwise pair with a
+// string literal's, and the qualifier between them would stay. Each text is
+// read in its own dialect: the target text as BigQuery, the imported text in
+// its imported dialect, and each dialect entry in its own. A vendor entry that
+// holds the same text as the target does not change how the target is read.
 function localizeInheritedField(field: Field, ancestor: string): Field {
   const clone = structuredClone(field);
-  const local = (text: string) =>
-      stripQualifier(fieldTextWithoutComments(field, text), ancestor);
+  const local = (text: string, dialect?: string) =>
+      stripQualifier(sqlWithoutComments(text, dialect), ancestor);
   if (clone.expression !== undefined) {
     clone.expression = local(clone.expression);
   }
   if (clone.importedExpression !== undefined) {
-    clone.importedExpression = local(clone.importedExpression);
+    clone.importedExpression =
+        local(clone.importedExpression, clone.importedDialect);
   }
   if (clone.dialects) {
-    clone.dialects =
-        clone.dialects.map(d => ({...d, expression: local(d.expression)}));
+    clone.dialects = clone.dialects.map(
+        d => ({...d, expression: local(d.expression, d.dialect)}));
   }
   return clone;
 }

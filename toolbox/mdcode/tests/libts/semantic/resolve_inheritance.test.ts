@@ -250,6 +250,33 @@ describe('inherited-expression localization', () => {
     expect(inherited('title')).toEqual(
         stringForm('title', "COALESCE(title, 'none')"));
   });
+
+  test('each text is read in its own dialect, even when a vendor entry holds the same text', () => {
+    // PostgreSQL reads `#` as an operator, so there the apostrophe opens a
+    // string and `Person.second` inside it keeps its qualifier. The target
+    // text and the BIGQUERY entry are read as BigQuery, where `#` starts a
+    // comment.
+    const text = "Person.first # Person's first\n|| Person.second || ' '";
+    const {model: r} = resolveInheritance(model([
+      entity('Person', [], undefined, {
+        fields: [{
+          name: 'label',
+          expression: text,
+          importedExpression: text,
+          importedDialect: 'POSTGRES',
+          dialects: [
+            {dialect: 'POSTGRES', expression: text},
+            {dialect: 'BIGQUERY', expression: text},
+          ],
+        }],
+      }),
+      entity('Customer', ['id'], ['Person']),
+    ]));
+    const label = entityOf(r, 'Customer').fields.find(f => f.name === 'label')!;
+    expect(label.expression).toBe("first || second || ' '");
+    expect(label.dialects![1].expression).toBe("first || second || ' '");
+    expect(label.dialects![0].expression).toBe(label.importedExpression!);
+  });
 });
 
 

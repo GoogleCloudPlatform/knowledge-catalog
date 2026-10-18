@@ -1166,4 +1166,36 @@ describe('a comment in a field expression', () => {
         '      MEASURE(SUM(amount)) AS revenue\n');
     expect(warnings).toEqual([]);
   });
+
+  test('on an inherited field is read in its own dialect, even when a vendor entry holds the same text', () => {
+    // Read as PostgreSQL, where `#` is an operator, the apostrophe opens a
+    // string, the subtype's copy keeps `base.second`, and the generator warns
+    // that the subtype remaps a property it only inherits.
+    const text = "base.first # base's first\n|| base.second || ' '";
+    const inherited: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'p.d.base',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'label', expression: text, importedExpression: text,
+             importedDialect: 'POSTGRES',
+             dialects: [{dialect: 'POSTGRES', expression: text},
+                        {dialect: 'BIGQUERY', expression: text}]},
+          ],
+        },
+        {name: 'orders', dataSource: 'p.d.orders', keys: ['id'],
+         extends: ['base'], fields: []},
+      ],
+    };
+    const {ddl, warnings} = generatePropertyGraph(inherited, GEN_OPTS);
+    expect(ddl).not.toContain('base.second');
+    expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(3);
+    expect(warnings).toEqual([]);
+  });
 });

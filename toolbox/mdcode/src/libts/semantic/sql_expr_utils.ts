@@ -88,6 +88,14 @@ export function fieldTextWithoutComments(
       text, !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect);
 }
 
+// `text`, written in `dialect`, with its comments removed. An ANSI_SQL text, or
+// a text with no dialect, is read as BigQuery, as the loader and the graph
+// generators read it.
+export function sqlWithoutComments(text: string, dialect?: string): string {
+  return withoutComments(
+      text, !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect);
+}
+
 // The text the graph generators write for `field`, as fieldBinding gives it,
 // with its comments removed. Undefined when the field is unbound. The target
 // text is read as BigQuery, as the parser also reads Spanner SQL. Imported
@@ -98,10 +106,9 @@ export function fieldBindingWithoutComments(
     string|undefined {
   const text = fieldBinding(field);
   if (text === undefined) return undefined;
-  const vendor =
-      field.expression === undefined ? field.importedDialect : undefined;
-  return withoutComments(
-      text, !vendor || vendor === 'ANSI_SQL' ? 'BIGQUERY' : vendor);
+  return sqlWithoutComments(
+      text,
+      field.expression === undefined ? field.importedDialect : undefined);
 }
 
 // The physical column a key or join column names, as the graph generators read

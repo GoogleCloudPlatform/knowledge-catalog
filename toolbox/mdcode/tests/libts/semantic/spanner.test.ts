@@ -458,4 +458,34 @@ describe('a comment in a field expression', () => {
         '      order_id AS id,\n      amount,\n      `select`\n');
     expect(warnings).toEqual([]);
   });
+
+  test('on an inherited field is read in its own dialect, even when a vendor entry holds the same text', () => {
+    // Read as PostgreSQL, where `#` is an operator, the apostrophe opens a
+    // string and the subtype's property keeps `base.second`.
+    const text = "base.first # base's first\n|| base.second || ' '";
+    const inherited: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'Base',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'label', expression: text, importedExpression: text,
+             importedDialect: 'POSTGRES',
+             dialects: [{dialect: 'POSTGRES', expression: text},
+                        {dialect: 'BIGQUERY', expression: text}]},
+          ],
+        },
+        {name: 'orders', dataSource: 'Orders', keys: ['id'], extends: ['base'],
+         fields: []},
+      ],
+    };
+    const {ddl} = generateSpannerPropertyGraph(inherited);
+    expect(ddl).not.toContain('base.second');
+    expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(3);
+  });
 });
