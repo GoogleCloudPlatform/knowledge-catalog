@@ -1607,6 +1607,9 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       expect(await pushResult('legacy')).toEqual({code: 1, errors: [error]});
       expect(await profiles({profile: 'legacy'})).toBe(1);
       expect(rejects(profileSection('legacy'))).toEqual([error]);
+      // The runtime gives the same error under the same profile.
+      expect(await createSemanticRuntimes({profile: 'legacy', ctx: CTX}))
+          .toEqual({error});
     });
 
     test('and reports a legacy profile file that does not parse', async () => {

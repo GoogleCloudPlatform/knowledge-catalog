@@ -14,14 +14,16 @@
 // Of push's checks on the model itself, the runtime runs only the one on
 // inheritance. A model that push refuses for an entity with no source, a
 // relationship with no join columns, a key that is not a column, or a broken
-// expression, action or constraint still gets a store and a skill. Nor does
-// the runtime run push's checks that every profile file loads, applies to the
-// model and is complete. So a model beside a profile file that those checks
-// refuse still gets a store and a skill under the default profile. The
-// runtime also skips the checks of push's Knowledge Catalog leg: one model per
-// entry group, and with KC_V2_ASPECTS off the checks on the copies of the
-// model and profile files, such as whether each is valid UTF-8. Two models
-// that deploy to one graph each get a skill.
+// expression, action or constraint still gets a store and a skill. Like push,
+// the runtime loads every profile file except a legacy wrapper of a profile
+// it does not read. It does not run push's checks that every profile file
+// applies to the model and is complete. So a model beside a profile file that
+// those checks refuse still gets a store and a skill under the default
+// profile. The runtime also skips the
+// checks of push's Knowledge Catalog leg: one model per entry group, and with
+// KC_V2_ASPECTS off the checks on the copies of the model and profile files,
+// such as whether each is valid UTF-8. Two models that deploy to one graph
+// each get a skill.
 //
 // Live checks are mocked, and no case reaches the network.
 
@@ -866,6 +868,105 @@ entities:
              "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
              "'Nope' is not in the logical model");
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
+       });
+
+  // Push and the runtime load every profile file except a legacy wrapper,
+  // whichever profile they read. A file in <model>.profiles/ takes its
+  // profile name from its file name, and loading it checks the `name:`
+  // inside it.
+  test('a file in <model>.profiles/ whose name does not match its file name: every command refuses',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profiles/prod.yaml': `name: prd
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+         });
+         const mismatch = "[commerce.profiles/prod.yaml] profile 'prod' " +
+             "declares name 'prd', which does not match its file's profile " +
+             "name 'prod'";
+         for (const r of [await runAll(), await runAll('prod')]) {
+           expect(codes(r))
+               .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+           expect(r.push.out).toContain(`Error: ${mismatch}`);
+           expect(r.printStore.out).toBe(`Error: ${mismatch}`);
+           expect(r.skills.out).toContain(`Error: ${mismatch}`);
+         }
+       });
+
+  test('a profile file that sets a key a profile may not set: every command refuses',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profile.prod.yaml': `name: prod
+bogus: 1
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+         });
+         const r = await runAll();
+         expect(codes(r))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(r.printStore.out)
+             .toContain("[commerce.profile.prod.yaml] profile 'prod'");
+         expect(r.push.out).toContain(r.printStore.out);
+         expect(r.skills.out).toBe(r.printStore.out);
+       });
+
+  // Push loads the model files before the profile files it does not apply.
+  // When both fail to load, every command gives the model file's error.
+  test('a model file and a profile file that both fail to load: every command gives the model file error',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    bogus_model_key: 1
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profile.prod.yaml': 'name: prod\nbogus: 1\n',
+         });
+         const r = await runAll();
+         for (const k of ['push', 'printStore', 'skills']) {
+           expect(r[k].code).toBe(1);
+           expect(r[k].out).toContain("Error: Model document 'commerce'");
+           expect(r[k].out).not.toContain("sets 'bogus'");
+         }
        });
 
   test('a profile file that is not valid UTF-8: push refuses its copy, the runtime reads it',
