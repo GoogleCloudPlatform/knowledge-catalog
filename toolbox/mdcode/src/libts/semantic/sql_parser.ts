@@ -71,6 +71,7 @@ const PARSER_DIALECTS: Record<string, string> = {
   POSTGRES: 'postgresql',
   ALLOYDB: 'postgresql',
   MYSQL: 'mysql',
+  SQLSERVER: 'tsql',
   SNOWFLAKE: 'snowflake',
   DATABRICKS: 'databricks',
 };
@@ -107,7 +108,7 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
       oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
   if (!ast) return undefined;
   const columns: SqlColumn[] = [];
-  collectColumns(ast, columns, new Set(), engineDialect === 'bigquery');
+  collectColumns(ast, columns, new Set(), engineDialect);
   return columns;
 }
 
@@ -136,20 +137,23 @@ function oneExpression(dialect: string, sql: string, kind?: string): unknown {
 
 // Functions whose first argument is a date-part unit (such as `DAY` or `MONTH`)
 // that the parser represents as an unquoted bare `column` node in MySQL,
-// Databricks or generic ANSI SQL.
+// Databricks, T-SQL or generic ANSI SQL.
 const LEADING_DATE_PART_FUNCTIONS = new Set([
   'DATEDIFF',
   'DATEADD',
   'DATE_ADD',
+  'DATE_BUCKET',
   'DATE_DIFF',
   'TIMESTAMPDIFF',
   'TIMESTAMPADD',
 ]);
 
-// In BigQuery (and Spanner), these put the unit last, as in
-// `DATE_DIFF(end_col, start_col, DAY)`, so their first argument is a column
-// even when its name matches a short unit such as `d`.
-const BIGQUERY_TRAILING_UNIT_FUNCTIONS = new Set(['DATE_ADD', 'DATE_DIFF']);
+// In BigQuery (and Spanner), these take a column first, as in
+// `DATE_DIFF(end_col, start_col, DAY)` or `DATE_BUCKET(d, INTERVAL 7 DAY)`, so
+// their first argument is a column even when its name matches a short unit
+// such as `d`.
+const BIGQUERY_TRAILING_UNIT_FUNCTIONS =
+    new Set(['DATE_ADD', 'DATE_BUCKET', 'DATE_DIFF']);
 
 // BigQuery functions whose last argument is a date part, as in
 // `DATE_TRUNC(d, MONTH)` or `DATE_DIFF(a, b, WEEK(MONDAY))`. Under the `SAFE.`
@@ -174,10 +178,11 @@ const DATE_PART_KEYWORDS = new Set([
 
 function collectColumns(
     node: unknown, out: SqlColumn[], bound: ReadonlySet<string>,
-    bigQuery: boolean): void {
+    dialect: string): void {
+  const bigQuery = dialect === 'bigquery';
   if (Array.isArray(node)) {
     for (const item of node) {
-      collectColumns(item, out, bound, bigQuery);
+      collectColumns(item, out, bound, dialect);
     }
     return;
   }
@@ -220,19 +225,23 @@ function collectColumns(
       }
       return;
     }
-    collectColumns(obj.dot?.this, out, bound, bigQuery);
+    collectColumns(obj.dot?.this, out, bound, dialect);
     return;
   }
   if (keys.length === 1 && keys[0] === 'method_call') {
     // In `NET.HOST(x)` and `my_project.my_dataset.my_udf(x)` the part before
     // the dot is a bare name path that names a function namespace, so it is not
-    // read. Any other receiver is the expression a chained call applies to, as
-    // in `(orders.name).UPPER()` or `LOWER(orders.name).TRIM()`, and it is.
+    // read. In T-SQL, `orders.geo.STLength()` calls a method of the column
+    // `orders.geo`, so a receiver written as a qualified column is read. Any
+    // other receiver is the expression a chained call applies to, as in
+    // `(orders.name).UPPER()` or `LOWER(orders.name).TRIM()`, and it is.
     const receiver = obj.method_call?.this;
-    if (!isNamePath(receiver)) {
-      collectColumns(receiver, out, bound, bigQuery);
+    const columnMethod = dialect === 'tsql' &&
+        typeof receiver?.column?.table?.name === 'string';
+    if (columnMethod || !isNamePath(receiver)) {
+      collectColumns(receiver, out, bound, dialect);
     }
-    collectColumns(obj.method_call?.args, out, bound, bigQuery);
+    collectColumns(obj.method_call?.args, out, bound, dialect);
     return;
   }
   if (keys.length === 1 && keys[0] === 'function') {
@@ -247,14 +256,14 @@ function collectColumns(
         typeof col0.name?.name === 'string' &&
         DATE_PART_KEYWORDS.has(col0.name.name.toUpperCase())) {
       for (const arg of args.slice(1)) {
-        collectColumns(arg, out, bound, bigQuery);
+        collectColumns(arg, out, bound, dialect);
       }
       return;
     }
     if (bigQuery && fnName.startsWith('SAFE.') &&
         BIGQUERY_DATE_PART_FUNCTIONS.has(fnName.slice('SAFE.'.length)) &&
         args.length >= 2 && isDatePart(args[args.length - 1])) {
-      collectColumns(args.slice(0, -1), out, bound, bigQuery);
+      collectColumns(args.slice(0, -1), out, bound, dialect);
       return;
     }
   }
@@ -263,7 +272,7 @@ function collectColumns(
     for (const p of obj.lambda?.parameters ?? []) {
       if (typeof p?.name === 'string') next.add(p.name);
     }
-    collectColumns(obj.lambda?.body, out, next, bigQuery);
+    collectColumns(obj.lambda?.body, out, next, dialect);
     return;
   }
   if (keys.length === 1 && keys[0] === 'select') {
@@ -271,10 +280,10 @@ function collectColumns(
     const next = new Set(bound);
     for (const cte of select?.with?.ctes ?? []) {
       if (typeof cte?.alias?.name === 'string') next.add(cte.alias.name);
-      collectColumns(cte?.this, out, next, bigQuery);
+      collectColumns(cte?.this, out, next, dialect);
     }
     for (const expr of select?.from?.expressions ?? []) {
-      collectColumns(expr, out, next, bigQuery);
+      collectColumns(expr, out, next, dialect);
       addSourceAliases(expr, next);
     }
     // Inside a subquery with its own `FROM` clause, a bare identifier in the
@@ -284,7 +293,7 @@ function collectColumns(
     const target: SqlColumn[] = select?.from ? [] : out;
     for (const join of select?.joins ?? []) {
       addSourceAliases(join?.this, next);
-      collectColumns(join, target, next, bigQuery);
+      collectColumns(join, target, next, dialect);
     }
     for (const item of select?.expressions ?? []) {
       if (typeof item?.alias?.alias?.name === 'string') {
@@ -293,7 +302,7 @@ function collectColumns(
     }
     for (const [k, v] of Object.entries(select ?? {})) {
       if (k !== 'with' && k !== 'from' && k !== 'joins') {
-        collectColumns(v, target, next, bigQuery);
+        collectColumns(v, target, next, dialect);
       }
     }
     if (select?.from) {
@@ -302,7 +311,7 @@ function collectColumns(
     return;
   }
   for (const value of Object.values(obj)) {
-    collectColumns(value, out, bound, bigQuery);
+    collectColumns(value, out, bound, dialect);
   }
 }
 

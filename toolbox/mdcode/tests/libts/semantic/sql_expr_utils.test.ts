@@ -262,6 +262,44 @@ describe('columnReferences', () => {
     expect(columnReferences('SUM(orders.amount', 'ANSI_SQL')).toBeUndefined();
     expect(columnReferences('a; b', 'BIGQUERY')).toBeUndefined();
   });
+
+  test('reads SQL Server text as T-SQL', () => {
+    // Bracketed names are T-SQL only: the dialect-neutral parser cannot read
+    // them.
+    expect(columnReferences('SUM([orders].[amount])', 'SQLSERVER'))
+        .toEqual([{qualifier: 'orders', name: 'amount'}]);
+    expect(columnReferences('COUNT(DISTINCT orders.[customer id])', 'SQLSERVER'))
+        .toEqual([{qualifier: 'orders', name: 'customer id'}]);
+    expect(columnReferences('SUM([orders].[amount])', 'ANSI_SQL'))
+        .toBeUndefined();
+    expect(columnReferences('SUM(ISNULL(orders.discount, 0))', 'SQLSERVER'))
+        .toEqual([{qualifier: 'orders', name: 'discount'}]);
+    // DATEDIFF puts the date part first; it is not a column.
+    for (const unit of ['day', 'dd']) {
+      expect(columnReferences(
+                 `AVG(DATEDIFF(${unit}, orders.start_date, orders.end_date))`,
+                 'SQLSERVER'))
+          .toEqual([
+            {qualifier: 'orders', name: 'start_date'},
+            {qualifier: 'orders', name: 'end_date'},
+          ]);
+    }
+    // DATE_BUCKET puts the date part first too. BigQuery's DATE_BUCKET takes
+    // the date first, so there `d` is a column.
+    expect(columnReferences(
+               'COUNT(DISTINCT DATE_BUCKET(week, 1, orders.order_date))',
+               'SQLSERVER'))
+        .toEqual([{qualifier: 'orders', name: 'order_date'}]);
+    expect(columnReferences(
+               "DATE_BUCKET(d, INTERVAL 7 DAY, DATE '2020-01-01')", 'BIGQUERY'))
+        .toEqual([{name: 'd'}]);
+    // A method of a column, such as geography's STLength, reads the column. A
+    // two-part function name is still a function.
+    expect(columnReferences('MAX(orders.geo.STLength())', 'SQLSERVER'))
+        .toEqual([{qualifier: 'orders', name: 'geo'}]);
+    expect(columnReferences('SUM(dbo.fn_tax(orders.amount))', 'SQLSERVER'))
+        .toEqual([{qualifier: 'orders', name: 'amount'}]);
+  });
 });
 
 describe('entitiesReached', () => {

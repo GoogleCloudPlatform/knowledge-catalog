@@ -43,11 +43,13 @@ was used.
 Ossie compatibility is a property of the **vanilla** version, and the contract
 runs in both directions:
 
-> **Every Ossie `0.2.0.dev0` document is a valid `kcmd` model.** The reverse holds
-> for a vanilla `kcmd` model that uses no extensions ([§5](#5-extensions)) *and* no
-> relaxations ([§4](#4-narrowings-and-relaxations)) — a fully-bound model with only
-> Ossie constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model
-> and it is a valid Ossie document.
+> **An Ossie `0.2.0.dev0` document is a valid `kcmd` model unless it breaks a
+> narrowing ([§4.1](#41-narrowings-stricter-than-ossie)), such as an expression in
+> a non-SQL dialect.** The reverse holds for a vanilla `kcmd` model that uses no
+> extensions ([§5](#5-extensions)) *and* no relaxations
+> ([§4](#4-narrowings-and-relaxations)) — a fully-bound model with only Ossie
+> constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model and
+> it is a valid Ossie document.
 
 Under vanilla, `kcmd`'s deployment, binding and inheritance additions ride in a
 `custom_extensions` block an Ossie-only tool ignores (see
@@ -265,9 +267,8 @@ ai_context:
 
 There is no top-level `synonyms` key on any object; synonyms are always
 `ai_context.synonyms`. `instructions`, `synonyms`, and `examples` are all
-Ossie-native. `kcmd` accepts `examples` leniently — items of any shape, keeping
-only the string ones — where Ossie constrains items to strings; authored documents
-SHOULD use string examples for portability. Which parts of `ai_context` reach
+Ossie-native. Each `examples` item MUST be a string, as in Ossie; any other item
+is a load error. Which parts of `ai_context` reach
 which destination is in [What push and pull preserve](fidelity.md).
 
 ### 2.5. Expressions
@@ -290,8 +291,10 @@ portable fallback. An `expression` references logical fields as
 ([§2.3](#23-metric)).
 
 Ossie closes `dialect` to an enum — `ANSI_SQL`, `SNOWFLAKE`, `MDX`, `TABLEAU`,
-`DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. `kcmd`'s parser accepts any
-string here (a relaxation); authored documents SHOULD use an Ossie dialect name.
+`DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. `kcmd` accepts the SQL
+dialects `ANSI_SQL`, `BIGQUERY`, `SPANNER`, `MYSQL`, `POSTGRES`, `ALLOYDB`,
+`SQLSERVER`, `SNOWFLAKE` and `DATABRICKS`, and rejects any other name.
+`SQLSERVER` text is read as T-SQL.
 
 ## 3. Conformance summary
 
@@ -318,12 +321,12 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
-| `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
+| `expression.dialects` | closed enum | stricter; adds names | SQL dialects only; adds Google Cloud engines · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
 | `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
 | `constraints` | — | added | named invariants over the ontology; `/google` only · [§5](#5-extensions) |
 | field `expression` (column binding) | required | optional | model before binding; unbound is pruned · [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
 | `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
-| `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same; `examples` any shape | tolerate imports; non-strings dropped · [§2.4](#24-ai_context), [§4.2](#42-relaxations-looser-than-ossie) |
+| `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same | [§2.4](#24-ai_context) |
 | `custom_extensions` (`vendor_name`, `data`) | the extension carrier | rejected | `/google` uses native keys; nothing to carry · [§6](#6-the-extension-mechanism) |
 | `deployment_target` | — | added | OSI omits deployment; vanilla carries it in `custom_extensions` · [§5](#5-extensions), [§7.2](#72-deployment-target) |
 | binding profiles | — | added | one model, many stores · [§7.3](#73-binding-profiles) |
@@ -384,6 +387,11 @@ Each rule and its reason:
 - **A metric belongs to a concrete leaf.** A metric whose entity is abstract, or
   extended by another entity, is rejected on every push.
 
+- **Only SQL dialects are accepted.** An expression entry whose `dialect` is
+  `MDX`, `TABLEAU`, `MAQL` or `THOUGHTSPOT` is a hard load error
+  ([§2.5](#25-expressions)). *Why:* every accepted dialect names a SQL engine,
+  and no engine on the list runs text in those languages.
+
 A diamond in a class hierarchy is allowed when both paths reach one
 declaration: the resolver keeps that field once. A cycle in `extends` is
 rejected, and so is a field that two ancestors which do not extend each other
@@ -410,19 +418,11 @@ logical edge.
 - **`from_columns` / `to_columns` on a relationship** — both required in Ossie;
   `kcmd` allows both omitted (a logical edge).
 
-**Value constraints loosened — to tolerate imported and future inputs.** Ossie
-closes these to a fixed set; `kcmd`'s parser accepts more so a document produced by
-an importer or by a newer Ossie is loaded (with a warning), not rejected, then
-normalized on the way to a store. *Why:* these carry no deploy-time meaning that a
-stricter check would protect — an unknown `dialect` is only ever selected against a
-known one, and a non-string example is discarded — so rejecting the whole document
-over them costs portability for no safety. Authored documents SHOULD still use the
-Ossie-valid forms.
-
-- **`dialect` value** — a closed enum in Ossie; any string in `kcmd`'s parser
-  (an unrecognized dialect is ignored when a canonical variant is selected).
-- **`ai_context.examples` items** — strings in Ossie; any shape in `kcmd`
-  (non-strings are dropped on load).
+**Dialect names added for Google Cloud databases.** Ossie's `dialect` enum has
+no name for Spanner, AlloyDB or the Cloud SQL engines. `kcmd` accepts `SPANNER`,
+`MYSQL`, `POSTGRES`, `ALLOYDB` and `SQLSERVER` in both versions
+([§2.5](#25-expressions)). A vanilla document that uses one of them is not a
+valid Ossie document.
 
 The operational form of every rule in this section (hard error vs.
 skip-with-warning, and the exact message) is in

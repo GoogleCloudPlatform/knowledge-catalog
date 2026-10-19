@@ -4096,7 +4096,7 @@ entities:
           "profile 'prod': entity 'base': field 'note': 'expression': " +
               "dialects.0.dialect: Unknown dialect 'NOPE' in expression " +
               'dialects. Expected one of ANSI_SQL, BIGQUERY, SPANNER, MYSQL, ' +
-              'POSTGRES, ALLOYDB, SNOWFLAKE, DATABRICKS.',
+              'POSTGRES, ALLOYDB, SQLSERVER, SNOWFLAKE, DATABRICKS.',
         ]);
     // No profile binds an abstract entity, so `orders` still needs its own
     // binding.

@@ -164,7 +164,7 @@ export interface Dimension {
 
 export const ALLOWED_DIALECTS = [
   'ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL',
-  'POSTGRES', 'ALLOYDB', 'SNOWFLAKE', 'DATABRICKS',
+  'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS',
 ] as const;
 export type SqlDialect = (typeof ALLOWED_DIALECTS)[number];
 

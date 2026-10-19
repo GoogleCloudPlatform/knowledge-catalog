@@ -973,8 +973,8 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     expect(metric.aiContext?.synonyms).toEqual(['revenue']);
   });
 
-  test('all eight allowed dialects and ten datatypes are accepted, while non-SQL dialects (MDX, TABLEAU, MAQL) are rejected', () => {
-    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SNOWFLAKE', 'DATABRICKS'];
+  test('all nine allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
+    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS'];
     const datatypes = [...DATA_TYPES];  // the loader accepts exactly the IR vocabulary
     const { models } = fromDocument({
       version: '0.2.0.dev0',
@@ -1009,6 +1009,21 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
         }],
       })).toThrow(`Unknown dialect '${nonSql}'`);
     }
+
+    // SQL Server is named SQLSERVER only; TSQL is not a synonym.
+    expect(() => fromDocument({
+      version: '0.2.0.dev0',
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'd', source: 'bigquery:p.d.d', primary_key: ['id'],
+          fields: [{
+            name: 'f',
+            expression: { dialects: [{ dialect: 'TSQL', expression: 'd.c' }] },
+          }],
+        }],
+      }],
+    })).toThrow(`Unknown dialect 'TSQL'`);
   });
 });
 
