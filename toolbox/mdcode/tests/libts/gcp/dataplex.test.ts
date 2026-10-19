@@ -204,6 +204,46 @@ describe('_fixEntry path-keyed aspects', () => {
      });
 });
 
+// An update with deleteMissingAspects answers with each aspect it removed
+// listed under its key with an empty value.
+describe('_fixEntry removed aspects', () => {
+  test('drops an aspect whose value is empty or null, at entry level and at ' +
+           'a field path, and keeps the others',
+       async () => {
+         const lookup = spyOn(ResourceManagerClient.prototype, 'getProject')
+                            .mockResolvedValue(
+                                {status: 200, result: {projectId: 'types'}} as
+                                any);
+         const entry: Entry = {
+           name: ENTRY,
+           entryType:
+               'projects/655216118709/locations/global/entryTypes/generic',
+           aspects: {
+             '655216118709.global.schema': {
+               aspectType:
+                   'projects/655216118709/locations/global/aspectTypes/schema',
+               data: {fields: []},
+             },
+             '418487367933.global.guidelines': {},
+             '418487367933.global.guidelines@Schema.amount': {},
+             '418487367933.global.sql-expressions': null as any,
+           },
+         };
+
+         await _fixEntry(entry, CTX);
+
+         expect(entry.aspects).toEqual({
+           'dataplex-types.global.schema': {
+             aspectType:
+                 'projects/dataplex-types/locations/global/aspectTypes/schema',
+             data: {fields: []},
+           },
+         });
+         // A removed aspect needs no project lookup.
+         expect(lookup).not.toHaveBeenCalled();
+         lookup.mockRestore();
+       });
+});
 
 
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
@@ -229,6 +269,39 @@ describe('CatalogClient.updateEntry', () => {
       aspectKeys: ['p.global.guidelines'],
     });
   });
+
+  test('returns the updated entry without the aspects the update removed',
+       async () => {
+         const client = new CatalogClient(CTX);
+         // The response Dataplex gives for an update that removed guidelines.
+         spyOn(client as any, '_patch').mockImplementation(async () => ({
+           status: 200,
+           result: {
+             name: ENTRY,
+             entryType:
+                 'projects/655216118709/locations/global/entryTypes/generic',
+             aspects: {
+               '655216118709.global.overview': {
+                 aspectType: 'projects/655216118709/locations/global/' +
+                     'aspectTypes/overview',
+                 data: {content: 'text'},
+               },
+               '655216118709.global.guidelines': {},
+             },
+           },
+         }));
+         const entry = {name: ENTRY, aspects: {}} as Entry;
+
+         const res = await client.updateEntry(
+             entry, ['aspects'],
+             ['dataplex-types.global.overview', 'dataplex-types.global.guidelines'],
+             true);
+
+         expect(res.status).toBe(200);
+         expect(Object.keys(res.result!.aspects!)).toEqual([
+           'dataplex-types.global.overview',
+         ]);
+       });
 });
 
 

@@ -2184,6 +2184,159 @@ describe('the push id on every file copy', () => {
 });
 
 
+// Makes the fake catalog answer an update the way Dataplex does. The update
+// writes each aspect `aspectKeys` names that the body carries. A key that ends
+// in `@*` names the type's aspects at every field path. With
+// `deleteMissingAspects` the update removes each named aspect the body leaves
+// out, and the response lists that aspect under its key with an empty value,
+// spelling the type's project as a number.
+function patchLikeDataplex(entries: Map<string, Entry>): void {
+  (CatalogClient.prototype.updateEntry as any).mockRestore();
+  spyOn(CatalogClient.prototype as any, '_patch')
+      .mockImplementation(async (...args: any[]) => {
+        const [name, body, params] = args as [string, Entry, any];
+        const stored = entries.get(name);
+        if (!stored) return {status: 404, message: 'not found'};
+        const aspects = {...stored.aspects};
+        const answered: Record<string, any> = {};
+        for (const listed of params.aspectKeys ?? []) {
+          const keys = listed.endsWith('@*') ?
+              [...Object.keys(aspects), ...Object.keys(body.aspects ?? {})]
+                  .filter(k => k.startsWith(listed.slice(0, -1))) :
+              [listed];
+          for (const key of new Set(keys)) {
+            if (body.aspects?.[key]) {
+              aspects[key] = structuredClone(body.aspects[key]);
+              answered[key] = {...body.aspects[key], createTime: 'now'};
+            } else if (params.deleteMissingAspects && aspects[key]) {
+              delete aspects[key];
+              answered[key.replace(/^dataplex-types\./, '655216118709.')] = {};
+            }
+          }
+        }
+        entries.set(name, {...structuredClone(body), aspects});
+        return {
+          status: 200,
+          result: {name, entryType: body.entryType, aspects: answered},
+        };
+      });
+}
+
+describe('a push whose update removes an aspect', () => {
+  const WITH_INSTRUCTIONS = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        primary_key: [key]
+        ai_context:
+          instructions: Join orders on the customer key.
+        fields:
+          - { name: key, label: Customer ID }
+      - name: Order
+        primary_key: [id]
+        fields:
+          - { name: id }
+    metrics:
+      - name: customers
+        description: Customers
+        entity: Customer
+        expression: COUNT(Customer.key)
+`;
+  // The instructions and the Order entity are gone, and the metric has a new
+  // description.
+  const WITHOUT_INSTRUCTIONS = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Customer
+        primary_key: [key]
+        fields:
+          - { name: key, label: Customer ID }
+    metrics:
+      - name: customers
+        description: Customer count
+        entity: Customer
+        expression: COUNT(Customer.key)
+`;
+  const named = (id: string) =>
+      `projects/test-project/locations/us/entryGroups/commerce_eg/entries/${id}`;
+
+  test('exits 0, removes the aspect, and finishes the writes and deletions ' +
+           'after the update',
+       async () => {
+         writeWorkspace();
+         const modelPath = path.join(entryGroupDir(), 'commerce.yaml');
+         fs.writeFileSync(modelPath, WITH_INSTRUCTIONS);
+         const {entries} = fakeCatalog();
+         patchLikeDataplex(entries);
+         const customer = () =>
+             Object.keys(entries.get(named('commerce.entities.Customer'))!
+                             .aspects ?? {});
+         expect(await push({})).toBe(0);
+         expect(customer()).toContain('dataplex-types.global.guidelines');
+
+         fs.writeFileSync(modelPath, WITHOUT_INSTRUCTIONS);
+         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+         const code = await push({});
+
+         expect(messages(errorSpy)).toBe('');
+         expect(code).toBe(0);
+         expect(customer()).not.toContain('dataplex-types.global.guidelines');
+         // The metric is written after the entities, and an orphaned entry is
+         // deleted last.
+         expect(entries.get(named('commerce.metrics.customers'))!.entrySource
+                    ?.description)
+             .toBe('Customer count');
+         expect(entries.has(named('commerce.entities.Order'))).toBe(false);
+         expect(storedCopies(entries)['commerce.yaml'])
+             .toBe(WITHOUT_INSTRUCTIONS);
+       });
+
+  test('with KC_V2_ASPECTS on, exits 0 and removes sql-expressions and a ' +
+           'field\'s guidelines too',
+       async () => {
+         process.env.KC_V2_ASPECTS = '1';
+         writeWorkspace();
+         const modelPath = path.join(entryGroupDir(), 'commerce.yaml');
+         fs.writeFileSync(modelPath, WITH_INSTRUCTIONS);
+         const {entries} = fakeCatalog();
+         patchLikeDataplex(entries);
+         expect(await push({})).toBe(0);
+         // Another writer adds two aspects that push owns under the flag.
+         const customer = () =>
+             entries.get(named('commerce/entities/Customer'))!.aspects!;
+         customer()['dataplex-types.global.sql-expressions'] = {
+           aspectType:
+               'projects/dataplex-types/locations/global/aspectTypes/' +
+               'sql-expressions',
+           data: {},
+         };
+         customer()['dataplex-types.global.guidelines@Schema.key'] = {
+           aspectType:
+               'projects/dataplex-types/locations/global/aspectTypes/guidelines',
+           path: 'Schema.key',
+           data: {instructions: 'The key.', userManaged: true},
+         };
+
+         fs.writeFileSync(modelPath, WITHOUT_INSTRUCTIONS);
+         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+         const code = await push({});
+
+         expect(messages(errorSpy)).toBe('');
+         expect(code).toBe(0);
+         expect(Object.keys(customer()).sort()).toEqual([
+           'dataplex-types.global.schema',
+           'dataplex-types.global.semantic-entity',
+         ]);
+         expect(entries.get(named('commerce/metrics/customers'))!.entrySource
+                    ?.description)
+             .toBe('Customer count');
+         expect(entries.has(named('commerce/entities/Order'))).toBe(false);
+       });
+});
+
+
 // Push applies a profile, loads its models and checks them. It prints each
 // warning after `Warning:`, the summary of what pruning leaves unavailable after
 // `Note:` and each error after `Error:`.
