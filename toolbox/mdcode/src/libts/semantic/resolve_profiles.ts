@@ -42,6 +42,7 @@ import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, g
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
+import {transpilesFrom} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -1875,14 +1876,16 @@ function textsFor(
 
 // The texts a profile of `dialect` evaluates for a field or metric, as
 // textsFor gives them. With `transpiled`, the caller translates a text written
-// only in a vendor dialect into BigQuery SQL, so a BigQuery profile evaluates
-// that text too, read in the dialect it is written in.
+// only in a vendor dialect its translator reads into BigQuery SQL, so a
+// BigQuery profile evaluates that text too, read in the dialect it is written
+// in.
 function evaluatedTexts(
     f: Parameters<typeof textsFor>[0], dialect: string|undefined,
     transpiled: boolean): Array<{text: string; dialect: string}> {
   const out = textsFor(f, dialect);
   if (out.length || !transpiled || dialect !== 'BIGQUERY' ||
-      f.expression !== undefined || !f.importedExpression) {
+      f.expression !== undefined || !f.importedExpression ||
+      !transpilesFrom(f.importedDialect ?? '')) {
     return out;
   }
   const written = f.importedDialect || 'ANSI_SQL';
@@ -1967,8 +1970,8 @@ export interface CompletenessOptions {
   // profile's dialect is `dialect` and the field is not in `rebound`.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
   // The caller transpiles a field or metric whose only text is in a vendor
-  // dialect into BigQuery SQL, so a BigQuery profile can run it. The rules
-  // that read references then read that text.
+  // dialect its translator reads into BigQuery SQL, so a BigQuery profile can
+  // run it. The rules that read references then read that text.
   transpiled?: boolean;
 }
 

@@ -612,8 +612,8 @@ const PUSH_REPORT: PrepareReport = {
 // binding it selects, so those rules leave that binding out. A
 // legacy `semantic_model:` wrapper, and a file under the reserved name
 // 'default', which no push deploys, are not read here. With `transpile`, push
-// fills in BigQuery SQL for a text written only in a vendor dialect. The
-// warnings go to `warnings`.
+// fills in BigQuery SQL for a text written only in a vendor dialect its
+// translator reads. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     profileName: string, profileDocs: ProfileDocs, warnings: string[],

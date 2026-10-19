@@ -2085,6 +2085,32 @@ entities:
       }
     });
 
+    // Push's translator does not read Spanner or AlloyDB SQL, so --transpile
+    // leaves such a text as written, and a BigQuery profile still cannot run
+    // it.
+    test('and under --transpile still rejects a metric whose only text the translator cannot read', async () => {
+      for (const dialect of ['SPANNER', 'ALLOYDB']) {
+        writeScope({
+          'commerce.yaml': `${commerce()}    metrics:
+      - name: spend
+        entity: purchase
+        expression:
+          dialects:
+            - { dialect: ${dialect}, expression: "SUM(purchase.p_id)" }
+`,
+          'commerce.profile.prod.yaml': profileFile('prod'),
+        });
+        errs.length = 0;
+        expect(await push({validateOnly: true, transpile: true})).toBe(1);
+        expect(errs).toEqual([
+          "Error: [commerce.profile.prod.yaml] profile 'prod': metric " +
+              "'spend' has no expression for BIGQUERY or ANSI_SQL, and this " +
+              "profile's sources are BIGQUERY; give it one, or add it to " +
+              "'metrics_exclude'",
+        ]);
+      }
+    });
+
     // Under --transpile, push fills in BigQuery SQL for a text written only
     // in a vendor dialect, so a BigQuery profile can run it.
     test('and lets --transpile fill in a vendor-only metric for a BigQuery profile', async () => {
