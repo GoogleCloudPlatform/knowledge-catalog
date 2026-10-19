@@ -1885,6 +1885,22 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
   });
 
+  // An abstract dataset has no table, so it names no source and binds no
+  // field. Its block is read before the bindings are checked.
+  test('abstract on a dataset with no source and an unbound field fails the same way', () => {
+    const m = fullModel();
+    m.datasets[0].custom_extensions = [google({ extends: ['Party'] })];
+    m.datasets.push({
+      name: 'Party',
+      custom_extensions: [google({ abstract: true })],
+      fields: [{ name: 'id', datatype: 'String' }],
+    });
+    expect(() => load(VANILLA, m)).toThrow(
+      "dataset 'Party': a GOOGLE custom_extensions block cannot declare 'abstract' in a " +
+      "'0.2.0.dev0' document. An abstract dataset has no table, and every '0.2.0.dev0' " +
+      "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
+  });
+
   test('a value the Google flavor rejects for the same key fails', () => {
     const cases = [
       ['model', { deployments: [{ name: 'a' }] }],

@@ -1720,12 +1720,19 @@ function convertModel(
 
   const block = readGoogleBlocks(
       m.custom_extensions, version, 'model', `model '${m.name}'`);
+  // A dataset's GOOGLE blocks are read before the bindings are checked, so a
+  // dataset that declares `abstract` in one is told that vanilla has no
+  // abstract dataset, even when it names no `source`.
+  const datasetBlocks = m.datasets.map(
+      ds => readGoogleBlocks(
+          ds.custom_extensions, version, 'dataset', `dataset '${ds.name}'`));
   if (version === OSSIE_VERSION) {
     requireVanillaBindings(m);
   }
 
   const entities = m.datasets.map(
-      ds => convertDataset(ds, version, opts, warnings, dialect));
+      (ds, i) => convertDataset(
+          ds, datasetBlocks[i], version, opts, warnings, dialect));
   rejectDuplicateNames(
       entities.map(e => e.name), 'dataset name', `model '${m.name}'`);
 
@@ -1855,9 +1862,12 @@ function convertModel(
   return model;
 }
 
+// Converts the dataset `ds`, whose GOOGLE blocks convertModel has read into
+// `block`.
 function convertDataset(
-    ds: DatasetDoc, version: FormatVersion, opts: LoadOptions,
-    warnings: string[], dialect: string): Entity {
+    ds: DatasetDoc, block: ReturnType<typeof readGoogleBlocks>,
+    version: FormatVersion, opts: LoadOptions, warnings: string[],
+    dialect: string): Entity {
   const ctxLabel = `dataset '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
@@ -1878,8 +1888,6 @@ function convertDataset(
   if (parsedSource) entity.authoredSource = parsedSource.authoredSource;
   if (ds.unique_keys && ds.unique_keys.length)
     entity.uniqueKeys = ds.unique_keys;
-  const block =
-      readGoogleBlocks(ds.custom_extensions, version, 'dataset', ctxLabel);
   const parents = ds.extends ?? block.values.extends;
   if (parents && parents.length) entity.extends = parents;
   if (ds.abstract) entity.abstract = true;
