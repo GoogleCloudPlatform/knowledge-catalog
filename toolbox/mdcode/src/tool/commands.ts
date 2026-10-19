@@ -158,9 +158,13 @@ export function checkPushSelection(sel: {
 // `deployments` or `deploymentTargets` list. Drives the push mode: a push whose
 // models all declare no target governs the logical model only -- it deploys no
 // graph, so bindings and a target are not required and pruning is skipped
-// (Knowledge Catalog publishes the whole model). On any ambiguity (unparseable
-// YAML, malformed GOOGLE data) it returns true, so the strict load reports the
-// problem rather than silently taking the logical path.
+// (Knowledge Catalog publishes the whole model). It also returns true when the
+// YAML does not parse, or when the data string of a GOOGLE block on the model
+// is not a JSON object or holds a `deployments` value that is not a list. The
+// strict load then reports the problem, and the push does not silently take
+// the logical path. A `deploymentTargets` value that is not a list names no
+// target, as the deploy code reads it. A block whose data is not a string is
+// skipped, and the load rejects it.
 export function declaresGraphTarget(text: string): boolean {
   let doc: any;
   try {
@@ -185,7 +189,7 @@ export function declaresGraphTarget(text: string): boolean {
       // The rule every other reader uses: a blank target names nothing, and
       // a non-string one is a target in no accepted form, which the target
       // checks reject.
-      let data: any;
+      let data: unknown;
       try {
         if (googleBlockTargets([{vendorName: 'GOOGLE', data: ext.data}], '')
                 .length) {
@@ -195,7 +199,12 @@ export function declaresGraphTarget(text: string): boolean {
       } catch {
         return true;  // malformed GOOGLE data: strict load will name it
       }
-      if (Array.isArray(data?.deployments) && data.deployments.length) {
+      if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+        return true;  // not a JSON object: strict load will name it
+      }
+      const deployments = (data as {deployments?: unknown}).deployments;
+      if (Array.isArray(deployments) ? deployments.length > 0 :
+                                       deployments !== undefined) {
         return true;
       }
     }

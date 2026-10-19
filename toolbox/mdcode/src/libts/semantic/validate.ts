@@ -94,8 +94,8 @@ export function validatePushRequirements(
     // model), one, or even several backends (whose KC aspect records all of
     // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
-      // Where the model lists its deployments. A vanilla model that lists
-      // none is told how to declare them instead.
+      // Where the model lists its deployments. A vanilla model with no
+      // `deployments` in its GOOGLE block is told how to declare them instead.
       const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
           model.deployments?.length ?
           `under 'deployments' in its GOOGLE custom_extensions block` :

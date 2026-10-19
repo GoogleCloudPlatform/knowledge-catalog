@@ -117,8 +117,7 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 export const OSSIE_VERSION = '0.2.0.dev0';
 export const GOOGLE_VERSION = '0.2.0.dev0/google';
 // How a vanilla author declares deployments: in a GOOGLE block on the model,
-// or under `deployments:` after a switch to the Google flavor. The end of
-// every message that asks a vanilla model for a deployment.
+// or under `deployments:` after a switch to the Google flavor.
 export const DEPLOYMENTS_VERSION_HINT =
     `list 'deployments' in a GOOGLE custom_extensions block on the model, or ` +
     `set version: '${GOOGLE_VERSION}' and use 'deployments:'`;
@@ -419,9 +418,11 @@ const aiContextSchema = googleAiContextSchema;
 
 // A vendor-scoped extension block: opaque `data` (a JSON string) tagged by
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
-// relationship, metric). A vanilla document's GOOGLE blocks are read into the
-// IR (see readGoogleBlocks); every other block is preserved verbatim (see
-// toCustomExtensions).
+// relationship, metric). A vanilla document's GOOGLE blocks on a model,
+// dataset, relationship or metric are read into the IR (see readGoogleBlocks).
+// A model also keeps each GOOGLE block that carries `deploymentTargets`.
+// rejectGoogleBlock says where a GOOGLE block is rejected. Every other block is
+// kept verbatim.
 const customExtensionSchema = z.object({
   vendor_name: z.string(),
   data: z.string(),
@@ -1210,7 +1211,9 @@ function rejectGoogleBlock(
 type BlockLevel = Exclude<ExtensionLevel, 'field'>;
 
 // The keys a GOOGLE block takes at each level of a vanilla document. Each is
-// the Google flavor's native key of the same name.
+// the Google flavor's native key of the same name, apart from `profiles`, which
+// the Google flavor keeps in profile files. A model's block may also carry
+// `deploymentTargets`, which readGoogleBlocks keeps unread.
 const GOOGLE_BLOCK_KEYS: Record<BlockLevel, readonly string[]> = {
   model: ['profiles', 'deployments'],
   dataset: ['extends'],
@@ -1240,13 +1243,14 @@ interface GoogleBlockValues {
 // `ctx` at `level`, and returns the values they carry and the blocks the object
 // keeps. Only a vanilla document gives a GOOGLE block meaning, and
 // rejectGoogleBlock rejects one in the Google flavor. Each key is validated as
-// the Google flavor validates its native key. A block that is read is not
-// kept, so an object keeps its third-party blocks, and a model keeps a block
-// that carries `deploymentTargets`, which the deploy code still reads. Throws,
-// naming the object, on data that is not a JSON object, a key one block sets
-// twice, a key the level does not take, `abstract` included, a key two blocks
-// both set, a value the Google flavor rejects, and `deployments` beside
-// `deploymentTargets`.
+// the Google flavor validates its native key, apart from `profiles`, whose
+// entries are read as profile files are. A block that is read is not kept, so
+// an object keeps its third-party blocks. Throws, naming the object, on data
+// that is not a JSON object, a key one block sets twice, a key the level does
+// not take, `abstract` included, a key two blocks both set, a value the Google
+// flavor rejects, and `deployments` beside `deploymentTargets`. The deploy code
+// still reads a model's `deploymentTargets`, so the model keeps the block that
+// carries it. Its value is not checked, and two blocks may both set it.
 function readGoogleBlocks(
     exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
     level: BlockLevel, ctx: string):

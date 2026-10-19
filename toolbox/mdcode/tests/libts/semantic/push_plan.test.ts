@@ -220,6 +220,37 @@ semantic_model:
         data: 'not json'
 `)).toBe(true);
        });
+
+  const withData = (data: string) => `
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${data}'
+`;
+
+  test('GOOGLE data the strict load rejects resolves to true', () => {
+    for (const data of [
+           '[]',
+           'null',
+           '"x"',
+           '{"deployments": null}',
+           '{"deployments": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+         ]) {
+      expect(declaresGraphTarget(withData(data))).toBe(true);
+    }
+  });
+
+  // The deploy code reads such a value as no target.
+  test('a GOOGLE block whose deploymentTargets is not a list declares no target', () => {
+    for (const data of [
+           '{"deploymentTargets": null}',
+           '{"deploymentTargets": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+         ]) {
+      expect(declaresGraphTarget(withData(data))).toBe(false);
+    }
+  });
 });
 
 
