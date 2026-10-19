@@ -2342,7 +2342,8 @@ entities:
   // `orders`. A load in that dialect gives the field that text as its target
   // text, which BigQuery would read as the qualifier `orders.` and a comment.
   test('the profile checks read an inherited field in its own dialects under any load dialect', () => {
-    const PG = (t: string) => `postgresql:host.db.public.${t}`;
+    const PG = (t: string) =>
+        `cloudsql_postgresql:p.us-central1.inst.db.public.${t}`;
     const pts = `
             expression:
               dialects:
