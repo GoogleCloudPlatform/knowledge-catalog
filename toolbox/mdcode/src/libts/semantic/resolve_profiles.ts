@@ -2006,12 +2006,12 @@ export function validateProfileCompleteness(
   // the model: the profile applied as push applies it, and each excluded field
   // left off the entity that names it. Push reports a broken hierarchy in the
   // model file. A profile breaks the hierarchy itself when it binds a field on
-  // two unrelated branches. That is reported here, unless `applied`, since
-  // push then reports it. The rules below still run on a broken hierarchy,
-  // apart from the check that each inherited field holds SQL, which push
-  // also skips then. An entity whose own ancestors do not resolve shows only
-  // its declared fields, so the rules that need what it inherits leave it
-  // out.
+  // two unrelated branches. That is reported here once the model file's
+  // hierarchy resolves, unless `applied`, since push then reports it. The
+  // rules below still run on a broken hierarchy, apart from the check that
+  // each inherited field holds SQL, which push also skips then. An entity
+  // whose own ancestors do not resolve shows only its declared fields, so the
+  // rules that need what it inherits leave it out.
   const fieldsOf = fieldsByEntity(baseModel);
   // The entities whose own ancestors do not resolve in the model file, so
   // what they inherit is not known.

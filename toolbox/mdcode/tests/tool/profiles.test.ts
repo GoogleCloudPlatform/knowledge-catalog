@@ -1977,6 +1977,132 @@ entities:
           incomplete('inventory.profile.staging.yaml').map(e => `Error: ${e}`)));
     });
 
+    // Push reports one broken hierarchy at a time. While the model file's
+    // does not resolve, push reports that alone. The break a profile file
+    // adds shows once the model file is fixed.
+    test('and reports a profile that breaks the hierarchy once the model file resolves', async () => {
+      const model = (shopExtends: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: code, datatype: String }
+      - name: customer
+        extends: [party]
+        source: ${BQ('dev', 'customer')}
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+      - name: supplier
+        extends: [party]
+        source: ${BQ('dev', 'supplier')}
+        primary_key: [s_id]
+        fields:
+          - { name: s_id, expression: s_id }
+          - { name: code, expression: s_code }
+      - name: partner
+        extends: [customer, supplier]
+        source: ${BQ('dev', 'partner')}
+        primary_key: [p_id]
+        fields:
+          - { name: p_id, expression: p_id }
+      - name: shop
+${shopExtends}        source: ${BQ('dev', 'shop')}
+        primary_key: [sh_id]
+        fields:
+          - { name: sh_id, expression: sh_id }
+`;
+      const prod = `name: prod
+entities:
+  - name: customer
+    source: ${BQ('prod', 'customer')}
+    fields:
+      - { name: code, expression: c_code }
+  - name: supplier
+    source: ${BQ('prod', 'supplier')}
+  - name: partner
+    source: ${BQ('prod', 'partner')}
+  - name: shop
+    source: ${BQ('prod', 'shop')}
+`;
+      writeScope({
+        'commerce.yaml': model('        extends: [ghost]\n'),
+        'commerce.profile.prod.yaml': prod,
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [expect.stringContaining(
+            "entity 'shop' extends unknown entity 'ghost'")],
+      });
+      writeScope({'commerce.yaml': model('')});
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [expect.stringContaining(
+            "[commerce.profile.prod.yaml] profile 'prod': entity 'partner' " +
+            "inherits field 'code' from 'customer' and from 'supplier'")],
+      });
+    });
+
+    // The error a profile file gets beside a model file that loads only with
+    // a legacy wrapper merged in is about the model file. It names the
+    // profile, as a push that selects the profile file does, and not the file.
+    test('names the profile, not the file, when the model file needs the pushed wrapper', async () => {
+      writeScope({
+        'commerce.yaml': commerce().replace('        to_columns: [c_id]\n', ''),
+        'commerce.profiles/legacy.yaml': `semantic_model:
+  - name: commerce
+    relationships:
+      - name: placed_by
+        to_columns: [c_id]
+`,
+        'commerce.profiles/staging.yaml': profileFile('staging'),
+      });
+      const {code, errors} = await pushResult('legacy');
+      expect(code).toBe(1);
+      expect(errors).toEqual([expect.stringMatching(
+          /^Model document 'commerce': [^]*\(under profile 'staging', the model file must load on its own before the profile applies\)$/)]);
+    });
+
+    // A deployment that names a profile stops the push before the profile
+    // checks, so an incomplete profile file is reported on the next push.
+    test('after a deployment that names a profile is fixed', async () => {
+      writeScope({
+        'commerce.yaml': commerce({targets: 1}).replace(
+            /(target: \S+_prod\n)/, '$1        profile: staging\n'),
+        'commerce.profile.staging.yaml': STAGING,
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [
+          "[commerce] model 'commerce': deployment 'prod' names profile " +
+              "'staging'; remove 'profile' from the deployment entry so it " +
+              "uses the model file's own bindings.",
+        ],
+      });
+      writeScope({'commerce.yaml': commerce({targets: 1})});
+      expect(await pushResult()).toEqual(
+          {code: 1, errors: incomplete('commerce.profile.staging.yaml')});
+    });
+
+    // --all-profiles --no-kc deploys each profile's graph and publishes
+    // nothing, so a model that deploys no graph and does not declare the
+    // default_profile is neither deployed nor checked.
+    test('but not a model --all-profiles --no-kc neither deploys nor publishes', async () => {
+      writeScope(
+          {
+            'commerce.yaml': commerce(),
+            'commerce.profiles/w.yaml': legacyProfile(true),
+            'inventory.yaml': commerce().replace('name: commerce', 'name: inventory'),
+            'inventory.profile.staging.yaml': STAGING,
+          },
+          'w');
+      expect(await push({validateOnly: true, allProfiles: true, kc: false}))
+          .toBe(0);
+      expect(errs).toEqual([]);
+    });
+
     // A profile that binds an inherited field on two unrelated branches
     // breaks the hierarchy. The rest of the profile is still checked.
     test('and checks the rest of a profile that breaks the hierarchy', async () => {

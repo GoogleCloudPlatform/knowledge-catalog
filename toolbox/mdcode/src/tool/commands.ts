@@ -604,7 +604,8 @@ const PUSH_REPORT: PrepareReport = {
 };
 
 // The errors the named profiles of each model in `docs` give: each profile
-// file checked on its own for completeness. An error names its profile file.
+// file checked on its own for completeness. An error about a profile file
+// names that file.
 // A model's profiles are checked against its model file as loaded, whichever
 // binding `profileName` selects. `checkedByDoc`
 // holds each document as push checks it: with the profile applied, or loaded
@@ -706,10 +707,11 @@ function reboundFields(base: SemanticModel, pushed: SemanticModel): string[] {
 // Loads and validates a profile's documents into deployable models, sharing
 // one IR across the push legs. `prune` drops each unbound field, and whatever
 // depends on it, so a deployed graph presents only what its binding answers; a
-// catalog-only push leaves it off to publish the whole logical model. Every
-// named profile the models declare is checked too, read through
-// `profileDocs`. Runs local checks only. Returns the models and the target
-// partition the graph legs need, or null after reporting an error.
+// catalog-only push leaves it off to publish the whole logical model. Once
+// the documents load and no deployment names a profile, every named profile
+// the models declare is checked too, read through `profileDocs`. Runs local
+// checks only. Returns the models and the target partition the graph legs
+// need, or null after reporting an error.
 async function prepareModels(
     docs: ProfiledDoc[], profileName: string, opts: {
       prune: boolean; defaultProject: string; profileDocs: ProfileDocs;
