@@ -117,6 +117,9 @@ export function declaredConceptFields(model: SemanticModel):
  * `targetDialect` is the SQL that an inherited field's target text and its
  * ANSI_SQL entries are read in to find their comments. It is BigQuery unless
  * given, as the graph generators read the target text.
+ *
+ * Reading an inherited field's SQL needs the SQL parser, so call
+ * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
  */
 export function resolveInheritance(
     model: SemanticModel, targetDialect?: string): ResolveResult {
