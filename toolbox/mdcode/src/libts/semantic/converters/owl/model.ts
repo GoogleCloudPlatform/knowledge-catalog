@@ -152,6 +152,9 @@ export interface OwlClass extends OwlCommonAnnotations {
   // class a closed vocabulary even without an owl:oneOf, false keeps it a data
   // class even when it has named individuals. Absent when not annotated.
   vocabulary?: boolean;
+  // `kcmd:abstract true|false`: overrides the abstract-by-structure rule
+  // (abstract.ts). Absent when not annotated.
+  abstract?: boolean;
   // rdfs:label, if present. A display name; carried to the entity only when it
   // adds information over `localName` (see to_ir.ts).
   label?: string;
@@ -265,9 +268,18 @@ export interface OwlDatatypeProperty extends OwlCommonAnnotations {
   localName: string;
   // Local names of every rdfs:domain class this property hangs off; the field
   // is added to each. A property may declare more than one domain (it then
-  // appears on each entity). Empty when no domain is declared (skipped with a
+  // appears on each entity), or one `owl:unionOf` domain, whose member classes
+  // are listed here (the form to use: several rdfs:domain triples mean an
+  // intersection in OWL). Empty when no domain is declared (skipped with a
   // warning -- an unattached field has nowhere to live).
   domains: string[];
+  // True when (some of) `domains` came from an owl:unionOf domain.
+  unionDomain?: boolean;
+  // The rdfs:domain class expressions that could not be read as classes (an
+  // owl:intersectionOf, a restriction, an anonymous owl:unionOf member that
+  // is not itself a union, ...), named by construct for the mapper's warning.
+  // Absent when none.
+  unsupportedDomains?: string[];
   // The rdfs:range IRI (e.g. the xsd:string IRI), mapped to an OSI datatype by
   // the mapper. Undefined when no range is declared (-> Opaque).
   rangeIri?: string;
@@ -318,6 +330,8 @@ export interface OwlObjectProperty extends OwlCommonAnnotations {
   // warning: an edge needs both endpoints).
   domains: string[];
   ranges: string[];
+  // As OwlDatatypeProperty.unsupportedDomains.
+  unsupportedDomains?: string[];
   label?: string;
   comment?: string;
   synonyms: string[];
@@ -492,4 +506,36 @@ export interface OwlModel {
   // declared owl:NamedIndividual, in document order (see OwlIndividual). A
   // term that is itself a class or property is not listed. Absent when none.
   individuals?: OwlIndividual[];
+  // The kcmd:Metric individuals (https://kcmd.dev/ns#Metric), in document
+  // order (see OwlMetric). They are not listed in `individuals`. Absent when
+  // none.
+  metrics?: OwlMetric[];
+}
+
+/**
+ * A business metric stated in the ontology as an individual of kcmd:Metric:
+ *
+ *   met:win_rate a kcmd:Metric ;
+ *       skos:prefLabel "Win rate" ; skos:altLabel "close rate" ;
+ *       kcmd:expression "100 * SAFE_DIVIDE(...)" ;
+ *       skos:definition "..." ; kcmd:instructions "..." ; kcmd:unit "percent" .
+ *
+ * The local name is the metric name; `expression` is written over the
+ * ontology's own `<Class>.<property>` names. Every value is a literal (the
+ * unit may also be an IRI, whose local name is kept).
+ */
+export interface OwlMetric {
+  iri: string;
+  localName: string;
+  expression?: string;
+  // rdfs:label / skos:prefLabel values (prefLabel first), then
+  // skos:altLabel / skos:hiddenLabel values.
+  labels: string[];
+  altLabels: string[];
+  // skos:definition, else rdfs:comment, else dcterms:/dc:description.
+  definition?: string;
+  instructions?: string;
+  unit?: string;
+  // Also typed skos:Concept: the SKOS glossary already has a term for it.
+  concept?: true;
 }

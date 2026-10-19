@@ -31,6 +31,14 @@
 // different arrangement is a reason to generalize this file rather than to add
 // a second mechanism elsewhere.
 //
+// AN ASPECT-ONLY TYPE has no entry type: its aspect rides an entry of a
+// BUILT-IN type (a `semantic-model` / `semantic-entity` / `semantic-metric`
+// entry) to carry what that type's closed template has no slot for. The three
+// annotation aspects below are the model content a push would otherwise lose
+// (see kc_annotations.ts, which encodes them). Each is optional on its entry,
+// so a project that has not re-run `kcmd init` still pushes; it just pushes
+// the lossy subset (see provisionedCustomAspects).
+//
 // TEMPLATES ARE APPEND-ONLY. Dataplex rejects a backwards-incompatible template
 // change, so a new field must be APPENDED with a fresh index. Renumbering or
 // removing an existing field breaks the update for every project that already
@@ -45,8 +53,9 @@ export interface CustomType {
   // Shared by the entry type and the aspect type.
   id: string;
   // The entry type, minus the required-aspect list: it always requires exactly
-  // this record's aspect type, which provisionCustomTypes fills in.
-  entryType: Omit<EntryType, 'name'|'requiredAspects'>;
+  // this record's aspect type, which provisionCustomTypes fills in. Absent on
+  // an aspect-only type (see the header).
+  entryType?: Omit<EntryType, 'name'|'requiredAspects'>;
   // The aspect type, including the metadata template that gives the entry its
   // typed, queryable fields.
   aspectType: Omit<AspectType, 'name'>;
@@ -579,7 +588,426 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Annotation aspects (aspect-only; see the header and kc_annotations.ts).
+// ---------------------------------------------------------------------------
+
+// The whole `ai_context` of a model element and of the parts of it that have
+// no entry of their own: an entity's fields, and (on the model anchor) the
+// relationships, which are entry links and so cannot carry a custom aspect.
+export const AI_CONTEXT_TYPE_ID = 'semantic-ai-context';
+
+// SQL expressions and the authoring facts the built-in templates collapse: a
+// metric's expression, and per field its expression (the column binding), its
+// imported vendor form, its dimension role and its logical datatype.
+export const EXPRESSIONS_TYPE_ID = 'semantic-expressions';
+
+// Where an entity's rows come from and how they are shaped: binding mode,
+// hydration rules, vocabulary members, the physical assets it is read through
+// (node view, graph node), and -- on a junction entry -- the many-to-many
+// relationship the junction backs.
+export const BINDING_TYPE_ID = 'semantic-binding';
+
+// The relationship-index fields that carry a relationship publishing no
+// schema-join link (see AI_CONTEXT_ASPECT_TYPE). A chain step is written as
+// the relationship name, prefixed `~` when it is traversed backwards.
+const UNPUBLISHED_RELATIONSHIP_FIELDS = [
+  ['source', 'Source Entity', 'string'],
+  ['destination', 'Destination Entity', 'string'],
+  ['sourceColumns', 'Source Columns', 'strings'],
+  ['destinationColumns', 'Destination Columns', 'strings'],
+  ['abstract', 'Abstract', 'bool'],
+  ['extends', 'Specializes', 'strings'],
+  ['description', 'Description', 'string'],
+  ['inverse', 'Inverse Name', 'string'],
+  ['via', 'Derived Via', 'strings'],
+  ['filter', 'Derived Filter', 'string'],
+].map(([name, displayName, kind], i) => kind === 'strings' ? {
+  index: 4 + i,
+  name,
+  type: 'array',
+  arrayItems: {name: `${name}Item`, type: 'string'},
+  annotations: {displayName},
+} : {
+  index: 4 + i,
+  name,
+  type: kind,
+  annotations: {displayName},
+});
+
+const AI_CONTEXT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
+  displayName: 'Semantic AI Context',
+  description:
+      'The ai_context (instructions, synonyms, examples) of a semantic model ' +
+      'element and of its fields; on the model, also of each relationship.',
+  metadataTemplate: {
+    name: AI_CONTEXT_TYPE_ID,
+    type: 'record',
+    recordFields: [
+      aiContextField(1),
+      {
+        index: 2,
+        name: 'fields',
+        type: 'array',
+        arrayItems: {
+          name: 'field',
+          type: 'record',
+          recordFields: [
+            {
+              index: 1,
+              name: 'name',
+              type: 'string',
+              constraints: {required: true},
+              annotations: {displayName: 'Field'},
+            },
+            aiContextField(2),
+          ],
+        },
+        annotations: {
+          displayName: 'Fields',
+          description: 'The ai_context of each field of an entity that has one.',
+        },
+      },
+      {
+        index: 3,
+        name: 'relationships',
+        type: 'array',
+        arrayItems: {
+          name: 'relationship',
+          type: 'record',
+          recordFields: [
+            {
+              index: 1,
+              name: 'name',
+              type: 'string',
+              constraints: {required: true},
+              annotations: {
+                displayName: 'Name',
+                description: 'The relationship name exactly as authored.',
+              },
+            },
+            {
+              index: 2,
+              name: 'link',
+              type: 'string',
+              annotations: {
+                displayName: 'Entry Link',
+                description:
+                    'Id of the schema-join entry link that publishes it (on ' +
+                    'a many-to-many relationship, the link to its source).',
+              },
+            },
+            aiContextField(3),
+            // Fields 4-13 are set only on a relationship that publishes no
+            // schema-join link (abstract, or an endpoint that is abstract or
+            // has no join columns): the row is then its only record, so it
+            // carries the whole relationship and pull rebuilds it from here.
+            ...UNPUBLISHED_RELATIONSHIP_FIELDS,
+          ],
+        },
+        annotations: {
+          displayName: 'Relationships',
+          description:
+              'On the model entry: every relationship by its authored name, ' +
+              'with its ai_context. An entry link carries no custom aspect, ' +
+              'so this is where they ride; one that publishes no link rides ' +
+              'here whole.',
+        },
+      },
+    ],
+  },
+};
+
+const expressionFields = (first: number) => [
+  {
+    index: first,
+    name: 'expression',
+    type: 'string',
+    annotations: {
+      displayName: 'Expression',
+      description: 'The GoogleSQL expression (for a field, its column binding).',
+    },
+  },
+  {
+    index: first + 1,
+    name: 'importedExpression',
+    type: 'string',
+    annotations: {
+      displayName: 'Imported Expression',
+      description: 'The original vendor SQL, verbatim.',
+    },
+  },
+  {
+    index: first + 2,
+    name: 'importedDialect',
+    type: 'string',
+    annotations: {displayName: 'Imported Dialect'},
+  },
+  {
+    index: first + 3,
+    name: 'type',
+    type: 'string',
+    annotations: {
+      displayName: 'Logical Type',
+      description:
+          'The datatype as authored (String, Integer, ... Opaque); the ' +
+          'schema\'s column type cannot tell an authored String from an ' +
+          'untyped value.',
+    },
+  },
+];
+
+const EXPRESSIONS_ASPECT_TYPE: Omit<AspectType, 'name'> = {
+  displayName: 'Semantic Expressions',
+  description:
+      'The SQL of a semantic model element: a metric\'s aggregate, or the ' +
+      'column binding and dimension role of each field of an entity.',
+  metadataTemplate: {
+    name: EXPRESSIONS_TYPE_ID,
+    type: 'record',
+    recordFields: [
+      ...expressionFields(1),
+      {
+        index: 5,
+        name: 'fields',
+        type: 'array',
+        arrayItems: {
+          name: 'field',
+          type: 'record',
+          recordFields: [
+            {
+              index: 1,
+              name: 'name',
+              type: 'string',
+              constraints: {required: true},
+              annotations: {displayName: 'Field'},
+            },
+            ...expressionFields(2),
+            {
+              index: 6,
+              name: 'dimension',
+              type: 'bool',
+              annotations: {
+                displayName: 'Dimension',
+                description: 'The field is a dimension.',
+              },
+            },
+            {
+              index: 7,
+              name: 'isTime',
+              type: 'bool',
+              annotations: {
+                displayName: 'Time Dimension',
+                description:
+                    'Explicit temporal-dimension flag; absent means ' +
+                    'inferred from the type.',
+              },
+            },
+          ],
+        },
+        annotations: {displayName: 'Fields'},
+      },
+    ],
+  },
+};
+
+const str = (index: number, name: string, displayName: string,
+             required = false) => ({
+  index,
+  name,
+  type: 'string',
+  ...(required ? {constraints: {required: true}} : {}),
+  annotations: {displayName},
+});
+
+const BINDING_ASPECT_TYPE: Omit<AspectType, 'name'> = {
+  displayName: 'Semantic Binding',
+  description:
+      'Where a semantic entity\'s rows come from and how they are shaped: ' +
+      'the binding mode, the hydration rules, vocabulary members, and the ' +
+      'physical assets (node view, graph node) an agent reads it through.',
+  metadataTemplate: {
+    name: BINDING_TYPE_ID,
+    type: 'record',
+    recordFields: [
+      {
+        index: 1,
+        name: 'mode',
+        type: 'string',
+        annotations: {
+          displayName: 'Mode',
+          description:
+              '`view` (read through a generated node view) or `direct` ' +
+              '(the source table as-is). Absent means `view`.',
+        },
+      },
+      {
+        index: 2,
+        name: 'hydration',
+        type: 'record',
+        recordFields: [
+          {
+            index: 1,
+            name: 'grain',
+            type: 'record',
+            recordFields: [
+              str(1, 'latestBy', 'Latest By'),
+              {index: 2, name: 'deterministic', type: 'bool',
+               annotations: {displayName: 'Deterministic'}},
+            ],
+            annotations: {
+              displayName: 'Grain',
+              description: 'One row per key: the latest by `latestBy`, or a ' +
+                  'deterministic pick.',
+            },
+          },
+          {
+            index: 2,
+            name: 'normalize',
+            type: 'array',
+            arrayItems: {
+              name: 'rule',
+              type: 'record',
+              recordFields: [
+                str(1, 'field', 'Field', true),
+                str(2, 'before', 'Before'),
+                str(3, 'after', 'After'),
+                {index: 4, name: 'divideBy', type: 'double',
+                 annotations: {displayName: 'Divide By'}},
+                {index: 5, name: 'multiplyBy', type: 'double',
+                 annotations: {displayName: 'Multiply By'}},
+                str(6, 'on', 'Date Column'),
+              ],
+            },
+            annotations: {
+              displayName: 'Normalize',
+              description: 'Declared value corrections before / after a date.',
+            },
+          },
+          {
+            index: 3,
+            name: 'resolve',
+            type: 'array',
+            arrayItems: {
+              name: 'rule',
+              type: 'record',
+              recordFields: [
+                str(1, 'field', 'Field', true),
+                {index: 2, name: 'match', type: 'array',
+                 arrayItems: {name: 'match', type: 'string'},
+                 annotations: {displayName: 'Match'}},
+              ],
+            },
+            annotations: {
+              displayName: 'Resolve',
+              description: 'Foreign keys recorded as a code or name, resolved ' +
+                  'to the destination\'s key.',
+            },
+          },
+          {
+            index: 4,
+            name: 'deriveFrom',
+            type: 'string',
+            annotations: {
+              displayName: 'Derive From',
+              description: 'The relationship whose distinct foreign-key ' +
+                  'values are the entity\'s rows.',
+            },
+          },
+          {
+            index: 5,
+            name: 'constraints',
+            type: 'string',
+            annotations: {
+              displayName: 'Constraints',
+              description: '`enforce`: the node view applies the model\'s ' +
+                  'constraints to the rows it serves (reject rules withhold ' +
+                  'the value or exclude the row; the rest are named in ' +
+                  '`_warnings`).',
+            },
+          },
+        ],
+        annotations: {
+          displayName: 'Hydration',
+          description: 'How the bound source is reshaped into the entity.',
+        },
+      },
+      {
+        index: 3,
+        name: 'members',
+        type: 'array',
+        arrayItems: {
+          name: 'member',
+          type: 'record',
+          recordFields: [
+            str(1, 'code', 'Code', true),
+            str(2, 'label', 'Label'),
+            {index: 3, name: 'synonyms', type: 'array',
+             arrayItems: {name: 'synonym', type: 'string'},
+             annotations: {displayName: 'Synonyms'}},
+            str(4, 'definition', 'Definition'),
+            {index: 5, name: 'order', type: 'int',
+             annotations: {displayName: 'Order'}},
+            str(6, 'iri', 'IRI'),
+          ],
+        },
+        annotations: {
+          displayName: 'Members',
+          description: 'A vocabulary\'s members: its rows.',
+        },
+      },
+      {
+        index: 4,
+        name: 'nodeView',
+        type: 'string',
+        annotations: {
+          displayName: 'Node View',
+          description:
+              'The BigQuery view the entity is read through (generated, ' +
+              'deduplicated, ontology-named), as `project.dataset.view`.',
+        },
+      },
+      {
+        index: 5,
+        name: 'graph',
+        type: 'string',
+        annotations: {
+          displayName: 'Graph',
+          description: 'The property graph the entity is a node of, as ' +
+              '`project.dataset.graph`.',
+        },
+      },
+      {
+        index: 6,
+        name: 'graphNode',
+        type: 'string',
+        annotations: {
+          displayName: 'Graph Node Label',
+          description: 'The entity\'s node label in that graph.',
+        },
+      },
+      {
+        index: 7,
+        name: 'association',
+        type: 'record',
+        recordFields: [
+          str(1, 'relationship', 'Relationship', true),
+          str(2, 'source', 'Source Entity'),
+          str(3, 'destination', 'Destination Entity'),
+        ],
+        annotations: {
+          displayName: 'Association',
+          description:
+              'On a junction entry: the many-to-many relationship whose ' +
+              'pairs this table holds.',
+        },
+      },
+    ],
+  },
+};
+
 // Every type kcmd provisions. This list is the whole of what is custom.
+// Entry+aspect pairs first, then the aspect-only annotation types.
 export const CUSTOM_TYPES: readonly CustomType[] = [
   {
     id: ACTION_TYPE_ID,
@@ -597,7 +1025,37 @@ export const CUSTOM_TYPES: readonly CustomType[] = [
     },
     aspectType: CONSTRAINT_ASPECT_TYPE,
   },
+  {id: AI_CONTEXT_TYPE_ID, aspectType: AI_CONTEXT_ASPECT_TYPE},
+  {id: EXPRESSIONS_TYPE_ID, aspectType: EXPRESSIONS_ASPECT_TYPE},
+  {id: BINDING_TYPE_ID, aspectType: BINDING_ASPECT_TYPE},
 ];
+
+// The aspect-only annotation types, in the order a push attaches them.
+export const ANNOTATION_ASPECT_IDS: readonly string[] =
+    [AI_CONTEXT_TYPE_ID, EXPRESSIONS_TYPE_ID, BINDING_TYPE_ID];
+
+/**
+ * The annotation aspect types already provisioned in a destination (by `kcmd
+ * init`). A push attaches only these, and a pull hydrates only these: naming
+ * an aspect type the project does not have would fail the whole write or
+ * read, while leaving one out only loses what it would have carried. A failed
+ * read (missing, no permission) counts as not provisioned.
+ */
+export async function provisionedCustomAspects(
+    cat: Pick<CatalogClient, 'getAspectType'>,
+    dest: {project: string}): Promise<string[]> {
+  const home = customTypeHome(dest);
+  const out: string[] = [];
+  for (const id of ANNOTATION_ASPECT_IDS) {
+    try {
+      const res = await cat.getAspectType(home.project, home.location, id);
+      if (res.status === 200) out.push(id);
+    } catch {
+      // Unreadable is the same as absent here.
+    }
+  }
+  return out;
+}
 
 // Custom types are provisioned at `global` so an entry group in any region can
 // reference them, matching where the built-in system types live.
@@ -761,14 +1219,15 @@ async function provisionOne(
   // The entry type requires the aspect type above, so it is created second. An
   // existing one is left alone rather than patched: unlike the aspect type it
   // carries no template that grows over time, and its required-aspect list is
-  // what an entry already published depends on.
+  // what an entry already published depends on. An aspect-only type has none.
+  const collected = warnings.length ? {warnings} : {};
+  if (!type.entryType) return collected;
   const entryLabel = `entry type '${type.id}'`;
   const entryType =
       await cat.createEntryType(home.project, home.location, type.id, {
         ...type.entryType,
         requiredAspects: [{type: customAspectTypeName(type.id, dest)}],
       });
-  const collected = warnings.length ? {warnings} : {};
   if (entryType.status === 409) return collected;
   const refused = denial(entryLabel, entryType.status, entryType.message);
   if (refused) return {...refused, ...collected};

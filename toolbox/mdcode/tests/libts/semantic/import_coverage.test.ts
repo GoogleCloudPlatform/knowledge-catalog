@@ -135,14 +135,20 @@ describe('OWL import coverage lists every construct with its outcome', () => {
       outcome: 'hinted',
       target: 'relationship twinOf ai_context.instructions',
     });
+    expect(find(coverage, 'owl:deprecated', 'Voucher')?.outcome).toBe('hinted');
+  });
+
+  test('an unkeyed class equivalent to a keyed one is folded into it', () => {
     expect(find(
-               coverage, 'owl:equivalentClass (named)',
-               'Customer EquivalentTo Patron'))
+               coverage, 'owl:equivalentClass (folded)',
+               'Patron EquivalentTo Customer'))
         .toMatchObject({
-          outcome: 'hinted',
+          outcome: 'compiled',
           target: 'entity Customer ai_context.synonyms',
         });
-    expect(find(coverage, 'owl:deprecated', 'Voucher')?.outcome).toBe('hinted');
+    expect(find(coverage, 'owl:equivalentClass (named)',
+                'Customer EquivalentTo Patron'))
+        .toBeUndefined();
   });
 
   test('constructs with no home are dropped, with the reason', () => {
@@ -185,8 +191,10 @@ const OWL_SUMMARY_GOLDEN = [
   `coverage (owl import of model 'shop'):`,
   '  construct                            compiled  hinted  dropped',
   '  owl:Class                                   8       0        0',
+  '  owl:equivalentClass (folded)                1       0        0',
   '  rdfs:subClassOf                             2       0        0',
   '  owl:hasKey                                  3       0        0',
+  '  owl:hasKey (absent)                         1       0        1',
   '  owl:DatatypeProperty                        4       0        0',
   '  rdfs:range                                  4       0        0',
   '  owl:FunctionalProperty                      1       0        0',
@@ -195,7 +203,6 @@ const OWL_SUMMARY_GOLDEN = [
   '  owl:propertyChainAxiom                      0       0        1',
   '  owl:TransitiveProperty                      0       1        0',
   '  owl:SymmetricProperty                       0       1        0',
-  '  owl:equivalentClass (named)                 0       1        0',
   '  owl:equivalentClass (defined class)         1       0        0',
   '  owl:Restriction                             1       0        0',
   '  owl:oneOf                                   0       0        1',
@@ -204,7 +211,7 @@ const OWL_SUMMARY_GOLDEN = [
   '  owl:deprecated                              0       1        0',
   '  rdfs:seeAlso                                0       1        0',
   '  owl:Ontology                                1       0        0',
-  '  total                                      34       5        2',
+  '  total                                      36       4        3',
 ].join('\n');
 
 describe('pruned elements are reported as dropped', () => {

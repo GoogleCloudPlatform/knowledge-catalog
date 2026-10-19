@@ -24,7 +24,9 @@ import {generatePropertyGraph} from './bigquery';
 // historical import path.
 import {BigQueryGraphTarget, bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
+import {ConstraintRates, measureConstraintRates} from './constraint_enforcement';
 import {describeMetricGraphPlan, planMetricGraphs} from './metric_slices';
+import {lowerNodeViews, orderGeneratedViews} from './node_views';
 
 export {bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets};
 export type {BigQueryGraphTarget};
@@ -37,11 +39,20 @@ export interface DeployOptions {
   // fall back to -- see metric_slices.ts (K6, a proposed enhancement). On
   // unless explicitly false (`kcmd push --no-metric-graphs`).
   metricGraphs?: boolean;
+  // Read each bound entity through a generated node view (hydration; see
+  // node_views.ts). On unless explicitly false -- a test / escape hatch; an
+  // author opts one entity out with `mode: direct`.
+  nodeViews?: boolean;
   // Poll bounds for a slow query job, overridable so tests can exercise the
   // exhaustion path without burning wall-clock. Default to the module
   // constants.
   maxQueryPolls?: number;
   pollBackoffMs?: number;
+  // After deploying, measure how often each constraint breaks in the node
+  // views that enforce constraints (`hydration.constraints: enforce`), for the
+  // Knowledge Catalog leg's `Constraints:` paragraphs. Off unless true (the
+  // CLI turns it on when the push also publishes to Knowledge Catalog).
+  measureConstraints?: boolean;
 }
 
 export interface DeployResult {
@@ -61,8 +72,15 @@ export interface DeployResult {
   // (and per main graph that serves GRAPH_EXPAND itself), for the CLI to
   // print. Filled under validateOnly too.
   metricGraphs: string[];
-  // Number of fallback views actually created (0 for validateOnly).
+  // One line per node view (and resolved-edge view) generated ahead of a
+  // graph, naming the entity and its hydration. Filled under validateOnly.
+  nodeViews?: string[];
+  // Number of generated / fallback views actually created (0 for
+  // validateOnly).
   views: number;
+  // Per model name, the measured constraint rates of its first target's
+  // enforcing node views (with measureConstraints; never under validateOnly).
+  constraintRates?: Map<string, ConstraintRates>;
 }
 
 
@@ -195,12 +213,16 @@ export async function deployBigQuery(
   const ddl: string[] = [];
   const warnings: string[] = [];
   const metricGraphs: string[] = [];
+  const nodeViews: string[] = [];
+  const constraintRates = new Map<string, ConstraintRates>();
   let deployed = 0;
   let views = 0;
   let modelsSeen = 0;
 
-  const fail = (details: string): DeployResult =>
-      ({success: false, details, ddl, warnings, deployed, metricGraphs, views});
+  const fail = (details: string): DeployResult => ({
+    success: false, details, ddl, warnings, deployed, metricGraphs, nodeViews,
+    views,
+  });
 
   // These are CREATE OR REPLACE statements executed one at a time, so any
   // graphs (and views) already deployed in this run have mutated production
@@ -262,18 +284,31 @@ export async function deployBigQuery(
     }
 
     for (const target of targets) {
-      const gen = generatePropertyGraph(model, {
+      const tag = `[${model.name} -> ${target.graphName}]`;
+      // Hydration: each bound entity is read through a node view generated
+      // next to the graph (see node_views.ts). The lowering rewrites the model
+      // so the graph, its edges and the metric graphs all read those views.
+      const nodeWarnings: string[] = [];
+      const lowering = options.nodeViews === false ?
+          {model, views: [], plan: [], enforcement: new Map()} :
+          lowerNodeViews(
+              model, {project: target.project, dataset: target.dataset},
+              nodeWarnings);
+      for (const w of nodeWarnings) warnings.push(`${tag} ${w}`);
+      for (const line of lowering.plan) nodeViews.push(`${tag} ${line}`);
+      const graphModel = lowering.model;
+      const gen = generatePropertyGraph(graphModel, {
         project: target.project,
         dataset: target.dataset,
         graphName: target.graphName,
       });
-      const tag = `[${model.name} -> ${target.graphName}]`;
       for (const w of gen.warnings) {
         warnings.push(`${tag} ${w}`);
       }
-      // K2 / K3: the views the graph reads (vocabularies, then the edges over
-      // them) are created first, in order, and listed ahead of the graph.
-      const generatedViews = gen.views ?? [];
+      // The views the graph reads are created first, in order, and listed
+      // ahead of the graph: node views, then vocabularies (K3), then the
+      // edge views over them (resolved, vocabulary and derived edges, K2).
+      const generatedViews = orderGeneratedViews(lowering.views, gen.views ?? []);
       ddl.push(`-- ${target.uri}\n${
           generatedViews.map(v => `${v.ddl};\n\n`).join('')}${gen.ddl}`);
 
@@ -282,7 +317,7 @@ export async function deployBigQuery(
       // exactly what a real push would create.
       const plan = options.metricGraphs === false ?
           undefined :
-          planMetricGraphs(model, {
+          planMetricGraphs(graphModel, {
             project: target.project,
             dataset: target.dataset,
             graphName: target.graphName,
@@ -313,6 +348,12 @@ export async function deployBigQuery(
       for (const v of generatedViews) {
         const done = await run(v.ddl);
         if (!done.ok) {
+          if (v.kind === 'node') {
+            return fail(`Failed to create node view '${v.ref}' for entity '${
+                v.element}': ${done.error}; check the entity's source, its ` +
+                `field columns and its hydration columns (grain.latest_by, ` +
+                `normalize.on)${partial()}`);
+          }
           return fail(`Failed to create generated view '${v.ref}': ${done.error}${partial()}`);
         }
         views++;
@@ -341,6 +382,19 @@ export async function deployBigQuery(
         }
         views++;
       }
+
+      // How often each enforced rule breaks, for the catalog's Constraints:
+      // paragraphs. Read-only, and never fatal: an unmeasured rate is left out.
+      if (options.measureConstraints && lowering.enforcement.size &&
+          !constraintRates.has(model.name)) {
+        const measured = await measureConstraintRates(
+            lowering.enforcement, lowering.model, ctx,
+            {project: target.project, location});
+        for (const e of measured.errors) {
+          warnings.push(`${tag} constraint rates not measured for ${e}`);
+        }
+        constraintRates.set(model.name, measured.rates);
+      }
     }
   }
 
@@ -352,10 +406,13 @@ export async function deployBigQuery(
   if (!modelsSeen) {
     if (options.validateOnly) {
       warnings.push('No semantic model documents found; nothing to validate.');
-      return {success: true, ddl, warnings, deployed, metricGraphs, views};
+      return {success: true, ddl, warnings, deployed, metricGraphs, nodeViews, views};
     }
     return fail('No semantic model documents found; nothing to deploy.');
   }
 
-  return {success: true, ddl, warnings, deployed, metricGraphs, views};
+  return {
+    success: true, ddl, warnings, deployed, metricGraphs, nodeViews, views,
+    ...(constraintRates.size ? {constraintRates} : {}),
+  };
 }

@@ -18,10 +18,12 @@
 // keys). A constraint with no such note -- a hand-written judgment -- has no
 // deterministic form and is reported as unsupported, never guessed at.
 //
-// The results are a REPORT about stored data. They are never used to filter
-// anything: a query, a graph, a skill or an action guard reads the model, not
-// these counts. Publishing writes them to Knowledge Catalog as an aspect on the
-// entity entries, beside (not inside) the published rules.
+// The results are a REPORT about stored data: the counts themselves filter
+// nothing. Publishing writes them to Knowledge Catalog as an aspect on the
+// entity entries, beside (not inside) the published rules. Applying the rules
+// to the rows a read sees is the node view's job, where the binding profile
+// sets `hydration.constraints: enforce` (constraint_enforcement.ts); it parses
+// each rule here and compiles it with the same predicate (fieldViolation).
 //
 // Layering: everything above `runBigQueryValidation` is pure (planning, SQL,
 // manifest, aspect payloads) and unit-tested without a network; the runner and
@@ -622,21 +624,48 @@ function constraintParts(
   const C = spec.entity;
   const keys = binder.keys(C);
   const f = spec.field;
-  const fields = spec.kind === 'lessThan' || spec.kind === 'lessThanOrEquals' ||
-          spec.kind === 'equals' || spec.kind === 'disjoint' ?
-      [...keys, f, spec.other] :
-      [...keys, f];
+  const pair = spec.kind === 'lessThan' || spec.kind === 'lessThanOrEquals' ||
+      spec.kind === 'equals' || spec.kind === 'disjoint';
+  const fields = pair ? [...keys, f, spec.other] : [...keys, f];
   const focus = cte('focus', binder.rows(C, fields));
-  const a = q(f);
-  let violation: string;
-  let value = str(f);
+  const violation = fieldViolation(spec, q, index.fieldType(C, f));
+  const value = pair ?
+      `CONCAT(IFNULL(${str(f)}, 'NULL'), ' vs ', IFNULL(${
+          str(spec.other)}, 'NULL'))` :
+      str(f);
+  return {ctes: [focus], from: 'focus', violation, key: keyExpr(keys), value};
+}
+
+/** A rule about the values of one row: every kind but the edge and class ones. */
+export type FieldSpec =
+    Exclude<ConstraintSpec, {kind: 'cardinality'|'class'|'disjointClasses'}>;
+
+/** Whether a parsed rule is about the values of one row (see FieldSpec). */
+export function isFieldSpec(spec: ConstraintSpec): spec is FieldSpec {
+  return spec.kind !== 'cardinality' && spec.kind !== 'class' &&
+      spec.kind !== 'disjointClasses';
+}
+
+/**
+ * The predicate that is TRUE on a row breaking a field rule. `col` renders a
+ * field (by name) as the SQL that reads it on the row -- a logical column in
+ * the validation queries, a node-view column in an enforcing view (see
+ * constraint_enforcement.ts) -- and `type` is the constrained field's type.
+ * NULL where SQL's three-valued logic leaves it open, which both readers treat
+ * as not broken. Throws Unsupported for a rule no SQL renders (an unknown
+ * regular-expression flag).
+ */
+export function fieldViolation(
+    spec: FieldSpec, col: (field: string) => string,
+    type: DataType|undefined): string {
+  const f = spec.field;
+  const a = col(f);
+  const s = (field: string) => `CAST(${col(field)} AS STRING)`;
   switch (spec.kind) {
     case 'required':
-      violation = `${a} IS NULL OR TRIM(${str(f)}) = ''`;
-      break;
+      return `${a} IS NULL OR TRIM(${s(f)}) = ''`;
     case 'empty':
-      violation = `${a} IS NOT NULL`;
-      break;
+      return `${a} IS NOT NULL`;
     case 'pattern': {
       let prefix = '';
       for (const flag of spec.flags ?? '') {
@@ -646,48 +675,40 @@ function constraintParts(
         prefix += RE2_FLAGS[flag];
       }
       const regex = prefix ? `(?${prefix})${spec.pattern}` : spec.pattern;
-      violation = `${a} IS NOT NULL AND NOT REGEXP_CONTAINS(${str(f)}, ${
+      return `${a} IS NOT NULL AND NOT REGEXP_CONTAINS(${s(f)}, ${
           sqlString(regex)})`;
-      break;
     }
     case 'in':
-      violation = `${a} IS NOT NULL AND ${str(f)} NOT IN (${
+      return `${a} IS NOT NULL AND ${s(f)} NOT IN (${
           spec.values.map(sqlString).join(', ')})`;
-      break;
     case 'value':
-      violation = `${a} IS NULL OR ${str(f)} != ${sqlString(spec.value)}`;
-      break;
+      return `${a} IS NULL OR ${s(f)} != ${sqlString(spec.value)}`;
     case 'range': {
-      const type = index.fieldType(C, f);
       const cmp = spec.bounds.map(b => {
         const op = RANGE_VIOLATION[b.term];
         if (NUMERIC.test(b.value)) {
-          return `SAFE_CAST(${str(f)} AS BIGNUMERIC) ${op} CAST(${
+          return `SAFE_CAST(${s(f)} AS BIGNUMERIC) ${op} CAST(${
               sqlString(b.value)} AS BIGNUMERIC)`;
         }
         const t = type && TEMPORAL_SQL[type];
         if (t) {
-          return `SAFE_CAST(${str(f)} AS ${t}) ${op} SAFE_CAST(${
+          return `SAFE_CAST(${s(f)} AS ${t}) ${op} SAFE_CAST(${
               sqlString(b.value)} AS ${t})`;
         }
-        return `${str(f)} ${op} ${sqlString(b.value)}`;
+        return `${s(f)} ${op} ${sqlString(b.value)}`;
       });
-      violation = `${a} IS NOT NULL AND (${cmp.join(' OR ')})`;
-      break;
+      return `${a} IS NOT NULL AND (${cmp.join(' OR ')})`;
     }
     case 'length': {
       const cmp = [
-        spec.min !== undefined ? `LENGTH(${str(f)}) < ${spec.min}` : '',
-        spec.max !== undefined ? `LENGTH(${str(f)}) > ${spec.max}` : '',
+        spec.min !== undefined ? `LENGTH(${s(f)}) < ${spec.min}` : '',
+        spec.max !== undefined ? `LENGTH(${s(f)}) > ${spec.max}` : '',
       ].filter(Boolean);
-      violation = `${a} IS NOT NULL AND (${cmp.join(' OR ')})`;
-      break;
+      return `${a} IS NOT NULL AND (${cmp.join(' OR ')})`;
     }
     default: {
-      const b = q(spec.other);
-      value = `CONCAT(IFNULL(${str(f)}, 'NULL'), ' vs ', IFNULL(${
-          str(spec.other)}, 'NULL'))`;
-      violation = spec.kind === 'lessThan' ?
+      const b = col(spec.other);
+      return spec.kind === 'lessThan' ?
           `${a} IS NOT NULL AND ${b} IS NOT NULL AND ${a} >= ${b}` :
           spec.kind === 'lessThanOrEquals' ?
           `${a} IS NOT NULL AND ${b} IS NOT NULL AND ${a} > ${b}` :
@@ -696,7 +717,6 @@ function constraintParts(
           `${a} = ${b}`;
     }
   }
-  return {ctes: [focus], from: 'focus', violation, key: keyExpr(keys), value};
 }
 
 // Joins `left.cols[i] = right.kcmd_j<i>`.
@@ -1057,8 +1077,8 @@ export function renderValidationSql(plan: ValidationPlan, meta: PlanMeta): strin
         plan.model}' (profile '${meta.profile}').`,
     `-- Each check is a violation-count query (violations, total) followed ` +
         `by an examples query.`,
-    `-- Read-only: nothing here writes, and the results are a report, never ` +
-        `a filter.`,
+    `-- Read-only: nothing here writes; the results report on the stored ` +
+        `data.`,
   ];
   for (const u of plan.unsupported) {
     out.push(`-- skipped ${u.constraint}: ${u.reason.replace(/\n/g, ' ')}`);
@@ -1186,7 +1206,9 @@ export const CONSTRAINT_RESULTS_ASPECT_TYPE: Omit<AspectType, 'name'> = {
       'The last measured state of the data against the semantic model\'s ' +
       'constraints: one record per rule checked on this entity, with the ' +
       'violation count, the rows examined, sample violating keys and the ' +
-      'query that produced them. A report, never a filter.',
+      'query that produced them. A report on the stored data; a node view ' +
+      'applies the rules to the rows it serves only where its binding ' +
+      'enforces them.',
   metadataTemplate: {
     name: CONSTRAINT_RESULTS_TYPE_ID,
     type: 'record',

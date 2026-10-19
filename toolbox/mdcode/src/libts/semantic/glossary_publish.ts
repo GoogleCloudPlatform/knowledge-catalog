@@ -18,6 +18,7 @@ import {ResourceManagerClient} from '../gcp/crm';
 
 import {bigQueryTableParts, glossaryFromDataplex, GlossaryPlan, GlossaryRequest, GlossaryTarget, MANAGED_BY_LABEL, MANAGED_BY_VALUE, MODEL_LABEL, modelLabelValue, planGlossary} from './glossary';
 import {Glossary, SemanticModel} from './ir';
+import {physicalBindings} from './knowledge_catalog';
 
 export interface GlossaryPublishOptions {
   // Glossary project (default: the context project) and location (default
@@ -72,16 +73,26 @@ export async function resolveGlossaryTarget(
   const projectNumber = await number(project) ?? project;
 
   const datasetLocations = new Map<string, string>();
-  for (const e of model.entities ?? []) {
-    const tbl = bigQueryTableParts(e.dataSource);
-    if (!tbl || e.abstract || e.definition) continue;
+  const locate = async (tbl: {project: string; dataset: string}) => {
     const key = `${tbl.project}.${tbl.dataset}`;
-    if (datasetLocations.has(key)) continue;
+    if (datasetLocations.has(key)) return;
     await number(tbl.project);
     const ds = await bq.getDataset(tbl.project, tbl.dataset);
     const loc = ds.status === 200 ? (ds.result as any)?.location : undefined;
     if (loc) datasetLocations.set(key, String(loc).toLowerCase());
     else if (opts.dryRun) datasetLocations.set(key, `{location-of-${key}}`);
+  };
+  for (const e of model.entities ?? []) {
+    const tbl = bigQueryTableParts(e.dataSource);
+    if (!tbl || e.abstract || e.definition) continue;
+    await locate(tbl);
+  }
+  // K5: the node views the semantic-entry legs fall back to.
+  if (opts.semantic) {
+    for (const phys of physicalBindings(model).values()) {
+      const view = bigQueryTableParts(phys.nodeView ?? '');
+      if (view) await locate(view);
+    }
   }
 
   const target: GlossaryTarget = {
@@ -121,6 +132,12 @@ export async function publishGlossary(
     for (const r of plan.requests) {
       log(`POST ${r.path}?${new URLSearchParams(r.query)}  (${r.label})`);
       log(JSON.stringify(r.body, null, 2));
+      if (r.fallback) {
+        const f = r.fallback;
+        log(`  if refused, fallback: POST ${f.path}?${
+            new URLSearchParams(f.query)}  (${f.label})`);
+        log(JSON.stringify(f.body, null, 2));
+      }
     }
     for (const n of plan.notes) log(`skip: ${n}`);
     if (opts.prune) log(`prune: would delete kcmd-managed terms/categories ` +
@@ -136,7 +153,19 @@ export async function publishGlossary(
     // API may not allow definition links on custom entries, or the field
     // path may not exist on the entry's schema aspect (inherited fields).
     if (r.kind === 'link' && !r.path.includes('/entryGroups/@')) {
-      result.skipped.push(`${r.label}: refused on the semantic entry (${err})`);
+      if (!r.fallback) {
+        result.skipped.push(
+            `${r.label}: refused on the semantic entry (${err})`);
+        continue;
+      }
+      // K5: land the term on the bound node view's column instead.
+      const fbErr = await send(dp, r.fallback, result);
+      result.skipped.push(
+          fbErr ?
+              `${r.label}: refused on the semantic entry (${err}); the ` +
+                  `fallback ${r.fallback.label} failed too (${fbErr})` :
+              `${r.label}: refused on the semantic entry (${err}); linked ` +
+                  `${r.fallback.label} instead`);
     } else {
       result.errors.push(`${r.label}: ${err}`);
     }

@@ -27,6 +27,7 @@ import {spannerTable} from './binding';
 import {lowerDefinedEntities} from './defined_entities';
 import {Association, Entity, Field, inverseEdgeNames, Relationship, relationshipAncestors, SemanticModel} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
+import {sharedAbstractLabelFields} from './shared_labels';
 import {stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 
@@ -161,10 +162,15 @@ export function generateSpannerPropertyGraph(
   const labelByName =
       new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
                   .map(e => [e.name, e]));
+  // An abstract label carries only the inherited fields every descendant binds
+  // (see shared_labels.ts).
+  const abstractLabelFields =
+      sharedAbstractLabelFields(validEntities, labelByName, warnings);
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
-          entity, labelByName, ancestorsUsed.has(entity.name), warnings));
+          entity, labelByName, abstractLabelFields,
+          ancestorsUsed.has(entity.name), warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   // Relationship inheritance, mirroring the BigQuery leg: an abstract
@@ -233,7 +239,8 @@ export function generateSpannerPropertyGraph(
 
 
 function renderNodeTable(
-    entity: Entity, labelByName: Map<string, Entity>, isSupertype: boolean,
+    entity: Entity, labelByName: Map<string, Entity>,
+    abstractLabelFields: Map<string, Set<string>>, isSupertype: boolean,
     warnings: string[]): string {
   const table =
       spannerTable(entity.dataSource, warnings, `entity '${entity.name}'`);
@@ -292,8 +299,12 @@ function renderNodeTable(
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
     let signature: string[];
     if (ancestor.abstract) {
+      // Only the fields every descendant carrying the label binds (a label
+      // exposes one property set across its tables; see shared_labels.ts).
+      const shared = abstractLabelFields.get(ancestorName);
       signature = [];
       for (const af of ancestor.fields) {
+        if (!shared?.has(af.name)) continue;
         const child = boundFields.find(cf => cf.name === af.name);
         if (child) signature.push(renderFieldProperty(child, entity.name));
       }

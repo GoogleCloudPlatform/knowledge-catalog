@@ -27,11 +27,15 @@ export interface GeneratedView {
   // The reference the graph DDL uses: `project.dataset.name` when the target
   // is known, otherwise as much of it as is.
   ref: string;
-  // What the view backs: a vocabulary node table, or an edge table (a
-  // vocabulary join or a derived relationship).
-  kind: 'vocabulary'|'edge';
+  // What the view backs: an entity's node table (a node view, see
+  // node_views.ts), a vocabulary node table, or an edge table (a vocabulary
+  // join, a resolved foreign key, or a derived relationship).
+  kind: 'node'|'vocabulary'|'edge';
   // The `CREATE OR REPLACE VIEW` statement (no trailing semicolon).
   ddl: string;
+  // The model element the view realizes (entity or relationship name), so a
+  // deploy failure can name it. Set on node views and resolved edges.
+  element?: string;
 }
 
 /** Where generated views are created: the graph's own project and dataset. */

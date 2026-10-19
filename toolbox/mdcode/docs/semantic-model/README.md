@@ -44,6 +44,7 @@ example that carries one model through the whole lifecycle, see the
 |---|---|
 | **This page** | look up each deploy operation and its rules |
 | [Binding profiles](profiles.md) | bind one logical model to several stores |
+| [Drafting a binding (`kcmd bind`)](bind.md) | let kcmd propose the binding profile and its hydration from tables that already exist |
 | [Modeling class hierarchies](inheritance.md) | model subtypes with `extends` so a supertype query gathers them |
 | [Codelab: one semantic ontology, one data journey](codelab.md) | see the whole lifecycle: author, govern, hydrate, query |
 | [Modeling write operations](actions.md) | declare an action an agent can call, publish it, run it, and derive an agent's tools from the model |
@@ -146,10 +147,14 @@ much a fact about an account as the fields beside it. Each one states its rule
 in words, under `judgment`, with the field names it mentions written
 model-qualified so they are checked like any other reference — which is what
 lets a rule no arithmetic decides, such as whether a discount is justified by
-the reason given, be stated at all. A constraint does nothing until an action
-names it in `guards`; then it is settled before that call runs, by a language
-model reading the attempted call. A constraint reaches Knowledge Catalog only:
-it is validated, published there, and read back by `pull`.
+the reason given, be stated at all. A constraint does nothing until something
+references it. An action names it in `guards`; then it is settled before that
+call runs, by a language model reading the attempted call. A binding profile
+can set `hydration.constraints: enforce` on an entity; then its BigQuery node
+view applies every rule `kcmd validate` can check to the rows a read sees (see
+[Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time)).
+A constraint is validated, published to Knowledge Catalog, and read back by
+`pull`.
 
 This model names no table and no store, so it is complete enough to govern in
 Knowledge Catalog as-is (step 2). Where each entity reads from — the store and the
@@ -195,6 +200,23 @@ can put these bindings directly on the model, or keep them in a separate **bindi
 profile** so one logical model serves several stores. See
 [Binding profiles](profiles.md); for a runnable end-to-end that binds the same
 model to BigQuery and Spanner and queries each, see the [codelab](codelab.md).
+
+### Hydrate: draft the binding from existing tables
+
+When the tables already exist, `kcmd bind` (proposed) drafts the binding
+profile for you. It scans the warehouse, scores each entity against each table,
+and matches fields to columns. It then profiles the chosen tables and proposes
+the hydration each one needs: the grain that picks one row per key, the
+resolution of names to keys, a unit normalization, or a derivation from a
+relationship. It writes `<model>.profiles/<profile>.yaml` and a `bind_report.md`
+that explains every choice, and exits 2 while anything still needs a human:
+
+```bash
+kcmd bind --profile bigquery --scan my-project.raw_*   # draft and review
+kcmd bind --profile bigquery --scan my-project.raw_* --accept-review
+```
+
+See [Drafting a binding](bind.md).
 
 Once the model is bound, `kcmd push` deploys to the store its target names and to
 Knowledge Catalog. The most common flags:

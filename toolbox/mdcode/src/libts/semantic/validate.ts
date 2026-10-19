@@ -21,6 +21,7 @@ import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './reso
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {checkUnitsAndHistory} from './units_history';
 import {checkGlossary} from './glossary';
+import {checkHydration, isDerivedEntity} from './hydration';
 import {generatesVocabularyView, isVocabulary} from './vocabulary';
 
 // Checks every model against the push requirements and returns the collected
@@ -246,6 +247,25 @@ export function validatePushRequirements(
     for (const msg of checkGlossary(
              model, {fieldsPruned: opts.fieldsPruned}).errors) {
       errors.push(`model '${model.name}' (${document}): ${msg}`);
+    }
+
+    // Hydration (hydration.ts): every rule names a field / relationship the
+    // model has, in the shape the node view needs.
+    for (const msg of checkHydration(
+             model, {fieldsPruned: opts.fieldsPruned}).errors) {
+      errors.push(`model '${model.name}' (${document}): ${msg}`);
+    }
+    // Only the BigQuery leg generates node views today; a Spanner graph binds
+    // tables as-is, so a derived entity there would have no rows.
+    if (deployInfo.spanner.length > 0) {
+      for (const e of model.entities ?? []) {
+        if (!isDerivedEntity(e)) continue;
+        errors.push(
+            `dataset '${e.name}' in model '${model.name}' (${
+                document}) is derived from a relationship (hydration.` +
+            `derive_from), which only a BigQuery graph push materializes; ` +
+            `bind it to a table for a Spanner Graph deploy.`);
+      }
     }
   }
   return errors;

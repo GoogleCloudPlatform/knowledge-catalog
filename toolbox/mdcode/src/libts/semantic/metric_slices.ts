@@ -43,10 +43,11 @@
 import {generatePropertyGraph} from './bigquery';
 import {lowerDefinedEntities, resolveDefinedEntities} from './defined_entities';
 import {Entity, fieldBinding, inverseEdgeNames, Metric, Relationship, relationshipAncestors, SemanticModel} from './ir';
-import {CompositionContext, decomposeMetric, DUPLICATE_INSENSITIVE, findAggregateCalls, MetricDecomposition, renderComposition, simpleMetricIndex} from './metric_composition';
+import {CompositionContext, decomposeMetric, DUPLICATE_INSENSITIVE, findAggregateCalls, MetricDecomposition, simpleMetricIndex} from './metric_composition';
 import {resolveInheritance} from './resolve_inheritance';
 import {escapeRegExp, mapOutsideStringLiterals, referencedEntityNames, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {isVocabulary} from './vocabulary';
 
 /** GRAPH_EXPAND accepts at most this many node tables (BigQuery limit). */
 export const GRAPH_EXPAND_MAX_NODE_TABLES = 10;
@@ -123,6 +124,12 @@ export type MetricPlacement = {
   decomposition: MetricDecomposition;
   /** The node table each component's MEASURE is declared on. */
   homes: string[];
+  /**
+   * Each component's MEASURE name: the component's own name, or
+   * `<name>__measure` when that is a column of its node table (see
+   * bigquery.ts measureNameFor). A reader selects AGG(<home>_<measure>).
+   */
+  measures: string[];
 }|{
   kind: 'view';
   ref: string;
@@ -145,18 +152,6 @@ export interface MetricGraphPlan {
   /** Metric name -> where to read it. Every metric of the model has one. */
   placements: Map<string, MetricPlacement>;
   warnings: string[];
-}
-
-/**
- * The GRAPH_EXPAND expression that reads a graph-placed metric: `AGG()` of
- * its measure, or its composition over `AGG()` of each component.
- */
-export function graphExpandExpression(
-    p: Extract<MetricPlacement, {kind: 'graph'}>): string {
-  const ref = (i: number) =>
-      `AGG(${p.homes[i]}_${p.decomposition.components[i].name})`;
-  return p.decomposition.simple ? ref(0) :
-                                  renderComposition(p.decomposition.template, ref);
 }
 
 /** `<main>__<fact_snake>_metrics`: the slice graph for a fact entity. */
@@ -217,6 +212,16 @@ function graphView(lowered: SemanticModel, resolved: SemanticModel): GraphView {
           nodes.has(r.destination.entity));
   for (const r of rendered) {
     if (r.association || r.source.entity === r.destination.entity) continue;
+    // An edge the graph renders over a generated edge VIEW rather than over
+    // its source's own table -- a foreign key into a vocabulary (matched
+    // case-insensitively, vocabulary.ts) or a derived relationship
+    // (derived_relationships.ts) -- is a standalone edge table, which
+    // GRAPH_EXPAND ignores as ambiguous. Its destination would then be a
+    // second root and every GRAPH_EXPAND on the slice would fail ("multiple
+    // root node tables", seen live), so such an edge is not a slice edge.
+    if (r.via?.length || isVocabulary(entities.get(r.destination.entity)!)) {
+      continue;
+    }
     if (!isToOne(r, entities.get(r.destination.entity)!)) continue;
     const list = out.get(r.source.entity) ?? [];
     list.push(r);
@@ -369,6 +374,7 @@ export function planMetricGraphs(
   }
   const g = graphView(lowered, resolved);
   const mainMeasures = new Map(main.measures.map(m => [m.metric, m.nodeTable]));
+  const mainMeasureNames = new Map(main.measures.map(m => [m.metric, m.measure]));
   const mainWarnings = new Set(main.warnings);
 
   const entityNames = (lowered.entities ?? []).map(e => e.name);
@@ -394,8 +400,8 @@ export function planMetricGraphs(
           `no table (a MEASURE cannot filter rows)`;
       plan.placements.set(metric.name, {kind: 'none', reason});
       plan.warnings.push(
-          `metric '${metric.name}' cannot be a graph MEASURE (${reason}); the ` +
-          `query skill gives plain SQL for it`);
+          `metric '${metric.name}' cannot be a graph MEASURE (${reason}); ` +
+          `query it with plain SQL over the bound tables`);
       continue;
     }
     const placed = placeInGraph(metric, ctx, g, max);
@@ -412,7 +418,8 @@ export function planMetricGraphs(
   for (const fact of [...groups.keys()].sort()) {
     const slice = buildSlice(
         fact, groups.get(fact)!, {g, lowered, target, max, metricsByName,
-                                  mainMeasures, mainWarnings, taken, plan});
+                                  mainMeasures, mainMeasureNames, mainWarnings,
+                                  taken, plan});
     for (const f of slice.rejected) fallbacks.push(f);
   }
 
@@ -473,6 +480,8 @@ interface SliceContext {
   max: number;
   metricsByName: Map<string, Metric>;
   mainMeasures: Map<string, string>;
+  /** Metric -> its measure's name on the main graph (see measureNameFor). */
+  mainMeasureNames: Map<string, string>;
   mainWarnings: Set<string>;
   taken: Set<string>;
   plan: MetricGraphPlan;
@@ -527,6 +536,8 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
         fact,
         decomposition: c.d,
         homes: [c.d.components[0].entity],
+        measures: [sc.mainMeasureNames.get(c.d.components[0].name) ??
+                   c.d.components[0].name],
       });
     }
     return {rejected};
@@ -549,12 +560,13 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
       }
       return {rejected};
     }
-    const placed = new Map(gen.measures.map(m => [m.metric, m.nodeTable]));
+    const placed = new Map(gen.measures.map(m => [m.metric, m]));
     const failed = accepted.filter(
-        c => c.d.components.some(comp => placed.get(comp.name) !== comp.entity));
+        c => c.d.components.some(comp => placed.get(comp.name)?.nodeTable !== comp.entity));
     if (failed.length) {
       for (const c of failed) {
-        const missing = c.d.components.find(comp => placed.get(comp.name) !== comp.entity)!;
+        const missing = c.d.components.find(
+            comp => placed.get(comp.name)?.nodeTable !== comp.entity)!;
         const why = gen.warnings.find(w => w.startsWith(`metric '${missing.name}'`));
         rejected.push({
           metric: c.metric,
@@ -585,7 +597,7 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
       labels: labelNames(model, tree),
       omitted: omitted.sort(),
       metrics: accepted.map(c => c.metric.name).sort(),
-      measures: placed,
+      measures: new Map(gen.measures.map(m => [m.measure, m.nodeTable])),
       model,
       ddl: gen.ddl,
     });
@@ -598,6 +610,7 @@ function buildSlice(fact: string, group: Candidate[], sc: SliceContext):
         fact,
         decomposition: c.d,
         homes: c.d.components.map(comp => comp.entity),
+        measures: c.d.components.map(comp => placed.get(comp.name)!.measure),
       });
     }
     return {rejected};
@@ -731,8 +744,8 @@ function planViews(
       plan.placements.set(metric.name, {kind: 'none', reason});
       plan.warnings.push(
           `metric '${metric.name}' cannot be a graph MEASURE (${reason}); ` +
-          `no fallback view either (${viewable.why}); the query skill gives ` +
-          `plain SQL for it`);
+          `no fallback view either (${viewable.why}); query it with plain ` +
+          `SQL over the bound tables`);
       continue;
     }
     const list = groups.get(viewable.fact) ?? [];

@@ -19,8 +19,8 @@
 // The Knowledge Catalog pull (kc_converter) peels the same paragraphs back off
 // (splitUnitTrailer / splitGrainHistoryTrailers), so a push -> pull
 // round-trips the spec keys. Everything K7 owns lives in this module -- the
-// trailer codec, the static checks, and the skill-page wording -- so the
-// feature is easy to find, rename or drop.
+// trailer codec and the static checks -- so the feature is easy to find,
+// rename or drop.
 
 import {DataType, Entity, EntityHistory, Field, SemanticModel} from './ir';
 import {declaredConceptFields} from './resolve_inheritance';
@@ -282,7 +282,7 @@ export function checkUnitsAndHistory(
       if (key === 'current_flag' && f.type !== undefined &&
           f.type !== 'Boolean' && f.type !== 'Opaque') {
         warnings.push(`entity '${e.name}': history.current_flag '${name}' is ` +
-            `${f.type}, not Boolean; the skill tells agents to filter on ` +
+            `${f.type}, not Boolean; current rows are read as ` +
             `'${name} = TRUE'`);
       }
       if (key !== 'current_flag' && f.type !== undefined &&
@@ -293,65 +293,4 @@ export function checkUnitsAndHistory(
     }
   }
   return {errors, warnings};
-}
-
-// ---------------------------------------------------------------------------
-// Skill-page wording (skills_query entity pages).
-// ---------------------------------------------------------------------------
-
-/**
- * The Notes text for a property's unit/scale, e.g. `Unit: USD. Scale: x1000
- * (a stored 1 is 1000 USD).`, or undefined.
- */
-export function unitNote(field: Pick<Field, 'unit'|'scale'>): string|
-    undefined {
-  const unit = field.unit?.trim() ? oneLine(field.unit) : undefined;
-  const parts: string[] = [];
-  if (unit !== undefined) parts.push(`Unit: ${unit}.`);
-  if (field.scale !== undefined) {
-    parts.push(`Scale: ${scaleText(field.scale)} (a stored 1 is ${
-        String(field.scale)}${unit !== undefined ? ` ${unit}` : ''}).`);
-  }
-  return parts.length ? parts.join(' ') : undefined;
-}
-
-/**
- * The grain and history lines of an entity page. `column` maps a field name
- * to its physical column (for the SQL form of the current-row filter).
- */
-export function grainHistoryLines(
-    entity: Pick<Entity, 'grain'|'history'>,
-    column: (field: string) => string): string[] {
-  const out: string[] = [];
-  if (entity.grain?.trim()) {
-    const grain = oneLine(entity.grain);
-    out.push(`Grain: ${grain}${/[.!?]$/.test(grain) ? '' : '.'}`);
-  }
-  const h = entity.history;
-  if (!h) return out;
-  if (!h.versioned) {
-    out.push('History: not versioned; each row is the current state.');
-    return out;
-  }
-  const span = h.validFrom || h.validTo ?
-      ` Each version is valid${h.validFrom ? ` from \`${h.validFrom}\`` : ''}${
-          h.validTo ? ` to \`${h.validTo}\`` : ''}.` :
-      '';
-  if (h.currentFlag) {
-    out.push(
-        `History: versioned. This node table holds every version of each ` +
-        `record, not only the current one.${span} For current rows filter ` +
-        `on \`${h.currentFlag}\`: \`WHERE n.${h.currentFlag} = TRUE\` in GQL, ` +
-        `\`WHERE ${column(h.currentFlag)} = TRUE\` in SQL. Counts, totals ` +
-        `and "current" questions need that filter; questions about changes ` +
-        `over time do not.`);
-  } else {
-    out.push(
-        `History: versioned. This node table holds every version of each ` +
-        `record.${span} No current-row flag is declared: pick the version ` +
-        `in force per key (e.g. the latest${
-            h.validFrom ? ` \`${h.validFrom}\`` : ''}) before counting or ` +
-        `summing.`);
-  }
-  return out;
 }

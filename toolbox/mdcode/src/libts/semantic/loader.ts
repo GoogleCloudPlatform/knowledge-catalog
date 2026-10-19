@@ -15,6 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, Entity, Executor, Field, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, Metric, Relationship, relationshipAncestors, SemanticModel, VIOLATION_EFFECTS, VocabularyMember,} from './ir';
 import {checkGlossary} from './glossary';
 import {checkDerivedRelationships, parseStep} from './derived_relationships';
+import {BINDING_MODES, checkHydration, hydrationDocErrors, hydrationFromDoc, modeDocError} from './hydration';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {referencedEntityNames} from './sql_expr_utils';
 import {checkUnitsAndHistory} from './units_history';
@@ -183,6 +184,10 @@ const datasetBase = z.object({
   history: historySchema.optional(),
   // K3 (proposed): the members of a vocabulary dataset (see Entity.members).
   members: z.array(memberSchema).optional(),
+  // How the binding reshapes its source (see hydration.ts): a closed block
+  // of rules, validated by hydrationDocErrors.
+  hydration: z.any().optional(),
+  mode: z.enum(BINDING_MODES).optional(),
   description: z.string().optional(),
   ai_context: aiContextSchema.optional(),
   fields: z.array(fieldBase).optional(),
@@ -530,6 +535,11 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
            history: historySchema.optional(),
            // K3 (proposed): a vocabulary's members (see vocabulary.ts).
            members: z.array(memberSchema).optional(),
+           // Hydration: how the binding reshapes its source (a closed rule
+           // vocabulary, no SQL; see hydration.ts), and whether the entity
+           // is read through its generated node view or bound directly.
+           hydration: z.unknown().optional(),
+           mode: z.unknown().optional(),
          } :
                         {}),
        })
@@ -540,11 +550,35 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
             // K3: a vocabulary's rows are its members; with no `source` the
             // graph leg generates its table (see vocabulary.ts).
             const vocabulary = ds.members !== undefined;
+            // A derived entity's rows are a relationship's distinct foreign
+            // keys (hydration.derive_from): it has no table of its own.
+            const derived = !!ds.hydration && typeof ds.hydration === 'object' &&
+                ds.hydration.derive_from !== undefined;
+            if (ds.hydration !== undefined) {
+              for (const message of hydrationDocErrors(ds.hydration)) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ['hydration'],
+                  message: `dataset '${ds.name}': ${message}`,
+                });
+              }
+            }
+            if (ds.mode !== undefined) {
+              const message = modeDocError(ds.mode);
+              if (message) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: ['mode'],
+                  message: `dataset '${ds.name}': ${message}`,
+                });
+              }
+            }
             // A concrete (non-abstract) dataset must name its backing table;
             // only an abstract one may omit `source`. Relaxed under
-            // bindingOptional. A defined entity never has a table.
+            // bindingOptional. A defined entity never has a table, nor does
+            // a derived one.
             if (!bindingOptional && !abstract && !defined && !vocabulary &&
-                ds.source === undefined) {
+                !derived && ds.source === undefined) {
               ctx.addIssue({
                 code: z.ZodIssueCode.custom,
                 path: ['source'],
@@ -951,6 +985,49 @@ export function loadModels(text: string, opts: LoadOptions = {}): LoadResult {
   return fromDocument(doc, opts);
 }
 
+/** The most problems a load error lists before summarizing the rest. */
+const MAX_LISTED_ISSUES = 20;
+
+/**
+ * Renders schema problems one per line as `<path>: <message>`, e.g.
+ * `semantic_model[0].metrics[3].expression: required (expected a string or
+ * an object)`. A union's branches fold into that one line.
+ */
+export function formatIssues(issues: readonly any[]): string {
+  const where = (path: readonly PropertyKey[]) => path.length ?
+      path.map((p, i) => typeof p === 'number' ? `[${p}]` :
+                    `${i ? '.' : ''}${String(p)}`)
+          .join('') :
+      '(document)';
+  const describe = (issue: any): string => {
+    if (issue.code === 'invalid_union' && Array.isArray(issue.errors)) {
+      const branches: any[] = issue.errors.map((b: any[]) => b?.[0]);
+      if (branches.length && branches.every(b => b?.code === 'invalid_type' &&
+                                              !(b.path ?? []).length)) {
+        const expected = [...new Set(branches.map(b => b.expected))];
+        const missing =
+            branches.every(b => /received undefined/.test(b.message ?? ''));
+        return `${missing ? 'required' : 'wrong type'} (expected ${
+            expected.map(e => `${/^[aeiou]/.test(e) ? 'an' : 'a'} ${e}`)
+                .join(' or ')})`;
+      }
+      const inner = branches.filter(Boolean).map(
+          b => `${(b.path ?? []).length ? `${where(b.path)}: ` : ''}${
+              b.message}`);
+      return `${issue.message}${inner.length ? ` (${inner.join('; or ')})` : ''}`;
+    }
+    return issue.message ?? String(issue.code ?? 'invalid');
+  };
+  if (!issues.length) return 'the document does not match the schema';
+  const lines = issues.slice(0, MAX_LISTED_ISSUES)
+                    .map(i => `  - ${where(i.path ?? [])}: ${describe(i)}`);
+  if (issues.length > MAX_LISTED_ISSUES) {
+    lines.push(`  ... and ${issues.length - MAX_LISTED_ISSUES} more`);
+  }
+  return `${issues.length} problem${issues.length === 1 ? '' : 's'}:\n${
+      lines.join('\n')}`;
+}
+
 /**
  * Converts an already-parsed document object into the Semantic Model IR. Throws
  * on a structurally invalid document; softer, lossy conversions are reported in
@@ -964,7 +1041,8 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   const result = makeDocumentSchema(opts.bindingOptional ?? false, extended)
                      .safeParse(normalized);
   if (!result.success) {
-    throw new Error(`Semantic model load error: ${result.error.message}`);
+    throw new Error(
+        `Semantic model load error: ${formatIssues(result.error.issues)}`);
   }
 
   const warnings: string[] = [];
@@ -1132,6 +1210,12 @@ function convertModel(
   for (const msg of [...k7.errors, ...k7.warnings]) {
     warnings.push(`model '${m.name}': ${msg}`);
   }
+  // Hydration: a rule naming no field / relationship loads with a warning;
+  // validatePushRequirements rejects it (see hydration.ts checkHydration).
+  const hyd = checkHydration(model);
+  for (const msg of [...hyd.errors, ...hyd.warnings]) {
+    warnings.push(`model '${m.name}': ${msg}`);
+  }
   // K9: the business glossary. Unresolved references load with a warning;
   // validatePushRequirements rejects them (see glossary.ts checkGlossary).
   if (m.glossary !== undefined) {
@@ -1249,6 +1333,11 @@ function convertDataset(
       return member;
     });
   }
+  if (ds.hydration !== undefined && ds.hydration !== null) {
+    const hydration = hydrationFromDoc(ds.hydration);
+    if (Object.keys(hydration).length) entity.hydration = hydration;
+  }
+  if (ds.mode !== undefined) entity.mode = ds.mode;
   const description = composeDescription(ds.description);
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);

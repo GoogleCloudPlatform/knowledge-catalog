@@ -4,6 +4,7 @@ semantic_model:
     description: Deals, parties and contracts.
     entities:
       - name: Party
+        abstract: true
       - name: ClientAccount
         extends:
           - Party
@@ -11,6 +12,7 @@ semantic_model:
         extends:
           - Party
       - name: Opportunity
+        abstract: true
         fields:
           - name: opportunityId
             datatype: String
@@ -25,6 +27,7 @@ semantic_model:
         extends:
           - Opportunity
       - name: Contract
+        abstract: true
       - name: MSA
         extends:
           - Contract

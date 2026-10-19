@@ -12,7 +12,7 @@
 
 import {Parser} from 'n3';
 
-import {OwlChainStep, OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlIndividual, OwlLiteral, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
+import {OwlChainStep, OwlClass, OwlClassExpr, OwlCommonAnnotations, OwlConstraintPolicy, OwlDataRange, OwlDatatypeProperty, OwlDisjointClassesAxiom, OwlIndividual, OwlLiteral, OwlMetric, OwlModel, OwlObjectProperty, OwlOntology, OwlRestriction,} from './model';
 
 // RDF/RDFS/OWL/SKOS/Dublin-Core term IRIs we recognize. Only these; anything
 // else is carried by neither the parser nor the model (see the user guide's
@@ -158,6 +158,15 @@ const KCMD_SEVERITY = `${KCMD_NS}severity`;
 const KCMD_ON_VIOLATION = `${KCMD_NS}onViolation`;
 // The stored code of a vocabulary individual (see OwlModel.individualCodes).
 const KCMD_CODE = `${KCMD_NS}code`;
+// `<class> kcmd:abstract true|false` overrides the abstract-by-structure rule
+// (see abstract.ts).
+const KCMD_ABSTRACT = `${KCMD_NS}abstract`;
+// `met:x a kcmd:Metric ; kcmd:expression "..." ; kcmd:instructions "..."` --
+// a business metric (see OwlMetric). kcmd:unit is read by local name with the
+// other unit predicates (UNIT_PREDICATES).
+export const KCMD_METRIC = `${KCMD_NS}Metric`;
+const KCMD_EXPRESSION = `${KCMD_NS}expression`;
+const KCMD_INSTRUCTIONS = `${KCMD_NS}instructions`;
 const SKOS_NOTATION = `${SKOS}notation`;
 
 // Class-expression and data-range vocabulary read by the owl:equivalentClass
@@ -249,6 +258,9 @@ interface Annotations {
   dctermsDescription?: string;
   dcDescription?: string;
   domains: string[];
+  // Blank-node rdfs:domain objects (class expressions), resolved at build
+  // time: an owl:unionOf adds each member class to `domains`.
+  domainNodes: string[];
   ranges: string[];  // raw range IRIs; the mapper maps xsd:* -> datatype
   versionInfo?: string;
   keyListHeads: string[];          // owl:hasKey list heads (blank nodes)
@@ -272,6 +284,7 @@ interface Annotations {
   encodedBy?: string;              // <ns>:encodedBy (local name)
   unit?: string;                   // qudt:unit / qudt:hasUnit / *:unit (K7)
   vocabulary?: boolean;            // <ns>:vocabulary true|false (K3)
+  abstract?: boolean;              // kcmd:abstract true|false
 }
 
 function emptyAnnotations(): Annotations {
@@ -279,6 +292,7 @@ function emptyAnnotations(): Annotations {
     synonyms: [],
     examples: [],
     domains: [],
+    domainNodes: [],
     ranges: [],
     keyListHeads: [],
     oneOfListHeads: [],
@@ -530,6 +544,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     // through the triples that reference them; they are just not routed to a
     // kind, so they neither become model terms nor count in the import stats.
     if (q.subject.termType === 'BlankNode') continue;
+    // The importer's own kcmd: vocabulary is not domain content: an ontology
+    // declares `kcmd:Metric a owl:Class` so OWL tools accept its metric
+    // individuals, and that class must not become an entity.
+    if (subject.startsWith(KCMD_NS)) continue;
     if (!kind.has(subject)) {
       kind.set(subject, k);
       order.push(subject);
@@ -638,7 +656,13 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         a.dcDescription = q.object.value;
         break;
       case RDFS_DOMAIN:
-        a.domains.push(localName(q.object.value));
+        // A named class is a domain as-is; a blank node is a class
+        // expression (`[ owl:unionOf (A B) ]`), resolved once the blank-node
+        // facts are known (see resolveDomainNode).
+        if (q.object.termType === 'BlankNode')
+          a.domainNodes.push(q.object.value);
+        else
+          a.domains.push(localName(q.object.value));
         break;
       case RDFS_RANGE:
         a.ranges.push(q.object.value);  // kept as IRI; mapper maps xsd:*
@@ -710,6 +734,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
         break;
       case KCMD_ON_VIOLATION:
         if (q.object.termType === 'Literal') a.onViolation = q.object.value;
+        break;
+      case KCMD_ABSTRACT:
+        if (q.object.termType === 'Literal' && a.abstract === undefined)
+          a.abstract = booleanLiteral(q.object.value);
         break;
       case OWL_DISJOINT_WITH:
         // Class disjointness -> no native OSI home; carried verbatim. Named
@@ -1085,6 +1113,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
   }>();
   for (const [subject, types] of typesOf) {
     if (kind.has(subject) || subject === ontologyIri) continue;
+    if (types.includes(KCMD_METRIC)) continue;  // a metric, read below
     if (!namedIndividuals.has(subject) &&
         !types.some(t => kind.get(t) === 'class')) {
       continue;
@@ -1140,6 +1169,137 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     if (acc.order !== undefined) individual.order = acc.order;
     individuals.push(individual);
   }
+  // The kcmd:Metric individuals (see OwlMetric), in document order. Values
+  // are read in one ordered pass; the first expression / definition /
+  // instructions / unit wins.
+  const metricAcc = new Map<string, {
+    labels: string[]; prefLabels: string[]; altLabels: string[];
+    expression?: string; definition?: string; comment?: string;
+    description?: string; instructions?: string; unit?: string;
+  }>();
+  for (const [subject, types] of typesOf) {
+    if (types.includes(KCMD_METRIC) && !kind.has(subject)) {
+      metricAcc.set(subject, {labels: [], prefLabels: [], altLabels: []});
+    }
+  }
+  for (const q of quads) {
+    const acc = metricAcc.get(q.subject.value);
+    if (!acc) continue;
+    const p = q.predicate.value;
+    if (UNIT_PREDICATES.has(localName(p)) && acc.unit === undefined) {
+      if (q.object.termType === 'NamedNode') {
+        acc.unit = localName(q.object.value);
+      } else if (q.object.termType === 'Literal' && q.object.value.trim()) {
+        acc.unit = q.object.value.trim();
+      }
+      continue;
+    }
+    if (q.object.termType !== 'Literal') continue;
+    const value = q.object.value;
+    switch (p) {
+      case RDFS_LABEL:
+        acc.labels.push(value);
+        break;
+      case SKOS_PREF_LABEL:
+        acc.prefLabels.push(value);
+        break;
+      case SKOS_ALT_LABEL:
+      case SKOS_HIDDEN_LABEL:
+        acc.altLabels.push(value);
+        break;
+      case KCMD_EXPRESSION:
+        if (value.trim()) acc.expression ??= value.trim();
+        break;
+      case KCMD_INSTRUCTIONS:
+        acc.instructions ??= value;
+        break;
+      case SKOS_DEFINITION:
+        acc.definition ??= value;
+        break;
+      case RDFS_COMMENT:
+        acc.comment ??= value;
+        break;
+      case DCTERMS_DESCRIPTION:
+      case DC_DESCRIPTION:
+        acc.description ??= value;
+        break;
+      default:
+        break;
+    }
+  }
+  const metrics: OwlMetric[] = [];
+  for (const [iri, acc] of metricAcc) {
+    const metric: OwlMetric = {
+      iri,
+      localName: localName(iri),
+      labels: [...acc.prefLabels, ...acc.labels],
+      altLabels: acc.altLabels,
+    };
+    if (acc.expression !== undefined) metric.expression = acc.expression;
+    const definition = acc.definition ?? acc.comment ?? acc.description;
+    if (definition !== undefined) metric.definition = definition;
+    if (acc.instructions !== undefined) metric.instructions = acc.instructions;
+    if (acc.unit !== undefined) metric.unit = acc.unit;
+    if (typesOf.get(iri)?.includes(`${SKOS}Concept`)) metric.concept = true;
+    metrics.push(metric);
+  }
+  // A blank-node rdfs:domain (see Annotations.domainNodes) as the classes it
+  // names. An owl:unionOf is the one shape that maps: the property applies to
+  // instances of ANY member, so the field goes on each member class (unlike
+  // several rdfs:domain triples, which OWL reads as an intersection). A
+  // nested union is flattened; any other anonymous member (an intersection,
+  // a restriction, ...) or a non-union expression is reported in
+  // `unsupported` (by construct, for the mapper's warning) and skipped.
+  const describeClassNode = (node: string): string =>
+      describeClassExpr(nodeFacts.get(node));
+  const resolveDomainNode =
+      (node: string, seen = new Set<string>()):
+          {named: string[]; unsupported: string[]} => {
+            const out = {named: [] as string[], unsupported: [] as string[]};
+            if (seen.has(node)) {
+              out.unsupported.push('a cyclic class expression');
+              return out;
+            }
+            seen.add(node);
+            const union = nodeFacts.get(node)?.get(OWL_UNION_OF);
+            if (!union) {
+              out.unsupported.push(describeClassNode(node));
+              return out;
+            }
+            for (const m of resolveListTerms(union.value)) {
+              if (m.termType === 'NamedNode') {
+                if (!TOP_CLASS_IRIS.has(m.value)) {
+                  out.named.push(localName(m.value));
+                }
+              } else if (
+                  m.termType === 'BlankNode' &&
+                  nodeFacts.get(m.value)?.has(OWL_UNION_OF)) {
+                const inner = resolveDomainNode(m.value, seen);
+                out.named.push(...inner.named);
+                out.unsupported.push(...inner.unsupported);
+              } else if (m.termType === 'BlankNode') {
+                out.unsupported.push(`an owl:unionOf member that is ${
+                    describeClassNode(m.value)}`);
+              } else {
+                out.unsupported.push(
+                    `an owl:unionOf member that is a ${m.termType}`);
+              }
+            }
+            return out;
+          };
+  // Every domain of a property: the named rdfs:domain classes as declared,
+  // then the members of each union domain not already listed.
+  const domainsOf = (a: Annotations):
+      {domains: string[]; unsupported: string[]} => {
+        const domains = [...a.domains];
+        const unsupported: string[] = [];
+        for (const node of a.domainNodes) {
+          const r = resolveDomainNode(node);
+          for (const d of r.named) if (!domains.includes(d)) domains.push(d);
+          unsupported.push(...r.unsupported);
+        }
+        return {domains, unsupported};
+      };
   // K2: one owl:propertyChainAxiom list member as a step -- a named property,
   // or an anonymous `[ owl:inverseOf p ]` (p walked backwards). Any other
   // member (a nested expression, a literal) is flagged so the mapper can say
@@ -1214,14 +1374,16 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           restrictions: expanded.flatMap(e => e.restrictions),
           ...commonAnnotations(a),
           ...(a.vocabulary !== undefined ? {vocabulary: a.vocabulary} : {}),
+          ...(a.abstract !== undefined ? {abstract: a.abstract} : {}),
         });
         if (definitions.length) classes[classes.length - 1].definitions = definitions;
         break;
       }
-      case 'datatypeProperty':
+      case 'datatypeProperty': {
+        const {domains, unsupported} = domainsOf(a);
         datatypeProperties.push({
           localName: localName(iri),
-          domains: a.domains,
+          domains,
           rangeIri: a.ranges[0],
           label: a.label,
           comment: descriptionOf(a),
@@ -1234,15 +1396,19 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           propertyDisjointWith: a.propertyDisjointWith,
           ...commonAnnotations(a),
           ...(a.unit !== undefined ? {unit: a.unit} : {}),
+          ...(a.domainNodes.length ? {unionDomain: true} : {}),
+          ...(unsupported.length ? {unsupportedDomains: unsupported} : {}),
         });
         break;
-      case 'objectProperty':
+      }
+      case 'objectProperty': {
+        const {domains, unsupported} = domainsOf(a);
         objectProperties.push({
           localName: localName(iri),
           // a.domains are already local names; a.ranges are raw IRIs. Carry all
           // of each so the mapper can warn about (and drop) the extras rather
           // than silently keeping only the first.
-          domains: a.domains,
+          domains,
           ranges: a.ranges.map(localName),
           label: a.label,
           comment: descriptionOf(a),
@@ -1268,8 +1434,10 @@ export function parseOwl(turtle: string|string[]): OwlModel {
           asymmetric: asymmetric.has(iri),
           ...commonAnnotations(a),
           ...(a.encodedBy !== undefined ? {encodedBy: a.encodedBy} : {}),
+          ...(unsupported.length ? {unsupportedDomains: unsupported} : {}),
         });
         break;
+      }
       default:
         break;
     }
@@ -1333,6 +1501,7 @@ export function parseOwl(turtle: string|string[]): OwlModel {
     allDifferent: resolveMembers(allDifferentNodes),
     ...(Object.keys(individualCodes).length ? {individualCodes} : {}),
     ...(individuals.length ? {individuals} : {}),
+    ...(metrics.length ? {metrics} : {}),
   };
 }
 
@@ -1345,4 +1514,17 @@ function ontologyBaseIri(iri: string): string|undefined {
   const last = iri[iri.length - 1];
   if (last === '#' || last === '/') return iri;
   return `${iri}#`;
+}
+
+// Names an anonymous class expression by its construct, from the facts of its
+// blank node, for a warning about a place only named classes (or a union of
+// them) can go.
+function describeClassExpr(facts: ReadonlyMap<string, unknown>|undefined):
+    string {
+  if (facts?.has(OWL_UNION_OF)) return 'an owl:unionOf';
+  if (facts?.has(OWL_INTERSECTION_OF)) return 'an owl:intersectionOf';
+  if (facts?.has(OWL_COMPLEMENT_OF)) return 'an owl:complementOf';
+  if (facts?.has(OWL_ONE_OF)) return 'an owl:oneOf';
+  if (facts?.has(OWL_ON_PROPERTY)) return 'an owl:Restriction';
+  return 'an anonymous class expression';
 }

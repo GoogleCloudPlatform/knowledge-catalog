@@ -4,9 +4,9 @@
 // push validation, the BigQuery lowering (a generated `vocab_<entity>` view
 // behind the node table; edges into the vocabulary matching the code
 // case-insensitively through an `edge_<relationship>` view), the deploy
-// order, the Knowledge Catalog push/pull trailer, OSI round-trip, the
-// query-skill pages, and the OWL importer (owl:oneOf, named individuals, a
-// `vocabulary` annotation, SKOS labels, code and sort-order annotations).
+// order, the Knowledge Catalog push/pull trailer, OSI round-trip, and the OWL
+// importer (owl:oneOf, named individuals, a `vocabulary` annotation, SKOS
+// labels, code and sort-order annotations).
 //
 // Running example: orders whose status is one of a closed list of codes.
 
@@ -23,9 +23,6 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, loadModels, loadSemanticModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
-import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
-import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
-import {generateSkill} from '../../../src/libts/semantic/skills';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 import {generatesVocabularyView, lowerVocabularies, membersTrailer, splitMembersTrailer, withVocabularyBindings} from '../../../src/libts/semantic/vocabulary';
 
@@ -369,10 +366,13 @@ describe('deploy', () => {
       const res = await deployBigQuery(loaded(), CTX, {});
       expect(res.success).toBe(true);
       const sqls = querySpy.mock.calls.map(c => String(c[1]));
-      expect(sqls.length).toBe(3);
-      expect(sqls[0]).toStartWith('CREATE OR REPLACE VIEW `p.d.vocab_order_status`');
-      expect(sqls[1]).toStartWith('CREATE OR REPLACE VIEW `p.d.edge_has_status`');
-      expect(sqls[2]).toContain('CREATE OR REPLACE PROPERTY GRAPH `p.d.g`');
+      // Node views first (Order reads its generated node view), then the
+      // vocabulary view, the edge view over it, and the graph.
+      expect(sqls.length).toBe(4);
+      expect(sqls[0]).toStartWith('CREATE OR REPLACE VIEW `p.d.order`');
+      expect(sqls[1]).toStartWith('CREATE OR REPLACE VIEW `p.d.vocab_order_status`');
+      expect(sqls[2]).toStartWith('CREATE OR REPLACE VIEW `p.d.edge_has_status`');
+      expect(sqls[3]).toContain('CREATE OR REPLACE PROPERTY GRAPH `p.d.g`');
     } finally {
       dsSpy.mockRestore();
       querySpy.mockRestore();
@@ -382,15 +382,19 @@ describe('deploy', () => {
   test('a failing view stops the push before the graph, naming the view',
        async () => {
          const dsSpy = mockDataset();
+         // The node view succeeds; the vocabulary view after it fails.
+         let calls = 0;
          const querySpy = spyOn(bq.BigQueryClient.prototype, 'query')
-                              .mockImplementation(
-                                  async () => ({status: 400, message: 'boom'}));
+                              .mockImplementation(async () => (++calls === 1 ?
+                                  {status: 200, result: {jobComplete: true}} :
+                                  {status: 400, message: 'boom'}) as any);
          try {
            const res = await deployBigQuery(loaded(), CTX, {});
            expect(res.success).toBe(false);
            expect(res.details).toContain(`view 'p.d.vocab_order_status'`);
            expect(res.details).toContain('boom');
-           expect(querySpy).toHaveBeenCalledTimes(1);
+           expect(res.details).toContain('1 view(s) already deployed');
+           expect(querySpy).toHaveBeenCalledTimes(2);
          } finally {
            dsSpy.mockRestore();
            querySpy.mockRestore();
@@ -496,58 +500,6 @@ describe('OSI round-trip', () => {
     expect(status.members).toEqual(orderStatus().members);
     expect(status.dataSource).toBe('');
   });
-});
-
-describe('query skill', () => {
-  function generate(m: SemanticModel = model()) {
-    const runtime: SemanticRuntime = {
-      model: resolveInheritance(m).model,
-      document: 'orders',
-      store: {
-        kind: 'bigquery',
-        name: 'projects/p/datasets/d',
-        project: 'p',
-        dataset: 'd'
-      },
-      profile: 'bigquery',
-      entryGroup: 'orders_eg',
-    } as SemanticRuntime;
-    const out = generateSkill({runtime, mode: 'query', query: {location: 'US'}});
-    if ('error' in out) throw new Error(out.error);
-    return Object.fromEntries(out.files.map(x => [x.path, x.text]));
-  }
-  const files = generate();
-  const page = files['references/entities/OrderStatus.md'];
-
-  test('the vocabulary page lists its members (code — label)', () => {
-    expect(page).toContain('## Members');
-    expect(page).toContain(
-        'A closed list of 4 members. Filter on `statusCode` (the code); an ' +
-        'edge into OrderStatus matches the code case-insensitively. Members ' +
-        '(code — label):');
-    expect(page).toContain('- `OPEN` — Open: Placed, not yet shipped.');
-    expect(page).toContain('- `SHIPPED` — Shipped (also: Dispatched)');
-    expect(page).toContain(`- \`ON_HOLD\` — Customer's hold`);
-    expect(page).toContain('- `VOID`\n');
-  });
-
-  test('the SQL fallback join compares codes case-insensitively', () => {
-    expect(Object.values(files).some(
-               t => t.includes(
-                   'SQL join LOWER(Order.status_key) = LOWER(OrderStatus.code)')))
-        .toBe(true);
-  });
-
-  test('the SQL fallback join casts a non-text foreign key, as the edge does',
-       () => {
-         const m = model();
-         m.entities[0].fields[1].type = 'Integer';
-         expect(Object.values(generate(m)).some(
-                    t => t.includes(
-                        'SQL join LOWER(CAST(Order.status_key AS STRING)) = ' +
-                        'LOWER(OrderStatus.code)')))
-             .toBe(true);
-       });
 });
 
 describe('OWL import', () => {

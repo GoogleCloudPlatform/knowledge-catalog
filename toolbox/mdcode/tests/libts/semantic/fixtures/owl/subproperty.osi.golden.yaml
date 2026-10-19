@@ -4,9 +4,11 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/deals#
     entities:
       - name: BusinessObject
+        abstract: true
       - name: CommercialDocument
         extends:
           - BusinessObject
+        abstract: true
       - name: Opportunity
         extends:
           - CommercialDocument
@@ -16,6 +18,7 @@ semantic_model:
       - name: OrgUnit
         extends:
           - BusinessObject
+        abstract: true
       - name: MarketUnit
         extends:
           - OrgUnit
@@ -23,9 +26,11 @@ semantic_model:
         extends:
           - OrgUnit
       - name: Party
+        abstract: true
       - name: Organization
         extends:
           - Party
+        abstract: true
       - name: Client
         extends:
           - Organization

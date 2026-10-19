@@ -12,6 +12,7 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {ConstraintRates} from '../libts/semantic/constraint_enforcement';
 import * as contracts from '../libts/semantic/contract_tests';
 import {buildCoverageReport, CoverageReport, formatCoverageSummary, writeCoverageFile} from '../libts/semantic/converters/coverage';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
@@ -23,7 +24,8 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {checkGlossary} from '../libts/semantic/glossary';
 import {publishGlossary} from '../libts/semantic/glossary_publish';
-import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {probeAnnotationAspects, resolveBigQueryEntries} from '../libts/semantic/kc_closure_env';
+import {provisionCustomTypes, provisionedCustomAspects} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
@@ -31,8 +33,7 @@ import {boundEntityNames, formatPruneSummary} from '../libts/semantic/prune';
 import {AvailabilityReport, DEFAULT_PROFILE, mergeProfileOntoDoc, pruneUnavailable,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {storeLine} from '../libts/semantic/runtime/store';
-import {generateSkill, SKILL_MODES, SkillMode, SkillPackage} from '../libts/semantic/skills';
-import type {SemanticModel} from '../libts/semantic/ir';
+import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {transpileModels} from '../libts/semantic/transpile';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import * as bqValidation from '../libts/semantic/validate_bigquery';
@@ -587,6 +588,10 @@ export async function push(options: PushOptions): Promise<number> {
       }
     };
     const loadedDocs = new Set<string>();
+    // Per model, how often each constraint breaks in the node views that
+    // enforce constraints: measured after the BigQuery deploy, published by
+    // the Knowledge Catalog leg (constraint_enforcement.ts).
+    const constraintRates = new Map<string, ConstraintRates>();
     for (const profileName of graphProfileNames) {
       // --all-profiles fans out over every model's profiles, so a model that
       // does not define this one is dropped (skipMissing) rather than failing
@@ -646,7 +651,9 @@ export async function push(options: PushOptions): Promise<number> {
             !(await profileGate(prepared.bqModels, ctx, profileName))) {
           return 1;
         }
-        const code = await pushBigQuery(prepared.bqModels, ctx, options);
+        const code = await pushBigQuery(
+            prepared.bqModels, ctx, options,
+            kcEnabled ? constraintRates : undefined);
         if (code !== 0) return code;
         deployedGraphs += prepared.bqModels.length;
       }
@@ -690,9 +697,11 @@ export async function push(options: PushOptions): Promise<number> {
     }
 
     // Neither a BigQuery nor a Spanner property graph has a construct for an
-    // action or a constraint, so Knowledge Catalog is their only destination. A
-    // push that omits the KC leg (--no-kc) would validate them and then deploy
-    // them nowhere. Warn instead of dropping them silently.
+    // action or a constraint, so Knowledge Catalog is the only place they are
+    // published (a node view applies the constraints its binding enforces, but
+    // publishes none). A push that omits the KC leg (--no-kc) would validate
+    // them and then publish them nowhere. Warn instead of dropping them
+    // silently.
     if (!kcEnabled) {
       // The loop above already loaded every document that contributes a graph.
       // Only the rest need loading, which is usually none, and a model that
@@ -728,8 +737,8 @@ export async function push(options: PushOptions): Promise<number> {
       const prune = graphEnabled && docs.some(d => declaresGraphTarget(d.text));
       const prepared = await prepareOnce(docs, kcProfileName, prune);
       if (!prepared) return 1;
-      const code =
-          await pushKnowledgeCatalog(prepared.models, ctx, options, source);
+      const code = await pushKnowledgeCatalog(
+          prepared.models, ctx, options, source, constraintRates);
       if (code !== 0) return code;
     } else if (deployedGraphs === 0) {
       // Graph-only push (--no-kc) whose selected profile(s) declare no target:
@@ -978,15 +987,29 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
 // Deploys the semantic model's BigQuery Graph leg (over the pre-loaded models)
 // and prints the result. Returns a process exit code (0 on success).
 async function pushBigQuery(
-    models: LoadedModel[], ctx: context.ApiContext,
-    options: PushOptions): Promise<number> {
+    models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
+    constraintRates?: Map<string, ConstraintRates>): Promise<number> {
   console.log(
       options.validateOnly ? 'Validating semantic model for BigQuery Graph...' :
                              'Pushing semantic model (BigQuery Graph)...');
-  const result = await deploy.deployBigQuery(models, ctx, options);
+  // With a rates sink, the deploy also measures how often each enforced
+  // constraint breaks, for the Knowledge Catalog leg.
+  const result = await deploy.deployBigQuery(
+      models, ctx, {...options, measureConstraints: !!constraintRates});
+  for (const [model, rates] of result.constraintRates ?? []) {
+    constraintRates?.set(model, rates);
+  }
 
   for (const w of result.warnings) {
     console.warn(`Warning: ${w}`);
+  }
+  // The node views each graph reads its entities through (hydration; see
+  // node_views.ts): what was created, or under a dry run what would be.
+  if (result.nodeViews?.length) {
+    console.log(
+        options.validateOnly ? 'Node views (dry run; nothing created):' :
+                               'Node views:');
+    for (const line of result.nodeViews) console.log(`  ${line}`);
   }
   // The GRAPH_EXPAND metric graphs and fallback views next to each graph
   // (see metric_slices.ts): what was planned, or under a dry run what would be.
@@ -1007,7 +1030,7 @@ async function pushBigQuery(
     console.error('Error pushing semantic model to BigQuery:', result.details);
     return 1;
   }
-  const views = result.views ? ` and ${result.views} metric view(s)` : '';
+  const views = result.views ? ` and ${result.views} view(s)` : '';
   console.log(
       options.validateOnly ?
           'Validation complete; no changes applied.' :
@@ -1054,11 +1077,18 @@ async function pushSpanner(
 // success).
 async function pushKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
-    source: SemanticModelSource): Promise<number> {
+    source: SemanticModelSource,
+    constraintRates?: Map<string, ConstraintRates>): Promise<number> {
   console.log(
       options.validateOnly ?
           'Validating semantic model for Knowledge Catalog...' :
           'Pushing semantic model (Knowledge Catalog)...');
+  // K1 / K3: attach the annotation aspects `kcmd init` provisioned, and link
+  // each entity to the BigQuery entries it is read through.
+  const customAspects =
+      await probeAnnotationAspects(ctx, {project: source.project});
+  const bigQueryEntries =
+      await resolveBigQueryEntries(models.map(m => m.model), ctx);
   const result = await kc.deployKnowledgeCatalog(models, ctx, {
     project: source.project,
     location: source.location,
@@ -1066,6 +1096,9 @@ async function pushKnowledgeCatalog(
     validateOnly: options.validateOnly,
     forceRemove: options.forceRemove,
     emitExpressions: options.emitExpressions,
+    customAspects,
+    bigQueryEntries,
+    ...(constraintRates?.size ? {constraintRates} : {}),
     // The semantic-* system types live in `dataplex-types/global` on prod.
     // Override via KC_TYPE_PROJECT to reference them from another project
     // (e.g. `dataplex-autopush-types` on the autopush/sandbox EAP).
@@ -1098,12 +1131,15 @@ async function pushKnowledgeCatalog(
       `; unlinked ${result.unlinked} orphaned link${
           result.unlinked === 1 ? '' : 's'}` :
       '';
+  const bound = result.bound ? `; bound ${result.bound} BigQuery link${
+                                   result.bound === 1 ? '' : 's'}` :
+                               '';
   console.log(
       options.validateOnly ?
           'Validation complete; no changes applied.' :
           `Wrote ${result.created} new and ${result.updated} updated ` +
               `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${
-                  linked}${unlinked}.`);
+                  linked}${unlinked}${bound}.`);
   return 0;
 }
 
@@ -1134,6 +1170,8 @@ async function pullSemanticModel(
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
+    customAspects: await provisionedCustomAspects(
+        catalog, {project: source.project}),
   });
 
   for (const w of result.warnings) {
@@ -1359,7 +1397,8 @@ export async function owl(
 
   // K3/K2 (proposed): how many of those became vocabularies / derived
   // relationships, only when there are any.
-  const {vocabularies = 0, derivedRelationships = 0} = result.stats;
+  const {vocabularies = 0, derivedRelationships = 0, metrics = 0} =
+      result.stats;
   const refined = [
     ...(vocabularies ?
             [`${vocabularies} ${
@@ -1370,6 +1409,7 @@ export async function owl(
                 plural(
                     derivedRelationships, 'relationship', 'relationships')}`] :
             []),
+    ...(metrics ? [`${metrics} ${plural(metrics, 'metric', 'metrics')}`] : []),
   ];
   console.log(
       `converted ${classes} ${plural(classes, 'class', 'classes')}, ` +
@@ -1618,9 +1658,9 @@ export function catalogOnlyWarning(
         n.constraints ? `${n.constraints} constraint(s)` : '',
       ].filter(part => part)
           .join(' and ');
-  return `model '${model}' declares ${declared}, which deploy only to ` +
+  return `model '${model}' declares ${declared}, which publish only to ` +
       `Knowledge Catalog; --no-kc excludes that leg, so they will not be ` +
-      `deployed. Drop --no-kc to deploy them.`;
+      `published. Drop --no-kc to publish them.`;
 }
 
 
@@ -1634,54 +1674,6 @@ export interface SkillsGenerateOptions {
   name?: string;
   /** Replace a skill that is already there, pruning stale pages. */
   force?: boolean;
-  /**
-   * `act` (default): the action router. `query`: the read-side index over
-   * the property graph. `both`: one skill with the two.
-   */
-  mode?: string;
-  /**
-   * Further catalog scopes (directories holding a `catalog.yaml`) whose
-   * BigQuery graphs the query side should also point at -- e.g. a metrics
-   * slice small enough for GRAPH_EXPAND. Read-only; read under each scope's
-   * own default profile.
-   */
-  extraScope?: string|string[];
-  /** BigQuery location to name in the query side. */
-  location?: string;
-  /**
-   * Whether the query side reads metrics on the GRAPH_EXPAND metric graphs
-   * and fallback views `kcmd push` deploys (K6, a proposed enhancement; see
-   * ../libts/semantic/metric_slices.ts). On by default; `--no-metric-graphs`
-   * sets it false, for a graph pushed with `--no-metric-graphs`.
-   */
-  metricGraphs?: boolean;
-}
-
-
-// The GCP context for a generator that writes files and calls no regional
-// API. `ApiContext.default()` refuses to start without `compute/region`, but
-// generating a skill only reads the scope (whose type lookups name their own
-// location), so a missing region falls back to `global` rather than stopping
-// an offline command over an unrelated gcloud setting.
-function generatorContext(): context.ApiContext {
-  try {
-    return context.ApiContext.default();
-  } catch {
-    const read = (cmd: string) => {
-      try {
-        return cp.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']})
-            .toString()
-            .trim();
-      } catch {
-        return '';
-      }
-    };
-    const project = process.env.CLOUDSDK_CORE_PROJECT ||
-        read('gcloud -q config get-value project');
-    const token =
-        read('gcloud -q auth application-default print-access-token');
-    return new context.ApiContext(project, 'global', token);
-  }
 }
 
 
@@ -1703,13 +1695,7 @@ function generatorContext(): context.ApiContext {
 // Returns a process exit code (0 on success).
 export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     Promise<number> {
-  const ctx = generatorContext();
-  const mode = (options.mode ?? 'act') as SkillMode;
-  if (!SKILL_MODES.includes(mode)) {
-    console.error(`Error: --mode must be one of ${SKILL_MODES.join(', ')}; got '${
-        options.mode}'.`);
-    return 1;
-  }
+  const ctx = context.ApiContext.default();
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
   const opened = await createSemanticRuntimes({profile: named, ctx});
@@ -1722,34 +1708,6 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
         opened.length} models. Drop it and each takes its model's name.`);
     return 1;
   }
-
-  const extraScopes = options.extraScope === undefined ?
-      [] :
-      (Array.isArray(options.extraScope) ? options.extraScope :
-                                           [options.extraScope]);
-  if (extraScopes.length && mode === 'act') {
-    console.warn('Warning: --extra-scope only affects --mode query or both; ignored.');
-  }
-  const extraModels: SemanticModel[] = [];
-  for (const dir of mode === 'act' ? [] : extraScopes) {
-    const extra = await createSemanticRuntimes({
-      path: dir,
-      ctx,
-      // The extra scope is read for its graph's coordinates and measures;
-      // its binding chatter is not this command's to report.
-      onWarning: () => {},
-    });
-    if ('error' in extra) {
-      console.error(`Error: --extra-scope ${dir}: ${extra.error}`);
-      return 1;
-    }
-    extraModels.push(...extra.map(r => r.model));
-  }
-  const query = {
-    extraModels,
-    location: options.location,
-    metricGraphs: options.metricGraphs,
-  };
 
   const root = options.out ?? 'skills';
 
@@ -1768,8 +1726,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
   const claimed = new Map<string, string>();
   let failed = false;
   for (const runtime of opened) {
-    const generated =
-        generateSkill({runtime, name: options.name, mode, query});
+    const generated = generateSkill({runtime, name: options.name});
     if ('error' in generated) {
       console.error(`Error: [${runtime.model.name}] ${generated.error}`);
       failed = true;
@@ -1838,18 +1795,40 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
 // demand -- so the stale page is read as current and describes a call that no
 // longer exists.
 function stalePages(dir: string, keep: Set<string>): string[] {
-  const out: string[] = [];
-  // `references/` holds the action pages and the query side's metrics and
-  // patterns pages; `references/entities/` holds one page per graph label.
-  for (const sub of ['references', 'references/entities']) {
-    const refs = path.join(dir, sub);
-    if (!fs.existsSync(refs)) continue;
-    out.push(...fs.readdirSync(refs)
-                 .filter(f => f.endsWith('.md'))
-                 .map(f => `${sub}/${f}`)
-                 .filter(f => !keep.has(f)));
+  const refs = path.join(dir, 'references');
+  if (!fs.existsSync(refs)) return [];
+  return fs.readdirSync(refs)
+      .filter(f => f.endsWith('.md'))
+      .map(f => `references/${f}`)
+      .filter(f => !keep.has(f));
+}
+
+
+// The GCP context for the commands below (validate, test, profile, glossary),
+// which read the scope and name their own location for any API they call (a
+// BigQuery job's, the glossary's). `ApiContext.default()` throws when gcloud
+// cannot supply a project or a token; this falls back to what gcloud does
+// supply, in `global`, rather than stopping an offline run (--sql-only,
+// --dry-run) over an unrelated gcloud setting.
+function generatorContext(): context.ApiContext {
+  try {
+    return context.ApiContext.default();
+  } catch {
+    const read = (cmd: string) => {
+      try {
+        return cp.execSync(cmd, {stdio: ['ignore', 'pipe', 'ignore']})
+            .toString()
+            .trim();
+      } catch {
+        return '';
+      }
+    };
+    const project = process.env.CLOUDSDK_CORE_PROJECT ||
+        read('gcloud -q config get-value project');
+    const token =
+        read('gcloud -q auth application-default print-access-token');
+    return new context.ApiContext(project, 'global', token);
   }
-  return out;
 }
 
 

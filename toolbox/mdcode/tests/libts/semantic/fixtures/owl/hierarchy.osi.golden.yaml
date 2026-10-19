@@ -4,11 +4,13 @@ semantic_model:
     description: Imported from OWL ontology http://example.com/hr#
     entities:
       - name: Person
+        abstract: true
         description: A human being.
         fields:
           - name: fullName
             datatype: String
       - name: Employee
+        abstract: true
         description: A person employed by the organization.
         fields:
           - name: employeeId

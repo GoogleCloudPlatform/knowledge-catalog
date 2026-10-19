@@ -34,8 +34,13 @@ function yamlFixtures(dir: string): string[] {
     // inputs: a model carrying the proposed supersets the profiler reads, with
     // parts left unbound on purpose, and simulated query rows, which are no
     // OSI document at all. profile_bigquery.test.ts loads them instead.
+    // The bind/ subtree holds `kcmd bind` inputs and goldens: a logical model
+    // (no sources/expressions) and the binding profile bind drafts for it --
+    // the same pre-OSI supersets as profiles/. bind.test.ts merges and
+    // checks them instead.
     if (ent.isDirectory()) {
-      if (ent.name === 'profiles' || ent.name === 'data_profile') continue;
+      if (ent.name === 'profiles' || ent.name === 'data_profile' ||
+          ent.name === 'bind') continue;
       out.push(...yamlFixtures(p));
     } else if (ent.name.endsWith('.yaml') || ent.name.endsWith('.yml')) {
       out.push(p);

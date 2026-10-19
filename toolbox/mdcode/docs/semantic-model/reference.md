@@ -126,7 +126,6 @@ against.
 | `--name <name>` | Name the skill, and so its directory. Defaults to the model's own name. Rejected when the scope holds more than one model, because a name names one skill. |
 | `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. It is what the one deployment-specific section describes. |
 | `--force` | Replace a skill already at that path. A reference page for an action the model no longer declares is deleted and reported; a file outside `references/` is left alone. |
-| `--no-metric-graphs` | Query mode (`--mode query` or `both`; the other query-mode flags are in [Generating an Agent Skill](skills.md#flags)). Read metrics on the main graph's own measures rather than on the metric graphs and views a push deploys next to it (proposed). Use it for a graph pushed with `--no-metric-graphs`. |
 
 Before anything is written, a warning is printed when no action in a model is
 runnable under the selected profile, because a skill that can run nothing is
@@ -346,14 +345,14 @@ becomes one part of that graph:
 | Model element | BigQuery construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
-| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key |
+| Entity | a node view + `NODE TABLE` | the node table reads the entity's generated node view (see [Node views](#node-views-hydration)), keyed by its primary key; with `mode: direct` it reads the `source` table itself |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Relationship `inverse` | a second `EDGE TABLE` over the same backing table | `SOURCE`/`DESTINATION` swapped, labeled with the inverse name (see [Relationship inverses](#relationship-inverses-inverse)) |
 | Metric | `MEASURE` on a node table | must resolve to a single entity (otherwise the push is rejected — see [Validation](#validation)) and reduce to one supported aggregate over one operand (otherwise that metric is skipped with a warning) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Relationship `extends` / `abstract` | extra `LABEL … NO PROPERTIES` clauses on the sub-relationship's edge table; no edge table for an abstract relationship | a match on the parent label spans every descendant edge table (see [Relationship hierarchies](#relationship-hierarchies)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
-| Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
+| Constraint | *no graph construct* | a constraint is published to Knowledge Catalog (see below); a node view under `hydration.constraints: enforce` applies it to the rows it serves (see [Node views](#node-views-hydration)) |
 
 Next to that graph, a push also deploys the model's metrics as small
 `GRAPH_EXPAND`-ready metric graphs, plus a view for any metric none can hold
@@ -363,8 +362,16 @@ Next to that graph, a push also deploys the model's metrics as small
 statement runs in the right region; without that permission it falls back to
 BigQuery's own location inference and warns. Under `--validate-only` (or
 `--dry-run`) no graph DDL is executed and nothing is written (the live
-source-table checks still run — see [Validation](#validation)); add `--print`
-to see the generated DDL.
+source-table checks still run — see [Validation](#validation)); the node views
+a push would create are listed under `Node views (dry run; nothing created):`,
+and `--print` shows every statement's DDL in deploy order.
+
+Statements run one at a time, in this order, each `CREATE OR REPLACE`: node
+views; vocabulary views; edge views (resolved foreign keys, vocabulary edges,
+derived relationships); the graph; the metric graphs; the metric views. A
+failing statement stops the push and names what it was creating — for a node
+view, the view and its entity — and what earlier statements already deployed
+(nothing is rolled back). Knowledge Catalog is written after the graph legs.
 
 **How a metric becomes a `MEASURE`.** A graph measure aggregates a node
 property, so the aggregate's operand is exposed as one first. An operand that
@@ -379,11 +386,59 @@ column (or SQL) it is bound to, parenthesized when it is not a bare column:
 profile that binds `total_contract_value` and `probability_of_win` becomes
 `total_contract_value * probability_of_win AS weighted_pipeline_input`. String
 literals, function names, and qualified names are left untouched. Two metrics
-whose operands resolve to the same SQL share one derived property.
+whose operands resolve to the same SQL share one derived property. (Through a
+node view, the column a field is bound to is its view column,
+`snake_case(<field>)`.)
+
+**Measure names.** A measure is named like its metric, so a reader selects
+`AGG(<NodeTable>_<metric>)`, with one exception. When the metric's name is also
+a column of the node table's backing table, the measure is named
+`<metric>__measure`. That happens, for example, with a metric `won_amount =
+SUM(Opportunity.wonAmount)` read through a node view whose column is
+`won_amount`. BigQuery accepts a measure named like a backing column, but then
+fails every query on the graph, GQL and `GRAPH_EXPAND` alike, with an internal
+error. Push warns once per renamed metric, and the metric's `Query:` paragraph
+in Knowledge Catalog always names the measure as deployed.
 
 For which of your descriptive metadata (`description`, `ai_context`, field
 labels, …) lands in the graph and which is dropped, see
 [What push and pull preserve](fidelity.md#to-bigquery).
+
+### Node views (hydration)
+
+A property graph is a schema over tables, and BigQuery does not enforce a node
+table's `KEY`: a key the source repeats silently doubles every match and
+measure through it. So by default a push reads each bound concrete entity
+through a view it generates in the graph's dataset, named
+`snake_case(<entity>)`, with:
+
+- **columns** — the entity's modeled fields only, each named
+  `snake_case(<field>)` and computed from the field's binding (a column the
+  model does not declare is not exposed);
+- **rows** — what the entity's binding `hydration` rules make of the source:
+  one row per key (`grain`), rescaled values (`normalize`), foreign keys
+  rewritten to the destination's key (`resolve`), or, for an entity with no
+  table, the distinct foreign keys of a relationship (`derive_from`). See
+  [Hydration](profiles.md#hydration--reshaping-a-table-into-the-entity) for the
+  rules and the SQL each compiles to;
+- **constraints** — under `constraints: enforce`, the model's constraints
+  applied to those rows: a `reject` rule's failing value withheld (NULL) or,
+  for a required field or the key, the row left out; allowed-set values served
+  in the member's spelling; and a `_warnings` column (`ARRAY<STRING>`) naming
+  every rule the row breaks. See
+  [Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time);
+- **description** — the entity's description, its key, a one-line summary of
+  the rules applied (and of the constraints it enforces), and its source.
+
+The graph, its edges (a foreign key is read from its entity's view), vocabulary
+and derived edges, measures, and metric graphs all read the views, so every
+governed read inherits the hydration and the enforced constraints; the
+`_warnings` column is read through the view itself (it is not a node
+property). An abstract,
+defined, or vocabulary entity gets none (a vocabulary keeps its `vocab_*`
+view), nor does one with `mode: direct`, or one whose view would replace a
+table the model binds (warned). The views need `bigquery.tables.create` /
+`bigquery.tables.update` on the graph's dataset, as the graph does.
 
 ### Metric graphs for `GRAPH_EXPAND` (proposed)
 
@@ -408,9 +463,7 @@ fact's metrics read, then further many-to-one dimensions breadth-first, up to
 `MEASURE` per aggregate. A view has one row per fact record, with columns named
 `<Entity>_<field>`. The main graph is the same with or without them. The rules
 are in
-[What push and pull preserve](fidelity.md#metric-graphs-for-graph_expand-proposed),
-and how the query skill reads them in
-[Agent skills](skills.md#metrics-and-metric-graphs-proposed).
+[What push and pull preserve](fidelity.md#metric-graphs-for-graph_expand-proposed).
 
 The push prints the plan, one line per metric graph and view. A dry run prints
 it too, headed `Metric graphs (dry run; nothing created):`, and `--print` adds
@@ -751,10 +804,11 @@ statement is planned against the target database first, on both legs (see
 ## What gets created in Knowledge Catalog
 
 Each element of your model maps to one catalog resource. Every resource type
-below except `semantic-action` and `semantic-constraint` is a built-in system
-type under `dataplex-types/global` — push references them, it never creates
-them. Those two are custom, and `kcmd init --semantic-model` creates them in
-your own project at `global`; push still writes only entries.
+below except `semantic-action`, `semantic-constraint` and the three annotation
+aspects (`semantic-ai-context`, `semantic-expressions`, `semantic-binding`) is
+a built-in system type under `dataplex-types/global` — push references them, it
+never creates them. The custom ones are created by `kcmd init --semantic-model`
+in your own project at `global`; push still writes only entries and links.
 
 > Set `KC_TYPE_PROJECT` to read these system types from another project, and
 > `DATAPLEX_ENDPOINT` to target a non-prod Dataplex host; both default to
@@ -762,10 +816,12 @@ your own project at `global`; push still writes only entries.
 
 | Model element | Catalog resource | Kind | Id |
 |---|---|---|---|
-| Model | `semantic-model` | entry — anchor / parent of the rest | `<model>` |
-| Entity | `semantic-entity` (+ built-in `schema` aspect) | entry | `<model>.entities.<entity>` |
-| Metric | `semantic-metric` | entry | `<model>.metrics.<metric>` |
-| Relationship | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
+| Model | `semantic-model` (+ `semantic-ai-context`) | entry — anchor / parent of the rest | `<model>` |
+| Entity | `semantic-entity` (+ built-in `schema`; + `semantic-ai-context`, `semantic-expressions`, `semantic-binding`) | entry | `<model>.entities.<entity>` |
+| Metric | `semantic-metric` (+ `semantic-ai-context`, `semantic-expressions`) | entry | `<model>.metrics.<metric>` |
+| Relationship (1:1 / 1:N) | `schema-join` | entry link between the two entity entries | derived from the model and relationship names |
+| Relationship (many-to-many) | `semantic-entity` for the junction table + two `schema-join` links (junction → source, junction → destination) | entry + 2 entry links | `<model>.associations.<relationship>`; links `…-src` / `…-dst` |
+| Binding (entity → physical) | `schema-join` (type `JOIN`) to the `@bigquery` node view / table entry and to the graph node entry | entry links | `<model>-bind-view-<entity>`, `<model>-bind-node-<entity>` |
 | Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
 | Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
 
@@ -775,6 +831,77 @@ description, and any `label` per field), plus the entity's keys and unique keys
 relationship detail — the paired columns and foreign-key direction — in its
 aspect. Any element with `ai_context.instructions` (the model, an entity, or a
 metric) also gets a built-in `guidelines` aspect holding that text.
+
+### Annotation aspects (lossless push / pull)
+
+The built-in templates are closed and have no slot for several things a model
+says, so `kcmd init --semantic-model` also provisions three **aspect-only**
+custom types in your project at `global`. Push attaches each one only when
+`init` provisioned it (push probes for them) and only to elements that have
+content for it; a project that has not re-run `init` publishes exactly what it
+did before.
+
+| Aspect | On | Carries |
+|---|---|---|
+| `semantic-ai-context` | model, entity, metric | the element's whole `ai_context` (instructions, synonyms, examples) and each field's `ai_context`; on the model entry, every relationship's authored name, its link id and its `ai_context` (an entry link cannot carry a custom aspect) |
+| `semantic-expressions` | entity, metric | the metric's expression, imported vendor SQL and logical type; per field its expression, imported SQL, logical type and dimension role |
+| `semantic-binding` | entity | binding `mode`, `hydration` rules (`constraints: enforce` included), vocabulary `members` (all member fields), and the node view / graph / node label it is read through; on a junction entry, the many-to-many relationship it backs |
+
+With `semantic-expressions` provisioned, expressions are always published
+through it, so `--emit-expressions` is no longer needed. `pull` reads all three
+back and treats them as authoritative for what they cover; the description
+trailers (`Hydration:`, `Members:`, …) stay for human and agent readers.
+
+### What an agent reads through `lookup_context`
+
+`lookup_context`, the call an agent grounds on, returns each entry's
+description and its schema. It does not return aspects or entry links. So when
+push knows the physical layout (the `semantic-binding` type is provisioned, or
+the BigQuery entries are located), it ends each description with how to read
+the entry:
+
+| Entry | Paragraph | Example |
+|---|---|---|
+| Model anchor | `Contents:` every metric, then every entity, by name, so an agent whose search matched nothing can pick the entries to look up. Sized to keep the description within Dataplex's 2,000 characters (`… N more`) | `Contents: metrics revenue, aov; entities Customer, Order, Product.` |
+| Bound entity | `Read through:` its node view (its table under `mode: direct`), its graph and node label | ``Read through: node view `p.d.order`; graph `p.d.shop_graph`, node Order.`` |
+| Bound entity | `Relationships:` every edge from it (`→`) and to it (`←`) with the join columns of the views both ends are read through, this entity's column first; a many-to-many edge names its junction table. Sized to keep the description within Dataplex's 2,000 characters (`… N more`), just before `Constraints:` / `Hydration:` | `Relationships: placedBy → Customer (customer_id = customer_id).` |
+| Bound entity under `hydration.constraints: enforce` | `Constraints:` the rules its node view applies (rows excluded, values withheld, flagged only), the spelling it normalizes, and the relationship rules it reports, each with how often it breaks over the hydrated rows (push measures it after the deploy); every broken rule is named in the view's `_warnings` column. At most 800 characters: the rules no row breaks fold into a count first. Just before `Hydration:` | `Constraints: enforced in the node view after hydration; … Values withheld (served as NULL): floorPrice by DealPricing_floorPrice_lte_targetPrice (50.1%). …` |
+| Metric | `Query:` its measures composed as its expression over `GRAPH_EXPAND` of the graph that holds them (or its expression over its fallback view), last | `Query: SELECT AGG(Order_revenue) FROM GRAPH_EXPAND("p.d.shop_graph__order_metrics")` |
+
+The query runs as written; to slice it, add `WHERE` and `GROUP BY` over the
+same `GRAPH_EXPAND`'s `<NodeTable>_<field>` columns. The paragraphs are
+derived from the model and its deployment target, so `pull` drops them and the
+next push writes them again.
+
+### Binding links
+
+When the graph and the source datasets are visible, push links each bound
+entity entry to the `@bigquery` entry it is read through — its generated node
+view, or its table under `mode: direct` — and to its node in the property graph
+(`…/propertyGraphs/<graph>/nodes/<Label>`). Each is a `schema-join` of type
+`JOIN` on the entity key, described `Binding: <entity> is read through …`, so
+a reader can walk from an entity, or from a glossary term, to the physical
+asset inside the catalog. The `@bigquery` entries exist
+only once BigQuery has created the view or graph and Dataplex has indexed it,
+so a refused binding link is a warning, not a failed push; the next push writes
+it. Binding links an entity no longer has are deleted on push.
+
+An entry link can reference only entries of its own region, and a `@bigquery`
+entry lives in its dataset's location. Binding links therefore need the model's
+entry group in the same location as the data — `scope:
+semantic-model.<project>.us.<entry_group>` for datasets in `US`. With the entry
+group anywhere else (`global` included), push writes none and says so in one
+warning.
+
+### Glossary definition links
+
+`kcmd glossary push` links each term to the BigQuery table column it names and
+to the kcmd `semantic-entity` / `semantic-metric` entry. If Dataplex refuses
+the link on the kcmd entry, the publisher links the term to the matching column
+of the entity's node view (`Schema.<snake_case field>`; the whole view for an
+entity or a metric) instead, and reports `… linked … (node view fallback)
+instead`. An entity with no node view (`mode: direct`) keeps only the table
+link.
 
 An **action** entry carries its executor, its typed parameters, the names of the
 constraints that gate it (`guards`), and the concepts it changes (`affects`) in
@@ -977,8 +1104,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   third dotted segment, which is a path rather than a field. What is left is the
   case the check exists for: a tail the model declares under no kind at all,
   next to an entity it does declare. *(static)*
-* Like an action, a constraint reaches Knowledge Catalog only, and a `--no-kc`
-  push warns that it will not be deployed. Two rules are enforced at parse time:
+* Like an action, a constraint is published to Knowledge Catalog only, and a
+  `--no-kc` push warns that it will not be published (a node view still applies
+  the constraints its binding enforces). Two rules are enforced at parse time:
   `on_violation` and `severity` are each a closed vocabulary — `reject` /
   `escalate` / `warn` and `critical` / `high` / `medium` / `low` — so an
   unrecognized word is a hard load error rather than a value that publishes and

@@ -46,6 +46,7 @@ import {Action, ActionParameter, AffectedConcept, AiContext, Constraint, CustomE
 import {declaredConceptFields} from './resolve_inheritance';
 import {glossaryDoc} from './glossary';
 import {formatStep} from './derived_relationships';
+import {hydrationToDoc, isDerivedEntity} from './hydration';
 
 // The version stamped on every serialized document. Pull emits kcmd's extended
 // profile: it uses native extension keys (`entities`, `deployment_target`)
@@ -220,7 +221,7 @@ function datasetDoc(
   // model, where a missing source is intended (a binding profile supplies it
   // later).
   if (!logical && !entity.abstract && !entity.definition && !entity.dataSource &&
-      !entity.members) {
+      !entity.members && !isDerivedEntity(entity)) {
     warnings.push(
         `entity '${entity.name}' has no source and is not abstract; the ` +
         `serialized document will not reload until a source is set`);
@@ -232,6 +233,12 @@ function datasetDoc(
     // the key rather than emit `source: ""` (which the loader reads as a
     // concrete-but-empty reference).
     source: entity.dataSource || undefined,
+    // How the binding reshapes the source (see hydration.ts), and whether the
+    // entity is bound through its node view (the default) or directly.
+    hydration: entity.hydration && Object.keys(hydrationToDoc(entity.hydration)).length ?
+        hydrationToDoc(entity.hydration) :
+        undefined,
+    mode: entity.mode,
     // Supertype entities (entity-level inheritance); omitted when none.
     extends: nonEmpty(entity.extends),
     // Conceptual (table-less) marker; omitted when false/absent.

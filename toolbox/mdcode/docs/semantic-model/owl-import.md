@@ -302,7 +302,11 @@ appears nowhere above.
 |---|---|---|
 | `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
 | `owl:Class` | `datasets[]` entry | a logical entity — **no `source`** (a binding profile adds one before a graph deploy) |
-| `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a property with several `rdfs:domain` values lands on each; a logical field — **no `expression`** (a binding profile maps it to a column) |
+| `owl:Class` with no `owl:hasKey` (own or inherited) that has subclasses | dataset `abstract: true` | a category — a label on its subtypes, not a table (see [Abstract classes](#abstract-classes-by-structure-kcmdabstract)); a keyless **leaf** stays concrete and is listed in the coverage report |
+| `kcmd:abstract true` / `false` on a class | dataset `abstract` | overrides the structural rule either way; ignored (warned) on a vocabulary or defined class |
+| `C owl:equivalentClass D` where `C` has no key and `D` has one | `C` folded into `D` | `C` is not imported: its relationships and fields move to `D`, its subclasses extend `D`, its name and labels become `D`'s `ai_context.synonyms`; warned (see [Folded equivalent classes](#folded-equivalent-classes)) |
+| `kcmd:Metric` individual | `metrics[]` entry | name = local name, `expression` = `kcmd:expression`, `description` = `skos:definition` + `Unit: …` for `kcmd:unit`; see [Metrics](#metrics-kcmdmetric) |
+| `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a logical field — **no `expression`** (a binding profile maps it to a column). A property shared by several classes takes **one** union domain, `rdfs:domain [ owl:unionOf (A B) ]`, and lands on each member (several `rdfs:domain` triples mean the *intersection* in OWL; they are still accepted, landing on each, for backward compatibility). A union member that is not a named class is warned and skipped |
 | `owl:ObjectProperty` | `relationships[]` | `from` = domain, `to` = range; a **logical edge with no join columns** (you add `from_columns`/`to_columns` to the model before a graph deploy, see [binding](#4-going-from-ontology-to-a-running-graph-binding)); with several `rdfs:domain`/`rdfs:range` values only the first of each is kept (a relationship is one source → one destination) and the rest are warned |
 | `owl:inverseOf` | relationship `inverse` | the pair becomes **one** relationship whose `inverse:` names the reverse reading — never two edges (see [Inverse properties](#inverse-properties-owlinverseof)); a graph deploy emits it as a second edge label over the same backing table |
 | `rdfs:subClassOf` (named superclass) | dataset `extends[]` | records the parent(s) in document order (see [Class hierarchies](#class-hierarchies-rdfssubclassof)) |
@@ -317,11 +321,11 @@ appears nowhere above.
 | `owl:TransitiveProperty` / `owl:SymmetricProperty` (object property) | relationship `ai_context.instructions` | a query hint: transitive → a bounded quantified path `-[:rel]->{1,10}`; symmetric → an undirected match `-[:rel]-` |
 | `owl:oneOf` (directly or as the class's `owl:equivalentClass`), a class with `owl:NamedIndividual` instances, or a class annotated `vocabulary true` | dataset `members` (proposed) | the class becomes a **vocabulary**; each individual a member: code from `skos:notation` or any annotation whose local name is `code`, label from `rdfs:label` / `skos:prefLabel`, order from a local name `sortOrder` / `order`; see [Vocabularies](#vocabularies-owloneof-named-individuals) |
 | `owl:propertyChainAxiom` on an object property | relationship `via` (proposed) | `p owl:propertyChainAxiom ( [owl:inverseOf a] b )` → `via: [^a, b]`, a **derived relationship**; missing `rdfs:domain` / `rdfs:range` are inferred from the chain's ends; see [Property chains](#property-chains-owlpropertychainaxiom) |
-| `encodedBy` (any annotation with that local name) on an object property | relationship `from_columns` / `to_columns` | the named datatype property holds the destination's code: the edge joins it to the destination's single-column key; see [Vocabularies](#vocabularies-owloneof-named-individuals) |
+| `encodedBy` (any annotation with that local name) on an object property | relationship `from_columns` / `to_columns` | the named datatype property holds the destination's code or key: the edge joins it (on the source or an ancestor) to the destination's single-column key — its own or the nearest keyed ancestor's, for a vocabulary or an ordinary keyed class alike. A composite or missing destination key leaves the edge logical, warned; see [Vocabularies](#vocabularies-owloneof-named-individuals) |
 | `owl:propertyDisjointWith`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the other property characteristics, `rdfs:subPropertyOf` between datatype properties, `rdfs:isDefinedBy`, `owl:versionInfo` on a term, `rdfs:seeAlso` other than a deprecation replacement | *(dropped)* | **no native home** — not imported (see [Limitations](#limitations)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
-| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead |
+| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead (not on a category whose subclasses have keys of their own); inherited as a unique key by concrete subclasses |
 | `rdfs:label` on a datatype property | field `label` | the field's display name (a `label` slot exists only on fields); dropped when it only respaces/recases the name |
 | `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when redundant with the name |
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
@@ -336,6 +340,32 @@ the whole import. An object property that declares *more than one* `rdfs:domain`
 or `rdfs:range` is kept — a relationship maps one source to one destination, so
 the first of each is used and the extra endpoints are dropped with a warning
 (unlike a multi-domain *datatype* property, which lands on every domain).
+
+### Shared fields (`rdfs:domain [ owl:unionOf (...) ]`)
+
+A key is usually also the foreign key of the classes that reference it:
+`com:accountId` identifies a `ClientAccount` and records the account on an
+`Opportunity`. Declare such a shared property with **one union domain**:
+
+```turtle
+com:accountId a owl:DatatypeProperty ; rdfs:range xsd:string ;
+    rdfs:domain [ a owl:Class ; owl:unionOf ( com:ClientAccount com:Opportunity ) ] .
+com:ClientAccount owl:hasKey ( com:accountId ) .
+com:forAccount a owl:ObjectProperty ;
+    rdfs:domain com:Opportunity ; rdfs:range com:ClientAccount ;
+    core:encodedBy com:accountId .
+```
+
+The field lands on every member class (`ClientAccount.accountId`, its key, and
+`Opportunity.accountId`), and `forAccount` joins `Opportunity.accountId` to
+`ClientAccount.accountId`. Do **not** write several `rdfs:domain` triples
+instead: OWL reads them as an **intersection** (an instance of the domain is a
+`ClientAccount` *and* an `Opportunity`), which a reasoner would act on. The
+importer still accepts that form for backward compatibility (the field lands
+on each class), but the union is the correct one. Nested unions are
+flattened; a member that is not a named class (an intersection, a
+restriction) is warned and skipped, and listed as a dropped `rdfs:domain` in
+the coverage report.
 
 ### Datatypes (`rdfs:range`)
 
@@ -375,7 +405,17 @@ BigQuery Graph / BI treats it as one.
   declares **no `owl:hasKey`** but has exactly **one** single-column
   inverse-functional property, that property is promoted to the `primary_key`
   (with a warning) so the dataset has a grain; ambiguous cases (several unique
-  keys, or a composite one) are left without a `primary_key`.
+  keys, or a composite one) are left without a `primary_key`. The promotion
+  is skipped on a **category whose subclasses declare keys of their own**
+  (`core:unitName` on `OrgUnit`, over `MarketUnit` and `ServiceGroup` keyed by
+  their codes): each subclass is identified by its own key, so the property
+  stays a unique key and the category stays [abstract](#abstract-classes-by-structure-kcmdabstract).
+- **Unique keys flow down `extends`.** Every concrete subclass (not abstract,
+  not a defined entity, not a vocabulary) gets its ancestors' `unique_keys`
+  after its own — `MarketUnit` has `primary_key: [marketUnitCode]` and
+  `unique_keys: [[unitName]]` — so a lookup by name resolves on the table
+  that backs it. Primary keys are not inherited this way: a subclass with no
+  key of its own is identified by its nearest keyed ancestor's.
 
 Keys are **logical grain**, not a binding — they are the entity's identity, so
 they come across even though the model has no physical binding. They also tell
@@ -407,8 +447,10 @@ the `Person` and `Customer` entities come out as (`Customer` carrying
 `extends: [Person]`):
 
 ```yaml
-  # Person is its own entity:
+  # Person is its own entity -- abstract, since it has no key and a subclass
+  # (see Abstract classes below):
   - name: Person
+    abstract: true
     description: A human being.
     fields:
       - name: fullName
@@ -451,6 +493,62 @@ Two boundaries to be clear about:
   [Class hierarchies on the catalog](reference.md#class-hierarchies-on-the-catalog)).
 - **Relationships have their own hierarchy.** Entity `extends` never makes an
   edge inherit anything; property inheritance is a separate mapping, below.
+
+A **vocabulary** under a class that carries fields (`GeographicRegion
+rdfs:subClassOf OrgUnit`, where `OrgUnit` has `unitName`) does **not** get
+`extends: [OrgUnit]`: a vocabulary's rows are its members, read through fixed
+columns (code, label, sort order, definition, IRI), and it could not bind the
+fields it would inherit. The import warns, and the coverage report lists the
+`rdfs:subClassOf` as dropped with that reason. A parent that carries no fields
+(a pure category) is kept.
+
+### Abstract classes (by structure, `kcmd:abstract`)
+
+A class with **no key** — no `owl:hasKey` of its own or on an ancestor, and no
+inverse-functional property promoted to one — that **has subclasses** is a
+category: a label its subtypes share, not something a table backs. It comes
+out `abstract: true` (`Party` over `Organization` over keyed `ClientAccount`).
+A keyed class is never made abstract, nor is a class that inherits a key.
+Only subclasses with rows of their own count: a **defined** subclass (an
+`owl:equivalentClass` class expression, imported as a filter over its parent's
+rows) does not make its parent abstract, since the parent is what holds those
+rows.
+
+A keyless **leaf** class (no subclasses, or only defined ones) stays a concrete
+entity with no `primary_key`; the coverage report lists it (`owl:hasKey
+(absent)`, dropped) and a binding refuses to bind it until it has a key.
+
+`kcmd:abstract` (`https://kcmd.dev/ns#abstract`) overrides the rule either way:
+`ex:Note kcmd:abstract true` makes a leaf abstract, `ex:Organization
+kcmd:abstract false` keeps a keyless parent concrete. Vocabularies and defined
+classes are never abstract; `kcmd:abstract true` on one is warned and ignored.
+
+### Folded equivalent classes
+
+Two modules often name one concept twice, and only one says how instances are
+identified: `fin:Counterparty owl:equivalentClass com:ClientAccount`, with the
+key on `ClientAccount`. When exactly one side of a named `owl:equivalentClass`
+has a key (own or inherited), the unkeyed class is **folded** into the keyed
+one before mapping:
+
+- it is not imported as an entity;
+- every reference to it moves to the keyed class — an object property's
+  `rdfs:range` / `rdfs:domain` (so `fin:hasPayer` points at `ClientAccount`,
+  and its `encodedBy` join uses `ClientAccount`'s key), a datatype property's
+  domain, its subclasses' `extends`, restriction fillers, disjointness;
+- its local name and labels (`Counterparty`, `Payer`, `Bill-to party`) become
+  the keyed entity's `ai_context.synonyms`;
+- a metric expression qualified by its name (`Counterparty.x`) is rewritten to
+  the keyed class;
+- a warning names the fold, and the coverage report lists it
+  (`owl:Class` → `entity ClientAccount (folded in)`,
+  `owl:equivalentClass (folded)`).
+
+Two keyed equivalent classes are two tables of one concept and both stay (the
+equivalence is a synonym, see [Semantic
+annotations](#semantic-annotations-equivalence-deprecation-transitivity)), as
+do two unkeyed ones. A vocabulary or a class with its own class definition is
+never folded.
 
 ### Property hierarchies (`rdfs:subPropertyOf`)
 
@@ -501,10 +599,15 @@ the downstream effect `rdfs:subPropertyOf` means.
   sub-property's own end.
 - **Only object properties.** `rdfs:subPropertyOf` between datatype properties
   has no native home (fields do not inherit from fields) and is dropped.
-- **Endpoints should narrow.** A sub-relationship's `from`/`to` should be its
-  parent's or a subtype of them (per entity `extends`); the loader warns when
-  they are not, since a match on the parent label would then return edges
-  outside its declared ends.
+- **Endpoints must narrow.** A sub-relationship's `from` and `to` must each be
+  its parent's endpoint or a subtype of it (per entity `extends`). Otherwise a
+  match on the parent label would return edges outside the parent's declared
+  ends, and the loader flags them. The importer drops such a parent from
+  `extends`, with a warning. This happens most often after a
+  [vocabulary](#vocabularies-owloneof-named-individuals) detaches from its
+  superclass: a `GeographicRegion` that was an `OrgUnit` no longer fits
+  `belongsToTerritory`'s range, so `inRegion` stops extending it. The parent
+  stays the abstract umbrella over the sub-properties that do fit.
 
 ### Rules (restrictions, functional properties, disjointness)
 
@@ -721,24 +824,45 @@ The compilation follows the ontology prototype's reference compiler:
   Its `rdfs:subClassOf` restrictions and disjointness still do.
 - **String comparisons are exact.** The prototype lower-cases both sides; the
   importer compares as written.
-- **Fallback.** Anything that needs a join (above all a restriction that
+- **Fallback.** Some definitions need a join, above all a restriction that
   traverses a relationship with no `encodedBy` column, e.g. `hasBuyer some
-  StrategicAccount`) keeps the [intersection](#rules-restrictions-functional-properties-disjointness)
-  import: `extends` plus constraints. It is warned with the reason:
+  StrategicAccount`. Others reduce to `TRUE` or `FALSE`, or the class has no
+  superclass. None of these can be a filter. The class has no fields or key of
+  its own, so it has no rows to bind either: as a concrete entity it would be a
+  keyless node that no binding can satisfy and a graph deploy rejects. It is
+  therefore imported **abstract**: no node of its own, and its
+  [restrictions](#rules-restrictions-functional-properties-disjointness) still
+  become constraints. Its definition is written in Manchester syntax into
+  `ai_context.instructions`, so an agent can still evaluate membership over the
+  base. The warning names the reason:
 
   ```
   class 'PriorityOpportunity': its owl:equivalentClass definition was not
   compiled to a defined entity (unsupported: a restriction on object property
   'hasBuyer', which traverses a relationship and has no encodedBy code column
-  on 'Opportunity'); imported as a subclass with constraints instead.
+  on 'Opportunity'); imported as an abstract entity with constraints, its
+  definition in ai_context.instructions.
   ```
 
-  The same fallback applies to a class with its own fields or key (it is a
-  table-backed subtype), a class with no superclass, and a definition that
-  reduces to `TRUE` or `FALSE`. A top-level `owl:oneOf` of individuals (a
-  closed vocabulary such as an order-status list) is not a definition; it
-  imports as a [vocabulary](#vocabularies-owloneof-named-individuals)
-  (proposed).
+  ```yaml
+  - name: PriorityOpportunity
+    extends: [Opportunity]
+    abstract: true
+    ai_context:
+      instructions: >-
+        Membership is defined, not stored: a PriorityOpportunity is Opportunity
+        and (HighValueOpportunity or (hasBuyer some StrategicAccount)). No
+        PriorityOpportunity rows or nodes exist; to find its members, evaluate
+        this definition over Opportunity and its relationships.
+  ```
+
+  `kcmd:abstract false` on the class keeps it concrete. A class with fields or
+  a key of its own is a table-backed subtype rather than a filter, so it keeps
+  the [intersection](#rules-restrictions-functional-properties-disjointness)
+  import: `extends` plus constraints, with a warning. A top-level `owl:oneOf`
+  of individuals (a closed vocabulary such as an order-status list) is not a
+  definition; it imports as a
+  [vocabulary](#vocabularies-owloneof-named-individuals) (proposed).
 
 ### Semantic annotations (equivalence, deprecation, transitivity)
 
@@ -1037,6 +1161,60 @@ glossary:
 An ontology with no `skos:Concept` gets no `glossary:` block, so existing
 imports are unchanged.
 
+When a glossary is emitted, every imported [metric](#metrics-kcmdmetric) that
+no concept already defines gets a term of its own, `defines: [{metric: …}]`,
+with the metric's `skos:prefLabel` as display name, its `skos:definition` and
+its `skos:altLabel`s as synonyms. A metric that is also typed `skos:Concept`
+is that concept's term. No glossary is created only to hold metric terms.
+
+### Metrics (`kcmd:Metric`)
+
+Business KPIs can live in the ontology, next to the classes they measure, as
+individuals of `kcmd:Metric` (`https://kcmd.dev/ns#Metric`):
+
+```turtle
+kcmd:Metric a owl:Class .   # declared so OWL tools accept the individuals
+met:win_rate_pct a kcmd:Metric ;
+    skos:prefLabel "Win rate percentage" ;
+    skos:altLabel "win rate" , "close rate" ;
+    kcmd:expression "100 * SAFE_DIVIDE(COUNTIF(LOWER(Opportunity.salesStage) = '5_won'), COUNTIF(LOWER(Opportunity.salesStage) IN ('5_won', 'closed_lost')))" ;
+    skos:definition "Won opportunities as a percentage of closed opportunities." ;
+    kcmd:instructions "Only closed opportunities are in the denominator." ;
+    kcmd:unit "percent" .
+```
+
+becomes
+
+```yaml
+metrics:
+  - name: win_rate_pct
+    expression: 100 * SAFE_DIVIDE(COUNTIF(LOWER(Opportunity.salesStage) = '5_won'), ...)
+    description: |-
+      Won opportunities as a percentage of closed opportunities.
+
+      Unit: percent.
+    ai_context:
+      instructions: Only closed opportunities are in the denominator.
+      synonyms: [Win rate percentage, win rate, close rate]
+```
+
+| OWL | metric | notes |
+|---|---|---|
+| local name | `name` | |
+| `kcmd:expression` | `expression` | written over the ontology's own `<Class>.<property>` names, never tables or columns (a binding maps those); a qualifier naming a [folded](#folded-equivalent-classes) class is rewritten to the keyed class |
+| `skos:definition` (else `rdfs:comment`, `dcterms:description`) | `description` | |
+| `kcmd:unit` (or any unit predicate, as on fields) | `description` trailer `Unit: X.` | the convention fields use where a slot is missing |
+| `skos:prefLabel`, `rdfs:label`, `skos:altLabel`, `skos:hiddenLabel` | `ai_context.synonyms` | prefLabel first; the name itself is dropped |
+| `kcmd:instructions` | `ai_context.instructions` | |
+| the one entity the expression references | attach entity | derived as the loader derives it; none for a cross-entity metric |
+
+`kcmd:Metric` and the other `kcmd:` terms are never imported as entities or
+fields, and metric individuals are not vocabulary members. A metric with no
+`kcmd:expression` is skipped with a warning; so is a second metric with the
+same name. The import summary counts the metrics (`… (M metrics)`), and the
+coverage report lists each one (`kcmd:Metric`, compiled or dropped, plus
+`kcmd:Metric (glossary)` for its glossary term).
+
 ## 4. Going from ontology to a running graph (binding)
 
 The import gives you a **logical model**: what the domain means, with no physical
@@ -1244,15 +1422,17 @@ A chain member that is an anonymous inverse (`[ owl:inverseOf p ]`) reads
 
 Take an ontology with one occurrence of most constructs: a subclass, keys, a
 functional datatype property, an inverse pair, a property chain, a transitive
-and a symmetric property, a named equivalence, a defined class, an enumeration
-and a deprecated class. Its summary reads:
+and a symmetric property, an equivalence folded into its keyed class, a defined
+class, an enumeration and a deprecated class. Its summary reads:
 
 ```console
 coverage (owl import of model 'shop'):
   construct                            compiled  hinted  dropped
   owl:Class                                   8       0        0
+  owl:equivalentClass (folded)                1       0        0
   rdfs:subClassOf                             2       0        0
   owl:hasKey                                  3       0        0
+  owl:hasKey (absent)                         1       0        1
   owl:DatatypeProperty                        4       0        0
   rdfs:range                                  4       0        0
   owl:FunctionalProperty                      1       0        0
@@ -1261,7 +1441,6 @@ coverage (owl import of model 'shop'):
   owl:propertyChainAxiom                      0       0        1
   owl:TransitiveProperty                      0       1        0
   owl:SymmetricProperty                       0       1        0
-  owl:equivalentClass (named)                 0       1        0
   owl:equivalentClass (defined class)         1       0        0
   owl:Restriction                             1       0        0
   owl:oneOf                                   0       0        1
@@ -1270,7 +1449,7 @@ coverage (owl import of model 'shop'):
   owl:deprecated                              0       1        0
   rdfs:seeAlso                                0       1        0
   owl:Ontology                                1       0        0
-  total                                      34       5        2
+  total                                      36       4        3
 ```
 
 An outcome is a fact about the output. The report is built after the mapping,

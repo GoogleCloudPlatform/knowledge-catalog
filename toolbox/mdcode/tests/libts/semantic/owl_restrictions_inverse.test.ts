@@ -156,14 +156,15 @@ describe('restrictions inside owl:intersectionOf', () => {
             owl:onProperty ex:hasHealthCheck ;
             owl:someValuesFrom ex:QAHealthCheck ] ) ] .`;
   // ∃hasHealthCheck traverses a relationship, so the definition cannot become
-  // a one-row membership predicate (a defined entity); the class keeps the
-  // subclass + constraint import, and says why.
+  // a one-row membership predicate (a defined entity). With no fields or key
+  // of its own the class has no rows either, so it is imported abstract with
+  // its constraint, and says why.
   const FALLBACK =
       `class 'QAAssuredEngagement': its owl:equivalentClass definition was ` +
       `not compiled to a defined entity (unsupported: a restriction on ` +
       `object property 'hasHealthCheck', which traverses a relationship and ` +
-      `has no encodedBy code column on 'Engagement'); imported as a subclass ` +
-      `with constraints instead.`;
+      `has no encodedBy code column on 'Engagement'); imported as an abstract ` +
+      `entity with constraints, its definition in ai_context.instructions.`;
 
   test('Engagement ⊓ ∃hasHealthCheck.QAHealthCheck → constraint + extends', () => {
     const {model, constraints, warnings} = convert(QA);
@@ -171,6 +172,9 @@ describe('restrictions inside owl:intersectionOf', () => {
     expect(entity(model, 'QAAssuredEngagement').extends)
         .toEqual(['Engagement']);
     expect(entity(model, 'QAAssuredEngagement').definition).toBeUndefined();
+    expect(entity(model, 'QAAssuredEngagement').abstract).toBe(true);
+    expect(entity(model, 'QAAssuredEngagement').aiContext?.instructions).toContain(
+        'a QAAssuredEngagement is Engagement and (hasHealthCheck some QAHealthCheck)');
     const c = byName(constraints,
                      'QAAssuredEngagement_hasHealthCheck_some_QAHealthCheck');
     expect(c?.description)

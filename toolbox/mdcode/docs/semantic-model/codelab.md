@@ -508,6 +508,28 @@ SELECT * FROM UNNEST([                 -- order 100: 2 lines, 101: 1, 102: 3
 > these tables. So the tables must exist first. (Step 2 needed none of this: it
 > governed the logical model, no tables required.)
 
+### Hydrate: let kcmd draft the binding (optional)
+
+Here you wrote the binding by hand because you created the tables yourself. On
+a real estate the raw tables come first, usually in other datasets than the one
+the model deploys to, and `kcmd bind` (proposed) can draft the profile from
+them. It scores each entity against each table and matches fields to columns. It
+then profiles the chosen tables and proposes the hydration they need: a grain
+when a key repeats, a unit normalization when a series changes scale, and so on.
+Everything it decides is explained in `bind_report.md`, and it exits 2 while
+anything still needs a human:
+
+```bash
+# Raw tables in datasets raw_*, the model deploying to $DATASET.
+kcmd bind --profile drafted --scan $PROJECT.raw_*
+kcmd bind --profile drafted --scan $PROJECT.raw_* --accept-review
+```
+
+`bind` never scans the deployment target's own dataset, so here, where the
+tables live in `$DATASET` itself, it has nothing to bind. Keep the hand-written
+`analytical` profile for the rest of this codelab. See
+[Drafting a binding](bind.md).
+
 ### Deploy the semantic model
 
 Now deploy the bound model to BigQuery. The graph backend comes from the model's
@@ -645,8 +667,11 @@ join and the formula come from the model rather than from whoever writes the
 query, so the correct answer is the default one.
 
 > **Tips.** Use `--nouse_cache` — `GRAPH_EXPAND` result caches are not
-> invalidated by graph edits. To see the exact output column names for a graph:
-> `DECLARE s STRING; CALL BQ.SHOW_GRAPH_EXPAND_SCHEMA("$PROJECT.$DATASET.$GRAPH", s); SELECT s;`
+> invalidated by graph edits. Output columns are `<node>_<field>` and
+> `<node>_<measure>`. Don't try to list them with
+> `BQ.SHOW_GRAPH_EXPAND_SCHEMA` or `SELECT *`: both fail on a graph that has
+> measures. Each metric's Knowledge Catalog entry ends with its ready-to-run
+> query (see [Consume with an agent](#consume-with-an-agent)).
 
 ### Query Semantic Model: GQL
 
@@ -675,6 +700,50 @@ GROUP BY customer ORDER BY customer'
 This is standalone GQL. The pattern and the model's property names are portable
 across graph query engines; only the graph reference is engine-specific, and here
 BigQuery takes the fully qualified `$PROJECT.$DATASET.$GRAPH`.
+
+### Consume with an agent
+
+The two queries above were written by someone who already knew the graph name,
+the node labels and the measure. An agent starts from a question instead, and
+the push you just ran left it everything it needs in Knowledge Catalog: the
+semantic entries, their annotation aspects (synonyms, examples, field-level
+`ai_context`, expressions, binding and hydration — provisioned by `kcmd init`),
+and binding links from each entity to its BigQuery node view and graph node
+entry. Those links need the entry group in the dataset's location (`us` for a
+`US` dataset); with `LOCATION=global` push skips them and says so (see
+[Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
+
+A generic agent skill, `semantic-navigator`, follows one protocol for any model
+pushed by kcmd. It names no entity, table, metric or project:
+
+1. **Find** — one `search_entries` call over the catalog with the question's
+   business terms; synonyms on the `semantic-ai-context` aspect make
+   `"turnover"` find `revenue`.
+2. **Ground** — one `lookup_context` call on the hits. It returns each entry's
+   description and schema, and push ends each description with how to read
+   the entry: a metric's ready-to-run `Query:` (`AGG(<node>_<measure>)` over
+   `GRAPH_EXPAND`), an entity's `Read through:` node view and graph node (see
+   [Reference → What an agent reads through `lookup_context`](reference.md#what-an-agent-reads-through-lookup_context)).
+3. **Execute** — pick the cheapest correct form:
+   - a metric → its `Query:`, with any `WHERE` / `GROUP BY` added over the
+     `GRAPH_EXPAND` columns, as in
+     [Query Semantic Model: metrics](#query-semantic-model-metrics) above —
+     never a hand-written join;
+   - a path or an absence ("customers with no orders") → GQL `MATCH`, with
+     `NOT EXISTS` or a bounded quantifier such as `{1,5}`;
+   - a plain fact about one entity → the node view named in `Read through:`,
+     which already applies the grain, normalization and resolution rules;
+   - nothing modeled → fall back to the raw tables, and say so in the answer.
+4. **Answer** — cite the metric or entity used and any instruction that shaped
+   the query.
+
+Its budget is at most three catalog calls and three queries per question. It
+takes `GRAPH_EXPAND` column names from the `<node>_<field>` rule and the schema
+`lookup_context` returns, and it never probes the graph.
+Put the skill wherever your agent harness loads skills from, and connect the
+harness to the Knowledge Catalog MCP server and BigQuery. Then ask it "revenue
+by customer". It should return the `290 / 40` result above, not the fan-out
+`380 / 120`.
 
 ---
 

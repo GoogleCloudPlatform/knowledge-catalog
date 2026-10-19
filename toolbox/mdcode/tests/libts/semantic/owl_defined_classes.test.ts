@@ -175,16 +175,22 @@ describe('the lifecycle classes', () => {
     expect(s.extends).toEqual(['ClientAccount']);
   });
 
-  test('a restriction that traverses a relationship falls back, warned', () => {
+  test('a restriction that traverses a relationship falls back to abstract, warned', () => {
     const p = entity(r.model, 'PriorityOpportunity');
     expect(p.definition).toBeUndefined();
     expect(p.extends).toEqual(['Opportunity']);
+    // No fields or key of its own and no compilable filter: no rows to bind,
+    // so no node; the definition rides ai_context as readable text.
+    expect(p.abstract).toBe(true);
+    expect(p.aiContext?.instructions).toContain(
+        'Membership is defined, not stored: a PriorityOpportunity is ');
+    expect(p.aiContext?.instructions).toContain('hasBuyer some StrategicAccount');
     expect(r.warnings).toContain(
         `class 'PriorityOpportunity': its owl:equivalentClass definition was ` +
         `not compiled to a defined entity (unsupported: a restriction on ` +
         `object property 'hasBuyer', which traverses a relationship and has ` +
-        `no encodedBy code column on 'Opportunity'); imported as a subclass ` +
-        `with constraints instead.`);
+        `no encodedBy code column on 'Opportunity'); imported as an abstract ` +
+        `entity with constraints, its definition in ai_context.instructions.`);
   });
 
   test('compiled definitions are not restated as constraints', () => {

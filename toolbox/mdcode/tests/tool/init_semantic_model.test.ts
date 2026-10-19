@@ -111,14 +111,20 @@ describe('init --semantic-model: entry-group provisioning', () => {
 
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
 
-    // Every registered type gets both halves. Both are custom, so both live in
-    // the destination project at `global`, rather than beside the built-in
-    // types or in the entry group's region.
+    // Every registered type gets its aspect type; those that own an entry
+    // (actions, constraints) also get the entry type -- the K1 annotation
+    // types are aspect-only. Both are custom, so both live in the destination
+    // project at `global`, rather than beside the built-in types or in the
+    // entry group's region.
     const ids = CUSTOM_TYPES.map(t => t.id);
+    const entryIds = CUSTOM_TYPES.filter(t => t.entryType).map(t => t.id);
     expect(ids).toContain('semantic-action');
-    for (const spy of [aspectType, entryType]) {
-      expect(spy).toHaveBeenCalledTimes(ids.length);
-      expect(spy.mock.calls.map(c => c[2])).toEqual(ids);
+    expect(ids).toContain('semantic-ai-context');
+    expect(entryIds).not.toContain('semantic-ai-context');
+    for (const [spy, expected] of [[aspectType, ids], [entryType, entryIds]] as
+         const) {
+      expect(spy).toHaveBeenCalledTimes(expected.length);
+      expect(spy.mock.calls.map(c => c[2])).toEqual(expected);
       for (const [project, location] of spy.mock.calls) {
         expect(project).toBe('proj');
         expect(location).toBe('global');
@@ -126,8 +132,8 @@ describe('init --semantic-model: entry-group provisioning', () => {
     }
     // The entry type requires the aspect type, so the server rejects it while
     // the aspect type's create is still running.
-    for (let i = 0; i < ids.length; i++) {
-      expect(aspectType.mock.invocationCallOrder[i])
+    for (let i = 0; i < entryIds.length; i++) {
+      expect(aspectType.mock.invocationCallOrder[ids.indexOf(entryIds[i])])
           .toBeLessThan(entryType.mock.invocationCallOrder[i]);
     }
   });
@@ -160,7 +166,10 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
     expect(premature).toEqual([]);
     expect(created).toBe(CUSTOM_TYPES.length);
-  });
+    // Each type waits out one real poll interval (~1s), and there is one per
+    // registered type, so the default 5s budget is too tight. Running past it
+    // also leaks the still-running init into the next test's spies.
+  }, 20_000);
 
   test('an already-existing aspect type is patched with the current template',
        async () => {
@@ -205,7 +214,8 @@ describe('init --semantic-model: entry-group provisioning', () => {
     // reports the refusal and carries on rather than abandoning a workspace
     // whose entry group it has already created.
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
-    expect(entryType).toHaveBeenCalledTimes(CUSTOM_TYPES.length);
+    expect(entryType).toHaveBeenCalledTimes(
+        CUSTOM_TYPES.filter(t => t.entryType).length);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
     expect(warned.some(m => m.includes('unchanged'))).toBe(true);

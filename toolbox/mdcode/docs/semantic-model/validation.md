@@ -6,6 +6,14 @@ binds conforms to the model's constraints. It replaces the prototype's
 constraints, plus keys and foreign keys), and the tables come from the selected
 profile, so the queries follow the same bindings the property graph does.
 
+`validate` reports on the data as stored. Applying the same rules to the rows a
+read sees is the node view's job: a profile that sets
+`hydration.constraints: enforce` gets node views that withhold, exclude and
+flag by each rule's `on_violation` (see
+[Enforcing constraints at consumption time](#enforcing-constraints-at-consumption-time)).
+Both parse and compile a rule with the same code, so the violation column below
+is also the predicate an enforcing view flags a row with.
+
 ```bash
 # Write the queries only (no credentials needed).
 kcmd validate --target bigquery --profile bigquery --sql-only --out validation
@@ -137,9 +145,94 @@ results in place. Run `kcmd push` first: an entity entry that does not exist is
 reported, not created.
 
 > [!IMPORTANT]
-> The results describe stored data at one point in time. Nothing uses them as a
-> filter: the property graph, queries, skills and action guards read the model,
-> never these counts.
+> The results describe stored data at one point in time; the counts themselves
+> filter nothing. What a read sees is decided by the node views: where the
+> binding sets `hydration.constraints: enforce`, they apply the rules (next
+> section), and push measures and publishes their rates over the served rows.
+
+## Enforcing constraints at consumption time
+
+A binding profile opts an entity in with one hydration rule (see
+[profiles.md](profiles.md#hydration--reshaping-a-table-into-the-entity)):
+
+```yaml
+entities:
+  - name: DealPricing
+    source: //bigquery.googleapis.com/projects/p/datasets/ps_pricing/tables/deal_pricing
+    hydration:
+      grain: {deterministic: true}
+      constraints: enforce
+```
+
+`kcmd bind --enforce-constraints` writes it on every entity whose view would
+apply or report a rule. The entity's node view then applies every rule this page
+can check, after the other hydration rules, routed on the rule's
+`on_violation`:
+
+| The rule | What the node view serves |
+|---|---|
+| `reject`, about a value (`pattern`, `in`, `value`, `range`, `length`, `empty`, a comparison with another field) | the row, with the failing value withheld (NULL) |
+| `reject`, about the record (`required`, or any rule on a key field) | no row: it is excluded |
+| `warn` or `escalate` | the row as stored (a read has no approver to escalate to) |
+| an allowed set (`sh:in`), any word | a value equal to a member once case and whitespace are ignored, in the member's spelling (`COMPETITIVE PRESSURE` → `Competitive Pressure`); only a value matching no member breaks the rule, and a spelling two members share stays as recorded |
+| `cardinality`, `class`, `disjointClasses` | nothing changes: reported, never applied, since excluding a record for a missing or extra edge would cascade across entities |
+
+Every rule a served row breaks — a withheld value's rule included — is named in
+the view's `_warnings` column (`ARRAY<STRING>`, empty when the row breaks none),
+so a reader can filter clean rows (`ARRAY_LENGTH(_warnings) = 0`) or count one
+rule (`'DealPricing_floorPrice_lte_targetPrice' IN UNNEST(_warnings)`).
+`_warnings` is a column of the node view; the graph's node properties stay the
+modeled fields, so `GRAPH_EXPAND`, GQL and measures read the served values.
+
+A rule on a supertype applies to each subtype's rows, and a rule on a defined
+entity applies to its base's rows that its membership predicate selects. Every
+rule is checked on the same hydrated, spelling-repaired row, so one rule's
+outcome never feeds another's. A rule the view cannot check (its field is not
+bound) is listed by push as a warning.
+
+The view is three steps: `hydrated` (the hydration SELECT), `checked` (one
+boolean per rule), then the served columns:
+
+```sql
+WITH hydrated AS (
+  SELECT t.pricing_id, t.floor_price, t.target_price, ... FROM `p.ps_pricing.deal_pricing` AS t
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY t.pricing_id ORDER BY FARM_FINGERPRINT(TO_JSON_STRING(t))) = 1
+),
+checked AS (
+  SELECT h.*,
+    COALESCE(h.pricing_id IS NULL OR TRIM(CAST(h.pricing_id AS STRING)) = '', FALSE) AS _kcmd_c0,
+    COALESCE(h.floor_price IS NOT NULL AND h.target_price IS NOT NULL AND h.floor_price > h.target_price, FALSE) AS _kcmd_c1
+  FROM hydrated AS h
+)
+SELECT
+  c.pricing_id,
+  IF(c._kcmd_c1, NULL, c.floor_price) AS floor_price,
+  c.target_price,
+  ARRAY(SELECT w.rule FROM UNNEST([
+      STRUCT(c._kcmd_c1 AS broken, 'DealPricing_floorPrice_lte_targetPrice' AS rule)
+    ]) AS w WITH OFFSET AS o WHERE w.broken ORDER BY o) AS _warnings
+FROM checked AS c
+WHERE NOT (c._kcmd_c0)
+```
+
+After deploying, push counts each rule over the `checked` rows (and the
+reported rules with the queries on this page, over the node views), and the
+entity's Knowledge Catalog entry carries the result as a derived paragraph
+between `Relationships:` and `Hydration:` (pull drops it; the next push writes
+it again):
+
+```text
+Constraints: enforced in the node view after hydration; each rule a served row
+breaks is named in its _warnings column. Rows excluded: DealPricing_pricingId_required
+(none). Values withheld (served as NULL): floorPrice by
+DealPricing_floorPrice_lte_targetPrice (50.1%). Flagged only:
+DealPricing_pricingConstruct_in (<0.1%). Spelling normalized to the allowed
+members: pricingConstruct. Rates are over the 60,700 hydrated rows.
+```
+
+When the paragraph would crowd the description, the rules no row breaks fold
+into a count (`4 more rules hold on every row.`). The view's own description
+names the same rules, without rates.
 
 ## Contract tests (`kcmd test`, proposed)
 

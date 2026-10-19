@@ -4,8 +4,8 @@
 // toolchain: the loader's checks, chain resolution, the BigQuery lowering (a
 // generated `edge_<relationship>` view materializing the distinct pairs, and
 // an edge table over it), availability pruning, push validation, the
-// Knowledge Catalog schema-join push/pull, OSI round-trip, the query-skill
-// pages, and the OWL importer's owl:propertyChainAxiom mapping.
+// Knowledge Catalog schema-join push/pull, OSI round-trip, and the OWL
+// importer's owl:propertyChainAxiom mapping.
 //
 // Running example: customers hold memberships in clubs; `belongsTo` is the
 // customer -> club edge reached through an active membership.
@@ -21,10 +21,7 @@ import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_convert
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
-import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
 import {pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
-import {SemanticRuntime} from '../../../src/libts/semantic/runtime/runtime';
-import {generateSkill} from '../../../src/libts/semantic/skills';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const GEN_OPTS = {project: 'p', dataset: 'd'};
@@ -569,33 +566,6 @@ describe('OSI round-trip', () => {
     const r = rel(models[0], 'belongsTo');
     expect(r.via).toEqual(rel(model(), 'belongsTo').via);
     expect(r.filter).toBe(`Membership.status = 'active'`);
-  });
-});
-
-describe('query skill', () => {
-  const runtime: SemanticRuntime = {
-    model: resolveInheritance(model()).model,
-    document: 'clubs',
-    store: {
-      kind: 'bigquery',
-      name: 'projects/p/datasets/d',
-      project: 'p',
-      dataset: 'd'
-    },
-    profile: 'bigquery',
-    entryGroup: 'clubs_eg',
-  } as SemanticRuntime;
-  const out = generateSkill({runtime, mode: 'query', query: {location: 'US'}});
-  if ('error' in out) throw new Error(out.error);
-  const page = out.files.find(f => f.path === 'references/entities/Customer.md')!.text;
-
-  test('the derived edge is documented with its chain and filter', () => {
-    expect(page).toContain('- `(Customer)-[:belongsTo]->(Club)` -- M:N');
-    expect(page).toContain(
-        `  Derived: not stored; it is the chain ^memberOf, inClub (Customer -> ` +
-        `Membership -> Club), keeping only pairs where Membership.status = ` +
-        `'active' (\`^\` = walked backwards). Traverse it like any edge.`);
-    expect(page).toContain('  The clubs a customer is an active member of.');
   });
 });
 

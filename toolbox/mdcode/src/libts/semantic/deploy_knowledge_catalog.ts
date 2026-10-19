@@ -38,7 +38,8 @@ import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
-import {generateCatalogResources, KcResources} from './knowledge_catalog';
+import {customAspectKey} from './kc_custom_types';
+import {BigQueryEntryLocator, bindingLinkPrefix, generateCatalogResources, KcGenerateOptions, KcResources} from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
 
@@ -62,6 +63,16 @@ export interface KcDeployOptions {
   // Off by default so the push matches the live types; see
   // KcGenerateOptions.emitExpressions.
   emitExpressions?: boolean;
+  // K1: the annotation aspect types provisioned in the destination project
+  // (probed by the caller, see kc_custom_types.provisionedCustomAspects).
+  // See KcGenerateOptions.customAspects.
+  customAspects?: readonly string[];
+  // K3: where the model's BigQuery entries live, resolved by the caller.
+  // Present = write binding links (non-fatally) and reconcile stale ones.
+  bigQueryEntries?: BigQueryEntryLocator;
+  // Per model, the measured rates of the constraints its node views enforce.
+  // See KcGenerateOptions.constraintRates.
+  constraintRates?: KcGenerateOptions['constraintRates'];
   // Compile and report only; never writes to the catalog (a dry run).
   validateOnly?: boolean;
   // Delete models already in the entry group that this push does not re-emit --
@@ -75,6 +86,12 @@ export interface KcDeployOptions {
   entryCreateTries?: number;
   // Delay between entries.create retries, in ms. Default ENTRY_CREATE_RETRY_MS.
   entryCreateRetryMs?: number;
+  // How many times to try an entry-link write that the per-minute entry-link
+  // quota refused (HTTP 429). Default LINK_WRITE_TRIES.
+  linkWriteTries?: number;
+  // Base delay before retrying a rate-limited entry-link write, in ms; the n-th
+  // retry waits n times this. Default LINK_RETRY_MS.
+  linkRetryMs?: number;
 }
 
 export interface KcDeployResult {
@@ -99,6 +116,10 @@ export interface KcDeployResult {
   // Orphaned schema-join links deleted -- from relationships dropped or renamed
   // on a still-present model, and from force-removed models (0 for validateOnly).
   unlinked: number;
+  // K3: binding links (entity -> @bigquery view/table and graph node)
+  // written. Set only when the push was given a BigQueryEntryLocator; a
+  // binding link that fails is a warning, not a failed push.
+  bound?: number;
   // A human-readable plan of what would be written: the sole output of a
   // validateOnly run, and also returned (for --print) on a real push.
   plan: string[];
@@ -124,8 +145,28 @@ type EmittedModel = {model: string; resources: KcResources};
 const ENTRY_CREATE_TRIES = 3;
 const ENTRY_CREATE_RETRY_MS = 3000;
 
+// Entry-link writes share a per-minute, per-region quota (300 by default). A
+// push that writes more links than that in a minute gets HTTP 429 on the rest;
+// waiting 20 s, 40 s, then 60 s spans a full quota window.
+const LINK_WRITE_TRIES = 4;
+const LINK_RETRY_MS = 20000;
+
 function sleep(ms: number): Promise<void> {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// Runs one entry-link write, retrying while the entry-link quota refuses it.
+async function withLinkQuotaRetry<T>(
+    opts: KcDeployOptions,
+    write: () => Promise<ApiResult<T>>): Promise<ApiResult<T>> {
+  const tries = opts.linkWriteTries ?? LINK_WRITE_TRIES;
+  const retryMs = opts.linkRetryMs ?? LINK_RETRY_MS;
+  let res = await write();
+  for (let attempt = 1; attempt < tries && res.status === 429; attempt++) {
+    await sleep(retryMs * attempt);
+    res = await write();
+  }
+  return res;
 }
 
 
@@ -165,10 +206,12 @@ export async function deployEmittedModels(
   const counts: Counts =
       {created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0};
   let plan: string[] = [];
+  let bound: number|undefined;
   // Builds the return value from the running state; details is set only on a
   // failure, and counts/plan reflect whatever had been done when called.
   const result = (success: boolean, details?: string): KcDeployResult =>
-      ({success, warnings, ...counts, plan, ...(details ? {details} : {})});
+      ({success, warnings, ...counts, ...(bound !== undefined ? {bound} : {}),
+        plan, ...(details ? {details} : {})});
 
   // Exactly one model per entry group is supported for now. An empty workspace
   // is a clean no-op under --validate-only and a configuration error on a real
@@ -215,7 +258,9 @@ export async function deployEmittedModels(
   if (guard.error) return result(false, guard.error);
 
   // Write each model's entries and relationship links.
-  const written = await writeModels(cat, opts, emitted, existing, counts);
+  const written =
+      await writeModels(cat, opts, emitted, existing, counts, warnings);
+  if (written.bound !== undefined) bound = written.bound;
   if (written.error) return result(false, written.error);
 
   // Finally, delete entries orphaned by entities/metrics removed from a
@@ -247,6 +292,9 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
         systemTypeProject: opts.systemTypeProject,
         systemTypeLocation: opts.systemTypeLocation,
         emitExpressions: opts.emitExpressions,
+        customAspects: opts.customAspects,
+        bigQueryEntries: opts.bigQueryEntries,
+        constraintRates: opts.constraintRates,
       });
     } catch (err: any) {
       return {
@@ -308,7 +356,9 @@ async function guardForeignModels(
 // a mid-way failure still reports what had been written.
 async function writeModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    existing: Entry[], counts: Counts): Promise<{error?: string}> {
+    existing: Entry[], counts: Counts,
+    warnings: string[]): Promise<{error?: string; bound?: number}> {
+  let bound: number|undefined;
   for (const {model, resources} of emitted) {
     const entries = await createEntries(cat, opts, resources.entries);
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
@@ -321,14 +371,33 @@ async function writeModels(
     if (links.error) return {error: `Model '${model}': ${links.error}`};
     counts.linked += links.linked;
 
+    // K3: binding links point into `@bigquery`, whose entries exist only once
+    // BigQuery has created the view / graph and Dataplex has indexed it. A
+    // refusal there says nothing about the model, so each is written on its
+    // own and a failure is a warning.
+    if (resources.bindingLinks) {
+      bound ??= 0;
+      for (const link of resources.bindingLinks) {
+        const res = await writeEntryLink(cat, opts, link);
+        if (res.error) {
+          warnings.push(`[${model}] binding link skipped: ${res.error}`);
+        } else {
+          bound++;
+        }
+      }
+    }
+
     // Then drop any schema-join link this model owns but no longer emits (a
     // relationship dropped or renamed), after its current links are written so a
     // rename never leaves the pair with no link between them.
-    const relLinks = await reconcileLinks(cat, opts, resources, existing);
-    if (relLinks.error) return {error: `Model '${model}': ${relLinks.error}`};
+    const relLinks =
+        await reconcileLinks(cat, opts, resources, existing, model);
+    if (relLinks.error) {
+      return {error: `Model '${model}': ${relLinks.error}`, bound};
+    }
     counts.unlinked += relLinks.unlinked;
   }
-  return {};
+  return {bound};
 }
 
 
@@ -483,10 +552,12 @@ async function deleteOwnedLinks(
 // model OWNS (both endpoints under its `<anchor>.entities.` namespace) that the
 // model no longer emits -- a relationship dropped or renamed since the last
 // push. A link touching an entry outside this model is never treated as owned,
-// so a shared entry group is safe.
+// so a shared entry group is safe. K3 binding links reach into `@bigquery`, so
+// they are owned by id instead (bindingLinkPrefix), and reconciled only by a
+// push that emits binding links -- one without a locator leaves them alone.
 function reconcileLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: KcResources,
-    existing: Entry[]): Promise<LinkReconcileOutcome> {
+    existing: Entry[], modelName?: string): Promise<LinkReconcileOutcome> {
   // An emitter that produced no entries has no anchor and owns nothing. Guarded
   // for the same reason reconcileDeletions guards it: this runs inside
   // writeModels, so a throw here escapes the KcDeployResult contract *after*
@@ -511,16 +582,22 @@ function reconcileLinks(
           .filter(name => ownedId(idOf(name)));
   if (!entityNames.length) return Promise.resolve({unlinked: 0});
 
-  const emittedLinkIds =
-      new Set(resources.entryLinks.map(l => idOf(l.name ?? '')));
+  const emittedLinkIds = new Set(
+      [...resources.entryLinks, ...(resources.bindingLinks ?? [])].map(
+          l => idOf(l.name ?? '')));
   const ownedByModel = (link: EntryLink) =>
       link.entryReferences.length === 2 &&
       link.entryReferences.every(r => ownedId(idOf(r.name)));
+  const bindPrefix = resources.bindingLinks && modelName !== undefined ?
+      `${bindingLinkPrefix(modelName)}-` :
+      undefined;
+  const ownedBinding = (link: EntryLink) => bindPrefix !== undefined &&
+      linkIdOf(link.name ?? '').startsWith(bindPrefix);
 
   return deleteOwnedLinks(
       cat, opts, entityNames,
-      link =>
-          ownedByModel(link) && !emittedLinkIds.has(idOf(link.name ?? '')));
+      link => (ownedByModel(link) || ownedBinding(link)) &&
+          !emittedLinkIds.has(idOf(link.name ?? '')));
 }
 
 
@@ -646,17 +723,22 @@ async function createEntryLinks(
 // it already exists. A link's entry references and type are immutable, so a
 // re-push only refreshes the aspect (the join detail). A relationship whose id
 // changed writes a new link and leaves the old one; reconcileLinks deletes such
-// orphaned links after this model's links are written.
+// orphaned links after this model's links are written. Both calls retry while
+// the per-minute entry-link quota refuses them (withLinkQuotaRetry).
 async function writeEntryLink(
     cat: CatalogClient, opts: KcDeployOptions,
     link: EntryLink): Promise<{error?: string}> {
   const linkId = linkIdOf(link.name ?? '');
-  const res = await cat.createEntryLink(
-      opts.project, opts.location, opts.entryGroup, linkId, link);
+  const res = await withLinkQuotaRetry(
+      opts,
+      () => cat.createEntryLink(
+          opts.project, opts.location, opts.entryGroup, linkId, link));
   if (isExists(res)) {
-    const upd = await cat.updateEntryLink(
-        {name: link.name, aspects: link.aspects} as EntryLink,
-        Object.keys(link.aspects ?? {}));
+    const upd = await withLinkQuotaRetry(
+        opts,
+        () => cat.updateEntryLink(
+            {name: link.name, aspects: link.aspects} as EntryLink,
+            Object.keys(link.aspects ?? {})));
     // A 409 already proved the link is present, and its entry references and type
     // are immutable, so this follow-up only refreshes the aspect. Some catalog
     // surfaces expose only create + lookup for an entry link and cannot address
@@ -719,6 +801,11 @@ function reconciledAspectKeys(entry: Entry, opts: KcDeployOptions): string[] {
   const loc = opts.systemTypeLocation ?? 'global';
   const keys = new Set(Object.keys(entry.aspects ?? {}));
   for (const type of OPTIONAL_ASPECT_TYPES) keys.add(`${proj}.${loc}.${type}`);
+  // K1: every annotation aspect is optional on its entry (attached only when
+  // the element has content for it), so it is reconciled the same way.
+  for (const id of opts.customAspects ?? []) {
+    keys.add(customAspectKey(id, {project: opts.project}));
+  }
   return [...keys];
 }
 
@@ -758,6 +845,14 @@ function planSummary(
             resources.entryLinks.length === 1 ? '' : 's'}:`,
         ...resources.entryLinks.map(
             l => `    - ${linkIdOf(l.name ?? '')}`));
+  }
+  if (resources.bindingLinks?.length) {
+    lines.push(
+        `  ${resources.bindingLinks.length} binding link${
+            resources.bindingLinks.length === 1 ? '' : 's'} (to @bigquery):`,
+        ...resources.bindingLinks.map(
+            l => `    - ${linkIdOf(l.name ?? '')} -> ${
+                idOf(l.entryReferences[1]?.name ?? '')}`));
   }
   return lines;
 }

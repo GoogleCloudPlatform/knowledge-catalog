@@ -78,8 +78,8 @@ export interface SemanticModel {
   // The model's business glossary: business terms (with definitions,
   // synonyms and links to the model elements they name) organized in
   // categories. Published as a Knowledge Catalog (Dataplex) Business Glossary
-  // by `kcmd glossary push`, and listed on agent skills. A `/google` extension;
-  // absent on most models. See glossary.ts.
+  // by `kcmd glossary push`. A `/google` extension; absent on most models. See
+  // glossary.ts.
   glossary?: Glossary;
 }
 
@@ -191,7 +191,7 @@ export interface Entity {
   definition?: EntityDefinition;
   // What one row / instance represents, free text (e.g. "one row per
   // opportunity version"). Informational: no emitter changes the table for it;
-  // it rides element descriptions and skill pages (see units_history.ts).
+  // it rides element descriptions (see units_history.ts).
   grain?: string;
   // How the backing table keeps history (see EntityHistory). Informational
   // like `grain`: the node table stays the all-versions table, and readers are
@@ -201,13 +201,74 @@ export interface Entity {
   // a status or stage list, the OWL named individuals of an enumerated class.
   // The members ARE the entity's rows: the BigQuery leg generates a view over
   // them and backs the node table with it, edges into the entity match the
-  // code case-insensitively, and Knowledge Catalog and skill pages list them
-  // (see vocabulary.ts). Absent on every other entity.
+  // code case-insensitively, and Knowledge Catalog lists them (see
+  // vocabulary.ts). Absent on every other entity.
   members?: VocabularyMember[];
+  // How the bound source is reshaped into the entity the model declares (a
+  // binding concern, set by a profile): which version of a key to keep,
+  // declared value corrections, codes resolved against a related entity, or
+  // the entity's rows derived from a relationship. A closed vocabulary; the
+  // BigQuery leg compiles it into the entity's node view (see hydration.ts,
+  // node_views.ts).
+  hydration?: EntityHydration;
+  // How the BigQuery leg binds the entity: `view` (the default) reads it
+  // through a generated node view named after the entity whose columns are
+  // the modeled fields; `direct` binds the source table as-is.
+  mode?: EntityBindingMode;
   description?: string;
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+}
+
+/** See Entity.mode. */
+export type EntityBindingMode = 'view'|'direct';
+
+/**
+ * An entity's hydration rules (see Entity.hydration and hydration.ts). Field
+ * references are field NAMES on the entity (inherited fields count), except
+ * `grain.latestBy` and `normalize.on`, which name a physical column of the
+ * entity's source (or a field, whose column is then used).
+ */
+export interface EntityHydration {
+  // Realizes the key over a source that repeats it: keep the row with the
+  // greatest `latestBy` per key, or (`deterministic`) one row per key picked
+  // by a hash of the row, so reruns pick the same one.
+  grain?: {latestBy?: string; deterministic?: boolean};
+  normalize?: NormalizeRule[];
+  resolve?: ResolveRule[];
+  // The entity has no table: its rows are the distinct foreign-key values of
+  // this relationship, whose destination is the entity's key.
+  deriveFrom?: {relationship: string};
+  // `enforce`: the node view applies the model's constraints to the rows it
+  // serves, after the rules above (see constraint_enforcement.ts). A `reject`
+  // rule withholds the failing value, or excludes the row when the rule is
+  // about the record itself (a required field, or the key); every other rule
+  // is named in the view's `_warnings` column. Relationship rules are
+  // reported, never applied. Absent: the view serves the rows as hydrated.
+  constraints?: ConstraintsMode;
+}
+
+/** See EntityHydration.constraints. */
+export type ConstraintsMode = 'enforce';
+
+/** A declared value correction applied before or after a date. */
+export interface NormalizeRule {
+  field: string;
+  before?: string;     // ISO date or timestamp; exactly one of before / after
+  after?: string;
+  divideBy?: number;   // exactly one of divideBy / multiplyBy, > 0
+  multiplyBy?: number;
+  on?: string;         // the date column compared (default: grain.latestBy)
+}
+
+/**
+ * A foreign key recorded as either the destination's key or one of its unique
+ * keys (a code or a name), resolved to the key.
+ */
+export interface ResolveRule {
+  field: string;    // the relationship's source (foreign-key) field
+  match: string[];  // destination fields: its key and/or single-field unique keys
 }
 
 /** One member of a vocabulary entity (see Entity.members). */
@@ -291,7 +352,7 @@ export interface Field {
   // The unit a value is measured in (e.g. 'USD', 'hours', 'percent', or a
   // QUDT-style code) and the multiplier the stored value carries (`scale:
   // 1000` means a stored 5 is 5000 of `unit`). Informational: nothing rescales
-  // values; they ride descriptions and skill pages (see units_history.ts).
+  // values; they ride element descriptions (see units_history.ts).
   unit?: string;
   scale?: number;
   aiContext?: AiContext;
@@ -814,7 +875,11 @@ export interface GrpcExecutor {
  * `guards`, and `warn` reports while `reject` and `escalate` stop the call;
  * `escalate` says so in the refusal, because nothing here has an approver to
  * route to. An expression is still text nothing computes, so its word decides
- * nothing yet.
+ * nothing yet. On the read side, a node view whose profile sets
+ * `hydration.constraints: enforce` routes on the word of every rule it can
+ * check deterministically (see constraint_enforcement.ts): `reject` withholds
+ * the failing value or excludes the row, and `warn` and `escalate` name the
+ * rule in the row's `_warnings`, since a read has no approver to escalate to.
  */
 export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
 

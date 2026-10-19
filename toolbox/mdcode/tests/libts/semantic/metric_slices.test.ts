@@ -15,7 +15,8 @@ import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {deployBigQuery} from '../../../src/libts/semantic/deploy_bigquery';
 import {Entity, Field, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel} from '../../../src/libts/semantic/loader';
-import {describeMetricGraphPlan, fallbackViewName, GRAPH_EXPAND_MAX_NODE_TABLES, graphExpandExpression, MetricPlacement, planMetricGraphs, rewriteToColumns, sliceGraphName, snakeCase} from '../../../src/libts/semantic/metric_slices';
+import {renderComposition} from '../../../src/libts/semantic/metric_composition';
+import {describeMetricGraphPlan, fallbackViewName, GRAPH_EXPAND_MAX_NODE_TABLES, MetricPlacement, planMetricGraphs, rewriteToColumns, sliceGraphName, snakeCase} from '../../../src/libts/semantic/metric_slices';
 
 const TARGET = {project: 'p', dataset: 'd', graphName: 'g'};
 const GRAPHS = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs';
@@ -146,10 +147,16 @@ function tiny(metrics: Metric[], inverse?: string): SemanticModel {
   } as SemanticModel;
 }
 
-// Where and how a placement says to read its metric, in one line.
+// Where and how a placement says to read its metric, in one line: a graph
+// placement as `AGG()` of each component's measure (on its home node table),
+// recombined by the composition.
 function read(p: MetricPlacement|undefined): string {
   if (!p) return 'missing';
-  if (p.kind === 'graph') return `${p.ref}: ${graphExpandExpression(p)}`;
+  if (p.kind === 'graph') {
+    const agg = (i: number) =>
+        `AGG(${p.homes[i]}_${p.decomposition.components[i].name})`;
+    return `${p.ref}: ${renderComposition(p.decomposition.template, agg)}`;
+  }
   if (p.kind === 'view') return `view ${p.ref}: ${p.expression}`;
   return `none: ${p.reason}`;
 }
@@ -390,8 +397,8 @@ describe('planMetricGraphs: slice selection', () => {
     ]);
     expect(plan.warnings).toEqual([
       "metric 'won_revenue' cannot be a graph MEASURE (it reads defined entity " +
-          'WonSale, which has no table (a MEASURE cannot filter rows)); the query ' +
-          'skill gives plain SQL for it',
+          'WonSale, which has no table (a MEASURE cannot filter rows)); query it ' +
+          'with plain SQL over the bound tables',
       "metric 'amount_stddev' cannot be a graph MEASURE (STDDEV cannot be a " +
           'MEASURE (a measure is one of SUM, AVG, COUNT, MIN, MAX)); it falls back ' +
           'to the SQL view p.d.g__sale_metrics_view',
@@ -580,8 +587,8 @@ describe('planMetricGraphs: fallbacks', () => {
         "metric 'promo_share' cannot be a graph MEASURE (its aggregates read Sale, " +
         'Promotion, and no one of them reaches the others through many-to-one ' +
         'relationships); no fallback view either (no one of Sale, Promotion ' +
-        'reaches the others through many-to-one relationships); the query skill ' +
-        'gives plain SQL for it');
+        'reaches the others through many-to-one relationships); query it with ' +
+        'plain SQL over the bound tables');
   });
 
   test('a flat view would repeat a dimension row: no view either', () => {
@@ -768,5 +775,48 @@ describe('deployBigQuery: metric graphs next to the main graph', () => {
       dsSpy.mockRestore();
       querySpy.mockRestore();
     }
+  });
+});
+
+describe('planMetricGraphs: edges over generated edge views', () => {
+  // A foreign key into a vocabulary is rendered over a generated edge view
+  // (matched case-insensitively), not over the fact's own table. GRAPH_EXPAND
+  // ignores such a standalone edge table, so a slice that kept it would have
+  // the vocabulary as a second root and every GRAPH_EXPAND on it would fail
+  // ("The graph has multiple root node tables", seen live). The slice keeps
+  // only the edges rendered over the source's own table.
+  function withStatus(): SemanticModel {
+    const model = tiny([metric('total_amount', 'SUM(Sale.amount)', 'Sale')]);
+    model.entities.push({
+      name: 'SaleStatus',
+      dataSource: '',
+      keys: ['code'],
+      fields: [{name: 'code', type: 'String'}, {name: 'label', type: 'String'}],
+      members: [{code: 'OPEN', label: 'Open'}, {code: 'WON', label: 'Won'}],
+    } as Entity);
+    model.entities[1].fields.push(f('status', 'status'));
+    model.relationships.push(rel('hasStatus', 'Sale', 'status', 'SaleStatus', 'code'));
+    return model;
+  }
+
+  test('the vocabulary is not a node table of the slice', () => {
+    const plan = planMetricGraphs(withStatus(), TARGET);
+    const sale = plan.slices.find(s => s.fact === 'Sale')!;
+    expect(sale.nodeTables).toEqual(['Sale', 'Customer']);
+    expect(sale.edges.map(e => e.relationship)).toEqual(['soldTo']);
+    expect(sale.ddl).not.toContain('edge_has_status');
+    expect(sale.ddl).not.toContain('vocab_sale_status');
+  });
+
+  test('the metric is read on the slice', () => {
+    const plan = planMetricGraphs(withStatus(), TARGET);
+    expect(read(plan.placements.get('total_amount')))
+        .toBe('p.d.g__sale_metrics: AGG(Sale_total_amount)');
+  });
+
+  test('the main graph still walks the edge into the vocabulary', () => {
+    const {ddl} = generatePropertyGraph(withStatus(), TARGET);
+    expect(ddl).toContain('AS hasStatus');
+    expect(ddl).toContain('AS SaleStatus');
   });
 });

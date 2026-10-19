@@ -6,8 +6,7 @@ The `glossary:` block records the business vocabulary next to the model:
 business terms with definitions and synonyms, grouped in categories, and
 linked to the entities, fields and metrics they name. `kcmd glossary push`
 publishes it as a [Knowledge Catalog Business
-Glossary](https://cloud.google.com/dataplex/docs/manage-glossaries), and query
-skills list it so agents can map a business word to the model.
+Glossary](https://cloud.google.com/dataplex/docs/manage-glossaries).
 
 The block is an extension of the `0.2.0.dev0/google` profile; vanilla Ossie
 rejects it. It changes nothing else: no generated SQL, no semantic entry, no
@@ -185,21 +184,6 @@ A glossary block is plain spec, so any source can produce it:
   vocabulary](owl-import.md#skos-vocabulary-business-glossary)).
 - **Other sources.** A planned `kcmd glossary import --from <source>` will use
   the same block.
-
-## Agent skills
-
-Query skills read the glossary:
-
-- `SKILL.md` gains a **Business terms** section with one line per term:
-  `Display Name (synonyms) -> model element or formula`. It is capped at 60
-  terms, followed by "… N more in the Knowledge Catalog glossary <id>".
-- The navigation guide gains one rule: *"A business term or metric name that
-  is not in the model may be in the Knowledge Catalog glossary <id>: search it
-  (search_entries) before concluding the data does not contain it."*
-- Each entity page lists the terms that define the entity or one of its
-  fields.
-
-See [Agent skills](skills.md).
 
 ## Not yet
 
