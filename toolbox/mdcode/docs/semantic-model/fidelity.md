@@ -78,11 +78,11 @@ agree on every structural row and differ only where a Spanner target has no
    metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
    carries no `OPTIONS` at all — so the model's `description` and
    `ai_context.instructions` are carried into Knowledge Catalog instead.
-9. **Other custom extensions.** Under the vanilla `0.2.0.dev0` profile a
-   `custom_extensions` block (other than a GOOGLE deployment target) is the only
-   carrier for vendor metadata; it is inert on push and not persisted to
-   Knowledge Catalog, so `pull` never recovers it — keep your authored file. The
-   OWL importer emits none: it is import-only (see [Importing an OWL
+9. **Other custom extensions.** A third-party `custom_extensions` block (other
+   than a GOOGLE deployment target) is inert on push and has no catalog entry or
+   aspect of its own; `pull` returns it from the stored copy of the model file,
+   and leaves it out only when rebuilding from the catalog metadata. The OWL
+   importer emits none: it is import-only (see [Importing an OWL
    ontology](owl-import.md)).
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
@@ -313,8 +313,8 @@ returns that view. Two things about *how* it comes back:
   `places-order`); the catalog stores the name only in the link id. See
   [Writer-side follow-up](#writer-side-follow-up).
 - Field types round-trip except one collapse: a field authored as `String`
-  comes back un-typed (both no type and `String` store `dataType STRING`, kept
-  distinct by a field's `metadataType` — see footnote ²). A metric's data
+  comes back un-typed (both no type and `String` store `dataType STRING`, and
+  `pull` writes no `datatype` for either; see footnote ²). A metric's data
   type round-trips only for a concrete type (e.g. `Decimal`); an untyped,
   `String`, or `Opaque` metric comes back un-typed, because the metric aspect
   stores a data type but no metadata type to mark it `Opaque`.

@@ -83,9 +83,10 @@ export interface SerializeOptions {
  * missing join columns under OSSIE_VERSION, or loader-invalid gaps), so the
  * caller can surface the lossy edge.
  *
- * `logical` marks the model as a purely logical one (no physical binding), so
- * the missing-source and missing-expression warnings -- which flag a lossy pull
- * of a bound model -- are suppressed. An OWL import sets it; `pull` does not.
+ * `logical` marks the model as a purely logical one (no physical binding).
+ * Under GOOGLE_VERSION it suppresses the missing-source and missing-expression
+ * warnings, which flag a lossy pull of a bound model. OSSIE_VERSION requires
+ * both, so they are still given. An OWL import sets it; `pull` does not.
  *
  * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
  * flow style so the output matches the compact convention the semantic-model
@@ -96,8 +97,13 @@ export function serializeModel(
     model: SemanticModel, opts: SerializeOptions = {}): SerializeResult {
   const warnings: string[] = [];
   const document = modelDocument(model, warnings, opts.logical);
-  const text =
-      opts.compactFlow ? renderCompact(document) : yaml.stringify(document);
+  // `compat: 'yaml-1.1'` quotes strings that a YAML 1.1 parser (PyYAML,
+  // ruamel's 1.1 mode) would read as booleans or dates (`'yes'`, `'on'`,
+  // `'2001-12-14'`), so arbitrary values in `custom_extensions` or `ai_context`
+  // round-trip across tools.
+  const text = opts.compactFlow ?
+      renderCompact(document) :
+      yaml.stringify(document, {compat: 'yaml-1.1'});
   return {yaml: text, warnings: [...new Set(warnings)]};
 }
 
@@ -127,7 +133,7 @@ function scalarWidth(node: unknown): number {
 }
 
 function renderCompact(document: Record<string, any>): string {
-  const doc = new yaml.Document(document);
+  const doc = new yaml.Document(document, {compat: 'yaml-1.1'});
   yaml.visit(doc, {
     Seq(_, node) {
       if (!node.items.every(item => yaml.isScalar(item))) return;
@@ -225,8 +231,7 @@ function modelDoc(
 
 // Warns about each IR construct OSSIE_VERSION has no native key for, so a
 // '0.2.0.dev0' write flags dropped content just as a GOOGLE_VERSION write flags
-// a dropped GOOGLE block. An abstract entity is not listed here because
-// datasetDoc already warns that it has no source.
+// a dropped GOOGLE block.
 function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
   const drop = (where: string, what: string) => warnings.push(
       `${where}: ${what} has no representation under '${OSSIE_VERSION}' and ` +
@@ -237,6 +242,7 @@ function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
   if (model.constraints?.length) drop(where, `'constraints'`);
   for (const e of model.entities ?? []) {
     if (e.extends?.length) drop(`entity '${e.name}'`, `'extends'`);
+    if (e.abstract) drop(`entity '${e.name}'`, `'abstract'`);
   }
   for (const r of model.relationships ?? []) {
     if (r.description) drop(`relationship '${r.name}'`, `'description'`);
@@ -254,10 +260,13 @@ function datasetDoc(
   // gap at write time instead of emitting a document that fails to load. Under
   // OSSIE_VERSION `abstract` is omitted, so a dataset without `dataSource`
   // cannot reload even if `entity.abstract` was set. Suppressed for a logical
-  // model, where a missing source is intended.
-  if (!logical && !(isGoogleVersion && entity.abstract) && !entity.dataSource) {
+  // model under GOOGLE_VERSION, where a missing source is intended.
+  // OSSIE_VERSION requires a source on every dataset.
+  if ((!logical || !isGoogleVersion) && !(isGoogleVersion && entity.abstract) &&
+      !entity.dataSource) {
     warnings.push(
-        `entity '${entity.name}' has no source and is not abstract; the ` +
+        `entity '${entity.name}' has no source${
+            isGoogleVersion ? ' and is not abstract' : ''}; the ` +
         `serialized document will not reload until a source is set`);
   }
   return compact({
@@ -278,9 +287,13 @@ function datasetDoc(
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,
     ai_context: aiContextDoc(entity.aiContext, isGoogleVersion),
-    fields: nonEmpty(
-        (entity.fields ??
-         []).map(f => fieldDoc(f, warnings, logical, isGoogleVersion))),
+    fields:
+        nonEmpty((entity.fields ?? [])
+                     .map(
+                         f => fieldDoc(
+                             f, warnings,
+                             logical || (isGoogleVersion && !!entity.abstract),
+                             isGoogleVersion))),
     custom_extensions: customExtensionsDoc(
         entity.customExtensions, `entity '${entity.name}'`, isGoogleVersion,
         /* isModel= */ false, warnings),
@@ -302,13 +315,17 @@ function fieldDoc(
     isGoogleVersion: boolean): Record<string, any> {
   const expression =
       expressionDoc(field, isGoogleVersion, `field '${field.name}'`, warnings);
-  // A logical field intentionally has no expression (a binding profile maps it
-  // to a column later), so the missing-expression warning is suppressed there;
-  // for a bound model it still flags a lossy pull.
-  if (!logical && !expression) {
+  // Under GOOGLE_VERSION a field with no expression reloads unbound. A logical
+  // field, or one on an abstract entity, has none on purpose and is not warned.
+  // OSSIE_VERSION requires an expression on every field.
+  if ((!logical || !isGoogleVersion) && !expression) {
     warnings.push(
-        `field '${field.name}': no expression; the loader requires one per ` +
-        `field and the document will not load until it is set.`);
+        isGoogleVersion ?
+            `field '${field.name}': no expression; it reloads as an unbound ` +
+                `field.` :
+            `field '${field.name}': no expression; a '${OSSIE_VERSION}' ` +
+                `document requires one per field and will not load until it ` +
+                `is set.`);
   }
   return compact({
     name: field.name,
@@ -434,15 +451,16 @@ function parameterDoc(
     warnings: string[]): Record<string, any> {
   const projects = p.concept !== undefined &&
       (resolvable === null || resolvable.has(`${p.concept}.${p.field}`));
-  const resolvedType = datatypeDoc(p.type);
   // The fallback above rests on there BEING a resolved type to fall back to,
   // and a parameter can reach here without one -- a pull of an aspect written
   // before the type was recorded, or a model whose inheritance would not
   // resolve. Both keys then drop and the parameter emits as name and wording
   // alone, which reloads as a typeless parameter and is rejected by validate.
   // Nothing here can invent the type, so say so at write time rather than let
-  // it surface as a load error against a document this wrote.
-  if (!projects && p.concept !== undefined && resolvedType === undefined) {
+  // it surface as a load error against a document this wrote. `Opaque` is a
+  // valid standalone parameter type in the loader (unlike on fields and
+  // metrics), so `p.type` is emitted directly without `datatypeDoc`.
+  if (!projects && p.concept !== undefined && p.type === undefined) {
     warnings.push(
         `action '${action}': parameter '${p.name}' projected from '${
             p.concept}.${p.field}', which this document does not carry, and ` +
@@ -452,7 +470,7 @@ function parameterDoc(
   }
   return compact({
     name: p.name,
-    type: projects ? undefined : resolvedType,
+    type: projects ? undefined : p.type,
     concept: projects ? p.concept : undefined,
     field: projects ? p.field : undefined,
     label: p.label,
@@ -572,8 +590,16 @@ function expressionDoc(
   // under OSSIE_VERSION bare strings are forbidden, so emit `{dialects:
   // [...]}`.
   if (item.dialects?.length) {
-    const allowed =
-        item.dialects.filter(d => ALLOWED_DIALECT_SET.has(d.dialect));
+    const allowed: Array<{dialect: SqlDialect; expression: string}> = [];
+    for (const d of item.dialects) {
+      if (ALLOWED_DIALECT_SET.has(d.dialect)) {
+        allowed.push(d);
+      } else {
+        warnings.push(
+            `${where}: expression in dialect '${d.dialect}' is not a dialect ` +
+            `the loader accepts and is not serialized`);
+      }
+    }
     if (allowed.length) {
       if (isGoogleVersion && item.stringForm) {
         return allowed[0].expression;
@@ -586,7 +612,8 @@ function expressionDoc(
   }
   // Path 2 (`kcmd pull` / OWL import / fallback): `dialects` is absent, so
   // synthesize it from `expression` and `importedExpression`.
-  if (isGoogleVersion && item.stringForm && item.expression !== undefined) {
+  if (isGoogleVersion && item.stringForm && item.expression !== undefined &&
+      item.importedExpression === undefined) {
     return item.expression;
   }
   const dialects: Array<{dialect: string; expression: string}> = [];
@@ -604,11 +631,18 @@ function expressionDoc(
     // Google SQL expression exists. Only emit `importedDialect` when the loader
     // accepts it; an unknown or missing label would fail to reload.
     const label = item.importedDialect;
-    if (label === undefined || !ALLOWED_DIALECT_SET.has(label)) {
+    if (label === undefined) {
+      warnings.push(
+          `${where}: imported expression has no dialect and is not serialized`);
+    } else if (!ALLOWED_DIALECT_SET.has(label)) {
       warnings.push(
           `${where}: imported expression in dialect '${label}' is not a ` +
           `dialect the loader accepts and is not serialized`);
-    } else if (!dialects.some(d => d.dialect === label)) {
+    } else if (dialects.some(d => d.dialect === label)) {
+      warnings.push(
+          `${where}: imported expression in dialect '${label}' has the same ` +
+          `dialect as the expression and is not serialized`);
+    } else {
       dialects.push({dialect: label, expression: item.importedExpression});
     }
   }

@@ -16,6 +16,8 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import {ActionParameter, ALLOWED_DIALECTS, CustomExtension, Entity, Field, Metric, Relationship, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
+import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
+import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {modelDocument, serializeModel} from '../../../src/libts/semantic/osi_converter';
 
@@ -759,12 +761,34 @@ describe('a projection is only emitted when it will supply a type', () => {
     expect(withFallback.type).toBe('String');
     expect(withOpaque.concept).toBeUndefined();
     expect(withOpaque.field).toBeUndefined();
-    expect(withOpaque.type).toBeUndefined();
+    expect(withOpaque.type).toBe('Opaque');
     expect(doc.semantic_model[0].entities[0].fields[0].datatype)
         .toBeUndefined();
     expect(warnings.some(w => w.includes('parameter \'fallback\'')))
         .toBe(false);
-    expect(warnings.some(w => w.includes('parameter \'opaque\''))).toBe(true);
+    expect(warnings.some(w => w.includes('parameter \'opaque\''))).toBe(false);
+  });
+
+  test('keeps a standalone parameter typed Opaque', () => {
+    const model = projectionModel(
+        {}, [{name: 'payload', type: 'Opaque', required: true}]);
+    const {entries, entryLinks} = generateCatalogResources(model, {
+      project: 'p',
+      location: 'us',
+      entryGroup: 'eg',
+      emitExpressions: true,
+    });
+    const rebuilt = modelsFromCatalogResources(entries, entryLinks).models[0];
+
+    const {yaml: text, warnings} = serializeModel(rebuilt);
+    const reloaded = loadModels(text).models[0];
+
+    expect(warnings).toEqual([]);
+    expect(reloaded.actions?.[0].parameters?.[0]).toEqual({
+      name: 'payload',
+      type: 'Opaque',
+      required: true,
+    });
   });
 
   test(
@@ -1129,6 +1153,66 @@ describe('dual-version model serialization', () => {
     ]);
   });
 
+  test('warns that abstract is dropped under 0.2.0.dev0', () => {
+    const model: SemanticModel = {
+      ...emptyModel,
+      version: '0.2.0.dev0',
+      entities: [{
+        name: 'base',
+        dataSource: '',
+        abstract: true,
+        keys: ['id'],
+        fields: [idField],
+      }],
+    };
+
+    const {warnings} = serializeModel(model);
+
+    expect(warnings).toEqual([
+      `entity 'base' has no source; the serialized document will not reload until a source is set`,
+      `entity 'base': 'abstract' has no representation under '0.2.0.dev0' and is not serialized`,
+    ]);
+  });
+
+  test(
+      'warns on missing source and expression in 0.2.0.dev0 even when logical',
+      () => {
+        const model: SemanticModel = {
+          ...emptyModel,
+          version: '0.2.0.dev0',
+          entities: [
+            {name: 'orders', dataSource: '', keys: [], fields: [{name: 'id'}]}
+          ],
+        };
+
+        const {warnings} = serializeModel(model, {logical: true});
+
+        expect(warnings).toEqual([
+          `entity 'orders' has no source; the serialized document will not reload until a source is set`,
+          `field 'id': no expression; a '0.2.0.dev0' document requires one per field and will not load until it is set.`,
+        ]);
+      });
+
+  test(
+      'does not warn on unbound fields of an abstract entity in 0.2.0.dev0/google',
+      () => {
+        const model: SemanticModel = {
+          ...emptyModel,
+          entities: [{
+            name: 'base',
+            dataSource: '',
+            abstract: true,
+            keys: [],
+            fields: [{name: 'id', type: 'String'}],
+          }],
+        };
+
+        const {yaml: text, warnings} = serializeModel(model);
+
+        expect(warnings).toEqual([]);
+        expect(() => loadModels(text)).not.toThrow();
+      });
+
   test(
       'warns when an imported expression has a dialect outside ALLOWED_DIALECTS',
       () => {
@@ -1156,9 +1240,66 @@ describe('dual-version model serialization', () => {
         const {warnings} = serializeModel(model);
 
         expect(warnings).toEqual([
+          `field 'amt': imported expression in dialect 'BIGQUERY' has the same dialect as the expression and is not serialized`,
           `field 'unknown_dialect': imported expression in dialect 'IMPORTED' is not a dialect the loader accepts and is not serialized`,
         ]);
       });
+
+  test('keeps an imported expression beside a short-form expression', () => {
+    const model: SemanticModel = {
+      ...emptyModel,
+      entities: [{
+        ...baseOrders,
+        fields: [{
+          name: 'amt',
+          expression: 'orders.amt',
+          stringForm: true,
+          importedExpression: 'NVL(orders.amt, 0)',
+          importedDialect: 'SNOWFLAKE',
+        }],
+      }],
+    };
+
+    const doc = firstModelDoc(model);
+
+    expect(doc.entities[0].fields[0].expression).toEqual({
+      dialects: [
+        {dialect: 'ANSI_SQL', expression: 'orders.amt'},
+        {dialect: 'SNOWFLAKE', expression: 'NVL(orders.amt, 0)'},
+      ],
+    });
+  });
+
+  test('warns for each expression dropped for its dialect', () => {
+    const model: SemanticModel = {
+      ...emptyModel,
+      entities: [{
+        ...baseOrders,
+        fields: [
+          {
+            name: 'no_dialect',
+            expression: 'orders.a',
+            importedExpression: 'orders.A',
+          },
+          {
+            name: 'bad_in_list',
+            expression: 'orders.b',
+            dialects: [
+              {dialect: 'ANSI_SQL', expression: 'orders.b'},
+              {dialect: 'ORACLE' as SqlDialect, expression: 'orders.B'},
+            ],
+          },
+        ],
+      }],
+    };
+
+    const {warnings} = serializeModel(model);
+
+    expect(warnings).toEqual([
+      `field 'no_dialect': imported expression has no dialect and is not serialized`,
+      `field 'bad_in_list': expression in dialect 'ORACLE' is not a dialect the loader accepts and is not serialized`,
+    ]);
+  });
 
   test('warns when a 0.2.0.dev0 relationship has no join columns', () => {
     const model: SemanticModel = {
@@ -1208,4 +1349,26 @@ describe('dual-version model serialization', () => {
       `field 'id': 1 GOOGLE custom_extension(s) have no representation on a field under '0.2.0.dev0' and are not serialized`,
     ]);
   });
+
+  for (const compactFlow of [false, true]) {
+    test(
+        `quotes YAML 1.1 booleans and dates (compactFlow=${compactFlow})`,
+        () => {
+          const model: SemanticModel = {
+            ...emptyModel,
+            aiContext: {
+              additionalProperties:
+                  {flag: 'yes', toggle: 'on', day: '2001-12-14'},
+            },
+            entities: [baseOrders],
+          };
+
+          const {yaml: text} = serializeModel(model, {compactFlow});
+          const parsed = yaml.parse(text, {version: '1.1'});
+          const custom = parsed.semantic_model[0].ai_context.custom;
+
+          expect(custom).toEqual(
+              {flag: 'yes', toggle: 'on', day: '2001-12-14'});
+        });
+  }
 });
