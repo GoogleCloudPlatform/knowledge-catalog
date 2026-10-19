@@ -401,12 +401,12 @@ function deploymentsFor(
     used = usedBy(DEFAULT_PROFILE);
   }
   if (!used.length) {
+    // A vanilla model lists its deployments in its GOOGLE block.
+    const listed = model.version === OSSIE_VERSION ?
+        `its GOOGLE block's 'deployments'` :
+        `'deployments'`;
     let error: string;
     if (profile === DEFAULT_PROFILE) {
-      // A vanilla model lists its deployments in its GOOGLE block.
-      const listed = model.version === OSSIE_VERSION ?
-          `its GOOGLE block's 'deployments'` :
-          `'deployments'`;
       error = `Model '${model.name}' declares no deployment without a ` +
           `'profile' in ${listed}, so there is no store to run against ` +
           `under binding profile '${DEFAULT_PROFILE}'.`;
@@ -415,7 +415,7 @@ function deploymentsFor(
           `'deployment_target', and every deployment in 'deployments' names ` +
           `another profile, ${nothingToRun}`;
     } else {
-      error = `${namedProfile}, and no deployment in 'deployments' uses it, ${
+      error = `${namedProfile}, and no deployment in ${listed} uses it, ${
           nothingToRun}`;
     }
     return {error};

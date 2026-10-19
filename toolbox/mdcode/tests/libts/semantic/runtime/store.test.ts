@@ -534,6 +534,19 @@ describe('the store a profile uses', () => {
             "against under binding profile 'default'.");
   });
 
+  test('a block profile no block deployment uses has no store, naming the block', () => {
+    const vanilla = vanillaModel({
+      profiles: [{name: 'operational'}, {name: 'staging'}],
+      deployments: [{name: 'spanner_a', target: SPANNER_GRAPH, profile: 'operational'}],
+    });
+    const store = resolveStore(vanilla, 'staging');
+    expect('error' in store && store.error)
+        .toBe(
+            "binding profile 'staging' is a named profile, which names no " +
+            "deployment target, and no deployment in its GOOGLE block's " +
+            "'deployments' uses it, so there is no database to run it against");
+  });
+
   test('a deployment that names no destination is reported beside one that does',
        () => {
          const typo =
