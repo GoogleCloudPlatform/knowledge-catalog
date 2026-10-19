@@ -487,6 +487,53 @@ describe('the store a profile uses', () => {
             'runs against is ambiguous');
   });
 
+  // A vanilla model whose GOOGLE block holds `data`.
+  function vanillaModel(data: object): SemanticModel {
+    return loadModels(
+        `version: "0.2.0.dev0"\nsemantic_model:\n  - name: m\n` +
+        `    custom_extensions:\n` +
+        `      - vendor_name: GOOGLE\n` +
+        `        data: '${JSON.stringify(data)}'\n` +
+        `    datasets:\n` +
+        `      - name: Customer\n` +
+        `        source: ${DB}/tables/Customer\n` +
+        `        primary_key: [id]\n` +
+        `        fields:\n` +
+        `          - name: id\n` +
+        `            expression: {dialects: [{dialect: SPANNER, expression: id}]}\n`)
+        .models[0];
+  }
+
+  // A vanilla model lists its deployments in its GOOGLE block, and the
+  // messages say so, as push's do.
+  test('several block deployments of a vanilla model fail, naming the block', () => {
+    const vanilla = vanillaModel({
+      deployments: [
+        {name: 'spanner_a', target: SPANNER_GRAPH},
+        {name: 'spanner_b', target: `${DB}2/propertyGraphs/g`},
+      ],
+    });
+    const store = resolveStore(vanilla, 'default');
+    expect('error' in store && store.error)
+        .toContain(
+            "declares 2 Spanner deployment targets in its GOOGLE block's " +
+            "'deployments' for profile 'default' (spanner_a, spanner_b), so " +
+            'which store it runs against is ambiguous');
+  });
+
+  test('default has no store when every block deployment names a profile, naming the block', () => {
+    const vanilla = vanillaModel({
+      profiles: [{name: 'operational'}],
+      deployments: [{name: 'spanner_a', target: SPANNER_GRAPH, profile: 'operational'}],
+    });
+    const store = resolveStore(vanilla, 'default');
+    expect('error' in store && store.error)
+        .toBe(
+            "Model 'm' declares no deployment without a 'profile' in its " +
+            "GOOGLE block's 'deployments', so there is no store to run " +
+            "against under binding profile 'default'.");
+  });
+
   test('a deployment that names no destination is reported beside one that does',
        () => {
          const typo =
