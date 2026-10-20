@@ -2508,6 +2508,153 @@ ${partner ? `  - name: partner
         });
       }
     });
+
+    // A vanilla model carries its profiles in a GOOGLE block. Push checks
+    // each one as it checks a profile file, and an error names the model
+    // document, since a block profile has no file of its own.
+    describe('in a vanilla model\'s GOOGLE block', () => {
+      // commerce() as a vanilla document named `name`, whose GOOGLE block
+      // lists `profiles`.
+      function vanilla(profiles: object[], name = 'commerce'): string {
+        const sql = (column: string) =>
+            `{dialects: [{dialect: ANSI_SQL, expression: ${column}}]}`;
+        return `version: "0.2.0.dev0"
+semantic_model:
+  - name: ${name}
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({profiles})}'
+    datasets:
+      - name: customer
+        source: ${BQ('dev', 'customer')}
+        primary_key: [c_id]
+        fields:
+          - name: c_id
+            expression: ${sql('c_id')}
+      - name: purchase
+        source: ${BQ('dev', 'purchase')}
+        primary_key: [p_id]
+        fields:
+          - name: p_id
+            expression: ${sql('p_id')}
+    relationships:
+      - name: placed_by
+        from: purchase
+        to: customer
+        from_columns: [p_customer]
+        to_columns: [c_id]
+`;
+      }
+      // A block profile that binds both entities to the prod tables and the
+      // join between them, as profileFile does.
+      const complete = (name: string) => ({
+        name,
+        entities: [
+          {name: 'customer', source: BQ('prod', 'customer')},
+          {name: 'purchase', source: BQ('prod', 'purchase')},
+        ],
+        relationships: [
+          {name: 'placed_by', from_columns: ['p_customer'], to_columns: ['c_id']},
+        ],
+      });
+      // A block profile that binds customer alone, as STAGING does.
+      const staging = {
+        name: 'staging',
+        entities: [{name: 'customer', source: BQ('staging', 'customer')}],
+      };
+
+      test('fails a push when one leaves an entity without a source', async () => {
+        writeScope({'commerce.yaml': vanilla([staging])});
+        const errors = incomplete('commerce');
+        expect(await pushResult()).toEqual({code: 1, errors});
+        expect(await profiles()).toBe(1);
+        expect(rejects(section(INLINE))).toEqual(errors);
+      });
+
+      test('still pushes when each is complete', async () => {
+        writeScope({'commerce.yaml': vanilla([complete('a'), complete('b')])});
+        for (const profile of [undefined, 'a', 'b']) {
+          expect(await pushResult(profile)).toEqual({code: 0, errors: []});
+        }
+      });
+
+      // Push's own checks cover part of the profile it applies, so the
+      // selected block profile reports each problem once.
+      test('reports each problem of the selected one once', async () => {
+        writeScope({'commerce.yaml': vanilla([staging])});
+        expect(await pushResult('staging'))
+            .toEqual({code: 1, errors: incomplete('commerce')});
+        expect(await profiles({profile: 'staging'})).toBe(1);
+        expect(rejects(profileSection('staging')))
+            .toEqual(incomplete('commerce'));
+
+        // A source the reader rejects stops a push that selects the profile
+        // before its checks run. A push of another binding gives the same
+        // error.
+        writeScope({
+          'commerce.yaml': vanilla([{
+            ...complete('prod'),
+            entities: [
+              {name: 'customer', source: 'not a source'},
+              {name: 'purchase', source: BQ('prod', 'purchase')},
+            ],
+          }]),
+        });
+        const selected = await pushResult('prod');
+        expect(selected).toEqual({
+          code: 1,
+          errors: [expect.stringContaining(
+              "[commerce] profile 'prod': entity 'customer': source " +
+              "'not a source'")],
+        });
+        expect(await pushResult()).toEqual(selected);
+      });
+
+      // Actions are out of scope for the preview, so push checks a block
+      // profile's actions against the model only when it applies the profile,
+      // as for a profile file. The load still reads their shape.
+      test('leaves the actions of one it does not apply unchecked', async () => {
+        writeScope({
+          'commerce.yaml': vanilla(
+              [{...complete('a'), actions: [{name: 'refund', executor: null}]}]),
+        });
+        expect(await pushResult()).toEqual({code: 0, errors: []});
+        expect(await pushResult('a')).toEqual({
+          code: 1,
+          errors: ["[commerce] profile 'a': action 'refund' is not in the " +
+                   'logical model'],
+        });
+      });
+
+      test('checks one the push does not select', async () => {
+        writeScope({'commerce.yaml': vanilla([complete('prod'), staging])});
+        expect(await pushResult('prod'))
+            .toEqual({code: 1, errors: incomplete('commerce')});
+      });
+
+      // Each model in a scope may declare its profiles in either form. A
+      // problem is reported once, naming the file or the model document.
+      test('checks one beside another model\'s profile file', async () => {
+        const cases: Array<[string, object, string[]]> = [
+          [profileFile('staging'), staging, incomplete('shop')],
+          [
+            STAGING, complete('staging'),
+            incomplete('commerce.profile.staging.yaml'),
+          ],
+        ];
+        for (const [file, block, expected] of cases) {
+          writeScope({
+            'commerce.yaml': commerce({targets: 1}),
+            'commerce.profile.staging.yaml': file,
+            'shop.yaml': vanilla([block], 'shop'),
+          });
+          logs.length = 0;
+          expect(await push({validateOnly: true, kc: false})).toBe(1);
+          expect(logs.filter(l => l.startsWith('Error: ')))
+              .toEqual(expected.map(e => `Error: ${e}`));
+        }
+      });
+    });
   });
 });
 

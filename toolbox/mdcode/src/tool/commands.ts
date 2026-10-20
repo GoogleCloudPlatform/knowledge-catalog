@@ -604,12 +604,13 @@ const PUSH_REPORT: PrepareReport = {
 };
 
 // The errors the named profiles of each model in `docs` give: each profile
-// file checked on its own for completeness. An error about a profile file
-// names that file.
+// file, and each profile a vanilla model carries in its GOOGLE block, checked
+// on its own for completeness. An error about a profile file names that file,
+// and one about a block profile names the model document.
 // A model's profiles are checked against its model file as loaded, whichever
 // binding `profileName` selects. `checkedByDoc`
 // holds each document as push checks it: with the profile applied, or loaded
-// with no profile file applied. Push's own checks cover part of this for the
+// with no profile applied. Push's own checks cover part of this for the
 // binding it selects, so those rules leave that binding out. A
 // legacy `semantic_model:` wrapper, and a file under the reserved name
 // 'default', which no push deploys, are not read here. With `transpile`, push
@@ -617,17 +618,34 @@ const PUSH_REPORT: PrepareReport = {
 // translator reads. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
-    profileName: string, profileDocs: ProfileDocs, warnings: string[],
-    transpile: boolean): string[] {
+    profileName: string, profileDocs: ProfileDocs, declared: DeclaredProfiles,
+    warnings: string[], transpile: boolean): string[] {
   const errors: string[] = [];
   for (const d of docs) {
-    let files: ReturnType<ProfileDocs>;
+    // Each named profile, with the label its errors carry and a function that
+    // reads it. declared() lists the profile files too, so only its block
+    // profiles are taken from it. A block profile is already read. Its actions
+    // are dropped, as loadProfileFile skips a profile file's.
+    let named: Array<{name: string; label: string; read: () => ProfileSpec}>;
     try {
-      files = profileDocs(d.name).filter(
-          p => !isLegacyWrapper(p.text) &&
-              p.name.toLowerCase() !== DEFAULT_PROFILE);
+      named = [
+        ...profileDocs(d.name).filter(p => !isLegacyWrapper(p.text)).map(p => ({
+          name: p.name,
+          label: p.fileName,
+          read: () => loadProfileFile(p.text, p.name, {skipActions: true}),
+        })),
+        ...declared(d).flatMap(p => 'spec' in p ? [{
+          name: p.name,
+          label: d.name,
+          read: () => {
+            const {actions: _, ...spec} = p.spec;
+            return spec;
+          },
+        }] : []),
+      ].filter(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
     } catch (err: any) {
-      // A profile file that breaks one of the layout's file rules.
+      // A profile file that breaks one of the layout's file rules, or block
+      // profiles a load rejects.
       errors.push(`${err.message || err}`);
       continue;
     }
@@ -640,13 +658,13 @@ function namedProfileErrors(
     const base = d.base ?? (d.excluded ? undefined : checkedByDoc.get(d.name));
     if (!base) {
       if (d.baseError) {
-        for (const p of files) {
+        for (const p of named) {
           let error = modelFileAloneMessage(d.baseError, p.name);
           try {
-            loadProfileFile(p.text, p.name, {skipActions: true});
+            p.read();
           } catch (err) {
             if (!(err instanceof SemanticModelError)) throw err;
-            error = `[${p.fileName}] ${err.message}`;
+            error = `[${p.label}] ${err.message}`;
           }
           errors.push(error);
         }
@@ -667,11 +685,11 @@ function namedProfileErrors(
       dialect: sourcesDialect(pushed),
       rebound: reboundFields(base, pushed),
     } : undefined;
-    for (const p of files) {
-      const at = (m: string) => `[${p.fileName}] ${m}`;
+    for (const p of named) {
+      const at = (m: string) => `[${p.label}] ${m}`;
       let spec: ProfileSpec;
       try {
-        spec = loadProfileFile(p.text, p.name, {skipActions: true});
+        spec = p.read();
       } catch (err) {
         if (!(err instanceof SemanticModelError)) throw err;
         errors.push(at(err.message));
@@ -709,12 +727,14 @@ function reboundFields(base: SemanticModel, pushed: SemanticModel): string[] {
 // depends on it, so a deployed graph presents only what its binding answers; a
 // catalog-only push leaves it off to publish the whole logical model. Once
 // the documents load and no deployment names a profile, every named profile
-// the models declare is checked too, read through `profileDocs`. Runs local
-// checks only. Returns the models and the target partition the graph legs
-// need, or null after reporting an error.
+// the models declare is checked too: the profile files `profileDocs` reads,
+// and the GOOGLE block profiles `declared` adds. Runs local checks only.
+// Returns the models and the target partition the graph legs need, or null
+// after reporting an error.
 async function prepareModels(
     docs: ProfiledDoc[], profileName: string, opts: {
       prune: boolean; defaultProject: string; profileDocs: ProfileDocs;
+      declared: DeclaredProfiles;
       transpile?: boolean;
     },
     report: PrepareReport): Promise<PreparedModels|null> {
@@ -781,8 +801,8 @@ async function prepareModels(
   }));
   const unprunedWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
-      docs, checkedByDoc, profileName, opts.profileDocs, unprunedWarnings,
-      !!opts.transpile);
+      docs, checkedByDoc, profileName, opts.profileDocs, opts.declared,
+      unprunedWarnings, !!opts.transpile);
   let unprunedErrors: string[] = [];
   if (opts.transpile) {
     const transpiled = await transpileModels(models);
@@ -872,17 +892,19 @@ async function prepareModels(
 // and checks the whole model. A graph push of a profile file is refused before
 // any check runs. Push's checks on the copies it stores of the model and
 // profile files run once for the scope, in profiles(). Its lookup of their type
-// is left out. `profileDocs` reads the model's profile files, like the reader
-// push builds.
+// is left out. `profileDocs` reads the model's profile files, and `declared`
+// its declared profiles, like the readers push builds.
 async function pushErrors(
     doc: ProfiledDoc, profileName: string, defaultProject: string,
-    ctx: context.ApiContext, profileDocs: ProfileDocs): Promise<string[]> {
+    ctx: context.ApiContext, profileDocs: ProfileDocs,
+    declared: DeclaredProfiles): Promise<string[]> {
   const graph = declaresGraphTarget(doc.text);
   const refused = graph ? profileFileGraphError([doc], profileName) : undefined;
   if (refused) return [refused];
   const errors: string[] = [];
   const prepared = await prepareModels(
-      [doc], profileName, {prune: graph, defaultProject, profileDocs}, {
+      [doc], profileName, {prune: graph, defaultProject, profileDocs, declared},
+      {
         warning: () => {},
         note: () => {},
         error: e => errors.push(e),
@@ -1056,7 +1078,13 @@ export async function push(options: PushOptions): Promise<number> {
       if (prepareCache.has(key)) return prepareCache.get(key)!;
       const prepared = await prepareModels(
           docs, profileName,
-          {prune, defaultProject, profileDocs, transpile: options.transpile},
+          {
+            prune,
+            defaultProject,
+            profileDocs,
+            declared,
+            transpile: options.transpile,
+          },
           report);
       prepareCache.set(key, prepared);
       return prepared;
@@ -1523,7 +1551,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
   const errorsFor = (doc: ProfiledDoc, name: string) =>
-      pushErrors(doc, name, defaultProject, ctx, profileDocs);
+      pushErrors(doc, name, defaultProject, ctx, profileDocs, declaredBy);
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
   // bindings, which every model has.

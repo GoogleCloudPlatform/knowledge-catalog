@@ -480,10 +480,11 @@ writes nothing.
   the offending path.
 - **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them.
-- **Incomplete profile** — a push checks every profile file of each model it
-  deploys or publishes, whichever binding it deploys. A profile that leaves an
-  entity without a source or a relationship without join columns fails the
-  push.
+- **Incomplete profile** — a push checks every named profile of each model it
+  deploys or publishes, whichever binding it deploys: each profile file, and
+  each profile a vanilla model carries in its `GOOGLE` block. A profile that
+  leaves an entity without a source or a relationship without join columns
+  fails the push.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is
