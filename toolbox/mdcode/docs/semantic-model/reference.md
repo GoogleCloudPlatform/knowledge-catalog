@@ -80,16 +80,18 @@ binding is checked too. Beside declared profiles it is listed only when push
 would reject it. Some errors fail every push of the scope, such as a second
 model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles and still checks each
-profile. When `default_profile` names a profile that a model does not declare,
+profile. A Cloud SQL table whose entry cannot be read stops the command before
+the report. When `default_profile` names a profile that a model does not declare,
 a push that names no profile fails. That error prints above the model's
 profiles. When push warns that the model file's own bindings are incomplete,
 the report prints that warning under `profile 'default'`, unless `--profile`
 names another profile.
 
 The command is read-only. It applies and prunes each profile and generates each
-graph as `push --validate-only` does, but deploys nothing and calls no service,
-so you can compare coverage before choosing one. The checks that need a service
-run only at push time: the BigQuery source table probe, the dry runs of action
+graph as `push --validate-only` does, but deploys nothing, so you can compare
+coverage before choosing one. Like push, it reads the Knowledge Catalog entry
+of each Cloud SQL table written as its resource name, for the table's dialect.
+The other checks that need a service run only at push time: the BigQuery source table probe, the dry runs of action
 statements and, on a push without `--validate-only`, the Knowledge Catalog
 checks on the entry group. Push's lookup of the file-copy type also runs only
 at push time, because it calls a service. It exits non-zero when push would

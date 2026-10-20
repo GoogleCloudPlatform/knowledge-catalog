@@ -16,13 +16,14 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
+import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -398,7 +399,8 @@ export {isProfileFileForm};
 // The warnings merging a legacy wrapper gives are the caller's to print.
 function profiledDoc(
     doc: {name: string; text: string},
-    res: Extract<DocumentProfile, {kind: 'file'|'wrapper'}>): ProfiledDoc {
+    res: Extract<DocumentProfile, {kind: 'file'|'wrapper'}>,
+    load: CloudSqlLoad): ProfiledDoc {
   if (res.kind === 'file') {
     return {
       name: doc.name,
@@ -410,7 +412,7 @@ function profiledDoc(
     };
   }
   // The model file as it loads on its own, which the profile checks read.
-  const alone = loadSemanticModels([doc], {bindingOptional: true});
+  const alone = loadSemanticModels([doc], {bindingOptional: true, ...load});
   return {
     name: doc.name,
     text: res.text,
@@ -487,6 +489,30 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
     }
     return read.get(model)!;
   };
+}
+
+// The dialect of each Cloud SQL table the model documents `docs` and their
+// profile files write as a resource name, read from the tables' Knowledge
+// Catalog entries, for every load the command makes. Makes no call when no file
+// writes one. Prints each table whose entry cannot be read and returns null.
+async function cloudSqlLoad(
+    ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
+    profileDocs: ProfileDocs): Promise<CloudSqlLoad|null> {
+  const texts = docs.map(d => d.text);
+  for (const doc of docs) {
+    try {
+      texts.push(...profileDocs(doc.name).map(p => p.text));
+    } catch {
+      // A profile file the layout rejects is reported where it is read.
+    }
+  }
+  const {dialects, errors} =
+      await cloudSqlDialects(texts, new dataplex.CatalogClient(ctx));
+  if (errors.length) {
+    for (const e of errors) console.error(`Error: ${e}`);
+    return null;
+  }
+  return {cloudSqlDialects: dialects};
 }
 
 // Gives the profiles a model document declares: its profile files, then the
@@ -625,7 +651,7 @@ const PUSH_REPORT: PrepareReport = {
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     profileName: string, profileDocs: ProfileDocs, declared: DeclaredProfiles,
-    warnings: string[], transpile: boolean): string[] {
+    warnings: string[], transpile: boolean, load: CloudSqlLoad): string[] {
   const errors: string[] = [];
   for (const d of docs) {
     // Each named profile, with the label its errors carry and a function that
@@ -709,6 +735,7 @@ function namedProfileErrors(
             applied: !!d.applied && p.name === profileName,
             ownSqlOnly,
             transpiled: transpile,
+            ...load,
           }).map(at));
       warnings.push(...profileWarnings.map(at));
     }
@@ -779,6 +806,7 @@ async function prepareModels(
       prune: boolean; defaultProject: string; profileDocs: ProfileDocs;
       declared: DeclaredProfiles;
       transpile?: boolean;
+      load: CloudSqlLoad;
     },
     report: PrepareReport): Promise<PreparedModels|null> {
   const {prune, defaultProject} = opts;
@@ -786,7 +814,8 @@ async function prepareModels(
   // exclusions are marked; a catalog-only push publishes the whole logical
   // model, so they come off again there.
   const loaded = loadSemanticModels(
-      docs.filter(d => !d.applied), {defaultProject, bindingOptional: !prune});
+      docs.filter(d => !d.applied),
+      {defaultProject, bindingOptional: !prune, ...opts.load});
   if (loaded.error) {
     // A legacy wrapper's merged text may be what fails to load.
     report.error(
@@ -846,7 +875,7 @@ async function prepareModels(
   const profileErrors = [
     ...namedProfileErrors(
         docs, checkedByDoc, profileName, opts.profileDocs, opts.declared,
-        unprunedWarnings, !!opts.transpile),
+        unprunedWarnings, !!opts.transpile, opts.load),
     ...modelFileBindingErrors(
         docs, checkedByDoc, opts.declared, unprunedWarnings, !!opts.transpile),
   ];
@@ -945,13 +974,14 @@ async function prepareModels(
 async function pushErrors(
     doc: ProfiledDoc, profileName: string, defaultProject: string,
     ctx: context.ApiContext, profileDocs: ProfileDocs,
-    declared: DeclaredProfiles): Promise<string[]> {
+    declared: DeclaredProfiles, load: CloudSqlLoad): Promise<string[]> {
   const graph = declaresGraphTarget(doc.text);
   const refused = graph ? profileFileGraphError([doc], profileName) : undefined;
   if (refused) return [refused];
   const errors: string[] = [];
   const prepared = await prepareModels(
-      [doc], profileName, {prune: graph, defaultProject, profileDocs, declared},
+      [doc], profileName,
+      {prune: graph, defaultProject, profileDocs, declared, load},
       {
         warning: () => {},
         note: () => {},
@@ -1026,6 +1056,11 @@ export async function push(options: PushOptions): Promise<number> {
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
 
+    // A Cloud SQL table written as its resource name takes its dialect from its
+    // Knowledge Catalog entry, looked up once before anything loads.
+    const load = await cloudSqlLoad(ctx, layoutDocs, profileDocs);
+    if (!load) return 1;
+
     // Reserve the profile name 'default': it is the sentinel for the inline
     // bindings (never merged onto the document), so a
     // `<model>.profiles/default.yaml` would be silently unreachable. Reject it
@@ -1069,7 +1104,8 @@ export async function push(options: PushOptions): Promise<number> {
             // since its sources may all be in profile files.
             const docProfiles = readDeclaredProfiles(declared, doc);
             if (!docProfiles) return null;
-            const res = profileForDocument(doc, docProfiles, profileName);
+            const res =
+                profileForDocument(doc, docProfiles, profileName, load);
             if (res.kind === 'missing') {
               if (skipMissing) continue;
               console.error(`Error: ${
@@ -1087,7 +1123,7 @@ export async function push(options: PushOptions): Promise<number> {
                 console.warn(`Warning: [${doc.name}] ${w}`);
               }
             }
-            out.push(profiledDoc(doc, res));
+            out.push(profiledDoc(doc, res, load));
           }
           return out;
         };
@@ -1135,6 +1171,7 @@ export async function push(options: PushOptions): Promise<number> {
             profileDocs,
             declared,
             transpile: options.transpile,
+            load,
           },
           report);
       prepareCache.set(key, prepared);
@@ -1554,9 +1591,9 @@ function printProfileReport(
 // deployment target and sources plus what it cannot answer (the availability
 // report), then each error `kcmd push --profile <name>` would give. Read-only:
 // it applies and prunes each profile and runs push's local checks the way push
-// does, but deploys nothing and calls no service, so a user can see coverage
-// and whether push accepts a profile before choosing one. Returns a process
-// exit code (0 on success).
+// does, but deploys nothing, so a user can see coverage and whether push
+// accepts a profile before choosing one. Its one service call is push's Cloud
+// SQL dialect lookup. Returns a process exit code (0 on success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   if (options.printStore) return await printStore(options);
 
@@ -1605,8 +1642,12 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const defaultProject = source.project ?? ctx.project;
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
+  // A Cloud SQL table written as its resource name takes its dialect from its
+  // Knowledge Catalog entry, looked up once, as push does.
+  const load = await cloudSqlLoad(ctx, docs, profileDocs);
+  if (!load) return 1;
   const errorsFor = (doc: ProfiledDoc, name: string) =>
-      pushErrors(doc, name, defaultProject, ctx, profileDocs, declaredBy);
+      pushErrors(doc, name, defaultProject, ctx, profileDocs, declaredBy, load);
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
   // bindings, which every model has.
@@ -1702,7 +1743,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       continue;
     }
     for (const {name} of available) {
-      const res = profileForDocument(doc, available, name);
+      const res = profileForDocument(doc, available, name, load);
       // Narrows the type; `name` comes from `available`, so it is found.
       if (res.kind === 'missing') continue;
       // Push applies the profile to every model in the scope, so a model that
@@ -1737,6 +1778,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
               {
                 defaultProject,
                 bindingOptional: !declaresGraphTarget(res.text),
+                ...load,
               });
           for (const w of loaded.warnings) {
             console.warn(`  profile '${name}': warning: ${w}`);
@@ -1746,7 +1788,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
                 applyProfileExclusions(loaded.models[0].model, res.excluded);
           }
         }
-        errors.push(...await errorsFor(profiledDoc(doc, res), name));
+        errors.push(...await errorsFor(profiledDoc(doc, res, load), name));
       }
       const marker = name === defaultProfile ? ' (default)' : '';
       console.log(`  profile '${name}'${marker}`);

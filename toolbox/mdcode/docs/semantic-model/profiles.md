@@ -73,11 +73,12 @@ and physical is visible on disk.
 Each entity names where its data lives with `source`. A Google Cloud table is
 written as its [AIP-122](https://google.aip.dev/122) full resource name, such as
 `//bigquery.googleapis.com/…`, `//biglake.googleapis.com/…`,
-`//spanner.googleapis.com/…` or `//alloydb.googleapis.com/…`, with or without
-the leading `//`, and is read with ambient IAM. A BigQuery, Spanner or AlloyDB
-table may also be written as its Knowledge Catalog name, under `bigquery:`,
-`spanner:` or `alloydb:`. A Cloud SQL table is written as its Knowledge Catalog
-name only, under `cloudsql_mysql:` or `cloudsql_postgresql:`. The preview
+`//spanner.googleapis.com/…`, `//alloydb.googleapis.com/…` or
+`//cloudsql.googleapis.com/…`, with or without the leading `//`, and is read
+with ambient IAM. A BigQuery, Spanner or AlloyDB table may also be written as
+its Knowledge Catalog name, under `bigquery:`, `spanner:` or `alloydb:`, and a
+Cloud SQL for MySQL or PostgreSQL table under `cloudsql_mysql:` or
+`cloudsql_postgresql:`. The preview
 supports Google Cloud tables only, so a third-party table is rejected in every
 form: a Knowledge Catalog entry name, or a name under a prefix such as
 `snowflake:`, `databricks:table:`, `mysql:` or `postgresql:`. A Bigtable or
@@ -88,9 +89,23 @@ query, and any other prefix are rejected. The source also fixes the profile's
 SQL dialect, so every field the profile binds needs an expression in that
 dialect or in `ANSI_SQL`.
 
+A Cloud SQL table's resource name is
+`cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>`
+for MySQL, or `…/databases/<db>/schemas/<s>/tables/<t>` for PostgreSQL and SQL
+Server. The name cannot tell PostgreSQL from SQL Server, so `kcmd` reads
+the dialect from the table's Knowledge Catalog entry in the `@cloudsql` entry
+group: a `cloudsql-mysql-table` entry gives `MYSQL`, `cloudsql-postgresql-table`
+gives `POSTGRES` and `cloudsql-sqlserver-table` gives `SQLSERVER`, and the
+matching `-view` entry types give the same dialects. `kcmd push`,
+`kcmd profiles` and `kcmd skills-generate` look each table up once before they
+load the model. The entry exists only when the instance has Dataplex
+integration turned on (`gcloud sql instances patch <i>
+--enable-dataplex-integration`), and the catalog can take a while to list a new
+table. When the entry cannot be read, the command stops and says so.
+
 A profile's sources all sit in one database, meaning the system one query can
 reach: all of BigQuery, or one Spanner, AlloyDB or Cloud SQL for PostgreSQL
-database, or one Cloud SQL for MySQL instance. A profile moves an entity
+database, or one Cloud SQL for MySQL or SQL Server instance. A profile moves an entity
 between stores by swapping its source and, when the two stores shape the data
 differently, the column each field reads.
 

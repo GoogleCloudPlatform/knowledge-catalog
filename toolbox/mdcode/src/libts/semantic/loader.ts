@@ -44,6 +44,13 @@ export interface LoadOptions {
   // excludes it, as applying a profile file does. The loaded model does not
   // mark them.
   excluded?: ReadonlyArray<ProfileExclusion>;
+  // The dialect of each Cloud SQL table written as its resource name, keyed by
+  // the resource name with no leading `//`, as cloudSqlDialects read them from
+  // the tables' Knowledge Catalog entries. A command looks them up before it
+  // loads. Without this map a Cloud SQL resource name implies no dialect: the
+  // source names a table, not its engine, so the model implies none and every
+  // expression text counts.
+  cloudSqlDialects?: ReadonlyMap<string, string>;
 }
 
 export interface LoadResult {
@@ -2287,6 +2294,9 @@ function convertDataset(
 
   const entity: Entity = {name: ds.name, dataSource, keys, fields};
   if (parsedSource) entity.authoredSource = parsedSource.authoredSource;
+  if (parsedSource?.sourceDialect) {
+    entity.sourceDialect = parsedSource.sourceDialect;
+  }
   if (ds.unique_keys && ds.unique_keys.length)
     entity.uniqueKeys = ds.unique_keys;
   const parents = ds.extends ?? block.values.extends;
@@ -2971,6 +2981,8 @@ function pickDialect(
 interface ParsedSource {
   dataSource: string;
   authoredSource: string;
+  // The looked-up dialect of a Cloud SQL resource name, when the load has it.
+  sourceDialect?: string;
 }
 
 const MAX_CATALOG_NAME_LENGTH = 4000;
@@ -2985,6 +2997,33 @@ const ALLOYDB_TABLE_URI =
     /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/;
 const LEGACY_ALLOYDB_INSTANCE_URI =
     /^\/\/alloydb\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/clusters\/([^/]+)\/instances\/[^/]+\/databases\/([^/]+)\/tables\/([^/]+)$/;
+// A Cloud SQL table. A MySQL table sits in a database; a PostgreSQL or SQL
+// Server table sits in a schema in a database. The shape tells MySQL from the
+// other two but not PostgreSQL from SQL Server, so the dialect comes from the
+// table's catalog entry, not from the source (see sourcesDialect).
+const CLOUDSQL_TABLE_URI =
+    /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/[^/]+\/tables\/[^/]+$/;
+const CLOUDSQL_SCHEMA_TABLE_URI =
+    /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/;
+
+// A Cloud SQL table written as its resource name or resource URI: its
+// project, location and instance, and its resource name with no leading `//`,
+// which is also the id of its catalog entry in the `@cloudsql` entry group.
+export interface CloudSqlTable {
+  project: string;
+  location: string;
+  instance: string;
+  resourceName: string;
+}
+
+// The Cloud SQL table `source` names, or undefined when it names none.
+export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
+  const uri = asResourceUri(source.trim());
+  const m = uri.match(CLOUDSQL_TABLE_URI) ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
+  return m ?
+      {project: m[1], location: m[2], instance: m[3], resourceName: uri.slice(2)} :
+      undefined;
+}
 
 // A GCP resource name: a Google Cloud service host and a path, with no leading
 // `//`, such as `bigquery.googleapis.com/projects/p/datasets/d/tables/t`.
@@ -3079,14 +3118,18 @@ function hasUnquotedWhitespace(source: string): boolean {
 // validation, or undefined when the source is in no accepted form: a bare name,
 // a query, a graph rather than a table, a catalog name under a prefix kcmd does
 // not accept, or one with the wrong number of segments. The result starts with
-// its system, which DIALECT_OF_SYSTEM maps to the dialect the source infers.
+// its system, which DIALECT_OF_SYSTEM maps to the dialect the source infers,
+// except for a Cloud SQL resource name (see dialectOfSources).
 //
 // A database is what a single query can reach: all of BigQuery, BigLake
 // included because BigQuery reads it; one Spanner, AlloyDB or Cloud SQL for
-// PostgreSQL database; one Cloud SQL for MySQL instance. The segment counts
-// are those of the Knowledge Catalog FQN reference. A third-party table is in
-// no accepted form: the preview supports Google Cloud tables only (see
-// thirdPartySourceError).
+// PostgreSQL database, or one Cloud SQL for MySQL or SQL Server instance. The
+// segment counts are those of the Knowledge Catalog FQN reference. A
+// third-party table is in no accepted form: the preview supports Google Cloud
+// tables only (see thirdPartySourceError). The shape of a Cloud SQL resource
+// name cannot tell a SQL Server table from a PostgreSQL one, so this keys it
+// on its database, and the one-database rule widens it to its instance once
+// the lookup names SQL Server.
 export function databaseOf(written: string): string|undefined {
   if (hasUnquotedWhitespace(written)) return undefined;
   const source = asResourceUri(written);
@@ -3098,6 +3141,14 @@ export function databaseOf(written: string): string|undefined {
   // An AlloyDB database belongs to its cluster, and a table to a schema in it.
   m = source.match(ALLOYDB_TABLE_URI);
   if (m) return `alloydb/${m[1]}/${m[2]}/${m[3]}/${m[4]}`;
+  // A Cloud SQL for MySQL table's database is its instance, as for the
+  // `cloudsql_mysql:` form, so both spellings of one instance agree. A table
+  // in a schema is in Cloud SQL for PostgreSQL or SQL Server, which the shape
+  // cannot tell apart, so its key names neither engine.
+  m = source.match(CLOUDSQL_TABLE_URI);
+  if (m) return `cloudsql_mysql/${m[1]}.${m[2]}.${m[3]}`;
+  m = source.match(CLOUDSQL_SCHEMA_TABLE_URI);
+  if (m) return `cloudsql/${m[1]}.${m[2]}.${m[3]}.${m[4]}`;
   if (source.length > MAX_CATALOG_NAME_LENGTH) return undefined;
   m = source.match(/^([a-z_]+):(.+)$/);
   if (!m) return undefined;
@@ -3136,8 +3187,8 @@ export function isAcceptedSource(source: string|undefined): boolean {
 // Maps an accepted source string (or catalog resource path) to the IR's
 // canonical `dataSource`. A GCP resource name is read as its resource URI
 // first. A BigQuery or BigLake resource URI or a 3-segment `bigquery:` catalog
-// name becomes the dot-separated table string. A Spanner or AlloyDB resource
-// URI is returned as the URI, with the leading `//`. Anything else (other
+// name becomes the dot-separated table string. A Spanner, AlloyDB or Cloud SQL
+// resource URI is returned as the URI, with the leading `//`. Anything else (other
 // catalog names, or an unrecognized string) is returned trimmed. Shared by the
 // loader (`parseSource`) and the Knowledge Catalog reader
 // (`dataSourceFromResource`) so `readRelationships` matches `Entity.dataSource`
@@ -3246,9 +3297,13 @@ export function parseSource(
 
   // Accepted forms: GCP resource URI or name, or Knowledge Catalog name.
   if (isAcceptedSource(trimmed)) {
+    const cloudSql = cloudSqlTableOf(trimmed);
+    const sourceDialect = cloudSql &&
+        opts.cloudSqlDialects?.get(cloudSql.resourceName);
     return {
       authoredSource: trimmed,
       dataSource: sourceToDataSource(trimmed),
+      ...(sourceDialect ? {sourceDialect} : {}),
     };
   }
 
@@ -3335,7 +3390,9 @@ export function parseSource(
       `table reference. Expected a GCP resource URI ` +
       `('//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
       `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
-      `'//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', or ` +
+      `'//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
+      `'//cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
+      `'//cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
       `'//biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>') ` +
       `or a Knowledge Catalog name ('bigquery:<p>.<d>.<t>', ` +
       `'spanner:<p>.<config>.<i>.<db>.<t>', ` +

@@ -11,6 +11,7 @@ import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {profiles, skillsGenerate} from '../../src/tool/commands';
+import {stubCloudSqlEntry} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SPANNER_DB =
@@ -280,4 +281,69 @@ semantic_model:
          expect(rt.error).toStartWith("[commerce] model 'commerce': ");
          expect(rt.error).toContain('cycle');
        });
+});
+
+
+// A Cloud SQL table written as its resource name takes its dialect from its
+// Knowledge Catalog entry, which the runtime looks up before it loads.
+describe('a Cloud SQL source written as a resource name', () => {
+  const TABLE = 'cloudsql.googleapis.com/projects/acme-ops/locations/us-central1/' +
+      'instances/ms/databases/shop/schemas/sales/tables/Orders';
+  const DEPLOY = '      - {name: default, target: ' +
+      'bigquery.googleapis.com/projects/acme/datasets/d/propertyGraphs/g}\n';
+
+  test('takes the dialect its catalog entry gives', async () => {
+    writeModel('commerce.yaml', model(DEPLOY, TABLE, false));
+    const lookup = stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    const rt = await createSemanticRuntimes({ctx: CTX});
+    if ('error' in rt) throw new Error(rt.error);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(rt[0].model.entities[0].sourceDialect).toBe('SQLSERVER');
+  });
+
+  test('a profile file that binds one takes the dialect its catalog entry gives', async () => {
+    writeModel('commerce.yaml', model(DEPLOY, `${SPANNER_DB}/tables/Orders`, false));
+    writeModel('commerce.profile.prod.yaml',
+               `name: prod\nentities:\n  - name: Order\n    source: ${TABLE}\n`);
+    stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    const rt = await createSemanticRuntimes({ctx: CTX, profile: 'prod'});
+    if ('error' in rt) throw new Error(rt.error);
+    expect(rt[0].model.entities[0].sourceDialect).toBe('SQLSERVER');
+
+    // So does a profile in a vanilla model's GOOGLE block, and one that binds
+    // nothing keeps the model file's Spanner source, which needs no lookup.
+    fs.rmSync(path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.profile.prod.yaml'));
+    const profiles = [
+      {name: 'prod', entities: [{name: 'Order', source: TABLE}]},
+      {name: 'logical', entities: []},
+    ];
+    writeModel('commerce.yaml', `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({profiles})}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`);
+    for (const [profile, dialect] of [['prod', 'SQLSERVER'], ['logical', undefined]]) {
+      const block = await createSemanticRuntimes({ctx: CTX, profile});
+      if ('error' in block) throw new Error(block.error);
+      expect(block[0].model.entities[0].sourceDialect).toBe(dialect);
+    }
+  });
+
+  test('stops with the Dataplex message when its entry cannot be read', async () => {
+    writeModel('commerce.yaml', model(DEPLOY, TABLE, false));
+    stubCloudSqlEntry(403);
+    const rt = await createSemanticRuntimes({ctx: CTX});
+    expect('error' in rt && rt.error).toContain(
+        "Turn on Dataplex integration for instance 'ms' (gcloud sql instances " +
+        'patch ms --enable-dataplex-integration --project acme-ops)');
+  });
 });

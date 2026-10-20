@@ -18,6 +18,7 @@ import {applyProfile, applyProfileExclusions, applyProfileFile, CompletenessOpti
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
+import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 
 beforeAll(async () => {
   await loadSqlEngine();
@@ -2070,6 +2071,68 @@ describe('completeness sees the model as the profile does', () => {
         .toContain("source 'cloudsql_mysql:acme.us.sales.c' is not a valid table reference");
   });
 
+  // A Cloud SQL table written as its resource name. A MySQL table has no
+  // schema, and its database is its instance; a PostgreSQL or SQL Server table
+  // has a schema, and its database is the one it names.
+  test('Cloud SQL resource names classify by instance and database', () => {
+    const errorsFor = (a: string, b: string,
+                       cloudSqlDialects?: ReadonlyMap<string, string>) =>
+        validateProfileCompleteness(model(true), spec([
+          {name: 'customer', source: a}, {name: 'vip', source: b},
+        ]), [], {cloudSqlDialects}).join('\n');
+    const inst = 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst';
+    // MySQL: one instance is one database, whatever its databases, in either
+    // spelling.
+    expect(errorsFor(`${inst}/databases/sales/tables/c`, `${inst}/databases/crm/tables/v`))
+        .toEqual('');
+    expect(errorsFor(`${inst}/databases/sales/tables/c`, 'cloudsql_mysql:acme.us.inst.crm.v'))
+        .toEqual('');
+    expect(errorsFor(`${inst}/databases/sales/tables/c`,
+                     'cloudsql.googleapis.com/projects/acme/locations/us/instances/other/databases/sales/tables/v'))
+        .toContain('more than one database');
+    // With a schema: one database is one; two on one instance are two, unless
+    // the lookup names SQL Server, whose instance one query reaches whole.
+    expect(errorsFor(`${inst}/databases/db1/schemas/public/tables/c`,
+                     `//${inst}/databases/db1/schemas/sales/tables/v`))
+        .toEqual('');
+    const twoDatabases = [
+      `${inst}/databases/db1/schemas/public/tables/c`,
+      `${inst}/databases/db2/schemas/public/tables/v`,
+    ] as const;
+    const lookedUp = (dialect: string) =>
+        new Map(twoDatabases.map(s => [s, dialect]));
+    expect(errorsFor(...twoDatabases)).toContain('more than one database');
+    expect(errorsFor(...twoDatabases, lookedUp('POSTGRES')))
+        .toContain('more than one database');
+    expect(errorsFor(...twoDatabases, lookedUp('SQLSERVER'))).toEqual('');
+    // Malformed: no location, no table, or a table under the instance.
+    for (const bad of [
+           'cloudsql.googleapis.com/projects/acme/instances/inst/databases/db/tables/c',
+           `${inst}/databases/db/schemas/public`,
+           `${inst}/tables/c`,
+         ]) {
+      expect(errorsFor(bad, `${inst}/databases/db/tables/v`))
+          .toContain(`source '${bad}' is not a valid table reference`);
+    }
+  });
+
+  // The dialect of a Cloud SQL table written as its resource name is the one
+  // its catalog entry's type names, not one the source text implies. With no
+  // entry read, it is unknown, even for a MySQL-shaped name; the catalog name
+  // still implies its dialect from its prefix.
+  test('a Cloud SQL resource name implies no dialect', () => {
+    const dialectOf = (source: string) => sourcesDialect({entities: [
+      {name: 'orders', dataSource: source, authoredSource: source, keys: [], fields: []},
+    ]} as any);
+    expect(dialectOf(
+        'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/tables/orders'))
+        .toBeUndefined();
+    expect(dialectOf(
+        'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/schemas/s/tables/orders'))
+        .toBeUndefined();
+    expect(dialectOf('cloudsql_mysql:acme.us.inst.db.orders')).toBe('MYSQL');
+  });
+
   // A profile's rebinding is read as the model file's source is, so a
   // third-party table is rejected there too, and counts as no database.
   test('a profile that binds a third-party source is rejected', () => {
@@ -3003,6 +3066,59 @@ describe('profile completeness: dialects and struct paths', () => {
   const atSource = (source: string): ProfileSpec =>
       ({name: 'p', entities: [{name: 'orders', source}], relationships: []});
 
+  // A Cloud SQL table written as its resource name takes the dialect its
+  // catalog entry's type names, which a command looks up before it loads.
+  // Without a lookup the source implies no dialect, so every text counts.
+  test('a Cloud SQL resource name takes the dialect its catalog entry gave, and none without one', () => {
+    const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/ms/' +
+        'databases/shop/schemas/sales/tables/orders';
+    const sqlServer = {cloudSqlDialects: new Map([[CS, 'SQLSERVER']])};
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual([]);
+    for (const written of [CS, `//${CS}`]) {
+      expect(validateProfileCompleteness(bqOnly(), atSource(written), [], {cloudSqlDialects: sqlServer.cloudSqlDialects})
+                 .join('\n'))
+          .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
+    }
+    // The dialects are per table: another table's does not count.
+    const other = {cloudSqlDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: other.cloudSqlDialects})).toEqual([]);
+  });
+
+  test('the loader and a profile record the looked-up dialect on the entity', () => {
+    const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/my/' +
+        'databases/shop/tables/orders';
+    const doc = (source: string) => ({
+      version: '0.2.0.dev0/google',
+      semantic_model: [{
+        name: 'shop',
+        entities: [{name: 'orders', source, primary_key: ['id'], fields: [{name: 'id', expression: 'id'}]}],
+      }],
+    });
+    const opts = {cloudSqlDialects: new Map([[CS, 'MYSQL']])};
+    const [model] = fromDocument(doc(CS), opts).models;
+    expect(model.entities[0].sourceDialect).toBe('MYSQL');
+    expect(sourcesDialect(model)).toBe('MYSQL');
+    // The same table in its catalog-name spelling implies the same dialect.
+    expect(sourcesDialect({entities: [
+      model.entities[0],
+      {...model.entities[0], name: 'items', authoredSource: 'cloudsql_mysql:p.l.my.shop.items',
+       dataSource: 'cloudsql_mysql:p.l.my.shop.items', sourceDialect: undefined},
+    ]})).toBe('MYSQL');
+    // Without the lookup, nothing is recorded and no dialect is implied.
+    const [unread] = fromDocument(doc(CS)).models;
+    expect(unread.entities[0].sourceDialect).toBeUndefined();
+    expect(sourcesDialect(unread)).toBeUndefined();
+    // A profile that rebinds the entity elsewhere drops the recorded dialect.
+    const rebound = applyProfile(model, {
+      name: 'bq', entities: [{name: 'orders', source: BQ('orders')}], relationships: [],
+    }, {load: opts});
+    expect(rebound.entities[0].sourceDialect).toBeUndefined();
+    expect(sourcesDialect(rebound)).toBe('BIGQUERY');
+    // The recorded dialect is never written back into a model file.
+    expect(serializeModel(model).yaml).not.toContain('MYSQL');
+    expect(serializeModel(model).yaml).not.toContain('sourceDialect');
+  });
+
   // Every bound field has a text its profile's database can run.
   test('a bound field needs an expression for the profile\'s dialect or ANSI_SQL', () => {
     expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders'))).join('\n'))
@@ -3650,6 +3766,34 @@ entities:
     // A profile's empty primary key warns, as the model file's would.
     expect(fromFile.warnings)
         .toContain("[sales] dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)");
+  });
+
+  // A profile file that binds a Cloud SQL table written as its resource name
+  // records the dialect the command looked up, on the model it gives.
+  test('a profile file applied to its document records a looked-up Cloud SQL dialect', () => {
+    const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/pg/' +
+        'databases/shop/schemas/sales/tables/orders';
+    const file = FILE.replace(`"${BQ('orders_prod')}"`, `"${CS}"`);
+    const res = profileForDocument(DOC, [{name: 'prod', text: file}], 'prod', {
+      cloudSqlDialects: new Map([[CS, 'POSTGRES']]),
+    });
+    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
+    expect(res.model.entities.find(e => e.name === 'orders')!.sourceDialect)
+        .toBe('POSTGRES');
+    // A model file's own Cloud SQL source keeps its dialect under a profile
+    // that does not rebind it.
+    const withCs = {name: 'sales', text: DOC.text.replace(`"${BQ('orders')}"`, `"${CS}"`)};
+    expect(withCs.text).toContain(CS);
+    const kept = profileForDocument(withCs, [{name: 'prod', text: 'name: prod\n'}], 'prod', {
+      cloudSqlDialects: new Map([[CS, 'POSTGRES']]),
+    });
+    if (kept.kind !== 'file') throw new Error(JSON.stringify(kept));
+    expect(kept.model.entities.find(e => e.name === 'orders')!.sourceDialect)
+        .toBe('POSTGRES');
+    const unread = profileForDocument(DOC, [{name: 'prod', text: file}], 'prod');
+    if (unread.kind !== 'file') throw new Error(JSON.stringify(unread));
+    expect(unread.model.entities.find(e => e.name === 'orders')!.sourceDialect)
+        .toBeUndefined();
   });
 
   // A model with a `sql` executor reports that first, before reading a

@@ -16,10 +16,12 @@
 
 import {AlloyDbClient} from '../../gcp/alloydb';
 import * as context from '../../gcp/context';
+import {CatalogClient} from '../../gcp/dataplex';
 import {fileNameOf, SemanticModelLayout} from '../../layouts/semantic-model';
 import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
+import {cloudSqlDialects} from '../cloudsql_dialect';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
@@ -178,6 +180,16 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     filesByDoc.set(doc.name, files);
   }
 
+  // A Cloud SQL table written as its resource name takes its dialect from its
+  // Knowledge Catalog entry, looked up once for the scope before anything
+  // loads. A table whose entry cannot be read stops the scope, as push does.
+  const lookup = await cloudSqlDialects(
+      [...docs.map(d => d.text),
+       ...[...filesByDoc.values()].flat().map(f => f.text)],
+      new CatalogClient(ctx));
+  if (lookup.errors.length) return {error: lookup.errors.join('\n')};
+  const load = {cloudSqlDialects: lookup.dialects};
+
   const merged: Array<{
     name: string; text: string; allowLegacyBareSource?: boolean;
     excluded?: ProfileExclusion[];
@@ -198,7 +210,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       continue;
     }
     const available = profilesByDoc.get(doc.name) ?? [];
-    const res = profileForDocument(doc, available, profile);
+    const res = profileForDocument(doc, available, profile, load);
     if (res.kind === 'missing') {
       return {error: unknownProfileMessage(profile, doc.name, res.declared)};
     }
@@ -226,7 +238,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   }
 
   const loaded = loadSemanticModels(
-      merged, {defaultProject, bindingOptional: true});
+      merged, {defaultProject, bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error};
   // In the order of the documents, as one load of them all gives. The load
   // prefixes each warning with its document's name.

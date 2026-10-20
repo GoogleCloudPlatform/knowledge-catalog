@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, keyColumn} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1041,11 +1041,15 @@ export function loadProfileFile(
   return profileSpecOf(doc, profileName);
 }
 
+// The Cloud SQL dialects a command looked up before it loads
+// (LoadOptions.cloudSqlDialects).
+export type CloudSqlLoad = Pick<LoadOptions, 'cloudSqlDialects'>;
+
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
   // The preferred dialect the model was loaded with, which picks the text each
-  // field takes.
-  load?: Pick<LoadOptions, 'dialect'>;
+  // field takes, and the Cloud SQL dialects it was given.
+  load?: Pick<LoadOptions, 'dialect'|'cloudSqlDialects'>;
   // Collects the warnings a load gives for the values the profile sets.
   // applyProfile only; the other functions return them.
   warnings?: string[];
@@ -1163,29 +1167,30 @@ export interface AppliedProfile {
  * apply, since the callers word the two differently.
  */
 function applyProfileToDocument(
-    doc: {name: string; text: string}, profile: ProfileSpec): AppliedProfile|
-    {error: string; stage: 'load'|'apply'} {
+    doc: {name: string; text: string}, profile: ProfileSpec,
+    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
-      doc, (base, from) => applyProfileSpec(base, profile, {from}));
+      doc, (base, from) => applyProfileSpec(base, profile, {from, load}), load);
 }
 
 /** applyProfileToDocument for the profile file `text`. */
 function applyProfileFileToDocument(
-    doc: {name: string; text: string}, text: string,
-    profileName: string): AppliedProfile|
-    {error: string; stage: 'load'|'apply'} {
+    doc: {name: string; text: string}, text: string, profileName: string,
+    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
-      doc, (base, from) => applyProfileFile(base, text, profileName, {from}));
+      doc,
+      (base, from) => applyProfileFile(base, text, profileName, {from, load}),
+      load);
 }
 
 function applyToDocument(
     doc: {name: string; text: string},
     apply: (base: SemanticModel,
             from: {document: string; warnings: string[]}) =>
-        {model: SemanticModel; warnings: string[]}|{error: string}):
-    AppliedProfile|{error: string; stage: 'load'|'apply'} {
+        {model: SemanticModel; warnings: string[]}|{error: string},
+    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   const loaded = loadSemanticModels(
-      [{name: doc.name, text: doc.text}], {bindingOptional: true});
+      [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
   const base = loaded.models[0].model;
   const res = apply(base, {document: doc.name, warnings: loaded.warnings});
@@ -1255,13 +1260,13 @@ export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
  */
 export function profileForDocument(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
-    profileName: string): DocumentProfile {
+    profileName: string, load: CloudSqlLoad = {}): DocumentProfile {
   const chosen = profiles.find(p => p.name === profileName);
   if (!chosen) return {kind: 'missing', declared: profiles.map(p => p.name)};
   if ('spec' in chosen || isProfileFileForm(chosen.text)) {
     const res = 'spec' in chosen ?
-        applyProfileToDocument(doc, chosen.spec) :
-        applyProfileFileToDocument(doc, chosen.text, profileName);
+        applyProfileToDocument(doc, chosen.spec, load) :
+        applyProfileFileToDocument(doc, chosen.text, profileName, load);
     return 'error' in res ? {kind: 'error', ...res} : {kind: 'file', ...res};
   }
   const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
@@ -1565,6 +1570,13 @@ function applyBindings(
     if (parsed) {
       e.dataSource = parsed.dataSource;
       e.authoredSource = parsed.authoredSource;
+      // The profile's source replaces the model file's, and so does its
+      // looked-up dialect, or the lack of one.
+      if (parsed.sourceDialect) {
+        e.sourceDialect = parsed.sourceDialect;
+      } else {
+        delete e.sourceDialect;
+      }
     }
     if (pe.primaryKey !== undefined) {
       e.keys = [...pe.primaryKey];
@@ -1933,10 +1945,13 @@ export function sourcesDialect(
   return dialectOfSources(
       (model.entities ?? [])
           .filter(e => !e.abstract)
-          .map(e => e.authoredSource !== undefined &&
-                       isAcceptedSource(e.authoredSource.trim()) ?
-                   e.authoredSource :
-                   e.dataSource ?? ''));
+          .map(e => ({
+                 source: e.authoredSource !== undefined &&
+                         isAcceptedSource(e.authoredSource.trim()) ?
+                     e.authoredSource :
+                     e.dataSource ?? '',
+                 lookedUp: e.sourceDialect,
+               })));
 }
 
 // The dialect every one of `sources` implies, or undefined when one names no
@@ -1944,9 +1959,15 @@ export function sourcesDialect(
 // of one system, such as two Spanner databases, imply that system's dialect.
 // A three-part dotted name, which is how the loader completes a legacy bare
 // name, names BigQuery.
-function dialectOfSources(sources: string[]): string|undefined {
-  const dialects = new Set<string|undefined>(sources.map(source => {
+//
+// A Cloud SQL table written as its resource name implies the dialect its
+// catalog entry's type names, which a lookup read into `lookedUp`
+// (LoadOptions.cloudSqlDialects).
+function dialectOfSources(
+    sources: Array<{source: string; lookedUp?: string}>): string|undefined {
+  const dialects = new Set<string|undefined>(sources.map(({source, lookedUp}) => {
     const s = source.trim();
+    if (cloudSqlTableOf(s)) return lookedUp;
     const db = databaseOf(s) ??
         (/^[^./:\s`]+\.[^./:\s`]+\.[^./:\s`]+$/.test(s) ? 'bigquery' :
                                                          undefined);
@@ -1957,7 +1978,7 @@ function dialectOfSources(sources: string[]): string|undefined {
 }
 
 /** What the caller of validateProfileCompleteness checks itself. */
-export interface CompletenessOptions {
+export interface CompletenessOptions extends CloudSqlLoad {
   // The caller checks the model the profile gives, as push does for the
   // profile it selects. The rules the caller's check covers are left out:
   // whether the hierarchy still resolves, what the profile's field
@@ -2026,7 +2047,8 @@ export function validateProfileCompleteness(
   // what they inherit is not known.
   const unknownAncestry = unresolvedEntities(baseModel);
   const {model: profiled, errors: unread} =
-      applyBindings(baseModel, profile, {});
+      applyBindings(
+          baseModel, profile, {load: {cloudSqlDialects: opts.cloudSqlDialects}});
   errors.push(...unread.map(e => `${at}: ${e}`));
   const profiledError = inheritanceErrorOf(profiled);
   if (profiledError && !inheritanceErrorOf(baseModel) && !applied) {
@@ -2051,7 +2073,9 @@ export function validateProfileCompleteness(
   // is the one its own sources imply, so a source the model file states for an
   // entity the profile leaves out does not decide it.
   const databases = new Map<string, string>();
-  const stated: string[] = [];
+  const stated: Array<{source: string; lookedUp?: string}> = [];
+  const profiledByName =
+      new Map((profiled.entities ?? []).map(e => [e.name, e]));
   // The entities whose source the loader's reader rejects.
   const rejected = new Set<string>();
   for (const e of entities) {
@@ -2070,8 +2094,13 @@ export function validateProfileCompleteness(
       rejected.add(e.name);
       continue;
     }
-    stated.push(pe.source);
-    if (!databases.has(db)) databases.set(db, e.name);
+    stated.push(
+        {source: pe.source, lookedUp: profiledByName.get(e.name)?.sourceDialect});
+    // One query reaches every database of a SQL Server instance.
+    const table = profiledByName.get(e.name)?.sourceDialect === 'SQLSERVER' &&
+        cloudSqlTableOf(pe.source);
+    const key = table ? table.resourceName.split('/databases/')[0] : db;
+    if (!databases.has(key)) databases.set(key, e.name);
   }
   if (databases.size > 1) {
     const named = [...databases.values()].map(n => `'${n}'`).join(', ');

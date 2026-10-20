@@ -1,8 +1,9 @@
 // Tests for `kcmd profiles` (src/tool/commands.ts, profiles()) and the
 // catalog.yaml `default_profile` it reads (src/libts/manifest.ts). The command
 // is read-only -- it applies and prunes each profile the way push does but
-// deploys nothing and makes no network call -- so it runs in a temp working
-// directory with a pinned context, mirroring init_semantic_model.test.ts.
+// deploys nothing, and its one network call, the Cloud SQL lookup, is stubbed
+// -- so it runs in a temp working directory with a pinned context, mirroring
+// init_semantic_model.test.ts.
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -17,6 +18,7 @@ import * as bigQueryDeploy from '../../src/libts/semantic/deploy_bigquery';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {profiles, push} from '../../src/tool/commands';
+import {stubCloudSqlEntry} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -3259,5 +3261,155 @@ describe('catalog.yaml default_profile round-trips', () => {
     fs.writeFileSync(p, catalogYaml(undefined));
     const loaded = await CatalogManifest.load(p, CTX);
     expect(loaded.defaultProfile).toBeUndefined();
+  });
+});
+
+
+// A Cloud SQL table written as its resource name takes its dialect from its
+// Knowledge Catalog entry. `kcmd profiles` and push look it up once, before
+// anything loads, and check the model against that dialect.
+describe('a profile that binds a Cloud SQL resource name', () => {
+  const TABLE = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/' +
+      'instances/ms/databases/shop/schemas/sales/tables/orders';
+  const MODEL = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: o_key }
+          - name: amount
+            expression:
+              dialects:
+                - { dialect: BIGQUERY, expression: SAFE_CAST(o_amount AS NUMERIC) }
+`;
+  function writeScope(): void {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), MODEL);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
+                     `name: prod\nentities:\n  - name: Order\n    source: ${TABLE}\n`);
+  }
+
+  test('is checked against the dialect its catalog entry gives', async () => {
+    writeScope();
+    const lookup = stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    expect(await profiles({profile: 'prod'})).toBe(1);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup.mock.calls[0]).toEqual([
+      'acme', 'us-central1',
+      `projects/acme/locations/us-central1/entryGroups/@cloudsql/entries/${TABLE}`,
+    ]);
+    expect(logs.join('\n'))
+        .toContain("field 'Order.amount' has no expression for SQLSERVER or ANSI_SQL");
+    // Push applies the profile with the dialect too, so it reads a bracketed
+    // T-SQL metric, whose names resolve the metric's entity.
+    fs.writeFileSync(
+        path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml'),
+        MODEL.replace('BIGQUERY, expression: SAFE_CAST(o_amount AS NUMERIC)',
+                      'ANSI_SQL, expression: o_amount') +
+            `    metrics:
+      - name: revenue
+        expression:
+          dialects:
+            - { dialect: ANSI_SQL, expression: "SUM([Order].[amount])" }
+`);
+    // Push checks that the file-copy type exists; that lookup passes.
+    spyOn(CatalogClient.prototype, 'getEntryType')
+        .mockResolvedValue({status: 200, result: {}} as any);
+    spyOn(CatalogClient.prototype, 'getAspectType')
+        .mockResolvedValue({status: 200, result: {}} as any);
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
+    expect(await push({profile: 'prod', validateOnly: true} as any)).toBe(0);
+    expect(warnSpy.mock.calls.flat().join('\n')).not.toContain("metric 'revenue'");
+  });
+
+  // The report reads each field in the profile's dialect. Under SQLSERVER the
+  // DATABRICKS text of `net`, the only one that reads the unbound `discount`,
+  // is not evaluated, so `net` is not withheld. Without the lookup every text
+  // counts and it would be.
+  // The same holds for a profile written as a legacy wrapper, which the report
+  // loads itself.
+  test('the report reads each field in the dialect its catalog entry gives', async () => {
+    stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    const profileFiles: Record<string, string> = {
+      'commerce.profile.prod.yaml':
+          `name: prod\nentities:\n  - name: Order\n    source: ${TABLE}\n`,
+      'commerce.profiles/prod.yaml':
+          `semantic_model:\n  - name: commerce\n    entities:\n` +
+          `      - name: Order\n        source: ${TABLE}\n`,
+    };
+    for (const [file, text] of Object.entries(profileFiles)) {
+      fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+      logs = [];
+      fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+      const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+      fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
+      fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: Order
+        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: o_key }
+          - { name: discount }
+          - name: net
+            expression:
+              dialects:
+                - { dialect: BIGQUERY, expression: o_net }
+                - { dialect: DATABRICKS, expression: o_amount - Order.discount }
+`);
+      fs.writeFileSync(path.join(eg, file), text);
+      await profiles({profile: 'prod'});
+      expect(logs.join('\n')).toContain('field Order.discount (unbound)');
+      expect(logs.join('\n')).not.toContain('field Order.net (reads Order.discount');
+    }
+  });
+
+  // A model file whose own source is a Cloud SQL table is read in that table's
+  // dialect too: its ANSI_SQL metric is parsed as T-SQL, so its bracketed
+  // names resolve the metric's entity, which a BigQuery graph push needs.
+  test('the inline bindings are read in the dialect its catalog entry gives', async () => {
+    fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+    fs.mkdirSync(eg, {recursive: true});
+    fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - {name: default, target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/g}
+    entities:
+      - name: Order
+        source: ${TABLE}
+        primary_key: [key]
+        fields:
+          - { name: key, expression: o_key }
+          - { name: amount, expression: {dialects: [{dialect: ANSI_SQL, expression: o_amount}]} }
+    metrics:
+      - name: revenue
+        expression:
+          dialects:
+            - { dialect: ANSI_SQL, expression: "SUM([Order].[amount])" }
+`);
+    stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    await profiles({});
+    expect(logs.join('\n')).not.toContain("metric 'revenue'");
+  });
+
+  test('stops kcmd profiles and push when its entry cannot be read', async () => {
+    writeScope();
+    stubCloudSqlEntry(403);
+    const dataplex = "Turn on Dataplex integration for instance 'ms' (gcloud sql " +
+        'instances patch ms --enable-dataplex-integration --project acme)';
+    expect(await profiles({profile: 'prod'})).toBe(1);
+    expect(errs.join('\n')).toContain(dataplex);
+    errs = [];
+    expect(await push({profile: 'prod', validateOnly: true} as any)).toBe(1);
+    expect(errs.join('\n')).toContain(dataplex);
   });
 });

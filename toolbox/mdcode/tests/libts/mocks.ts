@@ -1,9 +1,20 @@
+import {spyOn} from 'bun:test';
+
 import * as gcp from '../../src/libts/gcp';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 import * as spanner from '../../src/libts/gcp/spanner';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
 export const TEST_API_CONTEXT = new gcp.ApiContext('test-project', 'test-location', 'test-token');
+
+// Stubs the Knowledge Catalog lookup of a Cloud SQL table's entry: it answers
+// `status`, with entry type `type` when that is 200. `mock.restore()` undoes it.
+export function stubCloudSqlEntry(status: number, type?: string) {
+  return spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(async () =>
+      (status === 200 ?
+           {status, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}} :
+           {status, message: 'Permission denied (or it may not exist).'}) as any);
+}
 
 
 export class CatalogClientMock extends gcp.CatalogClient {

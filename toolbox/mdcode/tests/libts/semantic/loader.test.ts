@@ -3128,6 +3128,21 @@ describe('strict entity sources', () => {
       'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
       'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
     ],
+    [
+      'Cloud SQL resource name, MySQL shape (no schema)',
+      'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/tables/orders',
+      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/tables/orders',
+    ],
+    [
+      'Cloud SQL resource name, PostgreSQL or SQL Server shape (with schema)',
+      'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
+      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
+    ],
+    [
+      'Cloud SQL resource URI',
+      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
+      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
+    ],
   ];
 
   for (const [label, authored, expectedDataSource] of cases) {
