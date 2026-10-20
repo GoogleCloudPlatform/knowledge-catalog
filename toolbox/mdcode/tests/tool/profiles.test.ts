@@ -1751,6 +1751,37 @@ entities:
       ]);
     });
 
+    // Push reads each dialect entry of the model file in its own dialect, as
+    // the check of an AlloyDB profile reads the ALLOYDB one, so push alone
+    // warns that it cannot read that entry.
+    test('and warns once for a model file entry in another dialect that the parser cannot read', async () => {
+      const AL = (t: string) =>
+          '//alloydb.googleapis.com/projects/acme/locations/us/clusters/c/' +
+          `databases/db/schemas/public/tables/${t}`;
+      writeScope({
+        'commerce.yaml': commerce().replace(
+            '          - { name: c_id, expression: c_id }\n',
+            '          - { name: c_id, expression: c_id }\n' +
+                '          - name: c_name\n' +
+                '            expression:\n' +
+                '              dialects:\n' +
+                '                - { dialect: BIGQUERY, expression: c_name }\n' +
+                '                - { dialect: ALLOYDB, expression: "LOWER(c_name" }\n'),
+        'commerce.profile.alloy.yaml': profileFile('alloy')
+                                           .replace(BQ('prod', 'customer'), AL('customer'))
+                                           .replace(BQ('prod', 'purchase'), AL('purchase')),
+      });
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+      const unread = warn.mock.calls.map(c => String(c[0]))
+                         .filter(w => w.includes('could not read'));
+      expect(unread).toEqual([
+        expect.stringContaining(
+            "field 'customer.c_name' in model 'commerce' (commerce): kcmd " +
+            "could not read its 'ALLOYDB' SQL"),
+      ]);
+    });
+
     // Actions are out of scope for the preview, so a `sql` executor in the
     // model file still fails only a push that applies a profile.
     test('but leaves actions to a push that applies the profile', async () => {

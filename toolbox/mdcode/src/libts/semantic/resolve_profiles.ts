@@ -1963,11 +1963,14 @@ export interface CompletenessOptions {
   applied?: boolean;
   // The caller warns about the model file's SQL that it reads, which it does
   // only when the hierarchy of the model it checks resolves. It reads an
-  // ANSI_SQL text in `dialect`, or as generic SQL when that is unset. It does
-  // not read the model file's text of a field in `rebound`, written as
-  // 'Entity.field', because the profile it applies rebinds or excludes that
-  // field. A warning about the model file's SQL is left out when this
-  // profile's dialect is `dialect` and the field is not in `rebound`.
+  // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
+  // every other entry in its own dialect. It does not read the model file's
+  // text of a field in `rebound`, written as 'Entity.field', because the
+  // profile it applies rebinds or excludes that field. A warning about the
+  // model file's SQL is left out when the field is not in `rebound` and the
+  // caller reads each text this check cannot read the same way: an entry in a
+  // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
+  // dialect is `dialect`.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
   // The caller transpiles a field or metric whose only text is in a vendor
   // dialect its translator reads into BigQuery SQL, so a BigQuery profile can
@@ -2210,6 +2213,19 @@ export function validateProfileCompleteness(
   // The texts this profile evaluates for a field or metric.
   const profileTexts: typeof textsFor = (f, d) =>
       evaluatedTexts(f, d, !!opts.transpiled);
+  // Each field or metric, as "field 'Entity.field'" or "metric 'name'", with
+  // a text this check cannot read that push reads in another dialect: an
+  // ANSI_SQL text, which push reads in its own dialect. Push reads every
+  // other entry in the dialect it is written in, as this check does.
+  const readOtherwise = new Set<string>();
+  const noteUnread =
+      (what: string, owner: Pick<Field, 'dialects'>,
+       text: {text: string; dialect: string}) => {
+        const asWritten = text.dialect !== 'ANSI_SQL' &&
+            (owner.dialects ?? []).some(
+                d => d.dialect === text.dialect && d.expression === text.text);
+        if (!asWritten) readOtherwise.add(what);
+      };
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
   if (dialect) {
@@ -2254,7 +2270,7 @@ export function validateProfileCompleteness(
         // because inheritance strips the qualifier when it copies one down.
         for (const dep of fieldDependencies(
                  profiled, e.name, f.name, unreadable, dialect,
-                 profileTexts)) {
+                 profileTexts, noteUnread)) {
           const target = `${e.name}.${dep}`;
           if (excluded.has(target) || dangling.has(target)) {
             dangling.set(key, dangling.get(target) ?? target);
@@ -2286,6 +2302,7 @@ export function validateProfileCompleteness(
           read.push(columns);
         } else {
           unreadable.add(`metric '${m.name}'`);
+          noteUnread(`metric '${m.name}'`, m, text);
         }
       }
       const reached = [...excluded, ...dangling.keys()].filter(target => {
@@ -2306,7 +2323,7 @@ export function validateProfileCompleteness(
   // Whether the caller warns itself about this model file SQL.
   const caller = opts.ownSqlOnly;
   const callerWarns = (what: string) => !!caller &&
-      caller.dialect === dialect &&
+      (caller.dialect === dialect || !readOtherwise.has(what)) &&
       !(caller.rebound ?? []).some(f => what === `field '${f}'`);
   for (const what of unreadable) {
     if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
@@ -2504,7 +2521,9 @@ export function inheritanceErrorOf(model: SemanticModel): string|undefined {
 function fieldDependencies(
     model: SemanticModel, entityName: string, field: string,
     unreadable: Set<string>, dialect?: string,
-    texts: typeof textsFor = textsFor): string[] {
+    texts: typeof textsFor = textsFor,
+    onUnread?: (what: string, owner: Field,
+                text: {text: string; dialect: string}) => void): string[] {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   const bindingOn = (name: string) => byName.get(name)?.fields.find(
       f => f.name === field && isFieldBound(f));
@@ -2524,6 +2543,7 @@ function fieldDependencies(
     const columns = columnReferences(text.text, text.dialect);
     if (!columns) {
       unreadable.add(`field '${name}.${field}'`);
+      onUnread?.(`field '${name}.${field}'`, bindingOn(name)!, text);
       continue;
     }
     for (const dep of fieldsReadOn(columns, name)) deps.add(dep);
