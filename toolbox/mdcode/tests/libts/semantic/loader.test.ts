@@ -2489,12 +2489,42 @@ ${model}`;
         [`version: "${VANILLA}\n${rest}`, `version: "${VANILLA}"\n${rest}`],
         [`bad: 1\n version: "${VANILLA}"\n${rest}`, `bad: 1\nversion: "${VANILLA}"\n${rest}`],
         [`bad\nversion: "${VANILLA}"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
+        // A quote left open on the version and closed on the next line.
+        [`version: "${VANILLA}\n  label: "\nx: "\n${rest}`,
+          `version: "${VANILLA}"\nlabel: ""\nx: ""\n${rest}`],
       ]) {
         expect(names(fixed)).toEqual(['prod']);
         expect(() => loadModels(broken)).toThrow('could not parse input');
         expect(() => googleBlockProfiles(broken)).toThrow(
           'Semantic model load error: could not parse input: ');
       }
+    });
+
+    // A YAML error after the version may hide a second version, so which one
+    // holds is not known.
+    test('reports the YAML error when an error may hide a second version', () => {
+      const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
+      for (const text of [
+        `version: "${GOOGLE}"\nlabel: [x,\n${rest}version: "${VANILLA}"\n`,
+        `version: "${GOOGLE}"\n${rest}---\nversion: "${VANILLA}"\n${rest}`,
+        `meta:\nversion: "${GOOGLE}"\n${rest}   version: "${VANILLA}"\n`,
+      ]) {
+        expect(() => loadModels(text)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // A key written with no value sets it to null, as in text that parses.
+    test('reads past a key set twice beside a key written with no value', () => {
+      const dup = '    description: a\n    description: b\n';
+      expect(names(vanilla(
+        `      - { vendor_name: GOOGLE, data, profiles: ${JSON.stringify([PROD])} }\n`, dup)))
+        .toEqual(['prod']);
+      const noExts = `version: "${VANILLA}"\nsemantic_model:\n` +
+        '  - { name: m, description: a, description: b, custom_extensions }\n';
+      expect(() => loadModels(noExts)).toThrow('Map keys must be unique');
+      expect(names(noExts)).toEqual([]);
     });
 
     // A YAML error after the version leaves it as written, so a Google-flavor

@@ -354,17 +354,20 @@ describe('SemanticModelLayout profile file rules', () => {
   });
 
   // The layout reads the version as the lookup of block profiles reads it. A
-  // version set twice is not read past the error, so the file is not taken as
-  // vanilla, and the lookup reports the error. A version set once is read past
+  // version set twice, or one a YAML error may change or hide, is not read past
+  // the error, so the file is not taken as vanilla, and the lookup reports the
+  // error. A version set once is read past
   // an error after it, such as more aliases than a load expands.
   test('the version of a model file that is not valid YAML is read as the block profile lookup reads it', async () => {
     writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
     const rest = 'semantic_model:\n  - name: retail\n';
-    for (const head of [
-      'version: 0.2.0.dev0/google\nversion: 0.2.0.dev0\n',
-      'version: 0.2.0.dev0\n  bad: 1\n',
+    for (const text of [
+      'version: 0.2.0.dev0/google\nversion: 0.2.0.dev0\n' + rest,
+      'version: 0.2.0.dev0\n  bad: 1\n' + rest,
+      // A later version hidden by a bad indent.
+      'meta:\nversion: 0.2.0.dev0\n' + rest + '   version: 0.2.0.dev0/google\n',
     ]) {
-      writeToGroup('retail.yaml', head + rest);
+      writeToGroup('retail.yaml', text);
       expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
           .toEqual(['prod']);
     }

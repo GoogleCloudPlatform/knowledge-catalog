@@ -838,8 +838,9 @@ export async function push(options: PushOptions): Promise<number> {
     // on: a graph push may resolve profiles, but a catalog-only --no-profile
     // push resolves none, so it does not police their names here. With
     // KC_V2_ASPECTS off it still reads every profile file to store it, and the
-    // layout's file rules apply then. Every model's profiles are read here, so
-    // GOOGLE block profiles that cannot be read stop the push with exit 1.
+    // layout's file rules apply then. A graph push reads every model's
+    // profiles here, so GOOGLE block profiles that cannot be read stop it with
+    // exit 1.
     if (graphEnabled) {
       for (const doc of layoutDocs) {
         const docProfiles = readDeclaredProfiles(declared, doc);

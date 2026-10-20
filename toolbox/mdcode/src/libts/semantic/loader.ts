@@ -1465,8 +1465,10 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  *
  * Text that is not valid YAML is read as far as it parses. A document whose
  * root keys are all strings, and that sets `version` once, to a string other
- * than the vanilla one, gives none when no YAML error other than a key set
- * twice falls in or before that string. Otherwise its profiles are read as in
+ * than the vanilla one written on one line, gives none when no YAML error
+ * other than a key set twice falls in or before that string. When such an
+ * error falls after it, the text must also write no other `version` key after
+ * it. Otherwise its profiles are read as in
  * text that parses, and only when that reading is unambiguous. Each YAML error
  * is a key set twice or an alias whose anchor is not set, since any other
  * error, such as a bad indent, can move the blocks, cut them short or change
@@ -1542,7 +1544,7 @@ function googleBlockProfilesPastYamlError(
   // it.
   const parsed = yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false});
   const errors = yaml.parseDocument(text, YAML_OPTIONS).errors;
-  const version = versionPastYamlError(parsed, errors);
+  const version = versionPastYamlError(text, parsed, errors);
   if (version !== undefined && version !== OSSIE_VERSION) return [];
   if (version === undefined || !blocksReadOneWay(parsed, errors)) {
     throw yamlError;
@@ -1566,9 +1568,11 @@ function googleBlockProfilesPastYamlError(
 /**
  * The `version` the model document `text` sets, as googleBlockProfiles reads
  * it. Valid YAML gives its version. Past a YAML error, the version is read
- * only when every root key is a string, the root sets `version` once, to a
- * string, and no YAML error other than a key set twice falls in or before that
- * string. Undefined otherwise, and when the text sets no string version.
+ * only when every root key is a string, and the root sets `version` once, to a
+ * string written on one line. No YAML error other than a key set twice may
+ * fall in or before that string, and when such an error falls after it, the
+ * text may write no other `version` key after it. Undefined otherwise, and
+ * when the text sets no string version.
  */
 export function modelDocumentVersion(text: string): string|undefined {
   let doc: unknown;
@@ -1576,7 +1580,7 @@ export function modelDocumentVersion(text: string): string|undefined {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch {
     return versionPastYamlError(
-        yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
+        text, yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
         yaml.parseDocument(text, YAML_OPTIONS).errors);
   }
   return isRecord(doc) && typeof doc.version === 'string' ? doc.version :
@@ -1584,9 +1588,9 @@ export function modelDocumentVersion(text: string): string|undefined {
 }
 
 // The value of `key` in `node`, read past a YAML error: undefined when `node`
-// is not a mapping or does not set `key`, and null when the mapping has a key
-// that is not a string, such as an alias or a merge key, sets `key` twice, or
-// gives it an alias.
+// is not a mapping, does not set `key`, or writes `key` with no colon, as in
+// `{data}`, and null when the mapping has a key that is not a string, such as
+// an alias or a merge key, sets `key` twice, or gives it an alias.
 function onlyValue(node: unknown, key: string): unknown {
   if (!yaml.isMap(node)) return undefined;
   if (!node.items.every(
@@ -1595,23 +1599,32 @@ function onlyValue(node: unknown, key: string): unknown {
   }
   const pairs = node.items.filter(p => (p.key as yaml.Scalar).value === key);
   if (pairs.length > 1 || yaml.isAlias(pairs[0]?.value)) return null;
-  return pairs[0]?.value;
+  return pairs[0]?.value ?? undefined;
 }
 
-// The version a text sets, read past a YAML error. `parsed` is the text parsed
+// A `version` key written anywhere in a text, quoted or not.
+const VERSION_KEY = /(?:^|[\s,{[?])["']?version["']?\s*:/m;
+
+// The version `text` sets, read past a YAML error. `parsed` is the text parsed
 // with keys set twice allowed, and `errors` are the errors of the strict parse.
-// Every root key must be a string, the root must set `version` once, to a
-// string, and no error other than a key set twice may fall in or before that
-// string. Undefined otherwise, since such an error can change the version the
-// text seems to set.
+// Every root key must be a string, and the root must set `version` once, to a
+// string written on one line. No error other than a key set twice may fall in
+// or before that string, and when there is such an error after it, the text
+// may write no other `version` key after it. Undefined otherwise, since such
+// an error can change the version the text seems to set, or hide a second
+// version.
 function versionPastYamlError(
-    parsed: yaml.Document.Parsed, errors: yaml.YAMLError[]): string|undefined {
+    text: string, parsed: yaml.Document.Parsed,
+    errors: yaml.YAMLError[]): string|undefined {
   const version = onlyValue(parsed.contents, 'version');
   if (!yaml.isScalar(version) || typeof version.value !== 'string') {
     return undefined;
   }
-  const end = version.range?.[2] ?? Infinity;
-  if (errors.some(err => err.code !== 'DUPLICATE_KEY' && err.pos[0] <= end)) {
+  const [start, valueEnd, end] = version.range ?? [0, Infinity, Infinity];
+  if (text.slice(start, valueEnd).includes('\n')) return undefined;
+  const others = errors.filter(err => err.code !== 'DUPLICATE_KEY');
+  if (others.some(err => err.pos[0] <= end) ||
+      (others.length && VERSION_KEY.test(text.slice(end)))) {
     return undefined;
   }
   return version.value;
