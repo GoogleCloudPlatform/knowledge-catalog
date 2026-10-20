@@ -366,6 +366,10 @@ describe('SemanticModelLayout profile file rules', () => {
       'version: 0.2.0.dev0\n  bad: 1\n' + rest,
       // A later version hidden by a bad indent.
       'meta:\nversion: 0.2.0.dev0\n' + rest + '   version: 0.2.0.dev0/google\n',
+      // A version split on its line, and a first version taken into a quote
+      // left open ahead of it.
+      '{version: "0.2.0.dev0", /google, label: "\nsemantic_model: [{name: retail}]}\n',
+      'label: "\n  version: \'0.2.0.dev0/google\'\n  note: "\nversion: "0.2.0.dev0"\nx: "\n' + rest,
     ]) {
       writeToGroup('retail.yaml', text);
       expect((await layout('eg')).profileDocuments('retail').map(d => d.name))

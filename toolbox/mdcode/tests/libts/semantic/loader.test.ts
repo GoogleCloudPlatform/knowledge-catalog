@@ -2489,9 +2489,15 @@ ${model}`;
         [`version: "${VANILLA}\n${rest}`, `version: "${VANILLA}"\n${rest}`],
         [`bad: 1\n version: "${VANILLA}"\n${rest}`, `bad: 1\nversion: "${VANILLA}"\n${rest}`],
         [`bad\nversion: "${VANILLA}"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
-        // A quote left open on the version and closed on the next line.
+        // A quote left open on the version and closed on the next line, or on
+        // the same line.
         [`version: "${VANILLA}\n  label: "\nx: "\n${rest}`,
           `version: "${VANILLA}"\nlabel: ""\nx: ""\n${rest}`],
+        [`version: "${VANILLA} # "\nlabel: "\n${rest}`,
+          `version: "${VANILLA}" # "\nlabel: ""\n${rest}`],
+        // A quote left open ahead of the version takes in a first version.
+        [`label: "\n  version: '${VANILLA}'\n  note: "\nversion: "${GOOGLE}"\nx: "\n${rest}`,
+          `label: ""\nversion: '${VANILLA}'\nnote: |\n  version: "${GOOGLE}"\n  x: "\n${rest}`],
       ]) {
         expect(names(fixed)).toEqual(['prod']);
         expect(() => loadModels(broken)).toThrow('could not parse input');
@@ -2508,6 +2514,8 @@ ${model}`;
         `version: "${GOOGLE}"\nlabel: [x,\n${rest}version: "${VANILLA}"\n`,
         `version: "${GOOGLE}"\n${rest}---\nversion: "${VANILLA}"\n${rest}`,
         `meta:\nversion: "${GOOGLE}"\n${rest}   version: "${VANILLA}"\n`,
+        `version: "${GOOGLE}"\nlabel: [{x: 1}"version": "${VANILLA}"\n${rest}`,
+        `meta:\nversion: "${GOOGLE}"\n${rest}   ? version # comment\n   : "${VANILLA}"\n`,
       ]) {
         expect(() => loadModels(text)).toThrow('could not parse input');
         expect(() => googleBlockProfiles(text)).toThrow(
@@ -2531,9 +2539,11 @@ ${model}`;
     // model gives none and its profile files stay listed.
     test('gives none for a Google-flavor model past a YAML error after its version', () => {
       for (const extra of ['    description: [x\n', '    description: a\n    description: b\n']) {
-        const text = `version: "${GOOGLE}"\nsemantic_model:\n  - name: m\n${extra}`;
-        expect(() => loadModels(text)).toThrow('could not parse input');
-        expect(googleBlockProfiles(text)).toEqual([]);
+        for (const head of ['', '# A model.\n\n']) {
+          const text = `${head}version: "${GOOGLE}"\nsemantic_model:\n  - name: m\n${extra}`;
+          expect(() => loadModels(text)).toThrow('could not parse input');
+          expect(googleBlockProfiles(text)).toEqual([]);
+        }
       }
     });
 

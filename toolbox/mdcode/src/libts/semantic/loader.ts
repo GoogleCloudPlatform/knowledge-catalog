@@ -1465,10 +1465,11 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  *
  * Text that is not valid YAML is read as far as it parses. A document whose
  * root keys are all strings, and that sets `version` once, to a string other
- * than the vanilla one written on one line, gives none when no YAML error
- * other than a key set twice falls in or before that string. When such an
- * error falls after it, the text must also write no other `version` key after
- * it. Otherwise its profiles are read as in
+ * than the vanilla one, gives none when each YAML error is a key set twice.
+ * Past any other YAML error, it gives none only when the first line that is
+ * not blank or a comment sets that version alone, and the text holds the word
+ * `version` nowhere else, since such an error can change the version or hide
+ * a second one. Otherwise its profiles are read as in
  * text that parses, and only when that reading is unambiguous. Each YAML error
  * is a key set twice or an alias whose anchor is not set, since any other
  * error, such as a bad indent, can move the blocks, cut them short or change
@@ -1569,10 +1570,10 @@ function googleBlockProfilesPastYamlError(
  * The `version` the model document `text` sets, as googleBlockProfiles reads
  * it. Valid YAML gives its version. Past a YAML error, the version is read
  * only when every root key is a string, and the root sets `version` once, to a
- * string written on one line. No YAML error other than a key set twice may
- * fall in or before that string, and when such an error falls after it, the
- * text may write no other `version` key after it. Undefined otherwise, and
- * when the text sets no string version.
+ * string. Past an error other than a key set twice, the first line that is not
+ * blank or a comment must also set that version alone, and the text may hold
+ * the word `version` nowhere else. Undefined otherwise, and when the text sets
+ * no string version.
  */
 export function modelDocumentVersion(text: string): string|undefined {
   let doc: unknown;
@@ -1602,17 +1603,23 @@ function onlyValue(node: unknown, key: string): unknown {
   return pairs[0]?.value ?? undefined;
 }
 
-// A `version` key written anywhere in a text, quoted or not.
-const VERSION_KEY = /(?:^|[\s,{[?])["']?version["']?\s*:/m;
+// The first line of a text that is not blank or a comment, when it is
+// `version:` followed by the version alone, plain or quoted, and maybe a
+// comment. The version is the first group that is set.
+const FIRST_LINE_VERSION = new RegExp(
+    String.raw`^(?:[ \t]*(?:#.*)?\r?\n)*version:[ \t]*` +
+    String.raw`(?:"([^"\s,]+)"|'([^'\s,]+)'|([^\s,#'"{}[\]]+))[ \t]*(?:#.*)?$`,
+    'm');
 
 // The version `text` sets, read past a YAML error. `parsed` is the text parsed
 // with keys set twice allowed, and `errors` are the errors of the strict parse.
 // Every root key must be a string, and the root must set `version` once, to a
-// string written on one line. No error other than a key set twice may fall in
-// or before that string, and when there is such an error after it, the text
-// may write no other `version` key after it. Undefined otherwise, since such
-// an error can change the version the text seems to set, or hide a second
-// version.
+// string. When each error is a key set twice, the text's structure is as
+// written, so that string is the version. Any other error can change the
+// version or hide a second one, from before the version, on its line or after
+// it. The version is then read only when the first line that is not blank or
+// a comment sets it alone, and the text holds the word `version` nowhere else.
+// Undefined otherwise.
 function versionPastYamlError(
     text: string, parsed: yaml.Document.Parsed,
     errors: yaml.YAMLError[]): string|undefined {
@@ -1620,11 +1627,11 @@ function versionPastYamlError(
   if (!yaml.isScalar(version) || typeof version.value !== 'string') {
     return undefined;
   }
-  const [start, valueEnd, end] = version.range ?? [0, Infinity, Infinity];
-  if (text.slice(start, valueEnd).includes('\n')) return undefined;
-  const others = errors.filter(err => err.code !== 'DUPLICATE_KEY');
-  if (others.some(err => err.pos[0] <= end) ||
-      (others.length && VERSION_KEY.test(text.slice(end)))) {
+  if (errors.every(err => err.code === 'DUPLICATE_KEY')) return version.value;
+  const first = FIRST_LINE_VERSION.exec(text);
+  const written = first && (first[1] ?? first[2] ?? first[3]);
+  if (first?.index !== 0 || written !== version.value ||
+      text.split('version').length !== 2) {
     return undefined;
   }
   return version.value;
