@@ -2507,6 +2507,19 @@ ${model}`;
       }
     });
 
+    // The checks on the path apply to mappings. A block that is not a mapping
+    // cannot become a GOOGLE block when a key set twice is fixed. A root key
+    // that is not a string leaves the version unread, in either flavor.
+    test('reads past a block that is not a mapping, and not past a root key that is not a string', () => {
+      const dup = '    description: a\n    description: b\n';
+      expect(names(vanilla(`      - just text\n${PROD_BLOCK}`, dup))).toEqual(['prod']);
+      for (const version of [VANILLA, GOOGLE]) {
+        const text = `version: "${version}"\n2024: launch\nsemantic_model:\n${section(PROD_BLOCK, dup)}`;
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
     // An alias in a GOOGLE block may name an anchor set on a key set twice,
     // and its value then depends on which key the fix keeps.
     test('reports the YAML error when a GOOGLE block holds an alias', () => {

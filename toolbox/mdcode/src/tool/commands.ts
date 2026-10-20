@@ -497,10 +497,10 @@ function declaredProfilesReader(profileDocs: ProfileDocs): DeclaredProfiles {
   };
 }
 
-// The profiles `doc` declares, read with `declared`. Prints the error and gives
-// undefined when the profiles in a vanilla model's GOOGLE blocks cannot be
-// read, as the runtime returns it. Throws when a profile file breaks a layout
-// rule.
+// The profiles `doc` declares, read with `declared`. When the profiles in a
+// vanilla model's GOOGLE blocks cannot be read, prints the same error the
+// runtime returns and gives undefined. Throws when a profile file breaks a
+// layout rule.
 function readDeclaredProfiles(declared: DeclaredProfiles, doc: {
   name: string; text: string
 }): DeclaredProfile[]|undefined {
@@ -1391,8 +1391,8 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       `bindings, as authored -- nothing merged, nothing withheld.`;
 
   // The profiles are read before anything prints, as push reads them. A
-  // profile file that breaks a layout rule throws, and GOOGLE block profiles
-  // that cannot be read are printed as an error with exit 1.
+  // profile file that breaks a layout rule throws. When a model's GOOGLE block
+  // profiles cannot be read, the error is printed and the command exits 1.
   for (const doc of docs) {
     if (!readDeclaredProfiles(declaredBy, doc)) return 1;
   }

@@ -2554,8 +2554,8 @@ semantic_model:
         "      [commerce] profile 'prod': entity 'Customer': source 'not a source'");
   });
 
-  // Push and kcmd profiles print the error and exit 1, as the runtime returns
-  // it, under every profile selection that reads the block profiles.
+  // Push and kcmd profiles print the same error the runtime returns, and exit
+  // 1, under every profile selection that reads the block profiles.
   const unreadable = [
     ['has data that is not a JSON object', () => writeModel('[]'),
      "model 'commerce': the 'data' of a GOOGLE custom_extensions block must " +
