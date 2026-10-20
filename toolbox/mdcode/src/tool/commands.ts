@@ -19,7 +19,7 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleBlockTargets, googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, setsAKeyTwice} from '../libts/semantic/loader';
+import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
@@ -497,6 +497,22 @@ function declaredProfilesReader(profileDocs: ProfileDocs): DeclaredProfiles {
   };
 }
 
+// The profiles `doc` declares, read with `declared`. Prints the error and gives
+// undefined when the profiles in a vanilla model's GOOGLE blocks cannot be
+// read, as the runtime returns it. Throws when a profile file breaks a layout
+// rule.
+function readDeclaredProfiles(declared: DeclaredProfiles, doc: {
+  name: string; text: string
+}): DeclaredProfile[]|undefined {
+  try {
+    return declared(doc);
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    console.error(`Error: ${err.message}`);
+    return undefined;
+  }
+}
+
 // The file copies of each model file and of each of its profile files: each
 // file's text exactly as read, for the catalog to store. A file name is the
 // file's path relative to the entry group directory, with `/` between
@@ -822,10 +838,13 @@ export async function push(options: PushOptions): Promise<number> {
     // on: a graph push may resolve profiles, but a catalog-only --no-profile
     // push resolves none, so it does not police their names here. With
     // KC_V2_ASPECTS off it still reads every profile file to store it, and the
-    // layout's file rules apply then.
+    // layout's file rules apply then. Every model's profiles are read here, so
+    // GOOGLE block profiles that cannot be read stop the push with exit 1.
     if (graphEnabled) {
       for (const doc of layoutDocs) {
-        const clash = reservedProfileNameError(doc.name, declared(doc));
+        const docProfiles = readDeclaredProfiles(declared, doc);
+        if (!docProfiles) return 1;
+        const clash = reservedProfileNameError(doc.name, docProfiles);
         if (clash) {
           console.error(`Error: ${clash}`);
           return 1;
@@ -1369,10 +1388,12 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       `  profile '${DEFAULT_PROFILE}': the model document's own inline ` +
       `bindings, as authored -- nothing merged, nothing withheld.`;
 
-  // The profiles are read before anything prints, so a profile file that
-  // breaks a layout rule, or a GOOGLE block profile a load rejects, throws as
-  // it does in push.
-  for (const doc of docs) declaredBy(doc);
+  // The profiles are read before anything prints, as push reads them. A
+  // profile file that breaks a layout rule throws, and GOOGLE block profiles
+  // that cannot be read are printed as an error with exit 1.
+  for (const doc of docs) {
+    if (!readDeclaredProfiles(declaredBy, doc)) return 1;
+  }
   // Push publishes to Knowledge Catalog one model per entry group.
   if (docs.length > 1) {
     printRejects(

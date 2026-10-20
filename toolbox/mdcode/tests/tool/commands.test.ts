@@ -2554,13 +2554,46 @@ semantic_model:
         "      [commerce] profile 'prod': entity 'Customer': source 'not a source'");
   });
 
-  test('a GOOGLE block that does not load stops push and kcmd profiles', async () => {
-    writeModel('[]');
-    const error = "model 'commerce': the 'data' of a GOOGLE custom_extensions " +
-        'block must be a JSON object.';
-    await expect(push({validateOnly: true})).rejects.toThrow(error);
-    await expect(profiles()).rejects.toThrow(error);
-  });
+  // Push and kcmd profiles print the error and exit 1, as the runtime returns
+  // it, under every profile selection that reads the block profiles.
+  const unreadable = [
+    ['has data that is not a JSON object', () => writeModel('[]'),
+     "model 'commerce': the 'data' of a GOOGLE custom_extensions block must " +
+         'be a JSON object.'],
+    ['sets profiles in two GOOGLE blocks', () => {
+       writeModel('{"profiles": [{"name": "prod"}]}');
+       const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+       fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
+           '    datasets:\n',
+           '      - vendor_name: GOOGLE\n' +
+               `        data: '{"profiles": [{"name": "dev"}]}'\n    datasets:\n`));
+     },
+     "model 'commerce': two GOOGLE custom_extensions blocks both set " +
+         "'profiles'; set it in one block."],
+  ] as const;
+  for (const [what, write, problem] of unreadable) {
+    test(`a model whose GOOGLE block ${what} stops push and kcmd profiles with exit 1`, async () => {
+      write();
+      const error =
+          `Error: Model document 'commerce': Semantic model load error: ${problem}`;
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+
+      for (const selection of [{}, {profile: 'prod'}, {allProfiles: true}]) {
+        expect(await push({validateOnly: true, ...selection})).toBe(1);
+        expect(messages(errorSpy)).toBe(error);
+        errorSpy.mockClear();
+      }
+      for (const options of [{}, {profile: 'prod'}]) {
+        expect(await profiles(options)).toBe(1);
+        expect(messages(errorSpy)).toBe(error);
+        expect(messages(logSpy)).toBe('');
+        errorSpy.mockClear();
+      }
+      const opened = await createSemanticRuntimes({ctx: CTX, onWarning: () => {}});
+      expect('error' in opened && `Error: ${opened.error}`).toBe(error);
+    });
+  }
 
   // Push reads the GOOGLE block before the load under every profile. Beside a
   // third-party block that fails the load, the runtime names the same problem.
@@ -2571,8 +2604,10 @@ semantic_model:
         '    datasets:\n', '      - vendor_name: ACME\n        data: 123\n    datasets:\n'));
     const error = "Semantic model load error: model 'commerce': the 'data' of " +
         'a GOOGLE custom_extensions block must be a JSON object.';
-    await expect(push({validateOnly: true})).rejects.toThrow(error);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(messages(errorSpy)).toBe(`Error: Model document 'commerce': ${error}`);
+    errorSpy.mockClear();
 
     expect(await profiles({printStore: true})).toBe(1);
     expect(messages(errorSpy)).toBe(`Error: Model document 'commerce': ${error}`);
@@ -2598,7 +2633,10 @@ semantic_model:
       const error = `model '${bad}': the 'data' of a GOOGLE custom_extensions ` +
           'block must be a JSON object.';
 
-      await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(error);
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(error);
+      errorSpy.mockRestore();
       const opened = await createSemanticRuntimes(
           {ctx: CTX, profile: 'prod', onWarning: () => {}});
       expect('error' in opened && opened.error).toContain(error);
@@ -2839,9 +2877,13 @@ semantic_model:
       expect(edit(text)).not.toBe(text);
       fs.writeFileSync(file, edit(text));
       const error = 'Semantic model load error: could not parse input: Map keys must be unique';
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-      await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(error);
-      await expect(profiles({profile: 'prod'})).rejects.toThrow(error);
+      expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(error);
+      errorSpy.mockClear();
+      expect(await profiles({profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(error);
     });
   }
 
@@ -2851,11 +2893,14 @@ semantic_model:
     writeModel(prod(PROD_SOURCE));
     const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/}'\n/, '}\n'));
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(
+    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toContain(
         'Semantic model load error: could not parse input: Missing closing');
-    await expect(profiles({profile: 'prod'})).rejects.toThrow(
-        'could not parse input: Missing closing');
+    errorSpy.mockClear();
+    expect(await profiles({profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toContain('could not parse input: Missing closing');
   });
 
   test('they are listed by name, as profile files are', async () => {
@@ -2938,8 +2983,10 @@ semantic_model:
     const error = "model 'commerce': a profile in a GOOGLE custom_extensions " +
         "block may not be named 'Default'; 'default' names the model's " +
         'inline bindings.';
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-    await expect(push({validateOnly: true})).rejects.toThrow(error);
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(messages(errorSpy)).toContain(error);
     const opened = await createSemanticRuntimes({ctx: CTX, onWarning: () => {}});
     expect('error' in opened && opened.error).toContain(error);
   });
