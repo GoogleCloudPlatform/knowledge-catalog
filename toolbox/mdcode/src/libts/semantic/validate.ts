@@ -1374,12 +1374,12 @@ export function validateExpressionReferences(
   return errors;
 }
 
-// Temporary BigQuery-only metric check until b/568183888 moves the BigQuery
-// generator (`bigquery.ts`) to the SQL parser and stops its vendor-SQL
-// fallback. Rejects a metric that the BigQuery generator would either fill with
-// untranspiled vendor SQL or drop because its regex (`referencedEntityNames`)
-// disagrees with the parser or because `metric.entity` is unset. Reports only
-// metrics that `validateExpressionReferences` has not already flagged.
+// BigQuery-only metric check. Rejects a metric that the BigQuery generator
+// (`bigquery.ts`) would skip: one with only another engine's SQL, which the
+// generator does not emit, or one it drops because its regex
+// (`referencedEntityNames`) disagrees with the parser or because
+// `metric.entity` is unset. Reports only metrics that
+// `validateExpressionReferences` has not already flagged.
 function validateBigQueryMetrics(
     model: SemanticModel, document: string,
     alreadyFlagged: ReadonlySet<string>): string[] {

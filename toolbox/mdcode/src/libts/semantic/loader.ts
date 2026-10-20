@@ -268,7 +268,7 @@ export function expressionDocOf(
 // a document writes it, as expressionDocOf gives it. Then its target text is
 // read as BigQuery, and its imported text in its imported dialect, or as
 // BigQuery with none, unless that reading already read or named it. The
-// graph generators read each text in that dialect when they write it, and
+// Spanner generator reads each text in that dialect when it writes it, and
 // serializeModel writes both. Either text can be outside the dialect list
 // when the field or metric was built in memory, or when push filled
 // `expression` by transpiling. The problem names each text that holds no

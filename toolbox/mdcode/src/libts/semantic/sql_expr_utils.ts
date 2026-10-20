@@ -5,8 +5,7 @@
 // (`columnReferences`, `entitiesReached`, `fieldsReadOn`) reads column and
 // entity references across dialects for the loader, validator, profile checks,
 // pull reader, and transpiler. The graph generators still use the literal-
-// aware regex helpers (`referencedEntityNames`, `stripQualifier`) until
-// b/568183888 moves them to the parser.
+// aware regex helpers (`referencedEntityNames`, `stripQualifier`).
 //
 
 import {Entity, Field, fieldBinding, keysCoveredBy} from './ir';
@@ -83,8 +82,8 @@ export function sqlWithoutComments(text: string, dialect?: string): string {
 
 // `field`'s binding, as fieldBinding gives it, with its comments removed.
 // Undefined when the field is unbound. The target text is read in
-// `targetDialect`, BigQuery unless given, which is how the graph generators
-// read it. The parser reads Spanner SQL as BigQuery. Imported vendor SQL, the
+// `targetDialect`, BigQuery unless given, which is how the Spanner generator
+// reads it. The parser reads Spanner SQL as BigQuery. Imported vendor SQL, the
 // binding only when there is no target text, is read in its imported dialect,
 // so it keeps what that dialect does not read as a comment.
 export function fieldBindingWithoutComments(
