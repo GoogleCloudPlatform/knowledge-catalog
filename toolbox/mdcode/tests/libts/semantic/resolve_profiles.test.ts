@@ -712,15 +712,26 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     }
   });
 
-  test('a metric is pruned on the text the generators emit', () => {
+  test('a metric with only vendor text is judged by the SQL --transpile writes', () => {
+    // The BigQuery graph emits no Snowflake text, so pruning does not read
+    // it. Pruning does read the BigQuery SQL that push's --transpile pass
+    // writes into `expression`, because the graph emits that.
     const m = irModel();
     const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
     metric.expression = undefined;
     metric.importedExpression = 'AVG("Customer"."lifetimeValue")';
     metric.importedDialect = 'SNOWFLAKE';
     const {model, report} = pruneUnavailable(m, 'operational');
-    expect(metricNames(model)).toEqual(['order_count']);
-    expect(report.droppedMetrics).toContainEqual(
+    expect(metricNames(model)).toContain('avg_lifetime_value');
+    expect(report.droppedMetrics.map(d => d.name))
+        .not.toContain('avg_lifetime_value');
+    metric.dialects =
+        [{dialect: 'SNOWFLAKE', expression: 'AVG(Customer.lifetimeValue)'}];
+    metric.importedExpression = 'AVG(Customer.lifetimeValue)';
+    metric.expression = 'AVG(Customer.lifetimeValue)';
+    const transpiled = pruneUnavailable(m, 'operational');
+    expect(metricNames(transpiled.model)).toEqual(['order_count']);
+    expect(transpiled.report.droppedMetrics).toContainEqual(
         {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound'});
   });
 
@@ -3314,10 +3325,10 @@ semantic_model:
         .toThrow("profile 'p': entity 'orders': bare table name 'prod.orders'");
   });
 
-  // Pruning also reads the text the graph generators emit. Under a Spanner
-  // profile an emitted ANSI_SQL text is read as Spanner SQL, so a hex literal,
+  // Pruning reads only the SPANNER text when a field has one. Under a Spanner
+  // profile an ANSI_SQL text is read as Spanner SQL, so a hex literal,
   // which generic SQL cannot read, still reads the field.
-  test('pruning reads an emitted ANSI_SQL text in the profile\'s dialect', () => {
+  test('pruning reads an ANSI_SQL text in the profile\'s dialect', () => {
     const hex = 'IF(orders.code = 0x1F, 1, 0)';
     const model: SemanticModel = {
       name: 'shop',
@@ -3328,6 +3339,8 @@ semantic_model:
           {name: 'id', expression: 'id'},
           {name: 'code'},
           {name: 'flag', expression: hex,
+           dialects: [{dialect: 'ANSI_SQL', expression: hex}]},
+          {name: 'kept', expression: hex,
            dialects: [{dialect: 'SPANNER', expression: 'orders.id'},
                       {dialect: 'ANSI_SQL', expression: hex}]},
         ],
@@ -4153,22 +4166,19 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
       expect(errors).toEqual([]);
     });
 
-    test('pruning also reads the text the generators emit', () => {
-      // The generators emit `expression`, here the BIGQUERY text, whatever the
-      // engine. Pruning reads it too, so the Spanner DDL never reads `tax`.
+    test('pruning reads only the text the profile\'s dialect selects', () => {
+      // The Spanner graph reads only the SPANNER text, so `net` stays.
       const {applied} = check(profileOf(
           SPANNER('orders'),
           '            - {dialect: SPANNER, expression: "orders.gross"}\n' +
           '            - {dialect: BIGQUERY, expression: "orders.gross - orders.tax"}\n'));
-      expect(pruneUnavailable(applied, 'prod').report.droppedFields).toEqual(
-          [{name: 'orders.net', reason: 'reads orders.tax, which is unavailable'}]);
-      // A field with no text for the profile's dialect is judged by the
-      // vendor text the BigQuery generator would emit.
+      expect(pruneUnavailable(applied, 'prod').report.droppedFields).toEqual([]);
+      // No graph emits a field's vendor text, so pruning does not read it.
       const vendor = check(profileOf(
           '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: SNOWFLAKE, expression: "orders.gross - orders.tax"}\n'));
       expect(pruneUnavailable(vendor.applied, 'prod').report.droppedFields)
-          .toEqual([{name: 'orders.net', reason: 'reads orders.tax, which is unavailable'}]);
+          .toEqual([]);
     });
 
     test('with sources in two databases, every text counts', () => {

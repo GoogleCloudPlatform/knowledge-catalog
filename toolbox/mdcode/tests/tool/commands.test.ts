@@ -709,8 +709,6 @@ relationships:
 // A Spanner graph reads a field's SPANNER text, else its ANSI_SQL one.
 // Pruning reads the text each profile's graph reads, even when a legacy
 // wrapper's bare source name implies BigQuery.
-// Until each graph generator emits its own engine's text, a field's
-// `expression` is what lands in the DDL, so pruning judges that text too.
 describe('a model with a Spanner graph target is pruned in the Spanner dialect', () => {
   test('push and kcmd profiles drop a field by the text its graph reads', async () => {
     fs.writeFileSync(
@@ -774,7 +772,7 @@ semantic_model:
 
     expect(code).toBe(0);
     const orders = deploySpy.mock.calls[0][0][0].model.entities[0];
-    expect(orders.fields.map(f => f.name)).toEqual(['order_id', 'gross']);
+    expect(orders.fields.map(f => f.name)).toEqual(['order_id', 'gross', 'total']);
 
     logSpy.mockClear();
     await profiles();
@@ -786,7 +784,7 @@ semantic_model:
     expect(bqReport).toContain(`    target: ${bqGraph}`);
     expect(bqReport).not.toContain(unavailable('net'));
     expect(spReport).toContain(unavailable('net'));
-    expect(spReport).toContain(unavailable('total'));
+    expect(spReport).not.toContain(unavailable('total'));
   });
 });
 
