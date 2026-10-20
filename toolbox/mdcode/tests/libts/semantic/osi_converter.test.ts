@@ -60,8 +60,9 @@ describe('loader <-> serialize round trip is IR-stable', () => {
 
   // The loader reads a vanilla metric's anchor out of its GOOGLE block, and a
   // '0.2.0.dev0' write does not put it back in one yet. Two metrics in this
-  // fixture read two datasets each and are anchored that way, so they come back
-  // unanchored, each with a warning. Everything else survives.
+  // fixture are anchored in a GOOGLE block, and each reads two datasets. The
+  // reload cannot infer one entity for them, so each comes back with none.
+  // The write warns once for each, and everything else survives.
   test('tpcds_retail.yaml survives IR -> YAML -> IR apart from its GOOGLE block anchors', () => {
     const [model] = loadFixture('tpcds_retail.yaml');
     const anchored = model.metrics.filter(m => m.authoredEntity !== undefined);
@@ -78,10 +79,8 @@ describe('loader <-> serialize round trip is IR-stable', () => {
       return copy;
     });
     expect(reloaded).toEqual([{...model, metrics: unanchored}]);
-    for (const {name} of anchored) {
-      expect(warnings).toContain(
-          `metric '${name}': 'entity' has no representation under '0.2.0.dev0' and is not serialized`);
-    }
+    expect(warnings).toEqual(anchored.map(({name}) =>
+        `metric '${name}': 'entity' has no representation under '0.2.0.dev0' and is not serialized`));
   });
 });
 
@@ -1178,6 +1177,37 @@ describe('dual-version model serialization', () => {
       `relationship 'rel': 'description' has no representation under '0.2.0.dev0' and is not serialized`,
       `metric 'total': 'entity' has no representation under '0.2.0.dev0' and is not serialized`,
     ]);
+  });
+
+  // A GOOGLE block the model keeps, such as one that lists deploymentTargets,
+  // is written as it is, with any profiles in it.
+  test('does not warn about profiles in a GOOGLE block the model keeps under 0.2.0.dev0', () => {
+    const block = (data: object) =>
+        `      - vendor_name: GOOGLE\n        data: '${JSON.stringify(data)}'\n`;
+    const text = (blocks: string) => `version: "0.2.0.dev0"
+semantic_model:
+  - name: m
+    custom_extensions:
+${blocks}    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+`;
+    const target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const prod = {name: 'prod'};
+    const warning =
+        `model 'm': 'profiles' has no representation under '0.2.0.dev0' and is not serialized`;
+
+    const [kept] = loadModels(text(block({deploymentTargets: [target], profiles: [prod]}))).models;
+    const written = serializeModel(kept);
+    expect(written.warnings).not.toContain(warning);
+    expect(loadModels(written.yaml).models[0].profiles).toEqual(kept.profiles);
+
+    const [own] = loadModels(text(block({deploymentTargets: [target]}) + block({profiles: [prod]}))).models;
+    expect(serializeModel(own).warnings).toContain(warning);
   });
 
   test('warns that abstract is dropped under 0.2.0.dev0', () => {

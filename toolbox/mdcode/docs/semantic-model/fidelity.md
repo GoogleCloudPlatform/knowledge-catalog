@@ -47,7 +47,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
 | Binding profile (alternate physical binding)                   | — only the selected one¹⁴       | —¹⁴                                            | one graph per BigQuery-bound profile                                 | one graph per Spanner-bound profile                                  |
 | Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
-| `custom_extensions` (beyond the deployment target)             | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
+| `custom_extensions` from a vendor other than GOOGLE            | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
 1. **Field type source.** The graph uses the source column's own type; a
    field's authored `datatype` is not carried.
@@ -78,12 +78,11 @@ agree on every structural row and differ only where a Spanner target has no
    metadata — BigQuery silently drops graph-statement `OPTIONS`, and Spanner
    carries no `OPTIONS` at all — so the model's `description` and
    `ai_context.instructions` are carried into Knowledge Catalog instead.
-9. **Other custom extensions.** A third-party `custom_extensions` block, from a
-   vendor other than GOOGLE, is inert on push and has no catalog entry or
-   aspect of its own; `pull` returns it from the stored copy of the model file,
-   and leaves it out only when rebuilding from the catalog metadata. The OWL
-   importer emits none: it is import-only (see [Importing an OWL
-   ontology](owl-import.md)).
+9. **Other custom extensions.** A `custom_extensions` block from a vendor other
+   than GOOGLE is inert on push and has no catalog entry or aspect of its own;
+   `pull` returns it from the stored copy of the model file, and leaves it out
+   only when rebuilding from the catalog metadata. The OWL importer emits none:
+   it is import-only (see [Importing an OWL ontology](owl-import.md)).
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
     because there is no table behind it, and a relationship that carries no join

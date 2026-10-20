@@ -48,8 +48,8 @@ import {GOOGLE_VERSION, isAcceptedSource, OSSIE_VERSION} from './loader';
 import {declaredConceptFields} from './resolve_inheritance';
 
 // The vendor tag for Google-specific extension blocks on the IR (kept in sync
-// with loader.GOOGLE_VENDOR). A model-level deployment target list rides in one
-// as a folded shim alongside `model.deployments`.
+// with loader.GOOGLE_VENDOR). In the Google flavor, a model-level deployment
+// target list rides in one as a folded shim alongside `model.deployments`.
 const GOOGLE_VENDOR = 'GOOGLE';
 
 // The dialect label for the IR's target/canonical `expression` when `dialects`
@@ -238,7 +238,9 @@ function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
       `is not serialized`);
   const where = `model '${model.name}'`;
   if (model.deployments?.length) drop(where, `'deployments'`);
-  if (model.profiles?.length) drop(where, `'profiles'`);
+  if (model.profiles?.length && !keptBlockListsProfiles(model)) {
+    drop(where, `'profiles'`);
+  }
   if (model.actions?.length) drop(where, `'actions'`);
   if (model.constraints?.length) drop(where, `'constraints'`);
   for (const e of model.entities ?? []) {
@@ -251,6 +253,19 @@ function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
   for (const m of model.metrics ?? []) {
     if (m.authoredEntity) drop(`metric '${m.name}'`, `'entity'`);
   }
+}
+
+// Whether a GOOGLE block the model keeps lists its profiles. A '0.2.0.dev0'
+// write emits a kept block as it is.
+function keptBlockListsProfiles(model: SemanticModel): boolean {
+  return (model.customExtensions ?? []).some(e => {
+    if (e.vendorName !== GOOGLE_VENDOR) return false;
+    try {
+      return JSON.parse(e.data)?.profiles !== undefined;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function datasetDoc(
