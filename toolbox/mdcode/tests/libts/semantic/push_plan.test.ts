@@ -239,6 +239,8 @@ semantic_model:
            '{"deployments": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
            '{"deploymentTargets": null}',
            '{"deploymentTargets": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+           '{"deployments": [{"name": "a", "target": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}], "deployments": []}',
+           '{"deploymentTargets": ["//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"], "deploymentTargets": []}',
          ]) {
       expect(declaresGraphTarget(withData(data))).toBe(true);
     }

@@ -1250,8 +1250,8 @@ interface GoogleBlockValues {
 // not take, `abstract` included, a key two blocks both set, a value the Google
 // flavor rejects, and `deployments` beside `deploymentTargets`. The deploy code
 // still reads a model's `deploymentTargets`, so the model keeps the block that
-// carries it. Its value must be a list, and only one block may set it. Push
-// checks each target in the list.
+// carries it, after reading any other key the block sets. Its value must be a
+// list, and only one block may set it. Push checks each target in the list.
 function readGoogleBlocks(
     exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
     level: BlockLevel, ctx: string):
@@ -1396,7 +1396,7 @@ function readBlockProfiles(
 }
 
 // Whether the JSON text `data` sets a key twice.
-function setsAKeyTwice(data: string): boolean {
+export function setsAKeyTwice(data: string): boolean {
   return yaml.parseDocument(data, YAML_OPTIONS)
       .errors.some(err => err.code === 'DUPLICATE_KEY');
 }

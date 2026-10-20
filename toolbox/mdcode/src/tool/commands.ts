@@ -19,7 +19,7 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleBlockTargets, googleDeploymentTargets} from '../libts/semantic/deployment_target';
 import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels} from '../libts/semantic/loader';
+import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, setsAKeyTwice} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, DEFAULT_PROFILE, DocumentProfile, isProfileFileForm, modelFileAloneMessage, ProfileExclusion, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, unknownProfileMessage,} from '../libts/semantic/resolve_profiles';
@@ -160,8 +160,8 @@ export function checkPushSelection(sel: {
 // graph, so bindings and a target are not required and pruning is skipped
 // (Knowledge Catalog publishes the whole model). It also returns true when the
 // YAML does not parse, or when the data string of a GOOGLE block on the model
-// is not a JSON object or holds a `deployments` or `deploymentTargets` value
-// that is not a list. The strict load then reports the problem, and the push
+// is not a JSON object, sets a key twice, or holds a `deployments` or
+// `deploymentTargets` value that is not a list. The strict load then reports the problem, and the push
 // does not silently take the logical path. A block whose data is not a string
 // is skipped, and the load rejects it.
 export function declaresGraphTarget(text: string): boolean {
@@ -201,6 +201,9 @@ export function declaresGraphTarget(text: string): boolean {
       if (data === null || typeof data !== 'object' || Array.isArray(data)) {
         return true;  // not a JSON object: strict load will name it
       }
+      // JSON.parse keeps the last of a repeated key, so an earlier value may
+      // list a target. The strict load rejects the repeat.
+      if (setsAKeyTwice(ext.data)) return true;
       const {deployments, deploymentTargets} =
           data as {deployments?: unknown; deploymentTargets?: unknown};
       if (deploymentTargets !== undefined &&
