@@ -27,28 +27,31 @@ const OPTS = {
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text).models[0];
+  return loadModels(text, {allowLegacyBareSource: true}).models[0];
 }
 
 // A one-entity document with a constraints array, for focused loader tests.
 function withConstraints(constraints: any[], over: any = {}) {
-  return fromDocument({
-    version: '0.2.0.dev0/google',
-    semantic_model: [{
-      name: 'm',
-      datasets: [{
-        name: 'customer',
-        source: 'p.d.c',
-        primary_key: ['id'],
-        fields: [{
-          name: 'balance',
-          expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+  return fromDocument(
+      {
+        version: '0.2.0.dev0/google',
+        semantic_model: [{
+          name: 'm',
+          datasets: [{
+            name: 'customer',
+            source: 'p.d.c',
+            primary_key: ['id'],
+            fields: [{
+              name: 'balance',
+              expression:
+                  {dialects: [{dialect: 'ANSI_SQL', expression: 'balance'}]},
+            }],
+          }],
+          constraints,
+          ...over,
         }],
-      }],
-      constraints,
-      ...over,
-    }],
-  });
+      },
+      {allowLegacyBareSource: true});
 }
 
 
@@ -72,14 +75,20 @@ describe('loader parses constraints', () => {
   });
 
   test('a model without constraints leaves model.constraints unset', () => {
-    const {models} = fromDocument({
-      version: '0.2.0.dev0/google',
-      semantic_model: [{
-        name: 'm',
-        datasets:
-            [{name: 'customer', source: 'p.d.c', primary_key: ['id'], fields: []}],
-      }],
-    });
+    const {models} = fromDocument(
+        {
+          version: '0.2.0.dev0/google',
+          semantic_model: [{
+            name: 'm',
+            datasets: [{
+              name: 'customer',
+              source: 'p.d.c',
+              primary_key: ['id'],
+              fields: [],
+            }],
+          }],
+        },
+        {allowLegacyBareSource: true});
     expect(models[0].constraints).toBeUndefined();
   });
 
@@ -309,7 +318,11 @@ describe('validatePushRequirements gates constraints', () => {
       judgment: 'Weigh the credit against customer.total_owed.',
       onViolation: 'warn',
     }]);
-    m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
+    m.model.metrics = [{
+      name: 'total_owed',
+      entity: 'customer',
+      expression: 'SUM(customer.balance)',
+    }];
     expect(validatePushRequirements([m])).toEqual([]);
   });
 
@@ -337,7 +350,11 @@ describe('validatePushRequirements gates constraints', () => {
       source: {entity: 'customer', columns: ['id']},
       destination: {entity: 'customer', columns: ['id']},
     }];
-    m.model.metrics = [{name: 'total_owed', entity: 'customer'}];
+    m.model.metrics = [{
+      name: 'total_owed',
+      entity: 'customer',
+      expression: 'SUM(customer.balance)',
+    }];
     const errs = validatePushRequirements([m]);
     expect(errs.some(e => e.includes('declares no field \'blance\'')))
         .toBe(true);
@@ -581,7 +598,7 @@ describe('OSI round trip', () => {
     expect(model.constraints).toHaveLength(5);
     const {yaml} = serializeModel(model);
     expect(yaml).toContain('constraints:');
-    const reloaded = loadModels(yaml).models[0];
+    const reloaded = loadModels(yaml, {allowLegacyBareSource: true}).models[0];
     expect(reloaded.constraints).toEqual(model.constraints);
   });
 
@@ -968,7 +985,8 @@ describe('judged constraints', () => {
     expect(yaml).toContain('judgment:');
     // Never authored, and now never published either.
     expect(yaml).not.toContain('evaluation:');
-    expect(loadModels(yaml).models[0].constraints).toEqual(judged.constraints);
+    expect(loadModels(yaml, {allowLegacyBareSource: true}).models[0].constraints)
+        .toEqual(judged.constraints);
   });
 });
 

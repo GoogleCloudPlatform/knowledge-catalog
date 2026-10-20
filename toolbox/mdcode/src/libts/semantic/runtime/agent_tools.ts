@@ -9,7 +9,8 @@
  */
 
 import {boundTable} from '../binding';
-import {Action, ActionParameter, Entity, fieldBinding, SemanticModel} from '../ir';
+import {Action, ActionParameter, Entity, expressionForDialect, SemanticModel} from '../ir';
+import {fieldBindingWithoutComments, sqlWithoutComments} from '../sql_expr_utils';
 
 import {SqlDialect} from './dialect';
 import {runtimeStoreError, SemanticRuntime} from './runtime';
@@ -285,10 +286,22 @@ interface BoundField {
 }
 
 
-function boundFields(entity: Entity): BoundField[] {
+// The fields of `entity` bound to one column each. A binding is read without
+// its comments, as the graph generators read it, so `order_id -- the key`
+// names the column `order_id` on the entity and on every entity that inherits
+// it. On a PostgreSQL store the binding is the text the database runs, the
+// field's ALLOYDB or ANSI_SQL entry, read as PostgreSQL, where `#` starts no
+// comment. A field with neither keeps the text the graph generators write,
+// read the same way.
+function boundFields(entity: Entity, dialect: SqlDialect): BoundField[] {
+  const postgres = dialect.name === 'PostgreSQL';
   const bound: BoundField[] = [];
   for (const field of entity.fields) {
-    const expr = (fieldBinding(field) ?? '').trim();
+    const runs = postgres ? expressionForDialect(field, 'ALLOYDB') : undefined;
+    const read = runs !== undefined ?
+        sqlWithoutComments(runs, 'POSTGRES') :
+        fieldBindingWithoutComments(field, postgres ? 'POSTGRES' : undefined);
+    const expr = read?.trim() ?? '';
     if (!expr || !/^[A-Za-z_]\w*$/.test(expr)) continue;
     const said = field.description?.trim();
     bound.push({
@@ -321,7 +334,7 @@ export function readableEntities(
   const readable: ReadableEntity[] = [];
   for (const entity of runtime.model.entities ?? []) {
     if (entity.abstract) continue;
-    const fields = boundFields(entity);
+    const fields = boundFields(entity, dialect);
     if (!fields.length) continue;
     const warnings: string[] = [];
     const table =

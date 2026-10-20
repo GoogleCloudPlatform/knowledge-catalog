@@ -22,7 +22,7 @@
 // Unit-level tests for the same generator (inline IR, inline goldens) live in
 // `bigquery.test.ts`.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -31,6 +31,12 @@ import * as yaml from 'yaml';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {loadModels, loadSemanticModels, LoadOptions} from '../../../src/libts/semantic/loader';
 import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -43,7 +49,6 @@ const CORPUS = [
   'vendor_dialects.yaml',
   'measure_lowering.yaml',
   'metric_skips.yaml',
-  'keyless_dimension.yaml',
   'hierarchy_graph.yaml',
   'reserved_words.yaml',
   'reserved_words_inherit.yaml',
@@ -54,9 +59,12 @@ const CORPUS = [
 // also run generation — which now throws for a model that yields no node table.
 function loadFixture(fixture: string, load: LoadOptions = {}) {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  return loadModels(
-      text,
-      {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
+  return loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+    ...load,
+  });
 }
 
 // Loads a fixture file and generates its property-graph DDL in one step, so a
@@ -104,6 +112,55 @@ describe(
       }
     });
 
+
+// keyless_dimension.yaml joins to a dataset with no key, which push rejects.
+// The generator still drops a node with no key, and every edge to it, if one
+// reaches it, so its golden stays outside the push-validated corpus.
+describe('a relationship to a keyless dataset', () => {
+  test('is rejected by push validation', () => {
+    const {models} = loadFixture('keyless_dimension.yaml');
+    expect(validatePushRequirements(
+               models.map(model => ({document: 'keyless_dimension.yaml', model})),
+               {targetOptional: true})
+               .join('\n'))
+        .toContain("cover no primary or unique key of 'nokey'");
+  });
+
+  test('is dropped by the generator, with its node, if one reaches it', () => {
+    const golden = goldenPath('keyless_dimension.yaml');
+    const actual = render('keyless_dimension.yaml');
+    if (process.env.UPDATE_GOLDENS) {
+      fs.writeFileSync(golden, actual);
+      return;
+    }
+    expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+  });
+});
+
+
+// A golden captures what the generator emits, and the generator runs only on a
+// model push validation has accepted. A fixture that validation rejects would
+// pin output no real push produces, so every golden fixture must pass. The
+// deployment target is optional here: most fixtures exercise generation and
+// declare none. `metric_skips.yaml` and `measure_lowering.yaml` exist
+// specifically to exercise how the generator skips or lowers a metric that push
+// validation rejects (unanchored multi-entity metrics and undeclared field
+// references), so they are excluded from this check.
+const GENERATOR_ONLY_FIXTURES = new Set([
+  'metric_skips.yaml',
+  'measure_lowering.yaml',
+]);
+describe('every golden fixture passes push validation', () => {
+  for (const fixture of CORPUS.filter(f => !GENERATOR_ONLY_FIXTURES.has(f))) {
+    test(fixture, () => {
+      const {models} = loadFixture(fixture);
+      expect(validatePushRequirements(
+                 models.map(model => ({document: fixture, model})),
+                 {targetOptional: true}))
+          .toEqual([]);
+    });
+  }
+});
 
 describe('dialect selection is surfaced by risk when the target dialect is absent', () => {
   test(
@@ -383,7 +440,11 @@ function buildProfile(logicalFixture: string, profile: string) {
   if (merged.error) throw new Error(merged.error);
   const loaded = loadSemanticModels(
       [{name: logicalFixture.replace(/\.yaml$/, ''), text: yaml.stringify(merged.doc)}],
-      {defaultProject: 'acme', defaultDataset: 'sales'});
+      {
+        defaultProject: 'acme',
+        defaultDataset: 'sales',
+        allowLegacyBareSource: true,
+      });
   if (loaded.error) throw new Error(loaded.error);
   const {model, report} = pruneUnavailable(loaded.models[0].model, profile);
   // Derive the generation project/dataset from the model's own resolved
@@ -585,9 +646,15 @@ semantic_model:
         const merged =
             mergeProfile(yaml.parse(logical), yaml.parse(profile), 'p');
         if (merged.error) throw new Error(merged.error);
+        // The merged legacy wrapper keeps its `deployment_target:`, so it loads
+        // the way push loads a wrapper (and buildProfile above): with
+        // allowLegacyBareSource. Its sources are GCP resource names already.
         const loaded = loadSemanticModels(
-            [{name: 'deals', text: yaml.stringify(merged.doc)}],
-            {defaultProject: 'acme', defaultDataset: 'sales'});
+            [{name: 'deals', text: yaml.stringify(merged.doc)}], {
+              defaultProject: 'acme',
+              defaultDataset: 'sales',
+              allowLegacyBareSource: true,
+            });
         if (loaded.error) throw new Error(loaded.error);
         const {model} = pruneUnavailable(loaded.models[0].model, 'p');
         return generatePropertyGraph(model, {project: 'acme', dataset: 'sales'});

@@ -37,8 +37,8 @@ Everything below is a way to honor this rule.
 
 `Party` is the general kind. In this model no row is *just* a party — every party
 is a customer or a supplier — so `Party` has no table of its own. Mark it
-`abstract: true`: it has no `source` and no key, produces no node table, and
-survives in the graph only as a label on its subtypes.
+`abstract: true`: it has no `source`, no key and no column bindings, produces no
+node table, and survives in the graph only as a label on its subtypes.
 
 Each concrete kind declares its own fields and the one `extends` keyword. The
 supertype's fields are inherited, so you do not repeat them:
@@ -50,7 +50,6 @@ semantic_model:
     entities:
       - name: Party
         abstract: true
-        primary_key: [id]
         fields:
           - { name: id,   datatype: Integer }
           - { name: name, datatype: String }
@@ -106,15 +105,21 @@ store you can bind inline on the model as the `default` profile:
         primary_key: [id]
         source: my-project.sales.customer
         fields:
-          - { name: id,           datatype: Integer, expression: c_custkey }
-          - { name: name,         datatype: String,  expression: c_name }   # the inherited field, bound here
-          - { name: loyalty_tier, datatype: String,  expression: c_tier }
+          - { name: id,           expression: c_custkey }
+          - { name: name,         expression: c_name }   # the inherited field, bound here
+          - { name: loyalty_tier, datatype: String, expression: c_tier }
 ```
 
+A redeclared inherited field carries only its binding. Its datatype and the rest
+of its definition come from `Party`, and push rejects a redeclaration that
+restates them.
+
 To bind the same hierarchy to more than one store, put each binding in its own
-[profile](profiles.md). A profile answers the supertype query only for the
-subtypes it binds: bind `Customer` but leave `Supplier` unbound and
-`MATCH (:Party)` returns customers alone.
+[profile](profiles.md). A named profile binds every concrete subtype, since
+each one stands for a table the profile's database has to hold. A profile can
+bind a field the
+subtype inherits by naming it under that subtype, with no redeclaration in the
+model file, and the binding reads from the subtype's own table.
 
 ## 3. Query the supertype
 
@@ -143,7 +148,6 @@ and each of those is a `Party`:
 ```yaml
       - name: Party
         abstract: true
-        primary_key: [id]
         fields:
           - { name: id,   datatype: Integer }
           - { name: name, datatype: String }
@@ -162,11 +166,11 @@ and each of those is a `Party`:
         primary_key: [id]
         source: my-project.hr.employee
         fields:
-          - { name: id,         datatype: Integer, expression: e_id }
-          - { name: name,       datatype: String,  expression: e_name }
-          - { name: birth_year, datatype: Integer, expression: e_birth }
-          - { name: tax_id,     datatype: String,  expression: e_tax }
-          - { name: department, datatype: String,  expression: e_dept }
+          - { name: id,         expression: e_id }
+          - { name: name,       expression: e_name }
+          - { name: birth_year, expression: e_birth }
+          - { name: tax_id,     expression: e_tax }
+          - { name: department, datatype: String, expression: e_dept }
 ```
 
 ```mermaid
@@ -199,6 +203,13 @@ appears once. `MATCH (:Person)`, `MATCH (:Taxpayer)`, and `MATCH (:Party)` each
 return every employee a single time. The number of supertypes a subtype has, and
 the number of paths that reach a shared ancestor, do not change the count.
 
+A field may be declared on only one side of a diamond. If `Person` and
+`Taxpayer` both declared a `nickname` field, push would reject the model,
+because neither is nearer to `Employee` and nothing says which one wins. Declare
+a field both sides share on `Party` instead. The same holds for a binding: two
+concrete supertypes that each rebind a field they inherit from `Party` leave
+their common subtype ambiguous, and push rejects it.
+
 ### Deeper hierarchies
 
 A hierarchy can run several levels deep with a concrete table at each leaf. Here
@@ -208,7 +219,6 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
 ```yaml
       - name: Party
         abstract: true
-        primary_key: [id]
         fields:
           - { name: id,   datatype: Integer }
           - { name: name, datatype: String }
@@ -227,18 +237,18 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
         primary_key: [id]
         source: my-project.sales.customer
         fields:
-          - { name: id,         datatype: Integer, expression: c_id }
-          - { name: name,       datatype: String,  expression: c_name }
-          - { name: birth_year, datatype: Integer, expression: c_birth }
-          - { name: tier,       datatype: String,  expression: c_tier }
+          - { name: id,         expression: c_id }
+          - { name: name,       expression: c_name }
+          - { name: birth_year, expression: c_birth }
+          - { name: tier,       datatype: String, expression: c_tier }
       - name: Vendor
         extends: [Organization]
         primary_key: [id]
         source: my-project.sales.vendor
         fields:
-          - { name: id,           datatype: Integer, expression: v_id }
-          - { name: name,         datatype: String,  expression: v_name }
-          - { name: founded_year, datatype: Integer, expression: v_founded }
+          - { name: id,           expression: v_id }
+          - { name: name,         expression: v_name }
+          - { name: founded_year, expression: v_founded }
           - { name: rating,       datatype: Integer, expression: v_rating }
 ```
 
@@ -282,8 +292,9 @@ label by property name, so the subtype tables never have to agree on a physical
 column. A supertype with its own table works too. Then every subtype table must
 carry that supertype's columns under the same names, and a thing present in both
 the supertype table and a subtype table is counted twice under the supertype
-label. Keeping supertypes abstract keeps the one rule — one real thing, one node
-— automatic.
+label. Such a supertype still cannot be a relationship endpoint or own a metric,
+because table-backed subtypes extend it. Keeping supertypes abstract keeps the one rule
+— one real thing, one node — automatic.
 
 ## Match the shape to how your data is stored
 
@@ -317,13 +328,42 @@ than one table under the hierarchy. When the two tables are instead the general
 and specific halves of one thing, model them as one entity whose binding joins
 them by key.
 
+## Relationships and metrics belong on the leaves
+
+A relationship may connect only concrete leaf entities. A leaf is an entity
+that is not abstract and that no table-backed entity extends. An edge stays on
+the node table it is declared on. An abstract `Party` has no table, and a concrete
+supertype's table holds only its own rows, so an edge declared on a supertype
+misses every subtype row. Declare the edge from each leaf that has it instead,
+for example from `Customer`. A metric may belong only to a leaf as well, because
+a measure cannot sit on a label that several tables share. Push rejects a
+relationship or metric on any other entity, including a push to Knowledge
+Catalog alone.
+
+Two exemptions follow from the reason for the rule. An abstract subtype and a
+[defined entity](#defined-entities-a-subtype-picked-out-by-a-condition) have no
+table of their own, so a parent they extend is still a leaf. An [abstract
+relationship](#relationship-inheritance) deploys no edge table, only a label
+its sub-relationships carry, so its ends may be abstract entities or
+supertypes.
+
 ## The rules push enforces
 
-Fields flow down to subtypes; relationships and keys do not. A subtype's table
-must expose every inherited column, or the deploy fails. A metric cannot sit on a
-shared supertype; attach it to a concrete subtype. An inherited field cannot be
-redefined with a different meaning, and every table under a shared supertype must
-expose the identical field set. Each rule and the error it raises is in
+Fields flow down to subtypes. Relationships and keys stay where they are
+declared. Every table under a shared supertype exposes the identical field set,
+so a subtype's table must have a column for every inherited field, or the deploy
+fails. Push also rejects a model that breaks any of these rules:
+
+- A subtype redeclares an inherited field only to bind it to a column. A
+  redeclaration with nothing but the name is rejected.
+- An abstract entity declares no `source`, no keys and no field expressions.
+- Relationships and metrics attach only to concrete leaf entities (an abstract
+  relationship, which deploys no edge table, is exempt).
+- No field is declared or rebound by two supertypes that do not extend each
+  other.
+- `extends` forms no cycle.
+
+Each rule and its reason is in
 [Reference → Class hierarchies](reference.md#class-hierarchies-extends--labels).
 
 Inheritance deploys the same way to BigQuery Graph and Spanner Graph — the extra
@@ -343,7 +383,7 @@ semantic_model:
   - name: sales
     entities:
       - name: Opportunity
-        source: proj.sales.opportunity
+        source: bigquery:proj.sales.opportunity
         primary_key: [id]
         fields:
           - name: id
@@ -382,6 +422,10 @@ It reads one row, so it cannot reach another entity. A defined entity:
   key. `abstract: true` is redundant and is ignored with a warning.
 - **cannot be a supertype.** A table-backed entity may not extend a defined one.
   Extend its base instead.
+- **leaves its base a leaf.** It forms no node table of its own, so its base is
+  still a concrete leaf for the rule that relationships and metrics attach only
+  to leaves (see [Relationships and metrics belong on the
+  leaves](#relationships-and-metrics-belong-on-the-leaves)).
 
 **On a graph push** (BigQuery and Spanner) a defined entity forms no node table
 and no label. It becomes a boolean property `is<Name>` on its base, computed
@@ -413,8 +457,7 @@ both with a warning.
 an abstract one: no source resources and no key. Its definition rides the entry
 description as fixed trailing paragraphs (`Definition note: …` when there is a
 note, then `Defined as: <expression>`), after `Specializes: <parent>.`. Pull
-peels them back off, so push → pull → push is a fixed point. A binding profile
-that makes the base unavailable drops its defined entities too.
+peels them back off, so push → pull → push is a fixed point.
 
 OWL import compiles `owl:equivalentClass` definitions into defined entities; see
 [OWL import → Defined classes](owl-import.md#defined-classes-owlequivalentclass).
@@ -424,27 +467,29 @@ OWL import compiles `owl:equivalentClass` definitions into defined entities; see
 Relationships have a hierarchy of their own, separate from the entity one. A
 general relationship names what several specific edges have in common, so one
 query reaches all of them. `hasCounterparty` links a commercial document to the
-organization on its other side; on an opportunity that organization is the
-buyer, and on an invoice it is the payer:
+organization on its other side. Both of its ends are abstract categories:
+`Opportunity` and `Invoice` extend `CommercialDocument`, and `Client` extends
+`Organization`. On an opportunity the counterparty is the client buying, and on
+an invoice it is the client paying:
 
 ```yaml
 relationships:
   - name: hasCounterparty
-    from: CommercialDocument
-    to: Organization
+    from: CommercialDocument    # an abstract entity
+    to: Organization            # an abstract entity
     abstract: true              # a label over its sub-relationships, not an edge
   - name: hasBuyer
     from: Opportunity
     to: Client
     extends: [hasCounterparty]
     from_columns: [buyer_id]
-    to_columns: [org_id]
+    to_columns: [client_id]
   - name: hasPayer
     from: Invoice
-    to: Organization
+    to: Client
     extends: [hasCounterparty]
     from_columns: [payer_id]
-    to_columns: [org_id]
+    to_columns: [client_id]
 ```
 
 Both keys are `/google` extensions (`version: …/google`):
@@ -457,13 +502,22 @@ Both keys are `/google` extensions (`version: …/google`):
   edge tables over different sources never have to agree on columns.
 - **`abstract: true`** — the relationship is only a label. It keeps `from`/`to`,
   which document what it connects, but takes no `from_columns`/`to_columns` and
-  deploys no edge table. An abstract relationship nothing extends is warned
-  (it would reach no edges).
+  deploys no edge table. Because it binds no join, its ends may be abstract
+  entities: a relationship between categories, like `hasCounterparty`, is
+  written this way. An abstract relationship nothing extends is warned (it
+  would reach no edges).
 
 The same one rule applies as for entities. A sub-relationship's `from` and `to`
-should be its parent's ends or subtypes of them; the loader warns otherwise.
-Keep the parent abstract. A *concrete* parent works too — it deploys as an edge
-table whose `DEFAULT LABEL` carries `NO PROPERTIES`, with its description
+should be its parent's ends or subtypes of them; the loader warns otherwise. A
+concrete relationship connects only concrete leaf entities (see [Relationships
+and metrics belong on the leaves](#relationships-and-metrics-belong-on-the-leaves)),
+so push rejects one with an abstract end: make it abstract, or declare it
+between the leaves, as `hasBuyer` and `hasPayer` are. OWL import makes an object
+property with an abstract class at either end an abstract relationship for this
+reason (see [OWL import → Abstract
+classes](owl-import.md#abstract-classes-by-structure-kcmdabstract)). Keep the
+parent abstract. A *concrete* parent between leaves works too — it deploys as an
+edge table whose `DEFAULT LABEL` carries `NO PROPERTIES`, with its description
 dropped with a warning — but an edge present both in its table and in a child's
 table then counts twice under the parent label.
 

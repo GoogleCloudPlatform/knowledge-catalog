@@ -14,7 +14,9 @@ destination at once:
   AI agents the semantics and business context to work with your data. Governing
   needs no tables or data, so you can publish a purely logical model before it is
   bound, or govern the model together with its bindings — the catalog serves
-  either. `kcmd pull` reconstructs the model from these entries.
+  either. `kcmd pull` returns the model files push stored with these entries.
+  It rebuilds the model from the entries only when no copy of the model file is
+  stored.
 * **A data store, where the model becomes queryable.** Consumers ask for business
   concepts — `Customer`, `revenue` — and get consistent, model-defined answers
   rather than re-deriving joins and formulas per query. The store can be
@@ -149,8 +151,9 @@ model-qualified so they are checked like any other reference — which is what
 lets a rule no arithmetic decides, such as whether a discount is justified by
 the reason given, be stated at all. A constraint does nothing until something
 references it. An action names it in `guards`; then it is settled before that
-call runs, by a language model reading the attempted call. A binding profile
-can set `hydration.constraints: enforce` on an entity; then its BigQuery node
+call runs, by a language model reading the attempted call. The model file's
+inline binding, or a profile in the `<model>.profiles/` layout, can set
+`hydration.constraints: enforce` on an entity; then its BigQuery node
 view applies every rule `kcmd validate` can check to the rows a read sees (see
 [Enforcing constraints at consumption time](validation.md#enforcing-constraints-at-consumption-time)).
 A constraint is validated, published to Knowledge Catalog, and read back by
@@ -171,17 +174,32 @@ kcmd push --validate-only --print   # preview the entries and links, write nothi
 kcmd push                           # write them
 ```
 
-Push creates one entry per entity and metric, one for the model itself, and a
+Push creates one entry per entity and metric, one for the model itself, one
+per model file and profile file holding a copy of that file, and a
 `schema-join` link for each relationship:
 
 ```
-Wrote 4 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
+Wrote 5 new and 0 updated Knowledge Catalog entries; linked 1 relationship.
 ```
+
+Some relationships get no link, and push warns about each one before it writes
+to Knowledge Catalog. `kcmd push --validate-only` gives the same warnings.
+Knowledge Catalog keeps one `schema-join` link between two entries, so when
+several relationships join the same two entities, only the first one that push
+can publish gets a link. Knowledge Catalog does not support a relationship from
+an entity to itself, so push skips it. Pull still returns a skipped
+relationship, because it writes back the stored copy of the model file. Only a
+model file that pull rebuilds from the catalog metadata leaves it out, and only
+in a project where `kcmd init` has not provisioned the `semantic-ai-context`
+aspect that carries it (see
+[Annotation aspects](reference.md#annotation-aspects-lossless-push--pull)).
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that
-gives AI agents the semantics and business context to reason over your data, and
-`kcmd pull` reconstructs the model document from them (see [Pull](#pull)).
+gives AI agents the semantics and business context to reason over your data.
+`kcmd pull` returns the model file and profile files stored with them. It
+rebuilds the model document from them only when no copy of the model file is
+stored (see [Pull](#pull)).
 Governance works whether the model is purely logical or already bound: govern it
 before it has any physical home, or govern the logical model together with its
 bindings. Every store you bind it to later serves this one definition. (Running
@@ -312,17 +330,21 @@ existing one in place; you don't get duplicates.
 push. Push deletes the leftover catalog entry for you (the summary shows
 `removed N orphaned entries`).
 
-**When you rename or delete a relationship** — push removes the old
-`schema-join` link after writing the new ones, so a rename never leaves the
-two entities disconnected (the summary shows `unlinked N orphaned links`). Push
-reconciles only the links of the model it is deploying, and an entry group holds
-exactly one model, so it never disturbs another model's links.
+**When you rename or delete a relationship** — push removes orphaned and stale
+relationship links before writing the current ones, so a renamed or re-pointed
+relationship can be created without colliding with the old link (the summary
+shows `unlinked N orphaned links`). Push reconciles only the links of the model
+it is deploying, and an entry group holds exactly one model, so it never
+disturbs another model's links.
 
 **When you remove a whole model** — deleting its document does *not* remove it
 from the catalog. As long as you still push at least one other model in the same
 entry group, push stops and names the model the catalog still has that you no
 longer push, so you can't wipe one out by accident or by pushing from the wrong
 directory; run push again with `--force-remove` to delete its entries and links.
+That push deletes the old model entry first, and Dataplex deletes the model's
+other entries and its links with it. A push that stops partway then leaves the
+whole old model or none of it.
 Deleting *every* document is the exception: with no models left to push, the run
 reports `No semantic model documents found; nothing to deploy` and touches
 nothing — so remove a model while other models in its group remain, or delete
@@ -341,11 +363,12 @@ BigQuery line.
 
 ## Pull
 
-`kcmd pull` is the inverse of push's Knowledge Catalog leg: it reads the
-`semantic-*` entries back from the catalog and reconstructs local model
-documents at `catalog/EntryGroups/<entryGroupId>/<model>.yaml`. Use it to
-recover a workspace from a catalog someone else deployed, or to see what the
-catalog actually holds.
+`kcmd pull` is the inverse of push's Knowledge Catalog leg: it writes the model
+file and profile files push stored back to
+`catalog/EntryGroups/<entryGroupId>/`. When the catalog holds no copy of the
+model file, it rebuilds `<model>.yaml` from the `semantic-*` entries instead.
+Use it to recover a workspace from a catalog someone else deployed, or to see
+what the catalog actually holds.
 
 ```bash
 kcmd pull
@@ -356,8 +379,8 @@ from the same scope you authored under (`<projectId>.<locationId>.<entryGroupId>
 The `--dry-run` and `--force-remove` flags are in
 [Reference → pull flags](reference.md#pull).
 
-An entry group holds **exactly one** semantic model. Pull reconstructs that one
-model's document; a group with more than one `semantic-model` anchor is an
+An entry group holds **exactly one** semantic model. Pull returns that one
+model's files; a group with more than one `semantic-model` anchor is an
 unexpected state, so pull stops and names the anchors rather than guess which to
 keep.
 
@@ -367,10 +390,27 @@ entry group holding two models — so by default pull stops and reports the
 mismatch instead of deleting anything. Re-run with `--force-remove` to delete the
 local model and replace it with the catalog's. Pull never touches the data store.
 
-Pull can only return what push wrote, so a push→pull round trip is **not** an
-identity — see [What push and pull preserve](fidelity.md) for exactly what
-comes back, what comes back normalized, and what doesn't come back at all. Keep
-your authored document as the source of truth.
+Push also stores a copy of the model file and of each profile file, and pull
+writes those copies back to the paths they came from, byte for byte. A local
+profile file the catalog has no copy of would be stored again by the next push,
+so pull names it in a warning, and `--force-remove` deletes it. Each push marks
+its copies with one id and the number of copies it stored. It also puts that id
+in the `kcmd-push-id` label of the model entry, which it writes before the
+copies. Pull refuses the catalog when the copies come from two pushes, when
+their number differs from that count, or when the label names a push whose
+copies the catalog does not hold. Each of these means the last push stopped
+partway. Pull then writes and deletes nothing and asks you to push again.
+
+Pull cannot catch a push that stopped before it changed the model entry. The
+catalog then still holds what the previous push left, and pull returns that.
+After a failed push, push again before you pull.
+
+A model with no label and no stored copies, such as one an older `kcmd` pushed,
+is rebuilt from the catalog metadata. Pull warns that the rebuilt file may differ
+from what was pushed, and keeps every local profile file. Pull also rebuilds the
+model file when no stored copy is named after the model. That rebuild is **not** an identity
+— see [What push and pull preserve](fidelity.md) for exactly what comes back,
+what comes back normalized, and what doesn't come back at all.
 
 ## Importing an OWL ontology
 

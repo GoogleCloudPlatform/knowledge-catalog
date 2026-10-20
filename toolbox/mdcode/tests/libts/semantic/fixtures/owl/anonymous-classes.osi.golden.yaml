@@ -31,9 +31,11 @@ semantic_model:
       - name: hasBuyer
         from: Opportunity
         to: Party
+        abstract: true
       - name: governedBy
         from: Opportunity
         to: Contract
+        abstract: true
     constraints:
       - name: WonOpportunity_governedBy_some_Contract
         judgment: Each WonOpportunity has at least one governedBy relationship to a

@@ -302,8 +302,9 @@ appears nowhere above.
 |---|---|---|
 | `owl:Ontology` header | model `description`, `ai_context`, version | comment → `description`; labels → `ai_context.synonyms`; `skos:example` → `ai_context.examples`; `owl:versionInfo` → appended to `description` |
 | `owl:Class` | `datasets[]` entry | a logical entity — **no `source`** (a binding profile adds one before a graph deploy) |
-| `owl:Class` with no `owl:hasKey` (own or inherited) that has subclasses | dataset `abstract: true` | a category — a label on its subtypes, not a table (see [Abstract classes](#abstract-classes-by-structure-kcmdabstract)); a keyless **leaf** stays concrete and is listed in the coverage report |
+| `owl:Class` with no `owl:hasKey` (own or inherited) that has subclasses | dataset `abstract: true` | a category — a label on its subtypes, not a table, with no keys of its own (see [Abstract classes](#abstract-classes-by-structure-kcmdabstract)); a keyless **leaf** stays concrete and is listed in the coverage report |
 | `kcmd:abstract true` / `false` on a class | dataset `abstract` | overrides the structural rule either way; ignored (warned) on a vocabulary or defined class |
+| `owl:ObjectProperty` whose `rdfs:domain` or `rdfs:range` is an abstract class | relationship `abstract: true` | the label of the edges between the subtypes, with no edge table and no join columns; a derived one keeps its chain as text (see [Abstract classes](#abstract-classes-by-structure-kcmdabstract)) |
 | `C owl:equivalentClass D` where `C` has no key and `D` has one | `C` folded into `D` | `C` is not imported: its relationships and fields move to `D`, its subclasses extend `D`, its name and labels become `D`'s `ai_context.synonyms`; warned (see [Folded equivalent classes](#folded-equivalent-classes)) |
 | `kcmd:Metric` individual | `metrics[]` entry | name = local name, `expression` = `kcmd:expression`, `description` = `skos:definition` + `Unit: …` for `kcmd:unit`; see [Metrics](#metrics-kcmdmetric) |
 | `owl:DatatypeProperty` | `fields[]` on **each** domain's dataset | a logical field — **no `expression`** (a binding profile maps it to a column). A property shared by several classes takes **one** union domain, `rdfs:domain [ owl:unionOf (A B) ]`, and lands on each member (several `rdfs:domain` triples mean the *intersection* in OWL; they are still accepted, landing on each, for backward compatibility). A union member that is not a named class is warned and skipped |
@@ -325,7 +326,7 @@ appears nowhere above.
 | `owl:propertyDisjointWith`, `owl:AllDisjointProperties`, `owl:AllDifferent`, the other property characteristics, `rdfs:subPropertyOf` between datatype properties, `rdfs:isDefinedBy`, `owl:versionInfo` on a term, `rdfs:seeAlso` other than a deprecation replacement | *(dropped)* | **no native home** — not imported (see [Limitations](#limitations)) |
 | `rdfs:range xsd:*` | field `datatype` | see [Datatypes](#datatypes-rdfsrange) |
 | `owl:hasKey ( ... )` | dataset `primary_key` | single or composite, in list order |
-| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead (not on a category whose subclasses have keys of their own); inherited as a unique key by concrete subclasses |
+| `owl:InverseFunctionalProperty` | dataset `unique_keys` | a uniquely-identifying property; omitted when it is already the `primary_key`; a lone one on a keyless class is promoted to `primary_key` instead (not on a category whose subclasses have keys of their own); inherited as a unique key by concrete subclasses, and kept only there when its class is abstract |
 | `rdfs:label` on a datatype property | field `label` | the field's display name (a `label` slot exists only on fields); dropped when it only respaces/recases the name |
 | `rdfs:label` on a class / object property | `ai_context.synonyms` | no `label` slot there, so a distinct label becomes an alternate name; dropped when redundant with the name |
 | extra `rdfs:label` / `skos:altLabel` / `prefLabel` / `hiddenLabel` | `ai_context.synonyms` | genuinely alternate names; feed NL search |
@@ -409,13 +410,21 @@ BigQuery Graph / BI treats it as one.
   is skipped on a **category whose subclasses declare keys of their own**
   (`core:unitName` on `OrgUnit`, over `MarketUnit` and `ServiceGroup` keyed by
   their codes): each subclass is identified by its own key, so the property
-  stays a unique key and the category stays [abstract](#abstract-classes-by-structure-kcmdabstract).
+  stays a unique key, which the subclasses carry, and the category stays
+  [abstract](#abstract-classes-by-structure-kcmdabstract).
 - **Unique keys flow down `extends`.** Every concrete subclass (not abstract,
   not a defined entity, not a vocabulary) gets its ancestors' `unique_keys`
   after its own — `MarketUnit` has `primary_key: [marketUnitCode]` and
   `unique_keys: [[unitName]]` — so a lookup by name resolves on the table
   that backs it. Primary keys are not inherited this way: a subclass with no
   key of its own is identified by its nearest keyed ancestor's.
+- **An abstract class has no keys.** It has no table, so it declares neither a
+  `primary_key` nor `unique_keys` (push rejects either on an abstract entity):
+  `OrgUnit` comes out with none, its `unitName` key on `MarketUnit` and
+  `ServiceGroup` only. A key on a class that `kcmd:abstract true` makes
+  abstract moves down too: it becomes the `primary_key` of a subclass with no
+  key of its own and a unique key of the others. The coverage report lists
+  such a key on the subclasses that carry it.
 
 Keys are **logical grain**, not a binding — they are the entity's identity, so
 they come across even though the model has no physical binding. They also tell
@@ -491,6 +500,13 @@ Two boundaries to be clear about:
   publishes each entry with exactly the fields it declares and records the
   hierarchy as a `Specializes: Person.` paragraph on the subtype's entry (see
   [Class hierarchies on the catalog](reference.md#class-hierarchies-on-the-catalog)).
+  Every push accepts a concrete relationship only between concrete leaf
+  entities. An object property whose `rdfs:domain` or `rdfs:range` is an
+  abstract class imports as an abstract relationship (see [Abstract
+  classes](#abstract-classes-by-structure-kcmdabstract)); one whose end is a
+  keyed class with table-backed subclasses (a defined subclass does not count)
+  imports as written, and push rejects it until you move it onto the leaf
+  classes.
 - **Relationships have their own hierarchy.** Entity `extends` never makes an
   edge inherit anything; property inheritance is a separate mapping, below.
 
@@ -522,6 +538,19 @@ entity with no `primary_key`; the coverage report lists it (`owl:hasKey
 `ex:Note kcmd:abstract true` makes a leaf abstract, `ex:Organization
 kcmd:abstract false` keeps a keyless parent concrete. Vocabularies and defined
 classes are never abstract; `kcmd:abstract true` on one is warned and ignored.
+
+An abstract class keeps **no keys** (see [Keys](#keys-owlhaskey-owlinversefunctionalproperty)),
+and an object property with an abstract class at either end is an **abstract
+relationship** by the same structure: its edges are the edges between the
+class's concrete subtypes, so it is the label those edges share, with no edge
+table of its own (see [Property hierarchies](#property-hierarchies-rdfssubpropertyof)).
+`ex:owns` from `Party` comes out `abstract: true`, with no `from_columns` /
+`to_columns`; the coverage report gives the reason, and an `encodedBy` join it
+would otherwise get is dropped with a warning. A derived relationship
+(`owl:propertyChainAxiom`) with an abstract end is abstract too: its pairs
+would need a key on each end, and an abstract relationship takes no `via`, so
+its chain is written into `ai_context.instructions` instead, with a warning.
+Declare the edge between the leaf classes to bind it.
 
 ### Folded equivalent classes
 
@@ -557,7 +586,8 @@ never folded.
 inheritance](inheritance.md#relationship-inheritance)). The super-property
 becomes an **abstract relationship**: it keeps its `from`/`to` (so it still says
 what it connects) but binds no join columns and deploys no edge table. Each
-sub-property is an ordinary relationship that names it:
+sub-property between concrete classes is an ordinary relationship that names
+it:
 
 ```turtle
 ex:hasCounterparty a owl:ObjectProperty ;
@@ -565,7 +595,7 @@ ex:hasCounterparty a owl:ObjectProperty ;
 ex:hasBuyer a owl:ObjectProperty ; rdfs:subPropertyOf ex:hasCounterparty ;
     rdfs:domain ex:Opportunity ; rdfs:range ex:Client .
 ex:hasPayer a owl:ObjectProperty ; rdfs:subPropertyOf ex:hasCounterparty ;
-    rdfs:domain ex:Invoice ; rdfs:range ex:Organization .
+    rdfs:domain ex:Invoice ; rdfs:range ex:Client .
 ```
 
 ```yaml
@@ -580,13 +610,16 @@ relationships:
     extends: [hasCounterparty]
   - name: hasPayer
     from: Invoice
-    to: Organization
+    to: Client
     extends: [hasCounterparty]
 ```
 
 On a graph push each concrete edge table carries `LABEL hasCounterparty NO
 PROPERTIES`, so `MATCH (d)-[:hasCounterparty]->(o)` spans both edge tables —
-the downstream effect `rdfs:subPropertyOf` means.
+the downstream effect `rdfs:subPropertyOf` means. A sub-property with an
+abstract class at either end (`rdfs:range ex:Organization`, a category) is
+abstract as well, like any relationship with an abstract end (see [Abstract
+classes](#abstract-classes-by-structure-kcmdabstract)).
 
 - **Inferred ends.** Super-properties are often declared with only a range (or
   nothing): `belongsToTerritory` in the fixture has `rdfs:range OrgUnit` and no
@@ -605,7 +638,7 @@ the downstream effect `rdfs:subPropertyOf` means.
   ends, and the loader flags them. The importer drops such a parent from
   `extends`, with a warning. This happens most often after a
   [vocabulary](#vocabularies-owloneof-named-individuals) detaches from its
-  superclass: a `GeographicRegion` that was an `OrgUnit` no longer fits
+  superclass: a `GeographicRegion` detached from `OrgUnit` does not fit
   `belongsToTerritory`'s range, so `inRegion` stops extending it. The parent
   stays the abstract umbrella over the sub-properties that do fit.
 
@@ -1106,12 +1139,17 @@ relationships:
 - A chain property that is also a superproperty stays a concrete derived
   relationship (warned): its pairs are its own edges, and its subproperties
   still carry its label.
+- A chain property with an abstract class at either end imports as an
+  abstract relationship instead (warned): its pairs would need a key on that
+  end, so its chain is written into `ai_context.instructions` rather than
+  `via` (see [Abstract classes](#abstract-classes-by-structure-kcmdabstract)).
 - These chains are not imported, each with a warning: a single-step chain, a
   chain naming the property itself (recursive, so no fixed join can
   materialize it), and a step other than a named property or `owl:inverseOf`.
   Only the first of several chains on one property is imported.
 - The import runs the loader's chain checks, so a chain whose steps do not
-  connect is already reported by `owl import`.
+  connect, or that walks an abstract relationship, is already reported by
+  `owl import`.
 
 The import summary counts both features:
 `converted N classes, … (V vocabularies, D derived relationships)`, shown only
@@ -1220,7 +1258,8 @@ coverage report lists each one (`kcmd:Metric`, compiled or dropped, plus
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, and keys) with nothing more to fill in:
+fields, and keys) with nothing more to fill in. The exception is a relationship
+on a class with subclasses, which push rejects as described above:
 
 ```console
 $ kcmd push                  # publishes the logical model to Knowledge Catalog
@@ -1233,12 +1272,14 @@ entities and fields still publish while the edge waits.
 A **BigQuery or Spanner Graph** deploy needs two things the import leaves open,
 and they belong in different places:
 
-1. **The join columns on each edge — in the model.** The import gives every
-   relationship its endpoints (`from`/`to`) but no join columns; which columns an
-   edge joins on is a *logical* fact the model owns, not a physical binding, so
-   you add it to the imported model itself. The keys the import already recovered
-   (`primary_key`, `unique_keys`) tell you which columns an edge's `to_columns`
-   must reference:
+1. **The join columns on each edge — in the model, and in each named profile.**
+   The import gives every relationship its endpoints (`from`/`to`) but no join
+   columns. Add them to the imported model: there they bind the edge for the
+   model's inline binding, and a push to Knowledge Catalog publishes the edge as
+   a link. A named profile states each relationship's join columns itself (see
+   [Merge rules](profiles.md#merge-rules)). The keys the import already
+   recovered (`primary_key`, `unique_keys`) tell you which columns an edge's
+   `to_columns` must reference:
 
    ```yaml
    # sales.yaml — add the join columns to the imported relationship
@@ -1261,11 +1302,13 @@ and they belong in different places:
    column each field reads, and the deployment target go in a
    [binding profile](profiles.md): a document in the same schema, kept beside the
    model as `<model>.profiles/<name>.yaml`, that adds *only* the binding and
-   leaves the logical model untouched. A profile may set `source`, field
-   `expression`, and `deployment_target` — nothing logical (a `relationships`
-   block in a profile is rejected). A field the profile does not bind is left
-   unbound; there is no separate flag. The model and the profile merge by name at
-   push time:
+   leaves the logical model untouched. A profile may set `source`, key columns,
+   field `expression`, `fields_exclude`, each relationship's join columns,
+   `hydration`, `mode` and `deployment_target` — nothing logical (see [the
+   contract](profiles.md#what-a-profile-may-change--the-contract)). A field the
+   profile does not name keeps the model file's binding, and a field it lists
+   in `fields_exclude` is unbound; there is no separate flag. The model and the
+   profile merge by name at push time:
 
    ```yaml
    # sales.profiles/warehouse.yaml — physical binding for the sales model
@@ -1285,6 +1328,8 @@ and they belong in different places:
            fields:
              - { name: orderId, expression: o_orderkey }
              # ... the remaining Order fields ...
+       relationships:
+         - { name: placedBy, from_columns: [o_custkey], to_columns: [c_custkey] }
    ```
 
    **Binding an imported hierarchy.** The import writes a subclass with only its
@@ -1306,8 +1351,9 @@ and they belong in different places:
    ```
 
    The graph then reads `c_name` both for `Customer`'s own label and for the
-   `LABEL Person` clause on the `customers` node table. An inherited field left
-   out of the profile is unbound, like any other.
+   `LABEL Person` clause on the `customers` node table. An inherited field the
+   profile does not name keeps what the model file gives it, like any other
+   field, and one it lists in `fields_exclude` is unbound.
 
 With the join columns in the model and the profile in place, a single push
 deploys the graph:
@@ -1345,14 +1391,17 @@ Everything else is removed, together with what refers to it:
 - glossary `defines` links to a removed entity. The term itself stays: it is
   vocabulary.
 
-The binding is a [binding profile](profiles.md), or any model document with
-inline bindings; only entities with a non-empty `source` count. The import looks
-for it in this order:
+The binding is a [binding profile](profiles.md), either a profile file or a
+`semantic_model` document in the `<model>.profiles/` layout, or any model
+document with inline bindings; only entities with a non-empty `source` count.
+The import looks for it in this order:
 
 1. the path given to the flag: `--prune-unbound model/shop.profiles/bigquery.yaml`;
 2. with the bare flag, the model's binding profiles in the scope's
-   semantic-model layout (`<model>.profiles/*.yaml`);
-3. else the `<model>.profiles/*.yaml` beside `--out`.
+   semantic-model layout: its `<model>.profile.<name>.yaml` files when there
+   are any, else `<model>.profiles/*.yaml`;
+3. else the same files beside `--out`: the `<model>.profile.<name>.yaml` files
+   first, else `<model>.profiles/*.yaml`.
 
 The import fails, and writes nothing, when no binding is found, when the named
 file does not exist, or when the binding binds no entity of the model (pruning

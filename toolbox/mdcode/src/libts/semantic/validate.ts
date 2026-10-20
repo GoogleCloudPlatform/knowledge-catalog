@@ -14,11 +14,14 @@ import {SpannerClient} from '../gcp/spanner';
 import {validateDefinedEntities} from './defined_entities';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {LoadedModel} from './loader';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
-import {DeclaredConcept, declaredConceptFields, resolveInheritance} from './resolve_inheritance';
+import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
+import {applyProfileExclusions, expressionSources, ProfileExclusion, sourcesDialect} from './resolve_profiles';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
+import {SqlColumn, withoutComments} from './sql_parser';
 import {checkUnitsAndHistory} from './units_history';
 import {checkGlossary} from './glossary';
 import {checkHydration, isDerivedEntity} from './hydration';
@@ -31,16 +34,30 @@ import {generatesVocabularyView, isVocabulary} from './vocabulary';
 // `targetOptional` permits a model with NO deployment target -- the case for a
 // Knowledge-Catalog-only push, which governs the logical model and deploys no
 // graph. A graph leg never sets it, so a bq/spanner/all push still requires
-// exactly one target. A KC-only push ignores its deployment target entirely --
-// it deploys no graph.
+// exactly one target. A KC-only push skips the target count and kind checks,
+// while still rejecting a repeated target URI.
 //
 // `fieldsPruned` says the caller has already dropped every field the selected
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
 // author declared. Checks that read a field list have to stand down for such a
 // model (see validateConstraints).
+//
+// `warnings` collects non-fatal messages (such as an expression the SQL parser
+// could not read, whose field references were therefore not checked) for the
+// caller to print.
+//
+// `liftedExclusions` are the fields a binding profile excludes, which a
+// catalog-only push takes off the model so that it publishes every field. The
+// check that each inherited field holds SQL still leaves each one off the
+// entity that excludes it, as applying the profile does.
 export function validatePushRequirements(
     models: LoadedModel[],
-    opts: {targetOptional?: boolean; fieldsPruned?: boolean} = {}): string[] {
+    opts: {
+      targetOptional?: boolean;
+      fieldsPruned?: boolean;
+      warnings?: string[];
+      liftedExclusions?: ReadonlyArray<ProfileExclusion>;
+    } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
@@ -55,6 +72,19 @@ export function validatePushRequirements(
       continue;
     }
 
+    // A resource name and its URI name the same resource.
+    const seenUris = new Set<string>();
+    for (const uri of deployInfo.uris) {
+      if (seenUris.has(asResourceUri(uri))) {
+        errors.push(
+            `model '${model.name}' (${document}) declares duplicate ` +
+            `deployment target '${uri}'; each deployment must target a ` +
+            `distinct resource.`);
+        break;
+      }
+      seenUris.add(asResourceUri(uri));
+    }
+
     // A graph push must declare exactly one deployment target -- a single
     // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
     // graphs per model). The target's host selects which deploy leg runs.
@@ -64,57 +94,45 @@ export function validatePushRequirements(
     // gets its own arm below so it is not reported as a typo.
     //
     // A KC-only push (targetOptional) deploys no graph, so its deployment
-    // target is irrelevant: skip the check entirely. Such a push may carry no
-    // target (a logical model), one, or even both backends (whose KC aspect
-    // records both)
-    // -- none of that affects the Knowledge Catalog write.
+    // target count and kind are irrelevant: skip this check (duplicate targets
+    // were already rejected above). Such a push may carry no target (a logical
+    // model), one, or even several backends (whose KC aspect records all of
+    // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
-      if (deployInfo.uris.length !== 1) {
+      const vanilla = model.version === OSSIE_VERSION;
+      if (deployInfo.malformed.length) {
+        // A target in no accepted form is named, alone or beside others, so
+        // the author knows which entry to fix.
         errors.push(
-            `model '${model.name}' (${document}) declares ${
-                deployInfo.uris
-                    .length} deploymentTargets; exactly one BigQuery ` +
-            `Graph or Spanner Graph target is required under its GOOGLE ` +
-            `custom_extension.`);
-      } else if (deployInfo.alloyDb.length) {
-        // Parseable, supported, and for the other command. AlloyDB has no
-        // property-graph DDL, so there is no graph here for a push to deploy
-        // -- which makes this a profile pointed at the wrong verb rather than
-        // a URI to correct, and the message says which verb it is for.
-        errors.push(
-            `model '${model.name}' (${document}) deploymentTarget '${
-                deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
-            `model runs against rather than deploys to; AlloyDB has no ` +
-            `property graph for a push to publish. Push under a profile ` +
-            `whose target is a BigQuery or Spanner Graph, and use this one ` +
-            `to run actions against.`);
-      } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
-        // The single target is present but is not a supported graph URI.
-        errors.push(
-            `model '${model.name}' (${document}) deploymentTarget '${
+            `model '${model.name}' (${document}) target '${
                 deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
             `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
             `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
             `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
-      }
-    }
-
-    // A model that targets a BigQuery graph must have every metric resolve to a
-    // single entity, or the metric cannot lower to a MEASURE and would be
-    // silently dropped from the graph. The loader sets metric.entity only when
-    // the expression resolves to exactly one entity, so an unset entity is the
-    // "references zero or multiple entities" case. Spanner Graph has no
-    // MEASURE, so it imposes no such requirement (its metrics are dropped by
-    // design).
-    if (deployInfo.bigQuery.length > 0) {
-      for (const metric of model.metrics ?? []) {
-        if (!metric.entity) {
-          errors.push(
-              `metric '${metric.name}' in model '${model.name}' (${
-                  document}) targets a BigQuery graph but does not resolve to a ` +
-              `single entity; set its attach entity or scope its expression to ` +
-              `one entity.`);
-        }
+      } else if (deployInfo.uris.length !== 1) {
+        errors.push(
+            `model '${model.name}' (${document}) declares ${
+                deployInfo.uris
+                    .length} deployments; push uses ` +
+            `exactly one deployment for now, with a BigQuery Graph or ` +
+            `Spanner Graph target${
+                vanilla ? `; ${DEPLOYMENTS_VERSION_HINT}` :
+                          ` under 'deployments'.`}`);
+      } else if (deployInfo.alloyDb.length) {
+        // Parseable, supported, and for the other command. AlloyDB has no
+        // property-graph DDL, so there is no graph here for a push to deploy
+        // -- which makes this a deployment pointed at the wrong verb rather
+        // than a URI to correct, and the message says which verb it is for.
+        errors.push(
+            `model '${model.name}' (${document}) target '${
+                deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
+            `model runs against rather than deploys to; AlloyDB has no ` +
+            `property graph for a push to publish. Declare a BigQuery or ` +
+            `Spanner Graph target (${
+                vanilla ? `${DEPLOYMENTS_VERSION_HINT}; ` :
+                          `under 'deployments'; `}push uses exactly one ` +
+            `deployment for now), or run 'kcmd push --no-profile' to publish ` +
+            `to Knowledge Catalog only.`);
       }
     }
 
@@ -128,9 +146,9 @@ export function validatePushRequirements(
     if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
         // An M:N edge binds through its junction table (association), so its
-        // direct source/destination columns are empty by design -- bigquery.ts
-        // renders it from `rel.association`. Only a plain FK edge needs direct
-        // join columns.
+        // direct source/destination columns are empty by design -- the graph
+        // generators render it from `rel.association`. Only a plain FK edge
+        // needs direct join columns.
         if (rel.association) continue;
         // An abstract relationship never forms an edge table -- it survives
         // only as a LABEL on its concrete descendants' edge tables -- so it
@@ -149,7 +167,7 @@ export function validatePushRequirements(
           }
           continue;
         }
-        if (!rel.source.columns.length || !rel.destination.columns.length) {
+        if (!rel.source.columns.length && !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
                   document}) targets a graph but has no join columns; add its ` +
@@ -178,42 +196,30 @@ export function validatePushRequirements(
     // relationship analogue of a dangling entity `extends`, and is reported
     // the same way: a hard error on every push, KC-only included, because the
     // label it promises (`MATCH ()-[:Parent]->()`) would silently match
-    // nothing. The loader accepts it and only warns. A profile push that
-    // pruned the model is exempt, as for entities: pruning may drop a parent
-    // whose own endpoints went unbound.
-    if (!opts.fieldsPruned) {
-      const relNames = new Set((model.relationships ?? []).map(r => r.name));
-      for (const rel of model.relationships ?? []) {
-        for (const parent of rel.extends ?? []) {
-          if (!relNames.has(parent)) {
-            errors.push(
-                `relationship '${rel.name}' in model '${model.name}' (${
-                    document}) extends '${parent}', which is not a ` +
-                `relationship in the model; declare it (it may be ` +
-                `'abstract: true') or remove it from 'extends'.`);
-          }
+    // nothing. The loader accepts it and only warns. Pruning never removes a
+    // relationship, so a dangling parent is always the author's.
+    const relNames = new Set((model.relationships ?? []).map(r => r.name));
+    for (const rel of model.relationships ?? []) {
+      for (const parent of rel.extends ?? []) {
+        if (!relNames.has(parent)) {
+          errors.push(
+              `relationship '${rel.name}' in model '${model.name}' (${
+                  document}) extends '${parent}', which is not a ` +
+              `relationship in the model; declare it (it may be ` +
+              `'abstract: true') or remove it from 'extends'.`);
         }
       }
     }
 
-    // Resolving inheritance throws on an `extends` naming an entity the model
-    // does not declare, and the two checks below stand down rather than
-    // stack-trace on one. Standing down has to mean reporting somewhere or it
-    // means publishing a broken model in silence: the loader accepts such a
-    // model, and a Knowledge-Catalog-only push reaches no graph leg that would
-    // resolve inheritance and catch it. So the failure is reported here, once
-    // per model, and the checks below stay quiet about it. A profile push that
-    // pruned fields is exempt for the same reason those checks are -- pruning
-    // can remove a supertype whole, and the dangling `extends` it leaves is the
-    // pruner's doing rather than the author's.
-    if (!opts.fieldsPruned) {
-      const failure = inheritanceFailure(model);
-      if (failure) {
-        errors.push(
-            `model '${model.name}' (${document}): ${failure} Constraint and ` +
-            `action checks that need the resolved model are skipped until ` +
-            `this is fixed.`);
-      }
+    errors.push(...validateInheritance([{document, model}]));
+    errors.push(...validateColumnsAndRelationships(model, document));
+    errors.push(...relationshipKeyErrors(model, document));
+    const flaggedMetrics = new Set<string>();
+    errors.push(...validateExpressionReferences(
+        [{document, model}], !!opts.fieldsPruned, opts.warnings,
+        flaggedMetrics, opts.liftedExclusions));
+    if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
+      errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -304,9 +310,9 @@ function validateActions(
   // inheritance.
   //
   // `fieldsPruned` stands the whole lookup down, which is what a profile push
-  // needs: pruning removes unbound fields and unavailable entities, so the
-  // concept a parameter projects from may be gone from the model in hand even
-  // though the author's document names one that exists. A parameter needs only
+  // needs: pruning removes unbound and unavailable fields, so the field a
+  // parameter projects from may be gone from the model in hand even though the
+  // author's document names one that exists. A parameter needs only
   // the logical definition and the loader already copied it down, so nothing
   // about the push depends on resolving the reference a second time here.
   // A `type` naming something that is not a scalar counts too, and it is the
@@ -510,12 +516,10 @@ function sqlExecutorErrors(action: Action, where: string): string[] {
 //
 // An absent `concepts` says the model reaching this point is a profile's view
 // of the author's model, not the author's model. Everything that reads the
-// ontology stands down there, because pruneUnavailable drops whole entities
-// and whole relationships -- not only unbound fields -- when a profile does
-// not bind their keys or join columns. An action survives that pruning
-// untouched, so an entry on a dropped concept is the profile's doing rather
-// than the author's, and failing the deploy over it would fail it for no
-// reason. An action reaches no graph in any case. What is left is the one
+// ontology stands down there, because pruneUnavailable drops the fields a
+// profile leaves unbound, and the metrics that read them. An entry naming a
+// dropped field is the profile's doing rather than the author's, and failing
+// the deploy over it would fail it for no reason. An action reaches no graph in any case. What is left is the one
 // check that reads only the entry itself.
 function affectedConceptErrors(
     action: Action, where: string,
@@ -799,8 +803,9 @@ function unknownFieldRefs(
 // resolve.
 //
 // `declaredFields` and `declaredConcepts` both resolve inheritance, and
-// resolving THROWS on an `extends` naming an entity the model does not declare
-// rather than reporting it. The loader accepts such a model, a
+// resolving THROWS on an `extends` naming an entity the model does not declare,
+// on a cycle, and on an ambiguously inherited field, rather than reporting it.
+// The loader accepts such a model, a
 // Knowledge-Catalog-only push reaches no graph leg to catch it, and a profile
 // push can create one by pruning a supertype whole. A validation gate reports;
 // it does not stack-trace, so every caller that resolves inheritance to answer
@@ -822,27 +827,707 @@ function ifResolvable<T>(build: () => T): T|undefined {
 // Reported rather than thrown, and reported once for the model rather than once
 // per check that needed it. A model declaring no inheritance cannot fail, and
 // resolving clones, so it is not asked.
-function inheritanceFailure(model: SemanticModel): string|undefined {
+function inheritanceFailure(model: SemanticModel):
+    {kind: InheritanceError['kind']|'other'; message: string}|undefined {
   if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
   try {
     resolveInheritance(model);
     return undefined;
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return message.endsWith('.') ? message : `${message}.`;
+    return {
+      kind: e instanceof InheritanceError ? e.kind : 'other',
+      message: message.endsWith('.') ? message : `${message}.`,
+    };
   }
 }
 
-// Every field each entity has, inherited ones included. Inheritance is resolved
-// through the same pass the graph legs use rather than by walking `extends`
-// here, so the two can never disagree about what a subtype has. The pass
-// clones, so it is skipped for a model that declares no inheritance.
+// The authored name of each property that defines a field rather than binds
+// it, for messages.
+const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
+  type: 'datatype',
+  aiContext: 'ai_context',
+  customExtensions: 'custom_extensions',
+};
+
+/**
+ * Returns one message per broken inheritance or concrete-leaf rule, or an
+ * empty list: a cycle, an unknown parent, or a field
+ * inherited from two unrelated ancestors; a redeclared inherited field; an
+ * abstract entity with a table; and a relationship or metric on an entity that
+ * is not a concrete leaf. Pruning can remove the field a rule is about, so a
+ * push that prunes runs this on the model before pruning as well as after.
+ */
+export function validateInheritance(models: LoadedModel[]): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    // Resolving inheritance throws on an `extends` naming an entity the model
+    // does not declare, on a cycle, and on a field inherited from two unrelated
+    // ancestors, and the checks below stand down rather than stack-trace on
+    // one. Standing down has to mean reporting somewhere or it means
+    // publishing a broken model in silence: the loader accepts such a model,
+    // and a Knowledge-Catalog-only push reaches no graph leg that would resolve
+    // inheritance and catch it. So the failure is reported here, once per
+    // model. Pruning never removes an entity, so an unknown parent is always
+    // the author's.
+    const failure = inheritanceFailure(model);
+    if (failure) {
+      errors.push(
+          `model '${model.name}' (${document}): ${failure.message} Checks ` +
+          `that need the resolved model are skipped until this is fixed.`);
+    }
+    errors.push(...inheritanceRuleErrors(model, document));
+  }
+  return errors;
+}
+
+// The rules inheritance puts on a model beyond resolving it:
+//   - a subtype may redeclare an inherited field only to rebind it: the line
+//     sets `expression` and nothing else;
+//   - an abstract entity has no table, so it declares no source, no key and no
+//     bound field;
+//   - a relationship endpoint, and the entity a metric belongs to, is a
+//     concrete leaf: not abstract, and extended by no other entity. An edge
+//     joins one table to one table and a measure binds to one table, while a
+//     non-leaf entity stands for the union of its descendants' tables.
+// The first rule needs the resolved model and is skipped when resolution
+// fails; that failure is reported once elsewhere.
+function inheritanceRuleErrors(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entities = model.entities ?? [];
+  const where = (name: string) =>
+      `entity '${name}' in model '${model.name}' (${document})`;
+
+  const resolved = entities.some(e => e.extends?.length) ?
+      ifResolvable(() => resolveInheritance(model).model.entities ?? []) :
+      undefined;
+  if (resolved) {
+    const ancestorsOf =
+        new Map(resolved.map(e => [e.name, e.extends ?? []]));
+    const ownNames = new Map(
+        entities.map(e => [e.name, new Set(e.fields.map(f => f.name))]));
+    for (const entity of entities) {
+      const inherited = new Set(
+          (ancestorsOf.get(entity.name) ?? [])
+              .flatMap(a => [...(ownNames.get(a) ?? [])]));
+      for (const field of entity.fields) {
+        if (!inherited.has(field.name)) continue;
+        const defined =
+            FIELD_DEFINITION_KEYS.filter(k => field[k] !== undefined)
+                .map(k => `'${AUTHORED_NAME[k] ?? k}'`);
+        if (defined.length) {
+          errors.push(
+              `${where(entity.name)}: field '${field.name}' is inherited, so ` +
+              `it may only be rebound to a column; remove ${
+                  defined.join(', ')}, which an ancestor defines.`);
+        } else if (!isFieldBound(field)) {
+          // A redeclaration sets `expression` and nothing else, so a line with
+          // only the name is not one.
+          const from = (ancestorsOf.get(entity.name) ?? [])
+                           .find(a => ownNames.get(a)?.has(field.name));
+          errors.push(
+              `${where(entity.name)}: field '${field.name}' is inherited from ` +
+              `'${from}'; restate it only to rebind it with 'expression', or ` +
+              `remove the line.`);
+        }
+      }
+    }
+  }
+
+  for (const entity of entities) {
+    if (!entity.abstract) continue;
+    if (entity.dataSource || entity.authoredSource) {
+      errors.push(
+          `${where(entity.name)} is abstract, so it has no table and cannot ` +
+          `declare a source.`);
+    }
+    if (entity.keys.length || entity.uniqueKeys?.length) {
+      errors.push(
+          `${where(entity.name)} is abstract, so it has no table and cannot ` +
+          `declare a primary key or unique keys.`);
+    }
+    for (const field of entity.fields) {
+      if (isFieldBound(field)) {
+        errors.push(
+            `${where(entity.name)} is abstract, so its field '${
+                field.name}' cannot carry an expression; bind it on each ` +
+            `concrete subtype instead.`);
+      }
+    }
+  }
+
+  const abstractNames =
+      new Set(entities.filter(e => e.abstract).map(e => e.name));
+  // A defined entity is a subset of its parent's rows rather than another
+  // table (see Entity.definition), and an abstract subtype has no table at
+  // all, so neither makes its parent a non-leaf. A table-backed entity does,
+  // and so it does to every ancestor, also through an abstract intermediate:
+  // in A <- abstract B <- C, A stands for C's rows as well.
+  const parentsOf = new Map(entities.map(e => [e.name, e.extends ?? []]));
+  const extendedNames = new Set<string>();
+  for (const e of entities) {
+    if (e.definition || e.abstract) continue;
+    const queue = [...(parentsOf.get(e.name) ?? [])];
+    while (queue.length) {
+      const parent = queue.shift()!;
+      if (extendedNames.has(parent)) continue;
+      extendedNames.add(parent);
+      queue.push(...(parentsOf.get(parent) ?? []));
+    }
+  }
+  const notLeaf = (name: string): string|undefined => abstractNames.has(name) ?
+      'abstract' :
+      extendedNames.has(name) ? 'extended by another entity' : undefined;
+  for (const rel of model.relationships ?? []) {
+    // An abstract relationship forms no edge table: it is a label on its
+    // concrete sub-relationships' edges, so its endpoints may be supertypes
+    // (see Relationship.abstract).
+    if (rel.abstract) continue;
+    // A relationship from an entity to itself is reported once.
+    for (const end of new Set([rel.source.entity, rel.destination.entity])) {
+      const why = notLeaf(end);
+      if (why) {
+        errors.push(
+            `relationship '${rel.name}' in model '${model.name}' (${
+                document}) connects '${end}', which is ${why}; a ` +
+            `relationship may connect only concrete leaf entities.`);
+      }
+    }
+  }
+  for (const metric of model.metrics ?? []) {
+    const owner = metric.authoredEntity ?? metric.entity;
+    const why = owner ? notLeaf(owner) : undefined;
+    if (why) {
+      errors.push(
+          `metric '${metric.name}' in model '${model.name}' (${
+              document}) belongs to '${owner}', which is ${why}; a metric ` +
+          `may belong only to a concrete leaf entity.`);
+    }
+  }
+  return errors;
+}
+
+// True when a rejected column string could be a column name written without
+// backticks, such as `order date`, `order-date`, `margin%` or `R&D cost`. An
+// empty value gets no hint. Neither does a value that starts or ends with
+// whitespace, because the fix there is to delete the whitespace. BigQuery
+// allows only letters, numeric characters, marks, connector punctuation,
+// dashes, whitespace and `& % = + : ' < > # |` in a column name, so any other
+// character rules out the hint. Of the operators isColumnName rejects,
+// BigQuery allows `- + % = < > | &`. Each of those counts as an operator at
+// the start of the value, or next to whitespace unless it ends the value. No
+// operator among them can end an expression, so `growth %` keeps the hint. A
+// value made only of words, such as `a AND b`, passes this test, so the hint
+// is worded as a condition.
+function couldBeUnquotedColumnName(col: string): boolean {
+  return col === col.trim() &&
+      /^[\p{L}\p{N}\p{Pc}\p{Pd}\p{M}\s&%=+:'<>#|]+$/u.test(col) &&
+      !/^[-+%=<>|&]|\s[-+%=<>|&](?!$)|[-+%=<>|&]\s/.test(col);
+}
+
+function invalidColumnNameError(
+    owner: string, modelName: string, document: string, slot: string,
+    col: string): string {
+  const hint = couldBeUnquotedColumnName(col) ?
+      ' (if it names a column with spaces or special characters, wrap it ' +
+          'in backticks, for example `order date`)' :
+      '';
+  return `${owner} in model '${modelName}' (${document}): ${slot} column '${
+      col}' is not a physical column name; keys and join columns must name ` +
+      `physical table columns, not expressions or field references${hint}.`;
+}
+
+// Checks that every key column and join column is a physical column name and
+// not a SQL expression or an entity-qualified reference. Key columns are the
+// entries of `primary_key` and `unique_keys`. Join columns are the entries of
+// `from_columns` and `to_columns`. Also checks that every relationship's
+// endpoints name entities the model declares, and that its two join column
+// lists have equal length. The loader checks endpoints and lengths for a model
+// it reads, and this repeats them for a model built in memory. Push runs this
+// on the model with its profile applied, so it also checks the key and join
+// columns a profile file supplies. An abstract entity's keys and an
+// association's direct join columns are not checked.
+function validateColumnsAndRelationships(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entityNames = new Set((model.entities ?? []).map(e => e.name));
+
+  for (const entity of model.entities ?? []) {
+    if (entity.abstract) continue;
+    const owner = `entity '${entity.name}'`;
+    for (const col of entity.keys) {
+      if (!isColumnName(col)) {
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'primary_key', col));
+      }
+    }
+    for (const uk of entity.uniqueKeys ?? []) {
+      for (const col of uk) {
+        if (!isColumnName(col)) {
+          errors.push(invalidColumnNameError(
+              owner, model.name, document, 'unique_keys', col));
+        }
+      }
+    }
+  }
+
+  for (const rel of model.relationships ?? []) {
+    const owner = `relationship '${rel.name}'`;
+    const at = `${owner} in model '${model.name}' (${document})`;
+    if (!entityNames.has(rel.source.entity)) {
+      errors.push(
+          `${at}: ${undefinedEndpointProblem('from', rel.source.entity)}.`);
+    }
+    if (!entityNames.has(rel.destination.entity)) {
+      errors.push(
+          `${at}: ${undefinedEndpointProblem('to', rel.destination.entity)}.`);
+    }
+    if (rel.association) continue;
+    const fromCount = rel.source.columns.length;
+    const toCount = rel.destination.columns.length;
+    if (!fromCount !== !toCount) {
+      errors.push(`${at}: ${HALF_BOUND_JOIN_PROBLEM}`);
+    } else if (fromCount !== toCount) {
+      errors.push(`${at}: ${joinLengthProblem(fromCount, toCount)}.`);
+    }
+    for (const col of rel.source.columns) {
+      if (!isColumnName(col)) {
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'from_columns', col));
+      }
+    }
+    for (const col of rel.destination.columns) {
+      if (!isColumnName(col)) {
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'to_columns', col));
+      }
+    }
+  }
+
+  return errors;
+}
+
+// A relationship's `to_columns` must cover a primary or unique key of the `to`
+// entity. A relationship is many-to-one or one-to-one, and the key its
+// `to_columns` cover decides which, so a join that covers no key is invalid in
+// every model, whatever it deploys to. The check runs on every push, a
+// catalog-only push included. A superset of a key covers it (see
+// keysCoveredBy). Keys and join columns are compared as the physical
+// columns they name, and a key that names a field with no column yet cannot be
+// judged until a binding gives it one. Skipped here when the check's own inputs
+// are absent or already invalid (reported by their own checks): an association
+// (junction-table) relationship, an empty `to_columns` list, a non-column entry
+// in `to_columns`, an undeclared or abstract `to` entity, or a non-column entry
+// in the `to` entity's `primary_key` or `unique_keys`.
+function relationshipKeyErrors(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entities = (model.entities ?? []).some(e => e.extends?.length) ?
+      ifResolvable(() => resolveInheritance(model).model.entities) ??
+          model.entities :
+      model.entities ?? [];
+  const byName = new Map(entities.map(e => [e.name, e]));
+  for (const rel of model.relationships ?? []) {
+    const to = rel.destination.columns;
+    if (rel.association || !to.length) continue;
+    if (!to.every(isColumnName)) continue;
+    const target = byName.get(rel.destination.entity);
+    if (!target || target.abstract) continue;
+    if (!target.keys.every(isColumnName) ||
+        !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
+      continue;
+    }
+    const covered = keysCoveredByColumns(
+        target, to, target.keys, target.uniqueKeys ?? []);
+    if (covered && !covered.length) {
+      errors.push(
+          `relationship '${rel.name}' in model '${model.name}' (${
+              document}): its to_columns ${
+              JSON.stringify(to)} cover no primary or unique key of '${
+              target.name}'; join on every column of one of its keys, and ` +
+          `declare that key if '${target.name}' has none.`);
+    }
+  }
+  return errors;
+}
+
+// Why each field of `model` holds no SQL, in the loader's words. Each field
+// is read on the entity that declares it, and each field an entity inherits
+// is read on that entity, as the loader does, less each field in
+// `liftedExclusions` on the entity that excludes it. An association's field
+// is an edge property, read on its relationship.
+function fieldNoSqlErrors(
+    model: SemanticModel, document: string,
+    liftedExclusions: ReadonlyArray<ProfileExclusion> = []): string[] {
+  const where = `in model '${model.name}' (${document})`;
+  const errors: string[] = [];
+  for (const e of model.entities ?? []) {
+    for (const f of e.fields ?? []) {
+      const problem = noSqlProblemOf(f, e.name);
+      if (problem) {
+        errors.push(
+            `field '${e.name}.${f.name}' ${where}: ${problem}; write the ` +
+            `field's SQL, or remove 'expression' to leave the field unbound.`);
+      }
+    }
+  }
+  if ((model.entities ?? []).some(e => e.extends?.length)) {
+    const marked = applyProfileExclusions(model, liftedExclusions);
+    const concepts = ifResolvable(() => declaredConcepts(marked));
+    const inherited = concepts ?
+        inheritedNoSqlProblems(marked.entities ?? [], concepts, noSqlProblemOf) :
+        [];
+    for (const problem of inherited) {
+      errors.push(`model '${model.name}' (${document}): ${problem}.`);
+    }
+  }
+  for (const rel of model.relationships ?? []) {
+    for (const f of rel.association?.fields ?? []) {
+      const problem = noSqlProblemOf(f, rel.name);
+      if (problem) {
+        errors.push(
+            `relationship '${rel.name}' field '${f.name}' ${where}: ${
+                problem}; write the field's SQL.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// The error for a metric with no SQL, or undefined. A metric is rejected when
+// none of its texts holds SQL, with or without an anchor, since the graph
+// would drop it. It is also rejected when any one of its texts holds none, as
+// the loader rejects it, since a model built in memory skips the loader.
+function metricNoSqlError(
+    metric: Metric, model: SemanticModel, document: string): string|undefined {
+  const where = `metric '${metric.name}' in model '${model.name}' (${document})`;
+  const readable = expressionSources(metric).filter(
+      s => noSqlReason(s.text, s.dialect) === undefined);
+  if (!readable.length) {
+    return `${where} has no SQL in 'expression'; write the metric's SQL.`;
+  }
+  const problem = noSqlProblemOf(metric);
+  return problem && `${where}: ${problem}; write the metric's SQL.`;
+}
+
+// Validates field and metric expressions:
+//   - Reject a field or a metric with no SQL, as the loader does, since a
+//     model built in memory skips the loader (see fieldNoSqlErrors and
+//     metricNoSqlError).
+// The rules below run when inheritance resolved cleanly:
+//   - For each metric:
+//     1. Unless it has no SQL, reject a metric with no `authoredEntity` (or
+//        vanilla GOOGLE block `entity`) when its expressions, read together,
+//        reach no entity or more than one.
+//     2. Reject when `authoredEntity ?? entity` does not name a declared
+//        entity (runs on every push).
+//     3. When `authoredEntity` is set and the expressions reference at least
+//        one entity, at least one of those must be `authoredEntity`.
+//     4. For every referenced entity, every field it is referenced with must
+//        be declared or inherited on that entity (gated on `!fieldsPruned`,
+//        and run before pruning).
+//     5. Reject a column reference with no entity qualifier, or a qualified
+//        reference whose qualifier is not a declared entity (including when it
+//        differs in case from a declared entity), in a metric expression.
+//   - For each field on each entity E:
+//     1. Reject any reference to an entity other than E.
+//     2. For references to E itself, every field named must be declared or
+//        inherited on E (gated on `!fieldsPruned`, and run before pruning).
+//
+// Exported so `commands.ts` can also run it on the unpruned model before
+// `pruneUnavailable` drops unbound fields and metrics on a graph push. When
+// given, `flaggedMetrics` collects the name of each metric it reports.
+// `liftedExclusions` is as validatePushRequirements takes it.
+export function validateExpressionReferences(
+    models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
+    flaggedMetrics?: Set<string>,
+    liftedExclusions?: ReadonlyArray<ProfileExclusion>): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    errors.push(...fieldNoSqlErrors(model, document, liftedExclusions));
+    const fieldsByEntity = ifResolvable(() => declaredFields(model));
+    if (!fieldsByEntity) {
+      for (const metric of model.metrics ?? []) {
+        const noSql = metricNoSqlError(metric, model, document);
+        if (!noSql) continue;
+        errors.push(noSql);
+        flaggedMetrics?.add(metric.name);
+      }
+      continue;
+    }
+    const entityNames = [...fieldsByEntity.keys()];
+    const impliedDialect = sourcesDialect(model);
+    const addUnreadableWarning =
+        (what: string, total: number, unreadDialects: string[]) => {
+          if (!unreadDialects.length) return;
+          if (unreadDialects.length === total) {
+            warnings.push(
+                `${what} in model '${model.name}' (${document}): kcmd could ` +
+                `not read its SQL, so the fields it reads were not checked.`);
+          } else {
+            const listed = unreadDialects.map(d => `'${d}'`).join(', ');
+            const entryText = unreadDialects.length === 1 ?
+                'that entry reads' :
+                'those entries read';
+            warnings.push(
+                `${what} in model '${model.name}' (${document}): kcmd could ` +
+                `not read its ${listed} SQL, so the fields ${entryText} were ` +
+                `not checked.`);
+          }
+        };
+
+    for (const entity of model.entities ?? []) {
+      const others = entityNames.filter(n => n !== entity.name);
+      const knownFields = fieldsByEntity.get(entity.name)!;
+      for (const field of entity.fields ?? []) {
+        // A text with no SQL has nothing to read, so it gets no warning.
+        const sources = expressionSources(field).filter(
+            s => noSqlReason(s.text, s.dialect, entity.name) === undefined);
+        const allColumns: SqlColumn[] = [];
+        const unreadDialects: string[] = [];
+        for (const {text, dialect} of sources) {
+          const columns = columnsForSource(text, dialect, impliedDialect);
+          if (!columns) {
+            unreadDialects.push(dialect);
+            continue;
+          }
+          allColumns.push(...columns);
+        }
+        addUnreadableWarning(
+            `field '${entity.name}.${field.name}'`, sources.length,
+            unreadDialects);
+        for (const other of others) {
+          const refs = fieldsReadOn(allColumns, other);
+          if (refs.length) {
+            errors.push(
+                `field '${entity.name}.${field.name}' in model '${
+                    model.name}' (${document}) references entity '${
+                    other}' ('${other}.${
+                    refs[0]}'); a field expression may only reference its ` +
+                `own entity '${
+                    entity.name}' or unqualified columns of its backing ` +
+                `table.`);
+          }
+        }
+        if (!fieldsPruned) {
+          for (const ref of fieldsReadOn(allColumns, entity.name)) {
+            if (!knownFields.has(ref)) {
+              errors.push(
+                  `field '${entity.name}.${field.name}' in model '${
+                      model.name}' (${document}) references '${
+                      entity.name}.${ref}', which is not a declared or ` +
+                  `inherited field of '${entity.name}'.`);
+            }
+          }
+        }
+      }
+    }
+
+    for (const metric of model.metrics ?? []) {
+      const before = errors.length;
+      const sources = expressionSources(metric);
+      // A text with no SQL has nothing to read, so it gets no warning.
+      const readable =
+          sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
+      const allColumns: SqlColumn[] = [];
+      const unreadDialects: string[] = [];
+      for (const {text, dialect} of readable) {
+        const columns = columnsForSource(text, dialect, impliedDialect);
+        if (!columns) {
+          unreadDialects.push(dialect);
+          continue;
+        }
+        allColumns.push(...columns);
+      }
+      addUnreadableWarning(
+          `metric '${metric.name}'`, readable.length, unreadDialects);
+
+      const googleEntity = googleMetricEntity(metric);
+      const authored = metric.authoredEntity ?? googleEntity;
+      const anchor = authored ?? metric.entity;
+      const reached = entitiesReached(allColumns, entityNames);
+
+      // An anchor does not make up for missing SQL: the graph would drop the
+      // metric.
+      const noSql = metricNoSqlError(metric, model, document);
+      if (noSql) {
+        errors.push(noSql);
+      } else if (
+          !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
+          !authored && reached.length > 1) {
+        const fixHint = model.version === '0.2.0.dev0' ?
+            `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
+            `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
+            `metric) or scope its expression to one entity.` :
+            `set 'entity' on the metric or scope its expression to one entity.`;
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) has no 'entity' anchor and its expression${
+                reached.length === 0 ?
+                    ' reaches no declared entity' :
+                    ` reaches multiple entities (${reached.join(', ')})`}, ` +
+            `so it does not resolve to a single entity; ${fixHint}`);
+      }
+
+      if (anchor !== undefined && !fieldsByEntity.has(anchor)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}): entity '${
+                anchor}' is not declared in the model.`);
+      }
+
+      if (authored !== undefined && fieldsByEntity.has(authored) &&
+          reached.length > 0 && !reached.includes(authored)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) is anchored to entity '${
+                authored}', but its expression only references ${
+                reached.map(e => `'${e}'`).join(', ')}; the anchor ` +
+            `contradicts the SQL.`);
+      }
+
+      if (!fieldsPruned) {
+        for (const entityName of reached) {
+          const knownFields = fieldsByEntity.get(entityName)!;
+          for (const ref of fieldsReadOn(allColumns, entityName)) {
+            if (!knownFields.has(ref)) {
+              errors.push(
+                  `metric '${metric.name}' in model '${model.name}' (${
+                      document}): expression references '${entityName}.${
+                      ref}', but entity '${entityName}' has no field '${
+                      ref}'; metric expressions must reference declared ` +
+                  `fields, not physical columns.`);
+            }
+          }
+        }
+      }
+
+      const seenUnqualified = new Set<string>();
+      for (const col of allColumns) {
+        if (col.qualifier !== undefined &&
+            (fieldsByEntity.has(col.qualifier) || col.qualifier === anchor)) {
+          continue;
+        }
+        const token = col.qualifier !== undefined ?
+            `${col.qualifier}.${col.name}` :
+            col.name;
+        if (seenUnqualified.has(token)) continue;
+        seenUnqualified.add(token);
+        if (col.qualifier === undefined) {
+          errors.push(
+              `metric '${metric.name}' in model '${model.name}' (${
+                  document}): '${token}' must be written as ` +
+              `'entity.field'; a metric reads fields, never columns.`);
+        } else {
+          const sameNameOtherCase = entityNames.find(
+              n => n.toLowerCase() === col.qualifier!.toLowerCase());
+          if (sameNameOtherCase) {
+            errors.push(
+                `metric '${metric.name}' in model '${model.name}' (${
+                    document}): '${token}' uses qualifier '${
+                    col.qualifier}', which differs in case from entity '${
+                    sameNameOtherCase}'; entity names are case-sensitive.`);
+          } else {
+            errors.push(
+                `metric '${metric.name}' in model '${model.name}' (${
+                    document}): '${token}' has qualifier '${
+                    col.qualifier}', which is not a declared entity in ` +
+                `model '${model.name}'; write 'entity.field' starting with ` +
+                `a declared entity.`);
+          }
+        }
+      }
+      if (errors.length > before) flaggedMetrics?.add(metric.name);
+    }
+  }
+  return errors;
+}
+
+// Temporary BigQuery-only metric check until b/568183888 moves the BigQuery
+// generator (`bigquery.ts`) to the SQL parser and stops its vendor-SQL
+// fallback. Rejects a metric that the BigQuery generator would either fill with
+// untranspiled vendor SQL or drop because its regex (`referencedEntityNames`)
+// disagrees with the parser or because `metric.entity` is unset. Reports only
+// metrics that `validateExpressionReferences` has not already flagged.
+function validateBigQueryMetrics(
+    model: SemanticModel, document: string,
+    alreadyFlagged: ReadonlySet<string>): string[] {
+  const errors: string[] = [];
+  const entityNames = (model.entities ?? []).map(e => e.name);
+  for (const metric of model.metrics ?? []) {
+    if (alreadyFlagged.has(metric.name)) continue;
+    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
+    if (metric.expression === undefined &&
+        metric.importedExpression !== undefined) {
+      errors.push(
+          `${prefix} targets a BigQuery graph with only a '${
+              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
+      continue;
+    }
+    // The generator reads the expression with its comments removed.
+    const expr = withoutComments(
+        metric.expression ?? metric.importedExpression ?? '', 'BIGQUERY');
+    let referenced = referencedEntityNames(expr, entityNames);
+    if (referenced.length === 0 && metric.entity) {
+      referenced = [metric.entity];
+    }
+    if (referenced.length > 1) {
+      errors.push(
+          `${prefix} targets a BigQuery graph and references multiple ` +
+          `entities (${referenced.join(', ')}); the BigQuery generator ` +
+          `reads every '<entity>.' outside comments as a qualifier, ` +
+          `including a function namespace such as 'NET.', so remove the ` +
+          `extra '<entity>.' match or scope its expression to one entity.`);
+    } else if (referenced.length === 0) {
+      errors.push(
+          `${prefix} targets a BigQuery graph but does not resolve to a ` +
+          `single entity; the BigQuery generator reads '<entity>.' ` +
+          `qualifiers in the expression or top-level 'entity' (in ` +
+          `'0.2.0.dev0/google', not a GOOGLE custom_extensions block).`);
+    }
+  }
+  return errors;
+}
+
+// In a vanilla 0.2.0.dev0 document a metric states its anchor inside its
+// GOOGLE custom_extensions block until b/568397001 teaches the loader to read
+// it.
+function googleMetricEntity(metric: Metric): string|undefined {
+  for (const ext of metric.customExtensions ?? []) {
+    if (ext.vendorName !== 'GOOGLE') continue;
+    try {
+      const parsed = JSON.parse(ext.data);
+      if (parsed && typeof parsed === 'object' &&
+          typeof parsed.entity === 'string' && parsed.entity.trim()) {
+        return parsed.entity;
+      }
+    } catch {
+      // Ignore malformed JSON here; if relevant, other checks report it.
+    }
+  }
+  return undefined;
+}
+
+// Every field each entity has, inherited and profile-excluded ones included so
+// an unpruned check before `pruneUnavailable` does not report a profile-excluded
+// inherited field as undeclared. Inheritance is resolved through the same pass
+// the graph legs use rather than by walking `extends` here, so the two can
+// never disagree about what a subtype has. The pass clones, so it is skipped
+// for a model that declares no inheritance.
 function declaredFields(model: SemanticModel): Map<string, Set<string>> {
   const inherits = (model.entities ?? []).some(e => e.extends?.length);
   const entities =
       (inherits ? resolveInheritance(model).model : model).entities ?? [];
-  return new Map(
-      entities.map(e => [e.name, new Set((e.fields ?? []).map(f => f.name))]));
+  return new Map(entities.map(
+      e => [
+        e.name,
+        new Set([
+          ...(e.fields ?? []).map(f => f.name),
+          ...(e.excludedFields ?? []),
+        ]),
+      ]));
 }
 
 // The executor coordinate fields that are absent or blank. An executor with no
@@ -962,17 +1647,16 @@ function billingProject(model: SemanticModel, defaultProject: string): string {
 
 
 // A source that can be probed as a BigQuery table: the canonical `dataSource`,
-// trimmed, or null when it is not a table reference -- empty, or a query the
-// loader kept verbatim (contains whitespace). Unlike a tables.get probe this
-// imposes no part-count limit, so a three-part `project.dataset.table` and a
-// four-part REST-catalog / Lakehouse name are both returned for the dry-run to
-// resolve.
+// trimmed, or null when it is empty or a non-BigQuery resource URI. Unlike a
+// tables.get probe this imposes no part-count limit, so a three-part
+// `project.dataset.table` and a four-part BigLake / REST-catalog name are both
+// returned for the dry-run to resolve.
 function probeableRef(dataSource: string|undefined): string|null {
   const trimmed = (dataSource ?? '').trim();
-  if (!trimmed || /\s/.test(trimmed)) return null;
+  if (!trimmed) return null;
   // A non-BigQuery resource URI (Spanner/AlloyDB/iceberg/...) is not a
   // BigQuery table, so the BigQuery pre-flight does not probe it. (BigQuery
-  // source URIs are normalized to project.dataset.table by the loader, so a
+  // and BigLake source URIs are normalized to dotted names by the loader, so a
   // URI reaching here is non-BigQuery.)
   if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
     return null;

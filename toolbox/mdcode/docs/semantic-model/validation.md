@@ -1,10 +1,10 @@
 # Validating constraints against BigQuery
 
 `kcmd validate --target bigquery` measures how well the data a binding profile
-binds conforms to the model's constraints. It replaces the prototype's
-`shacl_to_sql.py`: the rules come from the model (imported SHACL and OWL
-constraints, plus keys and foreign keys), and the tables come from the selected
-profile, so the queries follow the same bindings the property graph does.
+binds conforms to the model's constraints. The rules come from the model
+(imported SHACL and OWL constraints, plus keys and foreign keys), and the tables
+come from the selected profile, so the queries follow the same bindings the
+property graph does.
 
 `validate` reports on the data as stored. Applying the same rules to the rows a
 read sees is the node view's job: a profile that sets
@@ -152,10 +152,13 @@ reported, not created.
 
 ## Enforcing constraints at consumption time
 
-A binding profile opts an entity in with one hydration rule (see
-[profiles.md](profiles.md#hydration--reshaping-a-table-into-the-entity)):
+A binding opts an entity in with one hydration rule, in the model file's inline
+binding or in a profile of the `<model>.profiles/` layout (a profile file,
+`<model>.profile.<name>.yaml`, may not set `hydration`; see
+[Hydration](profiles.md#hydration--reshaping-a-table-into-the-entity)):
 
 ```yaml
+# pricing.profiles/bigquery.yaml (excerpt)
 entities:
   - name: DealPricing
     source: //bigquery.googleapis.com/projects/p/datasets/ps_pricing/tables/deal_pricing
@@ -294,9 +297,10 @@ abstract and marked transitive, and three sub-relationships extend it:
   `Division`, is also an endpoint. Its label is then excluded from the
   parent's (`(a:Division&!Subsidiary)`), so each node is counted under its own
   table.
-- **What push leaves out.** Push drops an edge table when an endpoint's key
-  or a join column is unbound under the profile. Such an edge table is
-  absent from the graph, so it is left out of both sides.
+- **Unbound join fields.** Keys and join columns are physical columns, so push
+  keeps an edge table whose join field the profile leaves unbound, and the edge
+  table reads the column of that name. The closure test reads the edge the
+  same way.
 
 A relationship with no sub-relationships is the one-table case,
 `(a:Department)-[:partOf]->{1,k}(b:Department)`.

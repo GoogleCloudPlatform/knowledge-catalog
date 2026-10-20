@@ -277,7 +277,12 @@
         "dataplex-types.global.schema": {
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/schema",
           "data": {
-            "fields": []
+            "fields": [],
+            "primaryKey": {
+              "fields": [
+                "ss_sold_date_sk"
+              ]
+            }
           }
         }
       }
@@ -446,7 +451,6 @@
     }
   ],
   "warnings": [
-    "entity 'date_dim': no keys declared in the source model",
     "relationship 'store_sales_to_date_dim': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-date-dim'), not 'store_sales_to_date_dim'.",
     "relationship 'store_sales_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-customer'), not 'store_sales_to_customer'.",
     "relationship 'store_sales_to_item': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'store-sales-to-item'), not 'store_sales_to_item'.",

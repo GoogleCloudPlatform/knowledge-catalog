@@ -177,7 +177,7 @@ describe('kcmd profile', () => {
       [{examples: '-1'}, 'Error: --examples must be a whole number >= 0; got \'-1\'.'],
       [{shiftFactor: 'x'}, 'Error: --shift-factor must be a number > 1; got \'x\'.'],
       [{label: 'Team:data'}, 'Error: --label must be key:value with lowercase letters, digits, \'_\' or \'-\'; got \'Team:data\'.'],
-      [{profile: 'nope'}, 'Error: unknown binding profile \'nope\' for model \'shop\'.'],
+      [{profile: 'nope'}, 'Error: unknown binding profile \'nope\' for model \'shop\'; no profiles are defined for this model.'],
     ];
     for (const [options, message] of cases) {
       expect(await profile(options)).toBe(1);

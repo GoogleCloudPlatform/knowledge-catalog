@@ -43,7 +43,7 @@
 import {Action, AffectedConcept, Constraint, SemanticModel} from './ir';
 import {ActionTool, modelTools, readableEntities} from './runtime/agent_tools';
 import {dialectFor} from './runtime/dialect';
-import {SemanticRuntime} from './runtime/runtime';
+import {runtimeStoreError, SemanticRuntime} from './runtime/runtime';
 import {storeLine} from './runtime/store';
 
 /** One file of the generated package, at a path relative to the skill root. */
@@ -85,10 +85,13 @@ export interface GenerateSkillOptions {
 /**
  * The skill for one model, as files a caller writes out.
  *
- * Returns an error only for a name the Agent Skills spec would reject. A model
- * with no actions is not an error -- it is a skill that says the model
- * declares nothing to act on, which is the honest thing to hand an agent --
- * but it is warned about, because it is rarely what the caller meant.
+ * Returns an error for a name the Agent Skills spec would reject. It also
+ * returns the store error when push rejects the model's deployments, and
+ * when the profile names a store that cannot be resolved for a model with
+ * actions, whose skill names the store. A model with no actions is not an
+ * error -- it is a skill that says the model declares nothing to act on, which
+ * is the honest thing to hand an agent -- but it is warned about, because it
+ * is rarely what the caller meant.
  */
 export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   error: string
@@ -101,6 +104,12 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   if (nameError) return {error: nameError};
 
   const {actions, instruction} = modelTools({runtime});
+  // The skill names the store only in what it says about actions. So a store
+  // the profile names and that cannot be resolved stops only a skill with
+  // actions. Deployments push rejects stop any skill.
+  if (runtime.deploymentsRejected || (runtime.storeFailed && actions.length)) {
+    return {error: runtimeStoreError(runtime) ?? ''};
+  }
   const warnings: string[] = [];
   if (!actions.length) {
     warnings.push(

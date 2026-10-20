@@ -9,7 +9,7 @@ example a raw estate that grew up before the model, writing that profile by hand
 means reading every table. `kcmd bind` drafts it instead. It scans the
 warehouse, scores every concrete entity against every table, matches fields to
 columns, then profiles the tables it picked and proposes the
-[hydration](profiles.md) each one needs: a grain, value resolution, a unit
+[hydration](profiles.md#hydration--reshaping-a-table-into-the-entity) each one needs: a grain, value resolution, a unit
 normalization, or a derivation from a relationship.
 
 `bind` is deterministic. It uses no language model: the same model and the same
@@ -26,7 +26,7 @@ kcmd push --profile bigquery                                   # deploy the resu
 
 | File | Contents |
 |---|---|
-| `<model>.profiles/<profile>.yaml` | The binding profile: each bound entity's `source`, its field `expression`s, and its `hydration`. Entities that need review are written as comments. |
+| `<model>.profiles/<profile>.yaml` | The binding profile, in the `<model>.profiles/` layout that `kcmd push` deploys a graph for and that carries `hydration` (a profile file, `<model>.profile.<name>.yaml`, may not set `hydration` or `mode`): a `semantic_model` document with the profile's `deployment_target` and, for each bound entity, its `source` (the table's resource name, `//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`), its field `expression`s, and its `hydration`. Entities that need review are written as comments. |
 | `bind_report.md` | Every decision and the reason for it: the chosen table and the score breakdown, the field-to-column matches and the rule behind each, the rejected candidates, the hydration proposals with their evidence, and the tables left out of the scan. |
 | `bind_scan.json` | The scan itself (tables, columns, types), so a rerun can skip BigQuery with `--scan-file`. |
 
@@ -143,8 +143,10 @@ definition, instead of the local documents. Like `kcmd pull`, it reads the
 annotation aspects `kcmd init --semantic-model` provisioned, so the model it
 binds is the one pushed: metric expressions, verbatim relationship names and
 abstract relationships included, and the profile matches binding the local
-document. In a project without those aspect types the pull is the older lossy
-read. `--model <file>` binds one document and writes its profile beside it.
+document. In a project without those aspect types the model is read from the
+built-in aspects and description trailers alone, with the losses listed in
+[What pull recovers](fidelity.md#what-pull-recovers). `--model <file>` binds
+one document and writes its profile beside it.
 
 ## Flags
 

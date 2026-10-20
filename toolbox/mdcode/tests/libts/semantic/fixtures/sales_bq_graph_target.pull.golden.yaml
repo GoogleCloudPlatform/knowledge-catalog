@@ -1,11 +1,13 @@
-# (no warnings)
+# warning: model 'sales': deployment names were not recovered (the catalog stores target URIs only); using 'default'
 version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
+    deployments:
+      - name: default
+        target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
     entities:
       - name: orders
-        source: demo.sales.orders
+        source: //bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key:
           - o_orderkey
         fields:

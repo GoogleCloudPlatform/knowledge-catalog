@@ -1,17 +1,17 @@
 // Fills a Semantic Model's missing target expressions by transpiling the vendor
 // SQL the loader kept verbatim.
 //
-// The loader (./loader) collapses each field/metric to at most two forms: a
-// target/canonical `expression` valid against the target (GoogleSQL/ANSI) and,
-// when the source only supplied a vendor variant, the original vendor SQL in
-// `importedExpression` (+ `importedDialect`). When a node carries ONLY the
-// imported form -- e.g. a Databricks or Snowflake expression BigQuery does not
-// accept verbatim -- `expression` is left unset and the loader warns that it
-// "needs transpilation" (see pickDialect). This pass fills that gap: it
-// rewrites each such imported expression to the target dialect and sets
-// `expression`, while leaving `importedExpression`/`importedDialect` in place
-// so nothing is lost and the Knowledge Catalog leg can still emit the vendor
-// form.
+// The loader (./loader) keeps every entry in `dialects` (and records
+// `stringForm`), while still picking a target/canonical `expression` valid
+// against the target (GoogleSQL/ANSI) and, when the source supplied a vendor
+// variant, the first vendor SQL in `importedExpression` (+ `importedDialect`).
+// When a node carries ONLY the imported form -- e.g. a Databricks or Snowflake
+// expression BigQuery does not accept verbatim -- `expression` is left unset
+// and the loader warns that it "needs transpilation" (see pickDialect). This
+// pass fills that gap: it rewrites each such imported expression to the target
+// dialect and sets `expression`, while leaving
+// `importedExpression`/`importedDialect` in place so nothing is lost and the
+// Knowledge Catalog leg can still emit the vendor form.
 //
 // It is deliberately a GAP-FILLER, not a rewriter: a node that already has an
 // `expression` (target or portable canonical) is untouched, so a model authored
@@ -33,11 +33,10 @@
 //     imported form exactly as it would have without this pass.
 //
 
-import {readFileSync} from 'node:fs';
-
 import {Field, Metric, SemanticModel} from './ir';
 import {LoadedModel} from './loader';
-import {referencedEntityNames} from './sql_expr_utils';
+import {loadSqlEngine, PolyglotEngine} from './sql_parser';
+import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -100,6 +99,11 @@ function needsTranspile(node: Field|Metric): node is(Field | Metric)&{
  * `importedExpression` to `opts.target`, returning a clone plus diagnostics.
  * The input model is never mutated. When no node needs transpilation, the clone
  * is returned unchanged and the transpiler is not invoked.
+ *
+ * The qualifier-preservation guard parses the transpiled output with
+ * `columnReferences`, which requires the SQL parser to be loaded even when a
+ * custom `opts.transpiler` is injected (`loadSqlEngine()` is awaited before
+ * running the guard).
  */
 export async function transpileModel(
     model: SemanticModel,
@@ -151,6 +155,7 @@ export async function transpileModel(
 
   if (!pending.length) return {model: clone, warnings};
 
+  await loadSqlEngine();
   const responses = await transpiler(pending.map(p => p.request), target);
   const byId = new Map(responses.map(r => [r.id, r]));
 
@@ -168,25 +173,35 @@ export async function transpileModel(
     // strips qualifiers by matching `<Entity>.` case-sensitively (see
     // ./sql_expr_utils). A transpiler that re-cases a qualifier (`orders.` ->
     // `Orders.`) leaves SQL the emitter can no longer match, so the measure
-    // would silently drop or misplace. Detect that on the OUTPUT: every entity
-    // the transpiled SQL references case-insensitively must also be matched
-    // case-sensitively -- i.e. kept in the exact case the emitter needs.
-    // Comparing the output against itself (rather than the vendor input) avoids
-    // false positives from dialect-specific identifier quoting: the imported
-    // form may quote a qualifier in a way blankStringLiterals blanks (e.g.
-    // Snowflake double-quotes, which are string literals in GoogleSQL), so its
-    // qualifiers are invisible here anyway and are not a fair basis for
-    // comparison.
-    const emitterVisible = referencedEntityNames(res.sql, entityNames);
-    const anyCase =
-        referencedEntityNames(res.sql, entityNames, {caseInsensitive: true});
-    if (!sameSet(emitterVisible, anyCase)) {
+    // would silently drop or misplace. Detect that on the OUTPUT with
+    // `columnReferences`: every entity the transpiled SQL references
+    // case-insensitively must also be matched case-sensitively -- i.e. kept in
+    // the exact case the emitter needs. Comparing the output against itself
+    // (rather than the vendor input) avoids false positives from dialect-
+    // specific identifier quoting.
+    const cols = columnReferences(res.sql, target);
+    if (cols === undefined) {
       warnings.push(
-          `${ctx}: transpiled '${request.dialect}' -> '${
-              target}' but it re-cased an entity qualifier the emitter matches ` +
-          `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
-          `leaving the imported expression for the emitter`);
-      continue;
+          `${ctx}: transpiled '${request.dialect}' -> '${target}' could not ` +
+          `be parsed; qualifier check was skipped`);
+    } else {
+      const emitterVisible = entitiesReached(cols, entityNames);
+      const anyCase = [
+        ...new Set(
+            cols.flatMap(c => {
+              if (!c.qualifier) return [];
+              const lower = c.qualifier.toLowerCase();
+              return entityNames.filter(n => n.toLowerCase() === lower);
+            })),
+      ];
+      if (!sameSet(emitterVisible, anyCase)) {
+        warnings.push(
+            `${ctx}: transpiled '${request.dialect}' -> '${
+                target}' but it re-cased an entity qualifier the emitter matches ` +
+            `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
+            `leaving the imported expression for the emitter`);
+        continue;
+      }
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
@@ -260,43 +275,6 @@ function polyglotDialect(token: string): string|undefined {
   return POLYGLOT_DIALECTS[token.toUpperCase()];
 }
 
-// The subset of the @polyglot-sql/sdk `/manual` surface we use. Declared
-// locally because the package's `/manual` subpath does not re-export its named
-// bindings through tsc under this project's CommonJS/nodenext setting; the
-// dynamic import is cast to this shape.
-interface PolyglotEngine {
-  init(opts: {wasmUrl: string}): Promise<void>;
-  transpile(sql: string, read: string, write: string):
-      {success: boolean; sql?: string[]; error?: string};
-}
-
-// The WASM engine, initialized once and shared process-wide. The Rust/WASM blob
-// is embedded into the standalone binary via bun's `import(... , {with: {type:
-// 'file'}})` (statically analyzable, so bundled) and handed to `init()` as
-// bytes
-// -- the package's default loader reads the blob from disk at runtime, which
-// fails inside a `bun --compile` binary, so we use the `/manual` entry instead.
-let enginePromise: Promise<PolyglotEngine>|undefined;
-function loadEngine(): Promise<PolyglotEngine> {
-  if (!enginePromise) {
-    enginePromise = (async () => {
-      const {default: wasmPath} = await import(
-          '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}});
-      const engine =
-          await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
-      await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
-      return engine;
-    })().catch(err => {
-      // Don't cache the failure: a transient init error (e.g. a failed read)
-      // must not permanently disable transpilation for a long-lived process.
-      // Clear the memo so the next call retries, then propagate.
-      enginePromise = undefined;
-      throw err;
-    });
-  }
-  return enginePromise;
-}
-
 /**
  * The default {@link SqlTranspiler}: transpiles via the embedded
  * @polyglot-sql/sdk Rust/WASM engine. There is no external runtime dependency
@@ -319,7 +297,7 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
 
   let engine: PolyglotEngine;
   try {
-    engine = await loadEngine();
+    engine = await loadSqlEngine();
   } catch (err) {
     const reason = `SQL transpiler engine unavailable: ${errMessage(err)}`;
     return requests.map(r => ({id: r.id, error: reason}));

@@ -154,13 +154,13 @@ describe('loader', () => {
       datasets: [
         {
           name: 'Customer',
-          source: 'p.d.customers',
+          source: 'bigquery:p.d.customers',
           primary_key: ['customerId'],
           fields: [{name: 'customerId', expression: 'customer_id'}],
         },
         {
           name: 'Membership',
-          source: 'p.d.memberships',
+          source: 'bigquery:p.d.memberships',
           primary_key: ['membershipId'],
           fields: [
             {name: 'membershipId', expression: 'membership_id'},
@@ -171,7 +171,7 @@ describe('loader', () => {
         },
         {
           name: 'Club',
-          source: 'p.d.clubs',
+          source: 'bigquery:p.d.clubs',
           primary_key: ['clubId'],
           fields: [{name: 'clubId', expression: 'club_id'}],
         },
@@ -437,13 +437,17 @@ describe('BigQuery lowering', () => {
         `logical edge cannot be followed yet)); edge omitted`);
   });
 
-  test('a derived edge falls with an unavailable step', () => {
+  test('a derived edge stays when a step\'s join field is unbound', () => {
     const m = model();
+    // Join columns are physical columns, not fields: unbinding the field that
+    // shares the column's name drops that field, not the step, so the chain
+    // and the edge derived from it stay.
     delete m.entities[1].fields[2].expression;
     const {model: pruned, report} = pruneUnavailable(m, 'bigquery');
-    expect(report.droppedRelationships).toContainEqual(
-        {name: 'belongsTo', reason: 'chain step inClub is unavailable'});
-    expect(pruned.relationships.map(r => r.name)).not.toContain('belongsTo');
+    expect(report.droppedRelationships).toEqual([]);
+    expect(report.unboundFields).toContain('Membership.clubId');
+    expect(pruned.relationships.map(r => r.name))
+        .toEqual(expect.arrayContaining(['inClub', 'belongsTo']));
   });
 });
 
@@ -559,7 +563,13 @@ describe('derived trailers codec', () => {
 
 describe('OSI round-trip', () => {
   test('via and filter survive serialize -> load', () => {
-    const {yaml} = serializeModel(model());
+    const m = model();
+    // Each source as a load records it, in an accepted form, so the
+    // serialized document reloads.
+    for (const e of m.entities) {
+      if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+    }
+    const {yaml} = serializeModel(m);
     expect(yaml).toContain('- ^memberOf');
     expect(yaml).toContain('filter:');
     const {models} = loadModels(yaml);

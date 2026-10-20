@@ -70,14 +70,14 @@ export interface DeployResult {
   deployed: number;
   // One line per metric graph / fallback view planned next to a main graph
   // (and per main graph that serves GRAPH_EXPAND itself), for the CLI to
-  // print. Filled under validateOnly too.
-  metricGraphs: string[];
+  // print. Filled under validateOnly too. Absent = none.
+  metricGraphs?: string[];
   // One line per node view (and resolved-edge view) generated ahead of a
   // graph, naming the entity and its hydration. Filled under validateOnly.
   nodeViews?: string[];
   // Number of generated / fallback views actually created (0 for
-  // validateOnly).
-  views: number;
+  // validateOnly). Absent = 0.
+  views?: number;
   // Per model name, the measured constraint rates of its first target's
   // enforcing node views (with measureConstraints; never under validateOnly).
   constraintRates?: Map<string, ConstraintRates>;

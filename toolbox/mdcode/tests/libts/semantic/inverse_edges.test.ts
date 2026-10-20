@@ -32,13 +32,13 @@ semantic_model:
   - name: deals
     datasets:
       - name: Client
-        source: proj.ds.client
+        source: bigquery:proj.ds.client
         primary_key: [client_id]
         fields:
           - { name: client_id, expression: client_id }
           - { name: name, expression: name }
       - name: Opportunity
-        source: proj.ds.opportunity
+        source: bigquery:proj.ds.opportunity
         primary_key: [opportunity_id]
         fields:
           - { name: opportunity_id, expression: opportunity_id }

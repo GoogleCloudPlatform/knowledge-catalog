@@ -76,7 +76,7 @@ export function tableName(ref: string): string {
 /**
  * The physical column a field of `entity` reads: its bound expression with the
  * entity qualifier stripped, or the field name itself when it is unbound or not
- * a declared field (already a raw column). Mirrors bigquery.ts physicalColumn.
+ * a declared field (already a raw column). Mirrors graph_ddl.ts physicalColumn.
  */
 export function physicalColumnOf(entity: Entity, fieldName: string): string {
   const field = entity.fields.find(f => f.name === fieldName);

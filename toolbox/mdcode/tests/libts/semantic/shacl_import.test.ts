@@ -482,13 +482,18 @@ describe('model selection', () => {
   const two = MODEL + MODEL.replace(/^version:.*\nsemantic_model:\n/, '')
                           .replace('- name: deals', '- name: other');
 
-  test('several models require --model', () => {
-    expect(() => importShacl(SHAPES, two)).toThrow(/pass --model <name>/);
-    const r = importShacl(SHAPES, two, {model: 'other'});
-    expect(r.model).toBe('other');
-    const models = YAML.parse(r.yaml).semantic_model;
-    expect(models[0].constraints.length).toBe(1);
-    expect(models[1].constraints.length).toBe(9);
+  test('a document declares one model, so a second one is refused at load',
+       () => {
+         expect(() => importShacl(SHAPES, two))
+             .toThrow(/a document declares one model; split 'other' into its own file/);
+         expect(() => importShacl(SHAPES, two, {model: 'other'}))
+             .toThrow(/a document declares one model/);
+       });
+
+  test('--model names the document\'s model', () => {
+    const r = importShacl(SHAPES, MODEL, {model: 'deals'});
+    expect(r.model).toBe('deals');
+    expect(r.yaml).toEqual(read('deals.osi.golden.yaml'));
   });
 
   test('an unknown model is an error', () => {

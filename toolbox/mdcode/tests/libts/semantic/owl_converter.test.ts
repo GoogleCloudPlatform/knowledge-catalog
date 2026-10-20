@@ -234,8 +234,9 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
       lastLogin: 'DateTime',
       startDate: 'Date',
     });
-    // A range outside the mapped set falls back to Opaque.
-    expect(project.fields.find(f => f.name === 'notes')!.type).toBe('Opaque');
+    // A range outside the mapped set is emitted as Opaque, which the loader
+    // reads as no type (the same as leaving `datatype` out).
+    expect(project.fields.find(f => f.name === 'notes')!.type).toBeUndefined();
 
     // Keys: single, and inverse-functional employeeId that IS the key is NOT
     // also emitted as a unique_keys constraint.
@@ -338,7 +339,10 @@ describe('class hierarchies map rdfs:subClassOf to entity extends', () => {
             model.relationships.find(r => r.name === 'managedBy')!;
         expect(managedBy.customExtensions).toBeUndefined();
         expect(managedBy.extends).toEqual(['worksWith']);
-        expect(managedBy.abstract).toBeUndefined();
+        // Employee is a keyless category over Manager, so it is abstract, and
+        // an edge from it is abstract by structure too: the label of the
+        // edges between the concrete subtypes (see abstract.ts).
+        expect(managedBy.abstract).toBe(true);
         const worksWith =
             model.relationships.find(r => r.name === 'worksWith')!;
         expect(worksWith.abstract).toBe(true);
@@ -476,8 +480,9 @@ describe('datatype mapping (rdfs:range xsd:* -> DataType)', () => {
       tm: 'Time',
       dtm: 'DateTime',
       tz: 'DateTimeTz',
-      un: 'Opaque',  // range outside the set
-      nr: 'Opaque',  // no range at all
+      // Emitted as Opaque, which loads as no type:
+      un: undefined,  // range outside the set
+      nr: undefined,  // no range at all
     });
   });
 

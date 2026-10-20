@@ -55,10 +55,17 @@ function shop(): SemanticModel {
       vendorName: 'GOOGLE',
       data: JSON.stringify({deploymentTargets: [GRAPH]}),
     }],
+    // The catalog stores deployment target URIs only, and a pull names a lone
+    // target `default` (with a warning), so the model declares that name.
+    deployments: [{name: 'default', target: GRAPH}],
     entities: [
       {
         name: 'Customer',
         dataSource: 'src.sales.customers',
+        // The source as authored, which push stores as written and pull
+        // returns unchanged.
+        authoredSource:
+            '//bigquery.googleapis.com/projects/src/datasets/sales/tables/customers',
         keys: ['customerId'],
         description: 'A buyer.',
         aiContext: {
@@ -92,6 +99,8 @@ function shop(): SemanticModel {
       {
         name: 'Order',
         dataSource: 'src.sales.orders',
+        authoredSource:
+            '//bigquery.googleapis.com/projects/src/datasets/sales/tables/orders',
         keys: ['orderId'],
         mode: 'view',  // explicit: only the binding aspect can carry it
         hydration: {
@@ -119,6 +128,8 @@ function shop(): SemanticModel {
       {
         name: 'Product',
         dataSource: 'src.sales.products',
+        authoredSource:
+            '//bigquery.googleapis.com/projects/src/datasets/sales/tables/products',
         keys: ['productId'],
         mode: 'direct',
         fields: [{name: 'productId', expression: 'product_id', type: 'String'}],
@@ -326,7 +337,12 @@ describe('K1: relationships that publish no link ride the index whole', () => {
   test('they come back, in authored order, with the extends that name them',
        () => {
          const read = roundTrip(withUnpublished());
-         expect(read.warnings).toEqual([]);
+         // The catalog stores deployment target URIs only, so the pull names
+         // the target and says so; nothing else is reported.
+         expect(read.warnings).toEqual([
+           `model 'shop': deployment names were not recovered (the catalog ` +
+               `stores target URIs only); using 'default'`,
+         ]);
          expect(read.models[0].relationships)
              .toEqual(withUnpublished().relationships);
        });

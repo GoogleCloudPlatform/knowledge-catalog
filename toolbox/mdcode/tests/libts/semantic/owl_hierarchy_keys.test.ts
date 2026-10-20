@@ -5,8 +5,8 @@
 //     range is an unkeyed equivalent joins to the keyed class's key;
 //   - an inverse-functional property on a category whose subclasses declare
 //     their own keys stays a unique key (it is not promoted to the category's
-//     primary key, so the category stays abstract) and every concrete
-//     subclass inherits it as a unique key;
+//     primary key, so the category stays abstract), every concrete subclass
+//     inherits it as a unique key, and the abstract category keeps none;
 //   - a vocabulary does not extend a parent that carries fields (its rows are
 //     its members, read through fixed columns); a warning and a dropped
 //     rdfs:subClassOf coverage row say so.
@@ -79,11 +79,13 @@ const ORG = `${PREFIXES}
 `;
 
 describe('unique keys down the hierarchy', () => {
-  test('the category keeps the property as a unique key and is abstract',
+  test('the category passes the property down and keeps no key itself',
        () => {
          const org = convert(ORG).entity('OrgUnit');
          expect(org.keys).toEqual([]);
-         expect(org.uniqueKeys).toEqual([['unitName']]);
+         // An abstract entity has no table, so it declares no key; its
+         // concrete subclasses carry the unique key instead.
+         expect(org.uniqueKeys).toBeUndefined();
          expect(org.abstract).toBe(true);
        });
 
@@ -92,6 +94,49 @@ describe('unique keys down the hierarchy', () => {
     expect(entity('MarketUnit').keys).toEqual(['marketUnitCode']);
     expect(entity('MarketUnit').uniqueKeys).toEqual([['unitName']]);
     expect(entity('ServiceGroup').uniqueKeys).toEqual([['unitName']]);
+  });
+
+  test('coverage reports the key on the concrete subclasses', () => {
+    const row = convert(ORG).coverage.find(
+        e => e.construct === 'owl:InverseFunctionalProperty' &&
+            e.subject === 'OrgUnit.unitName');
+    expect(row).toMatchObject({
+      outcome: 'compiled',
+      target: 'entity MarketUnit unique_keys, entity ServiceGroup unique_keys',
+    });
+    expect(row!.reason).toContain(`'OrgUnit' is abstract (no table)`);
+  });
+
+  test('an abstract class passes its owl:hasKey down the same way', () => {
+    // kcmd:abstract true over owl:hasKey: the subclass with no key of its own
+    // takes the key as its primary key, one keyed otherwise as a unique key.
+    const ttl = `${PREFIXES}
+      @prefix kcmd: <https://kcmd.dev/ns#> .
+      core:Account a owl:Class ; owl:hasKey ( core:accountId ) ;
+          kcmd:abstract true .
+      core:Client a owl:Class ; rdfs:subClassOf core:Account .
+      core:Partner a owl:Class ; rdfs:subClassOf core:Account ;
+          owl:hasKey ( core:partnerId ) .
+      core:accountId a owl:DatatypeProperty ; rdfs:domain core:Account ;
+          rdfs:range xsd:string .
+      core:partnerId a owl:DatatypeProperty ; rdfs:domain core:Partner ;
+          rdfs:range xsd:string .
+    `;
+    const {entity, warnings, coverage} = convert(ttl);
+    expect(entity('Account').abstract).toBe(true);
+    expect(entity('Account').keys).toEqual([]);
+    expect(entity('Account').uniqueKeys).toBeUndefined();
+    expect(entity('Client').keys).toEqual(['accountId']);
+    expect(entity('Partner').keys).toEqual(['partnerId']);
+    expect(entity('Partner').uniqueKeys).toEqual([['accountId']]);
+    expect(warnings).toEqual([]);
+    expect(coverage.find(
+               e => e.construct === 'owl:hasKey' &&
+                   e.subject === 'Account HasKey (accountId)'))
+        .toMatchObject({
+          outcome: 'compiled',
+          target: 'entity Client primary_key, entity Partner unique_keys',
+        });
   });
 
   test('a vocabulary subclass does not inherit it', () => {

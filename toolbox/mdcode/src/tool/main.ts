@@ -39,10 +39,10 @@ cli.command('init', 'Initialize a new catalog snapshot')
 cli.command('pull', 'Pull catalog entries')
     .option(
         '--dry-run',
-        'Reconstruct and report only; do not write files (semantic-model scope)')
+        'Reconstruct and report only; do not write or delete files (semantic-model scope)')
     .option(
         '--force-remove',
-        'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails (semantic-model scope)')
+        'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails. Also deletes a local profile file the catalog\'s stored copies do not include (semantic-model scope)')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -84,7 +84,7 @@ cli.command('push', 'Push catalog entries')
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
     .option(
         '--profile [name]',
-        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
+        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml; a sibling <model>.profile.<name>.yaml cannot be deployed as a graph yet); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
     .option(
         '--all-profiles',
         'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
@@ -106,7 +106,7 @@ cli.command('push', 'Push catalog entries')
 
 cli.command(
        'profiles',
-       'List a semantic model\'s binding profiles and what each can answer')
+       'List a semantic model\'s binding profiles, what each can answer, and what push would reject')
     .option(
         '--profile [name]',
         'Report only this binding profile; defaults to every profile the model declares')
@@ -140,7 +140,7 @@ cli.command(
         'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
     .option(
         '--prune-unbound [binding]',
-        'Proposed: keep only the entities the binding gives a source, their ancestors and the defined entities over them, and print what was removed. The value is a binding profile (or a model document with inline bindings); the bare flag reads the model\'s profiles in this scope, else <model>.profiles/ beside --out')
+        'Proposed: keep only the entities the binding gives a source, their ancestors and the defined entities over them, and print what was removed. The value is a binding profile (or a model document with inline bindings); the bare flag reads the model\'s profiles in this scope, else the <model>.profile.<name>.yaml files (or <model>.profiles/) beside --out')
     .option(
         '--coverage <path>',
         'Proposed: write the coverage report (each construct read: compiled, hinted or dropped, with the reason) here instead of coverage.json beside the written model')
@@ -166,7 +166,7 @@ cli.command(
         'The model document to add the constraints to (default: the --model model in the semantic-model layout)')
     .option(
         '--model <name>',
-        'The model receiving the constraints (required without --into, or when the document declares several)')
+        'The model receiving the constraints (required without --into; with --into it confirms the document\'s one model)')
     .option(
         '--out <path>',
         'Write the updated document to this path instead of back to its source')

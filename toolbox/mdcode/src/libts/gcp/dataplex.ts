@@ -40,6 +40,7 @@ function operationFailure(op: Operation, what: string): string|undefined {
 
 export interface Aspect {
   aspectType?: string;
+  path?: string;
   data?: Record<string, any>;
 }
 
@@ -51,6 +52,8 @@ export interface Entry {
   updateTime?: string;
   entrySource?: {
     resource?: string;
+    system?: string;
+    platform?: string;
     ancestors?: {
       name: string;
       type: string;
@@ -126,8 +129,10 @@ export class CatalogClient extends api.ApiClient {
     return await this._get(name);
   }
 
+  // `fix.keepSourceResource` returns `entrySource.resource` exactly as stored.
   async getEntry(project: string, location: string, entryGroup: string, entry: string,
-                 aspects?: string[]): Promise<api.ApiResult<Entry>> {
+                 aspects?: string[],
+                 fix: FixOptions = {}): Promise<api.ApiResult<Entry>> {
     const name = `${catalogContainer(project, location, entryGroup)}/entries/${entry}`;
     const params: Record<string, any> = { view: 'BASIC' };
     if (aspects && aspects.length) {
@@ -137,7 +142,7 @@ export class CatalogClient extends api.ApiClient {
 
     const res = await this._get<Entry>(name, params);
     if (res.status == 200 && res.result) {
-      await _fixEntry(res.result, this.context);
+      await _fixEntry(res.result, this.context, fix);
     }
 
     return res;
@@ -178,15 +183,20 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async updateEntry(entry: Entry,
-                    updateMask?: string[],
-                    aspectKeys?: string[]): Promise<api.ApiResult<Entry>> {
+  // `deleteMissingAspects` removes each aspect `aspectKeys` names that `entry`
+  // does not carry. Without it Dataplex keeps such an aspect.
+  async updateEntry(entry: Entry, updateMask?: string[], aspectKeys?: string[],
+                    deleteMissingAspects?: boolean):
+      Promise<api.ApiResult<Entry>> {
     const params: Record<string, any> = {};
     if (updateMask && updateMask.length) {
       params.updateMask = updateMask.join(',');
     }
     if (aspectKeys && aspectKeys.length) {
       params.aspectKeys = aspectKeys;
+    }
+    if (deleteMissingAspects) {
+      params.deleteMissingAspects = true;
     }
 
     const res = await this._patch<Entry>(entry.name, entry, params);
@@ -197,8 +207,10 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async *listEntries(project: string, location: string,
-                     entryGroup: string): AsyncGenerator<Entry, void, unknown> {
+  // `fix.keepSourceResource` returns each `entrySource.resource` exactly as
+  // stored.
+  async *listEntries(project: string, location: string, entryGroup: string,
+                     fix: FixOptions = {}): AsyncGenerator<Entry, void, unknown> {
     const parent = catalogContainer(project, location, entryGroup);
     const resourceName = `${parent}/entries`;
 
@@ -216,7 +228,7 @@ export class CatalogClient extends api.ApiClient {
 
       const entries = res.result?.entries || [];
       for (const entry of entries) {
-        await _fixEntry(entry, this.context);
+        await _fixEntry(entry, this.context, fix);
         yield entry;
       }
 
@@ -356,6 +368,11 @@ export class CatalogClient extends api.ApiClient {
     return await this._patch<EntryLink>(entryLink.name!, entryLink, params);
   }
 
+  // Reads an entry link by its full resource name.
+  async getEntryLink(name: string): Promise<api.ApiResult<EntryLink>> {
+    return await this._get<EntryLink>(name);
+  }
+
   async deleteEntryLink(project: string, location: string, entryGroup: string,
                         entryLinkId: string): Promise<api.ApiResult<EntryLink>> {
     const name = `${
@@ -403,29 +420,47 @@ export class CatalogClient extends api.ApiClient {
 }
 
 
-// Fix all entries and aspects to consistently use project id. Its currently a mess with an
-// inconsistent mix of project ids and unusable project numbers.
-async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
+// How `_fixEntry` treats an entry. `keepSourceResource` leaves
+// `entrySource.resource` as stored, so a caller that writes it back changes
+// nothing and makes no Resource Manager lookup for it.
+export interface FixOptions {
+  keepSourceResource?: boolean;
+}
+
+// Normalises an entry and its aspects in place so resource names and aspect
+// keys consistently use project IDs (rather than project numbers), while
+// preserving `@<path>` suffixes and `path` fields on field-level aspects.
+export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
+                                fix: FixOptions = {}): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
   entry.entryType = await crm.fixProject(entry.entryType, ctx);
-  if (entry.entrySource?.resource) {
+  if (entry.entrySource?.resource && !fix.keepSourceResource) {
     entry.entrySource.resource = await crm.fixProject(entry.entrySource.resource, ctx);
   }
 
   if (entry.aspects) {
     const fixedAspects: Record<string, Aspect> = {};
     for (const [aspectKey, aspectValue] of Object.entries(entry.aspects)) {
+      const atIdx = aspectKey.indexOf('@');
+      const typeRef = atIdx === -1 ? aspectKey : aspectKey.slice(0, atIdx);
+      const keyPath = atIdx === -1 ? undefined : aspectKey.slice(atIdx + 1);
+
       let aspectType = '';
       if (!aspectValue || Object.keys(aspectValue).length) {
-        aspectType = _typeRefToName(aspectKey, 'aspect');
+        aspectType = _typeRefToName(typeRef, 'aspect');
       }
       else {
         aspectType = aspectValue['aspectType'] as string;
       }
       aspectType = await crm.fixProject(aspectType, ctx);
 
-      fixedAspects[_nameToTypeRef(aspectType)] = {
+      const path = aspectValue?.path || keyPath;
+      const baseKey = _nameToTypeRef(aspectType);
+      const fixedKey = path ? `${baseKey}@${path}` : baseKey;
+
+      fixedAspects[fixedKey] = {
         aspectType: aspectType,
+        ...(path ? { path } : {}),
         data: aspectValue['data'] ?? {}
       };
     }

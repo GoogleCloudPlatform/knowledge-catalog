@@ -14,6 +14,7 @@ import {renderBindReport, renderProfileYaml} from '../../../src/libts/semantic/b
 import {bindDocument} from '../../../src/libts/semantic/bind/run';
 import {filterScan, scanFromCsv} from '../../../src/libts/semantic/bind/scan';
 import {deployKnowledgeCatalog} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {ANNOTATION_ASPECT_IDS} from '../../../src/libts/semantic/kc_custom_types';
 import {formatIssues, loadModels} from '../../../src/libts/semantic/loader';
 import {pullModelDocs} from '../../../src/tool/bind';
 
@@ -33,13 +34,19 @@ function aspectKey(aspectType: string): string {
 
 // Just enough of CatalogClient for push and pull, with every annotation
 // aspect type provisioned (`kcmd init` ran) unless `provisioned` is false.
+// The other custom types `kcmd init` creates (semantic-constraint, ...) always
+// exist, as the push preflight requires.
 function fakeCatalog(provisioned = true) {
   const entries = new Map<string, Entry>();
   const links = new Map<string, EntryLink>();
   const ok = (result?: any) => ({status: 200, result});
   const P = CatalogClient.prototype as any;
   spyOn(P, 'getAspectType').mockImplementation(
-      async () => provisioned ? ok({}) : {status: 404, message: 'not found'});
+      async (_project: string, _location: string, id: string) =>
+          provisioned || !ANNOTATION_ASPECT_IDS.includes(id) ?
+          ok({}) :
+          {status: 404, message: 'not found'});
+  spyOn(P, 'getEntryType').mockImplementation(async () => ok({}));
   spyOn(P, 'listEntries').mockImplementation(async function*() {
     for (const e of [...entries.values()]) {
       yield {name: e.name, entryType: e.entryType, parentEntry: e.parentEntry};
@@ -106,19 +113,27 @@ async function governPush(provisioned = true) {
 }
 
 describe('bind --from-catalog over a govern-style push', () => {
-  test('the pulled model is the local one, warning-free', async () => {
-    const local = await governPush();
-    const pulled = await pullModelDocs(new CatalogClient(CTX), OPTS);
-    expect(pulled.warnings).toEqual([]);
-    expect(pulled.docs).toHaveLength(1);
-    const back = loadModels(pulled.docs[0].text, {bindingOptional: true});
-    expect(back.models[0]).toEqual(local);
-    // The constructs the lossy read used to lose.
-    const rel = (n: string) =>
-        back.models[0].relationships.find(r => r.name === n);
-    expect(rel('belongsToTerritory')?.abstract).toBe(true);
-    expect(rel('hasBuyer')?.extends).toEqual(['hasCounterparty']);
-  });
+  test('the pulled model is the local one, with no warning but the missing ' +
+           'file copy',
+       async () => {
+         const local = await governPush();
+         const pulled = await pullModelDocs(new CatalogClient(CTX), OPTS);
+         // This push stores no file copy, so the pull rebuilds the model file
+         // from the aspects and says so. Nothing else is reported.
+         expect(pulled.warnings).toEqual([
+           'no stored copy of the model file was found, so it is rebuilt ' +
+               'from the catalog\'s aspects and may differ from what was ' +
+               'pushed; push it again to store a copy',
+         ]);
+         expect(pulled.docs).toHaveLength(1);
+         const back = loadModels(pulled.docs[0].text, {bindingOptional: true});
+         expect(back.models[0]).toEqual(local);
+         // The constructs the lossy read used to lose.
+         const rel = (n: string) =>
+             back.models[0].relationships.find(r => r.name === n);
+         expect(rel('belongsToTerritory')?.abstract).toBe(true);
+         expect(rel('hasBuyer')?.extends).toEqual(['hasCounterparty']);
+       });
 
   test('binding the pulled model writes the same profile and report',
        async () => {

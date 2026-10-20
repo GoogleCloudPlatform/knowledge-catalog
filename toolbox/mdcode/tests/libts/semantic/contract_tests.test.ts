@@ -554,17 +554,24 @@ describe('contract tests: transitive closure over a relationship hierarchy', () 
     expect(t.expectedSql!.split('FROM `p.d.subsidiary`').length - 1).toBe(1);
   });
 
-  test('an edge table push drops for an unbound join column is left out', () => {
-    const model = orgFixture();
-    model.entities.find(e => e.name === 'Team')!.fields =
-        [f('teamId', 'team_id'), {name: 'divisionId', type: 'String'}];
-    const t = byId(planContractTests(model), 'transitive-closure:within');
-    expect(t.description).toContain('over the edge tables inTeam, subDivisionOf up to');
-    expect(matches(t.actualSql)).toEqual([
-      '(a:`Employee`)-[:`within`]->{1,10}(b:`Team`)',
-      '(a:`Division`)-[:`within`]->{1,10}(b:`Division`)',
-    ]);
-  });
+  test('an edge whose join field the binding leaves unbound reads the column ' +
+           'it names, as the deployed edge table does',
+       () => {
+         const model = orgFixture();
+         model.entities.find(e => e.name === 'Team')!.fields =
+             [f('teamId', 'team_id'), {name: 'divisionId', type: 'String'}];
+         const t = byId(planContractTests(model), 'transitive-closure:within');
+         expect(t.description)
+             .toContain('over the edge tables inTeam, teamOf, subDivisionOf up to');
+         expect(t.expectedSql)
+             .toContain('SELECT team_id AS `teamId`, divisionId AS `divisionId`\n');
+         expect(matches(t.actualSql)).toEqual([
+           '(a:`Employee`)-[:`within`]->{1,10}(b:`Team`)',
+           '(a:`Employee`)-[:`within`]->{1,10}(b:`Division`)',
+           '(a:`Team`)-[:`within`]->{1,10}(b:`Division`)',
+           '(a:`Division`)-[:`within`]->{1,10}(b:`Division`)',
+         ]);
+       });
 
   test('what cannot be tested says why', () => {
     const reasons = (model: SemanticModel) =>
@@ -844,8 +851,16 @@ describe('contract tests: the TPC-H codelab model (generation only)', () => {
   test('generates its validation-query tests; it has nothing for K1 or paths', () => {
     const merged = mergeProfileOntoDoc(CODELAB_MODEL, CODELAB_PROFILE, 'analytical');
     if ('error' in merged) throw new Error(merged.error);
+    // Loaded as push loads a `semantic_model:` wrapper profile: the codelab's
+    // names its graph with `deployment_target` and its tables by bare name.
     const loaded = loadSemanticModels(
-        [{name: 'sales', text: merged.text}], {bindingOptional: true});
+        [{
+          name: 'sales',
+          text: merged.text,
+          allowLegacyBareSource: true,
+          excluded: merged.excluded,
+        }],
+        {bindingOptional: true});
     expect(loaded.error).toBeUndefined();
     const plan = planContractTests(loaded.models[0].model);
     expect(plan.graph).toBe('codelab-project.codelab_ds.sales');

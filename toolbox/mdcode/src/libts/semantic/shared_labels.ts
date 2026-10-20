@@ -16,8 +16,9 @@
 // descendant table binds. A field bound on some descendants but not others is
 // still a property of those descendants (under their DEFAULT LABEL); it is just
 // not part of the shared label. Each such omission is warned, naming the
-// descendants that leave the field unbound. Both graph legs (bigquery.ts,
-// spanner.ts) read this one computation, so they never disagree.
+// descendants that leave the field unbound. Both graph generators (graph_ddl.ts,
+// which writes the BigQuery graph, and spanner.ts) read this one computation,
+// so they never disagree.
 
 import {Entity, fieldBinding} from './ir';
 

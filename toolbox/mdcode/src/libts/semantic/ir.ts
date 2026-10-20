@@ -23,6 +23,11 @@ export interface AiContext {
   synonyms?: string[];
   // Example questions / usages illustrating the annotated object.
   examples?: string[];
+  // Custom members, preserved verbatim for round-trip: the members under
+  // `custom:` in the Google flavor, and the sibling members beside the three
+  // standard ones in vanilla. A member whose name is a whole number sorts
+  // first, so document order holds for the rest only.
+  additionalProperties?: Record<string, unknown>;
 }
 
 /**
@@ -43,10 +48,10 @@ export interface CustomExtension {
  * A semantic model: a graph of entities (nodes) connected by relationships
  * (edges), with model-level metrics defined over them.
  *
- * The IR is primarily semantics. Deployment/target configuration lives in the
- * project manifest (`catalog.yaml`); when the open format carries it inline in a
- * model-level GOOGLE `custom_extensions` block, that block rides along verbatim
- * in `customExtensions` and is interpreted by the consumer that acts on it.
+ * The IR is primarily semantics. The loader reads a model's named
+ * `deployments:` list onto `deployments` and folds its target URIs into a
+ * model-level GOOGLE `custom_extensions` block (alongside any authored
+ * `custom_extensions` on a vanilla document) for the consumers that read it.
  */
 export interface SemanticModel {
   name: string;
@@ -72,9 +77,19 @@ export interface SemanticModel {
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
   // Vendor extension blocks carried verbatim (round-trip fidelity), including the
-  // model-level GOOGLE block. A typed deployment-target view is derived by the
-  // consumer that acts on it (e.g. the CLI push), not surfaced on the IR yet.
+  // model-level GOOGLE block.
   customExtensions?: CustomExtension[];
+  version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
+  // Named profiles. A Google-flavor model's come from its
+  // <model>.profile.<name>.yaml files and a vanilla model's from its GOOGLE
+  // block; the loader does not fill this yet.
+  profiles?: ProfileSpec[];
+  // Named targets from `deployments:`, each naming the profile it deploys.
+  deployments?: DeploymentSpec[];
+  // Metrics the binding profile in use names in `metrics_exclude`. They stay
+  // in `metrics`, so a catalog push still publishes them; pruning drops them.
+  // Set when a profile is applied; absent otherwise.
+  excludedMetrics?: string[];
   // The model's business glossary: business terms (with definitions,
   // synonyms and links to the model elements they name) organized in
   // categories. Published as a Knowledge Catalog (Dataplex) Business Glossary
@@ -148,6 +163,7 @@ export interface Entity {
   // into its own canonical form, and downstream consumers map it to their
   // target's addressing scheme.
   dataSource: string;
+  authoredSource?: string;  // the source string as typed
   keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
@@ -219,6 +235,13 @@ export interface Entity {
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+  // Fields this entity does not expose under the binding profile in use:
+  // the ones the profile names in `fields_exclude`, and
+  // declarations kept only for descendants that inherit them. Inheritance
+  // resolution leaves them off this entity, declared or inherited, and its
+  // descendants still inherit the declarations, because a binding is a fact
+  // about one table. Set when a profile is applied; absent otherwise.
+  excludedFields?: string[];
 }
 
 /** See Entity.mode. */
@@ -319,6 +342,17 @@ export interface Dimension {
   isTime?: boolean;
 }
 
+export const ALLOWED_DIALECTS = [
+  'ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL',
+  'POSTGRES', 'ALLOYDB', 'SNOWFLAKE', 'DATABRICKS',
+] as const;
+export type SqlDialect = (typeof ALLOWED_DIALECTS)[number];
+
+export interface DialectExpression {
+  dialect: SqlDialect;
+  expression: string;
+}
+
 /**
  * A field: a dimension / attribute of an entity or relationship.
  *
@@ -326,17 +360,23 @@ export interface Dimension {
  * not fields.
  *
  * Expression fidelity: the format may supply an expression in several SQL
- * dialects. We keep at most two forms — a target/canonical `expression` that is
- * valid against the target (GoogleSQL/ANSI), and the original vendor SQL in
- * `importedExpression` (with its `importedDialect`). At least one of the two is
- * set. When only `importedExpression` is present, `expression` awaits a
- * transpile pass (see ./transpile) that fills it from the imported form.
+ * dialects (or as a single string in the Google flavor). The loader keeps every
+ * entry in `dialects` in the order written and records `stringForm` (`true`
+ * when authored as `expression: "<sql>"`, `false` when authored as a `dialects`
+ * list). It also populates `expression` (the target-dialect text, or else the
+ * `ANSI_SQL` one) and `importedExpression` (the first other vendor entry, with
+ * its `importedDialect`) via `pickDialect`. A bound field sets at least one of
+ * `expression` or `importedExpression`. When only `importedExpression` is
+ * present, `expression` awaits a transpile pass (see ./transpile) that fills it
+ * from the imported form.
  */
 export interface Field {
   name: string;
-  expression?: string;             // target/canonical (GoogleSQL-valid) SQL
+  expression?: string;             // the BIGQUERY text, else the ANSI_SQL one
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
+  dialects?: DialectExpression[];  // every entry, in the order written
+  stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // A field with NO physical column under the current binding is UNBOUND:
   // structurally absent, not null. There is no explicit flag -- a field is
   // unbound exactly when it carries no `expression` (and no
@@ -362,10 +402,11 @@ export interface Field {
 /**
  * The open format's `datatype` vocabulary, mirroring Apache Ossie's `DataType`:
  * a CLOSED, case-sensitive set of logical types, independent of physical
- * representation. It is optional (omit when unknown); a type outside the
- * vocabulary is expressed as `Opaque` plus a `customExtensions` block, never an
- * invented value. The loader enforces this set at parse time, so a `type` on
- * the IR is always one of these.
+ * representation. It is optional; omit it when the type is unknown. `Opaque`
+ * marks an unknown type: the loader reads it as no type, and the catalog stores
+ * it where a type is required. No custom extension supplies a real type for
+ * it. The loader enforces this set at parse time, so a `type` on the IR is
+ * always one of these.
  */
 export const DATA_TYPES = [
   'String',
@@ -381,6 +422,37 @@ export const DATA_TYPES = [
 ] as const;
 
 export type DataType = typeof DATA_TYPES[number];
+
+const CANONICAL_DATA_TYPES = DATA_TYPES.filter(
+    (t): t is Exclude<DataType, 'Opaque'> => t !== 'Opaque');
+
+/**
+ * Normalizes a raw `datatype` string according to the document's flavor.
+ *
+ * In `0.2.0.dev0`, matching is strictly case-sensitive. In `0.2.0.dev0/google`,
+ * matching is case-insensitive and returns the canonical spelling. In both
+ * flavors, an omitted `datatype` and `Opaque` normalize to `type: undefined`.
+ */
+export function normalizeDataType(
+    raw: string|undefined,
+    version: '0.2.0.dev0'|'0.2.0.dev0/google',
+    ): {ok: true; type: Exclude<DataType, 'Opaque'>|undefined}|{ok: false} {
+  if (raw === undefined) {
+    return {ok: true, type: undefined};
+  }
+  const caseInsensitive = version === '0.2.0.dev0/google';
+  const matches = (a: string, b: string) =>
+      caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+
+  if (matches(raw, 'Opaque')) {
+    return {ok: true, type: undefined};
+  }
+  const found = CANONICAL_DATA_TYPES.find(t => matches(raw, t));
+  if (found) {
+    return {ok: true, type: found};
+  }
+  return {ok: false};
+}
 
 // The temporal subset of DataType (Date / Time / DateTime / DateTimeTz); a
 // field of one of these types is a time dimension by default (see
@@ -409,11 +481,97 @@ export function isTimeDimension(field: Field): boolean {
 // field's target/canonical `expression` wins; a field awaiting transpilation
 // falls back to its imported vendor expression, which still names a real
 // column, so it is bound rather than unbound. A field with neither is unbound
-// (no column at all). This is the single source of truth for "is this field
-// bound"; availability pruning and the BigQuery generator both consult it so
-// they never disagree.
-export function fieldBinding(field: Field): string|undefined {
+// (no column at all). `isFieldBound` asks the same question as a yes or no.
+export function fieldBinding(
+    field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
+}
+
+// The properties of a field that bind it to a column, and the ones that define
+// what it is. A subtype that redeclares an inherited field may set binding
+// properties and never definition properties. Together with `name` they are
+// every property a field has; the check below fails to compile if a property
+// is added to Field without being placed in one list or the other.
+export const FIELD_BINDING_KEYS = [
+  'expression', 'dialects', 'stringForm', 'importedExpression',
+  'importedDialect',
+] as const satisfies ReadonlyArray<keyof Field>;
+export const FIELD_DEFINITION_KEYS = [
+  'type', 'label', 'dimension', 'description', 'aiContext', 'customExtensions',
+  'unit', 'scale',
+] as const satisfies ReadonlyArray<keyof Field>;
+type UnlistedFieldKey = Exclude<
+    keyof Field,
+    'name'|(typeof FIELD_BINDING_KEYS)[number]|
+    (typeof FIELD_DEFINITION_KEYS)[number]>;
+const everyFieldKeyListed: [UnlistedFieldKey] extends [never] ? true : never =
+    true;
+void everyFieldKeyListed;
+
+/**
+ * Whether a field is bound to a column under the current binding: it carries an
+ * expression or an imported vendor expression. A dialect list, `stringForm` and
+ * `importedDialect` describe a binding and are not one on their own. Pruning,
+ * the graph generators, inheritance and push validation all use this test.
+ */
+export function isFieldBound(
+    field: Pick<Field, 'expression'|'importedExpression'>): boolean {
+  return fieldBinding(field) !== undefined;
+}
+
+/**
+ * The keys a relationship's `to_columns` cover, as "the primary key" and
+ * "unique key k" (from 1), in that order. A key is covered when every one of
+ * its columns is among `to_columns`, so a superset of a key covers it, since
+ * each row still matches at most one target row. An empty result means the
+ * join reaches no key. Column names compare as BigQuery compares them: ignoring
+ * case, and without the backticks that only quote a name.
+ */
+export function keysCoveredBy(
+    toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
+    string[] {
+  const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
+  const has = new Set(toColumns.map(columnKey));
+  const covers = (key: string[]) =>
+      key.length > 0 && key.every(c => has.has(columnKey(c)));
+  const out: string[] = [];
+  if (covers(primaryKey)) out.push('the primary key');
+  uniqueKeys.forEach((key, i) => {
+    if (covers(key)) out.push(`unique key ${i + 1}`);
+  });
+  return out;
+}
+
+/**
+ * Selects the SQL expression for a target engine from a Field or Metric.
+ *
+ * With a non-empty `dialects` list, returns the entry matching `targetDialect`;
+ * failing that, and where the target is not already `ANSI_SQL`, falls back to
+ * the `ANSI_SQL` entry; failing both, returns `undefined`. With `dialects`
+ * empty or absent, returns `item.importedExpression` when `importedDialect` is
+ * the target, and `item.expression` otherwise.
+ */
+export function expressionForDialect(
+    item: {
+      expression?: string; dialects?: DialectExpression[];
+      importedExpression?: string;
+      importedDialect?: string;
+    },
+    targetDialect: (typeof ALLOWED_DIALECTS)[number]): string|undefined {
+  if (item.dialects && item.dialects.length > 0) {
+    const exact = item.dialects.find(d => d.dialect === targetDialect);
+    if (exact) return exact.expression;
+    if (targetDialect !== 'ANSI_SQL') {
+      const ansi = item.dialects.find(d => d.dialect === 'ANSI_SQL');
+      if (ansi) return ansi.expression;
+    }
+    return undefined;
+  }
+  if (item.importedExpression !== undefined &&
+      item.importedDialect === targetDialect) {
+    return item.importedExpression;
+  }
+  return item.expression;
 }
 
 
@@ -582,15 +740,19 @@ export interface Metric {
                                 // entity-qualified fields
   importedExpression?: string;  // original vendor SQL, verbatim
   importedDialect?: string;     // dialect of `importedExpression`
+  dialects?: DialectExpression[];  // every entry, in the order written
+  stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // The single entity this metric attaches to -- the node it hangs off -- when
-  // its `expression` references exactly one. NOT part of the open format
-  // (Ossie's Metric has no such field): the loader DERIVES it by scanning the
-  // expression for known `entity.column` qualifiers (see
-  // referencedEntityNames). Omitted when the expression names no known entity
-  // (e.g. `COUNT(*)`; the loader warns) or references several -- a cross-entity
-  // metric whose join path consumers resolve from the model's relationships
-  // (the qualifiers stay inline in the expression).
+  // its expressions reference exactly one across all dialect entries (or when
+  // the author states `entity` on the metric). NOT part of the open format
+  // (Ossie's Metric has no such field): the loader DERIVES it by parsing the
+  // metric's expressions with `columnReferences` and collecting the known
+  // entity qualifiers (see `entitiesReached`). Omitted when the expressions
+  // name no known entity (e.g. `COUNT(*)`; the loader warns) or reference
+  // several -- a cross-entity metric whose join path consumers resolve from the
+  // model's relationships (the qualifiers stay inline in the expression).
   entity?: string;
+  authoredEntity?: string;          // an anchor the author wrote, vs one inferred
   description?: string;
   type?: DataType;  // logical datatype of the result (the open format's
                     // `datatype`)
@@ -965,10 +1127,44 @@ export interface Constraint {
   // said, and nothing reads it yet. See CONSTRAINT_SEVERITIES.
   severity?: ConstraintSeverity;
   aiContext?: AiContext;
-  // No `customExtensions`. Every other IR object has one because vanilla Ossie
-  // accepts `custom_extensions` on it. A constraint is unreachable that way:
-  // `constraints` is an extended-profile-only key, and the extended profile
-  // rejects `custom_extensions` outright (ceField in loader.ts), so no document
-  // can carry both. Should vanilla Ossie ever gain constraints, add the field
-  // back with `...ce` on the schema.
+  // No `customExtensions`: the loader's constraint schema takes no
+  // `custom_extensions`, so no document can give a constraint one.
+}
+
+export interface DeploymentSpec {
+  name: string;      // unique among the model's deployments
+  // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
+  // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
+  // `deployment_target.ts` already parses all three. Keep this opaque.
+  target: string;
+  profile?: string;  // absent means the model's inline bindings
+}
+
+export interface ProfileEntityBinding {
+  name: string;
+  source?: string;          // as the profile wrote it
+  primaryKey?: string[];    // physical column names
+  uniqueKeys?: string[][];
+  fields?: Array<Pick<
+      Field,
+      'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
+      'importedDialect'>>;
+  fieldsExclude?: string[]; // fields this profile deliberately leaves unbound
+}
+
+export interface ProfileRelationshipBinding {
+  name: string;
+  fromColumns: string[];    // pairs positionally with toColumns
+  toColumns: string[];
+}
+
+export interface ProfileSpec {
+  name: string;
+  entities: ProfileEntityBinding[];
+  relationships: ProfileRelationshipBinding[];
+  metricsExclude?: '*'|string[];  // '*' means all of them, now and later
+  // Actions are out of scope for preview. Hold what the loader already
+  // accepts — `loader.ts:288` allows a missing executor and an explicit null,
+  // and an executor may be mcp, rest, grpc or sql. Do not tighten it.
+  actions?: Array<{name: string; executor?: Executor|null}>;
 }

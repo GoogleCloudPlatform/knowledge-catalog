@@ -24,7 +24,7 @@ wrote coverage.json
 | Flag | Meaning |
 |---|---|
 | `--into <model.yaml>` | The model document to add the constraints to. Without it, the model named by `--model` is read from, and written back to, the scope's semantic-model layout. |
-| `--model <name>` | The model receiving the constraints. Required without `--into`, and with `--into` only when the document declares several models. |
+| `--model <name>` | The model receiving the constraints. Required without `--into`; with `--into` it confirms the document's model (a document declares one model, and the load refuses a document that declares two). |
 | `--out <path>` | Write the updated document here instead of back to its source. |
 | `--coverage <path>` | Proposed. Write the [coverage report](#3-coverage-report-proposed) here instead of to `coverage.json` beside the written document. |
 | `--no-coverage` | Proposed. Print no coverage summary and write no coverage report. |

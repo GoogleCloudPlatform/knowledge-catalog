@@ -38,7 +38,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Primary key                                                    | `schema.primaryKey`             | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
 | Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | — dropped (only PK emitted)                                          | — dropped (only PK emitted)                                          |
 | Metric                                                         | `semantic-metric` entry (+ `semantic-expressions`²⁰) | ✓²⁰ (else name, entity, description, instructions, type⁵) | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
-| Relationship (1:1 / 1:N)                                       | `schema-join` link (+ name / `ai_context` on the model's `semantic-ai-context`²⁰) | ✓²⁰ (else name normalized⁶) | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
+| Relationship (1:1 / 1:N)                                       | `schema-join` link²¹ (+ name / `ai_context` on the model's `semantic-ai-context`²⁰) | ✓²⁰ (else name normalized⁶) | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | junction `semantic-entity` entry (`<model>.associations.<rel>`) + two `schema-join` links²⁰ | ✓²⁰ | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
 | Entity `extends`                                               | `Specializes:` description paragraph¹⁵ | ✓¹⁵                                     | `LABEL` clauses + flattened fields                                   | `LABEL` clauses + flattened fields                                   |
 | Entity `abstract`                                              | table-less `semantic-entity` entry + `Abstract:` paragraph¹⁵ | ✓¹⁵                 | — no node table (a label on its subtypes)                            | — no node table (a label on its subtypes)                            |
@@ -175,7 +175,7 @@ agree on every structural row and differ only where a Spanner target has no
     link on the `semantic-entity` / `semantic-metric` entry, `kcmd glossary
     push` links the bound node view instead (its column for a field, the
     whole view for a metric) and reports the substitution; a `mode: direct`
-    entity has no node view, so its refusal is reported as before. A reader
+    entity has no node view, so its refusal is reported. A reader
     (`glossaryFromDataplex`) peels
     the trailers off again, but `kcmd pull` does not call it yet. The OSI
     export carries the block as is. See [Business glossary](glossary.md).
@@ -247,17 +247,18 @@ agree on every structural row and differ only where a Spanner target has no
     the element has content for it; when `semantic-expressions` is present
     the expressions are written without `--emit-expressions`. Pull treats a
     present aspect as authoritative and falls back to the description
-    trailers and built-in aspects otherwise, so a catalog pushed before the
-    types existed (or a project where `init` was not re-run) reads back
-    exactly as before. Independently of the aspects, a many-to-many
+    trailers and built-in aspects otherwise, so a catalog pushed without these
+    types (a project where `init` has not provisioned them) reads back from
+    the trailers and built-in aspects alone. Independently of the aspects, a many-to-many
     relationship publishes a junction `semantic-entity` entry
     `<model>.associations.<relationship>` plus two `schema-join` links
     (`…-src`, `…-dst`) through it (without `semantic-ai-context` its name
     comes back normalized⁶). A relationship that publishes no link — an
-    abstract one, or one with an abstract or column-less endpoint — rides the
-    model entry's relationship index whole (endpoints, columns, `abstract`,
-    `extends`, description, inverse, `via` / `filter`), so pull rebuilds it
-    and its sub-relationships keep their `extends`. Each bound entity also
+    abstract one, one with an abstract or column-less endpoint, or one that
+    footnote 21 skips — rides the model entry's relationship index whole
+    (endpoints, columns, `abstract`, `extends`, description, inverse, `via` /
+    `filter`), so pull rebuilds it and its sub-relationships keep their
+    `extends`. Each bound entity also
     gets binding links to its BigQuery node view (or, for `mode: direct`,
     its table) entry in `@bigquery` and to its graph node entry. Residual
     gaps:
@@ -272,6 +273,15 @@ agree on every structural row and differ only where a Spanner target has no
     - binding links need the entry group in the datasets' location (an entry
       link references only entries of its own region); elsewhere, `global`
       included, push skips them with one warning.
+21. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
+    link between two entries, so when several relationships join the same two
+    entities, push links the first one it can publish and skips the rest with
+    a warning. Knowledge Catalog does not support a relationship from an entity
+    to itself, so push skips it with a warning. The catalog metadata holds no
+    link for a skipped relationship. `pull` still returns it from the stored
+    copy of the model file, and leaves it out only when it rebuilds the file
+    from the metadata without the `semantic-ai-context` aspect²⁰ (with it, the
+    model entry's relationship index carries the relationship).
 
 ## What an import keeps (proposed)
 
@@ -288,19 +298,20 @@ content.
 | Imported construct | Coverage outcome | Model element | Graph lowering (BigQuery) |
 |---|---|---|---|
 | `owl:Class` | compiled | entity | `NODE TABLE` once a profile binds it; an unbound entity has no table |
-| `owl:Class` with no key (own or inherited) and subclasses (`owl:hasKey (absent)`), or `kcmd:abstract true` | compiled | entity `abstract: true` | no node table; a `LABEL` on its subtypes' node tables |
+| `owl:Class` with no key (own or inherited) and subclasses (`owl:hasKey (absent)`), or `kcmd:abstract true` | compiled | entity `abstract: true`, with no keys of its own: its unique keys, and the primary key of a class `kcmd:abstract` makes abstract, move to its concrete subclasses | no node table; a `LABEL` on its subtypes' node tables |
 | keyless leaf `owl:Class` (`owl:hasKey (absent)`) | dropped (reported) | entity with no `primary_key` | no node table until the model gives it a key |
 | `owl:equivalentClass` from an unkeyed class to a keyed one (`owl:equivalentClass (folded)`) | compiled | the keyed entity: relationships, fields and `extends` re-pointed, names as `ai_context.synonyms` | the keyed entity's node table and `OPTIONS(synonyms=[...])` |
 | `rdfs:subClassOf` (named class) | compiled | entity `extends` | `LABEL` clauses on the subtype's node table, inherited fields flattened down |
 | `rdfs:subClassOf` from a vocabulary to a class with fields | dropped | — (the vocabulary has no `extends` to it) | — |
-| `owl:hasKey` | compiled | `primary_key` | `KEY(...)` on the node table |
-| `owl:InverseFunctionalProperty` | compiled | `unique_keys` (inherited by concrete subclasses), or `primary_key` on a keyless class with no keyed subclass | — dropped (only the primary key is emitted), unless it became the primary key |
+| `owl:hasKey` | compiled | `primary_key`; on a class `kcmd:abstract true` makes abstract, the primary key or a unique key of its concrete subclasses | `KEY(...)` on the node table |
+| `owl:InverseFunctionalProperty` | compiled | `unique_keys` (inherited by concrete subclasses, and kept only there when its class is abstract), or `primary_key` on a keyless class with no keyed subclass | — dropped (only the primary key is emitted), unless it became the primary key |
 | `owl:DatatypeProperty` and its `rdfs:range` | compiled | field and its `datatype` | a property of the node table, typed by the bound column¹ |
 | `owl:unionOf` as an `rdfs:domain` | compiled | the field on every member class | a property of each member's node table |
 | `owl:FunctionalProperty` on a datatype property | compiled (by construction) | a field, which holds one value | a property, which holds one value |
 | `qudt:unit` and the other unit annotations | compiled | field `unit` | a `Unit:` trailer in the property's `OPTIONS(description)` |
 | `owl:ObjectProperty` | compiled | relationship | `EDGE TABLE` once the model gives it join columns and both ends are node tables |
-| `encodedBy` on an object property | compiled | relationship `from_columns` / `to_columns` (the destination's single-column key, own or inherited) | the `EDGE TABLE`'s `SOURCE KEY` / `DESTINATION KEY` |
+| `owl:ObjectProperty` whose `rdfs:domain` or `rdfs:range` is an abstract class | compiled | relationship `abstract: true`, with no join columns; a derived one keeps its chain as text in `ai_context.instructions` | no edge table; a label on the edge tables of the relationships that extend it |
+| `encodedBy` on an object property | compiled | relationship `from_columns` / `to_columns` (the destination's single-column key, own or inherited); dropped, with a warning, when the relationship is abstract | the `EDGE TABLE`'s `SOURCE KEY` / `DESTINATION KEY` |
 | `kcmd:Metric` individual | compiled | metric (`expression`, `description` with `Unit:`, `ai_context`); a glossary term when the model has a glossary | `MEASURE`⁴ |
 | `owl:inverseOf` | compiled | relationship `inverse` | a second `EDGE TABLE` over the same backing table, `SOURCE` and `DESTINATION` swapped, no `OPTIONS` |
 | `rdfs:subPropertyOf` between object properties | compiled | relationship `extends`; the parent is `abstract` | `LABEL <parent> NO PROPERTIES` on each sub-relationship's edge table; no edge table for the parent |
@@ -376,21 +387,24 @@ documents are `*.yaml`, so no push or pull reads the file.
 
 ## To Knowledge Catalog
 
-The catalog holds metadata rather than a full copy of your model. Every resource
-type it uses is a built-in system type under `dataplex-types/global`, apart from
-the custom `semantic-action` and `semantic-constraint` pairs and the three
-aspect-only annotation types (`semantic-ai-context`, `semantic-expressions`,
+The catalog holds the model's metadata and a copy of each model file and profile
+file. Every resource type it uses is a built-in system type under
+`dataplex-types/global`, apart from the custom `semantic-action`,
+`semantic-constraint` and `semantic-model-file` pairs and the three aspect-only
+annotation types (`semantic-ai-context`, `semantic-expressions`,
 `semantic-binding`) that `kcmd init` provisions. A push references those types
 and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
 What is recorded depends on the push. A catalog-only push (`--no-profile`), or a
 purely logical model with no bindings, records the whole model: every entity,
-metric, and relationship the document declares. A push that also deploys a graph
+metric, and relationship the document declares, apart from the relationships in
+footnote 21. A push that also deploys a graph
 first prunes the model to what that graph binds, so an unbound field — and any
 entity, metric, or relationship that depends on it — is left out of the catalog
-entries too. A pull of such a push returns the bound view rather than the full
-authored model.
+entries too. A pull still returns the authored model file from its stored copy.
+Only a model file that pull rebuilds from the catalog metadata comes back as the
+bound view.
 
 A logical model still produces complete entries. Each entity's `source` is
 recorded empty (`resources: []`) because there is no table behind it, and a
@@ -422,14 +436,14 @@ system-type templates do not carry a per-field `semantics` block, a
 or vocabulary members. When `kcmd init --semantic-model` has provisioned the
 `semantic-ai-context`, `semantic-expressions` and `semantic-binding` aspect
 types, a push stores all of that on them — expressions included, with no flag
-— and `pull` restores it, so a push→pull of the same model is a fixed point
-(see footnote ²⁰ under the matrix). On a catalog without those types, the old
-behavior applies: the default push omits the expressions (pass
-`--emit-expressions` to write the canonical GoogleSQL/ANSI expression into the
-built-in fields), and synonyms, examples, field-level `ai_context` and vendor
-SQL are not stored — only model, entity, and metric `instructions` have a home,
-in the `guidelines` aspect. Either way the authored document stays the source
-of truth for graph SQL.
+— and `pull` restores it when it rebuilds a model file from the metadata, so a
+rebuilt model is a push→pull fixed point too (see footnote ²⁰ under the
+matrix). On a catalog without those types, the default push omits the
+expressions (pass `--emit-expressions` to write the canonical GoogleSQL/ANSI
+expression into the built-in fields), and synonyms, examples, field-level
+`ai_context` and vendor SQL are not stored in the metadata — only model,
+entity, and metric `instructions` have a home, in the `guidelines` aspect.
+Either way the authored document stays the source of truth for graph SQL.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
@@ -466,10 +480,10 @@ that first pass is byte-for-byte stable.
 `affects` stores only what the author wrote, which is why it survives a partial
 pull intact. Whether a `concept` is an entity or an edge is not recorded, so
 nothing about it has to be re-resolved — and nothing can go stale. That matters
-most for a many-to-many relationship: a catalog pushed before junction entries
-existed holds the foreign-key `schema-join` links only, so a concept naming an
+most for a many-to-many relationship: a catalog with no junction entry for it
+holds the foreign-key `schema-join` links only, so a concept naming an
 M:N edge would look unresolvable on a model that is perfectly well-formed. It
-comes back untouched instead. (A current push publishes the M:N edge as a
+comes back untouched instead. (A push publishes the M:N edge as a
 junction entry, and pull recovers it.²⁰)
 
 **Constraints** publish the same way: each becomes a `semantic-constraint` entry
@@ -616,6 +630,14 @@ a Spanner graph binds tables directly and applies none.
 
 ## What pull recovers
 
+Push stores a copy of the model file and of each profile file it reads, and
+`pull` writes those copies back unchanged. What follows describes the catalog
+metadata itself, which is what `pull` rebuilds the model file from when the
+model has no `kcmd-push-id` label and no stored copy, such as a model an older
+`kcmd` pushed. It also rebuilds the model file when no stored copy is named
+after the model. [Pull](README.md#pull) says when `pull` refuses the catalog
+instead.
+
 `pull` returns what push wrote — the **Recovered by `pull`** column above is the
 summary. When the push deployed a graph, what push wrote was already pruned to
 the bound view (see [To Knowledge Catalog](#to-knowledge-catalog)), so pull
@@ -642,8 +664,8 @@ names, types and dimension roles come back as authored.
   entities and metrics is not — they come back in the catalog's own order, not
   the authored one. Comments in the original YAML are not preserved.
 
-**So a push followed by a pull does not return your original file.** Treat a
-pulled document as a faithful copy of the catalog metadata rather than of the
+**So a file rebuilt from the metadata is not your original file.** Treat a
+rebuilt document as a faithful copy of the catalog metadata rather than of the
 authored model, and keep the authored document as the source of truth.
 
 ## Writer-side follow-up
@@ -662,6 +684,7 @@ follow-up; the reader (pull) already returns everything the catalog holds.
   (server-side) would make the custom carrier unnecessary; it is the same class
   of gap as the `semantics` field that gates `--emit-expressions`.
 
-(A non-canonical deployment target is **not** a pull gap: push rejects it at the
-validation gate before any leg runs, so it is never written — see
-[Validation](reference.md#validation).)
+(A deployment target in no supported form is **not** a pull gap. A graph push
+rejects it at the validation gate before anything is written; see
+[Validation](reference.md#validation). A catalog-only push (`--no-profile`)
+stores it on the model entry, and pull returns it.)

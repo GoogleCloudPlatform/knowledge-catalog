@@ -27,8 +27,9 @@ import {shaclCoverage} from './coverage';
 import {parseShacl} from './parse';
 
 export interface ShaclImportOptions {
-  // The model (by name) to add the constraints to; required only when the
-  // document declares more than one.
+  // The model (by name) to add the constraints to. A document declares one
+  // model, so the name only confirms it: a name the document does not declare
+  // is an error.
   model?: string;
 }
 

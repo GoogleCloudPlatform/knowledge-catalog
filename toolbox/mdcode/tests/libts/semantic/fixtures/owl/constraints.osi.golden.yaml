@@ -41,12 +41,15 @@ semantic_model:
       - name: hasBuyer
         from: Opportunity
         to: ClientAccount
+        abstract: true
       - name: governedBy
         from: Opportunity
         to: Contract
+        abstract: true
       - name: suppliedBy
         from: Contract
         to: Supplier
+        abstract: true
     constraints:
       - name: Opportunity_hasBuyer_exactly_1
         judgment: Each Opportunity has exactly one hasBuyer relationship to a

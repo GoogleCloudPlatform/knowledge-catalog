@@ -36,8 +36,10 @@ import * as context from '../gcp/context';
 
 import {isDefinedEntity, membershipPropertyName, resolveDefinedEntities} from './defined_entities';
 import {bigQueryGraphTargets} from './deployment_target';
+import {physicalColumnOf} from './generated_views';
 import {Entity, Relationship, relationshipAncestors, SemanticModel} from './ir';
 import {pruneUnavailable} from './resolve_profiles';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {Binder, planBigQueryValidation, runQuery, sqlString, table as boundTable, Unsupported} from './validate_bigquery';
 
 
@@ -263,7 +265,8 @@ export function sameRowsSql(spec: SameRows): string {
 // edge labelled with its name and its ancestors' (bigquery.ts). `deployed` is
 // the model as push deploys it -- pruned of what the binding leaves unbound
 // (pruneUnavailable) -- and limits both to the entities and relationships it
-// keeps.
+// keeps. Pruning takes off fields, metrics and actions, so it keeps every
+// entity and relationship.
 export function graphShape(binder: Binder, deployed?: SemanticModel): GraphShape {
   const keptEntities = deployed && new Set((deployed.entities ?? []).map(e => e.name));
   const keptRelationships =
@@ -551,12 +554,23 @@ function nodeTable(ctx: ContractContext, name: string): Entity {
 
 // The rows of one node table: the entity's own table. A subtype with a table
 // of its own is a node table of its own, so -- unlike Binder.rows -- its rows
-// are not included.
+// are not included. `fields` are keys and join columns, read as the generated
+// graph reads them (see structuralColumn).
 function ownRows(ctx: ContractContext, name: string, fields: string[]): string {
   const e = nodeTable(ctx, name);
   const columns =
-      [...new Set(fields)].map(f => `${ctx.binder.column(e, f)} AS ${q(f)}`);
+      [...new Set(fields)].map(f => `${structuralColumn(e, f)} AS ${q(f)}`);
   return `SELECT ${columns.join(', ')}\nFROM ${boundTable(e)}`;
+}
+
+// The SQL a key or join column reads on one node table, as the generated graph
+// reads it (graph_ddl.ts physicalColumn): what a bound field binds, else the
+// name itself, a raw column. Keys and join columns are physical columns rather
+// than fields, so push keeps an edge whose join field the binding leaves
+// unbound, and the edge reads the column of that name.
+function structuralColumn(e: Entity, name: string): string {
+  const column = physicalColumnOf(e, name);
+  return isSimpleIdentifier(column) ? quoteIfReserved(column) : `(${column})`;
 }
 
 // A node's id across node tables: `<node table>:<key>`.

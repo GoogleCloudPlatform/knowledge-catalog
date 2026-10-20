@@ -20,7 +20,7 @@ import {Entity, SemanticModel} from '../ir';
 import {loadModels, loadSemanticModels} from '../loader';
 import {lowerNodeViews} from '../node_views';
 import {distinctQueries, evaluateProfile, planBigQueryProfile, ProfileFinding, ProfilePlan, QueryOutcome} from '../profile_bigquery';
-import {mergeProfileOntoDoc} from '../resolve_profiles';
+import {applyProfileExclusions, modelFileAloneMessage, profileForDocument} from '../resolve_profiles';
 import {bindChecks, EntityProposals, evaluateRefinements, planRefinements, tablesByRef} from './hydrate';
 import {ModelBindResult} from './report';
 import {CatalogScan, parseScanResult, ScanPattern, scanSql, ScanTable, tableUri} from './scan';
@@ -100,12 +100,41 @@ export function draftProfileDoc(model: string, bindings: EntityBinding[]): Recor
   return {version: VERSION, semantic_model: [{name: model, entities}]};
 }
 
-function loadOne(text: string, docName: string, defaultProject?: string):
+// The models of the document `modelText` with the profile `profileText`
+// applied, as push applies it (resolve_profiles' profileForDocument): a profile
+// file applies to the model file loaded on its own; a legacy `semantic_model:`
+// wrapper -- the layout `kcmd bind` writes, which may name its graph with
+// `deployment_target` -- is merged into the text and loaded as push loads one,
+// with its exclusions marked.
+function loadProfiled(
+    modelText: string, profileText: string, profileName: string,
+    docName: string, defaultProject?: string):
     {models: SemanticModel[]}|{error: string} {
+  const res = profileForDocument(
+      {name: docName, text: modelText}, [{name: profileName, text: profileText}],
+      profileName);
+  if (res.kind === 'missing') {
+    return {error: `no binding profile '${profileName}' to apply`};
+  }
+  if (res.kind === 'error') {
+    return {
+      error: res.stage === 'load' ? modelFileAloneMessage(res.error, profileName) :
+                                    res.error,
+    };
+  }
+  if (res.kind === 'file') return {models: [res.model]};
   const loaded = loadSemanticModels(
-      [{name: docName, text}], {defaultProject, bindingOptional: true});
+      [{
+        name: docName,
+        text: res.text,
+        allowLegacyBareSource: true,
+        excluded: res.excluded,
+      }],
+      {defaultProject, bindingOptional: true});
   if (loaded.error) return {error: loaded.error};
-  return {models: loaded.models.map(m => m.model)};
+  return {
+    models: loaded.models.map(m => applyProfileExclusions(m.model, res.excluded)),
+  };
 }
 
 async function profileModel(
@@ -113,11 +142,10 @@ async function profileModel(
     query: QueryFn): Promise<{plan?: ProfilePlan; findings: ProfileFinding[];
                               proposals: Map<string, EntityProposals>; notProfiled?: string}> {
   const empty = {findings: [], proposals: new Map<string, EntityProposals>()};
-  const merged = mergeProfileOntoDoc(
-      input.modelText, yaml.stringify(draftProfileDoc(model.name, bindings)), input.profileName);
-  if ('error' in merged) return {...empty, notProfiled: `the draft profile does not merge: ${merged.error}`};
-  const loaded = loadOne(merged.text, input.docName, input.defaultProject);
-  if ('error' in loaded) return {...empty, notProfiled: `the draft profile does not load: ${loaded.error}`};
+  const loaded = loadProfiled(
+      input.modelText, yaml.stringify(draftProfileDoc(model.name, bindings)),
+      input.profileName, input.docName, input.defaultProject);
+  if ('error' in loaded) return {...empty, notProfiled: `the draft profile does not apply: ${loaded.error}`};
   const bound = loaded.models.find(m => m.name === model.name);
   if (!bound) return {...empty, notProfiled: 'the draft profile lost the model'};
   const full = planBigQueryProfile(bound);
@@ -176,15 +204,14 @@ export async function bindDocument(
 }
 
 /**
- * Checks a written profile the way push will read it: merged onto the model,
+ * Checks a written profile the way push will read it: applied to the model,
  * loaded, and its hydration cross-checked. Returns the errors.
  */
 export function checkProfile(
     modelText: string, profileText: string, profileName: string, docName: string,
     defaultProject?: string): string[] {
-  const merged = mergeProfileOntoDoc(modelText, profileText, profileName);
-  if ('error' in merged) return [merged.error];
-  const loaded = loadOne(merged.text, docName, defaultProject);
+  const loaded =
+      loadProfiled(modelText, profileText, profileName, docName, defaultProject);
   if ('error' in loaded) return [loaded.error];
   return loaded.models.flatMap(m => checkHydration(m).errors);
 }
@@ -200,9 +227,8 @@ export function enforceableEntities(
     modelText: string, profileText: string, profileName: string, docName: string,
     defaultProject?: string): Set<string> {
   const out = new Set<string>();
-  const merged = mergeProfileOntoDoc(modelText, profileText, profileName);
-  if ('error' in merged) return out;
-  const loaded = loadOne(merged.text, docName, defaultProject);
+  const loaded =
+      loadProfiled(modelText, profileText, profileName, docName, defaultProject);
   if ('error' in loaded) return out;
   for (const model of loaded.models) {
     if (!(model.constraints ?? []).length) continue;

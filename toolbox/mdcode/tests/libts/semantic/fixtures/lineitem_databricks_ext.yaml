@@ -4,7 +4,9 @@
 # dataset with no primary_key, custom_extensions at field / relationship /
 # metric / model level, a COUNT(DISTINCT) metric, and a computed measure
 # (SUM(l_extendedprice * (1 - l_discount))) written with bare, unqualified
-# column references.
+# column references. Note: this is a loader/round-trip fixture only (never
+# passed through push validation, which rejects unqualified column references
+# in metrics).
 
 version: "0.2.0.dev0"
 

@@ -25,6 +25,7 @@
 import * as YAML from 'yaml';
 
 import {Constraint, Entity, GlossaryTerm, Relationship, SemanticModel} from './ir';
+import {isProfileFileForm} from './resolve_profiles';
 
 /** What pruneUnbound kept and removed. */
 export interface PruneResult {
@@ -258,21 +259,32 @@ function count(n: number, one: string, many: string): string {
 
 /**
  * The entity names a binding document binds: every entity (`entities` or
- * `datasets`) with a non-empty `source`. The document is a binding profile or
- * any model document with inline bindings. When `model` is given and the
- * document declares a model of that name, only that model is read; otherwise
- * every model in the document is.
+ * `datasets`) with a non-empty `source`. The document is a binding profile --
+ * a profile file (`<model>.profile.<name>.yaml`, one top-level profile object
+ * that binds the model it sits beside) or a legacy `semantic_model:` wrapper --
+ * or any model document with inline bindings. When `model` is given and a
+ * `semantic_model:` document declares a model of that name, only that model is
+ * read; otherwise every model in the document is.
  */
 export function boundEntityNames(text: string, model?: string): string[] {
   const doc = YAML.parse(text) as unknown;
+  if (isProfileFileForm(text)) return sourcedEntities([doc]);
   const models = (doc as {semantic_model?: unknown})?.semantic_model;
   if (!Array.isArray(models)) {
-    throw new Error('the binding document has no semantic_model list.');
+    throw new Error(
+        'the binding document is neither a profile file nor a document with ' +
+        'a semantic_model list.');
   }
   const named = models.filter(
       m => model !== undefined && (m as {name?: unknown})?.name === model);
+  return sourcedEntities(named.length ? named : models);
+}
+
+// The names of the entities with a non-empty `source` across `models` (each a
+// model or a profile object), in order and without repeats.
+function sourcedEntities(models: unknown[]): string[] {
   const out: string[] = [];
-  for (const m of named.length ? named : models) {
+  for (const m of models) {
     const items = (m as {entities?: unknown; datasets?: unknown})?.entities ??
         (m as {datasets?: unknown})?.datasets;
     if (!Array.isArray(items)) continue;

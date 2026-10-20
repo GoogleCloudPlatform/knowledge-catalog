@@ -35,6 +35,7 @@ semantic_model:
         to: Manager
         extends:
           - worksWith
+        abstract: true
       - name: worksWith
         from: Employee
         to: Employee

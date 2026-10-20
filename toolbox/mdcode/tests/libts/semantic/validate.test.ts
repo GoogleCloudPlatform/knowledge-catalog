@@ -4,8 +4,10 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
-import {LoadedModel} from '../../../src/libts/semantic/loader';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
+import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validateExpressionReferences, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
@@ -49,6 +51,12 @@ describe('validatePushRequirements', () => {
   test('a model with a deployment target and resolved metrics passes', () => {
     const m = model(
         {
+          entities: [{
+            name: 'o',
+            dataSource: 'p.d.o',
+            keys: ['p'],
+            fields: [{name: 'p', expression: 'p'}],
+          }],
           metrics:
               [{name: 'rev', expression: 'SUM(o.p)', entity: 'o'} as Metric]
         },
@@ -59,8 +67,17 @@ describe('validatePushRequirements', () => {
   test('a model with no deployment target is rejected', () => {
     const errs = validatePushRequirements([loaded(model())]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('exactly one');
+    expect(errs[0]).toContain(
+        'declares 0 deployments; push uses exactly one deployment for now, ' +
+        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
     expect(errs[0]).toContain('doc');
+
+    const vanillaErrs =
+        validatePushRequirements([loaded(model({version: '0.2.0.dev0'}))]);
+    expect(vanillaErrs).toHaveLength(1);
+    expect(vanillaErrs[0]).toEndWith(
+        "; set version: '0.2.0.dev0/google' and use 'deployments:'");
+    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
   });
 
   test(
@@ -75,11 +92,16 @@ describe('validatePushRequirements', () => {
       });
 
   test('a model with a Spanner Graph deployment target passes', () => {
-    // Spanner Graph has no MEASURE, so a metric that does not resolve to one
-    // entity is NOT required to (unlike a BigQuery target); the model is valid
-    // with only a Spanner target declared.
     const m = model(
-        {metrics: [{name: 'cnt', expression: 'COUNT(*)'} as Metric]},
+        {
+          entities: [{name: 'o', dataSource: 'o', keys: ['id'], fields: []}],
+          metrics: [{
+            name: 'cnt',
+            expression: 'COUNT(*)',
+            entity: 'o',
+            authoredEntity: 'o',
+          } as Metric],
+        },
         [googleExt([SPANNER_TARGET])]);
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
@@ -92,7 +114,9 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain(
-        'not a valid BigQuery Graph or Spanner Graph URI');
+        "target '//dataplex.googleapis.com/projects/p/locations/us' is not " +
+        'a valid BigQuery Graph or Spanner Graph URI');
+    expect(errs[0]).not.toContain('deploymentTarget');
   });
 
   // An AlloyDB target parses and is supported, and a push still cannot use it:
@@ -103,10 +127,27 @@ describe('validatePushRequirements', () => {
     const m = model({}, [googleExt([ALLOYDB_TARGET])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('is an AlloyDB database');
+    expect(errs[0]).toContain(`target '${ALLOYDB_TARGET}' is an AlloyDB database`);
     expect(errs[0]).toContain('runs against rather than deploys to');
-    expect(errs[0]).toContain(ALLOYDB_TARGET);
+    expect(errs[0]).toContain(
+        "Declare a BigQuery or Spanner Graph target (under 'deployments'; " +
+        "push uses exactly one deployment for now), or run 'kcmd push " +
+        "--no-profile' to publish to Knowledge Catalog only.");
+    expect(errs[0]).not.toContain('deploymentTarget');
     expect(errs[0]).not.toContain('is not a valid');
+
+    const vanilla =
+        model({version: '0.2.0.dev0'}, [googleExt([ALLOYDB_TARGET])]);
+    const vanillaErrs = validatePushRequirements([loaded(vanilla)]);
+    expect(vanillaErrs).toHaveLength(1);
+    // The version hint goes with the graph target it enables, not with the
+    // catalog-only option.
+    expect(vanillaErrs[0]).toContain(
+        "Declare a BigQuery or Spanner Graph target (set version: " +
+        "'0.2.0.dev0/google' and use 'deployments:'; push uses exactly one " +
+        "deployment for now), or run 'kcmd push --no-profile' to publish to " +
+        "Knowledge Catalog only.");
+    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
   });
 
   // A Knowledge-Catalog-only push deploys no graph at all, so it has no opinion
@@ -123,7 +164,68 @@ describe('validatePushRequirements', () => {
     const m = model({}, [googleExt([BQ_TARGET, other])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('exactly one');
+    expect(errs[0]).toContain(
+        'declares 2 deployments; push uses exactly one deployment for now, ' +
+        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
+  });
+
+  test('more than one target in a vanilla model ends with the version hint', () => {
+    const other =
+        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+    const m = model({version: '0.2.0.dev0'}, [googleExt([BQ_TARGET, other])]);
+    const errs = validatePushRequirements([loaded(m)]);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toEndWith(
+        "with a BigQuery Graph or Spanner Graph target; set version: " +
+        "'0.2.0.dev0/google' and use 'deployments:'");
+  });
+
+  // The entry to fix is named, rather than the count of targets.
+  test('a target in no accepted form beside a valid one is named', () => {
+    const typo = model({}, [googleExt([BQ_TARGET, 'bq-typo'])]);
+    expect(validatePushRequirements([loaded(typo)])).toEqual([
+      "model 'm' (doc) target 'bq-typo' is not a valid BigQuery Graph or " +
+          'Spanner Graph URI; expected //bigquery.googleapis.com/projects/' +
+          '<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/' +
+          'projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.',
+    ]);
+    const nonString = model({version: '0.2.0.dev0'}, [{
+      vendorName: 'GOOGLE',
+      data: JSON.stringify({deploymentTargets: [BQ_TARGET, 42]}),
+    }]);
+    const errs = validatePushRequirements([loaded(nonString)]);
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain("target '42' is not a valid BigQuery Graph");
+  });
+
+  // A padded target is the same target, so a blank one is dropped and a padded
+  // copy is caught as a repeat, on a catalog-only push too.
+  test('GOOGLE-block targets are trimmed and blank ones dropped before the repeat check', () => {
+    const padded = model({version: '0.2.0.dev0'},
+                         [googleExt([BQ_TARGET, '  ', ` ${BQ_TARGET} `])]);
+    expect(validatePushRequirements([loaded(padded)], {targetOptional: true}))
+        .toEqual([
+          `model 'm' (doc) declares duplicate deployment target '${
+              BQ_TARGET}'; each deployment must target a distinct resource.`,
+        ]);
+    const blank = model({version: '0.2.0.dev0'},
+                        [googleExt(['', ` ${BQ_TARGET} `])]);
+    expect(validatePushRequirements([loaded(blank)])).toEqual([]);
+  });
+
+  // A resource name and its URI name the same graph, so listing both is a
+  // repeat, and a single resource name is a valid target.
+  test('a resource name and its URI are the same target', () => {
+    const both = model({version: '0.2.0.dev0'},
+                       [googleExt([BQ_TARGET, BQ_TARGET.slice(2)])]);
+    expect(validatePushRequirements([loaded(both)], {targetOptional: true}))
+        .toEqual([
+          `model 'm' (doc) declares duplicate deployment target '${
+              BQ_TARGET.slice(2)}'; each deployment must target a distinct ` +
+              `resource.`,
+        ]);
+    const name = model({}, [googleExt([BQ_TARGET.slice(2)])]);
+    expect(validatePushRequirements([loaded(name)])).toEqual([]);
   });
 
   test('malformed GOOGLE extension JSON is reported, not thrown', () => {
@@ -153,10 +255,17 @@ describe('validatePushRequirements', () => {
         expect(validatePushRequirements([loaded(m)]).length).toBe(1);
       });
 
-  test('targetOptional ignores the deployment target entirely (KC-only)', () => {
+  test('targetOptional ignores the deployment target count and kind (KC-only), but still rejects duplicate targets', () => {
     // A KC-only push deploys no graph, so its deployment target is irrelevant:
-    // more than one target -- and even a single malformed one -- is accepted,
-    // where a graph push rejects both. (Zero targets is covered above.)
+    // more than one distinct target -- and even a single malformed one -- is
+    // accepted, where a graph push rejects both. (Zero targets is covered
+    // above.) A repeated target URI is still rejected so a vanilla file obeys
+    // the same uniqueness rule as `deployments:`.
+    const dup = model({}, [googleExt([BQ_TARGET, BQ_TARGET])]);
+    for (const targetOptional of [false, true]) {
+      const errs = validatePushRequirements([loaded(dup)], {targetOptional});
+      expect(errs.some(e => e.includes(`duplicate deployment target '${BQ_TARGET}'`))).toBe(true);
+    }
     const other =
         '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const many = model({}, [googleExt([BQ_TARGET, other])]);
@@ -242,12 +351,16 @@ describe('validateBigQueryDataSources', () => {
     expect(errs[0]).toContain('permission denied');
   });
 
-  test('skips a source that is a query, not a table', async () => {
-    // A query source (contains whitespace) is not a table and cannot be probed,
-    // so it is not checked (nothing is mocked for it).
+  test('probes a table name that contains spaces (from a backtick-quoted catalog name)', async () => {
     const bq = new BigQueryClientMock();
-    const m = model({entities: [entity('q', 'SELECT * FROM x')]});
-    expect(await validateBigQueryDataSources([loaded(m)], bq, 'p')).toEqual([]);
+    bq.addMockSource('acme.sales.order items');
+    const ok = model({entities: [entity('o', 'acme.sales.order items')]});
+    expect(await validateBigQueryDataSources([loaded(ok)], bq, 'p')).toEqual([]);
+
+    const missing = model({entities: [entity('o', 'acme.sales.missing items')]});
+    const errs = await validateBigQueryDataSources([loaded(missing)], bq, 'p');
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('acme.sales.missing items');
   });
 
   test(
@@ -677,6 +790,1832 @@ describe('action statement pre-flight', () => {
       expect(errs[0]).toContain('statement 2');
       expect(errs[1]).toContain('action \'B\'');
       expect(errs[1]).toContain('statement 1');
+    });
+  });
+});
+
+
+describe('inheritance rules', () => {
+  function ent(name: string, over: Partial<Entity> = {}): Entity {
+    return {
+      name,
+      dataSource: `p.d.${name}`,
+      keys: [`${name}_id`],
+      fields: [{name: `${name}_id`, expression: `${name}_id`}],
+      ...over,
+    };
+  }
+  function check(over: Partial<SemanticModel>): string[] {
+    return validatePushRequirements(
+        [loaded(model(over))], {targetOptional: true});
+  }
+  const customer = ent('customer', {
+    fields: [{name: 'name', expression: 'name', type: 'String',
+              description: 'Display name'}],
+  });
+
+  test('a subtype rebinding an inherited field passes', () => {
+    expect(check({
+      entities: [
+        customer,
+        ent('vip', {extends: ['customer'],
+                    fields: [{name: 'name', expression: 'c_name'}]}),
+      ],
+    })).toEqual([]);
+  });
+
+  test('a subtype redefining an inherited field is rejected, even with a binding', () => {
+    for (const extra of [
+      {type: 'Integer' as const}, {label: 'L'}, {dimension: {}},
+      {description: 'd'}, {aiContext: {instructions: 'i'}},
+      {customExtensions: [{vendorName: 'ACME', data: '{}'}]},
+    ]) {
+      const errors = check({
+        entities: [
+          customer,
+          ent('vip', {extends: ['customer'],
+                      fields: [{name: 'name', expression: 'c_name', ...extra}]}),
+        ],
+      });
+      expect(errors.join('\n')).toContain(
+          "field 'name' is inherited, so it may only be rebound to a column");
+    }
+  });
+
+  // A redeclaration sets `expression` and nothing else.
+  test('a subtype redeclaring an inherited field with nothing set is rejected', () => {
+    for (const f of [{name: 'name'}, {name: 'name', stringForm: true},
+                     {name: 'name', importedDialect: 'SNOWFLAKE'}]) {
+      expect(check({
+        entities: [customer, ent('vip', {extends: ['customer'], fields: [f]})],
+      }).join('\n')).toContain(
+          "field 'name' is inherited from 'customer'; restate it only to " +
+          "rebind it with 'expression', or remove the line.");
+    }
+  });
+
+  test('name-only redeclarations on both sides of a diamond are rejected', () => {
+    const party = ent('party', {
+      abstract: true, dataSource: undefined, keys: [],
+      fields: [{name: 'id', type: 'String'}],
+    });
+    const side = (name: string) => ent(name, {
+      abstract: true, dataSource: undefined, keys: [], extends: ['party'],
+      fields: [{name: 'id'}],
+    });
+    const errors = check({
+      entities: [
+        party, side('customer'), side('account'),
+        ent('vip', {extends: ['customer', 'account'], keys: ['id'],
+                    fields: [{name: 'id', expression: 'vip_id'}]}),
+      ],
+    }).join('\n');
+    expect(errors).toContain("entity 'customer' in model");
+    expect(errors).toContain("entity 'account' in model");
+    expect(errors).toContain("field 'id' is inherited from 'party'");
+  });
+
+  test('a legacy profile binds an inherited field the model does not redeclare', () => {
+    const logical = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: name, datatype: String }
+      - name: customer
+        extends: [party]
+        primary_key: [id]
+        fields:
+          - { name: id, datatype: Integer }
+`;
+    const profile = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: customer
+        source: p.d.customer
+        fields:
+          - { name: id, expression: c_custkey }
+          - { name: name, expression: c_name }
+`;
+    const docs = (text: string, bindingOptional: boolean) =>
+        loadModels(text, {bindingOptional, allowLegacyBareSource: true})
+            .models.map(m => loaded(m, 'sales.yaml'));
+    // The catalog leg validates the logical model unpruned.
+    expect(validatePushRequirements(docs(logical, true), {targetOptional: true}))
+        .toEqual([]);
+    const merged = mergeProfileOntoDoc(logical, profile, 'analytical');
+    if ('error' in merged) throw new Error(merged.error);
+    expect(validatePushRequirements(
+               docs(merged.text, false), {targetOptional: true}))
+        .toEqual([]);
+  });
+
+  test('a cycle or an ambiguous field is still reported on a pruned model', () => {
+    const cyclic = model({
+      entities: [ent('a', {extends: ['b']}), ent('b', {extends: ['a']})],
+    });
+    const ambiguous = model({
+      entities: [
+        ent('x', {fields: [{name: 'id', expression: 'id'}]}),
+        ent('y', {fields: [{name: 'id', expression: 'id'}]}),
+        ent('z', {extends: ['x', 'y']}),
+      ],
+    });
+    for (const [m, want] of [[cyclic, /must not form a cycle/],
+                             [ambiguous, /declare or rebind 'id'/]] as const) {
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true, fieldsPruned: true});
+      expect(errors.join('\n')).toMatch(want);
+    }
+    // Pruning never drops an entity, so an unknown parent is reported on a
+    // pruned model too.
+    expect(validatePushRequirements(
+               [loaded(model({entities: [ent('a', {extends: ['gone']})]}))],
+               {targetOptional: true, fieldsPruned: true}).join('\n'))
+        .toContain("extends unknown entity 'gone'");
+  });
+
+  test('an abstract entity is rejected for a source, keys or a bound field', () => {
+    const base = {abstract: true, keys: [], fields: [], dataSource: ''};
+    expect(check({entities: [ent('party', {...base, dataSource: 'p.d.party'})]})
+               .join('\n')).toContain('cannot declare a source');
+    expect(check({entities: [ent('party', {...base, keys: ['id']})]}).join('\n'))
+        .toContain('cannot declare a primary key or unique keys');
+    expect(check({entities: [ent('party', {...base, uniqueKeys: [['id']]})]})
+               .join('\n')).toContain('cannot declare a primary key or unique keys');
+    expect(check({entities: [ent('party', {...base, fields: [{name: 'id', expression: 'id'}]})]})
+               .join('\n')).toContain("its field 'id' cannot carry an expression");
+    expect(check({entities: [ent('party', {...base, authoredSource: 'bigquery:p.d.party'})]})
+               .join('\n')).toContain('cannot declare a source');
+  });
+
+  test('an abstract entity with no subtypes and nothing physical passes', () => {
+    expect(check({
+      entities: [ent('party', {abstract: true, dataSource: '', keys: [],
+                               fields: [{name: 'id', type: 'String'}]})],
+    })).toEqual([]);
+  });
+
+  describe('concrete leaves', () => {
+    const party = ent('party', {abstract: true, dataSource: '', keys: [], fields: []});
+    const person = ent('person');
+    const employee = ent('employee', {extends: ['person']});
+    const order = ent('order');
+    // Each join reaches the target's key, `<name>_id`.
+    const rel = (to: string) => ({
+      name: `order_${to}`,
+      source: {entity: 'order', columns: ['c']},
+      destination: {entity: to, columns: [`${to}_id`]},
+    });
+    const metric = (m: Partial<Metric>): Metric =>
+        ({name: 'm1', expression: 'COUNT(*)', ...m} as Metric);
+
+    test('a relationship to an abstract entity is rejected', () => {
+      expect(check({entities: [party, order], relationships: [rel('party')]})
+                 .join('\n')).toContain("connects 'party', which is abstract");
+    });
+    test('a relationship to an extended entity is rejected', () => {
+      expect(check({entities: [person, employee, order], relationships: [rel('person')]})
+                 .join('\n'))
+          .toContain("connects 'person', which is extended by another entity");
+    });
+    test('a relationship between leaves passes', () => {
+      expect(check({entities: [person, employee, order], relationships: [rel('employee')]}))
+          .toEqual([]);
+    });
+    test('a metric anchored to an abstract or extended entity is rejected', () => {
+      expect(check({entities: [party, order], metrics: [metric({authoredEntity: 'party', entity: 'party'})]})
+                 .join('\n')).toContain("belongs to 'party', which is abstract");
+      expect(check({entities: [person, employee], metrics: [metric({authoredEntity: 'person', entity: 'person'})]})
+                 .join('\n'))
+          .toContain("belongs to 'person', which is extended by another entity");
+    });
+    test('a metric whose inferred entity is abstract is rejected', () => {
+      expect(check({entities: [party, order], metrics: [metric({entity: 'party'})]})
+                 .join('\n')).toContain("belongs to 'party', which is abstract");
+    });
+    test('a relationship from an extended entity to itself is reported once', () => {
+      const errors = check({
+        entities: [person, employee],
+        relationships: [{
+          name: 'knows',
+          source: {entity: 'person', columns: ['c']},
+          destination: {entity: 'person', columns: ['person_id']},
+        }],
+      });
+      expect(errors.filter(e => e.includes("relationship 'knows'")).length).toBe(1);
+    });
+    test('the rules also run on a pruned model, as a graph push validates', () => {
+      const errors = validatePushRequirements(
+          [loaded(model({entities: [person, employee, order],
+                         relationships: [rel('person')]}))],
+          {targetOptional: true, fieldsPruned: true});
+      expect(errors.join('\n'))
+          .toContain("connects 'person', which is extended by another entity");
+    });
+    test('a metric whose inferred entity is extended is rejected', () => {
+      expect(check({entities: [person, employee], metrics: [metric({entity: 'person'})]})
+                 .join('\n'))
+          .toContain("belongs to 'person', which is extended by another entity");
+    });
+    test('a metric on a leaf passes, anchored or inferred', () => {
+      expect(check({entities: [person, employee], metrics: [metric({authoredEntity: 'employee', entity: 'employee'})]}))
+          .toEqual([]);
+      expect(check({
+               entities: [person, employee],
+               metrics: [metric({
+                 entity: 'employee',
+                 expression: 'COUNT(employee.employee_id)',
+               })],
+             }))
+          .toEqual([]);
+    });
+    // A defined subtype filters its parent's rows and an abstract one has no
+    // table, so neither turns the parent into a union of tables.
+    test('a parent extended only by a defined or an abstract subtype is a leaf', () => {
+      const vip = ent('vip', {
+        extends: ['person'], dataSource: '', keys: [], fields: [],
+        definition: {expression: 'person_id > 100'},
+      });
+      const lead = ent('lead', {extends: ['person'], abstract: true, dataSource: '', keys: [], fields: []});
+      expect(check({entities: [person, vip, lead, order], relationships: [rel('person')],
+                    metrics: [metric({authoredEntity: 'person', entity: 'person'})]}))
+          .toEqual([]);
+    });
+    test('a table-backed descendant behind an abstract one makes every ancestor a non-leaf', () => {
+      const staff = ent('staff', {extends: ['person'], abstract: true, dataSource: '', keys: [], fields: []});
+      const contractor = ent('contractor', {extends: ['staff']});
+      expect(check({entities: [person, staff, contractor, order], relationships: [rel('person')]})
+                 .join('\n'))
+          .toContain("connects 'person', which is extended by another entity");
+    });
+    // An abstract relationship forms no edge table; it labels its concrete
+    // sub-relationships' edges, so its ends may be supertypes.
+    test('an abstract relationship may connect an abstract or an extended entity', () => {
+      expect(check({
+               entities: [party, person, employee, order],
+               relationships: [
+                 {name: 'touches', abstract: true,
+                  source: {entity: 'order', columns: []}, destination: {entity: 'party', columns: []}},
+                 {name: 'meets', abstract: true,
+                  source: {entity: 'order', columns: []}, destination: {entity: 'person', columns: []}},
+               ],
+             }))
+          .toEqual([]);
+    });
+  });
+});
+
+
+// A relationship's cardinality comes from the key its to_columns cover, so a
+// join that covers no key is rejected on every push, a catalog-only one
+// included.
+describe('a relationship joins on a key of its target', () => {
+  const ent = (name: string, over: Partial<Entity> = {}): Entity => ({
+    name, dataSource: `p.d.${name}`, keys: ['id'], fields: [], ...over,
+  });
+  const join = (to: string[]) => ({
+    name: 'placed_by',
+    source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
+    destination: {entity: 'customer', columns: to},
+  });
+  const check = (customer: Entity, to: string[]) => validatePushRequirements(
+      [loaded(model({entities: [ent('orders'), customer], relationships: [join(to)]}))],
+      {targetOptional: true});
+
+  test('a join on a key, a unique key or a superset of one passes', () => {
+    expect(check(ent('customer'), ['id'])).toEqual([]);
+    expect(check(ent('customer', {uniqueKeys: [['email']]}), ['email'])).toEqual([]);
+    expect(check(ent('customer'), ['id', 'tenant'])).toEqual([]);
+  });
+
+  test('column names compare ignoring case and backticks', () => {
+    expect(check(ent('customer'), ['ID'])).toEqual([]);
+    expect(check(ent('customer'), ['`id`'])).toEqual([]);
+  });
+
+  test('a key field\'s column is read without its comment, as the generators read it', () => {
+    // The generators emit `KEY(cust_id)` for this field, so a join on
+    // `cust_id` covers the key.
+    const commented = ent('customer', {
+      fields: [{name: 'id', expression: 'cust_id -- the customer number'}],
+    });
+    expect(check(commented, ['cust_id'])).toEqual([]);
+  });
+
+  test('a join name matches a field exactly, as the generators read it', () => {
+    // The generators read `ID` as a column, not as field `id`, so the join
+    // does not reach the key they emit, `cust_id`.
+    const named = ent('customer', {fields: [{name: 'id', expression: 'cust_id'}]});
+    expect(check(named, ['ID']).join('\n'))
+        .toContain("cover no primary or unique key of 'customer'");
+  });
+
+  test('a join that covers no key is rejected', () => {
+    expect(check(ent('customer'), ['name']).join('\n')).toContain(
+        "relationship 'placed_by' in model 'm' (doc): its to_columns [\"name\"] " +
+        "cover no primary or unique key of 'customer'");
+  });
+
+  test('a target with no key cannot be joined to', () => {
+    expect(check(ent('customer', {keys: []}), ['id']).join('\n'))
+        .toContain("cover no primary or unique key of 'customer'");
+  });
+
+  test('a relationship with no join columns yet is not checked', () => {
+    expect(check(ent('customer', {keys: []}), [])).toEqual([]);
+  });
+});
+
+
+describe('a relationship key check reads names as columns', () => {
+  const join = (toEntity: string, to: string[]) => ({
+    name: 'placed_by',
+    source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
+    destination: {entity: toEntity, columns: to},
+  });
+  const orders: Entity = {name: 'orders', dataSource: 'p.d.o', keys: ['o_id'], fields: []};
+  const check = (entities: Entity[], rel: any) => validatePushRequirements(
+      [loaded(model({entities: [orders, ...entities], relationships: [rel]}))],
+      {targetOptional: true});
+
+  test('a key that names a field covers a join on that field\'s column', () => {
+    const customer: Entity = {
+      name: 'customer', dataSource: 'p.d.c', keys: ['customerId'],
+      fields: [{name: 'customerId', expression: 'customer_id'}],
+    };
+    expect(check([customer], join('customer', ['customer_id']))).toEqual([]);
+  });
+
+  // The column is bound only in a profile, so this binding cannot tell which
+  // column the key is; the profile's binding is checked instead.
+  test('a key that names a field with no column yet is not judged', () => {
+    const customer: Entity = {
+      name: 'customer', dataSource: 'p.d.c', keys: ['customerId'],
+      fields: [{name: 'customerId'}],
+    };
+    expect(check([customer], join('customer', ['customer_id']))).toEqual([]);
+  });
+
+  test('a relationship through a junction table is not checked', () => {
+    const customer: Entity = {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
+    expect(check([customer], {...join('customer', ['not_a_key']),
+                              association: {dataSource: 'p.d.oc'}}))
+        .toEqual([]);
+  });
+
+  test('a relationship to an abstract entity gets only the concrete-leaf error', () => {
+    const party: Entity = {name: 'party', abstract: true, dataSource: '', keys: [], fields: []};
+    const errors = check([party], join('party', ['id'])).join('\n');
+    expect(errors).toContain("connects 'party', which is abstract");
+    expect(errors).not.toContain('cover no primary or unique key');
+  });
+
+  test('skips the key-coverage check only when its own inputs are invalid', () => {
+    const customer: Entity = {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
+    // Invalid to_columns entry -> skipped.
+    const badToCol = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['o_id']},
+      destination: {entity: 'customer', columns: ['LOWER(id)']},
+    });
+    expect(badToCol.length).toBe(1);
+    expect(badToCol[0]).toContain('to_columns');
+    expect(badToCol[0]).not.toContain('cover no primary or unique key');
+
+    // Undeclared to entity -> skipped.
+    const badToEntity = check([customer], join('ghost', ['id']));
+    expect(badToEntity.length).toBe(1);
+    expect(badToEntity[0]).toContain("'to' dataset 'ghost' is not defined in the model");
+
+    // Invalid target primary_key or unique_keys -> skipped.
+    const badPk = check(
+        [{...customer, keys: ['LOWER(id)']}],
+        join('customer', ['not_a_key']));
+    expect(badPk.length).toBe(1);
+    expect(badPk[0]).toContain('primary_key');
+    expect(badPk[0]).not.toContain('cover no primary or unique key');
+
+    const badUk = check(
+        [{...customer, uniqueKeys: [['LOWER(email)']]}],
+        join('customer', ['not_a_key']));
+    expect(badUk.length).toBe(1);
+    expect(badUk[0]).toContain('unique_keys');
+    expect(badUk[0]).not.toContain('cover no primary or unique key');
+  });
+
+  test('reports an uncovered to_columns alongside an unrelated from-side or length error', () => {
+    const customer: Entity = {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
+    const badFromCol = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['LOWER(o_id)']},
+      destination: {entity: 'customer', columns: ['not_a_key']},
+    });
+    expect(badFromCol.length).toBe(2);
+    expect(badFromCol.join('\n')).toContain('from_columns');
+    expect(badFromCol.join('\n')).toContain("cover no primary or unique key of 'customer'");
+
+    const badFromEntity = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'ghost', columns: ['o_id']},
+      destination: {entity: 'customer', columns: ['not_a_key']},
+    });
+    expect(badFromEntity.length).toBe(2);
+    expect(badFromEntity.join('\n')).toContain("'from' dataset 'ghost' is not defined in the model");
+    expect(badFromEntity.join('\n')).toContain("cover no primary or unique key of 'customer'");
+
+    const badLength = check([customer], {
+      name: 'placed_by',
+      source: {entity: 'orders', columns: ['o_id', 'extra']},
+      destination: {entity: 'customer', columns: ['not_a_key']},
+    });
+    expect(badLength.length).toBe(2);
+    expect(badLength.join('\n')).toContain('from_columns (2) and to_columns (1)');
+    expect(badLength.join('\n')).toContain("cover no primary or unique key of 'customer'");
+  });
+});
+
+
+describe('physical column names and relationship shape', () => {
+  const validColumns = ['o_id', '`order date`'];
+  // Rejected values that could be a column name written without backticks.
+  // Their error suggests backticks as a condition, because only a parser could
+  // tell a value made of words, such as `a AND b`, from a column name.
+  const hintedColumns = [
+    'order date',
+    'order-date',
+    'a-',
+    'margin%',
+    'growth %',
+    'R&D cost',
+    'a AND b',
+    'o_id IS NULL',
+    'CASE WHEN a THEN b END',
+  ];
+  // Rejected values whose error gives no backtick hint.
+  const unhintedColumns = [
+    '',
+    '   ',
+    ' o_id',
+    'o_id ',
+    'customers.id',
+    'LOWER(cust_id)',
+    'a || b',
+    'a,b',
+    'a`b',
+    '``',
+    'amount - discount',
+    'x % 2',
+    'cost + tax',
+    'a = b',
+    '-1',
+    'a\t-\tb',
+    'price $ usd',
+    'amount €',
+    '"order date"',
+    '[order date]',
+  ];
+  const invalidColumns = [...hintedColumns, ...unhintedColumns];
+  const backtickHint =
+      'if it names a column with spaces or special characters, wrap it in backticks, for example `order date`';
+  // The whole error for a rejected column, with or without the backtick hint.
+  const columnError =
+      (owner: string, slot: string, value: string, hint: boolean) =>
+          `${owner} in model 'm' (doc): ${slot} column '${value}' is not a ` +
+          'physical column name; keys and join columns must name physical ' +
+          'table columns, not expressions or field references' +
+          (hint ? ` (${backtickHint})` : '') + '.';
+
+  const baseOrders = (over: Partial<Entity> = {}): Entity => ({
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    keys: ['o_id'],
+    fields: [],
+    ...over,
+  });
+  const baseCustomers = (over: Partial<Entity> = {}): Entity => ({
+    name: 'customers',
+    dataSource: 'p.d.customers',
+    keys: ['c_id'],
+    fields: [],
+    ...over,
+  });
+
+  test('accepts bare and backtick-quoted physical column names in all four slots', () => {
+    for (const col of validColumns) {
+      const m = model({
+        entities: [
+          baseOrders({keys: [col], uniqueKeys: [[col]]}),
+          baseCustomers({keys: [col]}),
+        ],
+        relationships: [{
+          name: 'placed_by',
+          source: {entity: 'orders', columns: [col]},
+          destination: {entity: 'customers', columns: [col]},
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    }
+  });
+
+  test('rejects expressions, qualified names, unquoted whitespace, and empty strings in all four slots, printing the backtick hint only for a value that could be a column name', () => {
+    for (const bad of invalidColumns) {
+      const expectHint = hintedColumns.includes(bad);
+
+      const pkErrs = validatePushRequirements(
+          [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+          {targetOptional: true});
+      expect(pkErrs).toEqual(
+          [columnError("entity 'orders'", 'primary_key', bad, expectHint)]);
+
+      const ukErrs = validatePushRequirements(
+          [loaded(model({entities: [baseOrders({uniqueKeys: [[bad]]})]}))],
+          {targetOptional: true});
+      expect(ukErrs).toEqual(
+          [columnError("entity 'orders'", 'unique_keys', bad, expectHint)]);
+
+      const fromErrs = validatePushRequirements(
+          [loaded(model({
+            entities: [baseOrders(), baseCustomers()],
+            relationships: [{
+              name: 'placed_by',
+              source: {entity: 'orders', columns: [bad]},
+              destination: {entity: 'customers', columns: ['c_id']},
+            }],
+          }))],
+          {targetOptional: true});
+      expect(fromErrs).toEqual([columnError(
+          "relationship 'placed_by'", 'from_columns', bad, expectHint)]);
+
+      const toErrs = validatePushRequirements(
+          [loaded(model({
+            entities: [baseOrders(), baseCustomers()],
+            relationships: [{
+              name: 'placed_by',
+              source: {entity: 'orders', columns: ['o_id']},
+              destination: {entity: 'customers', columns: [bad]},
+            }],
+          }))],
+          {targetOptional: true});
+      expect(toErrs).toEqual([columnError(
+          "relationship 'placed_by'", 'to_columns', bad, expectHint)]);
+    }
+  });
+
+  test('gives no backtick hint for an operator at the start of a value or next to whitespace', () => {
+    const operators =
+        ['+', '-', '*', '/', '%', '=', '<', '>', '!', '|', '&', '^', '~'];
+    for (const op of operators) {
+      for (const bad of [`${op}a`, `a ${op}b`, `a${op} b`]) {
+        const errs = validatePushRequirements(
+            [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+            {targetOptional: true});
+        expect(errs).toEqual(
+            [columnError("entity 'orders'", 'primary_key', bad, false)]);
+      }
+    }
+  });
+
+  test('gives the backtick hint for a rejected a<c>b or a<c>b c only when BigQuery allows c in a column name', () => {
+    // The ASCII characters BigQuery allows in a column name.
+    const allowedAscii = /^[A-Za-z0-9_ &%=+:'<>#|-]$/;
+    // Whitespace, then a letter, a numeric character, connector punctuation,
+    // a dash and a mark, each allowed.
+    const allowedOther =
+        ['\t', '\n', '\u00a0', '\u3000', 'ñ', '\u0663', '\u203f', '\u2013',
+         '\u0301'];
+    // A currency sign, a symbol, an emoji and a zero-width space, each
+    // forbidden.
+    const forbiddenOther = ['€', '°', '\u{1F600}', '\u200b'];
+    const chars = [...Array(95)]
+                      .map((_, i) => String.fromCharCode(32 + i))
+                      .concat(allowedOther, forbiddenOther);
+    for (const c of chars) {
+      const hint = allowedAscii.test(c) || allowedOther.includes(c);
+      // isColumnName rejects a<c>b only for some c. It rejects every a<c>b c,
+      // because of the space.
+      for (const bad of [`a${c}b`, `a${c}b c`]) {
+        if (isColumnName(bad)) continue;
+        const errs = validatePushRequirements(
+            [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
+            {targetOptional: true});
+        expect(errs).toEqual(
+            [columnError("entity 'orders'", 'primary_key', bad, hint)]);
+      }
+    }
+  });
+
+  test('rejects a model loaded from YAML whose key is not a physical column name', () => {
+    const [parsed] = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: ["LOWER(o_id)"]
+        fields:
+          - { name: o_id, expression: o_id }
+`).models;
+    const errs =
+        validatePushRequirements([loaded(parsed)], {targetOptional: true});
+    expect(errs).toHaveLength(1);
+    expect(errs[0]).toContain(
+        "entity 'orders' in model 'sales' (doc): primary_key column 'LOWER(o_id)' is not a physical column name");
+    expect(errs[0]).not.toContain('backticks');
+  });
+
+  test('an abstract entity with an invalid key gets only the abstract-entity key error', () => {
+    const party: Entity = {
+      name: 'party',
+      abstract: true,
+      dataSource: '',
+      keys: ['LOWER(id)'],
+      fields: [],
+    };
+    const errs = validatePushRequirements(
+        [loaded(model({entities: [party]}))],
+        {targetOptional: true});
+    expect(errs.length).toBe(1);
+    expect(errs[0]).toContain('cannot declare a primary key or unique keys');
+  });
+
+  test('a relationship to an abstract entity whose join column is an expression reports both the abstract endpoint and the bad join column', () => {
+    const party: Entity = {
+      name: 'party',
+      abstract: true,
+      dataSource: '',
+      keys: [],
+      fields: [],
+    };
+    const errs = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), party],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'party', columns: ['LOWER(id)']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(errs).toHaveLength(2);
+    expect(errs.join('\n')).toContain("connects 'party', which is abstract");
+    expect(errs.join('\n')).toContain(
+        "to_columns column 'LOWER(id)' is not a physical column name");
+    expect(errs.join('\n')).not.toContain('cover no primary or unique key');
+  });
+
+  test('skips direct-FK join column and length checks for an association relationship', () => {
+    const errs = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'orders_customers',
+            source: {entity: 'orders', columns: ['LOWER(o_id)', 'extra']},
+            destination: {entity: 'customers', columns: ['c_id']},
+            association: {
+              dataSource: 'p.d.order_customers',
+              keys: ['id'],
+              sourceColumns: ['o_id'],
+              destinationColumns: ['c_id'],
+            },
+          }],
+        }))],
+        {targetOptional: true});
+    expect(errs).toEqual([]);
+  });
+
+  test('checks the endpoints of an association relationship', () => {
+    const errs = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders()],
+          relationships: [{
+            name: 'orders_ghosts',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'ghost', columns: []},
+            association: {
+              dataSource: 'p.d.orders_ghosts',
+              keys: ['id'],
+              sourceColumns: ['o_id'],
+              destinationColumns: ['g_id'],
+            },
+          }],
+        }))],
+        {targetOptional: true});
+    expect(errs).toEqual([
+      "relationship 'orders_ghosts' in model 'm' (doc): 'to' dataset 'ghost' is not defined in the model.",
+    ]);
+  });
+
+  test('rejects an undeclared from or to entity on a relationship', () => {
+    const badFrom = validatePushRequirements(
+        [loaded(model({
+          entities: [baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'ghost', columns: ['c_id']},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(badFrom.length).toBe(1);
+    expect(badFrom[0]).toContain("relationship 'placed_by'");
+    expect(badFrom[0]).toContain("'from' dataset 'ghost' is not defined in the model.");
+
+    const badTo = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'ghost', columns: ['o_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(badTo.length).toBe(1);
+    expect(badTo[0]).toContain("relationship 'placed_by'");
+    expect(badTo[0]).toContain("'to' dataset 'ghost' is not defined in the model.");
+  });
+
+  test('rejects mismatched from_columns and to_columns lengths on KC-only and graph pushes, calls one bound side a half-bound join, and accepts both empty on KC-only push', () => {
+    const fromLonger = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id', 'extra_id']},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(fromLonger).toEqual([
+      "relationship 'placed_by' in model 'm' (doc): from_columns (2) and to_columns (1) have different lengths; the join keys are mismatched.",
+    ]);
+
+    const toLonger = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'customers', columns: ['c_id', 'extra_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(toLonger).toEqual([
+      "relationship 'placed_by' in model 'm' (doc): from_columns (1) and to_columns (2) have different lengths; the join keys are mismatched.",
+    ]);
+
+    const oneSideEmptyOnGraph = validatePushRequirements([loaded(model(
+        {
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: ['o_id']},
+            destination: {entity: 'customers', columns: []},
+          }],
+        },
+        [googleExt([BQ_TARGET])]))]);
+    const halfBound =
+        "relationship 'placed_by' in model 'm' (doc): from_columns and to_columns must be given together (both bind the edge) or both omitted (a logical edge); one without the other is a half-bound join.";
+    expect(oneSideEmptyOnGraph).toEqual([halfBound]);
+
+    const onlyToBound = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customers', columns: ['c_id']},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(onlyToBound).toEqual([halfBound]);
+
+    const unbound = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [{
+            name: 'placed_by',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customers', columns: []},
+          }],
+        }))],
+        {targetOptional: true});
+    expect(unbound).toEqual([]);
+  });
+});
+
+
+describe('field and metric expression references', () => {
+  const orders = (): Entity => ({
+    name: 'orders',
+    dataSource: 'p.d.orders',
+    keys: ['id'],
+    fields: [
+      {name: 'id', expression: 'o_id'},
+      {name: 'net_amount', expression: 'o_net_amount'},
+      {name: 'order_date', expression: 'o_order_date'},
+      {name: 'end_date', expression: 'o_end_date'},
+      {name: 'url', expression: 'o_url'},
+      {name: 'status', expression: 'o_status'},
+      {name: 'items', expression: 'o_items'},
+      {name: 'shipping_address', expression: 'o_shipping_address'},
+    ],
+  });
+  const customer = (): Entity => ({
+    name: 'customer',
+    dataSource: 'p.d.customer',
+    keys: ['id'],
+    fields: [
+      {name: 'id', expression: 'c_id'},
+      {name: 'amount', expression: 'c_amount'},
+    ],
+  });
+
+  describe('metrics', () => {
+    test('rejects an unanchored metric that reaches no entity or multiple entities on BigQuery, Spanner, and pruned pushes', () => {
+      const noEntity = (target: string) => model(
+          {
+            entities: [orders()],
+            metrics: [{name: 'cnt', expression: 'COUNT(*)'}],
+          },
+          [googleExt([target])]);
+      expect(validatePushRequirements([loaded(noEntity(BQ_TARGET))]).join('\n'))
+          .toContain("metric 'cnt'");
+      expect(validatePushRequirements([loaded(noEntity(SPANNER_TARGET))])
+                 .join('\n'))
+          .toContain("metric 'cnt'");
+      expect(validatePushRequirements(
+                 [loaded(noEntity(SPANNER_TARGET))], {fieldsPruned: true})
+                 .join('\n'))
+          .toContain("metric 'cnt'");
+
+      const multiEntity = model({
+        entities: [orders(), customer()],
+        metrics: [{
+          name: 'ratio',
+          expression: 'SUM(orders.net_amount) / COUNT(customer.id)',
+        }],
+      });
+      expect(validatePushRequirements(
+                 [loaded(multiEntity)], {targetOptional: true, fieldsPruned: true})
+                 .join('\n'))
+          .toContain('reaches multiple entities (orders, customer)');
+
+      const vanillaNoEntity = model({
+        version: '0.2.0.dev0',
+        entities: [orders()],
+        metrics: [{name: 'cnt', expression: 'COUNT(*)'}],
+      });
+      expect(validatePushRequirements(
+                 [loaded(vanillaNoEntity)], {targetOptional: true})
+                 .join('\n'))
+          .toContain("set 'entity' in a GOOGLE custom_extensions block on the metric");
+    });
+
+    // An anchor does not make up for missing SQL: the graph would drop the
+    // metric.
+    test('rejects a metric with no SQL, with or without an entity anchor', () => {
+      const message = (name: string) =>
+          `metric '${name}' in model 'm' (doc) has no SQL in 'expression'; ` +
+          "write the metric's SQL.";
+      const m = model({
+        entities: [orders()],
+        metrics: [
+          {name: 'empty_metric'},
+          {name: 'anchored', entity: 'orders', authoredEntity: 'orders'},
+          {name: 'blank', expression: '  '},
+          {name: 'comment', expression: '-- todo', entity: 'orders'},
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([
+            message('empty_metric'),
+            message('anchored'),
+            message('blank'),
+            message('comment'),
+          ]);
+    });
+
+    // A model built in memory skips the loader, which rejects these.
+    test('rejects a metric with no SQL in one of its texts in a model built in memory, as the loader does', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [
+          {
+            name: 'vendor',
+            expression: 'SUM(orders.net_amount)',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+              {dialect: 'POSTGRES', expression: '-- todo'},
+            ],
+          },
+          // The graph generator writes `expression`, which here is not the
+          // text of the dialect entry.
+          {
+            name: 'stale',
+            expression: '',
+            entity: 'orders',
+            dialects: [
+              {dialect: 'POSTGRES', expression: 'SUM(orders.net_amount)'},
+            ],
+          },
+        ],
+      });
+      const expected = [
+        "metric 'vendor' in model 'm' (doc): the POSTGRES entry of " +
+            "'expression' is only a comment; write the metric's SQL.",
+        "metric 'stale' in model 'm' (doc): 'expression' is blank; write " +
+            "the metric's SQL.",
+      ];
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual(expected);
+      // The BigQuery metric check reports each metric once.
+      const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
+      expect(validatePushRequirements([loaded(graph)], {fieldsPruned: true})
+                 .filter(e => e.startsWith('metric ')))
+          .toEqual(expected);
+    });
+
+    test('rejects a metric whose anchor names an undeclared entity before and after pruning', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [{
+          name: 'cnt',
+          expression: 'SUM(ghost.amount)',
+          entity: 'ghost',
+          authoredEntity: 'ghost',
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([
+            "metric 'cnt' in model 'm' (doc): entity 'ghost' is not declared in the model.",
+          ]);
+      expect(validatePushRequirements(
+                 [loaded(m)], {targetOptional: true, fieldsPruned: true}))
+          .toEqual([
+            "metric 'cnt' in model 'm' (doc): entity 'ghost' is not declared in the model.",
+          ]);
+      expect(validateExpressionReferences([loaded(m)], false).join('\n'))
+          .toContain("entity 'ghost' is not declared");
+    });
+
+    test('rejects a metric whose anchor is contradicted by its expression, including subtype vs supertype', () => {
+      const wrongAnchor = model({
+        entities: [orders(), customer()],
+        metrics: [{
+          name: 'rev',
+          expression: 'SUM(orders.net_amount)',
+          entity: 'customer',
+          authoredEntity: 'customer',
+        }],
+      });
+      expect(validatePushRequirements(
+                 [loaded(wrongAnchor)], {targetOptional: true})
+                 .join('\n'))
+          .toContain("anchored to entity 'customer', but its expression only references 'orders'");
+
+      // `vip` extends `customer`, so a metric anchored to `vip` that reads
+      // `customer.amount` contradicts its anchor; it must read `vip.amount`.
+      const baseCustomer: Entity = {
+        name: 'customer',
+        abstract: true,
+        dataSource: '',
+        keys: [],
+        fields: [{name: 'amount', type: 'Decimal'}],
+      };
+      const vip: Entity = {
+        name: 'vip',
+        extends: ['customer'],
+        dataSource: 'p.d.vip',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'v_id'},
+          {name: 'amount', expression: 'v_amount'},
+        ],
+      };
+      const subtypeMismatch = model({
+        entities: [baseCustomer, vip],
+        metrics: [{
+          name: 'vip_spend',
+          expression: 'SUM(customer.amount)',
+          entity: 'vip',
+          authoredEntity: 'vip',
+        }],
+      });
+      expect(validatePushRequirements(
+                 [loaded(subtypeMismatch)], {targetOptional: true})
+                 .join('\n'))
+          .toContain("anchored to entity 'vip', but its expression only references 'customer'");
+
+      const subtypeMatches = model({
+        entities: [baseCustomer, vip],
+        metrics: [{
+          name: 'vip_spend',
+          expression: 'SUM(vip.amount)',
+          entity: 'vip',
+          authoredEntity: 'vip',
+        }],
+      });
+      expect(validatePushRequirements(
+                 [loaded(subtypeMatches)], {targetOptional: true}))
+          .toEqual([]);
+    });
+
+    test('rejects a metric referencing a field that does not exist on the entity', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [{
+          name: 'bad_rev',
+          expression: 'SUM(orders.o_totalprice)',
+          entity: 'orders',
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true})
+                 .join('\n'))
+          .toContain("entity 'orders' has no field 'o_totalprice'");
+    });
+
+    test('accepts an anchored metric referencing one entity and real fields, including struct paths', () => {
+      const m = model({
+        entities: [orders(), customer()],
+        metrics: [
+          {
+            name: 'net_rev',
+            expression: 'SUM(orders.net_amount)',
+            entity: 'orders',
+            authoredEntity: 'orders',
+          },
+          {
+            name: 'cities',
+            expression: 'COUNT(DISTINCT orders.shipping_address.city)',
+            entity: 'orders',
+          },
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    });
+
+    test('checks BigQuery generator metric placement rules only when pushing to a BigQuery graph', () => {
+      const bqPush = (entities: Entity[], metric: Metric, version?: SemanticModel['version']) =>
+          validatePushRequirements(
+              [loaded(model({version, entities, metrics: [metric]}, [googleExt([BQ_TARGET])]))])
+              .join('\n');
+
+      // A function namespace matching an entity name trips the BQ regex. A comment naming a second entity
+      // passes on every push, because the generator reads the expression without its comments.
+      const commentMetric: Metric = {
+        name: 'rev', expression: 'SUM(orders.net_amount) -- customer.id', entity: 'orders',
+      };
+      expect(bqPush([orders(), customer()], commentMetric)).toBe('');
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([BQ_TARGET])]))],
+                 {targetOptional: true}))
+          .toEqual([]);
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([SPANNER_TARGET])]))]))
+          .toEqual([]);
+
+      const netEntity: Entity = {
+        name: 'NET', dataSource: 'p.d.net', keys: ['id'], fields: [{name: 'id', expression: 'n_id'}],
+      };
+      expect(bqPush([orders(), netEntity], {
+        name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))', entity: 'orders',
+      })).toContain(
+          "references multiple entities (NET, orders); the BigQuery generator reads every '<entity>.' " +
+          "outside comments as a qualifier, including a function namespace such as 'NET.'");
+
+      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` unset:
+      // KC-only push accepts it, while BigQuery graph push rejects it naming what the BigQuery generator reads.
+      const vanillaDoc = loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deploymentTargets: [BQ_TARGET]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_id }]
+    metrics:
+      - name: cnt
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity": "orders"}'
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "COUNT(*)" }]
+`).models[0];
+      expect(validatePushRequirements([loaded(vanillaDoc)], {targetOptional: true})).toEqual([]);
+      expect(validatePushRequirements([loaded(vanillaDoc)]).join('\n'))
+          .toContain("the BigQuery generator reads '<entity>.' qualifiers in the expression or top-level 'entity'");
+
+      // Metric with only a non-BigQuery dialect expression is rejected without --transpile.
+      expect(bqPush([orders()], {
+        name: 'pg_rev',
+        importedExpression: 'SUM("orders"."net_amount")',
+        importedDialect: 'POSTGRES',
+        entity: 'orders',
+        authoredEntity: 'orders',
+        dialects: [{dialect: 'POSTGRES', expression: 'SUM("orders"."net_amount")'}],
+      })).toContain("targets a BigQuery graph with only a 'POSTGRES' expression");
+    });
+  });
+
+  describe('unqualified fields in metrics', () => {
+    test('rejects an unqualified column in an anchored metric whether or not a field of that name exists', () => {
+      for (const col of ['net_amount', 'raw_col']) {
+        const m = model({
+          entities: [orders()],
+          metrics: [{
+            name: 'net_revenue',
+            expression: `SUM(${col})`,
+            entity: 'orders',
+            authoredEntity: 'orders',
+          }],
+        });
+        const errs =
+            validatePushRequirements([loaded(m)], {targetOptional: true});
+        expect(errs).toEqual([
+          `metric 'net_revenue' in model 'm' (doc): '${col}' must be written ` +
+          `as 'entity.field'; a metric reads fields, never columns.`,
+        ]);
+      }
+    });
+
+    test('rejects a dotted reference whose qualifier is not a declared entity or differs in case without emitting Rule 1', () => {
+      for (const [expr, qual] of [
+             ['shipping_address.city', 'shipping_address'],
+             ['ordres.net_amount', 'ordres'],
+           ] as const) {
+        const m = model({
+          entities: [orders()],
+          metrics: [{
+            name: 'net_revenue',
+            expression: `COUNT(${expr})`,
+          }],
+        });
+        expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+            .toEqual([
+              `metric 'net_revenue' in model 'm' (doc): '${expr}' has qualifier ` +
+              `'${qual}', which is not a declared entity in model 'm'; write ` +
+              `'entity.field' starting with a declared entity.`,
+            ]);
+      }
+
+      const caseMismatch = model({
+        entities: [orders()],
+        metrics: [{
+          name: 'net_revenue',
+          expression: 'SUM(Orders.net_amount)',
+        }],
+      });
+      expect(validatePushRequirements([loaded(caseMismatch)], {targetOptional: true}))
+          .toEqual([
+            "metric 'net_revenue' in model 'm' (doc): 'Orders.net_amount' " +
+            "uses qualifier 'Orders', which differs in case from entity " +
+            "'orders'; entity names are case-sensitive.",
+          ]);
+    });
+
+    test('accepts function names, date parts, leading date units, NET.HOST namespaces, UNNEST/subquery/lambda bindings, and COUNT(*)', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [
+          {name: 'months', expression: 'COUNT(DISTINCT DATE_TRUNC(orders.order_date, month))', entity: 'orders'},
+          {name: 'cnt_id', expression: 'count(orders.id)', entity: 'orders'},
+          {name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))', entity: 'orders'},
+          {name: 'cnt_star', expression: 'COUNT(*)', entity: 'orders', authoredEntity: 'orders'},
+          {
+            name: 'days_diff',
+            entity: 'orders',
+            authoredEntity: 'orders',
+            dialects: [
+              {dialect: 'DATABRICKS', expression: 'AVG(DATEDIFF(DAY, orders.order_date, orders.end_date))'},
+              {dialect: 'DATABRICKS', expression: 'AVG(DATE_DIFF(DAY, orders.order_date, orders.end_date))'},
+              {dialect: 'DATABRICKS', expression: 'AVG(DATE_ADD(DAY, 1, orders.order_date))'},
+              {dialect: 'MYSQL', expression: 'AVG(TIMESTAMPDIFF(DAY, orders.order_date, orders.end_date))'},
+              {dialect: 'ANSI_SQL', expression: 'AVG(DATEADD(DAY, 1, orders.order_date))'},
+            ],
+          },
+          {name: 'unnest_sum', expression: '(SELECT SUM(s.x) FROM UNNEST(orders.items) AS s)', entity: 'orders'},
+          {name: 'unnest_unaliased', expression: '(SELECT SUM(x) FROM UNNEST(orders.items))', entity: 'orders'},
+          {
+            name: 'lambda_sum',
+            entity: 'orders',
+            authoredEntity: 'orders',
+            dialects: [{dialect: 'DATABRICKS', expression: 'SUM(AGGREGATE(orders.items, 0, (acc, e) -> acc + e.price))'}],
+          },
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true})).toEqual([]);
+
+      // BigQuery `DATE_DIFF(end_col, start_col, DAY)` still checks its first argument as a column.
+      const bqDateDiffBadCol = model({
+        entities: [orders()],
+        metrics: [{
+          name: 'bad_diff',
+          expression: 'AVG(DATE_DIFF(end_date, orders.order_date, DAY))',
+          entity: 'orders',
+          authoredEntity: 'orders',
+        }],
+      });
+      expect(validatePushRequirements([loaded(bqDateDiffBadCol)], {targetOptional: true}))
+          .toEqual([
+            "metric 'bad_diff' in model 'm' (doc): 'end_date' must be written as 'entity.field'; a metric reads fields, never columns.",
+          ]);
+    });
+
+    test('reads short-form ANSI_SQL metrics in the sources dialect and falls back when sourceless', () => {
+      const yamlFor = (sourceLine: string, extraMetric = '') => `version: 0.2.0.dev0/google
+semantic_model:
+  - name: sales
+    datasets:
+      - name: orders
+${sourceLine}        primary_key: [id]
+        fields:
+          - { name: id, expression: o_id }
+          - { name: order_date, expression: o_order_date }
+          - { name: status, expression: o_status }
+          - { name: net_amount, expression: o_net_amount }
+    metrics:
+      - { name: months, expression: "COUNT(DISTINCT DATE_TRUNC(orders.order_date, MONTH))" }
+${extraMetric}`;
+      const bqLoaded = loadModels(yamlFor(
+          '        source: bigquery:p.d.orders\n',
+          '      - { name: done_rev, expression: \'SUM(IF(orders.status = "done", orders.net_amount, 0))\' }\n' +
+          '      - { name: recent_cnt, expression: \'COUNTIF(orders.order_date >= DATE "2024-01-01")\' }\n'));
+      const bqWarnings: string[] = [];
+      expect(validatePushRequirements(
+                 bqLoaded.models.map(m => loaded(m, 'sales.yaml')),
+                 {targetOptional: true, warnings: bqWarnings}))
+          .toEqual([]);
+      expect(bqWarnings).toEqual([]);
+
+      // Reading `ANSI_SQL` in the BigQuery source dialect catches a bad field inside BigQuery-only syntax
+      // (`DATE "2024-01-01"` does not parse in generic ANSI_SQL).
+      const bqBadLoaded = loadModels(yamlFor(
+          '        source: bigquery:p.d.orders\n',
+          '      - { name: bad_recent, expression: \'COUNTIF(orders.missing_date >= DATE "2024-01-01")\' }\n'));
+      expect(validatePushRequirements(
+                 bqBadLoaded.models.map(m => loaded(m, 'sales.yaml')),
+                 {targetOptional: true})
+                 .join('\n'))
+          .toContain("entity 'orders' has no field 'missing_date'");
+
+      const sourcelessLoaded = loadModels(yamlFor(''), {bindingOptional: true});
+      expect(validateExpressionReferences(
+                 sourcelessLoaded.models.map(m => loaded(m, 'unbind.yaml')), false))
+          .toEqual([]);
+    });
+
+    test('skips an expression the SQL parser cannot read, emits a warning naming the dialect when only some fail, and does not trigger Rule 1 when unanchored', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [
+          {name: 'unparseable_anchored', expression: 'SUM(orders.net_amount', entity: 'orders', authoredEntity: 'orders'},
+          {name: 'unparseable_unanchored', expression: 'SUM(orders.net_amount'},
+          {
+            name: 'partial_unparseable',
+            entity: 'orders',
+            authoredEntity: 'orders',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'COUNT(*)'},
+              {dialect: 'SNOWFLAKE', expression: 'SUM(orders.net_amount'},
+            ],
+          },
+        ],
+      });
+      const warnings: string[] = [];
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true, warnings})).toEqual([]);
+      expect(warnings).toEqual([
+        "metric 'unparseable_anchored' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
+        "metric 'unparseable_unanchored' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
+        "metric 'partial_unparseable' in model 'm' (doc): kcmd could not read its 'SNOWFLAKE' SQL, so the fields that entry reads were not checked.",
+      ]);
+    });
+  });
+
+  describe('fields', () => {
+    test('rejects a field expression that references another declared entity', () => {
+      const m = model({
+        entities: [
+          {
+            ...orders(),
+            fields: [
+              ...orders().fields,
+              {name: 'bad_cross', expression: 'customer.amount + 1'},
+            ],
+          },
+          customer(),
+        ],
+      });
+      expect(validatePushRequirements(
+                 [loaded(m)], {targetOptional: true, fieldsPruned: true})
+                 .join('\n'))
+          .toContain("field 'orders.bad_cross' in model 'm' (doc) references entity 'customer'");
+    });
+
+    test('rejects a field expression that references a missing sibling field on its own entity', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'taxed', expression: 'orders.missing_field * 1.1'},
+          ],
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true})
+                 .join('\n'))
+          .toContain("field 'orders.taxed' in model 'm' (doc) references 'orders.missing_field'");
+    });
+
+    test('accepts a field expression referencing a declared, inherited, or excluded-from-inheritance sibling field before pruning, and warns on unparseable SQL', () => {
+      const party: Entity = {
+        name: 'party',
+        abstract: true,
+        dataSource: '',
+        keys: [],
+        fields: [{name: 'base_score', type: 'Float'}, {name: 'internal_score', type: 'Float'}],
+      };
+      const member: Entity = {
+        name: 'member',
+        extends: ['party'],
+        excludedFields: ['internal_score'],
+        dataSource: 'p.d.member',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'm_id'},
+          {name: 'base_score', expression: 'm_base_score'},
+          {name: 'boosted_score', expression: 'member.base_score * 2'},
+          {name: 'legacy_ref', expression: 'member.internal_score + 1'},
+          {name: 'broken', expression: 'member.base_score + ('},
+        ],
+      };
+      const m = model({
+        entities: [
+          {
+            ...orders(),
+            fields: [
+              ...orders().fields,
+              {name: 'gross', expression: 'orders.net_amount * 1.1'},
+              {name: 'cust_id', expression: 'details.customer.id'},
+            ],
+          },
+          customer(),
+          party,
+          member,
+        ],
+      });
+      const warnings: string[] = [];
+      expect(validateExpressionReferences([loaded(m)], false, warnings)).toEqual([]);
+      expect(warnings).toEqual([
+        "field 'member.broken' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
+      ]);
+    });
+
+    // A model built in memory skips the loader, which rejects these.
+    test('rejects a field with no SQL in a model built in memory, as the loader does', () => {
+      const message = (field: string, problem: string) =>
+          `field 'orders.${field}' in model 'm' (doc): ${problem}; write ` +
+          "the field's SQL, or remove 'expression' to leave the field unbound.";
+      const fields = [
+        ...orders().fields,
+        {name: 'notes', expression: ''},
+        {name: 'memo', expression: '-- todo'},
+        {name: 'own', expression: 'orders.'},
+        {
+          name: 'vendor',
+          expression: 'o_vendor',
+          dialects: [
+            {dialect: 'BIGQUERY' as const, expression: 'o_vendor'},
+            {dialect: 'POSTGRES' as const, expression: ' '},
+          ],
+        },
+        // The graph generators write `expression`, which here is not the
+        // text of any dialect entry.
+        {
+          name: 'stale',
+          expression: '/* old */',
+          dialects: [{dialect: 'BIGQUERY' as const, expression: 'o_stale'}],
+        },
+        {name: 'pg_note', importedExpression: '-- todo', importedDialect: 'POSTGRES'},
+        // PostgreSQL reads `#` as an operator, so this text holds SQL there.
+        {name: 'pg_points', importedExpression: '# path', importedDialect: 'POSTGRES'},
+      ];
+      const expected = [
+        message('notes', "'expression' is blank"),
+        message('memo', "'expression' is only a comment"),
+        message('own', "'expression' is only the qualifier 'orders.'"),
+        message('vendor', "the POSTGRES entry of 'expression' is blank"),
+        message('stale', "'expression' is only a comment"),
+        message('pg_note', "the POSTGRES entry of 'expression' is only a comment"),
+      ];
+      const kcOnly = model({entities: [{...orders(), fields}]});
+      expect(validatePushRequirements([loaded(kcOnly)], {targetOptional: true}))
+          .toEqual(expected);
+      const graph =
+          model({entities: [{...orders(), fields}]}, [googleExt([BQ_TARGET])]);
+      const errors =
+          validatePushRequirements([loaded(graph)], {fieldsPruned: true});
+      for (const e of expected) expect(errors).toContain(e);
+    });
+
+    test('rejects a field an entity inherits when it has no SQL on that entity', () => {
+      // On `base` the text reads the column `sub`. On `sub`, inheritance
+      // removes `base.` and leaves only the qualifier `sub.`.
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'label', expression: 'base.sub.'},
+        ],
+      };
+      const sub: Entity = {
+        name: 'sub',
+        extends: ['base'],
+        dataSource: 'p.d.sub',
+        keys: ['id'],
+        fields: [],
+      };
+      const expected = [
+        "model 'm' (doc): entity 'sub' inherits field 'label': read on " +
+            "'sub', 'expression' is only the qualifier 'sub.'; write the " +
+            "field's SQL.",
+      ];
+      const m = model({entities: [base, sub]});
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual(expected);
+      // The graph generators write `expression`, which here is not the text
+      // of the dialect entry.
+      const stale: Entity = {
+        ...base,
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {
+            name: 'label',
+            expression: 'base.sub.',
+            dialects: [{dialect: 'BIGQUERY', expression: 'b_label'}],
+          },
+        ],
+      };
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [stale, sub]}))],
+                 {targetOptional: true}))
+          .toEqual(expected);
+      // A catalog-only push lifts a profile's exclusions to publish every
+      // field. A field the profile excludes on `sub` is not read there.
+      expect(validatePushRequirements([loaded(m)], {
+        targetOptional: true,
+        liftedExclusions: [{model: 'm', entity: 'sub', field: 'label'}],
+      })).toEqual([]);
+    });
+
+    // serializeModel writes both texts, and the loader rejects either one with
+    // no SQL, so push reads both.
+    test('rejects an imported text with no SQL beside a target text in a model built in memory', () => {
+      const fieldMessage = (field: string, problem: string) =>
+          `field 'orders.${field}' in model 'm' (doc): ${problem}; write ` +
+          "the field's SQL, or remove 'expression' to leave the field unbound.";
+      const fields = [
+        ...orders().fields,
+        {
+          name: 'notes',
+          expression: 'o_notes',
+          importedExpression: '-- todo',
+          importedDialect: 'POSTGRES',
+        },
+        {name: 'memo', expression: 'o_memo', importedExpression: '/* todo */'},
+        {
+          name: 'tag',
+          expression: 'o_tag',
+          dialects: [{dialect: 'BIGQUERY' as const, expression: 'o_tag'}],
+          importedExpression: ' ',
+          importedDialect: 'POSTGRES',
+        },
+        // PostgreSQL reads `#` as an operator, so this text holds SQL there.
+        {
+          name: 'points',
+          expression: 'o_points',
+          importedExpression: '# path',
+          importedDialect: 'POSTGRES',
+        },
+      ];
+      const m = model({
+        entities: [{...orders(), fields}],
+        metrics: [{
+          name: 'revenue',
+          expression: 'SUM(orders.net_amount)',
+          importedExpression: '-- todo',
+          importedDialect: 'POSTGRES',
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([
+            fieldMessage(
+                'notes', "the POSTGRES entry of 'expression' is only a comment"),
+            fieldMessage('memo', "'importedExpression' is only a comment"),
+            fieldMessage('tag', "'importedExpression' is blank"),
+            "metric 'revenue' in model 'm' (doc): the POSTGRES entry of " +
+                "'expression' is only a comment; write the metric's SQL.",
+          ]);
+    });
+
+    // A field an entity binds itself is reported where it is declared, and
+    // every field an entity inherits is read on it, whatever else is wrong.
+    test('rejects every inherited field with no SQL beside a field rejected where it is declared', () => {
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'label', expression: 'base.sub.'},
+          {name: 'tag', expression: 'base.sub.'},
+          {name: 'memo', expression: 'b_memo'},
+        ],
+      };
+      const sub: Entity = {
+        name: 'sub',
+        extends: ['base'],
+        dataSource: 'p.d.sub',
+        keys: ['id'],
+        fields: [
+          {name: 'own', expression: '-- todo'},
+          {name: 'memo', expression: '/* todo */'},
+        ],
+      };
+      const own = (field: string) =>
+          `field 'sub.${field}' in model 'm' (doc): 'expression' is only a ` +
+          "comment; write the field's SQL, or remove 'expression' to leave " +
+          'the field unbound.';
+      const inherited = (field: string) =>
+          `model 'm' (doc): entity 'sub' inherits field '${field}': read on ` +
+          "'sub', 'expression' is only the qualifier 'sub.'; write the " +
+          "field's SQL.";
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [base, sub]}))],
+                 {targetOptional: true}))
+          .toEqual([
+            own('own'),
+            own('memo'),
+            inherited('label'),
+            inherited('tag'),
+          ]);
+    });
+
+    // Inheritance removes only the ancestor's qualifier, so a text with no
+    // SQL where it is declared has none on any entity that inherits it.
+    test('rejects a field with no SQL where it is declared, and not again on each entity that inherits it', () => {
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'memo', expression: '-- todo'},
+          {name: 'own', expression: 'base.'},
+          // Its imported text holds SQL on `base` and on `b`, and is only
+          // the qualifier `a.` on `a`.
+          {
+            name: 'mixed',
+            expression: '-- todo',
+            importedExpression: 'base.a.',
+            importedDialect: 'POSTGRES',
+          },
+        ],
+      };
+      const sub = (name: string): Entity => ({
+        name,
+        extends: ['base'],
+        dataSource: `p.d.${name}`,
+        keys: ['id'],
+        fields: [],
+      });
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [base, sub('a'), sub('b')]}))],
+                 {targetOptional: true}))
+          .toEqual([
+            "field 'base.memo' in model 'm' (doc): 'expression' is only a " +
+                "comment; write the field's SQL, or remove 'expression' to " +
+                'leave the field unbound.',
+            "field 'base.own' in model 'm' (doc): 'expression' is only the " +
+                "qualifier 'base.'; write the field's SQL, or remove " +
+                "'expression' to leave the field unbound.",
+            "field 'base.mixed' in model 'm' (doc): the BIGQUERY entry of " +
+                "'expression' is only a comment; write the field's SQL, or " +
+                "remove 'expression' to leave the field unbound.",
+            "model 'm' (doc): entity 'a' inherits field 'mixed': read on " +
+                "'a', the BIGQUERY entry of 'expression' is only a comment " +
+                "and the POSTGRES entry of 'expression' is only the " +
+                "qualifier 'a.'; write the field's SQL.",
+          ]);
+    });
+
+    // A dialect list cannot hold an imported text with no imported dialect,
+    // or one marked BIGQUERY beside a target text, and a model built in
+    // memory can carry an imported text beside its list. Such a text is read
+    // also when the target text has no SQL.
+    test('rejects an inherited field whose imported text outside the dialect list is only the qualifier, beside a target text with no SQL', () => {
+      // Each imported text holds SQL on `base` and is only the qualifier
+      // `a.` on `a`.
+      const base: Entity = {
+        name: 'base',
+        dataSource: 'p.d.base',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'b_id'},
+          {name: 'loose', expression: '-- todo', importedExpression: 'base.a.'},
+          {
+            name: 'marked',
+            expression: '-- todo',
+            importedExpression: 'base.a.',
+            importedDialect: 'BIGQUERY',
+          },
+          {
+            name: 'listed',
+            dialects: [{dialect: 'BIGQUERY', expression: '-- todo'}],
+            expression: '-- todo',
+            importedExpression: 'base.a.',
+            importedDialect: 'POSTGRES',
+          },
+        ],
+      };
+      const a: Entity = {
+        name: 'a',
+        extends: ['base'],
+        dataSource: 'p.d.a',
+        keys: ['id'],
+        fields: [{name: 'id', expression: 'a_id'}],
+      };
+      const target = (field: string) =>
+          field === 'listed' ? "the BIGQUERY entry of 'expression'" :
+                               "'expression'";
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [base, a]}))],
+                 {targetOptional: true}))
+          .toEqual([
+            ...['loose', 'marked', 'listed'].map(
+                f => `field 'base.${f}' in model 'm' (doc): ${
+                         target(f)} is only a comment; write the field's ` +
+                    "SQL, or remove 'expression' to leave the field unbound."),
+            ...['loose', 'marked', 'listed'].map(
+                f => `model 'm' (doc): entity 'a' inherits field '${
+                         f}': read on 'a', ${target(f)} is only a comment ` +
+                    "and 'importedExpression' is only the qualifier 'a.'; " +
+                    "write the field's SQL."),
+          ]);
+    });
+
+    // Neither check needs inheritance resolved, so neither waits for the
+    // author to fix it.
+    test('rejects a field and a metric with no SQL when inheritance does not resolve', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          extends: ['gone'],
+          fields: [...orders().fields, {name: 'memo', expression: '-- todo'}],
+        }],
+        metrics: [
+          {name: 'k', expression: '-- x', entity: 'orders'},
+          {
+            name: 'total',
+            expression: 'SUM(orders.net_amount)',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+              {dialect: 'POSTGRES', expression: '-- todo'},
+            ],
+          },
+        ],
+      });
+      const expected = [
+        "field 'orders.memo' in model 'm' (doc): 'expression' is only a " +
+            "comment; write the field's SQL, or remove 'expression' to leave " +
+            'the field unbound.',
+        "metric 'k' in model 'm' (doc) has no SQL in 'expression'; write " +
+            "the metric's SQL.",
+        "metric 'total' in model 'm' (doc): the POSTGRES entry of " +
+            "'expression' is only a comment; write the metric's SQL.",
+      ];
+      const errors =
+          validatePushRequirements([loaded(m)], {targetOptional: true});
+      expect(errors.join('\n')).toContain("extends unknown entity 'gone'");
+      for (const e of expected) expect(errors).toContain(e);
+      // The BigQuery metric check reports each metric once.
+      const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
+      expect(validatePushRequirements([loaded(graph)], {fieldsPruned: true})
+                 .filter(e => e.startsWith('metric ')))
+          .toEqual(expected.slice(1));
+    });
+
+    test('rejects an association field with no SQL, which the graph writes as an edge property', () => {
+      const m = model(
+          {
+            entities: [orders(), customer()],
+            relationships: [{
+              name: 'bought',
+              source: {entity: 'orders', columns: []},
+              destination: {entity: 'customer', columns: []},
+              association: {
+                dataSource: 'p.d.bought',
+                keys: ['k'],
+                sourceColumns: ['order_id'],
+                destinationColumns: ['customer_id'],
+                fields: [
+                  {name: 'qty', expression: 'b_qty'},
+                  {name: 'note', expression: '# todo'},
+                  {name: 'tag', expression: 'bought.'},
+                ],
+              },
+            }],
+          },
+          [googleExt([BQ_TARGET])]);
+      const errors = validatePushRequirements([loaded(m)]);
+      expect(errors).toContain(
+          "relationship 'bought' field 'note' in model 'm' (doc): " +
+          "'expression' is only a comment; write the field's SQL.");
+      expect(errors).toContain(
+          "relationship 'bought' field 'tag' in model 'm' (doc): " +
+          "'expression' is only the qualifier 'bought.'; write the field's " +
+          'SQL.');
+      expect(errors.join('\n')).not.toContain("field 'qty'");
+    });
+
+    // The error says what is wrong. The warning would say kcmd could not read
+    // SQL that is not there.
+    test('a field or metric rejected for no SQL gets no warning that its SQL could not be read', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'memo', expression: '-- todo'},
+            {name: 'own', expression: 'orders.'},
+            {
+              name: 'vendor',
+              expression: 'o_vendor',
+              dialects: [
+                {dialect: 'BIGQUERY', expression: 'o_vendor'},
+                {dialect: 'POSTGRES', expression: '/* todo */'},
+              ],
+            },
+          ],
+        }],
+        metrics: [
+          {name: 'k', expression: '-- x', entity: 'orders'},
+          {
+            name: 'total',
+            expression: 'SUM(orders.net_amount)',
+            dialects: [
+              {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+              {dialect: 'POSTGRES', expression: '-- todo'},
+            ],
+          },
+        ],
+      });
+      const warnings: string[] = [];
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true, warnings});
+      expect(errors.map(e => e.slice(0, e.indexOf(' in model'))))
+          .toEqual([
+            "field 'orders.memo'",
+            "field 'orders.own'",
+            "field 'orders.vendor'",
+            "metric 'k'",
+            "metric 'total'",
+          ]);
+      expect(warnings).toEqual([]);
+    });
+  });
+
+  describe('across dialects', () => {
+    test('rejects a metric whose second dialect entry references a non-existent field', () => {
+      const m = model({
+        entities: [orders()],
+        metrics: [{
+          name: 'rev',
+          expression: 'SUM(orders.net_amount)',
+          entity: 'orders',
+          dialects: [
+            {dialect: 'BIGQUERY', expression: 'SUM(orders.net_amount)'},
+            {dialect: 'SNOWFLAKE', expression: 'SUM("orders"."no_such_field")'},
+          ],
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true})
+                 .join('\n'))
+          .toContain("entity 'orders' has no field 'no_such_field'");
     });
   });
 });

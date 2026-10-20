@@ -79,7 +79,7 @@ describe('loader', () => {
       name: 'm',
       datasets: [{
         name: 'Opportunity',
-        source: 'p.d.opp',
+        source: 'bigquery:p.d.opp',
         primary_key: ['id'],
         fields: [
           {name: 'id', expression: 'id', datatype: 'String'},
@@ -279,7 +279,13 @@ describe('Knowledge Catalog push / pull', () => {
 
 describe('OSI round-trip', () => {
   test('native keys survive serialize -> load', () => {
-    const {yaml} = serializeModel(model());
+    const m = model();
+    // Each source as a load records it, in an accepted form, so the
+    // serialized document reloads.
+    for (const e of m.entities) {
+      if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+    }
+    const {yaml} = serializeModel(m);
     expect(yaml).toContain('grain:');
     expect(yaml).toContain('history:');
     expect(yaml).toContain('unit: USD');

@@ -132,7 +132,7 @@ A dataset is one concept in the business.
 |---|---|---|
 | `name` | string | required |
 | `fields` | list of [field](#211-field) | the concept's attributes |
-| `primary_key` | list of strings | the field(s) that identify a row |
+| `primary_key` | list of strings | the physical column(s) that identify a row |
 | `unique_keys` | list of lists of strings | additional unique column-sets |
 | `extends` | list of strings | supertype dataset names — extension ([§2.1.2](#212-inheritance-extends), [§5](#5-extensions)) |
 | `abstract` | boolean | a concept with no table — extension ([§5](#5-extensions)) |
@@ -186,15 +186,22 @@ the signal. See [§7](#7-the-binding-layer).
 
 `extends` is a `kcmd` **extension** — Ossie `0.2.0.dev0` has no inheritance
 construct ([§5](#5-extensions)). A dataset MAY declare `extends: [Parent, …]`,
-naming one or more supertype datasets by name. Inheritance is **entity-level
-only** — relationships do not `extends`. A supertype that has no table of its own
+naming one or more supertype datasets by name. This section covers **entity**
+inheritance; a relationship's own `extends` is a separate extension
+([§5](#5-extensions)). A supertype that has no table of its own
 MUST be marked `abstract: true` (also an extension).
 
 The format rule is only that supertypes are named datasets in the same model. An
 `extends` that names a dataset not defined in the model is a **hard error** (a typo
-must not silently drop inheritance — agreed with Dmitri). The resolver breaks
-cycles with a warning and flattens diamonds (each ancestor contributes once,
-nearest-first).
+must not silently drop inheritance — agreed with Dmitri). A cycle in `extends` is
+an error. A diamond flattens, with each ancestor contributing once. A field
+declared or rebound by two supertypes that do not extend each other is an error,
+because nothing says which one wins. A subtype MAY redeclare an inherited field
+only to bind it, with an `expression` and nothing else; the definition comes
+from the ancestor that declares it. A relationship endpoint and a metric's entity MUST be a concrete
+leaf: not abstract, and not extended by another table-backed dataset (a defined
+or abstract subtype does not count). An abstract relationship is exempt: it
+produces no edge table ([§5](#5-extensions)).
 How the hierarchy is *lowered* into each store (labels, field flattening) and the
 downstream limits (e.g. a supertype whose label is shared across subtype tables
 cannot carry a measure) are operational — see
@@ -224,8 +231,12 @@ A relationship is a directed edge between two datasets.
 `from_columns` and `to_columns` are the edge's join keys. They MUST be given
 together (a bound edge) or both omitted (a logical edge); one without the other is
 rejected. When both are given they MUST have equal length. `from` and `to` MUST
-name datasets declared in the same model. An abstract relationship MUST NOT
-declare join columns. Nor may a derived relationship (one with `via`,
+name datasets declared in the same model. `to_columns` MUST contain every column
+of a primary or unique key of the `to` dataset; a superset of a key counts. The
+key they cover decides whether the edge is N:1 or 1:1, so join columns that
+cover no key are rejected on every push, a catalog-only push included. Every
+binding of the relationship covers the same keys. An abstract relationship MUST
+NOT declare join columns. Nor may a derived relationship (one with `via`,
 proposed), which MUST NOT be `abstract` either: its pairs are whatever its
 chain reaches ([§5](#5-extensions)).
 
@@ -238,9 +249,9 @@ dataset name, relationship name, or other inverse in the model.
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
 that lets a relationship be governed before it is bound. A graph deploy still
-requires them (see [§4](#4-narrowings-and-relaxations)). Unlike `source` and field `expression`,
-join columns are declared on the logical model and are not profile-swappable
-([§7](#7-the-binding-layer)).
+requires them (see [§4](#4-narrowings-and-relaxations)). Like `source` and a field's
+`expression`, join columns are a binding: a profile may supply or override them,
+and a named profile states them itself ([§7](#7-the-binding-layer)).
 
 > **Many-to-many is not yet authorable.** A junction-table (M:N) relationship
 > exists in `kcmd`'s internal representation but has **no YAML syntax** in
@@ -402,19 +413,13 @@ Each rule and its reason:
 - **An unknown supertype is rejected.** An `extends` that names a dataset not in the
   model is a hard load error (see [§2.1.2](#212-inheritance-extends)).
 
-- **A graph measure binds only to a leaf type.** For a BigQuery target, a metric
-  whose entity is a supertype — one another entity `extends` — cannot become a
-  `MEASURE` and is skipped with a warning: the supertype's label is shared across
-  its subtype tables, and BigQuery forbids a `MEASURE` on a shared label. Like the
-  single-aggregate rule this is a SHOULD, not a MUST — the metric still reaches
-  Knowledge Catalog; it simply has no graph measure. See [Reference → Class
-  hierarchies](reference.md#class-hierarchies-extends--labels).
+- **A metric belongs to a concrete leaf.** A metric whose entity is abstract, or
+  extended by another table-backed entity, is rejected on every push.
 
-Not a narrowing, contrary to a common assumption: **diamonds in a class hierarchy
-are not rejected.** The resolver flattens them (each ancestor once) and breaks
-cycles with a warning. What *is* rejected is downstream and store-specific — a
-BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
-[§2.1.2](#212-inheritance-extends).
+A diamond in a class hierarchy is allowed when both paths reach one
+declaration: the resolver keeps that field once. A cycle in `extends` is
+rejected, and so is a field that two ancestors which do not extend each other
+both declare or both rebind. See [§2.1.2](#212-inheritance-extends).
 
 ### 4.2. Relaxations (looser than Ossie)
 
@@ -473,7 +478,8 @@ reads the document ([§6](#6-the-extension-mechanism)).
 
 - **`abstract: true` on a dataset (extended profile only).** Marks a concept with
   no physical table (typically an `extends` supertype). An abstract dataset produces
-  no node table and MUST NOT declare a `source`. Accepted only under
+  no node table and MUST NOT declare a `source`, keys or field expressions.
+  Accepted only under
   `0.2.0.dev0/google`.
 
 - **`defined` on a dataset (extended profile only).** A defined (virtual) entity:
@@ -598,7 +604,6 @@ reads the document ([§6](#6-the-extension-mechanism)).
   - an endpoint with no table;
   - a step that is itself derived with a `filter` of its own.
 
-  A binding profile that drops a step drops the derived relationship too.
   *Spanner Graph:* a push error. *Knowledge Catalog:* a schema join pairing the
   two endpoints' keys, whose description ends with `Derived via: ^memberOf,
   inClub.` (and `Derived filter: …`), read back on pull. OSI output carries
@@ -637,7 +642,9 @@ reads the document ([§6](#6-the-extension-mechanism)).
   and `to` SHOULD be its parent's or subtypes of them (warned otherwise). An
   `abstract: true` relationship keeps `from`/`to`, MUST NOT declare join
   columns, and produces no edge table; each concrete descendant's edge table
-  carries the ancestor as an extra, property-less label. Accepted only under
+  carries the ancestor as an extra, property-less label. Its `from` and `to` MAY
+  be abstract datasets or supertypes: the concrete-leaf rule
+  ([§2.1.2](#212-inheritance-extends)) exempts it. Accepted only under
   `0.2.0.dev0/google`. See [Reference → Relationship
   hierarchies](reference.md#relationship-hierarchies).
 
@@ -855,16 +862,16 @@ and relationship join columns — from required to optional ([§4.2](#42-relaxat
 so a model with none of them is a complete *logical* model that can be governed in
 Knowledge Catalog as-is. The bindings are required only to deploy to a store.
 
-The physical bindings divide by what a profile can move. **`source`, a field's
-`expression`, and an action's `executor` are profile-swappable**: a [binding
-profile](#73-binding-profiles) supplies or overrides them, so one logical model
-deploys to several stores and performs its writes by whatever mechanism each
-store has. **A
-relationship's join columns are not** — they are declared on the logical model and
-a profile MUST NOT set them ([§7.3](#73-binding-profiles)), so they are fixed for
-every binding of the model. In practice this holds because join keys are usually
-stable across stores even when table and column names differ; a store that needs
-different join keys needs a different logical model.
+Every physical binding is profile-swappable. **`source`, an entity's key
+columns, a field's `expression`, a relationship's join columns, and an action's
+`executor`** are supplied or overridden by a [binding
+profile](#73-binding-profiles), so one logical model deploys to several stores,
+in each store's own table and column names, and performs its writes by whatever
+mechanism each store has. A named profile states every relationship's join
+columns itself, apart from an abstract or derived relationship, which has none
+([§7.3](#73-binding-profiles)). What a profile cannot change is
+the shape those bindings must keep: an entity's key shape, and which key a
+relationship's join columns cover, are the same under every binding.
 
 ### 7.1. Table sources
 
@@ -906,28 +913,32 @@ A **binding profile** is a separate document that supplies only the physical
 bindings for a model, so one logical model can deploy to several stores from one
 definition. A profile:
 
-- is a `semantic_model` document in the **same schema** as the logical model, but
-  MUST set only physical-binding keys: at the model level `deployment_target`,
-  `datasets`/`entities` and `actions`; at the dataset level `source` and
-  `fields`; at the field level `expression`; at the action level `executor`.
-  Setting any logical key (a new field, `primary_key`, a relationship, an
-  action's `guards`, …) in a profile is an error — the logical model owns those.
-- binds by `name` at each level. A field a profile does not bind is left **unbound**
-  for that profile (selecting a profile clears the logical model's inline column
-  bindings, so the profile alone decides what is bound); there is no `unbound` flag.
-- **inherits an executor, unlike a column.** An action a profile does not mention
-  keeps the model's executor, so a model MAY declare one default and a profile
-  override only where the write differs; `executor: null` withdraws it. A wrong
-  column returns another column's data silently, while a wrong mechanism fails at
-  the first call, which is why the two omissions mean opposite things.
-- MUST express a field `expression` as a **bare column reference**, not arbitrary
-  SQL — the computation belongs to the logical model.
+- MUST set only physical-binding keys: `source`, `primary_key`, `unique_keys`,
+  `fields` and `fields_exclude` on an entity; `from_columns` and `to_columns` on
+  a relationship; `expression` on a field; `executor` on an action; and
+  `metrics_exclude`. Setting any logical key (a new field, a datatype, a
+  relationship's endpoints, an action's `guards`, …) in a profile is an error —
+  the logical model owns those. A profile in the `<model>.profiles/<name>.yaml`
+  layout MAY also set `hydration` and `mode` on an entity: `hydration` is a
+  closed set of rules for reshaping the entity's table into the entity, never
+  SQL, and `mode` says whether the entity is read through a generated node view
+  ([Binding profiles → Hydration](profiles.md#hydration--reshaping-a-table-into-the-entity)).
+  A profile file rejects both.
+- binds by `name` at each level, including a field the entity inherits. It is an
+  overlay: a field the profile does not name keeps the model file's binding, and a
+  field in `fields_exclude` is left **unbound** for that profile; there is no
+  `unbound` flag. An action the profile does not mention keeps the model's
+  executor, and `executor: null` withdraws it.
+- MAY give a field any expression the logical model could: a column, a
+  computation, or the `dialects` form.
 
 The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
 (sidecar files `*.aspects.yaml` / `*.overview.yaml` are not models). Profiles live
-alongside it at `catalog/EntryGroups/<entryGroup>/<model>.profiles/<name>.yaml`;
-the profile's name is the file's basename. The name `default` is reserved for the
-model's own inline bindings and MUST NOT be used as a profile file. A
+beside it as `catalog/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`, and
+a profile file's `name:` MUST equal its `<name>`. The older
+`<model>.profiles/<name>.yaml` directory is still read when a model has no sibling
+profile file. The name `default` is reserved for the model's own inline bindings
+and MUST NOT be used as a profile name. A
 `default_profile` in `catalog.yaml` selects which profile the default push uses.
 The full merge behavior and worked examples are in
 [Binding profiles](profiles.md).

@@ -1,10 +1,9 @@
 # Test fixture -- AI-first semantics format (v0.2.0.dev0).
 #
-# A graph node requires a KEY. A dataset with no primary_key cannot form a valid
-# node, so it is skipped and any edge that references it is omitted -- rather than
-# emitting an invalid `KEY()` and a dangling REFERENCE. Read the golden: the
-# keyed `facts` node survives, the keyless `nokey` node is dropped, the edge
-# between them is gone, and the `-- warnings --` block explains both drops.
+# A graph node requires a KEY, and a relationship's to_columns must cover a key
+# of its target. `nokey` declares none, so push rejects the relationship to it.
+# If such a model reaches the generator anyway, the keyless node and the edge
+# to it are dropped, with warnings; the golden pins that.
 
 version: "0.2.0.dev0"
 

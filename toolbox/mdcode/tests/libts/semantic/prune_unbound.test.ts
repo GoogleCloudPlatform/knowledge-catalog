@@ -11,9 +11,11 @@
 //   3. the pruned model still loads and passes push validation;
 //   4. pruning is pure, reports unknown bound names, and says what it removed
 //      (golden summary);
-//   5. the bound names come from a binding profile (or inline bindings);
-//   6. the CLI seam: a named binding document, the bare flag reading
-//      `<model>.profiles/` beside --out, and the failure modes.
+//   5. the bound names come from a binding profile (a profile file or a
+//      `semantic_model:` wrapper) or from inline bindings;
+//   6. the CLI seam: a named binding document, the bare flag reading the
+//      `<model>.profile.<name>.yaml` files beside --out (else
+//      `<model>.profiles/` there), and the failure modes.
 
 import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -223,10 +225,26 @@ semantic_model:
 `)).toEqual(['Order']);
   });
 
-  test('a document with no semantic_model list is an error', () => {
-    expect(() => boundEntityNames('entities: []'))
-        .toThrow('the binding document has no semantic_model list.');
-  });
+  test('a profile file: the entities its top-level profile object binds',
+       () => {
+         expect(boundEntityNames(`
+name: prod
+entities:
+  - name: Customer
+    source: bigquery:proj.ds.customer
+  - name: Party
+`, 'shop')).toEqual(['Customer']);
+         expect(boundEntityNames('name: prod\nentities: []\n')).toEqual([]);
+       });
+
+  test('a document that is neither a profile file nor has a semantic_model ' +
+           'list is an error',
+       () => {
+         const message = 'the binding document is neither a profile file ' +
+             'nor a document with a semantic_model list.';
+         expect(() => boundEntityNames('- shop')).toThrow(message);
+         expect(() => boundEntityNames('semantic_model: shop')).toThrow(message);
+       });
 });
 
 describe('owl import --prune-unbound', () => {
@@ -282,6 +300,32 @@ describe('owl import --prune-unbound', () => {
     expect(entitiesOf(out)).toContain('Customer');
     expect(entitiesOf(out)).not.toContain('Shipment');
   });
+
+  test('the bare flag reads the <model>.profile.<name>.yaml files beside ' +
+           '--out, which hide <model>.profiles/ as in the layout',
+       async () => {
+         const dir = workdir();
+         fs.mkdirSync(
+             path.join(dir, 'model', 'shop.profiles'), {recursive: true});
+         // The directory binds Shipment alone; the sibling file is read.
+         fs.writeFileSync(
+             path.join(dir, 'model', 'shop.profiles', 'bigquery.yaml'),
+             'semantic_model:\n  - name: shop\n    entities:\n' +
+                 '      - name: Shipment\n        source: proj.ds.shipment\n');
+         fs.writeFileSync(
+             path.join(dir, 'model', 'shop.profile.bigquery.yaml'),
+             'name: bigquery\nentities:\n' +
+                 '  - name: Customer\n    source: bigquery:proj.ds.customer\n' +
+                 '  - name: Order\n    source: bigquery:proj.ds.orders\n');
+         const out = path.join(dir, 'model', 'shop.yaml');
+         expect(await owl('import', path.join(dir, 'shop.ttl'), {
+           out,
+           name: 'shop',
+           pruneUnbound: true,
+         })).toBe(0);
+         expect(entitiesOf(out))
+             .toEqual(['Party', 'Customer', 'Order', 'LargeOrder']);
+       });
 
   test('no binding found, or a binding that binds nothing, fails and writes ' +
            'nothing',

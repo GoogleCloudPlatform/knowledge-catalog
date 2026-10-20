@@ -161,8 +161,8 @@ So re-running `kcmd glossary push` converges.
 
 **Labels.** Every resource carries `managed-by: kcmd` and
 `kcmd-model: <model>`. `--prune-glossary` deletes only the terms and
-categories that carry this model's labels and that the spec no longer
-declares. Terms curated in the console are never touched.
+categories that carry this model's labels and that the spec does not
+declare. Terms curated in the console are never touched.
 
 **`--dry-run`** prints every request (method, path, query and body) and the
 skipped links, and sends nothing. It still reads project numbers and dataset

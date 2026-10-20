@@ -34,7 +34,7 @@ semantic_model:
     description: Customers, their orders and the invoices that bill them
     entities:
       - name: Customer
-        source: shop.customers
+        source: bigquery:sqlgen-testing.shop.customers
         primary_key: [customer_id]
         unique_keys: [[email]]
         fields:
@@ -58,7 +58,7 @@ semantic_model:
         extends: [Customer]
         defined: "credit_limit >= 10000"
       - name: Order
-        source: shop.orders
+        source: bigquery:sqlgen-testing.shop.orders
         primary_key: [order_id]
         grain: one row per order, dated by order_date
         fields:
@@ -96,7 +96,7 @@ semantic_model:
             datatype: Decimal
             unit: USD
       - name: Invoice
-        source: shop.invoices
+        source: bigquery:sqlgen-testing.shop.invoices
         primary_key: [invoice_id, revision]
         history:
           versioned: true

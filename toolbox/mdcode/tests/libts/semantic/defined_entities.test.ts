@@ -96,7 +96,7 @@ describe('loader', () => {
     semantic_model: [{
       name: 'm',
       datasets: [
-        {name: 'Opportunity', source: 'p.d.opp', primary_key: ['id'], fields: []},
+        {name: 'Opportunity', source: 'bigquery:p.d.opp', primary_key: ['id'], fields: []},
         {name: 'WonOpportunity', extends: ['Opportunity'], ...ds},
       ],
     }],
@@ -122,7 +122,7 @@ describe('loader', () => {
   });
 
   test('a defined dataset with a source is a hard error', () => {
-    expect(() => fromDocument(doc({defined: 'x = 1', source: 'p.d.t'})))
+    expect(() => fromDocument(doc({defined: 'x = 1', source: 'bigquery:p.d.t'})))
         .toThrow(/a defined dataset is a/);
   });
 
@@ -394,6 +394,11 @@ describe('OSI round-trip', () => {
     const m = model();
     m.entities.find(e => e.name === 'WonOpportunity')!.definition!.description =
         'Stage 5.';
+    // Each source as a load records it, in an accepted form, so the
+    // serialized document reloads.
+    for (const e of m.entities) {
+      if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+    }
     const {yaml} = serializeModel(m);
     expect(yaml).toContain('defined:');
     const {models} = loadModels(yaml);
@@ -455,18 +460,18 @@ describe('Knowledge Catalog push / pull', () => {
 });
 
 describe('availability pruning', () => {
-  test('a defined entity falls with its unavailable parent, transitively', () => {
+  test('a defined entity stays when its parent\'s key field is unbound', () => {
     const m = model();
-    // Unbind Opportunity's key: the whole entity is unavailable.
+    // A key is a physical column rather than a field, so unbinding the field
+    // that shares the key's name drops that field and nothing else: the parent
+    // stays, and so does every defined entity over it, transitively.
     m.entities[0].fields[0] = {name: 'id', type: 'String'};
     const {model: pruned, report} = pruneUnavailable(m, 'p');
-    const names = pruned.entities.map(e => e.name);
-    expect(names).not.toContain('WonOpportunity');
-    expect(names).not.toContain('MegaDeal');
-    expect(report.droppedEntities).toContainEqual({
-      name: 'MegaDeal',
-      reason: 'parent entity HighValueOpportunity is unavailable',
-    });
+    expect(pruned.entities.map(e => e.name)).toEqual(expect.arrayContaining([
+      'Opportunity', 'WonOpportunity', 'HighValueOpportunity', 'MegaDeal',
+    ]));
+    expect(report.droppedEntities).toEqual([]);
+    expect(report.unboundFields).toContain('Opportunity.id');
   });
 });
 

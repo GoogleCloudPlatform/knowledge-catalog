@@ -31,17 +31,17 @@ function doc(glossary: any, version = GOOGLE) {
         },
         {
           name: 'Customer',
-          source: 'data-proj.sales.customers',
+          source: 'bigquery:data-proj.sales.customers',
           primary_key: ['customerId'],
           extends: ['Party'],
           fields: [
             {name: 'customerId', expression: 'customer_id', datatype: 'String'},
-            {name: 'displayName', expression: 'name', datatype: 'String'},
+            {name: 'displayName', expression: 'name'},
           ],
         },
         {
           name: 'Order',
-          source: 'data-proj.sales.orders',
+          source: 'bigquery:data-proj.sales.orders',
           primary_key: ['orderId'],
           fields: [
             {name: 'orderId', expression: 'order_id', datatype: 'String'},

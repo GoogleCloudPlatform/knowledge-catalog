@@ -84,6 +84,16 @@ function model(): SemanticModel {
   };
 }
 
+// The running example as a load records it: each source in an accepted form,
+// so the serialized document reloads.
+function authoredModel(): SemanticModel {
+  const m = model();
+  for (const e of m.entities) {
+    if (e.dataSource) e.authoredSource = `bigquery:${e.dataSource}`;
+  }
+  return m;
+}
+
 const flat = (s: string) => s.replace(/\s+/g, ' ');
 
 const VOCAB_VIEW = [
@@ -123,7 +133,7 @@ describe('loader', () => {
       datasets: [
         {
           name: 'Order',
-          source: 'p.d.orders',
+          source: 'bigquery:p.d.orders',
           primary_key: ['orderId'],
           fields: [
             {name: 'orderId', expression: 'order_id'},
@@ -157,7 +167,7 @@ describe('loader', () => {
   test('members are a native extension: vanilla Ossie rejects them', () => {
     expect(() => fromDocument(doc(
                {
-                 source: 'p.d.order_status',
+                 source: 'bigquery:p.d.order_status',
                  primary_key: ['code'],
                  fields: [{name: 'code', expression: 'code'}],
                  members,
@@ -334,7 +344,7 @@ describe('deploy', () => {
   const CTX = new ApiContext('test-project', 'us', 'test-token');
   const loaded = () => {
     const r = loadSemanticModels(
-        [{name: 'orders', text: serializeModel(model()).yaml}],
+        [{name: 'orders', text: serializeModel(authoredModel()).yaml}],
         {defaultProject: 'p'});
     if (r.error) throw new Error(r.error);
     return r.models;
@@ -493,7 +503,7 @@ describe('members trailer codec', () => {
 
 describe('OSI round-trip', () => {
   test('members survive serialize -> load', () => {
-    const {yaml} = serializeModel(model());
+    const {yaml} = serializeModel(authoredModel());
     expect(yaml).toContain('members:');
     const {models} = loadModels(yaml);
     const status = models[0].entities.find(e => e.name === 'OrderStatus')!;

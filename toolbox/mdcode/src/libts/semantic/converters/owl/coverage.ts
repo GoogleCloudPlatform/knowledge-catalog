@@ -193,14 +193,33 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     }
   }
 
+  // The concrete subclasses of an abstract entity that carry `key`, as their
+  // primary key or a unique key, each with which (see to_ir dropAbstractKeys).
+  const keyCarriers = (name: string, key: string[]): string[] =>
+      model.entities
+          .filter(
+              d => d.name !== name && !d.abstract &&
+                  lineage(d.name).includes(name) &&
+                  (sameList(d.keys, key) ||
+                   (d.uniqueKeys ?? []).some(u => sameList(u, key))))
+          .map(d => `entity ${d.name} ${
+                   sameList(d.keys, key) ? 'primary_key' : 'unique_keys'}`);
+  const onSubclasses = (name: string) => `'${name}' is abstract (no table): ` +
+      `the key identifies the rows of its concrete subclasses, which carry it`;
+
   for (const c of classes) {
     if (!c.keys.length) continue;
     const C = c.localName;
     const keys = dedupe(c.keys);
     const subject = `${C} HasKey (${keys.join(' ')})`;
-    if (sameList(entities.get(C)!.keys, keys)) {
+    const e = entities.get(C)!;
+    const carriers = e.abstract ? keyCarriers(C, keys) : [];
+    if (sameList(e.keys, keys)) {
       land('compiled', 'owl:hasKey', subject, {entity: C},
            `entity ${C} primary_key`);
+    } else if (carriers.length) {
+      land('compiled', 'owl:hasKey', subject, {entity: C}, carriers.join(', '),
+           onSubclasses(C));
     } else {
       rec.dropped(
           'owl:hasKey', subject,
@@ -303,12 +322,21 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
       if (p.inverseFunctional) {
         const asKey = sameList(e.keys, [P]);
         const asUnique = (e.uniqueKeys ?? []).some(u => sameList(u, [P]));
+        const carriers = e.abstract ? keyCarriers(e.name, [P]) : [];
         if (asKey || asUnique) {
           land('compiled', 'owl:InverseFunctionalProperty', subject,
                {entity: e.name},
                `entity ${e.name} ${asKey ? 'primary_key' : 'unique_keys'}`);
+        } else if (carriers.length) {
+          land('compiled', 'owl:InverseFunctionalProperty', subject,
+               {entity: e.name}, carriers.join(', '), onSubclasses(e.name));
         } else {
-          rec.dropped('owl:InverseFunctionalProperty', subject, 'not kept');
+          rec.dropped(
+              'owl:InverseFunctionalProperty', subject,
+              e.abstract ? why([[`class '${e.name}' is abstract`, P]],
+                               `'${e.name}' is abstract (no table) and no ` +
+                                   `concrete subclass carries the key`) :
+                           'not kept');
         }
       }
       if (p.functional) {
@@ -351,10 +379,23 @@ export function owlCoverage(input: OwlCoverageInput): CoverageEntry[] {
     const r = duplicate ? undefined : rels.get(P);
     const folded = duplicate ? undefined : byInverse.get(P);
     if (r) {
-      land('compiled', 'owl:ObjectProperty', P, {relationship: P},
-           r.abstract ? `relationship ${P} (abstract: a label on its ` +
-                   `sub-relationships)` :
-                        `relationship ${P}`);
+      const abstractEnds =
+          [...new Set([r.source.entity, r.destination.entity])].filter(
+              n => entities.get(n)?.abstract);
+      const isSuper = model.relationships.some(x => x.extends?.includes(P));
+      if (r.abstract && abstractEnds.length && !isSuper) {
+        land('compiled', 'owl:ObjectProperty', P, {relationship: P},
+             `relationship ${P} (abstract: an endpoint is abstract)`,
+             `${abstractEnds.map(n => `'${n}'`).join(' and ')} ${
+                 abstractEnds.length > 1 ? 'are' : 'is'} abstract (no ` +
+                 `table): the relationship is the label of the edges ` +
+                 `between the concrete subtypes, with no edge table of its own`);
+      } else {
+        land('compiled', 'owl:ObjectProperty', P, {relationship: P},
+             r.abstract ? `relationship ${P} (abstract: a label on its ` +
+                     `sub-relationships)` :
+                          `relationship ${P}`);
+      }
     } else if (folded) {
       land('compiled', 'owl:ObjectProperty', P, {relationship: folded.name},
            `relationship ${folded.name} inverse`,

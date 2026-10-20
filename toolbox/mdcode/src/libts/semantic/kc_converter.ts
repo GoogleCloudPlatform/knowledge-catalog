@@ -32,9 +32,10 @@
 // `guidelines` aspect, on the model/entity/metric), each metric's attach entity
 // (re-derived from its expression, as the loader does, when the catalog holds
 // one, else the value the emitter persisted), the model's deployment targets
-// (from the semantic-model aspect, back into the GOOGLE `custom_extensions`
-// block), and 1:1 / 1:N relationships (from the `schema-join` entry links a
-// pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
+// (from the semantic-model aspect, back into `deployments` and the GOOGLE
+// `custom_extensions` block), and 1:1 / 1:N relationships (from the
+// `schema-join` entry links a pull fetched -- see
+// `modelsFromCatalogResources`'s `entryLinks` argument).
 // Entity `extends` and `abstract` come back from the `Specializes:` / `Abstract:`
 // paragraphs publish appends to an entity entry's description (see
 // `splitEntityTrailers`). Field `unit` / `scale` and entity `grain` /
@@ -72,18 +73,21 @@
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {Action, AiContext, Association, Constraint, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {Action, AiContext, Association, Constraint, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {applyFieldExpressions, readAiContextAnnotation, readBindingAnnotation, readExpressionsAnnotation, RelationshipIndexRow} from './kc_annotations';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
-import {ABSTRACT_MARKER, DEFINED_AS_PREFIX, DEFINITION_NOTE_PREFIX, INVERSE_PREFIX, linkSlug, SPECIALIZES_PREFIX} from './knowledge_catalog';
-import {referencedEntityNames} from './sql_expr_utils';
+import {linkSlug} from './kc_ids';
+import {ABSTRACT_MARKER, DEFINED_AS_PREFIX, DEFINITION_NOTE_PREFIX, INVERSE_PREFIX, SPECIALIZES_PREFIX} from './knowledge_catalog';
 import {splitGrainHistoryTrailers, splitUnitTrailer} from './units_history';
 import {splitDerivedTrailers} from './derived_relationships';
 import {splitMembersTrailer} from './vocabulary';
 import {splitConstraintsTrailer} from './constraint_enforcement';
 import {splitHydrationTrailer} from './hydration_kc';
 import {splitContentsTrailer, splitQueryTrailer, splitReadThroughTrailer, splitRelationshipsTrailer} from './read_trailers';
+import {unnamedDeployments} from './deployment_target';
+import {noSqlReason, sourceToDataSource} from './loader';
+import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
   models: SemanticModel[];
@@ -221,10 +225,14 @@ export function modelsFromCatalogResources(
                             .filter((c): c is Constraint => c !== undefined);
     if (constraints.length) model.constraints = constraints;
     warnDanglingGuards(actions, constraints, name, warnings);
-    // Deployment targets ride back in the same GOOGLE custom_extensions block
-    // the author wrote them in (the inverse of the emitter's modelAspectData).
-    const targets = readDeploymentTargets(anchor);
-    if (targets) model.customExtensions = [targets];
+    // Deployment targets ride back in both the GOOGLE custom_extensions block
+    // and as synthesized `deployments` entries (`default` when one,
+    // `deployment_1`, `deployment_2`, ... when several).
+    const targets = readDeploymentTargets(anchor, name, warnings);
+    if (targets) {
+      model.customExtensions = [targets.extension];
+      model.deployments = targets.deployments;
+    }
     const ai = anchorAi ? anchorAi.aiContext : readAiContext(anchor);
     if (ai) model.aiContext = ai;
     return model;
@@ -272,7 +280,12 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   const k7 = splitGrainHistoryTrailers(k3.rest);
   const defined = splitDefinitionTrailer(k7.rest);
   const trailers = splitEntityTrailers(defined.rest);
-  const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
+  // A source written as a catalog name is stored in `importedResource`, with
+  // `resources` left empty.
+  const imported = semantic?.source?.importedResource;
+  const rawResource = (semantic?.source?.resources?.[0] ?? '').trim() ||
+      (typeof imported === 'string' ? imported.trim() : '');
+  const dataSource = dataSourceFromResource(rawResource);
   // An abstract entity has no table by design, so an empty source is expected;
   // so does a defined one (a subset of its parent's rows), a vocabulary (its
   // rows are its members), and a derived one (its rows come from a
@@ -290,6 +303,7 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   const entity: Entity = {
     name,
     dataSource,
+    ...(rawResource ? {authoredSource: rawResource} : {}),
     // The grain / primary key, from the schema aspect's primaryKey.fields
     // (ordered, so a composite key's ordinal positions round-trip).
     keys: stringList(schema.primaryKey?.fields),
@@ -454,7 +468,17 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
   }
   const field: Field = {name};
   const sem = fd?.semantics ?? {};
-  if (sem.expression !== undefined) field.expression = sem.expression;
+  // An expression with no SQL does not load, so the field is read as unbound.
+  const noSql = typeof sem.expression === 'string' ?
+      noSqlReason(sem.expression, 'ANSI_SQL', entityName) :
+      undefined;
+  if (noSql) {
+    warnings.push(
+        `entity '${entityName}': field '${name}': its expression in the ` +
+        `catalog ${noSql}, so the field is read as unbound`);
+  } else if (sem.expression !== undefined) {
+    field.expression = sem.expression;
+  }
   const type = irDataType(fd?.dataType, fd?.metadataType);
   if (type !== undefined) field.type = type;
   if (sem.role === 'DIMENSION') field.dimension = {};
@@ -486,12 +510,25 @@ function readMetric(
   if (exprAnn) data.expression = exprAnn.expression;
 
   const metric: Metric = {name};
-  if (data.expression !== undefined) metric.expression = data.expression;
-  const exprForRefs = data.expression ?? '';
-  const referenced = referencedEntityNames(exprForRefs, entityNames);
+  // An expression with no SQL does not load, so it is read as absent, and the
+  // serializer warns that the metric needs one.
+  const expression = typeof data.expression === 'string' &&
+          noSqlReason(data.expression, 'ANSI_SQL') ?
+      undefined :
+      data.expression;
+  if (expression !== undefined) metric.expression = expression;
+  const exprForRefs = expression ?? '';
+  const cols = exprForRefs ? columnReferences(exprForRefs, 'BIGQUERY') : [];
+  const referenced = entitiesReached(cols ?? [], entityNames);
   const persistedEntity =
       typeof data.entity === 'string' && data.entity !== '' ? data.entity :
                                                               undefined;
+  if (cols === undefined && persistedEntity === undefined) {
+    warnings.push(
+        `metric '${name}': expression could not be parsed; entity inference ` +
+        `was skipped (set 'entity' on the metric, or backtick-quote a ` +
+        `reserved qualifier, such as \`Date\`.amount)`);
+  }
   if (referenced.length === 1) {
     // The expression pins exactly one known entity; re-derive it (as the loader
     // does) so the attach entity stays consistent with the reconstructed set.
@@ -501,7 +538,7 @@ function readMetric(
     // fall back to the attach entity the emitter persisted (metricAspectData)
     // rather than dropping it.
     metric.entity = persistedEntity;
-  } else if (exprForRefs && !referenced.length) {
+  } else if (cols !== undefined && exprForRefs && !referenced.length) {
     // Parity with the loader's convertMetric: an expression that qualifies no
     // known entity is flagged as potentially unplaceable downstream.
     warnings.push(
@@ -566,14 +603,13 @@ function irDataType(dataType: string|undefined, metadataType: string|undefined):
 }
 
 
-// The inverse of resourcePath: a BigQuery linked-resource URI becomes the
-// canonical `project.dataset.table` string; anything else (a verbatim query or
-// a passthrough reference) is returned unchanged.
+// The inverse of entityAspectData, through the loader's own conversion: a
+// BigQuery or BigLake resource URI or resource name, or a `bigquery:` catalog
+// name, becomes the dot-separated table string. A Spanner or AlloyDB resource
+// name becomes its resource URI. Anything else is returned trimmed. An absent
+// resource reads as ''.
 function dataSourceFromResource(resource: string|undefined): string {
-  const value = (resource ?? '').trim();
-  const m = value.match(
-      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/([^/]+)$/);
-  return m ? `${m[1]}.${m[2]}.${m[3]}` : value;
+  return sourceToDataSource(resource ?? '');
 }
 
 
@@ -615,16 +651,28 @@ function aspectDataOf(aspects: Record<string, Aspect>|undefined, type: string):
 
 
 // Recovers the model's deployment targets from its semantic-model aspect back
-// into the GOOGLE custom_extension the author declared them in (the inverse of
-// the emitter's modelAspectData). Returns undefined when the model has none.
-function readDeploymentTargets(anchor: Entry): CustomExtension|undefined {
-  const targets =
+// into both the GOOGLE custom_extension shim and a `deployments` list (`default`
+// when there is one target, `deployment_1`, `deployment_2`, ... when there are
+// several), warning that the original deployment names were not recovered.
+// Returns undefined when the model has none.
+function readDeploymentTargets(
+    anchor: Entry, modelName: string, warnings: string[]):
+    {extension: CustomExtension; deployments: DeploymentSpec[]}|undefined {
+  const deployments: DeploymentSpec[] = unnamedDeployments(
       asArray(aspectData(anchor, 'semantic-model').deploymentTargets)
-          .filter((t): t is string => typeof t === 'string' && t !== '');
-  if (!targets.length) return undefined;
+          .filter((t): t is string => typeof t === 'string'));
+  if (!deployments.length) return undefined;
+  const targets = deployments.map(d => d.target);
+  warnings.push(
+      `model '${modelName}': deployment names were not recovered (the ` +
+      `catalog stores target URIs only); using ${
+          deployments.map(d => `'${d.name}'`).join(', ')}`);
   return {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: targets})
+    extension: {
+      vendorName: 'GOOGLE',
+      data: JSON.stringify({deploymentTargets: targets}),
+    },
+    deployments,
   };
 }
 
@@ -923,7 +971,7 @@ export function splitInverse(text: string):
 export function linkDedupKey(link: EntryLink): string {
   if (link.name) return link.name;
   const refs = (link.entryReferences ?? []).map(r => r.name).sort();
-  return `${refs.join(' ')} ${link.entryLinkType ?? ''}`;
+  return `${refs.join('\0')}\0${link.entryLinkType ?? ''}`;
 }
 
 

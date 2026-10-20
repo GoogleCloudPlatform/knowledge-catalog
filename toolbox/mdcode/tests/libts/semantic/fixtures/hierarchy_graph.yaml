@@ -8,10 +8,12 @@
 #     |- Employee   extends Person
 #           |- Manager   extends Employee   (transitive: also a Person)
 #
-# Every class here is CONCRETE (backed by a real table). A `livesIn` edge on
-# Person shows that edges do NOT inherit: Customer/Employee/Manager gain the
-# Person LABEL and its fields, but not its relationships. `extends` is a
-# deliberate superset of released OSI (see osi_schema.test.ts).
+# Every class here is CONCRETE (backed by a real table). The `livesIn` edge
+# starts at Customer, a leaf: a relationship may attach only to a concrete
+# leaf entity, since an edge on Person would join Person's own rows and miss
+# its subtypes'. Customer/Employee/Manager gain the Person LABEL and its
+# fields. `extends` is a deliberate superset of released OSI (see
+# osi_schema.test.ts).
 
 version: "0.2.0.dev0/google"
 
@@ -102,7 +104,7 @@ semantic_model:
                   expression: city_name
     relationships:
       - name: livesIn
-        from: Person
+        from: Customer
         to: City
         from_columns: [city_id]
         to_columns: [id]

@@ -17,8 +17,19 @@
 // silently drop a node someone forgot to key. Vocabularies (keyed by their
 // code) and defined entities (a filter over their parent) are never made
 // abstract by structure; `kcmd:abstract true` on one is warned and ignored.
+//
+// The relationship counterpart: an object property whose domain or range is
+// an abstract class is ABSTRACT BY STRUCTURE (see ir.Relationship.abstract).
+// Its edges join rows, and an abstract class has none: they are the edges
+// between the class's concrete subtypes, so the relationship is the shared
+// label on those edges, with no edge table and no join columns of its own.
+// A derived relationship (owl:propertyChainAxiom, `via`) cannot keep its
+// chain there -- its pairs need a key on each end, and the loader rejects
+// `via` on an abstract relationship -- so it is imported abstract too, with
+// the chain written into its ai_context.instructions.
 
-import {Entity} from '../../ir';
+import {formatChain} from '../../derived_relationships';
+import {Entity, Relationship} from '../../ir';
 
 import {OwlModel} from './model';
 
@@ -79,4 +90,61 @@ export function applyOwlAbstract(
   function isKeyed(name: string): boolean {
     return lineage(name).some(n => entitiesByName.get(n)?.keys.length);
   }
+}
+
+/**
+ * Marks each relationship with an abstract endpoint abstract, in place (see
+ * the header), and returns the names it changed. Runs after applyOwlAbstract,
+ * once every entity's abstractness is settled. Like an abstract class by
+ * structure, this is by design, so the coverage report records it and only a
+ * loss is warned: the join columns an encodedBy annotation gave the edge, or a
+ * derived relationship's chain, which is kept as text.
+ */
+export function applyAbstractEndpoints(
+    relationships: readonly Relationship[],
+    entitiesByName: ReadonlyMap<string, Entity>,
+    warnings: string[]): Set<string> {
+  const changed = new Set<string>();
+  const isAbstract = (name: string) =>
+      entitiesByName.get(name)?.abstract === true;
+  for (const r of relationships) {
+    const ends = [...new Set([r.source.entity, r.destination.entity])].filter(
+        isAbstract);
+    if (!ends.length) continue;
+    const named = ends.map(n => `'${n}'`).join(' and ');
+    const are = ends.length > 1 ? 'are' : 'is';
+    const ctx = `object property '${r.name}' connects ${named}, which ${are} ` +
+        `abstract`;
+    if (r.via?.length) {
+      const chain = formatChain(r.via);
+      const note = `Derived, not stored: ${r.name} follows the chain ${
+          chain} (owl:propertyChainAxiom). ${named} ${are} abstract (no ` +
+          `table), so the chain has no pairs to store; follow it between the ` +
+          `concrete subtypes.`;
+      r.aiContext = {
+        ...(r.aiContext ?? {}),
+        instructions: r.aiContext?.instructions ?
+            `${r.aiContext.instructions}\n\n${note}` :
+            note,
+      };
+      delete r.via;
+      delete r.filter;
+      warnings.push(
+          `${ctx}, so it is imported as an abstract relationship and its ` +
+          `owl:propertyChainAxiom [${chain}] is kept as text in ` +
+          `ai_context.instructions (a derived relationship's pairs need a key ` +
+          `on each end, which an abstract class does not have).`);
+    }
+    if (r.source.columns.length || r.destination.columns.length) {
+      warnings.push(
+          `${ctx}, so it is imported as an abstract relationship and the ` +
+          `join columns its encodedBy annotation gave it are dropped (an ` +
+          `abstract relationship binds no join).`);
+      r.source.columns = [];
+      r.destination.columns = [];
+    }
+    if (!r.abstract) changed.add(r.name);
+    r.abstract = true;
+  }
+  return changed;
 }

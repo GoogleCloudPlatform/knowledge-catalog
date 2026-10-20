@@ -51,6 +51,7 @@ semantic_model:
         to: Organization
         extends:
           - hasCounterparty
+        abstract: true
       - name: belongsToTerritory
         from: BusinessObject
         to: OrgUnit
@@ -74,6 +75,8 @@ semantic_model:
       - name: partyTouches
         from: Party
         to: BusinessObject
+        abstract: true
       - name: dealTouches
         from: Opportunity
         to: BusinessObject
+        abstract: true

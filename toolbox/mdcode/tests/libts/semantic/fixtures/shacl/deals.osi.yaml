@@ -25,6 +25,7 @@ semantic_model:
       - name: WonOpportunity
         extends:
           - Opportunity
+        defined: "stage = 'won'"
       - name: Contract
         fields:
           - name: contractType

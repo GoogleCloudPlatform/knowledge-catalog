@@ -36,7 +36,11 @@
 //   <ns>:encodedBy (object prop.) -> the edge's join columns: the code
 //                                    field -> the destination's key
 //   no owl:hasKey + subclasses    -> dataset abstract (kcmd:abstract
-//                                    overrides; see abstract.ts)
+//                                    overrides; see abstract.ts), with no
+//                                    keys of its own
+//   object property with an abstract domain or range
+//                                 -> relationship abstract, no join columns
+//                                    (see abstract.ts)
 //   unkeyed C owl:equivalentClass keyed D
 //                                 -> C folded into D (see folds.ts)
 //
@@ -66,7 +70,7 @@
 import {checkDerivedRelationships, formatChain, resolveChain} from '../../derived_relationships';
 import {AiContext, Entity, Field, Relationship, RelationshipStep, SemanticModel,} from '../../ir';
 
-import {applyOwlAbstract} from './abstract';
+import {applyAbstractEndpoints, applyOwlAbstract} from './abstract';
 import {applyOwlAnnotations} from './annotations';
 import {canonicalSteps, chainSteps} from './chains';
 import {owlConstraints} from './constraints';
@@ -448,7 +452,8 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   //      subclasses declare keys of their own (`OrgUnit` over keyed
   //      `MarketUnit` / `ServiceGroup`): each subclass is identified by its own
   //      key, so the property stays a unique key, inherited by the subclasses
-  //      (see inheritUniqueKeys), and the category is abstract by structure.
+  //      (see inheritUniqueKeys), and the category is abstract by structure
+  //      and keeps no key of its own (see dropAbstractKeys).
   const ownKeyedDescendant = (name: string): boolean => {
     const seen = new Set<string>([name]);
     const queue = [name];
@@ -768,6 +773,18 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
   // vocabularies and defined entities, which are never abstract.
   applyOwlAbstract(owl, entitiesByName, warnings);
 
+  // A relationship with an abstract endpoint is abstract by structure, the
+  // relationship counterpart of the rule above (see abstract.ts). A derived
+  // relationship whose chain walks one of them can no longer follow it, so
+  // the chain checks run again and say so.
+  if (applyAbstractEndpoints(relationships, entitiesByName, warnings).size) {
+    const recheck: string[] = [];
+    checkDerivedRelationships(entities, relationships, recheck);
+    for (const w of recheck) {
+      if (!warnings.includes(w)) warnings.push(w);
+    }
+  }
+
   // A relationship extends a parent only while its endpoints fit the
   // parent's (each the parent's endpoint or a subtype of it): its edges carry
   // the parent's label, and the loader rejects edges that do not fit it. The
@@ -778,6 +795,9 @@ export function owlToIr(parsed: OwlModel, modelName: string): ToIrResult {
 
   // Unique keys flow down `extends` to the concrete subclasses.
   inheritUniqueKeys(entities, entitiesByName);
+  // An abstract entity has no table, so it keeps no key of its own: its keys
+  // identify its concrete subclasses, which carry them (dropAbstractKeys).
+  dropAbstractKeys(entities, entitiesByName, warnings);
 
   // Axioms that state a rule -- property restrictions, functional object
   // properties, class disjointness -- become native model-level constraints
@@ -870,7 +890,8 @@ function dropMisfitRelationshipParents(
 // parent's identity (no keys of its own, the loader rejects them), and a
 // vocabulary's rows are its members, so neither inherits. Downstream
 // resolution flattens inherited fields (resolve_inheritance.ts), so the key
-// names a field the subclass has.
+// names a field the subclass has. The category itself, when abstract, keeps
+// none (see dropAbstractKeys).
 function inheritUniqueKeys(
     entities: readonly Entity[], byName: ReadonlyMap<string, Entity>): void {
   // Snapshot the declared keys first so the result does not depend on order.
@@ -891,6 +912,71 @@ function inheritUniqueKeys(
       const have = [e.keys, ...(e.uniqueKeys ?? [])];
       if (have.some(k => arraysEqual(k, uk))) continue;
       (e.uniqueKeys ??= []).push([...uk]);
+    }
+  }
+}
+
+// An abstract entity has no table, so it declares no key: a key on one is a
+// model error (push rejects it). What its keys say is still true of every row
+// of its concrete subclasses, so they carry it. Its unique keys already
+// flowed down (inheritUniqueKeys). Its primary key -- left only by
+// `kcmd:abstract true` on a class with owl:hasKey -- flows down the same way:
+// a concrete subclass with no key of its own, whose nearest keyed ancestor is
+// the abstract class, takes it as its primary key; any other concrete
+// subclass takes it as a unique key. Then the abstract entity keeps neither.
+// A key no concrete subclass can carry is dropped, with a warning.
+function dropAbstractKeys(
+    entities: readonly Entity[], byName: ReadonlyMap<string, Entity>,
+    warnings: string[]): void {
+  const keysOf = new Map(entities.map(e => [e.name, [...e.keys]]));
+  // The entity's ancestors, nearest first (itself excluded).
+  const ancestors = (name: string): string[] => {
+    const out: string[] = [];
+    const queue = [...(byName.get(name)?.extends ?? [])];
+    while (queue.length) {
+      const n = queue.shift()!;
+      if (n === name || out.includes(n)) continue;
+      out.push(n);
+      queue.push(...(byName.get(n)?.extends ?? []));
+    }
+    return out;
+  };
+  const concrete = entities.filter(
+      e => !e.abstract && !e.definition && e.members === undefined);
+  for (const a of entities) {
+    if (!a.abstract) continue;
+    const pk = keysOf.get(a.name) ?? [];
+    const uks = a.uniqueKeys ?? [];
+    if (!pk.length && !uks.length) continue;
+    const heirs = concrete.filter(d => ancestors(d.name).includes(a.name));
+    if (pk.length) {
+      for (const d of heirs) {
+        const nearestKeyed =
+            ancestors(d.name).find(n => keysOf.get(n)?.length);
+        if (!keysOf.get(d.name)?.length && nearestKeyed === a.name) {
+          d.keys = [...pk];
+        } else if (
+            !arraysEqual(d.keys, pk) &&
+            !(d.uniqueKeys ?? []).some(u => arraysEqual(u, pk))) {
+          (d.uniqueKeys ??= []).push([...pk]);
+        }
+      }
+      if (!heirs.length) {
+        warnings.push(
+            `class '${a.name}' owl:hasKey (${pk.join(', ')}) is on an ` +
+            `abstract class, which has no table, and no concrete subclass ` +
+            `carries it; dropped.`);
+      }
+      a.keys = [];
+    }
+    if (uks.length) {
+      if (!heirs.length) {
+        warnings.push(
+            `class '${a.name}' is abstract and has no concrete subclass to ` +
+            `carry its unique key${uks.length > 1 ? 's' : ''} (${
+                uks.map(u => u.join(', ')).join('; ')}); dropped.`);
+      }
+      delete a.uniqueKeys;
     }
   }
 }

@@ -40,26 +40,28 @@ function dealsYaml(opts: {version?: string; extra?: string} = {}): string {
 version: ${opts.version ?? '0.2.0.dev0/google'}
 semantic_model:
   - name: deals
-    deployment_target: ${TARGET}
+    deployments:
+      - name: default
+        target: ${TARGET}
     datasets:
       - name: CommercialDocument
         abstract: true
       - name: Opportunity
-        source: p.d.opportunity
+        source: bigquery:p.d.opportunity
         extends: [CommercialDocument]
         primary_key: [opp_id]
         fields:
           - {name: opp_id, expression: opp_id}
           - {name: buyer_id, expression: buyer_id}
       - name: Invoice
-        source: p.d.invoice
+        source: bigquery:p.d.invoice
         extends: [CommercialDocument]
         primary_key: [inv_id]
         fields:
           - {name: inv_id, expression: inv_id}
           - {name: payer_id, expression: payer_id}
       - name: Organization
-        source: p.d.org
+        source: bigquery:p.d.org
         primary_key: [org_id]
         fields:
           - {name: org_id, expression: org_id}
@@ -346,10 +348,20 @@ describe('Knowledge Catalog', () => {
 
   test('pull restores extends when the parent itself is published', () => {
     const model = dealsModel();
+    // The catalog shows one join per pair of entities, so a second
+    // relationship from Opportunity to Organization would be skipped. The
+    // sub-relationship targets a kind of Organization instead.
+    model.entities.push({
+      name: 'KeyAccount',
+      dataSource: 'p.d.key_account',
+      extends: ['Organization'],
+      keys: ['org_id'],
+      fields: [],
+    });
     model.relationships.push({
       name: 'hasKeyBuyer',
       source: {entity: 'Opportunity', columns: ['buyer_id']},
-      destination: {entity: 'Organization', columns: ['org_id']},
+      destination: {entity: 'KeyAccount', columns: ['org_id']},
       extends: ['hasBuyer'],
     });
     const {entries, entryLinks} = generateCatalogResources(model, OPTS);

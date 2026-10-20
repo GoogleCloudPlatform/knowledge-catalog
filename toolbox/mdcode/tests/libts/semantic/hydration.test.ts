@@ -158,7 +158,7 @@ describe('loader', () => {
       name: 'm',
       datasets: [{
         name: 'Opportunity',
-        source: 'p.crm.opportunity',
+        source: 'bigquery:p.crm.opportunity',
         primary_key: ['id'],
         fields: [
           {name: 'id', expression: 'id'},
@@ -205,7 +205,7 @@ describe('loader', () => {
         datasets: [
           {
             name: 'Opportunity',
-            source: 'p.crm.opportunity',
+            source: 'bigquery:p.crm.opportunity',
             primary_key: ['id'],
             fields: [
               {name: 'id', expression: 'id'},
@@ -258,7 +258,7 @@ describe('profile merge', () => {
     version: '0.2.0.dev0/google',
     semantic_model: [{
       name: 'm',
-      entities: [{name: 'Opportunity', source: 'p.crm.opp', ...entity}],
+      entities: [{name: 'Opportunity', source: 'bigquery:p.crm.opp', ...entity}],
     }],
   });
   const entityOf = (doc: any) => doc.semantic_model[0].entities[0];
@@ -291,9 +291,9 @@ describe('profile merge', () => {
   });
 
   test('other entity keys stay logical declarations', () => {
-    const r = mergeProfile(logical(), profile({primary_key: ['x']}), 'bq');
-    expect(r.error).toContain(`sets 'primary_key', a logical declaration`);
-    expect(r.error).toContain('(source, hydration, mode, expression, executor, deployment_target)');
+    const r = mergeProfile(logical(), profile({description: 'x'}), 'bq');
+    expect(r.error).toContain(
+        `entity 'Opportunity' sets 'description', which a profile may not set`);
   });
 });
 
@@ -666,17 +666,20 @@ describe('deploy', () => {
 });
 
 describe('availability', () => {
-  test('a derived entity falls with its relationship', () => {
+  test('a derived entity stays when its relationship\'s join field is unbound', () => {
+    // Join columns are physical columns, not fields, so unbinding the field
+    // that shares the column's name drops the field and nothing else: the
+    // relationship stays, and the entity derived from it with it.
     const m = model();
     const opp = m.entities[2];
     opp.fields = opp.fields.map(
         f => f.name === 'partnerId' ? {name: 'partnerId', type: 'String'} : f);
     const {model: pruned, report} = pruneUnavailable(m, 'bq');
-    expect(pruned.entities.map(e => e.name)).not.toContain('Partner');
-    expect(report.droppedEntities).toEqual([{
-      name: 'Partner',
-      reason: 'relationship withPartner it is derived from is unavailable',
-    }]);
+    expect(pruned.entities.map(e => e.name)).toContain('Partner');
+    expect(pruned.relationships.map(r => r.name)).toContain('withPartner');
+    expect(report.droppedEntities).toEqual([]);
+    expect(report.droppedRelationships).toEqual([]);
+    expect(report.unboundFields).toContain('Opportunity.partnerId');
   });
 
   test('a derived entity\'s key counts as bound', () => {

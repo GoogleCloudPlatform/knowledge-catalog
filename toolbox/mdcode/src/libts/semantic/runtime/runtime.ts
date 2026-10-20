@@ -1,5 +1,5 @@
 // Creating a semantic runtime: the model as authored, merged with one binding
-// profile, paired with the store that profile's deployment target names.
+// profile, paired with the store the deployment that uses that profile names.
 //
 // A semantic model on disk is a declaration. A runtime is that declaration
 // made operational -- bindings applied, inheritance resolved, a store to run
@@ -14,6 +14,7 @@
 // while the product fails. The CLI calls this too, so there is one answer to
 // "what does this scope say" rather than one per caller.
 
+import {AlloyDbClient} from '../../gcp/alloydb';
 import * as context from '../../gcp/context';
 import {SemanticModelLayout} from '../../layouts/semantic-model';
 import {CatalogSnapshot} from '../../snapshot';
@@ -21,10 +22,11 @@ import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels} from '../loader';
-import {resolveInheritance} from '../resolve_inheritance';
-import {DEFAULT_PROFILE, mergeProfileOntoDoc} from '../resolve_profiles';
+import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
+import {applyProfileExclusions, DEFAULT_PROFILE, modelFileAloneMessage, ProfileExclusion, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
+import {loadSqlEngine} from '../sql_parser';
 
-import {resolveStore, Store} from './store';
+import {resolveStore, Store, withPrimaryInstance} from './store';
 
 
 /**
@@ -42,6 +44,25 @@ export interface SemanticRuntime {
   store?: Store;
   /** Why there is no store. Set exactly when `store` is absent. */
   storeError?: string;
+  /**
+   * Set when the model's deployments name a target and still no store
+   * results. The target of any deployment may be in no accepted form, the
+   * profile's several targets may leave the store ambiguous, the model may
+   * bind a table outside its Spanner or AlloyDB store, or finding how to
+   * connect may fail, such as the lookup of an AlloyDB cluster's primary
+   * instance. Also set when a GOOGLE block's data is not valid JSON, so its
+   * targets cannot be read. `storeError` says why.
+   */
+  storeFailed?: boolean;
+  /**
+   * Set with `storeFailed` when push rejects the model's deployments too, so
+   * the model is wrong whatever it is used for. One such case is a target in
+   * no accepted form in any deployment. Another is a GOOGLE block that is not
+   * valid JSON. A third is several targets for the profile with no single
+   * store. A table bound outside the store and a failed AlloyDB lookup are
+   * not such cases.
+   */
+  deploymentsRejected?: boolean;
   /** Which binding profile produced this. Provenance, for messages. */
   profile: string;
   /** The entry group the model is scoped to. */
@@ -71,7 +92,7 @@ export interface CreateRuntimeOptions {
   /** Directory holding `catalog.yaml`. Defaults to the current directory. */
   path?: string;
   /**
-   * Binding profile to merge onto each model. Defaults to the scope's
+   * Binding profile to apply to each model. Defaults to the scope's
    * `default_profile`, and failing that to the model's inline bindings.
    */
   profile?: string;
@@ -82,6 +103,12 @@ export interface CreateRuntimeOptions {
    * transcript to keep tidy can collect them instead.
    */
   onWarning?: (text: string) => void;
+  /**
+   * Set to refuse a scope that holds more than one model. The scope is
+   * refused before any store is looked up. When this is a function, it takes
+   * the number of models and returns the error.
+   */
+  oneModel?: boolean|((count: number) => string);
 }
 
 
@@ -117,33 +144,110 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const docs = layout.modelDocuments();
   if (!docs.length) return {error: 'no semantic model documents found.'};
 
-  const merged: Array<{name: string; text: string}> = [];
+  // Push reads every model's profile files first, whichever profile it
+  // deploys. It refuses the scope when profileDocuments rejects a file, such
+  // as one whose `name:` does not match its file name. It also refuses it
+  // when a model declares a profile named `default` in any letter case.
+  const profilesByDoc = new Map<string, Array<{name: string; text: string}>>();
+  for (const doc of docs) {
+    let available: Array<{name: string; text: string}>;
+    try {
+      available = layout.profileDocuments(doc.name);
+    } catch (err: any) {
+      return {error: err?.message ?? String(err)};
+    }
+    const reserved = reservedProfileNameError(doc.name, available);
+    if (reserved) return {error: reserved};
+    profilesByDoc.set(doc.name, available);
+  }
+
+  try {
+    await loadSqlEngine();
+  } catch (err: any) {
+    return {error: `${err?.message ?? err}`};
+  }
+
+  const merged: Array<{
+    name: string; text: string; allowLegacyBareSource?: boolean;
+    excluded?: ProfileExclusion[];
+  }> = [];
+  const excludedByDoc = new Map<string, ProfileExclusion[]>();
+  // A profile file applies to its model file loaded on its own, with its
+  // exclusions already marked.
+  const appliedByDoc = new Map<string, SemanticModel>();
+  // The warnings applying each profile file gave.
+  const fileWarnings = new Map<string, string[]>();
+  // The documents a legacy `semantic_model:` wrapper was merged into, each
+  // with whether the merged model names its target with `deployment_target`.
+  const wrapped = new Map<string, boolean>();
+  const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
       merged.push({name: doc.name, text: doc.text});
       continue;
     }
-    const available = layout.profileDocuments(doc.name);
-    const chosen = available.find(p => p.name === profile);
-    if (!chosen) {
-      const names = available.map(p => p.name);
+    const res =
+        profileForDocument(doc, profilesByDoc.get(doc.name) ?? [], profile);
+    if (res.kind === 'missing') {
+      return {error: unknownProfileMessage(profile, doc.name, res.declared)};
+    }
+    if (res.kind === 'error') {
       return {
-        error: `unknown binding profile '${profile}' for model '${doc.name}'; ` +
-            (names.length ? `defined profiles: ${names.join(', ')}.` :
-                            `no profiles are defined for this model.`),
+        error: res.stage === 'load' ? modelFileAloneMessage(res.error, profile) :
+                                      `[${doc.name}] ${res.error}`,
       };
     }
-    const res = mergeProfileOntoDoc(doc.text, chosen.text, profile);
-    if ('error' in res) return {error: `[${doc.name}] ${res.error}`};
+    if (res.kind === 'file') {
+      fileWarnings.set(doc.name, res.warnings);
+      appliedByDoc.set(doc.name, res.model);
+      continue;
+    }
     for (const w of res.warnings) warn(`Warning: [${doc.name}] ${w}`);
-    merged.push({name: doc.name, text: res.text});
+    merged.push({
+      name: doc.name,
+      text: res.text,
+      // A legacy `semantic_model:` wrapper may still carry
+      // `deployment_target:` and bare sources.
+      allowLegacyBareSource: true,
+      excluded: res.excluded,
+    });
+    excludedByDoc.set(doc.name, res.excluded);
+    wrapped.set(doc.name, res.deploymentTarget);
   }
 
   const loaded = loadSemanticModels(
-      merged,
-      {defaultProject: source.project ?? ctx.project, bindingOptional: true});
+      merged, {defaultProject, bindingOptional: true});
   if (loaded.error) return {error: loaded.error};
-  for (const w of loaded.warnings) warn(`Warning: ${w}`);
+  // In the order of the documents, as one load of them all gives. The load
+  // prefixes each warning with its document's name.
+  for (const doc of docs) {
+    const own = fileWarnings.get(doc.name) ??
+        loaded.warnings.filter(w => w.startsWith(`[${doc.name}] `));
+    for (const w of own) warn(`Warning: ${w}`);
+  }
+  const loadedByDoc = new Map(loaded.models.map(m => [m.document, m.model]));
+  const models = docs.flatMap(doc => {
+    const model = appliedByDoc.get(doc.name) ?? loadedByDoc.get(doc.name);
+    return model ? [{document: doc.name, model}] : [];
+  });
+
+  // A deployment that names a profile the model does not declare would be
+  // used by no profile. Push refuses every deployment that names a profile.
+  for (const {document, model} of models) {
+    const declared = (profilesByDoc.get(document) ?? []).map(p => p.name);
+    const error = undeclaredProfileError(document, model, declared);
+    if (error) return {error};
+  }
+
+  if (options.oneModel && models.length > 1) {
+    return {
+      error: typeof options.oneModel === 'function' ?
+          options.oneModel(models.length) :
+          `this scope holds ${models.length} models, which may name ` +
+              `different databases, so there is no single store. Narrow ` +
+              `the scope to one model.`,
+    };
+  }
 
   // Inheritance is resolved for the same reason both push legs resolve it: an
   // inherited field is a field, and every reader downstream reads
@@ -154,17 +258,84 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // refuses a generated UUID for an Integer key would read the key as a
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
-  for (const {document, model: authored} of loaded.models) {
-    const resolved = resolveInheritance(authored);
+  const alloyDb = new AlloyDbClient(ctx);
+  for (const {document, model: loadedModel} of models) {
+    // A profile's exclusions apply to the entity that names each one.
+    const authored = applyProfileExclusions(
+        loadedModel, excludedByDoc.get(document) ?? []);
+    // An excluded metric is not available under the profile.
+    const excludedMetrics = new Set(authored.excludedMetrics ?? []);
+    if (excludedMetrics.size) {
+      authored.metrics =
+          (authored.metrics ?? []).filter(m => !excludedMetrics.has(m.name));
+    }
+    // The store is the one the profile's deployments name. Finding it reads
+    // only the deployment targets and the tables the model binds, which
+    // inheritance does not change.
+    const chosen = resolveStore(authored, profile, {
+      legacyWrapper: wrapped.has(document),
+      deploymentTarget: wrapped.get(document),
+    });
+    // Resolving throws on an `extends` that names an entity the model does
+    // not declare, on a cycle, and on a field inherited from two unrelated
+    // ancestors. The loader lets each through, and push reports it as an
+    // error. An AlloyDB database runs an inherited text as PostgreSQL, where
+    // `#` starts no comment.
+    let resolved: ResolveResult;
+    try {
+      resolved = resolveInheritance(
+          authored,
+          !('error' in chosen) && chosen.kind === 'alloydb' ? 'POSTGRES' :
+                                                              undefined);
+    } catch (err: any) {
+      const message = `${err?.message ?? err}`;
+      return {
+        error: `[${document}] model '${authored.name}': ${message}${
+            message.endsWith('.') ? '' : '.'}`,
+      };
+    }
     for (const w of resolved.warnings) warn(`Warning: ${w}`);
-    const store = resolveStore(resolved.model);
-    runtimes.push({
+    // An AlloyDB database is reached through its cluster's primary instance.
+    const runtime: SemanticRuntime = {
       model: resolved.model,
       document,
-      ...('error' in store ? {storeError: store.error} : {store}),
       profile,
       entryGroup: source.entryGroup,
-    });
+    };
+    if ('error' in chosen) {
+      runtime.storeError = chosen.error;
+      if (chosen.named) runtime.storeFailed = true;
+      if (chosen.rejected) runtime.deploymentsRejected = true;
+    } else {
+      const store = await withPrimaryInstance(chosen, alloyDb);
+      if ('error' in store) {
+        runtime.storeError = store.error;
+        runtime.storeFailed = true;
+      } else {
+        runtime.store = store;
+      }
+    }
+    runtimes.push(runtime);
   }
   return runtimes;
+}
+
+
+/**
+ * Why `model` cannot be used because a deployment names a binding profile
+ * `declared` does not hold, or undefined when each names `default` or a
+ * declared profile. `document` is the model's document, for the message.
+ */
+export function undeclaredProfileError(
+    document: string, model: SemanticModel, declared: string[]): string|
+    undefined {
+  for (const d of model.deployments ?? []) {
+    const profile = d.profile ?? DEFAULT_PROFILE;
+    if (profile === DEFAULT_PROFILE || declared.includes(profile)) continue;
+    return `[${document}] model '${model.name}': deployment '${
+               d.name}' names unknown binding profile '${profile}'; ` +
+        (declared.length ? `defined profiles: ${declared.join(', ')}.` :
+                           `no profiles are defined for this model.`);
+  }
+  return undefined;
 }

@@ -23,9 +23,22 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 
 function loadFixture(name: string): SemanticModel[] {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text).models;
+  return loadModels(text, {allowLegacyBareSource: true}).models;
 }
 
+
+// The serializer does not write dialects or stringForm yet, so a round trip
+// cannot keep them.
+function withoutUnserializedFields(m: Omit<SemanticModel, 'version'>) {
+  return {
+    ...m,
+    entities: m.entities.map(({authoredSource: _as, ...e}) => ({
+      ...e,
+      fields: e.fields.map(({dialects: _d, stringForm: _sf, ...f}) => f),
+    })),
+    metrics: m.metrics.map(({dialects: _d, stringForm: _sf, ...mt}) => mt),
+  };
+}
 
 describe('loader <-> serialize round trip is IR-stable', () => {
   // Each fixture exercises a different slice of the format: relationships +
@@ -50,10 +63,18 @@ describe('loader <-> serialize round trip is IR-stable', () => {
 
       for (const model of original) {
         const {yaml: text} = serializeModel(model);
-        const reloaded = loadModels(text).models;
+        const reloaded = loadModels(text, {allowLegacyBareSource: true}).models;
         expect(reloaded).toHaveLength(1);
-        // IR-level equality: every field the loader keeps must match exactly.
-        expect(reloaded[0]).toEqual(model);
+        // The serializer always writes the Google flavor, so a vanilla fixture
+        // reloads as '0.2.0.dev0/google'. Set `version` aside until the
+        // serializer writes `model.version` back out, and pin what it writes.
+        const {version: reloadedVersion, ...reloadedRest} = reloaded[0];
+        const {version: _originalVersion, ...originalRest} = model;
+        expect(reloadedVersion).toBe('0.2.0.dev0/google');
+        // IR-level equality: every other field the loader keeps must match
+        // apart from dialects and stringForm.
+        expect(withoutUnserializedFields(reloadedRest))
+            .toEqual(withoutUnserializedFields(originalRest));
       }
     });
   }
@@ -104,6 +125,155 @@ describe('serialized document structure', () => {
     expect(relDoc.from_columns).toEqual(rel.source.columns);
     expect(relDoc.to_columns).toEqual(rel.destination.columns);
   });
+
+  test('the serializer keeps a deployment profile and prints no warning for the GOOGLE target block', () => {
+    const target = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const withProfile: SemanticModel = {
+      name: 'sales',
+      deployments: [{name: 'staging', target, profile: 'spanner_binding'}],
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [target]}),
+      }],
+      entities: [{name: 'orders', dataSource: 'p.d.orders', authoredSource: 'bigquery:p.d.orders', keys: ['id'], fields: []}],
+      relationships: [],
+      metrics: [],
+    };
+    const {yaml: text, warnings} = serializeModel(withProfile);
+    expect(warnings).toEqual([]);
+    const parsed = yaml.parse(text);
+    expect(parsed.semantic_model[0].deployments).toEqual([
+      {name: 'staging', target, profile: 'spanner_binding'},
+    ]);
+  });
+
+  test('a vanilla model whose targets live only in the GOOGLE custom_extensions block serializes them under deployments', () => {
+    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const spTarget = '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+    const [singleVanilla] = loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deploymentTargets: [bqTarget]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+`).models;
+    expect(singleVanilla.deployments).toBeUndefined();
+    const singleSer = serializeModel(singleVanilla);
+    expect(singleSer.warnings).toEqual([]);
+    expect(yaml.parse(singleSer.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: bqTarget},
+    ]);
+
+    const [multiVanilla] = loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deploymentTargets: [spTarget, bqTarget]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+`).models;
+    const multiSer = serializeModel(multiVanilla);
+    expect(multiSer.warnings).toEqual([]);
+    expect(yaml.parse(multiSer.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'deployment_1', target: spTarget},
+      {name: 'deployment_2', target: bqTarget},
+    ]);
+  });
+
+  // A padded repeat of a target is the same target, and a blank one names
+  // none. Written out as they are, either gives a file that fails to load.
+  test('a vanilla GOOGLE block with a padded repeat and a blank target serializes to a file that loads', () => {
+    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const model: SemanticModel = {
+      name: 'sales',
+      version: '0.2.0.dev0',
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [bqTarget, '  ', ` ${bqTarget} `]}),
+      }],
+      entities: [{
+        name: 'orders', dataSource: 'p.d.orders',
+        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const ser = serializeModel(model);
+    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: bqTarget},
+    ]);
+    const reloaded = loadModels(ser.yaml).models[0];
+    expect(reloaded.deployments).toEqual([{name: 'default', target: bqTarget}]);
+  });
+
+  test('a GOOGLE block whose data is not valid JSON does not drop the targets of another block', () => {
+    const bqTarget = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const model: SemanticModel = {
+      name: 'sales',
+      version: '0.2.0.dev0',
+      customExtensions: [
+        {vendorName: 'GOOGLE', data: 'not json'},
+        {vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [bqTarget]})},
+      ],
+      entities: [{
+        name: 'orders', dataSource: 'p.d.orders',
+        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const ser = serializeModel(model);
+    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: bqTarget},
+    ]);
+    expect(ser.warnings).toHaveLength(1);
+  });
+
+  // A non-string target is a target in no accepted form. It is written out as
+  // its JSON text, so a push of the reloaded file rejects it.
+  test('a vanilla GOOGLE block with a non-string target serializes it as its JSON text', () => {
+    const model: SemanticModel = {
+      name: 'sales',
+      version: '0.2.0.dev0',
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [7]}),
+      }],
+      entities: [{
+        name: 'orders', dataSource: 'p.d.orders',
+        authoredSource: 'bigquery:p.d.orders', keys: ['id'],
+        fields: [{name: 'id', expression: 'id'}],
+      }],
+      relationships: [],
+      metrics: [],
+    };
+    const ser = serializeModel(model);
+    expect(yaml.parse(ser.yaml).semantic_model[0].deployments).toEqual([
+      {name: 'default', target: '7'},
+    ]);
+    expect(ser.warnings).toEqual([]);
+  });
 });
 
 
@@ -113,7 +283,7 @@ describe('expression + datatype + dimension mapping', () => {
     const typed = model.entities.flatMap(e => e.fields).find(f => f.type);
     expect(typed).toBeDefined();
     const {yaml: text} = serializeModel(model);
-    const reloaded = loadModels(text).models[0];
+    const reloaded = loadModels(text, {allowLegacyBareSource: true}).models[0];
     const back = reloaded.entities.flatMap(e => e.fields)
                      .find(f => f.name === typed!.name)!;
     expect(back.type).toBe(typed!.type);
@@ -133,7 +303,9 @@ describe('expression + datatype + dimension mapping', () => {
     const fieldDoc = doc.semantic_model[0].entities[0].fields[0];
     expect(fieldDoc.dimension).toEqual({});
     // And it reloads back to a dimension field.
-    const reloaded = loadModels(serializeModel(model).yaml).models[0];
+    const reloaded =
+        loadModels(serializeModel(model).yaml, {allowLegacyBareSource: true})
+            .models[0];
     expect(reloaded.entities[0].fields[0].dimension).toEqual({});
   });
 
@@ -181,7 +353,9 @@ describe('expression + datatype + dimension mapping', () => {
         (modelDocument(model) as any).semantic_model[0].metrics[0];
     expect(metricDoc).not.toHaveProperty('entity');
     // The loader re-derives it on reload.
-    const reloaded = loadModels(serializeModel(model).yaml).models[0];
+    const reloaded =
+        loadModels(serializeModel(model).yaml, {allowLegacyBareSource: true})
+            .models[0];
     expect(reloaded.metrics[0].entity).toBe('orders');
   });
 });
@@ -357,7 +531,11 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
            ];
            // Same load defaults as the KC e2e/pull goldens, so the OSI golden
            // and the pull golden are directly comparable.
-           const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
+           const LOAD = {
+             defaultProject: 'sqlgen-testing',
+             defaultDataset: 'demo',
+             allowLegacyBareSource: true,
+           };
            const osiGoldenPath = (fixture: string) =>
                path.join(FIXTURES, fixture.replace(/\.yaml$/, '.osi.golden.yaml'));
 

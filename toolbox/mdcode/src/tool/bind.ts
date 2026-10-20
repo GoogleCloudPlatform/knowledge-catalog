@@ -40,6 +40,8 @@ import {pullKnowledgeCatalog} from '../libts/semantic/pull_kc';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
+import {kcV2Aspects, sqlParserReady} from './commands';
+
 export interface BindOptions {
   /** The profile to write (default `bigquery`). */
   profile?: string|boolean;
@@ -138,7 +140,8 @@ async function scopeDocs(root: string, ctx: context.ApiContext, fromCatalog: boo
  * documents. Probes the annotation aspect types `kcmd init` provisioned and
  * hydrates them, as `kcmd pull` does: they make the read lossless (metric
  * expressions, verbatim relationship names, abstract relationships), and a
- * pull without them would bind a different model than the one pushed.
+ * pull without them would bind a different model than the one pushed. Reads
+ * the aspect fields `KC_V2_ASPECTS` selects, as `kcmd pull` does.
  */
 export async function pullModelDocs(
     catalog: dataplex.CatalogClient,
@@ -150,6 +153,7 @@ export async function pullModelDocs(
     entryGroup: source.entryGroup,
     customAspects:
         await provisionedCustomAspects(catalog, {project: source.project}),
+    v2Aspects: kcV2Aspects(),
   });
   return {
     docs: pulled.models.map(m => ({
@@ -203,6 +207,9 @@ export async function bind(options: BindOptions = {}): Promise<number> {
     console.error(`Error: ${labels.error}.`);
     return 1;
   }
+  // Every model document is loaded below, and the loader reads each
+  // expression with the SQL parser.
+  if (!await sqlParserReady()) return 1;
   const root = options.cwd ?? '.';
   const location = options.location ?? 'US';
   const ctx = apiContext();

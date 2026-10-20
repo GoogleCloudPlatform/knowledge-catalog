@@ -37,8 +37,6 @@ semantic_model:
         extends:
           - BusinessObject
         abstract: true
-        unique_keys:
-          - - unitName
         description: "A unit the enterprise uses to organize sales and delivery:
           territories and service lines."
         ai_context:
