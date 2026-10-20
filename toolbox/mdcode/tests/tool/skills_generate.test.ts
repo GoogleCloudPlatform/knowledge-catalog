@@ -505,7 +505,8 @@ semantic_model:
                 ],
                 [
                   '{not-json',
-                  "Error: Semantic model load error: model 'commerce': the " +
+                  "Error: Model document 'commerce': Semantic model load " +
+                      "error: model 'commerce': the " +
                       "'data' of a GOOGLE custom_extensions block must be a " +
                       'JSON object.',
                 ],

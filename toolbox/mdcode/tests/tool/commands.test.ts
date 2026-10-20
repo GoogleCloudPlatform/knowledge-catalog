@@ -2575,10 +2575,10 @@ semantic_model:
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
     expect(await profiles({printStore: true})).toBe(1);
-    expect(messages(errorSpy)).toBe(`Error: ${error}`);
+    expect(messages(errorSpy)).toBe(`Error: Model document 'commerce': ${error}`);
     errorSpy.mockClear();
     expect(await skillsGenerate({out: 'skills'})).toBe(1);
-    expect(messages(errorSpy)).toBe(`Error: ${error}`);
+    expect(messages(errorSpy)).toBe(`Error: Model document 'commerce': ${error}`);
   });
 
   // The runtime reads every model's profiles before it applies one, as push
@@ -2642,12 +2642,13 @@ semantic_model:
     });
   }
 
-  // A model file with a YAML error elsewhere in it. The load rejects it.
+  // A model file with a YAML error ahead of its GOOGLE block. The load
+  // rejects it.
   const yamlErrors = [
-    ['sets a key twice', '        description: a\n        description: b\n',
+    ['sets a key twice', '    description: a\n    description: b\n',
      'Map keys must be unique'],
-    ['has a YAML syntax error', '        description: [x\n', 'could not parse input'],
-    ['has an alias whose anchor is not set', '        description: *nope\n',
+    ['has a YAML syntax error', '    description: [x\n', 'could not parse input'],
+    ['has an alias whose anchor is not set', '    description: *nope\n',
      'Unresolved alias'],
   ];
   for (const [what, extra, problem] of yamlErrors) {
@@ -2655,7 +2656,7 @@ semantic_model:
       writeModel(prod(PROD_SOURCE));
       const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
       fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
-          '        primary_key: [key]\n', `        primary_key: [key]\n${extra}`));
+          '    custom_extensions:\n', `${extra}    custom_extensions:\n`));
     };
 
     // As a profile file is found beside a model file the load rejects.
@@ -2692,7 +2693,7 @@ semantic_model:
     writeModel(JSON.stringify({...JSON.parse(prod(PROD_SOURCE)), bogus: 1}));
     const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
-        '        primary_key: [key]\n', '        primary_key: [key]\n        description: [x\n'));
+        '    custom_extensions:\n', '    description: [x\n    custom_extensions:\n'));
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
     expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);

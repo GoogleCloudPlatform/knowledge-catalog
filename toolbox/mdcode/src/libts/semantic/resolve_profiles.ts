@@ -1181,16 +1181,24 @@ export type DeclaredProfile = {name: string; text: string}|
  * The profiles the model document `doc` declares: `files`, its profile files,
  * then the profiles a vanilla model carries in its GOOGLE block, by name, as
  * the layout orders profile files. Push, `kcmd profiles` and the runtime all
- * read them here, so they agree. Throws SemanticModelError when
- * googleBlockProfiles does, such as on block profiles a load rejects.
+ * read them here, so they agree. Throws SemanticModelError, naming the
+ * document as a load does, when googleBlockProfiles throws, such as on block
+ * profiles a load rejects.
  */
 export function declaredProfiles(
-    doc: {text: string},
+    doc: {name: string; text: string},
     files: Array<{name: string; text: string}>): DeclaredProfile[] {
+  let blockProfiles: ProfileSpec[];
+  try {
+    blockProfiles = googleBlockProfiles(doc.text);
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    throw new SemanticModelError(
+        `Model document '${doc.name}': ${err.message}`);
+  }
   return [
     ...files,
-    ...googleBlockProfiles(doc.text)
-        .map(spec => ({name: spec.name, spec}))
+    ...blockProfiles.map(spec => ({name: spec.name, spec}))
         .sort((a, b) => a.name.localeCompare(b.name)),
   ];
 }

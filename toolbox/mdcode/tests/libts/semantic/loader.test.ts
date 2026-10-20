@@ -2376,13 +2376,78 @@ ${model}`;
     });
 
     // The yaml library expands at most 100 aliases.
-    test('gives no profiles, and does not throw, for text with more aliases than a load expands', () => {
+    // A Google-flavor model gives no profiles, so its profile files stay listed.
+    test('reports the YAML error for a vanilla model with more aliases than a load expands', () => {
       for (const version of [VANILLA, GOOGLE]) {
         const text = `version: "${version}"\nx: &a 1\nys:\n${'  - *a\n'.repeat(101)}` +
           `semantic_model:\n${section(PROD_BLOCK)}`;
         expect(() => loadModels(text)).toThrow('could not parse input: Excessive alias count');
-        expect(googleBlockProfiles(text)).toEqual([]);
+        if (version === VANILLA) {
+          expect(() => googleBlockProfiles(text)).toThrow(
+            'Semantic model load error: could not parse input: Excessive alias count');
+        } else {
+          expect(googleBlockProfiles(text)).toEqual([]);
+        }
       }
+    });
+
+    // A YAML error other than a key set twice can move custom_extensions out
+    // of the model, or cut it short where it ends.
+    test('reports the YAML error when an error may move or cut the blocks', () => {
+      const head = `version: "${VANILLA}"\nsemantic_model:\n  - name: m\n`;
+      const exts = `    custom_extensions:\n${PROD_BLOCK}`;
+      const acme = '    custom_extensions:\n      - vendor_name: ACME\n        data: x\n';
+      for (const [broken, fixed] of [
+        [head + '   description: x\n' + exts, head + '    description: x\n' + exts],
+        [head + '    label: y\n     description: x\n' + exts, head + '    label: y\n    description: x\n' + exts],
+        [head + '\tdescription: x\n' + exts, head + '    description: x\n' + exts],
+        [head + '    description: x\n    oops\n' + exts, head + '    description: x\n' + exts],
+        [head + '    description: |\n  bad\n' + exts, head + '    description: |\n      bad\n' + exts],
+        [head + exts.replace('custom_extensions:\n', 'custom_extensions:'), head + exts],
+        [head + '    custom_extensions:\n      - vendor_name: ACME\n\t        data: x\n' + PROD_BLOCK,
+          head + '    custom_extensions:\n      - vendor_name: ACME\n        data: x\n' + PROD_BLOCK],
+        [head + acme.replace('        data', '    \t    data') + PROD_BLOCK, head + acme + PROD_BLOCK],
+        [head + acme + "    '" + PROD_BLOCK.slice(4), head + acme + PROD_BLOCK],
+        [head + acme.replace('      - vendor_name: ACME', '  - vendor_name: ACME') + PROD_BLOCK, head + acme + PROD_BLOCK],
+        [head + exts + '    description: [x\n', head + exts + '    description: x\n'],
+      ]) {
+        expect(names(fixed)).toEqual(['prod']);
+        expect(() => loadModels(broken)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(broken)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // A key set twice, or an alias whose anchor is not set, cannot cut the
+    // blocks short, so it does not hide them wherever it is.
+    test('finds the profile past a key set twice or an unset alias after the blocks', () => {
+      const text = (extra: string) =>
+        `version: "${VANILLA}"\nsemantic_model:\n  - name: m\n    custom_extensions:\n${PROD_BLOCK}${extra}`;
+      for (const extra of ['    description: a\n    description: b\n', '    description: *nope\n']) {
+        expect(() => loadModels(text(extra))).toThrow('could not parse input');
+        expect(names(text(extra))).toEqual(['prod']);
+      }
+    });
+
+    // The last version holds, as when the text is turned into values.
+    test('reads the last version of a document with more aliases than a load expands', () => {
+      const aliases = `x: &a 1\nys:\n${'  - *a\n'.repeat(101)}`;
+      const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
+      for (const head of [`version: "${GOOGLE}"\nversion: "${VANILLA}"\n`, `v: &v "${VANILLA}"\nversion: *v\n`]) {
+        expect(() => googleBlockProfiles(head + aliases + rest)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+      expect(googleBlockProfiles(`version: "${VANILLA}"\nversion: "${GOOGLE}"\n${aliases}${rest}`)).toEqual([]);
+    });
+
+    // Which version holds is not known. With the Google flavor last, the
+    // document reads as a Google-flavor model, as the layout reads it.
+    test('reports the YAML error for a version set twice, the vanilla one last', () => {
+      const text = (first: string, last: string) =>
+        `version: "${first}"\nversion: "${last}"\nsemantic_model:\n${section(PROD_BLOCK)}`;
+      expect(() => googleBlockProfiles(text(GOOGLE, VANILLA))).toThrow(
+        'Semantic model load error: could not parse input: Map keys must be unique');
+      expect(googleBlockProfiles(text(VANILLA, GOOGLE))).toEqual([]);
     });
 
     test('reports the YAML error when the profiles are an alias whose anchor is not set', () => {
