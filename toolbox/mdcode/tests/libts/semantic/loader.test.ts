@@ -2495,6 +2495,19 @@ ${model}`;
           `version: "${VANILLA}"\nlabel: ""\nx: ""\n${rest}`],
         [`version: "${VANILLA} # "\nlabel: "\n${rest}`,
           `version: "${VANILLA}" # "\nlabel: ""\n${rest}`],
+        // A quote closed too early on the version, with the rest of the version
+        // on the next line, indented or not.
+        [`version: "0.2.0"\n  .dev0"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
+        [`version: '0.2.0'\n.dev0'\n${rest}`, `version: '${VANILLA}'\n${rest}`],
+        // Another version on the next line, which a fix may keep.
+        [`version: "${GOOGLE}"\n  "${VANILLA}"\n${rest}`, `version:\n  "${VANILLA}"\n${rest}`],
+        // A YAML error on the version's line: a comment with no space before
+        // it, a lone carriage return, a bad escape and a reserved first
+        // character.
+        [`version: "${GOOGLE}"#"\n${rest}`, `version: "${VANILLA}" # /google"\n${rest}`],
+        [`version: "${GOOGLE}"\r"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
+        [`version: "${VANILLA}\\g"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
+        [`version: \`${VANILLA}\n${rest}`, `version: ${VANILLA}\n${rest}`],
         // A quote left open ahead of the version takes in a first version.
         [`label: "\n  version: '${VANILLA}'\n  note: "\nversion: "${GOOGLE}"\nx: "\n${rest}`,
           `label: ""\nversion: '${VANILLA}'\nnote: |\n  version: "${GOOGLE}"\n  x: "\n${rest}`],
@@ -2516,6 +2529,8 @@ ${model}`;
         `meta:\nversion: "${GOOGLE}"\n${rest}   version: "${VANILLA}"\n`,
         `version: "${GOOGLE}"\nlabel: [{x: 1}"version": "${VANILLA}"\n${rest}`,
         `meta:\nversion: "${GOOGLE}"\n${rest}   ? version # comment\n   : "${VANILLA}"\n`,
+        // A second version written with an escape.
+        `version: "${GOOGLE}"\n${rest}   "ver\\x73ion": "${VANILLA}"\n`,
       ]) {
         expect(() => loadModels(text)).toThrow('could not parse input');
         expect(() => googleBlockProfiles(text)).toThrow(

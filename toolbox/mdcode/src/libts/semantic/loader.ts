@@ -1467,9 +1467,10 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  * root keys are all strings, and that sets `version` once, to a string other
  * than the vanilla one, gives none when each YAML error is a key set twice.
  * Past any other YAML error, it gives none only when the first line that is
- * not blank or a comment sets that version alone, and the text holds the word
- * `version` nowhere else, since such an error can change the version or hide
- * a second one. Otherwise its profiles are read as in
+ * not blank or a comment sets that version alone, no such error falls from
+ * that line to the start of the next root key, and the text holds the word
+ * `version` nowhere else and no backslash, since such an error can change the
+ * version or hide a second one. Otherwise its profiles are read as in
  * text that parses, and only when that reading is unambiguous. Each YAML error
  * is a key set twice or an alias whose anchor is not set, since any other
  * error, such as a bad indent, can move the blocks, cut them short or change
@@ -1571,9 +1572,10 @@ function googleBlockProfilesPastYamlError(
  * it. Valid YAML gives its version. Past a YAML error, the version is read
  * only when every root key is a string, and the root sets `version` once, to a
  * string. Past an error other than a key set twice, the first line that is not
- * blank or a comment must also set that version alone, and the text may hold
- * the word `version` nowhere else. Undefined otherwise, and when the text sets
- * no string version.
+ * blank or a comment must also set that version alone, no such error may fall
+ * from that line to the start of the next root key, and the text may hold the
+ * word `version` nowhere else and no backslash. Undefined otherwise, and when
+ * the text sets no string version.
  */
 export function modelDocumentVersion(text: string): string|undefined {
   let doc: unknown;
@@ -1619,7 +1621,11 @@ const FIRST_LINE_VERSION = new RegExp(
 // version or hide a second one, from before the version, on its line or after
 // it. The version is then read only when the first line that is not blank or
 // a comment sets it alone, and the text holds the word `version` nowhere else.
-// Undefined otherwise.
+// No error may fall from that line to the start of the next root key, since
+// the lines between may hold the rest of a version whose quote closes too
+// early, as in `version: "0.2.0"` followed by `  .dev0"`. The text may hold no
+// backslash, since a double-quoted key can spell `version` with an escape, as
+// in `"ver\x73ion"`. Undefined otherwise.
 function versionPastYamlError(
     text: string, parsed: yaml.Document.Parsed,
     errors: yaml.YAMLError[]): string|undefined {
@@ -1630,8 +1636,13 @@ function versionPastYamlError(
   if (errors.every(err => err.code === 'DUPLICATE_KEY')) return version.value;
   const first = FIRST_LINE_VERSION.exec(text);
   const written = first && (first[1] ?? first[2] ?? first[3]);
+  // Where the next root key starts.
+  const pairs = (parsed.contents as yaml.YAMLMap).items;
+  const next = pairs[pairs.findIndex(p => p.value === version) + 1];
+  const nextKey = yaml.isNode(next?.key) ? next.key.range?.[0] : undefined;
   if (first?.index !== 0 || written !== version.value ||
-      text.split('version').length !== 2) {
+      errors.some(err => err.pos[0] <= (nextKey ?? Infinity)) ||
+      text.split('version').length !== 2 || text.includes('\\')) {
     return undefined;
   }
   return version.value;

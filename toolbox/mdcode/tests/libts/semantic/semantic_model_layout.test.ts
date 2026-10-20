@@ -370,6 +370,13 @@ describe('SemanticModelLayout profile file rules', () => {
       // left open ahead of it.
       '{version: "0.2.0.dev0", /google, label: "\nsemantic_model: [{name: retail}]}\n',
       'label: "\n  version: \'0.2.0.dev0/google\'\n  note: "\nversion: "0.2.0.dev0"\nx: "\n' + rest,
+      // A quote closed too early on the version, with the rest of the version
+      // on a line after it, after a `#` with no space before it, or after a
+      // lone carriage return.
+      'version: "0.2.0.dev0"\n  /google"\n' + rest,
+      'version: "0.2.0.dev0"\n\n/google"\n' + rest,
+      'version: "0.2.0.dev0"#/google"\n' + rest,
+      'version: "0.2.0.dev0"\r/google"\n' + rest,
     ]) {
       writeToGroup('retail.yaml', text);
       expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
