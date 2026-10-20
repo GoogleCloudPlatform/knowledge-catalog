@@ -1996,8 +1996,8 @@ export function validateProfileCompleteness(
     opts: CompletenessOptions = {}): string[] {
   const applied = !!opts.applied;
   const errors: string[] = [];
-  // "field 'Entity.field'" or "metric 'name'", for each expression the parser
-  // cannot read, reported once.
+  // Each field or metric whose SQL the parser cannot read, reported once, by
+  // the label fieldLabel or metricLabel gives it.
   const unreadable = new Set<string>();
   const at = `profile '${profile.name}'`;
   // What a profile file could not say, for a profile built in memory, and
@@ -2100,7 +2100,7 @@ export function validateProfileCompleteness(
         const columns = columnReferences(
             text, written === 'ANSI_SQL' && dialect ? dialect : written);
         if (!columns) {
-          unreadable.add(`field '${pe.name}.${pf.name}'`);
+          unreadable.add(fieldLabel(pe.name, pf.name));
           continue;
         }
         for (const other of others) {
@@ -2301,8 +2301,8 @@ export function validateProfileCompleteness(
         if (columns) {
           read.push(columns);
         } else {
-          unreadable.add(`metric '${m.name}'`);
-          noteUnread(`metric '${m.name}'`, m, text);
+          unreadable.add(metricLabel(m.name));
+          noteUnread(metricLabel(m.name), m, text);
         }
       }
       const reached = [...excluded, ...dangling.keys()].filter(target => {
@@ -2319,12 +2319,15 @@ export function validateProfileCompleteness(
   }
   // The fields this profile binds, whose SQL the profile writes.
   const own = new Set(profile.entities.flatMap(
-      pe => (pe.fields ?? []).map(pf => `field '${pe.name}.${pf.name}'`)));
+      pe => (pe.fields ?? []).map(pf => fieldLabel(pe.name, pf.name))));
   // Whether the caller warns itself about this model file SQL.
   const caller = opts.ownSqlOnly;
   const callerWarns = (what: string) => !!caller &&
       (caller.dialect === dialect || !readOtherwise.has(what)) &&
-      !(caller.rebound ?? []).some(f => what === `field '${f}'`);
+      !(caller.rebound ?? []).some(f => {
+        const dot = f.indexOf('.');
+        return what === fieldLabel(f.slice(0, dot), f.slice(dot + 1));
+      });
   for (const what of unreadable) {
     if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
       continue;
@@ -2512,6 +2515,17 @@ export function inheritanceErrorOf(model: SemanticModel): string|undefined {
   }
 }
 
+// How a warning names a field, "field 'Entity.field'". The checks that skip a
+// warning compare these labels, so each label comes from here.
+function fieldLabel(entity: string, field: string): string {
+  return `field '${entity}.${field}'`;
+}
+
+// How a warning names a metric, "metric 'name'".
+function metricLabel(name: string): string {
+  return `metric '${name}'`;
+}
+
 // The fields of its own entity that `field` reads on `entityName`, from the
 // texts `texts` picks for a profile of `dialect` (textsFor unless pruning
 // passes prunedTexts) as written. The declaration read is the one whose
@@ -2542,8 +2556,8 @@ function fieldDependencies(
     if (noSqlReason(text.text, text.dialect, name) !== undefined) continue;
     const columns = columnReferences(text.text, text.dialect);
     if (!columns) {
-      unreadable.add(`field '${name}.${field}'`);
-      onUnread?.(`field '${name}.${field}'`, bindingOn(name)!, text);
+      unreadable.add(fieldLabel(name, field));
+      onUnread?.(fieldLabel(name, field), bindingOn(name)!, text);
       continue;
     }
     for (const dep of fieldsReadOn(columns, name)) deps.add(dep);

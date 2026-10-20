@@ -1480,6 +1480,11 @@ describe('validateProfileCompleteness', () => {
     // the model file's text.
     expect(warned({dialect: 'ALLOYDB', rebound: ['Customer.code']}))
         .toEqual([unread]);
+    // A rebound field counts only by its exact entity and field names.
+    expect(warned({
+      dialect: 'ALLOYDB',
+      rebound: ['Customer.cod', 'Customer.code2', 'Order.code'],
+    })).toEqual([]);
   });
 });
 
