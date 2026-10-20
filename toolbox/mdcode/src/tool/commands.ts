@@ -869,7 +869,9 @@ export async function push(options: PushOptions): Promise<number> {
           for (const doc of layoutDocs) {
             // A profile file applies to the model file loaded on its own,
             // since its sources may all be in profile files.
-            const res = profileForDocument(doc, declared(doc), profileName);
+            const docProfiles = readDeclaredProfiles(declared, doc);
+            if (!docProfiles) return null;
+            const res = profileForDocument(doc, docProfiles, profileName);
             if (res.kind === 'missing') {
               if (skipMissing) continue;
               console.error(`Error: ${

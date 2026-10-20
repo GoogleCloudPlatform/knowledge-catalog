@@ -2595,6 +2595,19 @@ semantic_model:
     });
   }
 
+  // A --no-profile push builds the catalog's view of the model under
+  // default_profile, so it reads the block profiles too.
+  test('a --no-profile push under default_profile stops with exit 1 on a GOOGLE block that does not load', async () => {
+    writeModel('[]', 'default_profile: prod\n');
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+    expect(await push({validateOnly: true, profile: false})).toBe(1);
+    expect(messages(errorSpy)).toBe(
+        "Error: Model document 'commerce': Semantic model load error: " +
+        "model 'commerce': the 'data' of a GOOGLE custom_extensions block " +
+        'must be a JSON object.');
+  });
+
   // Push reads the GOOGLE block before the load under every profile. Beside a
   // third-party block that fails the load, the runtime names the same problem.
   test('a GOOGLE block that does not load stops the runtime with the error push gives', async () => {
