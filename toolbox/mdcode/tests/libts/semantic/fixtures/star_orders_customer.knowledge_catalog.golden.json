@@ -204,7 +204,5 @@
       }
     }
   ],
-  "warnings": [
-    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
-  ]
+  "warnings": []
 }

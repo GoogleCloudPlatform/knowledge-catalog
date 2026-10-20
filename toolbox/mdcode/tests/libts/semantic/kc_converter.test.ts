@@ -266,7 +266,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
       });
 
   test(
-      'a relationship name comes back normalized (lowercased/hyphenated)',
+      'a relationship name comes back lowercased, with its underscores',
       () => {
         const model: SemanticModel = {
           name: 'sales',
@@ -280,7 +280,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
           metrics: [],
         };
         expect(roundTrip(model).models[0].relationships[0].name)
-            .toBe('places-order');
+            .toBe('places_order');
       });
 
   test('a many-to-many (association) relationship is not recovered', () => {
@@ -402,7 +402,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
             metrics: [],
           };
           expect(roundTrip(model).models[0].relationships[0].name)
-              .toBe('rel-one');
+              .toBe('rel_one');
         }
       });
 

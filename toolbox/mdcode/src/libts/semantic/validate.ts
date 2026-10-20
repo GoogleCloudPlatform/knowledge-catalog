@@ -15,9 +15,10 @@ import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfileExclusions, expressionSources, ProfileExclusion, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, expressionSources, ProfileExclusion, reservedProfileNameError, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -55,6 +56,7 @@ export function validatePushRequirements(
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
+    errors.push(...nameAndDescriptionErrors(model, document));
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
     try {
       // One pass over the model's GOOGLE extension(s): both checks below read
@@ -180,6 +182,50 @@ export function validatePushRequirements(
     // Constraints are logical invariants, target-independent like actions.
     errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
   }
+  return errors;
+}
+
+// Each name in `model` that breaks its kind's pattern or length limit, and each
+// description too long for the Knowledge Catalog entry that stores it. The
+// loader checks names too; this check is for a model built in memory and a
+// profile that reaches `model.profiles` some other way. Description limits are
+// checked at push only.
+function nameAndDescriptionErrors(
+    model: SemanticModel, document: string): string[] {
+  const at = `model '${model.name}' (${document})`;
+  const errors: string[] = [];
+  const check = (kind: NameKind, name: string) => {
+    const problem = nameProblem(kind, name);
+    if (problem) errors.push(`${at}: ${problem}`);
+  };
+  const tooLong = (what: string, description: string|undefined) => {
+    if (description !== undefined &&
+        description.length > MAX_ENTRY_DESCRIPTION) {
+      errors.push(
+          `${at}: the description of ${what} is ${
+              description.length} characters long; a Knowledge Catalog ` +
+          `entry's description holds at most ${MAX_ENTRY_DESCRIPTION}.`);
+    }
+  };
+  check('model', model.name);
+  tooLong(`model '${model.name}'`, model.description);
+  for (const e of model.entities ?? []) {
+    check('entity', e.name);
+    tooLong(`entity '${e.name}'`, e.description);
+    for (const f of e.fields ?? []) check('field', f.name);
+  }
+  for (const m of model.metrics ?? []) {
+    check('metric', m.name);
+    tooLong(`metric '${m.name}'`, m.description);
+  }
+  for (const r of model.relationships ?? []) {
+    check('relationship', r.name);
+    tooLong(`relationship '${r.name}'`, r.description);
+  }
+  for (const d of model.deployments ?? []) check('deployment', d.name);
+  for (const p of model.profiles ?? []) check('profile', p.name);
+  const reserved = reservedProfileNameError(document, model.profiles ?? []);
+  if (reserved) errors.push(reserved);
   return errors;
 }
 

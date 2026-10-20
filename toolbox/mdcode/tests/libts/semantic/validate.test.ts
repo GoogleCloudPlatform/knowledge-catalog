@@ -2645,3 +2645,98 @@ ${extraMetric}`;
     });
   });
 });
+
+
+// Push checks names again, for a model built in memory and a profile that
+// reaches `model.profiles` without the loader, and is the only place the
+// description limit applies.
+describe('push checks names and description lengths', () => {
+  const withNames = (over: Partial<SemanticModel> = {}) => model({
+    entities: [{
+      name: 'orders', dataSource: 'p.d.o', keys: ['id'],
+      fields: [{name: 'id', expression: 'id'}],
+    }],
+    ...over,
+  });
+  const errorsOf = (m: SemanticModel) =>
+      validatePushRequirements([loaded(m)], {targetOptional: true});
+
+  test('a valid model passes', () => {
+    expect(errorsOf(withNames())).toEqual([]);
+  });
+
+  test('each name a model built in memory carries is checked', () => {
+    const m = withNames({
+      name: 'sales/orders',
+      entities: [{
+        name: 'my-entity', dataSource: 'p.d.o', keys: ['id'],
+        fields: [{name: 'order date', expression: 'id'}],
+      }],
+      metrics: [{name: '2024_orders', expression: 'COUNT(*)'} as Metric],
+      relationships: [{
+        name: 'placed-by', source: {entity: 'my-entity', columns: []},
+        destination: {entity: 'my-entity', columns: []},
+      }],
+      deployments: [{name: 'prod,us', target: BQ_TARGET}],
+      profiles: [{name: 'eu west', entities: [], relationships: []}],
+    });
+    const errors = errorsOf(m).join('\n');
+    for (const message of [
+           "model 'sales/orders' (doc): Model name 'sales/orders' is not valid",
+           "Entity name 'my-entity' is not valid",
+           "Field name 'order date' is not valid",
+           "Metric name '2024_orders' is not valid",
+           "Relationship name 'placed-by' is not valid",
+           "Deployment name 'prod,us' is not valid",
+           "Profile name 'eu west' is not valid",
+         ]) {
+      expect(errors).toContain(message);
+    }
+  });
+
+  test('a profile may not be named default, in any case', () => {
+    for (const name of ['default', 'Default', 'DEFAULT']) {
+      expect(errorsOf(withNames({profiles: [{name, entities: [], relationships: []}]})))
+          .toEqual([
+            `[doc] a binding profile may not be named 'default' -- that name ` +
+            `refers to the model's inline bindings. Rename the profile.`,
+          ]);
+    }
+    expect(errorsOf(withNames({
+      profiles: [{name: 'default_eu', entities: [], relationships: []}],
+    }))).toEqual([]);
+  });
+
+  test('a description may have 2,000 characters on the model, an entity, a metric or a relationship', () => {
+    const described = (length: number) => withNames({
+      description: 'm'.repeat(length),
+      entities: [{
+        name: 'orders', dataSource: 'p.d.o', keys: ['id'],
+        fields: [{name: 'id', expression: 'id', description: 'f'.repeat(length)}],
+        description: 'e'.repeat(length),
+      }],
+      metrics: [{
+        name: 'order_count', expression: 'COUNT(orders.id)', entity: 'orders',
+        description: 'x'.repeat(length),
+      } as Metric],
+      relationships: [{
+        name: 'self_ref', source: {entity: 'orders', columns: ['id']},
+        destination: {entity: 'orders', columns: ['id']},
+        description: 'r'.repeat(length),
+      }],
+    });
+    expect(errorsOf(described(2000))).toEqual([]);
+    const errors = errorsOf(described(2001));
+    for (const what of [
+           "model 'm'", "entity 'orders'", "metric 'order_count'",
+           "relationship 'self_ref'",
+         ]) {
+      expect(errors).toContain(
+          `model 'm' (doc): the description of ${what} is 2001 characters ` +
+          `long; a Knowledge Catalog entry's description holds at most 2000.`);
+    }
+    // A field's description is not stored as an entry's description, so it
+    // has no limit.
+    expect(errors).toHaveLength(4);
+  });
+});

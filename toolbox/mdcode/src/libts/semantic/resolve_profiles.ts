@@ -49,11 +49,6 @@ import {YAML_OPTIONS} from './yaml_options';
 // authored -- so a bare `kcmd push` behaves as it always has.
 export const DEFAULT_PROFILE = 'default';
 
-// A profile name: a letter, then letters, digits, underscores and hyphens, at
-// most 500 characters. A profile name never appears in SQL, so a hyphen is
-// safe.
-export const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,499}$/;
-
 export interface MergeResult {
   // The merged authoring document (still in the sugared form), ready to feed
   // through the normal loader.

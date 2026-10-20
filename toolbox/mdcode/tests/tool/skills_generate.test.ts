@@ -200,7 +200,7 @@ describe('kcmd skills-generate: two models, one name', () => {
     // A skill name is a lossy form of a model name. Writing both would leave
     // the second on disk and the first gone, with two "Wrote ..." lines and an
     // exit code of 0 saying otherwise.
-    writeModel('a.yaml', modelText('Sales Orders', 'PlaceOrder'));
+    writeModel('a.yaml', modelText('sales-orders', 'PlaceOrder'));
     writeModel('b.yaml', modelText('sales_orders', 'CancelOrder'));
     const code = await skillsGenerate({out: 'skills'});
     expect(code).toBe(1);

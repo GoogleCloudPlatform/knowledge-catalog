@@ -15,7 +15,7 @@ import * as yaml from 'yaml';
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
 import {modelDocumentVersion} from '../semantic/loader';
-import {PROFILE_NAME} from '../semantic/resolve_profiles';
+import {nameProblem} from '../semantic/names';
 import {YAML_OPTIONS} from '../semantic/yaml_options';
 
 // Sidecar suffixes that are NOT model documents.
@@ -144,7 +144,7 @@ export class SemanticModelLayout implements CatalogLayout {
   localProfileFiles(model: string): {path: string; profileName?: string}[] {
     return [
       ...this._siblingProfilePaths(model)
-          .filter(p => PROFILE_NAME.test(p.name))
+          .filter(p => !nameProblem('profile', p.name))
           .map(p => ({path: p.path, profileName: p.name})),
       ...this._legacyProfilePaths(model).map(p => ({path: p.path})),
     ];
@@ -177,7 +177,8 @@ export class SemanticModelLayout implements CatalogLayout {
         fs.readdirSync(this._groupDir()).find(f => {
           if (!f.startsWith(prefix) || !f.endsWith('.yaml')) return false;
           const n = f.slice(prefix.length, -'.yaml'.length);
-          return f !== `${model}.profile.yaml` && !PROFILE_NAME.test(n);
+          return f !== `${model}.profile.yaml` &&
+              nameProblem('profile', n) !== undefined;
         }) :
         undefined;
     if (badName) {
@@ -196,6 +197,9 @@ export class SemanticModelLayout implements CatalogLayout {
     const modelFile = `${model}.yaml`;
     const header = this._modelHeader(model);
     if (header.name !== undefined && header.name !== model) {
+      // A name the loader rejects cannot name the files either.
+      const problem = nameProblem('model', header.name);
+      if (problem) throw new Error(`Model file '${modelFile}': ${problem}`);
       throw new Error(
           `Profile file '${path.basename(siblings[0].path)}' is named after ` +
           `'${modelFile}', which declares model '${header.name}'; a profile ` +
@@ -266,7 +270,7 @@ export class SemanticModelLayout implements CatalogLayout {
     if (/[\\/]/.test(model)) {
       throw new Error(`Model name '${model}' is not valid in a file name.`);
     }
-    if (!PROFILE_NAME.test(profileName)) {
+    if (nameProblem('profile', profileName)) {
       throw new Error(
           `Profile name '${profileName}' is not valid; a profile name is a ` +
           `letter, then letters, digits, underscores or hyphens.`);

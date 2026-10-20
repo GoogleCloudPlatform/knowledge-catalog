@@ -30,7 +30,7 @@ semantic_model:
           - name: c_name
             description: Customer name
     relationships:
-      - name: orders-to-customer
+      - name: orders_to_customer
         from: orders
         to: customer
         from_columns:

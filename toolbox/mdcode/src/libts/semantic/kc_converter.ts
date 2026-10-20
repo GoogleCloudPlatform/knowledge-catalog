@@ -50,8 +50,8 @@
 // back un-typed: the metric aspect persists only `dataType` (both collapse to
 // `STRING`, with no metadataType to disambiguate), so -- as with a plain STRING
 // field -- the reader leaves it un-typed rather than guess. Relationship NAMES
-// come back normalized (lowercased/hyphenated), since the emitter encodes the
-// name only in the link id (via `linkSlug`), not in the join aspect.
+// come back lowercased, since the emitter encodes the name only in the link id
+// (via `linkSlug`), not in the join aspect.
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
@@ -567,17 +567,17 @@ export function linkDedupKey(link: EntryLink): string {
 
 
 // Best-effort recovery of the relationship name from the link id, which the
-// emitter built as linkSlug(`<model>-<name>`) (lowercased/hyphenated -- see
-// knowledge_catalog.ts). Strips the model prefix when present; the name comes
-// back normalized, never verbatim.
+// emitter built as linkSlug(`<model>-<name>`) (lowercased, with each underscore
+// turned into a hyphen -- see knowledge_catalog.ts). Strips the model prefix
+// when present. A relationship name has no hyphen, so each hyphen left is read
+// back as an underscore; the name comes back lowercased.
 function relationshipName(
     linkName: string|undefined, modelPrefix: string): string {
   const id = idOf(linkName ?? '');
-  if (modelPrefix && id.startsWith(`${modelPrefix}-`)) {
-    const rest = id.slice(modelPrefix.length + 1);
-    if (rest) return rest;
-  }
-  return id;
+  const rest = modelPrefix && id.startsWith(`${modelPrefix}-`) ?
+      id.slice(modelPrefix.length + 1) :
+      '';
+  return (rest || id).replace(/-/g, '_');
 }
 
 

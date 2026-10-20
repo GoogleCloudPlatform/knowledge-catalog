@@ -326,7 +326,6 @@
   ],
   "warnings": [
     "model 'sales': 1 action(s) published as semantic-action entries (Knowledge Catalog is the only system an action reaches).",
-    "model 'sales': 5 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches).",
-    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
+    "model 'sales': 5 constraint(s) published as semantic-constraint entries (Knowledge Catalog is the only system a constraint reaches)."
   ]
 }

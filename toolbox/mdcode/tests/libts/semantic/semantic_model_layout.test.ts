@@ -337,6 +337,16 @@ describe('SemanticModelLayout profile file rules', () => {
     expect(l.profileDocuments('other')).toEqual([]);
   });
 
+  test('a model name the loader rejects is reported before the file names', async () => {
+    // Naming the files after 'Sales Orders' could not work, so the name is the
+    // first thing to fix.
+    writeToGroup('sales.yaml', MODEL("'Sales Orders'"));
+    writeToGroup('sales.profile.prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('sales'))
+        .toThrow("Model file 'sales.yaml': Model name 'Sales Orders' is not valid");
+  });
+
   // A YAML error can change the name the text seems to declare. The load
   // reports the error.
   test('the model name is not checked in a model file that is not valid YAML', async () => {

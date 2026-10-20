@@ -1025,3 +1025,33 @@ describe('the owl import handler wires --compact through to the serializer', () 
     expect(yaml.parse(compact)).toEqual(yaml.parse(block));
   });
 });
+
+
+describe('the owl import handler writes only a model that loads', () => {
+  // The model name comes from the file name and the other names from the
+  // ontology, so either can produce a name the loader rejects. The import
+  // stops there rather than writing a file every other command refuses.
+  test('a file name that is not a valid model name is refused', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owl-names-'));
+    const src = path.join(dir, 'retail.v2.ttl');
+    fs.writeFileSync(src, readFixture('sales.owl.ttl'));
+    const out = path.join(dir, 'out.yaml');
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+    try {
+      expect(await owl('import', src, {out})).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(fs.existsSync(out)).toBe(false);
+    expect(errors.join('\n')).toContain(
+        `'${src}' converts to a model that does not load`);
+    expect(errors.join('\n')).toContain("Model name 'retail.v2' is not valid");
+
+    // The same ontology under a valid file name imports.
+    const ok = path.join(dir, 'retail_v2.ttl');
+    fs.writeFileSync(ok, readFixture('sales.owl.ttl'));
+    expect(await owl('import', ok, {out})).toBe(0);
+  });
+});

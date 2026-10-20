@@ -3516,7 +3516,7 @@ describe('deployments and inline profiles', () => {
         { name: '', target: BQ_TARGET },
       ],
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
-    })).toThrow('Too small: expected string to have >=1 characters');
+    })).toThrow("Deployment name '' is not valid");
 
     expect(() => load(GOOGLE, {
       name: 'sales',
@@ -3675,4 +3675,85 @@ ${extra}    ${key}:
       expect(res.error).toContain(message);
     });
   }
+});
+
+
+// Each name the loader reads is held to its kind's pattern (see names.ts and
+// names.test.ts for the rules themselves). These pin that every kind is
+// checked on load, with the scope named where the name alone does not say it.
+describe('names are checked on load', () => {
+  // A small model in which each name can be replaced.
+  const doc = (n: Partial<Record<
+      'model'|'entity'|'field'|'relationship'|'metric'|'deployment', string>> = {}) => ({
+    name: n.model ?? 'sales-analytics',
+    deployments: [{
+      name: n.deployment ?? 'prod-us',
+      target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+    }],
+    datasets: [
+      { name: n.entity ?? 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [
+          { name: 'id', expression: 'id' },
+          { name: n.field ?? '_customer_id', expression: 'customer_id' },
+        ] },
+      { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'], fields: [] },
+    ],
+    relationships: [{
+      name: n.relationship ?? 'orders_to_customers', from: n.entity ?? 'orders',
+      to: 'customers', from_columns: [n.field ?? '_customer_id'], to_columns: ['id'],
+    }],
+    metrics: [{ name: n.metric ?? 'order_count', expression: `COUNT(${n.entity ?? 'orders'}.id)` }],
+  });
+
+  test('valid names load, with a hyphen in the model and deployment names and a leading underscore in a field', () => {
+    expect(load(GOOGLE, doc()).models[0].name).toBe('sales-analytics');
+  });
+
+  test('each kind rejects a name that breaks its pattern', () => {
+    const cases: Array<[Parameters<typeof doc>[0], string]> = [
+      [{ model: 'sales/orders' }, "Model name 'sales/orders' is not valid"],
+      [{ entity: 'my-entity' }, "Entity name 'my-entity' is not valid"],
+      [{ field: 'order date' }, "dataset 'orders': Field name 'order date' is not valid"],
+      [{ relationship: 'placed-by' }, "Relationship name 'placed-by' is not valid"],
+      [{ metric: '2024_orders' }, "Metric name '2024_orders' is not valid"],
+      [{ deployment: 'prod,us' }, "model 'sales-analytics': Deployment name 'prod,us' is not valid"],
+    ];
+    for (const [names, message] of cases) {
+      expect(() => load(GOOGLE, doc(names))).toThrow(message);
+    }
+  });
+
+  test('a name over its length limit is rejected', () => {
+    expect(() => load(GOOGLE, doc({ entity: 'e'.repeat(501) })))
+        .toThrow('is 501 characters long; names may be at most 500 characters.');
+    expect(() => load(GOOGLE, doc({ field: 'f'.repeat(301) })))
+        .toThrow('is 301 characters long; names may be at most 300 characters.');
+    expect(load(GOOGLE, doc({ entity: 'e'.repeat(500), field: 'f'.repeat(300) })).models)
+        .toHaveLength(1);
+  });
+
+  test('a deployment name in a vanilla GOOGLE block is checked on load', () => {
+    const vanilla = {
+      name: 'sales',
+      custom_extensions: [{
+        vendor_name: 'GOOGLE',
+        data: JSON.stringify({deployments: [{
+          name: 'prod,us',
+          target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+        }]}),
+      }],
+      datasets: [{
+        name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [{name: 'id', expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}}],
+      }],
+    };
+    expect(() => load(VANILLA, vanilla))
+        .toThrow("model 'sales': Deployment name 'prod,us' is not valid");
+  });
+
+  test('a vanilla document is held to the same patterns', () => {
+    const vanilla = doc({ entity: 'my-entity' }) as any;
+    delete vanilla.deployments;
+    expect(() => load(VANILLA, vanilla)).toThrow("Entity name 'my-entity' is not valid");
+  });
 });

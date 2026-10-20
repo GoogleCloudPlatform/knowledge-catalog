@@ -13,8 +13,9 @@ import * as yaml from 'yaml';
 import * as z from 'zod';
 
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, PROFILE_NAME, ProfileExclusion, profileSpecOf, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
@@ -675,7 +676,7 @@ function rejectExpressionBody(
 
 const deploymentSchema =
     z.object({
-       name: z.string().min(1),
+       name: z.string(),
        target: z.string().trim().min(1),
        profile: z.string().min(1).optional(),
      }).strict();
@@ -1341,8 +1342,8 @@ function readGoogleBlocks(
 
 // Reads a GOOGLE block's `profiles`: a list of profiles, each read as a profile
 // file is. A name follows the rules the layout gives a profile file's name: it
-// matches PROFILE_NAME, it is not `default` in any letter case, and no two
-// names are equal ignoring case.
+// passes the profile rule in names.ts, it is not `default` in any letter case,
+// and no two names are equal ignoring case.
 function readBlockProfiles(
     value: unknown, error: (problem: string) => SemanticModelError,
     ctx: string): ProfileSpec[] {
@@ -1355,7 +1356,7 @@ function readBlockProfiles(
       throw error(
           `each profile in a ${block} must be a mapping with a 'name'.`);
     }
-    if (!PROFILE_NAME.test(p.name)) {
+    if (nameProblem('profile', p.name)) {
       throw error(
           `profile name '${p.name}' in a ${block} is not valid; a profile ` +
           `name is a letter followed by up to 499 letters, digits, ` +
@@ -2014,10 +2015,20 @@ function rejectDuplicateNames(
   }
 }
 
+// Rejects a name that breaks its kind's pattern or length limit (see
+// names.ts), naming the scope it is in when one is given.
+function rejectInvalidName(kind: NameKind, name: string, scope?: string): void {
+  const problem = nameProblem(kind, name);
+  if (problem) {
+    throw new SemanticModelError(scope ? `${scope}: ${problem}` : problem);
+  }
+}
+
 function convertModel(
     m: ModelDoc, version: FormatVersion, opts: LoadOptions,
     warnings: string[]): SemanticModel {
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
+  rejectInvalidName('model', m.name);
 
   const block = readGoogleBlocks(
       m.custom_extensions, version, 'model', `model '${m.name}'`);
@@ -2109,6 +2120,9 @@ function convertModel(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
 
   const deploymentDocs = m.deployments ?? block.values.deployments ?? [];
+  for (const d of deploymentDocs) {
+    rejectInvalidName('deployment', d.name, `model '${m.name}'`);
+  }
   const deployments = deploymentDocs.map(d => ({
     name: d.name,
     target: d.target,
@@ -2169,6 +2183,7 @@ function convertDataset(
     ds: DatasetDoc, block: ReturnType<typeof readGoogleBlocks>,
     version: FormatVersion, opts: LoadOptions, warnings: string[],
     dialect: string): Entity {
+  rejectInvalidName('entity', ds.name);
   const ctxLabel = `dataset '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
@@ -2340,6 +2355,7 @@ export function parseFieldBinding(
 function convertField(
     f: FieldDoc, entityName: string, version: FormatVersion,
     warnings: string[], dialect: string): Field {
+  rejectInvalidName('field', f.name, `dataset '${entityName}'`);
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
@@ -2388,6 +2404,7 @@ function convertField(
 function convertRelationship(
     r: RelationshipDoc, version: FormatVersion,
     entityNames: Set<string>): Relationship {
+  rejectInvalidName('relationship', r.name);
   const ctx = `relationship '${r.name}'`;
   rejectVanillaRelationshipDescription(r, version);
   if (!entityNames.has(r.from)) {
@@ -2424,6 +2441,7 @@ function convertRelationship(
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entityNames: string[],
     warnings: string[], dialect: string, impliedDialect?: string): Metric {
+  rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
   const block = readGoogleBlocks(mt.custom_extensions, version, 'metric', ctx);
   // The anchor the author wrote, natively or in a vanilla GOOGLE block.

@@ -93,8 +93,8 @@ export class Namer {
    * V1 sanitizes `model.name` with `slug()` because `model.name` may contain
    * characters (e.g. spaces) that Knowledge Catalog disallows in entry IDs.
    * V2 returns `model.name` verbatim because V2 model names are restricted to
-   * letters, digits, and underscores. This means `slug(model.name)` and
-   * `model.name` are equal for valid V2 models.
+   * letters, digits, underscores and hyphens, all of which `slug()` keeps. This
+   * means `slug(model.name)` and `model.name` are equal for valid V2 models.
    */
   modelId(model: SemanticModel): string {
     return this.v2Aspects ? model.name : slug(model.name);
@@ -143,8 +143,9 @@ export function relationshipLinkId(modelName: string, relName: string): string {
  *
  * The dotted prefixes use `slug(modelName)` to match V1 entries, while the
  * slash prefixes use `modelName` verbatim to match V2 entity and metric
- * entries. Because V2 model names are restricted to letters, digits, and
- * underscores, `slug(modelName)` and `modelName` are equal for valid V2 models.
+ * entries. Because V2 model names are restricted to letters, digits,
+ * underscores and hyphens, all of which `slug()` keeps, `slug(modelName)` and
+ * `modelName` are equal for valid V2 models.
  */
 export function ownedEntryIdPrefixes(modelName: string): string[] {
   const s = slug(modelName);

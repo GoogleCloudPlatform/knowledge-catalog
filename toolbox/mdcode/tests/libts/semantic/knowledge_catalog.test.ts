@@ -655,7 +655,7 @@ describe('relationships map to schema-join entry links', () => {
         expect(entryLinks.length).toBe(1);
         expect(warnings.some(
                    w => w.includes('Orders_To_Customer') &&
-                       w.includes('orders-to-customer')))
+                       w.includes("'orders_to_customer'")))
             .toBe(true);
       });
 

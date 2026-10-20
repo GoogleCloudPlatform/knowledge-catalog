@@ -66,8 +66,8 @@ agree on every structural row and differ only where a Spanner target has no
 5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;
    its data type round-trips only for a concrete type (e.g. `Decimal`) — an
    untyped, `String`, or `Opaque` metric comes back un-typed.
-6. **Relationship name.** Relationship names come back lowercased/hyphenated
-   (`Places Order` → `places-order`) — the catalog stores the name only in the
+6. **Relationship name.** Relationship names come back lowercased
+   (`Places_Order` → `places_order`) — the catalog stores the name only in the
    link id. See [Writer-side follow-up](#writer-side-follow-up).
 7. **Guidelines aspect.** The `guidelines` aspect exists only for the model,
    entities, and metrics — not fields or relationships, so field- and
@@ -308,8 +308,8 @@ returns that view. Two things about *how* it comes back:
 
 **Normalized** — the content survives, the form changes:
 
-- Relationship *names* come back lowercased/hyphenated (`Places Order` →
-  `places-order`); the catalog stores the name only in the link id. See
+- Relationship *names* come back lowercased (`Places_Order` →
+  `places_order`); the catalog stores the name only in the link id. See
   [Writer-side follow-up](#writer-side-follow-up).
 - Field types round-trip except one collapse: a field authored as `String`
   comes back un-typed (both no type and `String` store `dataType STRING`, and
@@ -336,8 +336,9 @@ what pull can recover. It is recorded here as a write-side follow-up; the reader
 
 - **Relationship names.** The `schema-join` aspect type's `metadataTemplate` has
   no field for the relationship name, so push cannot store it and pull recovers
-  it from the link id — which is lowercased and hyphenated (the entry-link id
-  format forbids the original casing/underscores). Returning the name verbatim
+  it from the link id — which is lowercased, with each underscore written as a
+  hyphen (the entry-link id format forbids both). Pull reads each hyphen back
+  as an underscore, but the original casing is lost. Returning the name verbatim
   requires adding a name field to the built-in `schema-join` aspect type in
   Knowledge Catalog (server-side), after which the client write/read is trivial;
   it is the same class of gap as the `semantics` field that gates

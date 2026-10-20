@@ -2013,6 +2013,17 @@ export async function owl(
     return 1;
   }
 
+  // Every name the import derives, from the file name and from the ontology,
+  // must be one the loader accepts.
+  const loaded = loadSemanticModels(
+      [{name: modelName, text: result.yaml}], {bindingOptional: true});
+  if (loaded.error) {
+    console.error(
+        `Error: '${file}' converts to a model that does not load: ${
+            loaded.error}`);
+    return 1;
+  }
+
   console.log(
       `converted ${classes} ${plural(classes, 'class', 'classes')}, ` +
       `${objectProperties} ` +
