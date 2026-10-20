@@ -2791,10 +2791,6 @@ semantic_model:
 
   // Other model files that are not valid YAML. The load rejects each.
   const invalidYaml = [
-    ['is written twice', (text: string) => text + text, 'Map keys must be unique'],
-    ['has a GOOGLE block that sets data twice', (text: string) =>
-        text.replace(/( {8}data: '.*'\n)/, "$1        data: '{}'\n"),
-     'Map keys must be unique'],
     ['has an alias whose anchor is not set, and a key the GOOGLE block may not set',
      (text: string) => text
          .replace('"profiles"', '"bogus":1,"profiles"')
@@ -2822,6 +2818,32 @@ semantic_model:
     });
   }
 
+  // A key set twice on the path to the GOOGLE block leaves which value holds
+  // the profile unknown, so the YAML error is reported.
+  const ambiguous = [
+    ['is written twice', (text: string) => text + text],
+    ['has a GOOGLE block that sets data twice', (text: string) =>
+        text.replace(/( {8}data: '.*'\n)/, "$1        data: '{}'\n")],
+    ['sets semantic_model twice', (text: string) =>
+        text.replace('semantic_model:\n', 'semantic_model:\n  - name: commerce\nsemantic_model:\n')],
+    ['sets custom_extensions twice', (text: string) => text.replace(
+        '    datasets:\n',
+        "    custom_extensions:\n      - vendor_name: ACME\n        data: '{}'\n    datasets:\n")],
+  ] as const;
+  for (const [what, edit] of ambiguous) {
+    test(`a model file that ${what} reports the YAML error`, async () => {
+      writeModel(prod(PROD_SOURCE));
+      const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
+      const text = fs.readFileSync(file, 'utf8');
+      expect(edit(text)).not.toBe(text);
+      fs.writeFileSync(file, edit(text));
+      const error = 'Semantic model load error: could not parse input: Map keys must be unique';
+
+      await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(error);
+      await expect(profiles({profile: 'prod'})).rejects.toThrow(error);
+    });
+  }
+
   // A quote left open in the GOOGLE block's data cuts the block short, so its
   // profile cannot be read. The YAML error is reported instead.
   test('a model file whose GOOGLE block a YAML error cuts short reports the error', async () => {
@@ -2833,38 +2855,6 @@ semantic_model:
         'Semantic model load error: could not parse input: Missing closing');
     await expect(profiles({profile: 'prod'})).rejects.toThrow(
         'could not parse input: Missing closing');
-  });
-
-  // The profile is under the second of two semantic_model keys.
-  test('a GOOGLE block under a later semantic_model does not hide one', async () => {
-    writeModel(prod(PROD_SOURCE));
-    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
-        'semantic_model:\n', 'semantic_model:\n  - name: commerce\nsemantic_model:\n'));
-    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-
-    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
-    expect(messages(errorSpy)).toContain('Map keys must be unique');
-    expect(messages(errorSpy)).toContain(
-        "(under profile 'prod', the model file must load on its own before " +
-        'the profile applies)');
-  });
-
-  // The profile is in the first of two custom_extensions keys, which the load
-  // rejects as a key set twice.
-  test('a GOOGLE block in an earlier custom_extensions does not hide one', async () => {
-    writeModel(prod(PROD_SOURCE));
-    const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
-        '    datasets:\n',
-        "    custom_extensions:\n      - vendor_name: ACME\n        data: '{}'\n    datasets:\n"));
-    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-
-    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
-    expect(messages(errorSpy)).toContain('Map keys must be unique');
-    expect(messages(errorSpy)).toContain(
-        "(under profile 'prod', the model file must load on its own before " +
-        'the profile applies)');
   });
 
   test('they are listed by name, as profile files are', async () => {
