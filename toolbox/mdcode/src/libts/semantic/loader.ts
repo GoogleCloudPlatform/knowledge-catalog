@@ -1422,10 +1422,12 @@ function asList(v: unknown): unknown[] {
 // The profiles the GOOGLE block `e` lists, whatever its shape: in data written
 // as a JSON string or as a YAML mapping, or beside `vendor_name` with no data.
 // `json` is them as the data of a block that lists only them. 'none' when the
-// block lists no profiles. 'unread' when its data is not a JSON object, or its
+// block lists no profiles. 'unread' when it has neither data nor profiles
+// beside `vendor_name`, when its data is not a JSON object, or when its
 // profiles have no JSON form, as with a recursive alias.
 function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
     'unread' {
+  if (e.data == null && e.profiles === undefined) return 'unread';
   let data: unknown = e.data == null ? {profiles: e.profiles} : e.data;
   if (typeof data === 'string') {
     try {
@@ -1528,12 +1530,28 @@ function googleBlockProfilesPastYamlError(
         })
         .map(p => resolve(p.value));
   };
+  // Whether the node `n` sets a key twice in a mapping inside it. An alias is
+  // not followed.
+  const setsAKeyTwiceIn = (n: unknown): boolean => {
+    if (yaml.isMap(n)) {
+      const keys = n.items.map(p => yaml.isScalar(p.key) ? p.key.value : p.key);
+      return new Set(keys).size < keys.length ||
+          n.items.some(p => setsAKeyTwiceIn(p.value));
+    }
+    return yaml.isSeq(n) && n.items.some(setsAKeyTwiceIn);
+  };
+  // Whether the mapping `map` sets `profiles` twice, or a key twice inside
+  // them.
+  const setsAProfilesKeyTwiceIn = (map: unknown): boolean => {
+    const profiles = values(map, 'profiles');
+    return profiles.length > 1 || profiles.some(setsAKeyTwiceIn);
+  };
   let doc: unknown;
   try {
     doc = js(parsed.contents);
   } catch {
-    // More aliases than a load expands. Empty, as for a document that is not
-    // a vanilla model.
+    // More aliases than a load expands, or a merge key whose value is not a
+    // mapping. Empty, as for a document that is not a vanilla model.
     return [];
   }
   if (!isRecord(doc) || doc.version !== OSSIE_VERSION) return [];
@@ -1546,11 +1564,31 @@ function googleBlockProfilesPastYamlError(
   let unread = false;
   for (const node of blockNodes) {
     const e = js(node);
-    if (!isRecord(e) || e.vendor_name !== GOOGLE_VENDOR) continue;
-    const datas = values(node, 'data').map(js);
+    if (!isRecord(e)) continue;
+    // A YAML error may leave `vendor_name` unset, or make it a list or a
+    // mapping, as a misindented line under it does. A block that sets it
+    // twice, once to GOOGLE, has no known vendor either.
+    if (typeof e.vendor_name !== 'string' ||
+        (e.vendor_name !== GOOGLE_VENDOR &&
+         values(node, 'vendor_name').map(js).includes(GOOGLE_VENDOR))) {
+      unread = true;
+      continue;
+    }
+    if (e.vendor_name !== GOOGLE_VENDOR) continue;
+    const dataNodes = values(node, 'data');
     // A block with no `data` key of its own may still take one from a merge
     // key.
-    for (const data of datas.length ? datas : [e.data]) {
+    for (const dataNode of dataNodes.length ? dataNodes : [undefined]) {
+      const data = dataNode === undefined ? e.data : js(dataNode);
+      // JSON.parse and the lenient parse keep the last of a repeated key, so
+      // data that sets `profiles` twice, or a key twice inside them, cannot be
+      // read. Nor can such profiles beside `vendor_name`.
+      if (typeof data === 'string' ? setsAProfilesKeyTwice(data) :
+              data == null ? setsAProfilesKeyTwiceIn(node) :
+                             setsAProfilesKeyTwiceIn(dataNode)) {
+        unread = true;
+        continue;
+      }
       const listed = listedProfiles({...e, data});
       if (listed === 'none') continue;
       if (listed === 'unread') {

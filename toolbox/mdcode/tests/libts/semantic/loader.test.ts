@@ -2330,6 +2330,62 @@ semantic_model:
       const text = vanilla('      - vendor_name: GOOGLE\n        data:\n          profiles: *nope\n');
       expect(() => googleBlockProfiles(text)).toThrow('could not parse input: Unresolved alias');
     });
+
+    // A block whose data the YAML error leaves unset cannot be read.
+    test('reports the YAML error when a block has no data and no profiles beside it', () => {
+      for (const [block, problem] of [
+        ['      - vendor_name: GOOGLE\n        data: *nope\n', 'Unresolved alias'],
+        [`      - vendor_name: GOOGLE\n       data: ${data({ profiles: [PROD] })}\n`, ''],
+      ]) {
+        expect(() => loadModels(vanilla(block))).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(vanilla(block))).toThrow(
+          `Semantic model load error: could not parse input: ${problem}`);
+      }
+    });
+
+    // JSON.parse keeps the last of a repeated key, so such data cannot be read.
+    test('reports the YAML error when a block sets profiles twice or a key twice inside them', () => {
+      for (const d of [
+        `'{"profiles": [{"name": "prod", "name": "dev"}]}'`,
+        `'{"profiles": ${JSON.stringify([PROD])}, "profiles": []}'`,
+      ]) {
+        const text = vanilla(blockYaml(d), '    description: a\n    description: b\n');
+        expect(() => loadModels(text)).toThrow('Map keys must be unique');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // The lenient parse keeps the last of a repeated key too, so profiles
+    // written as YAML that repeat a key cannot be read either.
+    test('reports the YAML error when profiles written as YAML set a key twice', () => {
+      for (const block of [
+        `      - vendor_name: GOOGLE\n        data:\n          profiles: ${JSON.stringify([PROD])}\n          profiles: []\n`,
+        '      - vendor_name: GOOGLE\n        data:\n          profiles:\n            - name: prod\n              name: dev\n',
+        '      - vendor_name: GOOGLE\n        data:\n          profiles:\n            - name: prod\n              entities:\n' +
+          '                - name: orders\n                  source: bigquery:p.a.orders\n                  source: bigquery:p.b.orders\n',
+        `      - vendor_name: GOOGLE\n        profiles: ${JSON.stringify([PROD])}\n        profiles: []\n`,
+        '      - vendor_name: GOOGLE\n        profiles:\n          - name: prod\n            name: dev\n',
+      ]) {
+        expect(() => loadModels(vanilla(block))).toThrow('Map keys must be unique');
+        expect(() => googleBlockProfiles(vanilla(block))).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // A block whose vendor the YAML error leaves unknown cannot be read.
+    test('reports the YAML error when a block\'s vendor_name is unset, not a string, or set twice', () => {
+      for (const [block, problem] of [
+        [`      - vendor_name: *nope\n        data: ${data({ profiles: [PROD] })}\n`, 'Unresolved alias'],
+        [`      - vendor_name: GOOGLE\n         data: ${data({ profiles: [PROD] })}\n`, ''],
+        [`      - vendor_name: GOOGLE\n        vendor_name: ACME\n        data: ${data({ profiles: [PROD] })}\n`,
+          'Map keys must be unique'],
+      ]) {
+        expect(() => loadModels(vanilla(block))).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(vanilla(block))).toThrow(
+          `Semantic model load error: could not parse input: ${problem}`);
+      }
+    });
   });
 
   test('googleBlockProfiles reads a semantic_model written as one mapping', () => {
