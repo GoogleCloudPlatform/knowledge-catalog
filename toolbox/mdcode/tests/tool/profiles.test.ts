@@ -2203,6 +2203,78 @@ entities:
       expect(rejects(profileSection('prod'))).toEqual(prod.errors);
     });
 
+    // #516's check that each inherited field holds SQL needs the whole
+    // hierarchy. A profile that breaks it gets the hierarchy error, and the
+    // inherited field is reported once the hierarchy resolves, by a push of
+    // the profile and by every other push alike, once each.
+    test('and reports an inherited field with no SQL once, after the hierarchy resolves', async () => {
+      const model = (partner: boolean) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    entities:
+      - name: party
+        abstract: true
+        fields:
+          - { name: code, datatype: String }
+      - name: customer
+        extends: [party]
+        source: ${BQ('dev', 'customer')}
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: memo }
+      - name: vip
+        extends: [customer]
+        source: ${BQ('dev', 'vip')}
+        primary_key: [c_id]
+      - name: supplier
+        extends: [party]
+        source: ${BQ('dev', 'supplier')}
+        primary_key: [s_id]
+        fields:
+          - { name: s_id, expression: s_id }
+          - { name: code, expression: s_code }
+${partner ? `      - name: partner
+        extends: [customer, supplier]
+        source: ${BQ('dev', 'partner')}
+        primary_key: [p_id]
+        fields:
+          - { name: p_id, expression: p_id }
+` : ''}`;
+      const prod = (partner: boolean) => `name: prod
+entities:
+  - name: customer
+    source: ${BQ('prod', 'customer')}
+    fields:
+      - { name: code, expression: c_code }
+      - { name: memo, expression: "customer.vip." }
+  - name: vip
+    source: ${BQ('prod', 'vip')}
+  - name: supplier
+    source: ${BQ('prod', 'supplier')}
+${partner ? `  - name: partner
+    source: ${BQ('prod', 'partner')}
+` : ''}`;
+      const inherited = "entity 'vip' inherits field 'memo': read on 'vip', " +
+          "'expression' is only the qualifier 'vip.'; write the field's SQL";
+      writeScope({'commerce.yaml': model(true), 'commerce.profile.prod.yaml': prod(true)});
+      for (const profile of [undefined, 'prod']) {
+        const {code, errors} = await pushResult(profile);
+        expect({profile, code, errors: errors.filter(e => e.includes("'memo'"))})
+            .toEqual({profile, code: 1, errors: []});
+        expect({profile, conflict: errors.filter(e => e.includes(
+                    "inherits field 'code' from 'customer' and from 'supplier'")).length})
+            .toEqual({profile, conflict: 1});
+      }
+      writeScope({'commerce.yaml': model(false), 'commerce.profile.prod.yaml': prod(false)});
+      const errors = [`[commerce.profile.prod.yaml] profile 'prod': ${inherited}`];
+      expect(await pushResult('prod')).toEqual({code: 1, errors});
+      expect(await pushResult()).toEqual({code: 1, errors});
+      expect(await profiles()).toBe(1);
+      expect(rejects(profileSection('prod'))).toEqual(errors);
+      expect(rejects(section(INLINE))).toEqual(errors);
+    });
+
     // Push's own check of the SQL it reads stands down when the model file's
     // hierarchy does not resolve. The profile check then reads what the
     // fields of the profile push applies read, and warns about the SQL it
