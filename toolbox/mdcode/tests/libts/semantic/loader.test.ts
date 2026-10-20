@@ -1901,6 +1901,22 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
   });
 
+  test('deploymentTargets that is not a list, or that two blocks set, fails', () => {
+    const cases = [
+      [google({ deploymentTargets: G }), 'expected array, received string'],
+      [google({ deploymentTargets: null }), 'expected array, received null'],
+    ] as const;
+    for (const [block, problem] of cases) {
+      expect(() => load(VANILLA, atLevel('model', block))).toThrow(
+        "model 'm': 'deploymentTargets' in a GOOGLE custom_extensions block: " +
+        `Invalid input: ${problem}`);
+    }
+    const twice = atLevel('model', google({ deploymentTargets: [G] }), google({ deploymentTargets: [G] }));
+    expect(() => load(VANILLA, twice)).toThrow(
+      "model 'm': two GOOGLE custom_extensions blocks both set 'deploymentTargets'; " +
+      'set it in one block.');
+  });
+
   test('a value the Google flavor rejects for the same key fails', () => {
     const cases = [
       ['model', { deployments: [{ name: 'a' }] }],

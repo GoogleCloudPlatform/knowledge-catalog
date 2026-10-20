@@ -237,18 +237,10 @@ semantic_model:
            '"x"',
            '{"deployments": null}',
            '{"deployments": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
-         ]) {
-      expect(declaresGraphTarget(withData(data))).toBe(true);
-    }
-  });
-
-  // The deploy code reads such a value as no target.
-  test('a GOOGLE block whose deploymentTargets is not a list declares no target', () => {
-    for (const data of [
            '{"deploymentTargets": null}',
            '{"deploymentTargets": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
          ]) {
-      expect(declaresGraphTarget(withData(data))).toBe(false);
+      expect(declaresGraphTarget(withData(data))).toBe(true);
     }
   });
 });

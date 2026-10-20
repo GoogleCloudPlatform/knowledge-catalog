@@ -160,11 +160,10 @@ export function checkPushSelection(sel: {
 // graph, so bindings and a target are not required and pruning is skipped
 // (Knowledge Catalog publishes the whole model). It also returns true when the
 // YAML does not parse, or when the data string of a GOOGLE block on the model
-// is not a JSON object or holds a `deployments` value that is not a list. The
-// strict load then reports the problem, and the push does not silently take
-// the logical path. A `deploymentTargets` value that is not a list names no
-// target, as the deploy code reads it. A block whose data is not a string is
-// skipped, and the load rejects it.
+// is not a JSON object or holds a `deployments` or `deploymentTargets` value
+// that is not a list. The strict load then reports the problem, and the push
+// does not silently take the logical path. A block whose data is not a string
+// is skipped, and the load rejects it.
 export function declaresGraphTarget(text: string): boolean {
   let doc: any;
   try {
@@ -202,7 +201,12 @@ export function declaresGraphTarget(text: string): boolean {
       if (data === null || typeof data !== 'object' || Array.isArray(data)) {
         return true;  // not a JSON object: strict load will name it
       }
-      const deployments = (data as {deployments?: unknown}).deployments;
+      const {deployments, deploymentTargets} =
+          data as {deployments?: unknown; deploymentTargets?: unknown};
+      if (deploymentTargets !== undefined &&
+          !Array.isArray(deploymentTargets)) {
+        return true;
+      }
       if (Array.isArray(deployments) ? deployments.length > 0 :
                                        deployments !== undefined) {
         return true;

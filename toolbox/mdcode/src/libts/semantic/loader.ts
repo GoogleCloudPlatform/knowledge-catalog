@@ -420,7 +420,7 @@ const aiContextSchema = googleAiContextSchema;
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
 // relationship, metric). A vanilla document's GOOGLE blocks on a model,
 // dataset, relationship or metric are read into the IR (see readGoogleBlocks).
-// A model also keeps each GOOGLE block that carries `deploymentTargets`.
+// A model also keeps the GOOGLE block that carries `deploymentTargets`.
 // rejectGoogleBlock says where a GOOGLE block is rejected. Every other block is
 // kept verbatim.
 const customExtensionSchema = z.object({
@@ -1213,7 +1213,7 @@ type BlockLevel = Exclude<ExtensionLevel, 'field'>;
 // The keys a GOOGLE block takes at each level of a vanilla document. Each is
 // the Google flavor's native key of the same name, apart from `profiles`, which
 // the Google flavor keeps in profile files. A model's block may also carry
-// `deploymentTargets`, which readGoogleBlocks keeps unread.
+// `deploymentTargets`, which readGoogleBlocks checks is a list and keeps.
 const GOOGLE_BLOCK_KEYS: Record<BlockLevel, readonly string[]> = {
   model: ['profiles', 'deployments'],
   dataset: ['extends'],
@@ -1250,7 +1250,8 @@ interface GoogleBlockValues {
 // not take, `abstract` included, a key two blocks both set, a value the Google
 // flavor rejects, and `deployments` beside `deploymentTargets`. The deploy code
 // still reads a model's `deploymentTargets`, so the model keeps the block that
-// carries it. Its value is not checked, and two blocks may both set it.
+// carries it. Its value must be a list, and only one block may set it. Push
+// checks each target in the list.
 function readGoogleBlocks(
     exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
     level: BlockLevel, ctx: string):
@@ -1286,6 +1287,13 @@ function readGoogleBlocks(
     let keep = false;
     for (const [key, value] of Object.entries(data)) {
       if (level === 'model' && key === 'deploymentTargets') {
+        if (hasTargets) {
+          throw error(`two ${block}s both set '${key}'; set it in one block.`);
+        }
+        const parsed = z.array(z.unknown()).safeParse(value);
+        if (!parsed.success) {
+          throw error(`'${key}' in a ${block}: ${issueList(parsed.error)}`);
+        }
         keep = true;
         hasTargets = true;
         continue;
