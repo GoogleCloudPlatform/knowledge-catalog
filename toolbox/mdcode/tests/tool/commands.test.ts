@@ -2681,15 +2681,17 @@ semantic_model:
   }
 
   // A model file with a YAML error ahead of its GOOGLE block. The load
-  // rejects it.
+  // rejects it. Past a key set twice or an alias whose anchor is not set, the
+  // profile is still read. Any other YAML error can move the block, so the
+  // YAML error is reported.
   const yamlErrors = [
     ['sets a key twice', '    description: a\n    description: b\n',
-     'Map keys must be unique'],
-    ['has a YAML syntax error', '    description: [x\n', 'could not parse input'],
+     'Map keys must be unique', true],
+    ['has a YAML syntax error', '    description: [x\n', 'could not parse input', false],
     ['has an alias whose anchor is not set', '    description: *nope\n',
-     'Unresolved alias'],
-  ];
-  for (const [what, extra, problem] of yamlErrors) {
+     'Unresolved alias', true],
+  ] as const;
+  for (const [what, extra, problem, listed] of yamlErrors) {
     const writeBroken = () => {
       writeModel(prod(PROD_SOURCE));
       const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
@@ -2698,15 +2700,26 @@ semantic_model:
     };
 
     // As a profile file is found beside a model file the load rejects.
-    test(`a model file that ${what} does not hide one`, async () => {
+    test(`a model file that ${what} ${listed ? 'does not hide one' : 'reports the YAML error'}`, async () => {
       writeBroken();
       const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      const alone = "(under profile 'prod', the model file must load on its " +
+          'own before the profile applies)';
 
       expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
       expect(messages(errorSpy)).toContain(problem);
-      expect(messages(errorSpy)).toContain(
-          "(under profile 'prod', the model file must load on its own before " +
-          'the profile applies)');
+      if (listed) {
+        expect(messages(errorSpy)).toContain(alone);
+        return;
+      }
+      expect(messages(errorSpy)).toStartWith(
+          "Error: Model document 'commerce': Semantic model load error: " +
+          'could not parse input: ');
+      expect(messages(errorSpy)).not.toContain(alone);
+      errorSpy.mockClear();
+      expect(await profiles({profile: 'prod'})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+      expect(messages(errorSpy)).not.toContain(alone);
     });
 
     // The layout reads the model file's version as the block lookup reads the
@@ -2725,17 +2738,18 @@ semantic_model:
     });
   }
 
-  // With a YAML syntax error in the text, each GOOGLE block is read for its
-  // profiles alone, so a key the block may not set does not hide one.
-  test('a model file with a YAML syntax error does not hide one beside a key the block may not set', async () => {
+  // With a YAML error in the text, each GOOGLE block is read for its profiles
+  // alone, so a key the block may not set does not hide one.
+  test('a model file with a YAML error does not hide one beside a key the block may not set', async () => {
     writeModel(JSON.stringify({...JSON.parse(prod(PROD_SOURCE)), bogus: 1}));
     const file = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml');
     fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(
-        '    custom_extensions:\n', '    description: [x\n    custom_extensions:\n'));
+        '    custom_extensions:\n',
+        '    description: a\n    description: b\n    custom_extensions:\n'));
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
     expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
-    expect(messages(errorSpy)).toContain('could not parse input');
+    expect(messages(errorSpy)).toContain('Map keys must be unique');
     expect(messages(errorSpy)).toContain(
         "(under profile 'prod', the model file must load on its own before " +
         'the profile applies)');

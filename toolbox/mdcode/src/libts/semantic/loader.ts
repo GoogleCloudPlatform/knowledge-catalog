@@ -1463,20 +1463,22 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  * twice or a key twice inside them, and on data that is not a JSON object in
  * a block whose shape the load accepts.
  *
- * Text that is not valid YAML, such as text that sets a key twice or has a bad
- * indent, is read as far as it parses. Its profiles are read as in text that
- * parses, and only when that reading is unambiguous: the document sets
- * `version` and `semantic_model` once, its model sets `custom_extensions`
- * once, and each block sets `vendor_name` once, to a string. A GOOGLE block
- * sets `data` and `profiles` at most once each. No key or value on that path
- * is an alias or a merge key. No key is set twice inside `custom_extensions`,
- * and no other YAML error falls in it or after it, since such an error can cut
- * the blocks short. When the model has no `custom_extensions`, each YAML error
- * is a key set twice. When any of these fails, when a GOOGLE block cannot be
+ * Text that is not valid YAML is read as far as it parses. A document that
+ * sets `version` once, to a string other than the vanilla one, gives none
+ * when no YAML error other than a key set twice falls in or before that
+ * string. Otherwise its profiles are read as in text that parses, and only
+ * when that reading is unambiguous. Each YAML error is a key set twice or an
+ * alias whose anchor is not set, since any other error, such as a bad indent,
+ * can move the blocks, cut them short or change the version. The document
+ * sets `version` once, to the vanilla one, and `semantic_model` at most once.
+ * Its model sets `custom_extensions` at most once, and each block sets
+ * `vendor_name` once, to a string. A GOOGLE block sets `data` and `profiles`
+ * at most once each, and holds no alias. No key on that path is an alias or a
+ * merge key, and no value on it is an alias. No key is set twice inside
+ * `custom_extensions`. When any of these fails, when a GOOGLE block cannot be
  * read, or when a load rejects its profiles, it throws the error a load
  * reports for the text. So does a vanilla model whose text has more aliases
- * than a load expands, or a merge key whose value is not a mapping. A document
- * whose last `version` is not the vanilla one gives none.
+ * than a load expands, or a merge key whose value is not a mapping.
  */
 export function googleBlockProfiles(text: string): ProfileSpec[] {
   let doc: unknown;
@@ -1526,36 +1528,32 @@ function blockProfilesOf(
 
 // The profiles the model in a vanilla document carries in its GOOGLE blocks,
 // when its text is not valid YAML. `parseError` is the error a load reports
-// for the text. The text is read as far as it parses, and the profiles are
+// for the text. A document whose version is read past the error as another
+// version gives none (see versionPastYamlError). Otherwise the profiles are
 // read as in text that parses, when that reading is unambiguous (see
-// blocksReadOneWay). Otherwise, and when a GOOGLE block cannot be read or a
-// load rejects its profiles, throws the load's error for the text.
+// blocksReadOneWay). When it is not, when a GOOGLE block cannot be read, or
+// when a load rejects its profiles, throws the load's error for the text.
 function googleBlockProfilesPastYamlError(
     text: string, parseError: string): ProfileSpec[] {
   const yamlError = new SemanticModelError(
       `Semantic model load error: could not parse input: ${parseError}`);
-  const parsed = parseLeniently(text);
+  // An alias whose anchor is not set stays an alias here, so the checks see
+  // it.
+  const parsed = yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false});
+  const errors = yaml.parseDocument(text, YAML_OPTIONS).errors;
+  const version = versionPastYamlError(parsed, errors);
+  if (version !== undefined && version !== OSSIE_VERSION) return [];
+  if (version === undefined || !blocksReadOneWay(parsed, errors)) {
+    throw yamlError;
+  }
   let doc: unknown;
   try {
-    doc = parsed.toJS();
+    doc = parseLeniently(text).toJS();
   } catch {
     // More aliases than a load expands, or a merge key whose value is not a
-    // mapping. The YAML error for a vanilla model, and empty for any other.
-    // The last `version` holds, as when the text is turned into values.
-    const last = yaml.isMap(parsed.contents) ?
-        parsed.contents.items
-            .filter(p => yaml.isScalar(p.key) && p.key.value === 'version')
-            .at(-1)
-            ?.value :
-        undefined;
-    const version = yaml.isAlias(last) ? last.resolve(parsed) : last;
-    if (yaml.isScalar(version) && version.value === OSSIE_VERSION) {
-      throw yamlError;
-    }
-    return [];
+    // mapping.
+    throw yamlError;
   }
-  if (!isRecord(doc) || doc.version !== OSSIE_VERSION) return [];
-  if (!blocksReadOneWay(text)) throw yamlError;
   try {
     return blockProfilesOf(doc, yamlError);
   } catch (err) {
@@ -1564,60 +1562,108 @@ function googleBlockProfilesPastYamlError(
   }
 }
 
-// Whether `text`, which is not valid YAML, gives one reading of its model's
-// GOOGLE blocks. The document sets `version` and `semantic_model` once, its
-// first model sets `custom_extensions` once, and each block sets `vendor_name`
-// once, to a string. A GOOGLE block sets `data` and `profiles` at most once
-// each. Every key on that path is a string, so not an alias or a merge key,
-// and no value on it is an alias. No key is set twice inside
-// `custom_extensions`, and no other error of the strict parse falls in it or
-// after it, since such an error can cut the blocks short. When the model has
-// no `custom_extensions`, each error is a key set twice, since another error,
-// such as a bad indent, can move the blocks out of the model.
-function blocksReadOneWay(text: string): boolean {
-  const parsed = yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false});
-  // The value of `key` in `node`: undefined when `node` is not a mapping or
-  // does not set `key`, and null when the mapping has a key that is not a
-  // string, sets `key` twice, or gives it an alias.
-  const only = (node: unknown, key: string): unknown => {
-    if (!yaml.isMap(node)) return undefined;
-    if (!node.items.every(
-            p => yaml.isScalar(p.key) && typeof p.key.value === 'string')) {
-      return null;
-    }
-    const pairs = node.items.filter(p => (p.key as yaml.Scalar).value === key);
-    if (pairs.length > 1 || yaml.isAlias(pairs[0]?.value)) return null;
-    return pairs[0]?.value;
-  };
-  if (only(parsed.contents, 'version') === null) return false;
-  const models = only(parsed.contents, 'semantic_model');
+/**
+ * The `version` the model document `text` sets, as googleBlockProfiles reads
+ * it: from the text when it is valid YAML, and past a YAML error only when the
+ * root sets it once, to a string, and no YAML error other than a key set twice
+ * falls in or before that string. Undefined otherwise, and when the text sets
+ * no string version.
+ */
+export function modelDocumentVersion(text: string): string|undefined {
+  let doc: unknown;
+  try {
+    doc = yaml.parse(text, YAML_OPTIONS);
+  } catch {
+    return versionPastYamlError(
+        yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
+        yaml.parseDocument(text, YAML_OPTIONS).errors);
+  }
+  return isRecord(doc) && typeof doc.version === 'string' ? doc.version :
+                                                             undefined;
+}
+
+// The value of `key` in `node`, read past a YAML error: undefined when `node`
+// is not a mapping or does not set `key`, and null when the mapping has a key
+// that is not a string, such as an alias or a merge key, sets `key` twice, or
+// gives it an alias.
+function onlyValue(node: unknown, key: string): unknown {
+  if (!yaml.isMap(node)) return undefined;
+  if (!node.items.every(
+          p => yaml.isScalar(p.key) && typeof p.key.value === 'string')) {
+    return null;
+  }
+  const pairs = node.items.filter(p => (p.key as yaml.Scalar).value === key);
+  if (pairs.length > 1 || yaml.isAlias(pairs[0]?.value)) return null;
+  return pairs[0]?.value;
+}
+
+// The version the text parsed as `parsed`, with the YAML errors `errors`,
+// sets: the root sets `version` once, to a string, as onlyValue reads it, and
+// no error other than a key set twice falls in or before that string.
+// Undefined otherwise, since such an error can change the version the text
+// seems to set.
+function versionPastYamlError(
+    parsed: yaml.Document.Parsed, errors: yaml.YAMLError[]): string|undefined {
+  const version = onlyValue(parsed.contents, 'version');
+  if (!yaml.isScalar(version) || typeof version.value !== 'string') {
+    return undefined;
+  }
+  const end = version.range?.[2] ?? Infinity;
+  if (errors.some(err => err.code !== 'DUPLICATE_KEY' && err.pos[0] <= end)) {
+    return undefined;
+  }
+  return version.value;
+}
+
+// Whether the text parsed as `parsed`, with the YAML errors `errors`, gives one
+// reading of its model's GOOGLE blocks. Each error is a key set twice, since
+// any other error, such as a bad indent, can move the blocks or cut them short.
+// The document sets `semantic_model` at most once, its first model sets
+// `custom_extensions` at most once, and each block sets `vendor_name` once, to
+// a string. A GOOGLE block sets `data` and `profiles` at most once each, and
+// holds no alias, since an alias may name an anchor set on a key set twice.
+// Every key on that path is a string, so not an alias or a merge key, and no
+// value on it is an alias. No key is set twice inside `custom_extensions`.
+function blocksReadOneWay(
+    parsed: yaml.Document.Parsed, errors: yaml.YAMLError[]): boolean {
+  if (errors.some(err => err.code !== 'DUPLICATE_KEY')) return false;
+  const models = onlyValue(parsed.contents, 'semantic_model');
   if (models === null) return false;
   const model = yaml.isSeq(models) ? models.items[0] : models;
   if (yaml.isAlias(model)) return false;
-  const exts = only(model, 'custom_extensions');
+  const exts = onlyValue(model, 'custom_extensions');
   if (exts === null) return false;
-  const errors = yaml.parseDocument(text, YAML_OPTIONS).errors;
-  if (!yaml.isNode(exts)) {
-    return errors.every(err => err.code === 'DUPLICATE_KEY');
-  }
+  if (!yaml.isNode(exts)) return true;
   const [start, , end] = exts.range ?? [0, 0, 0];
-  if (errors.some(err => err.pos[0] >= start &&
-          (err.code !== 'DUPLICATE_KEY' || err.pos[0] < end))) {
+  if (errors.some(err => err.pos[0] >= start && err.pos[0] < end)) {
     return false;
   }
   for (const block of yaml.isSeq(exts) ? exts.items : [exts]) {
     if (yaml.isAlias(block)) return false;
     if (!yaml.isMap(block)) continue;
-    const vendor = only(block, 'vendor_name');
+    const vendor = onlyValue(block, 'vendor_name');
     if (!yaml.isScalar(vendor) || typeof vendor.value !== 'string') {
       return false;
     }
     if (vendor.value !== GOOGLE_VENDOR) continue;
-    if (only(block, 'data') === null || only(block, 'profiles') === null) {
+    if (onlyValue(block, 'data') === null ||
+        onlyValue(block, 'profiles') === null || holdsAlias(block)) {
       return false;
     }
   }
   return true;
+}
+
+// Whether `node` holds an alias, as a key or a value at any depth.
+function holdsAlias(node: yaml.Node): boolean {
+  let found = false;
+  yaml.visit(node, {
+    Alias: () => {
+      found = true;
+      return yaml.visit.BREAK;
+    },
+  });
+  return found;
 }
 
 // Ossie's Relationship has no `description` key and its objects are closed, so

@@ -14,8 +14,9 @@ import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
+import {modelDocumentVersion} from '../semantic/loader';
 import {PROFILE_NAME} from '../semantic/resolve_profiles';
-import {parseLeniently, YAML_OPTIONS} from '../semantic/yaml_options';
+import {YAML_OPTIONS} from '../semantic/yaml_options';
 
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
@@ -372,15 +373,15 @@ export class SemanticModelLayout implements CatalogLayout {
 
   // The `version` and model `name` a model document declares, each undefined
   // when the document has none. In a document with a YAML error, the version
-  // is read as far as the text parses, as the lookup of its GOOGLE block
-  // profiles reads it. The name is undefined then, since the error can change
-  // the name the text seems to declare. The loader reports the error.
+  // is read as the lookup of its GOOGLE block profiles reads it, and is
+  // undefined when the error may change it. The name is undefined then, since
+  // the error can change the name the text seems to declare. The loader
+  // reports the error.
   private _modelHeader(model: string): {version?: string; name?: string} {
     const localPath = this._index.get(model);
     if (!localPath) return {};
     try {
       const text = fs.readFileSync(localPath, 'utf8');
-      const lenient: any = parseLeniently(text).toJS();
       let doc: any;
       try {
         doc = yaml.parse(text, YAML_OPTIONS);
@@ -391,8 +392,7 @@ export class SemanticModelLayout implements CatalogLayout {
           doc.semantic_model[0]?.name :
           undefined;
       return {
-        version: typeof lenient?.version === 'string' ? lenient.version :
-                                                         undefined,
+        version: modelDocumentVersion(text),
         name: typeof name === 'string' ? name : undefined,
       };
     } catch {
