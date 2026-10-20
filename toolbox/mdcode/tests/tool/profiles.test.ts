@@ -1541,6 +1541,48 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       expect(rejects(section(INLINE))).toEqual(errors);
     });
 
+    // The model file's join columns do not stand in for a side a named
+    // profile leaves out. A profile that states one side gets the
+    // completeness error from a push of any binding, from `kcmd profiles`
+    // under each binding, and from the runtime.
+    test('when a profile states one side of a join', async () => {
+      const oneSide = (columns: string) => `name: staging
+entities:
+  - name: customer
+    source: ${BQ('prod', 'customer')}
+  - name: purchase
+    source: ${BQ('prod', 'purchase')}
+relationships:
+  - {name: placed_by, ${columns}}
+`;
+      const error = incomplete('commerce.profile.staging.yaml')[1];
+      // With the model file's to_columns, two from_columns would be uneven.
+      // With no join columns in the model file, one side would be half a
+      // join. With the model file's from_columns, to_columns [c_id] alone
+      // would complete the join.
+      const cases: Array<[string, string]> = [
+        [commerce(), 'from_columns: [p_customer, p_region]'],
+        [commerce({joined: false}), 'to_columns: [c_id]'],
+        [commerce(), 'to_columns: [c_id]'],
+      ];
+      for (const [model, columns] of cases) {
+        writeScope({
+          'commerce.yaml': model,
+          'commerce.profile.staging.yaml': oneSide(columns),
+        });
+        const expected = {columns, code: 1, errors: [error]};
+        expect({columns, ...await pushResult('staging')}).toEqual(expected);
+        expect({columns, ...await pushResult()}).toEqual(expected);
+        expect(await profiles()).toBe(1);
+        expect(rejects(profileSection('staging'))).toEqual([error]);
+        expect(rejects(section(INLINE))).toEqual([error]);
+        logs.length = 0;
+        errs.length = 0;
+        expect(await createSemanticRuntimes({profile: 'staging', ctx: CTX}))
+            .toEqual({error});
+      }
+    });
+
     test('in the legacy profiles directory too', async () => {
       writeScope({
         'commerce.yaml': commerce(),
@@ -2624,6 +2666,33 @@ semantic_model:
           errors: ["[commerce] profile 'a': action 'refund' is not in the " +
                    'logical model'],
         });
+      });
+
+      // As for a profile file, the model file's join columns do not stand in
+      // for a side the block profile leaves out.
+      test('gives one that states one side of a join the completeness error', async () => {
+        const error = incomplete('commerce')[1];
+        for (const columns of [
+          {from_columns: ['p_customer', 'p_region']},
+          {to_columns: ['c_id']},
+        ]) {
+          writeScope({
+            'commerce.yaml': vanilla([{
+              ...complete('staging'),
+              relationships: [{name: 'placed_by', ...columns}],
+            }]),
+          });
+          const expected = {columns, code: 1, errors: [error]};
+          expect({columns, ...await pushResult('staging')}).toEqual(expected);
+          expect({columns, ...await pushResult()}).toEqual(expected);
+          expect(await profiles()).toBe(1);
+          expect(rejects(profileSection('staging'))).toEqual([error]);
+          expect(rejects(section(INLINE))).toEqual([error]);
+          logs.length = 0;
+          errs.length = 0;
+          expect(await createSemanticRuntimes({profile: 'staging', ctx: CTX}))
+              .toEqual({error});
+        }
       });
 
       test('checks one the push does not select', async () => {

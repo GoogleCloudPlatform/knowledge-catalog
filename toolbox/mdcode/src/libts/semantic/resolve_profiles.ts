@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1064,7 +1064,8 @@ export interface ApplyProfileOptions {
  * Throws, naming the profile, when the profile repeats a name, leaves a field
  * entry with nothing to bind, both binds and excludes a field, puts "*" inside
  * a list, names something the model does not declare, binds an abstract
- * entity, gives join columns a load would reject, gives a source or
+ * entity, states one of a relationship's join column lists without the
+ * other or gives both lists with different lengths, gives a source or
  * expression the loader's readers reject, or is applied to a model that
  * declares a `sql` executor, which belongs in each profile.
  */
@@ -1415,25 +1416,34 @@ function profileProblems(model: SemanticModel, profile: ProfileSpec): string[] {
 }
 
 // Why `profile` cannot apply to `model`, or undefined: the first of
-// profileProblems, then the join columns each relationship ends up with,
-// checked as a load checks them: both lists or neither, of equal length.
+// profileProblems, then the join columns the profile states for each
+// relationship. One list without the other gets the completeness check's
+// error, and two lists must have equal length. A relationship the profile
+// gives neither list keeps the model file's join columns, which the
+// completeness check reports.
 function profileApplyError(
     model: SemanticModel, profile: ProfileSpec): string|undefined {
   const problems = profileProblems(model, profile);
   if (problems.length) return problems[0];
   const at = `profile '${profile.name}'`;
-  for (const pr of profile.relationships) {
-    const r = (model.relationships ?? []).find(x => x.name === pr.name)!;
-    const from = pr.fromColumns.length ? pr.fromColumns : r.source.columns;
-    const to = pr.toColumns.length ? pr.toColumns : r.destination.columns;
+  for (const {name, fromColumns: from, toColumns: to} of
+           profile.relationships) {
     if (!from.length !== !to.length) {
-      return `${at}: ${halfBoundJoinMessage(r.name)}`;
+      return `${at}: ${profileJoinMessage(name)}`;
     }
     if (from.length !== to.length) {
-      return `${at}: ${joinLengthMessage(r.name, from.length, to.length)}`;
+      return `${at}: ${joinLengthMessage(name, from.length, to.length)}`;
     }
   }
   return undefined;
+}
+
+// The error for a relationship a named profile does not bind with both
+// 'from_columns' and 'to_columns'.
+function profileJoinMessage(relationship: string): string {
+  return `relationship '${relationship}' has no join columns in this ` +
+      `profile; a named profile states both 'from_columns' and ` +
+      `'to_columns' itself`;
 }
 
 // What loadProfileFile rejects in a profile's structure, in the order it
@@ -2160,10 +2170,7 @@ export function validateProfileCompleteness(
     const from = pr?.fromColumns ?? [];
     const to = pr?.toColumns ?? [];
     if (!from.length || !to.length) {
-      errors.push(
-          `${at}: relationship '${r.name}' has no join columns in this ` +
-          `profile; a named profile states both 'from_columns' and ` +
-          `'to_columns' itself`);
+      errors.push(`${at}: ${profileJoinMessage(r.name)}`);
     } else if (from.length !== to.length) {
       errors.push(
           `${at}: ${joinLengthMessage(r.name, from.length, to.length)}`);

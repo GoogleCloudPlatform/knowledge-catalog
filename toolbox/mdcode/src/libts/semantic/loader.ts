@@ -63,7 +63,7 @@ export const HALF_BOUND_JOIN_PROBLEM = `from_columns and to_columns must be ` +
     `given together (both bind the edge) or both omitted (a logical edge); ` +
     `one without the other is a half-bound join.`;
 
-export function halfBoundJoinMessage(relationship: string): string {
+function halfBoundJoinMessage(relationship: string): string {
   return `relationship '${relationship}': ${HALF_BOUND_JOIN_PROBLEM}`;
 }
 

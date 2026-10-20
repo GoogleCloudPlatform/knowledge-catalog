@@ -26,7 +26,10 @@ beforeAll(async () => {
 
 // Every profile file a test here merges is also applied with applyProfile,
 // which must build the same model or fail with the same error, wherever the
-// model file loads on its own.
+// model file loads on its own. The one exception is a profile that states one
+// of a relationship's join column lists without the other. The merge takes
+// the other list from the model file, and applyProfile rejects it as the
+// completeness check does.
 function checkAgainstApply(
     logical: unknown, profile: unknown, name: string,
     merged: {doc?: unknown; error?: string; excluded: ProfileExclusion[]}) {
@@ -49,6 +52,15 @@ function checkAgainstApply(
       applyProfileFile(model, yaml.stringify(profile, YAML_OPTIONS), name);
   if (merged.error) {
     expect(applied).toEqual({error: merged.error});
+    return;
+  }
+  const relationships = (profile as any).relationships;
+  if (Array.isArray(relationships) &&
+      relationships.some(
+          r => (r?.from_columns === undefined) !==
+              (r?.to_columns === undefined))) {
+    expect('error' in applied && applied.error)
+        .toContain('has no join columns in this profile');
     return;
   }
   let mergedModel: SemanticModel;
@@ -3776,25 +3788,21 @@ describe('what applying a profile keeps and replaces', () => {
     expect(net.importedExpression).toBeUndefined();
   });
 
-  // A profile that states one join side keeps the model file's other side.
-  // The completeness check still wants a named profile to state both.
-  test('one join side from the profile, the other from the model file', () => {
-    const profile: ProfileSpec = {
-      name: 'p', entities: [],
-      relationships: [{name: 'placed_by', fromColumns: ['cust_fk'], toColumns: []}],
-    };
-    const applied = applyProfile(model(), profile);
-    const r = applied.relationships[0];
-    expect([r.source.columns, r.destination.columns]).toEqual([['cust_fk'], ['id']]);
-    expect(validateProfileCompleteness(model(), profile).join('\n'))
-        .toContain("relationship 'placed_by' has no join columns in this profile");
-    // The same holds for the other side.
-    const toOnly = applyProfile(model(), {
-      name: 'p', entities: [],
-      relationships: [{name: 'placed_by', fromColumns: [], toColumns: ['key2']}],
-    }).relationships[0];
-    expect([toOnly.source.columns, toOnly.destination.columns])
-        .toEqual([model().relationships[0].source.columns, ['key2']]);
+  // A named profile states both join column lists itself, and the model
+  // file's other side does not stand in for one it leaves out. Applying a
+  // profile that states one side gives the completeness check's error.
+  test('one join side alone gets the completeness error', () => {
+    const error = "profile 'p': relationship 'placed_by' has no join " +
+        "columns in this profile; a named profile states both " +
+        "'from_columns' and 'to_columns' itself";
+    for (const [fromColumns, toColumns] of [[['cust_fk'], []], [[], ['key2']]]) {
+      const profile: ProfileSpec = {
+        name: 'p', entities: [],
+        relationships: [{name: 'placed_by', fromColumns, toColumns}],
+      };
+      expect(() => applyProfile(model(), profile)).toThrow(error);
+      expect(validateProfileCompleteness(model(), profile)).toContain(error);
+    }
   });
 
   // An abstract entity has no source, so it does not keep the sources from
@@ -4669,18 +4677,6 @@ relationships:
       error: "profile 'prod': relationship 'holds': from_columns (2) and " +
           'to_columns (1) have different lengths; the join keys are mismatched',
     });
-    // The load reports the half-bound join inside its schema error.
-    const half = 'name: prod\nrelationships: [{name: refers, from_columns: [p_cust]}]\n';
-    const applied = viaApply(SHOP, half);
-    if (!('error' in applied)) throw new Error('expected an error');
-    expect(applied.error)
-        .toBe(
-            "profile 'prod': relationship 'refers': from_columns and " +
-            'to_columns must be given together (both bind the edge) or both ' +
-            'omitted (a logical edge); one without the other is a half-bound ' +
-            'join.');
-    expect((viaMerge(SHOP, half) as {error: string}).error)
-        .toContain(applied.error.replace("profile 'prod': ", ''));
     expect(viaApply(SHOP, `name: prod
 relationships:
   - {name: holds, from_columns: [], to_columns: []}
@@ -4710,6 +4706,35 @@ actions:
 actions:
   - {name: Notify, executor: {mcp: {server: s}}}
 `)).toBe(true);
+  });
+
+  // A named profile states both join column lists itself, so one side alone
+  // gets the completeness check's error, whatever join columns the model file
+  // has. The merge, which the commands use only for a legacy wrapper, takes
+  // the other list from the model file, and the load then checks the join.
+  test('one side of a join gets the completeness error', () => {
+    const cases: Array<[string, string, string|undefined]> = [
+      // refers has no join columns in the model file.
+      ['refers', 'from_columns: [p_cust]', 'must be given together'],
+      // holds joins [p_cust] to [c_id] in the model file.
+      ['holds', 'from_columns: [a, b]',
+       'from_columns (2) and to_columns (1) have different lengths'],
+      ['holds', 'to_columns: [c_email]', undefined],
+    ];
+    for (const [name, columns, mergeError] of cases) {
+      const profile = `name: prod\nrelationships:\n  - {name: ${name}, ${
+          columns}}\n`;
+      expect({columns, ...viaApply(SHOP, profile)}).toEqual({
+        columns,
+        error: `profile 'prod': relationship '${name}' has no join columns ` +
+            "in this profile; a named profile states both 'from_columns' " +
+            "and 'to_columns' itself",
+      });
+      const merged = viaMerge(SHOP, profile);
+      expect({columns, merged: 'error' in merged ? merged.error : 'loads'})
+          .toEqual({columns, merged: mergeError ?
+                        expect.stringContaining(mergeError) : 'loads'});
+    }
   });
 
   test('the warnings match the ones a load of the merged document gives', () => {
