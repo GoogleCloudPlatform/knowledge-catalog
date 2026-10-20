@@ -6,6 +6,7 @@ import {
   DialectExpression,
   expressionForDialect,
   Field,
+  isFieldBound,
   Metric,
   normalizeDataType,
 } from '../../../src/libts/semantic/ir';
@@ -87,6 +88,34 @@ describe('expressionForDialect', () => {
         .toBe('SUM(orders.net_amount)');
 
     expect(expressionForDialect(unbound, 'BIGQUERY')).toBeUndefined();
+  });
+});
+
+describe('isFieldBound', () => {
+  const bound = (field: Field) => isFieldBound(field);
+
+  test('a non-empty dialect list with no expression is a binding', () => {
+    const field: Field = {
+      name: 'order_month',
+      dialects: [{dialect: 'SNOWFLAKE', expression: "DATE_TRUNC('month', ts)"}],
+    };
+    expect(bound(field)).toBe(true);
+  });
+
+  test('an expression or an imported vendor expression is a binding', () => {
+    expect(bound({name: 'a', expression: 'a'})).toBe(true);
+    expect(bound({
+      name: 'a',
+      importedExpression: 'DIV0(a, b)',
+      importedDialect: 'SNOWFLAKE',
+    })).toBe(true);
+  });
+
+  test('an empty dialect list, stringForm or importedDialect alone is not', () => {
+    expect(bound({name: 'a'})).toBe(false);
+    expect(bound({name: 'a', dialects: []})).toBe(false);
+    expect(bound({name: 'a', stringForm: true})).toBe(false);
+    expect(bound({name: 'a', importedDialect: 'SNOWFLAKE'})).toBe(false);
   });
 });
 

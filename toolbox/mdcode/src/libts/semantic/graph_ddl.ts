@@ -14,13 +14,14 @@
 //      `MEASURE(...)`; Spanner Graph has none).
 //   3. Element metadata. The per-element `OPTIONS` clause carrying
 //      descriptions and synonyms (BigQuery has one; Spanner has none).
-//   4. SQL text. Which of a field's expressions the engine reads.
+//   4. SQL text. Which SQL a field binds to: the engine's own dialect entry
+//      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one.
 //
 // ./bigquery supplies the BigQuery engine; spanner.ts still writes its own
 // graph.
 //
 
-import {AiContext, Association, Entity, Field, Metric, Relationship, SemanticModel,} from './ir';
+import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
 import {stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -69,8 +70,9 @@ export interface GraphEngine {
       string|undefined;
   fieldOptions(field: Field): string|undefined;
 
-  // 4. SQL text. The SQL a field binds to on this engine, or undefined when the
-  // engine has none for it.
+  // 4. SQL text. The engine's dialect, as warnings name it, and the SQL a field
+  // binds to on this engine, or undefined when the engine has none for it.
+  dialect: SqlDialect;
   fieldExpression(field: Field): string|undefined;
 }
 
@@ -327,21 +329,25 @@ function renderNodeTable(
   // Order: declared fields, then the engine's measure properties (any operand
   // properties synthesized for measures, then the measures themselves, which
   // reference those operand properties).
-  // Defense in depth: availability pruning normally strips every unbound field
-  // (it has no column) before generation. Pruning tests isFieldBound. The
-  // BigQuery engine's fieldExpression returns undefined exactly when
-  // fieldBinding does, so the two agree on which fields are bound. The text it
-  // returns is fieldBinding's with the comments removed. But a caller that
-  // generates DDL straight from a bindingOptional load without pruning could
-  // still reach here with an unbound field, such as a purely logical one. Skip
-  // it with a warning rather than emit `<name>` as a phantom bare column the
-  // source table does not have.
+  // A field is kept when the engine has SQL for it. That is narrower than
+  // isFieldBound, which availability pruning tests: a field bound only by
+  // another engine's SQL is bound, yet this engine has nothing to emit for it.
+  // Skip such a field with a warning naming the engine's dialect rather than
+  // emit that other engine's SQL. A field with no SQL at all is unbound;
+  // pruning normally strips it before generation, but a caller that generates
+  // DDL straight from a bindingOptional load without pruning could still reach
+  // here with one (e.g. purely logical). Skip it too rather than emit `<name>`
+  // as a phantom bare column the source table does not have.
   const boundFields = entity.fields.filter(f => {
     if (engine.fieldExpression(f) !== undefined) return true;
     warnings.push(
-        `entity '${entity.name}': field '${f.name}' has no column under this ` +
-        `binding; omitted from the node table (bind it, or govern the logical ` +
-        `model in Knowledge Catalog instead)`);
+        isFieldBound(f) ?
+            `entity '${entity.name}': field '${f.name}' has no '${
+                engine.dialect}' or 'ANSI_SQL' expression; omitted from the ` +
+                `node table` :
+            `entity '${entity.name}': field '${f.name}' has no column under ` +
+                `this binding; omitted from the node table (bind it, or ` +
+                `govern the logical model in Knowledge Catalog instead)`);
     return false;
   });
   const properties = [...boundFields.map(renderOwn), ...measureProperties];

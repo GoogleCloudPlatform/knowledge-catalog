@@ -186,9 +186,10 @@ export interface DialectExpression {
  * list). It also populates `expression` (the target-dialect text, or else the
  * `ANSI_SQL` one) and `importedExpression` (the first other vendor entry, with
  * its `importedDialect`) via `pickDialect`. A bound field sets at least one of
- * `expression` or `importedExpression`. When only `importedExpression` is
- * present, `expression` awaits a transpile pass (see ./transpile) that fills it
- * from the imported form.
+ * `expression`, `importedExpression` or a non-empty `dialects` (the loader sets
+ * one of the first two whenever it writes the third). When only
+ * `importedExpression` is present, `expression` awaits a transpile pass (see
+ * ./transpile) that fills it from the imported form.
  */
 export interface Field {
   name: string;
@@ -199,11 +200,11 @@ export interface Field {
   stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // A field with NO physical column under the current binding is UNBOUND:
   // structurally absent, not null. There is no explicit flag -- a field is
-  // unbound exactly when it carries no `expression` (and no
-  // `importedExpression`); see fieldBinding. A metric, relationship, or action
-  // that reads an unbound field is unavailable here rather than reading a null
-  // (see the binding-profiles guide). This is the field-level analogue of an
-  // entity's `abstract` (a whole class with no table).
+  // unbound exactly when it carries no `expression`, no `importedExpression`
+  // and no non-empty `dialects`; see isFieldBound. A metric, relationship, or
+  // action that reads an unbound field is unavailable here rather than reading
+  // a null (see the binding-profiles guide). This is the field-level analogue
+  // of an entity's `abstract` (a whole class with no table).
   dimension?: Dimension;           // dimension metadata (e.g. temporal role)
 
   label?: string;                  // human display label (distinct from name/description)
@@ -290,12 +291,13 @@ export function isTimeDimension(field: Field): boolean {
   return field.type !== undefined && TEMPORAL_TYPES.has(field.type);
 }
 
-// The physical column (or SQL) a field binds to under the current binding, or
-// undefined when the field is unbound (structurally absent -- no column). A
-// field's target/canonical `expression` wins; a field awaiting transpilation
-// falls back to its imported vendor expression, which still names a real
-// column, so it is bound rather than unbound. A field with neither is unbound
-// (no column at all). `isFieldBound` asks the same question as a yes or no.
+// The physical column (or SQL) a field binds to when no engine is named, or
+// undefined when it carries neither expression. A field's target/canonical
+// `expression` wins; a field awaiting transpilation falls back to its imported
+// vendor expression, which still names a real column. Undefined here is not
+// the same as unbound: a field bound only through a `dialects` list has no
+// text here yet counts as bound (see isFieldBound). The graph generators ask
+// for their own engine's text through `expressionForDialect` instead.
 export function fieldBinding(
     field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
@@ -323,13 +325,16 @@ void everyFieldKeyListed;
 
 /**
  * Whether a field is bound to a column under the current binding: it carries an
- * expression or an imported vendor expression. A dialect list, `stringForm` and
- * `importedDialect` describe a binding and are not one on their own. Pruning,
- * the graph generators, inheritance and push validation all use this test.
+ * expression, an imported vendor expression, or a non-empty dialect list.
+ * `stringForm` and `importedDialect` describe a binding and are not one on
+ * their own. Inheritance, profile pruning and push validation use this test.
+ * A graph generator asks a narrower question, whether the field has SQL for its
+ * engine (see expressionForDialect), so a bound field can still be left out of
+ * one engine's graph.
  */
 export function isFieldBound(
-    field: Pick<Field, 'expression'|'importedExpression'>): boolean {
-  return fieldBinding(field) !== undefined;
+    field: Pick<Field, 'expression'|'importedExpression'|'dialects'>): boolean {
+  return fieldBinding(field) !== undefined || (field.dialects?.length ?? 0) > 0;
 }
 
 /**

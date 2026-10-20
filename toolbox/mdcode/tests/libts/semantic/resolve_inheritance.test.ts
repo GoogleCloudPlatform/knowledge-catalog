@@ -382,10 +382,9 @@ describe('a field inherited from more than one ancestor', () => {
 
 
 describe('a redeclaration that carries no SQL', () => {
-  test('a lone stringForm, importedDialect or dialect list keeps the parent\'s binding', () => {
+  test('a lone stringForm or importedDialect keeps the parent\'s binding', () => {
     const extras: Array<Partial<Field>> = [
       {stringForm: true}, {importedDialect: 'SNOWFLAKE'},
-      {dialects: [{dialect: 'BIGQUERY', expression: 'vip_name'}]},
     ];
     for (const extra of extras) {
       const {model: r} = resolveInheritance(model([
@@ -447,6 +446,22 @@ describe('a subtype rebinding an inherited field', () => {
     const merged = entityOf(r, 'vip_customer').fields.find(f => f.name === 'name')!;
     expect(merged.expression).toBe('c_name');
     expect(merged.dialects).toBeUndefined();
+    expect(merged.type).toBe('String');
+  });
+
+  test('a dialect list alone rebinds the field over the parent\'s expression', () => {
+    const {model: r} = resolveInheritance(model([
+      entity('customer', [], undefined, {fields: [parentName]}),
+      entity('vip_customer', [], ['customer'], {
+        fields: [{
+          name: 'name',
+          dialects: [{dialect: 'BIGQUERY', expression: 'vip_name'}],
+        }],
+      }),
+    ]));
+    const merged = entityOf(r, 'vip_customer').fields.find(f => f.name === 'name')!;
+    expect(merged.dialects).toEqual([{dialect: 'BIGQUERY', expression: 'vip_name'}]);
+    expect(merged.expression).toBeUndefined();
     expect(merged.type).toBe('String');
   });
 

@@ -3,9 +3,10 @@
 //
 // This is the transpiled counterpart to bigquery.e2e.test.ts. That golden
 // (`vendor_dialects.bigquery.golden.sql`) captures the UN-transpiled output --
-// vendor SQL emitted verbatim because the loader left `expression` unset. This
-// one captures what `kcmd push --transpile` produces instead: the same model
-// after the pass fills each missing target `expression` from its
+// each field or metric with only vendor SQL omitted with a warning, because
+// the loader left `expression` unset and BigQuery never emits another engine's
+// SQL. This one captures what `kcmd push --transpile` produces instead: the
+// same model after the pass fills each missing target `expression` from its
 // `importedExpression`, so the DDL carries GoogleSQL. Every expression in the
 // golden was dry-run-validated against real BigQuery (see the fixture header).
 //

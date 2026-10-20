@@ -671,9 +671,11 @@ export function pruneUnavailable(
   };
 
   // A field is bound when isFieldBound says so; otherwise it is unbound
-  // (structurally absent under this profile). isFieldBound is the shared
-  // predicate the generator also uses, so a field awaiting transpilation (its
-  // column carried on the imported expression) counts as bound, not dropped.
+  // (structurally absent under this profile). A field awaiting transpilation
+  // (its column carried on the imported expression) or bound only through a
+  // dialect list counts as bound, not dropped. The graph generators ask a
+  // narrower question, whether the field has SQL for their engine, and leave
+  // out a bound field that has none with a warning of their own.
   //
   // Availability is judged on each entity's resolved fields, declared plus
   // inherited, since a metric can read an inherited field as readily as a
@@ -1901,10 +1903,11 @@ function evaluatedTexts(
 }
 
 // The texts pruning reads: those a profile of `dialect` evaluates, and the text
-// the graph generators emit today, which is `fieldBinding` whatever the
+// the Spanner graph generator emits today, which is `fieldBinding` whatever the
 // engine. Reading both keeps a deployed graph from reading a field the profile
-// leaves unbound. Once each generator emits its own engine's text, the
-// emitted text adds nothing and this can read `textsFor` alone.
+// leaves unbound. The BigQuery generator already emits its own engine's text;
+// once Spanner does too, the emitted text adds nothing and this can read
+// `textsFor` alone.
 function prunedTexts(
     f: Pick<
         Field,

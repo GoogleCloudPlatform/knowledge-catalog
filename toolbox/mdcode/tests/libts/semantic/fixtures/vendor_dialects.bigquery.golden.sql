@@ -8,24 +8,12 @@ NODE TABLES (
       o_custkey,
       o_orderstatus,
       o_totalprice,
-      IFF(o_orderstatus = 'F', 'fulfilled', 'open') AS order_status_label OPTIONS(description="Human-readable order status"),
-      NVL(o_clerk, 'unknown') AS clerk_name,
-      o_comment::text AS comment_text,
-      o_totalprice::double AS price_float,
-      DATEADD(day, 7, o_orderdate) AS due_date,
-      DATEDIFF(day, o_orderdate, o_shipdate) AS ship_days,
-      IFF(o_orderstatus = 'F', o_totalprice, 0) AS fulfilled_revenue_input,
-      NVL(o_totalprice, 0) AS avg_price_known_input,
-      MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue (portable control expression)"),
-      MEASURE(SUM(fulfilled_revenue_input)) AS fulfilled_revenue OPTIONS(description="Revenue from fulfilled orders"),
-      MEASURE(AVG(avg_price_known_input)) AS avg_price_known OPTIONS(description="Average order price, treating NULL as zero")
+      MEASURE(SUM(o_totalprice)) AS total_revenue OPTIONS(description="Total order revenue (portable control expression)")
     ),
   `samples.tpch.customer` AS customer
     KEY(c_custkey)
     PROPERTIES(
-      c_custkey,
-      REGEXP_LIKE(c_phone, '[0-9]+') AS phone_is_numeric,
-      c_mktsegment ILIKE 'AUTO%' AS is_auto_segment
+      c_custkey
     )
 )
 EDGE TABLES (
@@ -47,3 +35,13 @@ EDGE TABLES (
 -- field 'customer.is_auto_segment': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'DATABRICKS' expression as imported_expression (needs transpilation to 'BIGQUERY')
 -- metric 'fulfilled_revenue': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
 -- metric 'avg_price_known': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' expression as imported_expression (needs transpilation to 'BIGQUERY')
+-- metric 'fulfilled_revenue' has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to emit as a MEASURE)
+-- metric 'avg_price_known' has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to emit as a MEASURE)
+-- entity 'orders': field 'order_status_label' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'orders': field 'clerk_name' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'orders': field 'comment_text' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'orders': field 'price_float' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'orders': field 'due_date' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'orders': field 'ship_days' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'customer': field 'phone_is_numeric' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table
+-- entity 'customer': field 'is_auto_segment' has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table

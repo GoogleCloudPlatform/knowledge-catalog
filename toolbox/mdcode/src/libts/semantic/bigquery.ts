@@ -20,8 +20,8 @@
 //
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
-import {AiContext, Entity, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {fieldBindingWithoutComments, referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {referencedEntityNames, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
@@ -69,6 +69,7 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
         optionsClause(elementDescription(description, ai), ai?.synonyms),
     fieldOptions: field =>
         optionsClause(fieldDescription(field), field.aiContext?.synonyms),
+    dialect: 'BIGQUERY',
     fieldExpression,
   };
 }
@@ -142,15 +143,18 @@ function placeMetric(
     metric: Metric, input: MetricPlacementInput,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
   const {entityByName, skipped, ancestorsUsed} = input;
-  // The IR keeps at most two expression forms; a measure is emitted from the
-  // target/canonical `expression`, falling back to the imported vendor SQL when
-  // that is all the model carries (a transpile pass may fill `expression`
-  // later).
+  // A measure is emitted from the metric's BigQuery SQL (see
+  // metricExpression). A metric with SQL only for other engines is skipped
+  // with a warning naming the dialects it lacks, rather than emitting that
+  // other engine's SQL into a BigQuery graph.
   const expression = metricExpression(metric);
   if (expression === undefined) {
-    warnings.push(`metric '${
-        metric
-            .name}' has no expression; skipped (nothing to emit as a MEASURE)`);
+    warnings.push(
+        metric.dialects?.length || metric.importedExpression !== undefined ?
+            `metric '${metric.name}' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+                `expression; skipped (nothing to emit as a MEASURE)` :
+            `metric '${metric.name}' has no expression; skipped (nothing ` +
+                `to emit as a MEASURE)`);
     return;
   }
 
@@ -434,22 +438,25 @@ function uniqueName(base: string, taken: Set<string>): string {
 }
 
 
-// The target/canonical expression, falling back to the imported vendor SQL when
-// that is all the IR carries (see the Field/Metric expression-fidelity
-// contract), with its comments removed. fieldBindingWithoutComments reads
-// imported vendor SQL in its own dialect, so it keeps an operator BigQuery
-// would read as a comment, such as PostgreSQL's `#`. The DDL puts ` AS <name>`
-// and a comma after the expression on the same line, and a line comment left
-// in would swallow them. A metric's SQL is read the same way.
+// The SQL BigQuery runs for a field or metric: its `BIGQUERY` dialect entry,
+// else its `ANSI_SQL` one (see expressionForDialect), read as BigQuery with its
+// comments removed. Another engine's vendor SQL is never returned. The DDL puts
+// ` AS <name>` and a comma after the expression on the same line, and a line
+// comment left in would swallow them. The `?? expression` fallback is for the
+// `--transpile` push option, whose pass (./transpile) writes translated
+// BigQuery SQL into `expression` for an item that only had vendor text; the
+// loader fills `expression` only from a `BIGQUERY` or `ANSI_SQL` entry, so when
+// the list has neither, `expression` can only have come from that pass.
+// Once push drops `--transpile`, the fallback changes nothing.
 function fieldExpression(f: Field): string|undefined {
-  // Reads the canonical accessor, fieldBinding, so the shared generator's
-  // notion of "bound" matches availability pruning's (an unbound field yields
-  // undefined; a field awaiting transpilation stays bound via its imported
-  // expression).
-  return fieldBindingWithoutComments(f);
+  return bigQuerySql(f);
 }
 function metricExpression(m: Metric): string|undefined {
-  return fieldBindingWithoutComments(m);
+  return bigQuerySql(m);
+}
+function bigQuerySql(item: Field|Metric): string|undefined {
+  const text = expressionForDialect(item, 'BIGQUERY') ?? item.expression;
+  return text === undefined ? undefined : sqlWithoutComments(text);
 }
 
 

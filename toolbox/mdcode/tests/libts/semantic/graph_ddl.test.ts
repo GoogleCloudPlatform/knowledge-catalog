@@ -50,6 +50,7 @@ describe('the graph structure is engine-neutral', () => {
     placeMetrics: () => new Map(),
     elementOptions: () => undefined,
     fieldOptions: () => undefined,
+    dialect: 'SPANNER',
     fieldExpression: fieldBindingWithoutComments,
   };
 
@@ -215,6 +216,7 @@ describe('each engine difference comes from the engine', () => {
           return fieldBinding(field);
       }
     },
+    dialect: 'POSTGRES',
   };
 
   const MODEL: SemanticModel = {
@@ -230,6 +232,7 @@ describe('each engine difference comes from the engine', () => {
           {name: 'amount', expression: 'orders.amount', description: 'Total'},
           {name: 'customer_id', expression: 'orders.customer_id'},
           {name: 'notes', expression: 'orders.notes'},
+          {name: 'memo'},
         ],
       },
       {
@@ -413,9 +416,14 @@ NODE TABLES (
     expect(warnings).toContain(
         `1 constraint(s) reach Knowledge Catalog only; the Marked push ` +
         `deploys none of them.`);
-    // A field the engine has no SQL for is left out of its node table.
+    // A field the engine has no SQL for is left out of its node table. One
+    // bound by SQL the engine does not read is named against the engine's
+    // dialect; one with no SQL at all is unbound.
     expect(warnings).toContain(
-        `entity 'orders': field 'notes' has no column under this binding; ` +
+        `entity 'orders': field 'notes' has no 'POSTGRES' or 'ANSI_SQL' ` +
+        `expression; omitted from the node table`);
+    expect(warnings).toContain(
+        `entity 'orders': field 'memo' has no column under this binding; ` +
         `omitted from the node table (bind it, or govern the logical model in ` +
         `Knowledge Catalog instead)`);
   });
