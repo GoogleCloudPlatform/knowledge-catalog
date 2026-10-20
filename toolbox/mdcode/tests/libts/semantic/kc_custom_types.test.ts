@@ -86,18 +86,27 @@ describe('the semantic-constraint aspect template', () => {
 
 describe('the semantic-model-file aspect template', () => {
   test('holds the file name, the content, the push id and the copy count at ' +
-           'indices 1 to 4',
+           'indices 1 to 4, and a part\'s number and count at 5 and 6',
        () => {
          const fields = template(FILE_COPY_TYPE_ID).recordFields;
-         expect(indices(fields))
-             .toEqual({fileName: 1, content: 2, pushId: 3, pushFileCount: 4});
+         expect(indices(fields)).toEqual({
+           fileName: 1,
+           content: 2,
+           pushId: 3,
+           pushFileCount: 4,
+           part: 5,
+           partCount: 6,
+         });
          expect(fields.map((f: any) => f.type))
-             .toEqual(['string', 'string', 'string', 'int']);
-         // The push id and the copy count came later, so they are optional and
-         // init can patch them into a type an earlier kcmd created.
+             .toEqual(['string', 'string', 'string', 'int', 'int', 'int']);
+         // The push id, the copy count and the part fields came later, so
+         // they are optional and init can patch them into a type an earlier
+         // kcmd created.
          expect(fields.map((f: any) => f.constraints)).toEqual([
            {required: true},
            {required: true},
+           undefined,
+           undefined,
            undefined,
            undefined,
          ]);
@@ -134,5 +143,36 @@ describe('provisionCustomTypes', () => {
                  'no permission to create aspect type ' +
                  '\'semantic-model-file\' in project \'acme\' (permission ' +
                  'denied); every push needs it, so init cannot finish');
+       });
+
+  // A push that stores a file in parts needs the part fields, which a type
+  // an earlier kcmd created lacks. Init patches the type it finds with the
+  // whole template, so it gains them.
+  test('init adds the part fields to a semantic-model-file type that is ' +
+           'already there',
+       async () => {
+         spyOn(CatalogClient.prototype, 'createAspectType')
+             .mockImplementation(
+                 async () => ({status: 409, message: 'already exists'}));
+         const update =
+             spyOn(CatalogClient.prototype, 'updateAspectType')
+                 .mockImplementation(async () => ({status: 200, result: {}}));
+         spyOn(CatalogClient.prototype, 'awaitOperation')
+             .mockImplementation(async () => undefined);
+         spyOn(CatalogClient.prototype, 'createEntryType')
+             .mockImplementation(
+                 async () => ({status: 409, message: 'already exists'}));
+
+         const result = await provisionCustomTypes(
+             new CatalogClient({} as any), {project: 'acme'});
+
+         expect(result).toEqual({});
+         const call =
+             update.mock.calls.find((c: any[]) => c[2] === FILE_COPY_TYPE_ID)!;
+         expect(call[0]).toBe('acme');
+         expect(call[4])
+             .toEqual(['description', 'display_name', 'metadata_template']);
+         expect(indices((call[3] as any).metadataTemplate.recordFields))
+             .toMatchObject({part: 5, partCount: 6});
        });
 });

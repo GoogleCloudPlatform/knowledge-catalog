@@ -9,7 +9,8 @@
 // `schema` aspect), and hands the hydrated entries to the pure reader
 // (`kc_converter.modelsFromCatalogResources`). With the first-generation
 // aspects it also returns the file copies a push stored of the model and
-// profile files, for the caller to write instead of the rebuilt model.
+// profile files, the parts of a file stored in parts joined back into the
+// file, for the caller to write instead of the rebuilt model.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -46,10 +47,11 @@ export interface KcPullOptions {
 
 export interface KcPullResult {
   models: SemanticModel[];
-  // The file copies a push stored for the model, sorted by file name. Set
-  // only with v2Aspects off. Empty when the catalog holds no copy of the
-  // model file, `<model>.yaml`; the caller then writes the model rebuilt from
-  // the aspects.
+  // The file copies a push stored for the model, one per file and sorted by
+  // file name: a file stored in parts comes back as its parts joined in
+  // order, the file exactly as pushed. Set only with v2Aspects off. Empty
+  // when the catalog holds no copy of the model file, `<model>.yaml`; the
+  // caller then writes the model rebuilt from the aspects.
   rawFiles?: FileCopy[];
   warnings: string[];
 }
@@ -191,10 +193,12 @@ export async function pullKnowledgeCatalog(
   const copies = readFileCopies(
       hydrated.filter(e => idOf(e.name).startsWith(own)), warnings);
   const skipped = warnings.slice(before);
-  // Every copy one push stores carries that push's id and how many copies it
-  // stored. Copies whose ids differ, or of which only some carry one, or a
-  // number of copies other than that count, mean the last push stopped
-  // partway. Writing them would mix files from two pushes or leave one out.
+  // Every copy one push stores carries that push's id and how many files it
+  // stored, a file stored in parts counted once. Copies whose ids differ, or
+  // of which only some carry one, mean the last push stopped partway. So do
+  // the parts of a file that do not number 1 to their part count, and, once
+  // the parts are joined, a number of files other than that count. Writing
+  // them would mix files from two pushes or leave one out.
   // A push that stores copies also labels the model entry with its push id,
   // and writes that entry first. A labeled model whose copies are missing or
   // carry another id means the last push stopped before storing them.
@@ -203,12 +207,16 @@ export async function pullKnowledgeCatalog(
   const count = copies[0]?.pushFileCount;
   const anchor = hydrated[targets.indexOf(anchors[0])];
   const label = anchor.entrySource?.labels?.[PUSH_ID_LABEL];
+  const joined = joinFileCopyParts(copies);
+  const files = joined.files;
   const unfinished = new Set(copies.map(f => f.pushId)).size > 1 ?
       'its file copies in the catalog come from different pushes' :
-      count !== undefined && copies.length < count ?
-      `the catalog holds ${copies.length} of its ${count} file copies` :
-      count !== undefined && copies.length > count ?
-      `the catalog holds ${copies.length} file copies, but the push stored ` +
+      joined.problem !== undefined ?
+      joined.problem :
+      count !== undefined && files.length < count ?
+      `the catalog holds ${files.length} of its ${count} file copies` :
+      count !== undefined && files.length > count ?
+      `the catalog holds ${files.length} file copies, but the push stored ` +
           `${count}` :
       label !== undefined && !copies.length ?
       (skipped.length ? 'the catalog holds no readable file copy' :
@@ -224,11 +232,11 @@ export async function pullKnowledgeCatalog(
         `so pull writes nothing. Push again, then pull.` +
         skipped.map(w => ` ${w}.`).join(''));
   }
-  if (copies.some(f => f.fileName === `${model}.yaml`)) {
+  if (files.some(f => f.fileName === `${model}.yaml`)) {
     // The rebuilt model is not written, so its warnings are left out.
     return {
       models: read.models,
-      rawFiles: copies,
+      rawFiles: files,
       warnings: [...new Set(warnings)],
     };
   }
@@ -252,8 +260,9 @@ function isFileCopyEntry(entry: Entry): boolean {
 }
 
 // The file copies among the hydrated entries, sorted by file name, each with
-// the push id and copy count it carries. A copy whose aspect holds no file
-// name or no content is skipped with a warning.
+// the push id and copy count it carries, and the part number and part count
+// of a part of a file stored in parts. A copy whose aspect holds no file name
+// or no content is skipped with a warning.
 function readFileCopies(entries: Entry[], warnings: string[]): FileCopy[] {
   const files: FileCopy[] = [];
   for (const entry of entries) {
@@ -276,10 +285,76 @@ function readFileCopies(entries: Entry[], warnings: string[]): FileCopy[] {
       ...(typeof data.pushFileCount === 'number' ?
               {pushFileCount: data.pushFileCount} :
               {}),
+      ...(typeof data.part === 'number' ? {part: data.part} : {}),
+      ...(typeof data.partCount === 'number' ? {partCount: data.partCount} :
+                                               {}),
     });
   }
   return files.sort(
       (a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0);
+}
+
+// One copy per file, from copies sorted by file name: a file stored whole as
+// it is, and a file stored in parts as its parts joined in order, with the
+// push id and file count they carry. The caller compares the files with that
+// count. `problem` says instead why the copies of a file do not make up the
+// file: its parts must number 1 to their part count, each once, with nothing
+// else stored under its name. The parts come from one push, since the caller
+// has checked that every copy does.
+function joinFileCopyParts(copies: readonly FileCopy[]):
+    {files: FileCopy[]; problem?: string} {
+  const byName = new Map<string, FileCopy[]>();
+  for (const copy of copies) {
+    byName.set(copy.fileName, [...(byName.get(copy.fileName) ?? []), copy]);
+  }
+  const files: FileCopy[] = [];
+  for (const [fileName, group] of byName) {
+    const [first] = group;
+    const whole = group.every(
+        c => c.part === undefined && c.partCount === undefined);
+    if (whole && group.length === 1) {
+      files.push(first);
+      continue;
+    }
+    if (whole) {
+      return {
+        files: [],
+        problem: `the catalog holds ${group.length} copies of file ` +
+            `'${fileName}'`,
+      };
+    }
+    const count = first.partCount ?? 0;
+    const numbered = Number.isInteger(count) && count >= 1 &&
+        group.every(
+            c => c.partCount === count && Number.isInteger(c.part) &&
+                c.part! >= 1 && c.part! <= count) &&
+        new Set(group.map(c => c.part)).size === group.length;
+    if (!numbered) {
+      return {
+        files: [],
+        problem: `the parts of file '${fileName}' in the catalog do not run ` +
+            `from 1 to their part count`,
+      };
+    }
+    if (group.length < count) {
+      return {
+        files: [],
+        problem: `the catalog holds ${group.length} of the ${count} parts of ` +
+            `file '${fileName}'`,
+      };
+    }
+    files.push({
+      fileName,
+      content: [...group].sort((a, b) => a.part! - b.part!)
+                   .map(c => c.content)
+                   .join(''),
+      ...(first.pushId !== undefined ? {pushId: first.pushId} : {}),
+      ...(first.pushFileCount !== undefined ?
+              {pushFileCount: first.pushFileCount} :
+              {}),
+    });
+  }
+  return {files};
 }
 
 

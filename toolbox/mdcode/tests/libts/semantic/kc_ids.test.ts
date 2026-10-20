@@ -3,7 +3,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Entity, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
-import {entryIdOf, linkSlug, Namer, NamerOptions, ownedEntryIdPrefixes, relationshipLinkId, slug} from '../../../src/libts/semantic/kc_ids';
+import {entryIdOf, fileCopySlug, linkSlug, Namer, NamerOptions, ownedEntryIdPrefixes, relationshipLinkId, slug} from '../../../src/libts/semantic/kc_ids';
 
 const BASE_OPTS: NamerOptions = {
   project: 'p',
@@ -118,6 +118,17 @@ describe('Namer.fileEntryId', () => {
     const names = new Namer(BASE_OPTS);
     expect(names.fileEntryId('retail_sales', 'retail_sales.profile.prod.yaml'))
         .toBe('retail_sales.files.retail_sales.profile.prod.yaml');
+  });
+
+  // A part of a file stored in parts sits under the same `.files.` prefix,
+  // and its id cannot be a stored file's: those end in `.yaml`.
+  test('a part of a file stored in parts adds .part-<n> after the slug', () => {
+    const names = new Namer(BASE_OPTS);
+    expect(names.fileEntryId('retail_sales', 'retail_sales.yaml', 2))
+        .toBe('retail_sales.files.retail_sales.yaml.part-2');
+    expect(fileCopySlug('retail_sales.profiles/a b.yaml', 12))
+        .toBe('retail_sales.profiles_a_b.yaml.part-12');
+    expect(fileCopySlug('retail_sales.yaml')).toBe('retail_sales.yaml');
   });
 });
 

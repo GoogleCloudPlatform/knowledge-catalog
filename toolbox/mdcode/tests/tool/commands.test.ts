@@ -1172,12 +1172,14 @@ describe('the file copy round trip', () => {
          expect(entryType).not.toHaveBeenCalled();
        });
 
-  test('a file over the aspect size limit fails in the preflight, naming it',
+  test('a file over the part cap fails in the preflight, naming it',
        async () => {
-         // The limit production enforces on one aspect's data.
+         // The limit production enforces on one aspect's data, and the most
+         // parts push stores a file in.
          expect(kc.MAX_ASPECT_DATA_BYTES).toBe(122_880);
-         writeRoundTripWorkspace(
-             `${ROUND_TRIP_PROFILE}# ${'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`);
+         expect(kc.MAX_FILE_COPY_PARTS).toBe(16);
+         writeRoundTripWorkspace(`${ROUND_TRIP_PROFILE}# ${
+             'x'.repeat(kc.MAX_FILE_COPY_PARTS * kc.MAX_ASPECT_DATA_BYTES)}\n`);
          const {create, list} = fakeCatalog();
          const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
@@ -1186,9 +1188,92 @@ describe('the file copy round trip', () => {
              .toContain(
                  'file \'commerce.profile.prod.yaml\' is too large to store ' +
                  'in Knowledge Catalog');
+         expect(messages(errorSpy))
+             .toContain('at most 16 parts of at most 122880 bytes each');
          // The check is local, so the push stops before it reads the catalog.
          expect(list).not.toHaveBeenCalled();
          expect(create).not.toHaveBeenCalled();
+       });
+
+  // A profile file just over one aspect, of two-byte characters, so the cut
+  // between its two parts falls between multi-byte characters.
+  const BIG_PROFILE =
+      `${ROUND_TRIP_PROFILE}# ${'é'.repeat(kc.MAX_ASPECT_DATA_BYTES / 2)}\n`;
+  // The ids of the file copies the fake catalog holds, sorted.
+  const copyIds = (entries: Map<string, Entry>) =>
+      [...entries.values()]
+          .filter(e => e.entryType.endsWith('/semantic-model-file'))
+          .map(e => e.name.split('/entries/')[1])
+          .sort();
+  // The file-copy type as `kcmd init` provisions it, part fields included.
+  const withPartFields = async () => ({
+    status: 200,
+    result: {
+      metadataTemplate: {
+        recordFields: ['part', 'partCount'].map(name => ({name})),
+      },
+    },
+  });
+
+  test('a file over one aspect is pushed in parts and pulled back byte for ' +
+           'byte',
+       async () => {
+         writeRoundTripWorkspace(BIG_PROFILE);
+         const {entries, aspectType} = fakeCatalog();
+         aspectType.mockImplementation(withPartFields as any);
+
+         expect(await push({profile: false})).toBe(0);
+         expect(copyIds(entries)).toEqual([
+           'commerce.files.commerce.profile.prod.yaml.part-1',
+           'commerce.files.commerce.profile.prod.yaml.part-2',
+           'commerce.files.commerce.yaml',
+         ]);
+
+         const profilePath =
+             path.join(entryGroupDir(), 'commerce.profile.prod.yaml');
+         fs.rmSync(profilePath);
+         expect(await pull()).toBe(0);
+         expect(fs.readFileSync(profilePath, 'utf8')).toBe(BIG_PROFILE);
+         expect(fs.readFileSync(path.join(entryGroupDir(), 'commerce.yaml'), 'utf8'))
+             .toBe(ROUND_TRIP_MODEL);
+       });
+
+  // A file-copy type an earlier kcmd created lacks the part fields.
+  test('a push that stores a file in parts into a project whose type lacks ' +
+           'the part fields writes nothing and asks for kcmd init',
+       async () => {
+         writeRoundTripWorkspace(BIG_PROFILE);
+         const {create} = fakeCatalog();
+         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+         expect(await push({profile: false})).toBe(1);
+         expect(messages(errorSpy))
+             .toContain(
+                 'Error: file \'commerce.profile.prod.yaml\' is too large for ' +
+                 'one aspect, so push stores it in 2 parts, but aspect type ' +
+                 '\'semantic-model-file\' in project \'test-project\' has no ' +
+                 '\'part\' or \'partCount\' field to hold a part; run ' +
+                 '\'kcmd init --semantic-model\' to add them, then push again.');
+         expect(create).not.toHaveBeenCalled();
+       });
+
+  test('a re-push after the file fits one aspect again deletes its parts',
+       async () => {
+         writeRoundTripWorkspace(BIG_PROFILE);
+         const {entries, aspectType} = fakeCatalog();
+         aspectType.mockImplementation(withPartFields as any);
+         expect(await push({profile: false})).toBe(0);
+
+         fs.writeFileSync(
+             path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
+             ROUND_TRIP_PROFILE);
+         expect(await push({profile: false})).toBe(0);
+         expect(copyIds(entries)).toEqual([
+           'commerce.files.commerce.profile.prod.yaml',
+           'commerce.files.commerce.yaml',
+         ]);
+         expect(storedCopies(entries)['commerce.profile.prod.yaml'])
+             .toBe(ROUND_TRIP_PROFILE);
        });
 });
 
@@ -1777,10 +1862,12 @@ describe('push checks each file before anything is stored', () => {
   // the graph leg too.
   for (const [label, setup, error] of [
          [
-           'a file over the size limit',
+           'a file over the part cap',
            () => fs.appendFileSync(
                path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
-               `# ${'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`),
+               `# ${
+                   'x'.repeat(
+                       kc.MAX_FILE_COPY_PARTS * kc.MAX_ASPECT_DATA_BYTES)}\n`),
            'file \'commerce.profile.prod.yaml\' is too large to store',
          ],
          [
@@ -1816,10 +1903,10 @@ describe('push checks each file before anything is stored', () => {
     });
   }
 
-  test('a --validate-only push of a file over the size limit fails',
+  test('a --validate-only push of a file over the part cap fails',
        async () => {
-         writeRoundTripWorkspace(
-             `${ROUND_TRIP_PROFILE}# ${'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`);
+         writeRoundTripWorkspace(`${ROUND_TRIP_PROFILE}# ${
+             'x'.repeat(kc.MAX_FILE_COPY_PARTS * kc.MAX_ASPECT_DATA_BYTES)}\n`);
          fakeCatalog();
          const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 

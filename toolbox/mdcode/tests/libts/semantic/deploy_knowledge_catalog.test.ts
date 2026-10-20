@@ -16,7 +16,9 @@ import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, MAX_FILE_COPY_PARTS, preflightKnowledgeCatalog, storedFileCopies,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {FileCopy} from '../../../src/libts/semantic/kc_custom_types';
+import {fileCopyData} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -618,6 +620,36 @@ describe('checkFileCopies', () => {
     expect(checkFileCopies([{...file, content, ...stamped}]))
         .toContain('file \'sales.yaml\' is too large to store');
   });
+
+  test('the parts of one file share its name and do not collide', () => {
+    const {files} = storedFileCopies(
+        [{fileName: 'sales.yaml', content: 'x'.repeat(MAX_ASPECT_DATA_BYTES)}],
+        'p'.repeat(36));
+    expect(files.length).toBe(2);
+    expect(checkFileCopies(files)).toBeUndefined();
+  });
+
+  // A part's entry id is the file's slug and `.part-<n>`, so a file whose
+  // slug is that id would take the part's entry, in either order.
+  test('a file whose slug is the id of another file\'s part collides with it',
+       () => {
+         const {files} = storedFileCopies(
+             [{
+               fileName: 'sales.yaml',
+               content: 'x'.repeat(MAX_ASPECT_DATA_BYTES),
+             }],
+             'p'.repeat(36));
+         expect(checkFileCopies(
+                    [...files, {fileName: 'sales.yaml.part-2', content: 'x'}]))
+             .toBe(
+                 'files \'sales.yaml\' and \'sales.yaml.part-2\' both map to ' +
+                 'one entry id; rename one of them');
+         expect(checkFileCopies(
+                    [{fileName: 'sales.yaml.part-1', content: 'x'}, ...files]))
+             .toBe(
+                 'files \'sales.yaml.part-1\' and \'sales.yaml\' both map to ' +
+                 'one entry id; rename one of them');
+       });
 });
 
 
@@ -657,6 +689,329 @@ describe('deployKnowledgeCatalog: the size of a file copy', () => {
     expect(content.length + ENVELOPE).toBeLessThan(LIMIT);
     expect((await preflight(content)).success).toBe(false);
   });
+});
+
+
+describe('storedFileCopies: a file too large for one aspect', () => {
+  const PUSH = 'p'.repeat(36);
+  // The size of a copy's aspect data, as Dataplex measures it.
+  const bytes = (f: FileCopy) =>
+      new TextEncoder().encode(JSON.stringify(fileCopyData(f))).length;
+  // The bytes a text takes inside a JSON string, escapes included.
+  const textBytes = (s: string) =>
+      new TextEncoder().encode(JSON.stringify(s)).length - 2;
+  // The aspect data around the text of a whole copy of `fileName`.
+  const envelope = (fileName: string) =>
+      bytes({fileName, content: '', pushId: PUSH, pushFileCount: 1});
+  // `size` bytes of text: lines of 99 `x` and a line break, which takes two
+  // bytes once escaped, then `x`.
+  const lines = (size: number) => {
+    const n = Math.floor(size / 101);
+    return `${'x'.repeat(99)}\n`.repeat(n) + 'x'.repeat(size - n * 101);
+  };
+  // A surrogate without its other half.
+  const LONE =
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
+  test('a file whose copy fits one aspect keeps the single-copy shape', () => {
+    const files = [
+      {fileName: 'sales.yaml', content: 'a: 1\n'},
+      {fileName: 'sales.profile.prod.yaml', content: 'name: prod\n'},
+    ];
+    expect(storedFileCopies(files, PUSH)).toEqual({
+      files: [
+        {
+          fileName: 'sales.yaml',
+          content: 'a: 1\n',
+          pushId: PUSH,
+          pushFileCount: 2,
+        },
+        {
+          fileName: 'sales.profile.prod.yaml',
+          content: 'name: prod\n',
+          pushId: PUSH,
+          pushFileCount: 2,
+        },
+      ],
+    });
+    // A copy exactly at the limit is still one copy.
+    const content =
+        'x'.repeat(MAX_ASPECT_DATA_BYTES - envelope('sales.yaml'));
+    const {files: [only]} =
+        storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
+    expect(only).toEqual(
+        {fileName: 'sales.yaml', content, pushId: PUSH, pushFileCount: 1});
+    expect(bytes(only)).toBe(MAX_ASPECT_DATA_BYTES);
+  });
+
+  test('a file one byte over is stored in two parts that end at a line ' +
+           'break and join back exactly',
+       () => {
+         const content =
+             lines(MAX_ASPECT_DATA_BYTES - envelope('sales.yaml') + 1);
+         const {files, error} =
+             storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
+         expect(error).toBeUndefined();
+         expect(files.map(({content, ...rest}) => rest)).toEqual([
+           {
+             fileName: 'sales.yaml',
+             pushId: PUSH,
+             pushFileCount: 1,
+             part: 1,
+             partCount: 2,
+           },
+           {
+             fileName: 'sales.yaml',
+             pushId: PUSH,
+             pushFileCount: 1,
+             part: 2,
+             partCount: 2,
+           },
+         ]);
+         expect(files.map(f => f.content).join('')).toBe(content);
+         expect(files[0].content.endsWith('\n')).toBe(true);
+         for (const f of files) {
+           expect(bytes(f)).toBeLessThanOrEqual(MAX_ASPECT_DATA_BYTES);
+         }
+       });
+
+  // Once escaped, `é` takes 2 bytes, `€` 3, the emoji 4 over two UTF-16
+  // units, `"`, `\` and a tab 2 each, and U+0001 6. With no line break a part
+  // holds all that fits, and shifting the text one byte at a time puts the
+  // cut at every offset of the pattern.
+  test('multi-byte characters at the cut: no part splits one, and each part ' +
+           'but the last is full',
+       () => {
+         const pattern = 'é€😀"\\\t\u0001a';
+         const size = MAX_ASPECT_DATA_BYTES - envelope('sales.yaml');
+         const body =
+             pattern.repeat(Math.ceil(size / textBytes(pattern)) + 1);
+         for (let shift = 0; shift < textBytes(pattern) + 2; shift++) {
+           const content = 'a'.repeat(shift) + body;
+           const {files} =
+               storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
+           expect(files.length).toBe(2);
+           expect(files.map(f => f.content).join('')).toBe(content);
+           for (const f of files) {
+             expect(LONE.test(f.content)).toBe(false);
+             expect(bytes(f)).toBeLessThanOrEqual(MAX_ASPECT_DATA_BYTES);
+           }
+           // The character after the cut does not fit in part 1.
+           const next = String.fromCodePoint(files[1].content.codePointAt(0)!);
+           expect(bytes({...files[0], content: files[0].content + next}))
+               .toBeGreaterThan(MAX_ASPECT_DATA_BYTES);
+         }
+       });
+
+  test('a line break is passed over when ending a part there would take ' +
+           'another part',
+       () => {
+         // One early line break, then more than one part holds.
+         const size = 2 * (MAX_ASPECT_DATA_BYTES - 300);
+         const content = `${'x'.repeat(5000)}\n${'y'.repeat(size - 5002)}`;
+         const {files} =
+             storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
+         expect(files.length).toBe(2);
+         expect(files[0].content.endsWith('\n')).toBe(false);
+         expect(files[0].content.length).toBeGreaterThan(5001);
+         expect(files.map(f => f.content).join('')).toBe(content);
+       });
+
+  test('the copy count counts every file', () => {
+    const {files} = storedFileCopies(
+        [
+          {fileName: 'sales.yaml', content: lines(MAX_ASPECT_DATA_BYTES + 1000)},
+          {fileName: 'sales.profile.prod.yaml', content: 'name: prod\n'},
+        ],
+        PUSH);
+    expect(files.map(f => [f.fileName, f.part, f.pushFileCount])).toEqual([
+      ['sales.yaml', 1, 2],
+      ['sales.yaml', 2, 2],
+      ['sales.profile.prod.yaml', undefined, 2],
+    ]);
+  });
+
+  test('a file that needs more than 16 parts is too large to store, naming ' +
+           'the cap',
+       () => {
+         expect(MAX_FILE_COPY_PARTS).toBe(16);
+         // The room part `part` of 16 leaves for text, in one push of `count`
+         // copies.
+         const room = (part: number, count: number) => MAX_ASPECT_DATA_BYTES -
+             bytes({
+               fileName: 'big.yaml',
+               content: '',
+               pushId: PUSH,
+               pushFileCount: count,
+               part,
+               partCount: 16,
+             });
+         // Each of the 16 parts holds this much.
+         const fits = 'x'.repeat(16 * room(16, 1));
+         const stored =
+             storedFileCopies([{fileName: 'big.yaml', content: fits}], PUSH);
+         expect(stored.error).toBeUndefined();
+         expect(stored.files.length).toBe(16);
+         expect(stored.files.every(
+                    f => f.pushFileCount === 1 && f.partCount === 16))
+             .toBe(true);
+         expect(stored.files.map(f => f.content).join('')).toBe(fits);
+
+         // No 16 parts hold this much, even with the room of part 1.
+         const over = 'x'.repeat(16 * room(1, 1) + 1);
+         const whole = bytes(
+             {fileName: 'big.yaml', content: over, pushId: PUSH, pushFileCount: 1});
+         expect(storedFileCopies([{fileName: 'big.yaml', content: over}], PUSH))
+             .toEqual({
+               files: [],
+               error: `file 'big.yaml' is too large to store in Knowledge ` +
+                   `Catalog: its copy takes ${whole} bytes, and push stores a ` +
+                   `file in at most 16 parts of at most 122880 bytes each.`,
+             });
+       });
+});
+
+
+describe('deployKnowledgeCatalog: a file stored in parts', () => {
+  const PUSH = '6f1c1a0e-4b7d-4c55-9b1e-2a6f8f0d9c3b';
+  // The model file with a comment line that takes it just over one aspect.
+  const BIG = `${OSSIE}# ${'x'.repeat(MAX_ASPECT_DATA_BYTES)}\n`;
+  const parts = () =>
+      storedFileCopies([{fileName: 'sales.yaml', content: BIG}], PUSH).files;
+  // The file-copy type as `kcmd init` provisions it, part fields included.
+  const withPartFields = () => ok({
+    metadataTemplate: {
+      recordFields: [
+        'fileName', 'content', 'pushId', 'pushFileCount', 'part', 'partCount',
+      ].map(name => ({name})),
+    },
+  });
+  // The file-copy entry ids a spy on createEntry or deleteEntry was called
+  // with.
+  const fileIds = (spy: any): string[] =>
+      spy.mock.calls.map((c: any[]) => c[3] as string)
+          .filter((id: string) => id.includes('.files.'));
+  const partEntries = (...parts: number[]) => parts.map(
+      n => ({id: `sales.files.sales.yaml.part-${n}`, type: FILE_TYPE}));
+
+  test('each part is written in an entry of its own', async () => {
+    const stored = parts();
+    expect(stored.length).toBe(2);
+    const {create} = stubClient({aspectType: withPartFields});
+
+    const result = await deployKnowledgeCatalog(
+        models(DOCS), CTX, {...OPTS, sourceFiles: stored});
+
+    expect(result.success).toBe(true);
+    expect(fileIds(create)).toEqual([
+      'sales.files.sales.yaml.part-1',
+      'sales.files.sales.yaml.part-2',
+    ]);
+    const written = create.mock.calls.filter((c: any[]) => c[3].includes('.files.'))
+                        .map((c: any[]) => Object.values(c[4].aspects)[0] as any);
+    expect(written.map(a => a.data)).toEqual(stored.map(fileCopyData));
+    expect(result.plan).toContain(
+        '    - sales.files.sales.yaml.part-2 (semantic-model-file)');
+  });
+
+  // A type an earlier kcmd created has no part fields, so the write of a
+  // part would fail partway through the push.
+  test('a project whose file-copy type lacks the part fields writes nothing ' +
+           'and asks for kcmd init',
+       async () => {
+         const {create, update} = stubClient();
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, sourceFiles: parts()});
+
+         expect(result.success).toBe(false);
+         expect(result.details)
+             .toBe(
+                 'file \'sales.yaml\' is too large for one aspect, so push ' +
+                 'stores it in 2 parts, but aspect type ' +
+                 '\'semantic-model-file\' in project \'dest\' has no ' +
+                 '\'part\' or \'partCount\' field to hold a part; run ' +
+                 '\'kcmd init --semantic-model\' to add them, then push ' +
+                 'again.');
+         expect(create).not.toHaveBeenCalled();
+         expect(update).not.toHaveBeenCalled();
+       });
+
+  // Push checks the type itself before any graph deploys.
+  test('a caller that checked the file-copy type is not checked again',
+       async () => {
+         const {getAspectType} = stubClient();
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX,
+             {...OPTS, sourceFiles: parts(), fileCopyTypeChecked: true});
+
+         expect(result.success).toBe(true);
+         expect(getAspectType).not.toHaveBeenCalled();
+       });
+
+  test('a file that shrinks to fewer parts: the re-push deletes the parts it ' +
+           'no longer needs',
+       async () => {
+         const {del} = stubClient(
+             {aspectType: withPartFields, existing: partEntries(1, 2, 3)});
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, sourceFiles: parts()});
+
+         expect(result.success).toBe(true);
+         expect(fileIds(del)).toEqual(['sales.files.sales.yaml.part-3']);
+         expect(result.deleted).toBe(1);
+       });
+
+  test('a file that fits one aspect again: the re-push writes it whole and ' +
+           'deletes its parts',
+       async () => {
+         const {create, del} = stubClient({existing: partEntries(1, 2)});
+
+         const result = await deployKnowledgeCatalog(models(DOCS), CTX, {
+           ...OPTS,
+           sourceFiles: [
+             {fileName: 'sales.yaml', content: OSSIE, pushId: PUSH, pushFileCount: 1},
+           ],
+         });
+
+         expect(result.success).toBe(true);
+         expect(fileIds(create)).toEqual(['sales.files.sales.yaml']);
+         expect(fileIds(del).sort()).toEqual([
+           'sales.files.sales.yaml.part-1',
+           'sales.files.sales.yaml.part-2',
+         ]);
+       });
+
+  test('a file that grows into parts: the re-push deletes its whole copy',
+       async () => {
+         const {del} = stubClient({
+           aspectType: withPartFields,
+           existing: [{id: 'sales.files.sales.yaml', type: FILE_TYPE}],
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, sourceFiles: parts()});
+
+         expect(result.success).toBe(true);
+         expect(fileIds(del)).toEqual(['sales.files.sales.yaml']);
+       });
+
+  test('with v2Aspects on, no copy is written and no part field is checked',
+       async () => {
+         const {create, getAspectType} = stubClient();
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX,
+             {...OPTS, sourceFiles: parts(), v2Aspects: true});
+
+         expect(result.success).toBe(true);
+         expect(fileIds(create)).toEqual([]);
+         expect(getAspectType.mock.calls.some(
+                    (c: any[]) => c[2] === 'semantic-model-file'))
+             .toBe(false);
+       });
 });
 
 

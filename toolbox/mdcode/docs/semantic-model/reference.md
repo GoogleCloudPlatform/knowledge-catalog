@@ -92,10 +92,11 @@ graph as `push --validate-only` does, but deploys nothing and calls no service,
 so you can compare coverage before choosing one. The checks that need a service
 run only at push time: the BigQuery source table probe, the dry runs of action
 statements and, on a push without `--validate-only`, the Knowledge Catalog
-checks on the entry group. Push's lookup of the file-copy type also runs only
-at push time, because it calls a service. It exits non-zero when push would
-reject a binding. Until push accepts a deployment that names a profile, the
-report refuses one, while `--print-store` takes that profile's store from it.
+checks on the entry group. Push's lookup of the file-copy type, and of its part
+fields for a file stored in parts, also runs only at push time, because it
+calls a service. It exits non-zero when push would reject a binding. Until push
+accepts a deployment that names a profile, the report refuses one, while
+`--print-store` takes that profile's store from it.
 The report's `target:` line lists the targets of the deployments the profile
 uses, the same ones `--print-store` reads. For an AlloyDB target named by its
 cluster, `--print-store` calls the AlloyDB API to find the cluster's primary
@@ -910,7 +911,7 @@ only entries and links.
 | Binding (entity → physical) | `schema-join` (type `JOIN`) to the `@bigquery` node view / table entry and to the graph node entry | entry links | `<model>-bind-view-<entity>`, `<model>-bind-node-<entity>` |
 | Action | `semantic-action` (custom type) | entry | `<model>.actions.<action>` |
 | Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
-| Model file and each profile file | `semantic-model-file` (custom type) | entry holding the file's text | `<model>.files.<file>` |
+| Model file and each profile file | `semantic-model-file` (custom type) | entry holding the file's text; for a file whose copy is larger than one aspect (120 KiB), one entry per part, up to 16 | `<model>.files.<file>`; parts `<model>.files.<file>.part-<n>` |
 
 The model entry also carries the `kcmd-push-id` label, which names the push that
 stored the file copies. On each entry, push owns the `schema`, `semantic-*` and
@@ -1343,9 +1344,13 @@ stores the model file and its profile files with that type, so init fails when
 the type is missing and it cannot create it, and a push into a project that
 lacks it stops before writing anything and asks you to run
 `kcmd init --semantic-model`. A project set up by an older `kcmd` needs that
-once. When the entry group or a type already exists, init goes on even if you
-may not create or update it, and reports a refusal to update a type as a
-warning, so a teammate without these permissions can still run init in a
+once. The same holds for the `part` and `partCount` fields of the
+`semantic-model-file` aspect type, which hold the parts of a file too large
+for one aspect: a push that stores a file in parts into a project whose type
+lacks them stops before writing anything and asks you to run init, which
+patches them in. When the entry group or a type already exists, init goes on
+even if you may not create or update it, and reports a refusal to update a type
+as a warning, so a teammate without these permissions can still run init in a
 project someone else set up. Actions and constraints are optional
 constructs, so init reports a refusal to create their types as a warning and
 carries on; every model that declares neither still pushes and pulls. Any other

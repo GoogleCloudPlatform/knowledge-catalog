@@ -125,11 +125,22 @@ export class Namer {
 
   /**
    * Bare entry ID for a verbatim model/profile file copy (used while
-   * `KC_V2_ASPECTS` is off). Dotted under both layouts.
+   * `KC_V2_ASPECTS` is off), or for one part of a file stored in parts (see
+   * `fileCopySlug`). Dotted under both layouts.
    */
-  fileEntryId(modelName: string, fileName: string): string {
-    return `${slug(modelName)}.files.${slug(fileName)}`;
+  fileEntryId(modelName: string, fileName: string, part?: number): string {
+    return `${slug(modelName)}.files.${fileCopySlug(fileName, part)}`;
   }
+}
+
+/**
+ * The part of a file copy's entry ID after `<model>.files.`: the file name's
+ * slug, followed by `.part-<n>` for part `n` of a file stored in parts. A
+ * stored file name ends in `.yaml`, so a part's ID never equals the ID of a
+ * file stored whole.
+ */
+export function fileCopySlug(fileName: string, part?: number): string {
+  return part === undefined ? slug(fileName) : `${slug(fileName)}.part-${part}`;
 }
 
 /** Entry-link ID for a relationship on a model. */

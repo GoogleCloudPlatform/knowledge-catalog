@@ -17,7 +17,9 @@ import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
+import {storedFileCopies} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {FileCopy} from '../../../src/libts/semantic/kc_custom_types';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {pullKnowledgeCatalog} from '../../../src/libts/semantic/pull_kc';
 
@@ -723,5 +725,98 @@ describe('pullKnowledgeCatalog: file copies', () => {
       'file copy \'sales.files.sales.profile.prod.yaml\' holds no file name ' +
           'or no content; it is skipped',
     ]);
+  });
+
+  // A file whose copy does not fit one aspect is stored in parts, one entry
+  // each, and pull joins them back into the file.
+  describe('a file stored in parts', () => {
+    // A model file just over one aspect, of characters that take two, three
+    // and four bytes, so the cut falls between multi-byte characters.
+    const BIG = {fileName: 'sales.yaml', content: `# ${'é€😀'.repeat(13660)}\n`};
+    const stored = (pushId: string) =>
+        storedFileCopies([BIG, PROFILE_FILE], pushId).files;
+    const emitted = (copies: FileCopy[]) => generateCatalogResources(SALES, {
+                                              ...OPTS,
+                                              emitExpressions: true,
+                                              sourceFiles: copies,
+                                            }).entries;
+    const isPart = (n: number) => (e: Entry) => e.name.endsWith(`.part-${n}`);
+
+    test('comes back as one file, byte for byte', async () => {
+      const copies = stored('push-9');
+      expect(copies.map(c => c.part)).toEqual([1, 2, undefined]);
+      const entries = emitted(copies);
+      stubClient(entries, entries);
+
+      const cat = new CatalogClient({} as any);
+      const {rawFiles, warnings} = await pullKnowledgeCatalog(cat, OPTS);
+
+      expect(rawFiles).toEqual([
+        {...PROFILE_FILE, pushId: 'push-9', pushFileCount: 2},
+        {...BIG, pushId: 'push-9', pushFileCount: 2},
+      ]);
+      expect(warnings).toEqual([]);
+    });
+
+    test('a missing part aborts the pull', async () => {
+      const entries = emitted(stored('push-9')).filter(e => !isPart(2)(e));
+      stubClient(entries, entries);
+
+      const cat = new CatalogClient({} as any);
+      await expect(pullKnowledgeCatalog(cat, OPTS))
+          .rejects.toThrow(
+              `${NOT_FINISHED}the catalog holds 1 of the 2 parts of file 'sales.yaml', so ` +
+              'pull writes nothing. Push again, then pull.');
+    });
+
+    // A push that stopped partway leaves its parts beside the parts of the
+    // push before.
+    test('a part from another push aborts the pull', async () => {
+      const entries = [
+        ...emitted(stored('push-9')).filter(e => !isPart(2)(e)),
+        ...emitted(stored('push-8')).filter(isPart(2)),
+      ];
+      stubClient(entries, entries);
+
+      const cat = new CatalogClient({} as any);
+      await expect(pullKnowledgeCatalog(cat, OPTS))
+          .rejects.toThrow(
+              `${NOT_FINISHED}its file copies in the catalog come from ` +
+              'different pushes, so pull writes nothing. Push again, then ' +
+              'pull.');
+    });
+
+    // Only another writer leaves parts whose count agrees with the push but
+    // whose numbers do not make up the file.
+    test('parts that do not run from 1 to their part count abort the pull',
+         async () => {
+           const entries = emitted(stored('push-9'));
+           const second = entries.find(isPart(2))!;
+           Object.values(second.aspects!)[0].data!.part = 1;
+           stubClient(entries, entries);
+
+           const cat = new CatalogClient({} as any);
+           await expect(pullKnowledgeCatalog(cat, OPTS))
+               .rejects.toThrow(
+                   `${NOT_FINISHED}the parts of file 'sales.yaml' in the ` +
+                   'catalog do not run from 1 to their part count, so pull ' +
+                   'writes nothing. Push again, then pull.');
+         });
+
+    test('a part missing from a set whose count agrees aborts the pull',
+         async () => {
+           const copies = stored('push-9')
+                              .filter(c => c.part !== 2)
+                              .map(c => ({...c, pushFileCount: 2}));
+           const entries = emitted(copies);
+           stubClient(entries, entries);
+
+           const cat = new CatalogClient({} as any);
+           await expect(pullKnowledgeCatalog(cat, OPTS))
+               .rejects.toThrow(
+                   `${NOT_FINISHED}the catalog holds 1 of the 2 parts of file ` +
+                   '\'sales.yaml\', so pull writes nothing. Push again, then ' +
+                   'pull.');
+         });
   });
 });

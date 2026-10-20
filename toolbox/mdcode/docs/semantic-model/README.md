@@ -175,7 +175,8 @@ kcmd push                           # write them
 ```
 
 Push creates one entry per entity and metric, one for the model itself, one
-per model file and profile file holding a copy of that file, and a
+per model file and profile file holding a copy of that file (or one per part
+of a file too large for one entry, see [Pull](#pull)), and a
 `schema-join` link for each relationship:
 
 ```
@@ -400,6 +401,20 @@ copies. Pull refuses the catalog when the copies come from two pushes, when
 their number differs from that count, or when the label names a push whose
 copies the catalog does not hold. Each of these means the last push stopped
 partway. Pull then writes and deletes nothing and asks you to push again.
+
+One Knowledge Catalog aspect holds at most 120 KiB, so push stores the copy of
+a larger file in parts: the fewest parts that each fit one aspect, each in an
+entry of its own, ending at a line break where that takes no extra part. Every
+part counts as one copy toward the number the push stored, and pull joins the
+parts back into the file. Pull refuses the catalog when a file's parts do not
+number 1 to their part count, as when one is missing. A file that needs more
+than 16 parts, a little under 2 MiB, is too large to store, and push stops
+before writing anything. The parts need two fields of the
+`semantic-model-file` aspect type that a project set up by an older `kcmd`
+lacks; a push that stores a file in parts there stops before writing anything
+and asks you to run `kcmd init --semantic-model`, which adds them. When a file
+shrinks to fewer parts, or to one aspect, the next push deletes the parts left
+over.
 
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.

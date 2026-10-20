@@ -1020,27 +1020,33 @@ export const FILE_COPY_TYPE_ID = 'semantic-model-file';
 // push that stopped before storing them. kcmd owns this label and no other.
 export const PUSH_ID_LABEL = 'kcmd-push-id';
 
-// A file copy: one model or profile file's name and text.
+// A file copy: one model or profile file's name and text, or one part of it.
 export interface FileCopy {
   // The file's path relative to the entry group directory, for example
   // `retail.yaml` or `retail.profile.prod.yaml`.
   fileName: string;
-  // The file's text, exactly as read.
+  // The file's text, exactly as read, or the text of this part of it.
   content: string;
   // The id of the push that stored the copy. Every copy one push stores
   // carries the same id. Absent on a copy stored before push ids.
   pushId?: string;
-  // How many copies that push stored. Absent on a copy stored before copy
-  // counts.
+  // How many files that push stored copies of, a file stored in parts
+  // counted once. Absent on a copy stored before copy counts.
   pushFileCount?: number;
+  // Which part of the file this copy holds, counting from 1, when its copy
+  // does not fit one aspect and push stores it in parts. Absent on a copy of
+  // a whole file.
+  part?: number;
+  // How many parts the file is stored in. Set with `part`.
+  partCount?: number;
 }
 
 // The aspect that carries a file copy.
 const FILE_COPY_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   displayName: 'Semantic Model File',
   description:
-      'The text of one semantic model file or profile file, exactly as ' +
-      'pushed.',
+      'The text of one semantic model file or profile file, or of one part ' +
+      'of it, exactly as pushed.',
   metadataTemplate: {
     name: FILE_COPY_TYPE_ID,
     type: 'record',
@@ -1064,7 +1070,8 @@ const FILE_COPY_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         constraints: {required: true},
         annotations: {
           displayName: 'Content',
-          description: 'The file\'s text, exactly as read.',
+          description: 'The file\'s text, exactly as read, or the text of ' +
+              'this part of it.',
         },
       },
       {
@@ -1084,13 +1091,38 @@ const FILE_COPY_ASPECT_TYPE: Omit<AspectType, 'name'> = {
         type: 'int',
         annotations: {
           displayName: 'Push File Count',
-          description: 'How many file copies the push that stored this one ' +
-              'stored in all.',
+          description: 'How many files the push that stored this copy ' +
+              'stored copies of, a file stored in parts counted once.',
+        },
+      },
+      {
+        index: 5,
+        name: 'part',
+        type: 'int',
+        annotations: {
+          displayName: 'Part',
+          description: 'Which part of the file this copy holds, counting ' +
+              'from 1, when the file is too large for one aspect and is ' +
+              'stored in parts. Absent on a copy of a whole file.',
+        },
+      },
+      {
+        index: 6,
+        name: 'partCount',
+        type: 'int',
+        annotations: {
+          displayName: 'Part Count',
+          description: 'How many parts the file is stored in. Set with ' +
+              '`part`.',
         },
       },
     ],
   },
 };
+
+// The fields of the file-copy template that hold one part of a file stored
+// in parts. A push that stores a file in parts needs a template with both.
+export const FILE_COPY_PART_FIELDS: readonly string[] = ['part', 'partCount'];
 
 // Every type kcmd provisions. This list is the whole of what is custom.
 // Entry+aspect pairs first, then the aspect-only annotation types.

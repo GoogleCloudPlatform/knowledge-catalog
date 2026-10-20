@@ -19,10 +19,11 @@
 // Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
 // `applyKnowledgeCatalog`):
 //   * Preflight validates that exactly one model is deployed per entry group
-//     and that each file copy fits in one aspect, snapshots the destination
-//     entry group to guard against foreign models (unless `--force-remove` is
-//     set), and checks that any required custom entry/aspect types exist in
-//     the target project.
+//     and that each file copy -- a whole file, or one part of a file too large
+//     for one aspect -- fits in one aspect, snapshots the destination entry
+//     group to guard against foreign models (unless `--force-remove` is set),
+//     and checks that any required custom entry/aspect types exist in the
+//     target project, with the part fields when a file is stored in parts.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
@@ -58,9 +59,9 @@ import * as context from '../gcp/context';
 import * as crm from '../gcp/crm';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
-import {collectCustomTypes, customAspectKey, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
+import {collectCustomTypes, customAspectKey, customTypeHome, FILE_COPY_PART_FIELDS, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isRelationshipLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
-import {entryIdOf, slug} from './kc_ids';
+import {entryIdOf, fileCopySlug, slug} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -507,8 +508,13 @@ function validateEntryGroup(
 // bytes, with escaping counted. The schema aspect may hold 2 MiB.
 export const MAX_ASPECT_DATA_BYTES = 120 * 1024;
 
+// The most parts push stores one file in: sixteen aspects, a little under
+// 2 MiB of file text. A file whose copy needs more is too large to store.
+export const MAX_FILE_COPY_PARTS = 16;
+
 /**
- * Validates that every file copy in `model` fits in one aspect.
+ * Validates that every file copy in `model` fits in one aspect. Each part of
+ * a file stored in parts is a copy of its own.
  *
  * A file too large to store then fails before any write, naming the file,
  * rather than partway through the writes. Push runs the same check on its
@@ -527,25 +533,196 @@ function validateFileCopySizes(
 }
 
 /**
+ * The copies a push stores of `files`, the model and profile files it read,
+ * each carrying `pushId` and, as `pushFileCount`, the number of files.
+ *
+ * A file whose copy fits one aspect is one copy, as read. A larger file is
+ * stored in the fewest parts whose aspect data each fits one aspect. Each part
+ * is a copy of its own that carries the file's name, its `part` number from 1
+ * and the `partCount`, and joining the parts in order gives the file back
+ * exactly. A part ends at a line break whenever the file still fits in as many
+ * parts, and never inside a character. Returns `error` instead, naming the
+ * file, when a file needs more than MAX_FILE_COPY_PARTS parts.
+ *
+ * A file stored in parts counts once in `pushFileCount`. A pull that knows
+ * parts joins them before it compares; one that counts every copy as a file
+ * finds more copies than the count and refuses the catalog, rather than write
+ * one part as the whole file.
+ */
+export function storedFileCopies(
+    files: readonly FileCopy[],
+    pushId: string): {files: FileCopy[]; error?: string} {
+  const stored: FileCopy[] = [];
+  for (const {fileName, content} of files) {
+    const split = fileCopyParts(
+        {fileName, content, pushId, pushFileCount: files.length});
+    if (split.error !== undefined) return {files: [], error: split.error};
+    stored.push(...split.parts);
+  }
+  return {files: stored};
+}
+
+// One file's copies, given its copy with the push id and copy count: the copy
+// itself when it fits one aspect, else the file's parts (see
+// storedFileCopies), or why the file is too large to store.
+function fileCopyParts(file: FileCopy):
+    {parts: FileCopy[]; error?: undefined}|{parts?: undefined; error: string} {
+  const whole = dataBytes(kcEmit.fileCopyData(file));
+  if (whole <= MAX_ASPECT_DATA_BYTES) return {parts: [file]};
+  const tooLarge = {
+    error: `file '${file.fileName}' is too large to store in Knowledge ` +
+        `Catalog: its copy takes ${whole} bytes, and push stores a file in at ` +
+        `most ${MAX_FILE_COPY_PARTS} parts of at most ${
+               MAX_ASPECT_DATA_BYTES} bytes each.`,
+  };
+  const text = file.content;
+  const n = text.length;
+  // Each UTF-16 unit takes at least one byte of aspect data, so a longer text
+  // cannot fit in the parts at all.
+  if (n > MAX_FILE_COPY_PARTS * MAX_ASPECT_DATA_BYTES) return tooLarge;
+
+  // `at[i]` is how many bytes `text[0, i)` takes inside the JSON string, in
+  // UTF-8 with escapes, so a slice takes `at[end] - at[start]`.
+  const at = new Int32Array(n + 1);
+  for (let i = 0; i < n; i++) at[i + 1] = at[i] + jsonUnitBytes(text, i);
+
+  // The room a part leaves for its text: the limit less the aspect data
+  // around the text, which grows with the digits of its numbers.
+  const room = (part: number, partCount: number) => MAX_ASPECT_DATA_BYTES -
+      dataBytes(kcEmit.fileCopyData({...file, content: '', part, partCount}));
+  // The furthest end of a part from `start` whose text fits in `bytes`. It
+  // never falls between the two units of a surrogate pair.
+  const furthest = (start: number, bytes: number) => {
+    const limit = at[start] + bytes;
+    let lo = start;
+    let hi = n;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (at[mid] <= limit) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo > start && lo < n && isHighSurrogate(text.charCodeAt(lo - 1)) &&
+            isLowSurrogate(text.charCodeAt(lo)) ?
+        lo - 1 :
+        lo;
+  };
+  // How many parts, numbered from `first`, the text from `start` on takes
+  // when each part holds as much as fits, or Infinity when that is more
+  // than the parts up to `partCount`. Filling each part is what takes the
+  // fewest parts.
+  const partsFrom = (start: number, first: number, partCount: number) => {
+    let pos = start;
+    let part = first;
+    while (pos < n) {
+      if (part > partCount) return Infinity;
+      const end = furthest(pos, room(part, partCount));
+      if (end <= pos) return Infinity;
+      pos = end;
+      part++;
+    }
+    return part - first;
+  };
+
+  // The fewest parts. The room depends on how many digits `partCount` has,
+  // so each digit count is tried in turn, from one.
+  let partCount = 0;
+  for (let top = 9; partCount === 0; top = top * 10 + 9) {
+    const most = Math.min(top, MAX_FILE_COPY_PARTS);
+    const needed = partsFrom(0, 1, most);
+    if (needed <= most) {
+      partCount = needed;
+    } else if (most === MAX_FILE_COPY_PARTS) {
+      return tooLarge;
+    }
+  }
+
+  // Each part but the last holds as much as fits, or ends after its last
+  // line break instead when the rest still fits in the parts left.
+  const parts: FileCopy[] = [];
+  let start = 0;
+  for (let part = 1; part <= partCount; part++) {
+    let end = n;
+    if (part < partCount) {
+      end = furthest(start, room(part, partCount));
+      const lineEnd = text.lastIndexOf('\n', end - 1) + 1;
+      if (lineEnd > start && lineEnd < end &&
+          partsFrom(lineEnd, part + 1, partCount) <= partCount - part) {
+        end = lineEnd;
+      }
+    }
+    parts.push({...file, content: text.slice(start, end), part, partCount});
+    start = end;
+  }
+  return {parts};
+}
+
+// How many bytes the UTF-16 unit at `i` adds inside a JSON string, in UTF-8:
+// two for a short escape, six for a `\u` escape, and a surrogate pair's four
+// on its first unit. A lone surrogate is escaped too.
+function jsonUnitBytes(text: string, i: number): number {
+  const c = text.charCodeAt(i);
+  if (c === 0x22 || c === 0x5c) return 2;
+  if (c < 0x20) {
+    return c === 0x08 || c === 0x09 || c === 0x0a || c === 0x0c || c === 0x0d ?
+        2 :
+        6;
+  }
+  if (c < 0x80) return 1;
+  if (c < 0x800) return 2;
+  if (isHighSurrogate(c)) {
+    return isLowSurrogate(text.charCodeAt(i + 1)) ? 4 : 6;
+  }
+  if (isLowSurrogate(c)) {
+    return isHighSurrogate(text.charCodeAt(i - 1)) ? 0 : 6;
+  }
+  return 3;
+}
+
+function isHighSurrogate(c: number): boolean {
+  return c >= 0xd800 && c <= 0xdbff;
+}
+
+function isLowSurrogate(c: number): boolean {
+  return c >= 0xdc00 && c <= 0xdfff;
+}
+
+// The size of aspect data as Dataplex measures it: its JSON form in UTF-8.
+function dataBytes(data: Record<string, any>): number {
+  return new TextEncoder().encode(JSON.stringify(data)).length;
+}
+
+/**
  * Checks a push's file copies before anything is written. Returns the error
  * to report, or undefined when every copy fits in one aspect and no two file
  * names map to one entry id.
  *
  * Push calls it before any graph deploys. Every copy of a model shares the
  * model's part of the entry id, so two file names collide when their slugs
- * do.
+ * do. A file stored in parts also claims the id of each part, so another
+ * file whose slug is one of those collides with it too.
  */
 export function checkFileCopies(files: readonly FileCopy[]): string|undefined {
-  const bySlug = new Map<string, string>();
+  // The file that holds each entry id, and the file that claims each slug or
+  // part id.
+  const stored = new Map<string, string>();
+  const claimedBy = new Map<string, string>();
   for (const file of files) {
     const tooLarge = fileCopySizeError(kcEmit.fileCopyData(file));
     if (tooLarge) return tooLarge;
-    const earlier = bySlug.get(slug(file.fileName));
+    const id = fileCopySlug(file.fileName, file.part);
+    const claims = [slug(file.fileName), id];
+    const earlier = stored.get(id) ??
+        claims.map(c => claimedBy.get(c))
+            .find(name => name !== undefined && name !== file.fileName);
     if (earlier !== undefined) {
       return `files '${earlier}' and '${file.fileName}' both map to one ` +
           `entry id; rename one of them`;
     }
-    bySlug.set(slug(file.fileName), file.fileName);
+    stored.set(id, file.fileName);
+    for (const c of claims) claimedBy.set(c, file.fileName);
   }
   return undefined;
 }
@@ -553,11 +730,45 @@ export function checkFileCopies(files: readonly FileCopy[]): string|undefined {
 // Why the aspect data of one file copy is too large to store, or undefined
 // when it fits.
 function fileCopySizeError(data: Record<string, any>): string|undefined {
-  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
+  const bytes = dataBytes(data);
   if (bytes <= MAX_ASPECT_DATA_BYTES) return undefined;
   return `file '${data.fileName}' is too large to store in Knowledge ` +
       `Catalog: its copy takes ${bytes} bytes, and one aspect holds at most ` +
       `${MAX_ASPECT_DATA_BYTES}.`;
+}
+
+/**
+ * Checks that the destination's file-copy aspect type has the fields a part
+ * of a file stored in parts carries. Returns the error to report, or
+ * undefined when no copy is a part or the type has them. Makes no network
+ * call when no copy is a part.
+ *
+ * A project whose type an earlier kcmd created lacks them until
+ * `kcmd init --semantic-model` patches the type, so push runs this before
+ * anything is written.
+ */
+export async function checkFileCopyParts(
+    cat: Pick<CatalogClient, 'getAspectType'>, dest: {project: string},
+    copies: readonly FileCopy[]): Promise<string|undefined> {
+  const part = copies.find(f => f.part !== undefined);
+  if (!part) return undefined;
+  const home = customTypeHome(dest);
+  const res =
+      await cat.getAspectType(home.project, home.location, FILE_COPY_TYPE_ID);
+  if (!isOkStatus(res)) {
+    return `checking aspect type '${FILE_COPY_TYPE_ID}' ` +
+        `(HTTP ${res.status}): ${errText(res)}`;
+  }
+  const fields = new Set(
+      (res.result?.metadataTemplate?.recordFields ?? []).map((f: any) => f?.name));
+  const missing = FILE_COPY_PART_FIELDS.filter(f => !fields.has(f));
+  if (!missing.length) return undefined;
+  return `file '${part.fileName}' is too large for one aspect, so push ` +
+      `stores it in ${part.partCount} parts, but aspect type ` +
+      `'${FILE_COPY_TYPE_ID}' in project '${dest.project}' has no ` +
+      `${missing.map(f => `'${f}'`).join(' or ')} field to hold a part; run ` +
+      `'kcmd init --semantic-model' to add ${
+          missing.length === 1 ? 'it' : 'them'}, then push again.`;
 }
 
 /**
@@ -572,16 +783,30 @@ function fileCopySizeError(data: Record<string, any>): string|undefined {
  * mid-push when creating an action or constraint entry.
  *
  * Skips the file-copy type when `opts.fileCopyTypeChecked` is set, because
- * the caller has already looked it up. Makes no network calls when no type
- * is left to check.
+ * the caller has already looked it up. Otherwise, when the model stores a
+ * file in parts, it also checks that the file-copy aspect type has the part
+ * fields (see `checkFileCopyParts`). Makes no network calls when no type is
+ * left to check.
  */
 async function validateCustomTypes(
     cat: CatalogClient, model: EmittedModel, opts: KcDeployOptions,
     result: ResultBuilder): Promise<KcDeployResult> {
   const typeIds = collectCustomTypes(model.resources.entries).filter(
       id => !(opts.fileCopyTypeChecked && id === FILE_COPY_TYPE_ID));
-  const error = await checkCustomTypes(cat, opts, typeIds);
+  const error = await checkCustomTypes(cat, opts, typeIds) ??
+      (typeIds.includes(FILE_COPY_TYPE_ID) ?
+           await checkFileCopyParts(cat, opts, emittedFileCopies(model)) :
+           undefined);
   return error ? result(false, error) : result(true);
+}
+
+// The file copies a model's emitted entries hold, read from their aspects.
+function emittedFileCopies(model: EmittedModel): FileCopy[] {
+  return model.resources.entries
+      .filter(e => entryTypeId(e) === FILE_COPY_TYPE_ID)
+      .flatMap(
+          e => Object.values(e.aspects ?? {})
+                   .map(a => (a.data ?? {}) as FileCopy));
 }
 
 /**
@@ -589,7 +814,8 @@ async function validateCustomTypes(
  * project. Returns the error to report, or undefined when every one exists.
  *
  * Push also calls it before any graph deploys, for the file-copy type every
- * push with v2Aspects off needs. Push then sets `fileCopyTypeChecked`, so the
+ * push with v2Aspects off needs, followed by `checkFileCopyParts` when it
+ * stores a file in parts. Push then sets `fileCopyTypeChecked`, so the
  * catalog preflight looks up only the other custom types.
  */
 export async function checkCustomTypes(

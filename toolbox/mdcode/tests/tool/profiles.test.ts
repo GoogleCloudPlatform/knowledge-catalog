@@ -1254,9 +1254,9 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
   // check fails every push of the scope.
   const copyCases: Array<[string, () => void, string]> = [
     [
-      'a file over the size limit',
+      'a file over the part cap',
       () => writeScope(
-          {'commerce.yaml': `# ${'x'.repeat(130 * 1024)}\n${commerce()}`}),
+          {'commerce.yaml': `# ${'x'.repeat(16 * 130 * 1024)}\n${commerce()}`}),
       "file 'commerce.yaml' is too large to store in Knowledge Catalog",
     ],
     [
@@ -1313,9 +1313,9 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
   });
 
   // Push skips the copies when the scope holds more than one model document.
-  test('prints only the one-model error for two models and a file over the size limit', async () => {
+  test('prints only the one-model error for two models and a file over the part cap', async () => {
     writeScope({
-      'commerce.yaml': `# ${'x'.repeat(130 * 1024)}\n${commerce()}`,
+      'commerce.yaml': `# ${'x'.repeat(16 * 130 * 1024)}\n${commerce()}`,
       'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
     });
     const pushed = await pushResult();

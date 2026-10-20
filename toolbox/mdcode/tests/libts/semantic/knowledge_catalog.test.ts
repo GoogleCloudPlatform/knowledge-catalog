@@ -1213,6 +1213,36 @@ describe('each model and profile file is stored in a file-copy entry', () => {
       expect(ownedPrefixes.some(p => id.startsWith(p))).toBe(true);
     }
   });
+
+  // Push stores a file too large for one aspect in parts.
+  test('each part of a file stored in parts gets an entry of its own, under ' +
+           'a prefix the model owns',
+       () => {
+         const stamp = {pushId: 'push-7', pushFileCount: 3};
+         const sourceFiles = [
+           {fileName: 'retail.yaml', content: '# a', ...stamp, part: 1, partCount: 2},
+           {fileName: 'retail.yaml', content: 'b\n', ...stamp, part: 2, partCount: 2},
+           {fileName: 'retail.profile.dev.yaml', content: 'name: dev\n', ...stamp},
+         ];
+         const {entries, ownedPrefixes} =
+             generateCatalogResources(MODEL, {...OPTS, sourceFiles});
+         const stored =
+             entries.filter(e => e.entryType.endsWith('/semantic-model-file'));
+         const ids = stored.map(e => e.name.split('/').pop()!);
+         expect(ids).toEqual([
+           'retail.files.retail.yaml.part-1',
+           'retail.files.retail.yaml.part-2',
+           'retail.files.retail.profile.dev.yaml',
+         ]);
+         expect(ids.every(id => ownedPrefixes.some(p => id.startsWith(p))))
+             .toBe(true);
+         // Each entry holds its copy's fields, and only the parts carry part
+         // fields.
+         expect(stored.map(e => Object.values(e.aspects!)[0].data))
+             .toEqual(sourceFiles);
+         expect(entries[0].entrySource?.labels)
+             .toEqual({'kcmd-push-id': 'push-7'});
+       });
 });
 
 

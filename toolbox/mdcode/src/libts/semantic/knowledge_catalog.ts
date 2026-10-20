@@ -28,12 +28,12 @@
 // This module only appends the entries those two return.
 //
 // With the first-generation aspects (v2Aspects off), each model and profile
-// file the push read is also stored whole as a file copy, one
-// `semantic-model-file` entry per file, parented to the anchor. That type is
-// custom too. The aspects cannot hold the whole model, so a pull returns
-// these copies instead of rebuilding the file from them. The anchor of a
-// model with copies carries their push id in the `kcmd-push-id` label on its
-// entrySource.
+// file the push read is also stored as a file copy, one `semantic-model-file`
+// entry per file, parented to the anchor, or one per part of a file whose
+// copy is too large for one aspect. That type is custom too. The aspects
+// cannot hold the whole model, so a pull returns these copies instead of
+// rebuilding the file from them. The anchor of a model with copies carries
+// their push id in the `kcmd-push-id` label on its entrySource.
 //
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
@@ -134,7 +134,8 @@ export interface KcGenerateOptions {
   // emits the first-generation layout.
   v2Aspects?: boolean;
   // The file copies of the model file and its profile files, each stored in
-  // an entry of its own when v2Aspects is off. Absent emits none.
+  // an entry of its own when v2Aspects is off: a whole file, or one part of
+  // a file stored in parts. Absent emits none.
   sourceFiles?: FileCopy[];
 }
 
@@ -355,15 +356,18 @@ export function generateCatalogResources(
   }, warnings));
 
   // One file copy entry per model and profile file, holding its text as
-  // read. Only with the first-generation aspects: a push with v2Aspects on
-  // emits none, so delete reconciliation removes the copies under the owned
-  // `.files.` prefix. Two file names that slug to one id fail the push, since
-  // storing only one would lose the other on the next pull.
+  // read, or one per part of a file push stores in parts because its copy
+  // does not fit one aspect (see deploy_knowledge_catalog.storedFileCopies).
+  // Only with the first-generation aspects: a push with v2Aspects on emits
+  // none, so delete reconciliation removes the copies under the owned
+  // `.files.` prefix, as it removes the parts left over when a file shrinks.
+  // Two file names that slug to one id fail the push, since storing only one
+  // would lose the other on the next pull.
   if (!v2) {
     const fileById = new Map<string, string>();
     let pushId: string|undefined;
     for (const file of opts.sourceFiles ?? []) {
-      const id = names.fileEntryId(model.name, file.fileName);
+      const id = names.fileEntryId(model.name, file.fileName, file.part);
       const earlier = fileById.get(id);
       if (earlier !== undefined) {
         throw new Error(
@@ -975,14 +979,17 @@ function fileCopyEntry(
   };
 }
 
-// The aspect data of a file copy: the file's name and text, and the push id
-// and copy count when the push set them.
+// The aspect data of a file copy: the file's name and text, the push id and
+// copy count when the push set them, and for one part of a file stored in
+// parts, which part it is and how many there are.
 export function fileCopyData(file: FileCopy): Record<string, any> {
   return compact({
     fileName: file.fileName,
     content: file.content,
     pushId: file.pushId,
     pushFileCount: file.pushFileCount,
+    part: file.part,
+    partCount: file.partCount,
   });
 }
 

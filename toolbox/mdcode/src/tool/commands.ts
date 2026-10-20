@@ -528,8 +528,9 @@ function checkUtf8(localPath: string, fileName: string, text: string): void {
 }
 
 // The copies push stores of each model file in `docs` and of its profile
-// files, read and checked locally. `error` is set instead, with push's text,
-// when a copy cannot be read or fails a check.
+// files, read and checked locally: a file whose copy does not fit one aspect
+// is stored in parts. `error` is set instead, with push's text, when a copy
+// cannot be read or fails a check.
 function checkedFileCopies(
     layout: SemanticModelLayout, docs: {name: string; text: string}[],
     profileDocs: ProfileDocs): {files: FileCopy[]; error?: string} {
@@ -541,10 +542,9 @@ function checkedFileCopies(
   }
   // One id and the number of copies on every copy this push stores let a
   // pull tell a whole set from a push that stopped partway.
-  const pushId = randomUUID();
-  const files = read.map(f => ({...f, pushId, pushFileCount: read.length}));
-  const error = kc.checkFileCopies(files);
-  return error ? {files: [], error} : {files};
+  const stored = kc.storedFileCopies(read, randomUUID());
+  const error = stored.error ?? kc.checkFileCopies(stored.files);
+  return error ? {files: [], error} : {files: stored.files};
 }
 
 // The models one binding profile gives for push: all of them, and those whose
@@ -1025,15 +1025,20 @@ export async function push(options: PushOptions): Promise<number> {
     // can return them all. Reading them under --no-profile too keeps a push
     // from dropping a stored profile copy. They are read and checked, and the
     // type that holds them is looked up, before any graph deploys and under
-    // --validate-only too. The catalog leg then does not look the type up
-    // again. With more than one model document, the catalog leg reports that
-    // first.
+    // --validate-only too. A push that stores a file in parts also checks
+    // that the type holds the part fields. The catalog leg then does not look
+    // the type up again. With more than one model document, the catalog leg
+    // reports that first.
     let fileCopies: FileCopy[] = [];
     if (kcEnabled && !kcV2Aspects() && layoutDocs.length === 1) {
       const copies = checkedFileCopies(layout, layoutDocs, profileDocs);
-      const problem = copies.error ??
-          await kc.checkCustomTypes(
-              new dataplex.CatalogClient(ctx), source, [FILE_COPY_TYPE_ID]);
+      let problem = copies.error;
+      if (!problem) {
+        const catalog = new dataplex.CatalogClient(ctx);
+        problem =
+            await kc.checkCustomTypes(catalog, source, [FILE_COPY_TYPE_ID]) ??
+            await kc.checkFileCopyParts(catalog, source, copies.files);
+      }
       if (problem) {
         console.error(`Error: ${problem}`);
         return 1;
@@ -1668,7 +1673,8 @@ async function pushKnowledgeCatalog(
     v2Aspects: kcV2Aspects(),
     sourceFiles,
     // Push looks up the file-copy type before any graph deploys whenever it
-    // has copies to store.
+    // has copies to store, and its part fields when it stores a file in
+    // parts.
     fileCopyTypeChecked: sourceFiles.length > 0,
     onWarnings: printWarnings,
   });
