@@ -233,8 +233,8 @@ function docReads(
 
 // `f`'s expression as a document writes it: its string form or its dialect
 // list. A binding built in memory with no dialect list gives its imported
-// text as an entry of its imported dialect, which is how the graph generators
-// read it. When it also has a target text, that text is a BIGQUERY entry
+// text as an entry of its imported dialect, which is how the Spanner generator
+// reads it. When it also has a target text, that text is a BIGQUERY entry
 // beside it, as serializeModel writes the two. A target text alone is the
 // string form. So is a target text beside an imported text that a dialect
 // list cannot hold: one with no imported dialect, or one marked BIGQUERY,

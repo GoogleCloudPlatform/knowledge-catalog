@@ -1374,7 +1374,8 @@ export function validateExpressionReferences(
   return errors;
 }
 
-// BigQuery-only metric check. Rejects a metric that the BigQuery generator
+// Temporary BigQuery-only metric check, until the BigQuery generator places
+// measures with the SQL parser. Rejects a metric that the generator
 // (`bigquery.ts`) would skip: one with only another engine's SQL, which the
 // generator does not emit, or one it drops because its regex
 // (`referencedEntityNames`) disagrees with the parser or because

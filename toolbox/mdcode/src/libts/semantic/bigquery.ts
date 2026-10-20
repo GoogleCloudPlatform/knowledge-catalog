@@ -20,7 +20,7 @@
 //
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
-import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {AiContext, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {referencedEntityNames, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
@@ -272,6 +272,18 @@ function placeMetric(
     operandExpr = entity.keys[0];
   }
 
+  // A field with no BigQuery SQL is left out of the node table, so a measure
+  // over it would aggregate a property the table does not declare.
+  if (entity.fields.some(
+          f => f.name === operandExpr && isFieldBound(f) &&
+              fieldExpression(f) === undefined)) {
+    warnings.push(
+        `metric '${metric.name}' aggregates field '${operandExpr}', which ` +
+        `has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to ` +
+        `emit as a MEASURE)`);
+    return;
+  }
+
   // The measure is itself exposed as a node property named `metric.name`, so it
   // must not collide with a field, a prior measure, or a synthesized operand
   // property — a duplicate property makes BigQuery reject the whole node table.
@@ -444,9 +456,10 @@ function uniqueName(base: string, taken: Set<string>): string {
 // ` AS <name>` and a comma after the expression on the same line, and a line
 // comment left in would swallow them. The `?? expression` fallback is for the
 // `--transpile` push option, whose pass (./transpile) writes translated
-// BigQuery SQL into `expression` for an item that only had vendor text; the
-// loader fills `expression` only from a `BIGQUERY` or `ANSI_SQL` entry, so when
-// the list has neither, `expression` can only have come from that pass.
+// BigQuery SQL into `expression` for an item that only had vendor text. Every
+// command loads with the default dialect, BIGQUERY, under which the loader
+// fills `expression` only from a `BIGQUERY` or `ANSI_SQL` entry, so when the
+// list has neither, `expression` can only have come from that pass.
 // Once push drops `--transpile`, the fallback changes nothing.
 function fieldExpression(f: Field): string|undefined {
   return bigQuerySql(f);

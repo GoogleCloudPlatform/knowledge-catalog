@@ -15,10 +15,10 @@
 //
 // It is deliberately a GAP-FILLER, not a rewriter: a node that already has an
 // `expression` (target or portable canonical) is untouched, so a model authored
-// in GoogleSQL/ANSI is unaffected and its goldens are stable. Both deploy legs
-// consume the result -- the BigQuery generator and the Knowledge Catalog
-// emitter both read `expression ?? importedExpression`, so filling `expression`
-// makes each emit the transpiled GoogleSQL instead of the raw vendor SQL.
+// in GoogleSQL/ANSI is unaffected and its goldens are stable. The BigQuery
+// generator and the Knowledge Catalog emitter both read `expression`, so
+// filling it makes each emit the transpiled GoogleSQL. Neither emits the raw
+// vendor SQL.
 //
 // Design:
 //   - Target-agnostic and non-mutating: `transpileModel(model, {target,
@@ -29,8 +29,9 @@
 //   - Graceful degradation: if the engine fails to initialize, errors, or would
 //     alter which entities an expression references (the qualifier-preservation
 //     guard), the node is left with no target `expression` and a warning is
-//     emitted -- never a throw. The downstream emitter then falls back to the
-//     imported form exactly as it would have without this pass.
+//     emitted -- never a throw. The node then keeps only its imported form,
+//     exactly as it would have without this pass, and the BigQuery graph
+//     leaves it out.
 //
 
 import {Field, Metric, SemanticModel} from './ir';
@@ -166,7 +167,7 @@ export async function transpileModel(
       const reason = res?.error ?? 'no result returned';
       warnings.push(
           `${ctx}: could not transpile '${request.dialect}' -> '${target}' (${
-              reason}); leaving the imported expression for the emitter`);
+              reason}); left untranslated`);
       continue;
     }
     // Qualifier-preservation guard: the BigQuery emitter locates measures and
@@ -199,7 +200,7 @@ export async function transpileModel(
             `${ctx}: transpiled '${request.dialect}' -> '${
                 target}' but it re-cased an entity qualifier the emitter matches ` +
             `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
-            `leaving the imported expression for the emitter`);
+            `left untranslated`);
         continue;
       }
     }

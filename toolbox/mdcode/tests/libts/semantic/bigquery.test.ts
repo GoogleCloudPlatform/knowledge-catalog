@@ -1372,4 +1372,170 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
     expect(ddl).toContain('full_name AS nm');
     expect(ddl).not.toContain('display_name');
   });
+
+  test('a concrete parent\'s field with no BigQuery SQL is left out of the parent\'s label on every table', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'person',
+          dataSource: 'p.d.person',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'person.id'},
+            {name: 'nick', ...snowflakeOnly()},
+          ],
+        },
+        {
+          name: 'customer',
+          dataSource: 'p.d.customer',
+          keys: ['id'],
+          extends: ['person'],
+          fields: [{name: 'id', expression: 'customer.id'}],
+        },
+      ],
+    };
+    expect(generatePropertyGraph(model, GEN_OPTS).ddl).not.toMatch(/\bnick\b/);
+    // A subtype that binds the field in BigQuery SQL keeps its own SQL.
+    model.entities[1].fields.push({name: 'nick', expression: 'customer.nick2'});
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('nick2 AS nick');
+    expect(ddl).not.toMatch(/^\s+nick,?$/m);
+  });
+
+  test('an abstract parent\'s label leaves out a field one leaf has no BigQuery SQL for, on every leaf', () => {
+    const leaf = (
+        name: string,
+        code: Pick<Field, 'expression'|'dialects'|'importedExpression'|
+                          'importedDialect'>): SemanticModel['entities'][number] => ({
+      name,
+      dataSource: `p.d.${name}`,
+      keys: ['id'],
+      extends: ['party'],
+      fields: [
+        {name: 'id', expression: `${name}.id`},
+        {name: 'nm', expression: `${name}.${name}_nm`},
+        {name: 'code', ...code},
+      ],
+    });
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'party',
+          abstract: true,
+          dataSource: '',
+          keys: [],
+          fields: [{name: 'nm'}, {name: 'code'}],
+        },
+        leaf('person', {expression: 'person.p_code'}),
+        leaf('org', snowflakeOnly()),
+      ],
+    };
+    const labels = (ddl: string) =>
+        [...ddl.matchAll(/LABEL party\s+(PROPERTIES\([^)]*\)|NO PROPERTIES)/g)]
+            .map(m => m[1].replace(/\s+/g, ' '));
+    expect(labels(generatePropertyGraph(model, GEN_OPTS).ddl)).toEqual([
+      'PROPERTIES( person_nm AS nm )',
+      'PROPERTIES( org_nm AS nm )',
+    ]);
+    // When nothing else is left, the label lists no properties, since a bare
+    // LABEL exposes every column of its table.
+    for (const e of model.entities) e.fields = e.fields.filter(f => f.name !== 'nm');
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(labels(ddl)).toEqual(['NO PROPERTIES', 'NO PROPERTIES']);
+    expect(ddl).toContain('p_code AS code');
+  });
+
+  test('a metric over a field with no BigQuery SQL is skipped', () => {
+    const model = orders();
+    model.entities[0].fields.push({name: 'ratio', ...snowflakeOnly()});
+    model.metrics = [{name: 'total_ratio', expression: 'SUM(orders.ratio)'}];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).not.toContain('ratio');
+    expect(warnings).toContain(
+        `metric 'total_ratio' aggregates field 'ratio', which has no ` +
+        `'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to emit as a ` +
+        `MEASURE)`);
+  });
+
+  test('a key field with only Snowflake SQL keeps its column in KEY', () => {
+    const model = orders();
+    model.entities[0].keys = ['order_id'];
+    model.entities[0].fields = [{
+      name: 'order_id',
+      dialects: [{dialect: 'SNOWFLAKE', expression: 'o_orderkey'}],
+      importedExpression: 'o_orderkey',
+      importedDialect: 'SNOWFLAKE',
+    }];
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('KEY(o_orderkey)');
+    expect(ddl).not.toContain('order_id');
+  });
+
+  test('an association field with no BigQuery SQL is left out of its edge', () => {
+    const model = orders();
+    model.entities.push({
+      name: 'parts',
+      dataSource: 'parts',
+      keys: ['p_partkey'],
+      fields: [{name: 'p_partkey', expression: 'parts.p_partkey'}],
+    });
+    model.relationships = [{
+      name: 'contains',
+      source: {entity: 'orders', columns: ['o_orderkey']},
+      destination: {entity: 'parts', columns: ['p_partkey']},
+      association: {
+        dataSource: 'lineitem',
+        keys: ['l_orderkey', 'l_partkey'],
+        sourceColumns: ['l_orderkey'],
+        destinationColumns: ['l_partkey'],
+        fields: [{name: 'ratio', ...snowflakeOnly()}],
+      },
+    }];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).not.toContain('ratio');
+    expect(warnings).toContain(
+        `relationship 'contains': field 'ratio' has no 'BIGQUERY' or ` +
+        `'ANSI_SQL' expression; omitted from the edge table`);
+  });
+
+  test('a subtype that restates an inherited field in Snowflake SQL only keeps the supertype\'s definition under its label', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'person',
+          dataSource: 'p.d.person',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'person.id'},
+            {name: 'nick', expression: 'person.nick'},
+          ],
+        },
+        {
+          name: 'customer',
+          dataSource: 'p.d.customer',
+          keys: ['id'],
+          extends: ['person'],
+          fields: [
+            {name: 'id', expression: 'customer.id'},
+            {name: 'nick', ...snowflakeOnly()},
+          ],
+        },
+      ],
+    };
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toMatch(/LABEL person\s+PROPERTIES\(\s+id,\s+nick\s+\)/);
+    expect(warnings).toContain(
+        `entity 'customer': field 'nick' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+        `expression; omitted from the node table's own label, and the ` +
+        `supertype's label keeps the supertype's definition`);
+  });
 });

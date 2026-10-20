@@ -21,7 +21,8 @@ Rows are what you authored; columns are its fate in each direction. `✓` = come
 back as authored; `—` = not present in that destination. Footnotes carry the
 nuances that don't fit a cell. BigQuery and Spanner each get a column; they
 agree on every structural row and differ only where a Spanner target has no
-`MEASURE` and no `OPTIONS` metadata — see [To Spanner](#to-spanner).
+`MEASURE` and no `OPTIONS` metadata, and in which SQL text a field reads — see
+[To Spanner](#to-spanner).
 
 | Authored element                                               | → Knowledge Catalog             | Recovered by `pull`                            | → BigQuery                                                           | → Spanner                                                            |
 |----------------------------------------------------------------|---------------------------------|------------------------------------------------|----------------------------------------------------------------------|----------------------------------------------------------------------|
@@ -46,7 +47,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
 | Deployment target                                              | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
 | Binding profile (alternate physical binding)                   | — only the selected one¹⁴       | —¹⁴                                            | one graph per BigQuery-bound profile                                 | one graph per Spanner-bound profile                                  |
-| Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | fallback — builds the DDL only when no canonical `expression` exists | fallback — builds the DDL only when no canonical `expression` exists |
+| Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | — not used; a field or metric with only vendor text is left out     | fallback — builds the DDL only when no canonical `expression` exists |
 | `custom_extensions` from a vendor other than GOOGLE            | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
 1. **Field type source.** The graph uses the source column's own type; a
@@ -90,11 +91,16 @@ agree on every structural row and differ only where a Spanner target has no
     the catalog entries are first pruned to what the graph binds — see
     [To Knowledge Catalog](#to-knowledge-catalog).
 11. **Vendor-dialect fallback.** What you author is the `expression.dialects[]`
-    list; the graph builds from the canonical (BigQuery/ANSI) variant.
-    `importedExpression` / `importedDialect` are not authored keys — the loader
-    *derives* them from a non-canonical dialect entry (for example the MAQL or
-    Snowflake form a metric was imported from) and uses that verbatim as the
-    fallback when no canonical variant exists. See
+    list. `importedExpression` / `importedDialect` are not authored keys — the
+    loader *derives* them from a non-canonical dialect entry (for example the
+    MAQL or Snowflake form a metric was imported from). A BigQuery graph reads
+    a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one, else the
+    SQL `push --transpile` translated from the vendor text. It never emits the
+    vendor text. A field with none of these is left out of its node table with
+    a warning. A metric with none, or one that aggregates such a field, is
+    skipped with a warning. A Spanner graph builds from the canonical
+    (BigQuery/ANSI) variant and uses the vendor text verbatim when no canonical
+    variant exists. See
     [Model spec §2.5](model_spec.md#25-expressions).
 12. **Actions.** An action reaches Knowledge Catalog only, as one
     `semantic-action` entry under the model entry, and `pull` reads it back from
@@ -181,8 +187,9 @@ templates gain the fields. The catalog never stores `ai_context.synonyms` /
 `examples`, field-level `ai_context` (only model, entity, and metric
 `instructions` have a home, in the `guidelines` aspect), or the original vendor
 SQL (`importedExpression` — for example the MAQL or Snowflake form a metric was
-imported from). Those stay in your authored document; the vendor SQL and
-expressions are still used when generating graph SQL.
+imported from). Those stay in your authored document. The expressions build the
+graph SQL. The vendor SQL builds only Spanner graph SQL, when no canonical
+expression exists.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
@@ -257,10 +264,12 @@ The model's own statement-level metadata has nowhere to go: BigQuery silently
 drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
 not in the graph — the `description` and `ai_context.instructions` are carried
 into Knowledge Catalog instead. Unique keys beyond the primary key are also
-dropped (only the primary key is emitted). The imported vendor SQL is not carried
-as a separate form: the graph builds from the canonical `expression` when
-present, and falls back to the imported vendor SQL verbatim only when the model
-was never transpiled to a canonical form.
+dropped (only the primary key is emitted). The imported vendor SQL is never
+emitted. The graph builds each field and metric from its `BIGQUERY` entry, else
+its `ANSI_SQL` one, else the SQL `push --transpile` translated from the vendor
+SQL. A field with none of these is left out of its node table with a warning. A
+metric with none, or one that aggregates such a field, is skipped with a
+warning.
 
 ## To Spanner
 

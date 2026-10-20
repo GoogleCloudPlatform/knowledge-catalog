@@ -786,10 +786,10 @@ function expressionDoc(
     });
   }
   if (item.importedExpression !== undefined) {
-    // `importedExpression` holds third-party vendor SQL (e.g. SNOWFLAKE or
-    // DATABRICKS) kept for transpilation and DDL fallback when no canonical
-    // Google SQL expression exists. Only emit `importedDialect` when the loader
-    // accepts it; an unknown or missing label would fail to reload.
+    // `importedExpression` holds third-party vendor SQL, such as SNOWFLAKE or
+    // DATABRICKS, kept for transpilation and for the Spanner DDL when no
+    // canonical Google SQL expression exists. Only emit `importedDialect` when
+    // the loader accepts it; an unknown or missing label would fail to reload.
     const label = item.importedDialect;
     if (label === undefined) {
       warnings.push(

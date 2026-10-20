@@ -647,7 +647,7 @@ export interface AvailabilityReport {
  * no executor dropped. A field counts whether the entity declares or inherits
  * it. What a field or metric reads comes from the text `dialect` evaluates,
  * which defaults to the dialect the model's sources imply, and from the text
- * the graph generators emit (see prunedTexts). When the sources are in
+ * the Spanner graph generator emits (see prunedTexts). When the sources are in
  * systems of different dialects, or one names no system, there is no dialect
  * and every text counts.
  * The input is never mutated. The report names each dropped block
@@ -1461,7 +1461,7 @@ function profileStructureErrors(profile: ProfileSpec): string[] {
     if (dupField) errors.push(`${where} 'fields' lists '${dupField}' twice`);
     for (const pf of pe.fields ?? []) {
       const fat = `${where}: field '${pf.name}'`;
-      if (!pf.dialects?.length && !isFieldBound(pf as Field)) {
+      if (!isFieldBound(pf as Field)) {
         errors.push(
             `${fat} has no 'expression'; bind it with one, or list it in ` +
             `'fields_exclude'`);
@@ -1576,7 +1576,7 @@ function applyBindings(
       // An entry with nothing to bind leaves the field as it is. applyProfile
       // rejects one, and validateProfileCompleteness reports it, through
       // profileStructureErrors.
-      if (!pf.dialects?.length && !isFieldBound(pf as Field)) continue;
+      if (!isFieldBound(pf as Field)) continue;
       // Read as a load reads the same expression in a model file. One the
       // reader rejects is left unapplied, also when a profile built in memory
       // gives it with no dialect list. Under `noSqlAsWritten`, one the reader
