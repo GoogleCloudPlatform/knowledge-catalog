@@ -184,7 +184,8 @@ export class CatalogClient extends api.ApiClient {
   }
 
   // `deleteMissingAspects` removes each aspect `aspectKeys` names that `entry`
-  // does not carry. Without it Dataplex keeps such an aspect.
+  // does not carry. Without it Dataplex keeps such an aspect. The returned
+  // entry leaves out every aspect the update removed.
   async updateEntry(entry: Entry, updateMask?: string[], aspectKeys?: string[],
                     deleteMissingAspects?: boolean):
       Promise<api.ApiResult<Entry>> {
@@ -430,6 +431,8 @@ export interface FixOptions {
 // Normalises an entry and its aspects in place so resource names and aspect
 // keys consistently use project IDs (rather than project numbers), while
 // preserving `@<path>` suffixes and `path` fields on field-level aspects.
+// Drops an aspect whose value is null or has no fields. An update's response
+// lists each aspect it removed with an empty value.
 export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
                                 fix: FixOptions = {}): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
@@ -441,27 +444,22 @@ export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
   if (entry.aspects) {
     const fixedAspects: Record<string, Aspect> = {};
     for (const [aspectKey, aspectValue] of Object.entries(entry.aspects)) {
+      if (!aspectValue || !Object.keys(aspectValue).length) continue;
       const atIdx = aspectKey.indexOf('@');
       const typeRef = atIdx === -1 ? aspectKey : aspectKey.slice(0, atIdx);
       const keyPath = atIdx === -1 ? undefined : aspectKey.slice(atIdx + 1);
 
-      let aspectType = '';
-      if (!aspectValue || Object.keys(aspectValue).length) {
-        aspectType = _typeRefToName(typeRef, 'aspect');
-      }
-      else {
-        aspectType = aspectValue['aspectType'] as string;
-      }
-      aspectType = await crm.fixProject(aspectType, ctx);
+      const aspectType =
+          await crm.fixProject(_typeRefToName(typeRef, 'aspect'), ctx);
 
-      const path = aspectValue?.path || keyPath;
+      const path = aspectValue.path || keyPath;
       const baseKey = _nameToTypeRef(aspectType);
       const fixedKey = path ? `${baseKey}@${path}` : baseKey;
 
       fixedAspects[fixedKey] = {
         aspectType: aspectType,
         ...(path ? { path } : {}),
-        data: aspectValue['data'] ?? {}
+        data: aspectValue.data ?? {}
       };
     }
     entry.aspects = fixedAspects;

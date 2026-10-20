@@ -14,11 +14,16 @@
 // Of push's checks on the model itself, the runtime runs only the one on
 // inheritance. A model that push refuses for an entity with no source, a
 // relationship with no join columns, a key that is not a column, or a broken
-// expression, action or constraint still gets a store and a skill. The
-// runtime also skips the checks of push's Knowledge Catalog leg: one model per
-// entry group, and with KC_V2_ASPECTS off the checks on the copies of the
-// model and profile files, such as whether each is valid UTF-8. Two models
-// that deploy to one graph each get a skill.
+// expression, action or constraint still gets a store and a skill. Like push,
+// the runtime loads every profile file except a legacy wrapper of a profile
+// it does not read. It does not run push's checks that every named profile
+// applies to the model and is complete. So a model whose profile file or
+// GOOGLE block profile those checks refuse still gets a store and a skill
+// under the default profile. The runtime also skips the
+// checks of push's Knowledge Catalog leg: one model per entry group, and with
+// KC_V2_ASPECTS off the checks on the copies of the model and profile files,
+// such as whether each is valid UTF-8. Two models that deploy to one graph
+// each get a skill.
 //
 // Live checks are mocked, and no case reaches the network.
 
@@ -831,11 +836,11 @@ entities:
          expect(r.skills.out).toBe(`Error: ${mismatch}`);
        });
 
-  // Push applies only the profile it deploys, so under the default profile it
-  // accepts a profile file that names an entity the model lacks. The report
-  // checks every profile and refuses it. When push checks every profile, as
-  // b/573773340 plans, the runtime has to check them too.
-  test('a profile file that does not apply: push accepts it under default, and so does the runtime',
+  // Push checks every profile file, whichever profile it deploys, so under the
+  // default profile it refuses a profile file that names an entity the model
+  // lacks. The report refuses it too. The runtime applies only the profile it
+  // is given, so --print-store and skills-generate accept the file.
+  test('a profile file that does not apply: push refuses it under default, the runtime accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -858,8 +863,110 @@ entities:
 `,
          });
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 0, report: 1, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.push.out).toContain(
+             "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
+             "'Nope' is not in the logical model");
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
+       });
+
+  // Push and the runtime load every profile file except a legacy wrapper,
+  // whichever profile they read. A file in <model>.profiles/ takes its
+  // profile name from its file name, and loading it checks the `name:`
+  // inside it.
+  test('a file in <model>.profiles/ whose name does not match its file name: every command refuses',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profiles/prod.yaml': `name: prd
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+         });
+         const mismatch = "[commerce.profiles/prod.yaml] profile 'prod' " +
+             "declares name 'prd', which does not match its file's profile " +
+             "name 'prod'";
+         for (const r of [await runAll(), await runAll('prod')]) {
+           expect(codes(r))
+               .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+           expect(r.push.out).toContain(`Error: ${mismatch}`);
+           expect(r.printStore.out).toBe(`Error: ${mismatch}`);
+           expect(r.skills.out).toContain(`Error: ${mismatch}`);
+         }
+       });
+
+  test('a profile file that sets a key a profile may not set: every command refuses',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profile.prod.yaml': `name: prod
+bogus: 1
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`,
+         });
+         const r = await runAll();
+         expect(codes(r))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(r.printStore.out)
+             .toContain("[commerce.profile.prod.yaml] profile 'prod'");
+         expect(r.push.out).toContain(r.printStore.out);
+         expect(r.skills.out).toBe(r.printStore.out);
+       });
+
+  // Push loads the model files before the profile files it does not apply.
+  // When both fail to load, every command gives the model file's error.
+  test('a model file and a profile file that both fail to load: every command gives the model file error',
+       async () => {
+         writeScope({
+           'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    bogus_model_key: 1
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/propertyGraphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+           'commerce.profile.prod.yaml': 'name: prod\nbogus: 1\n',
+         });
+         const r = await runAll();
+         for (const k of ['push', 'printStore', 'skills']) {
+           expect(r[k].code).toBe(1);
+           expect(r[k].out).toContain("Error: Model document 'commerce'");
+           expect(r[k].out).not.toContain("sets 'bogus'");
+         }
        });
 
   test('a profile file that is not valid UTF-8: push refuses its copy, the runtime reads it',
@@ -936,7 +1043,7 @@ entities:
          });
          const r = await runAll('prod');
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 0});
-         expect(r.push.out).toContain("binding profile 'prod' is a profile file");
+         expect(r.push.out).toContain("binding profile 'prod' is a named profile");
        });
 
   test('a logical model with no deployments: push and skills-generate accept it',
@@ -1026,4 +1133,151 @@ semantic_model:
     await skillsGenerate({out});
     expect(list).toHaveBeenCalled();
   });
+});
+
+
+// A vanilla model carries its profiles, deployments and `extends` in GOOGLE
+// blocks. Each case writes the Google-flavor scope, with deployments and a
+// profile file, then the equivalent vanilla scope, and expects every command
+// to give the same result for both.
+describe('a vanilla model with GOOGLE blocks agrees with the Google flavor', () => {
+  type Deployment = {name: string; target: string; profile?: string};
+
+  const prodProfile = `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`;
+
+  function googleScope(deployments: Deployment[], extendsList?: string[]):
+      Record<string, string> {
+    const lines = deployments.map(
+        d => `      - name: ${d.name}\n        target: ${d.target}\n` +
+            (d.profile ? `        profile: ${d.profile}\n` : ''));
+    return {
+      'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+${lines.join('')}    entities:
+      - name: Order
+${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`,
+      'commerce.profile.prod.yaml': prodProfile,
+    };
+  }
+
+  function vanillaScope(deployments: Deployment[], extendsList?: string[]):
+      Record<string, string> {
+    const model = JSON.stringify({
+      profiles: [{
+        name: 'prod',
+        entities: [{name: 'Order', source: `${SPANNER_DB}/tables/Orders`}],
+      }],
+      deployments,
+    });
+    const dataset = extendsList ?
+        `        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '${JSON.stringify({extends: extendsList})}'
+` :
+        '';
+    return {
+      'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${model}'
+    datasets:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+${dataset}        fields:
+          - name: key
+            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
+`,
+    };
+  }
+
+  // Runs the four commands over each flavor's scope, in a fresh directory.
+  async function bothFlavors(
+      deployments: Deployment[], profile?: string, extendsList?: string[]):
+      Promise<{google: Record<string, Outcome>; vanilla: Record<string, Outcome>}> {
+    writeScope(googleScope(deployments, extendsList));
+    const google = await runAll(profile);
+    fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+    writeScope(vanillaScope(deployments, extendsList));
+    const vanilla = await runAll(profile);
+    return {google, vanilla};
+  }
+
+  const dev = {name: 'dev', target: `${SPANNER_DB}/propertyGraphs/commerce`};
+  const prod = (target: string) => ({name: 'prod', target, profile: 'prod'});
+
+  // The runtime checks that each deployment's profile is declared. A vanilla
+  // model declares prod in its GOOGLE block.
+  test('a deployment for a declared profile, under default: the runtime uses dev',
+       async () => {
+         const {google, vanilla} = await bothFlavors(
+             [dev, prod(`${SPANNER_DB}2/propertyGraphs/commerce`)]);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(vanilla)).toEqual(codes(google));
+         // The vanilla expression form adds a dialect warning on its own line.
+         expect(vanilla.printStore.out.split('\n').pop())
+             .toBe(google.printStore.out);
+       });
+
+  test('a deployment for a declared profile, under it: the runtime uses it',
+       async () => {
+         const {google, vanilla} = await bothFlavors(
+             [prod(`${SPANNER_DB}/propertyGraphs/commerce`)], 'prod');
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(codes(vanilla)).toEqual(codes(google));
+         expect(vanilla.printStore.out.split('\n').pop())
+             .toBe('acme-ops/prod/commerce');
+       });
+
+  test('a deployment for an undeclared profile: every runtime command refuses',
+       async () => {
+         const {google, vanilla} = await bothFlavors([
+           dev,
+           {name: 'prod', target: `${SPANNER_DB}2/propertyGraphs/commerce`,
+            profile: 'prdo'},
+         ]);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(codes(vanilla)).toEqual(codes(google));
+         expect(vanilla.printStore.out).toContain(
+             "deployment 'prod' names unknown binding profile 'prdo'; " +
+             'defined profiles: prod.');
+       });
+
+  test('a malformed deployment for another declared profile: every command refuses',
+       async () => {
+         const {google, vanilla} = await bothFlavors(
+             [dev, prod(`${SPANNER_DB}/propertyGraph/typo`)]);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(codes(vanilla)).toEqual(codes(google));
+         expect(vanilla.printStore.out).toContain("deployment 'prod' targets");
+       });
+
+  test('an extends that names an unknown entity: every command refuses',
+       async () => {
+         const {google, vanilla} = await bothFlavors([dev], undefined, ['Missing']);
+         expect(codes(google))
+             .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
+         expect(codes(vanilla)).toEqual(codes(google));
+         for (const name of ['printStore', 'skills']) {
+           expect(vanilla[name].out)
+               .toContain("entity 'Order' extends unknown entity 'Missing'");
+         }
+       });
 });

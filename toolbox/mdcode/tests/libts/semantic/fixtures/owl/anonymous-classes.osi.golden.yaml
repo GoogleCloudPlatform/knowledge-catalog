@@ -16,7 +16,6 @@ semantic_model:
         abstract: true
         fields:
           - name: amount
-            datatype: Opaque
       - name: Contract
       - name: WonOpportunity
         extends:

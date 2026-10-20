@@ -16,9 +16,10 @@ import {googleDeploymentTargets} from './deploy_bigquery';
 import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfileExclusions, expressionSources, ProfileExclusion, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, expressionSources, ProfileExclusion, reservedProfileNameError, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -60,6 +61,7 @@ export function validatePushRequirements(
     } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
+    errors.push(...nameAndDescriptionErrors(model, document));
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
     try {
       // One pass over the model's GOOGLE extension(s): both checks below read
@@ -99,7 +101,12 @@ export function validatePushRequirements(
     // model), one, or even several backends (whose KC aspect records all of
     // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
-      const vanilla = model.version === OSSIE_VERSION;
+      // Where the model lists its deployments. A vanilla model with no
+      // `deployments` in its GOOGLE block is told how to declare them instead.
+      const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
+          model.deployments?.length ?
+          `under 'deployments' in its GOOGLE custom_extensions block` :
+          undefined;
       if (deployInfo.malformed.length) {
         // A target in no accepted form is named, alone or beside others, so
         // the author knows which entry to fix.
@@ -116,8 +123,7 @@ export function validatePushRequirements(
                     .length} deployments; push uses ` +
             `exactly one deployment for now, with a BigQuery Graph or ` +
             `Spanner Graph target${
-                vanilla ? `; ${DEPLOYMENTS_VERSION_HINT}` :
-                          ` under 'deployments'.`}`);
+                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
@@ -129,8 +135,7 @@ export function validatePushRequirements(
             `model runs against rather than deploys to; AlloyDB has no ` +
             `property graph for a push to publish. Declare a BigQuery or ` +
             `Spanner Graph target (${
-                vanilla ? `${DEPLOYMENTS_VERSION_HINT}; ` :
-                          `under 'deployments'; `}push uses exactly one ` +
+                where ?? DEPLOYMENTS_VERSION_HINT}; push uses exactly one ` +
             `deployment for now), or run 'kcmd push --no-profile' to publish ` +
             `to Knowledge Catalog only.`);
       }
@@ -274,6 +279,50 @@ export function validatePushRequirements(
       }
     }
   }
+  return errors;
+}
+
+// Each name in `model` that breaks its kind's pattern or length limit, and each
+// description too long for the Knowledge Catalog entry that stores it. The
+// loader checks names too; this check is for a model built in memory and a
+// profile that reaches `model.profiles` some other way. Description limits are
+// checked at push only.
+function nameAndDescriptionErrors(
+    model: SemanticModel, document: string): string[] {
+  const at = `model '${model.name}' (${document})`;
+  const errors: string[] = [];
+  const check = (kind: NameKind, name: string) => {
+    const problem = nameProblem(kind, name);
+    if (problem) errors.push(`${at}: ${problem}`);
+  };
+  const tooLong = (what: string, description: string|undefined) => {
+    if (description !== undefined &&
+        description.length > MAX_ENTRY_DESCRIPTION) {
+      errors.push(
+          `${at}: the description of ${what} is ${
+              description.length} characters long; a Knowledge Catalog ` +
+          `entry's description holds at most ${MAX_ENTRY_DESCRIPTION}.`);
+    }
+  };
+  check('model', model.name);
+  tooLong(`model '${model.name}'`, model.description);
+  for (const e of model.entities ?? []) {
+    check('entity', e.name);
+    tooLong(`entity '${e.name}'`, e.description);
+    for (const f of e.fields ?? []) check('field', f.name);
+  }
+  for (const m of model.metrics ?? []) {
+    check('metric', m.name);
+    tooLong(`metric '${m.name}'`, m.description);
+  }
+  for (const r of model.relationships ?? []) {
+    check('relationship', r.name);
+    tooLong(`relationship '${r.name}'`, r.description);
+  }
+  for (const d of model.deployments ?? []) check('deployment', d.name);
+  for (const p of model.profiles ?? []) check('profile', p.name);
+  const reserved = reservedProfileNameError(document, model.profiles ?? []);
+  if (reserved) errors.push(reserved);
   return errors;
 }
 
@@ -1217,9 +1266,8 @@ function metricNoSqlError(
 //     metricNoSqlError).
 // The rules below run when inheritance resolved cleanly:
 //   - For each metric:
-//     1. Unless it has no SQL, reject a metric with no `authoredEntity` (or
-//        vanilla GOOGLE block `entity`) when its expressions, read together,
-//        reach no entity or more than one.
+//     1. Unless it has no SQL, reject a metric with no `authoredEntity` when
+//        its expressions, read together, reach no entity or more than one.
 //     2. Reject when `authoredEntity ?? entity` does not name a declared
 //        entity (runs on every push).
 //     3. When `authoredEntity` is set and the expressions reference at least
@@ -1343,8 +1391,7 @@ export function validateExpressionReferences(
       addUnreadableWarning(
           `metric '${metric.name}'`, readable.length, unreadDialects);
 
-      const googleEntity = googleMetricEntity(metric);
-      const authored = metric.authoredEntity ?? googleEntity;
+      const authored = metric.authoredEntity;
       const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
 
@@ -1481,33 +1528,16 @@ function validateBigQueryMetrics(
           `including a function namespace such as 'NET.', so remove the ` +
           `extra '<entity>.' match or scope its expression to one entity.`);
     } else if (referenced.length === 0) {
+      const anchor = model.version === OSSIE_VERSION ?
+          `'entity' in a GOOGLE custom_extensions block on the metric` :
+          `top-level 'entity'`;
       errors.push(
           `${prefix} targets a BigQuery graph but does not resolve to a ` +
           `single entity; the BigQuery generator reads '<entity>.' ` +
-          `qualifiers in the expression or top-level 'entity' (in ` +
-          `'0.2.0.dev0/google', not a GOOGLE custom_extensions block).`);
+          `qualifiers in the expression or ${anchor}.`);
     }
   }
   return errors;
-}
-
-// In a vanilla 0.2.0.dev0 document a metric states its anchor inside its
-// GOOGLE custom_extensions block until b/568397001 teaches the loader to read
-// it.
-function googleMetricEntity(metric: Metric): string|undefined {
-  for (const ext of metric.customExtensions ?? []) {
-    if (ext.vendorName !== 'GOOGLE') continue;
-    try {
-      const parsed = JSON.parse(ext.data);
-      if (parsed && typeof parsed === 'object' &&
-          typeof parsed.entity === 'string' && parsed.entity.trim()) {
-        return parsed.entity;
-      }
-    } catch {
-      // Ignore malformed JSON here; if relevant, other checks report it.
-    }
-  }
-  return undefined;
 }
 
 // Every field each entity has, inherited and profile-excluded ones included so

@@ -12,16 +12,17 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, isFieldBound, Metric, normalizeDataType, Relationship, relationshipAncestors, SemanticModel, SqlDialect, VIOLATION_EFFECTS, VocabularyMember,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, Glossary, GlossaryCategory, GlossaryDefines, GlossaryTerm, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, relationshipAncestors, SemanticModel, SqlDialect, VIOLATION_EFFECTS, VocabularyMember,} from './ir';
+import {NameKind, nameProblem} from './names';
 import {checkGlossary} from './glossary';
 import {checkDerivedRelationships, parseStep} from './derived_relationships';
 import {BINDING_MODES, checkHydration, hydrationDocErrors, hydrationFromDoc, modeDocError} from './hydration';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, ProfileExclusion, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {checkUnitsAndHistory} from './units_history';
-import {YAML_OPTIONS} from './yaml_options';
+import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
   dialect?: string;  // preferred expression dialect; default 'BIGQUERY'
@@ -67,7 +68,7 @@ export const HALF_BOUND_JOIN_PROBLEM = `from_columns and to_columns must be ` +
     `given together (both bind the edge) or both omitted (a logical edge); ` +
     `one without the other is a half-bound join.`;
 
-export function halfBoundJoinMessage(relationship: string): string {
+function halfBoundJoinMessage(relationship: string): string {
   return `relationship '${relationship}': ${HALF_BOUND_JOIN_PROBLEM}`;
 }
 
@@ -119,10 +120,11 @@ const FALLBACK_DIALECT = 'ANSI_SQL';
 //     it would carry is a native key here.
 // Both parse into the same IR, so a downstream leg never sees the difference.
 export const OSSIE_VERSION = '0.2.0.dev0';
-const GOOGLE_VERSION = '0.2.0.dev0/google';
-// How a vanilla author gets the `deployments:` key: the end of every message
-// that asks a vanilla model for something only the Google flavor can say.
+export const GOOGLE_VERSION = '0.2.0.dev0/google';
+// How a vanilla author declares deployments: in a GOOGLE block on the model,
+// or under `deployments:` after a switch to the Google flavor.
 export const DEPLOYMENTS_VERSION_HINT =
+    `list 'deployments' in a GOOGLE custom_extensions block on the model, or ` +
     `set version: '${GOOGLE_VERSION}' and use 'deployments:'`;
 // The declared flavor, as stored on the IR (SemanticModel.version).
 type FormatVersion = NonNullable<SemanticModel['version']>;
@@ -421,10 +423,11 @@ const aiContextSchema = googleAiContextSchema;
 
 // A vendor-scoped extension block: opaque `data` (a JSON string) tagged by
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
-// relationship, metric). All are preserved verbatim on the IR (see
-// toCustomExtensions) for lossless round-trip; no vendor block is interpreted
-// at load time -- typed views (e.g. off the GOOGLE block) are a consumer
-// concern.
+// relationship, metric). A vanilla document's GOOGLE blocks on a model,
+// dataset, relationship or metric are read into the IR (see readGoogleBlocks).
+// A model also keeps the GOOGLE block that carries `deploymentTargets`.
+// rejectGoogleBlock says where a GOOGLE block is rejected. Every other block is
+// kept verbatim.
 const customExtensionSchema = z.object({
   vendor_name: z.string(),
   data: z.string(),
@@ -768,7 +771,7 @@ type GlossaryDoc = z.infer<typeof glossarySchema>;
 
 const deploymentSchema =
     z.object({
-       name: z.string().min(1),
+       name: z.string(),
        target: z.string().trim().min(1),
        profile: z.string().min(1).optional(),
      }).strict();
@@ -1129,8 +1132,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
               message: `metric '${mt.name}': 'entity' is a ` +
                   `'${GOOGLE_VERSION}' extension. A '${OSSIE_VERSION}' ` +
                   `metric takes its entity from the fields it reads, as in ` +
-                  `'COUNT(orders.id)'. To anchor it explicitly, set the ` +
-                  `document version to '${GOOGLE_VERSION}'.`,
+                  `'COUNT(orders.id)'. To anchor it explicitly, set 'entity' ` +
+                  `in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
+                  `metric, or set the document version to ` +
+                  `'${GOOGLE_VERSION}'.`,
             });
           });
 
@@ -1283,8 +1288,7 @@ function aiContextOrUndefined(ai: AiContextDoc|undefined): AiContext|undefined {
 
 // Preserves vendor `custom_extensions` verbatim on the IR (`vendor_name` ->
 // `vendorName`; `data` kept as the opaque, vendor-serialized string) so nothing
-// is lost and a 1P round-trip stays lossless. Typed views over specific vendors
-// are derived by the consumers that need them, not here.
+// is lost and a 1P round-trip stays lossless.
 function toCustomExtensions(exts: CustomExtensionDoc[]|undefined):
     CustomExtension[]|undefined {
   if (!exts || !exts.length) return undefined;
@@ -1465,6 +1469,489 @@ function rejectGoogleBlock(
         `field; the format defines a ${GOOGLE_VENDOR} payload only on a ` +
         `model, dataset, relationship or metric.`);
   }
+}
+
+// The levels a GOOGLE block carries keys on.
+type BlockLevel = Exclude<ExtensionLevel, 'field'>;
+
+// The keys a GOOGLE block takes at each level of a vanilla document. Each is
+// the Google flavor's native key of the same name, apart from `profiles`, which
+// the Google flavor keeps in profile files. A model's block may also carry
+// `deploymentTargets`, which readGoogleBlocks checks is a list and keeps.
+const GOOGLE_BLOCK_KEYS: Record<BlockLevel, readonly string[]> = {
+  model: ['profiles', 'deployments'],
+  dataset: ['extends'],
+  relationship: ['description'],
+  metric: ['entity'],
+};
+
+// How the Google flavor validates each of those native keys. A profile is read
+// as a profile file is instead (readBlockProfiles).
+const GOOGLE_BLOCK_SCHEMAS: Record<string, z.ZodTypeAny> = {
+  deployments: z.array(deploymentSchema),
+  extends: z.array(z.string()),
+  description: z.string(),
+  entity: z.string(),
+};
+
+// What the GOOGLE blocks on one object of a vanilla document carry.
+interface GoogleBlockValues {
+  profiles?: ProfileSpec[];
+  deployments?: Array<z.infer<typeof deploymentSchema>>;
+  extends?: string[];
+  description?: string;
+  entity?: string;
+}
+
+// Reads the GOOGLE blocks among `exts`, the `custom_extensions` of the object
+// `ctx` at `level`, and returns the values they carry and the blocks the object
+// keeps. Only a vanilla document gives a GOOGLE block meaning, and
+// rejectGoogleBlock rejects one in the Google flavor. Each key is validated as
+// the Google flavor validates its native key, apart from `profiles`, whose
+// entries are read as profile files are. A block that is read is not kept, so
+// an object keeps its third-party blocks. Throws, naming the object, on data
+// that is not a JSON object, a key one block sets twice, a key the level does
+// not take, `abstract` included, a key two blocks both set, a value the Google
+// flavor rejects, and `deployments` beside `deploymentTargets`. The deploy code
+// still reads a model's `deploymentTargets`, so the model keeps the block that
+// carries it, after reading any other key the block sets. Its value must be a
+// list, and only one block may set it. Push checks each target in the list.
+function readGoogleBlocks(
+    exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
+    level: BlockLevel, ctx: string):
+    {values: GoogleBlockValues; kept?: CustomExtension[]} {
+  rejectGoogleBlock(exts, version, level, ctx);
+  const error = (problem: string) =>
+      new SemanticModelError(`Semantic model load error: ${ctx}: ${problem}`);
+  const block = `${GOOGLE_VENDOR} custom_extensions block`;
+  const values: Record<string, unknown> = {};
+  const kept: CustomExtension[] = [];
+  let hasTargets = false;
+  for (const e of exts ?? []) {
+    const ext = {vendorName: e.vendor_name, data: e.data};
+    if (e.vendor_name !== GOOGLE_VENDOR) {
+      kept.push(ext);
+      continue;
+    }
+    let data: unknown;
+    try {
+      data = JSON.parse(e.data);
+    } catch {
+      // Reported below, as data that is not an object is.
+    }
+    if (!isRecord(data)) {
+      throw error(`the 'data' of a ${block} must be a JSON object.`);
+    }
+    // JSON.parse keeps the last of a repeated key. The YAML a native key is
+    // read from rejects a repeated key, so a block does too.
+    if (setsAKeyTwice(e.data)) {
+      throw error(
+          `the 'data' of a ${block} sets a key twice; set each key once.`);
+    }
+    let keep = false;
+    for (const [key, value] of Object.entries(data)) {
+      if (level === 'model' && key === 'deploymentTargets') {
+        if (hasTargets) {
+          throw error(`two ${block}s both set '${key}'; set it in one block.`);
+        }
+        const parsed = z.array(z.unknown()).safeParse(value);
+        if (!parsed.success) {
+          throw error(`'${key}' in a ${block}: ${issueList(parsed.error)}`);
+        }
+        keep = true;
+        hasTargets = true;
+        continue;
+      }
+      if (level === 'dataset' && key === 'abstract') {
+        throw error(
+            `a ${block} cannot declare 'abstract' in a '${OSSIE_VERSION}' ` +
+            `document. An abstract dataset has no table, and every ` +
+            `'${OSSIE_VERSION}' dataset needs a 'source'. A model that needs ` +
+            `an abstract entity uses '${GOOGLE_VERSION}'.`);
+      }
+      const allowed = GOOGLE_BLOCK_KEYS[level];
+      if (!allowed.includes(key)) {
+        throw error(
+            `'${key}' is not a key a ${block} takes on a ${level}; it takes ` +
+            `${allowed.map(k => `'${k}'`).join(' and ')}.`);
+      }
+      if (Object.hasOwn(values, key)) {
+        throw error(
+            `two ${block}s both set '${key}'; set it in one block` +
+            (key === 'extends' ? `, listing every parent there.` : `.`));
+      }
+      if (key === 'profiles') {
+        values.profiles = readBlockProfiles(value, error, ctx);
+        continue;
+      }
+      const parsed = GOOGLE_BLOCK_SCHEMAS[key].safeParse(value);
+      if (!parsed.success) {
+        throw error(`'${key}' in a ${block}: ${issueList(parsed.error)}`);
+      }
+      values[key] = parsed.data;
+    }
+    if (keep) kept.push(ext);
+  }
+  if (hasTargets && values.deployments !== undefined) {
+    throw error(
+        `set either 'deployments' or 'deploymentTargets' in its ${block}s, ` +
+        `not both.`);
+  }
+  return {
+    values: values as GoogleBlockValues,
+    kept: kept.length ? kept : undefined,
+  };
+}
+
+// Reads a GOOGLE block's `profiles`: a list of profiles, each read as a profile
+// file is. A name follows the rules the layout gives a profile file's name: it
+// passes the profile rule in names.ts, it is not `default` in any letter case,
+// and no two names are equal ignoring case.
+function readBlockProfiles(
+    value: unknown, error: (problem: string) => SemanticModelError,
+    ctx: string): ProfileSpec[] {
+  const block = `${GOOGLE_VENDOR} custom_extensions block`;
+  if (!Array.isArray(value)) {
+    throw error(`'profiles' in a ${block} must be a list.`);
+  }
+  const profiles = value.map(p => {
+    if (!isRecord(p) || typeof p.name !== 'string') {
+      throw error(
+          `each profile in a ${block} must be a mapping with a 'name'.`);
+    }
+    if (nameProblem('profile', p.name)) {
+      throw error(
+          `profile name '${p.name}' in a ${block} is not valid; a profile ` +
+          `name is a letter followed by up to 499 letters, digits, ` +
+          `underscores and hyphens.`);
+    }
+    if (p.name.toLowerCase() === DEFAULT_PROFILE) {
+      throw error(
+          `a profile in a ${block} may not be named '${p.name}'; ` +
+          `'${DEFAULT_PROFILE}' names the model's inline bindings.`);
+    }
+    // profileSpecOf rejects these two keys too, in words about a profile file.
+    for (const key of ['version', 'semantic_model']) {
+      if (p[key] !== undefined) {
+        throw error(
+            `profile '${p.name}' in a ${block} sets '${key}', which a ` +
+            `profile may not set.`);
+      }
+    }
+    try {
+      return profileSpecOf(p, p.name);
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      throw error(err.message);
+    }
+  });
+  rejectDuplicateNames(profiles.map(p => p.name), 'profile name', ctx);
+  const byLowerName = new Map<string, string>();
+  for (const {name} of profiles) {
+    const twin = byLowerName.get(name.toLowerCase());
+    if (twin !== undefined) {
+      throw error(
+          `profiles '${twin}' and '${name}' in a ${block} name the same ` +
+          `profile; profile names are unique ignoring case.`);
+    }
+    byLowerName.set(name.toLowerCase(), name);
+  }
+  return profiles;
+}
+
+// Whether the JSON text `data` sets a key twice.
+export function setsAKeyTwice(data: string): boolean {
+  return yaml.parseDocument(data, YAML_OPTIONS)
+      .errors.some(err => err.code === 'DUPLICATE_KEY');
+}
+
+// Whether the JSON text `data` sets `profiles` twice, or sets a key twice
+// inside its profiles.
+function setsAProfilesKeyTwice(data: string): boolean {
+  const doc = yaml.parseDocument(data, YAML_OPTIONS);
+  if (!yaml.isMap(doc.contents)) return false;
+  const pairs = doc.contents.items.filter(
+      p => yaml.isScalar(p.key) && p.key.value === 'profiles');
+  const range = yaml.isNode(pairs[0]?.value) ? pairs[0].value.range : undefined;
+  return pairs.length > 1 ||
+      (!!range && setsAKeyTwice(data.slice(range[0], range[1])));
+}
+
+// `v` as a list: a list as it is, one value as a list of it, and nothing as an
+// empty list.
+function asList(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : v === undefined || v === null ? [] : [v];
+}
+
+// The profiles the GOOGLE block `e` lists, whatever its shape: in data written
+// as a JSON string or as a YAML mapping, or beside `vendor_name` with no data.
+// `json` is them as the data of a block that lists only them. 'none' when the
+// block lists no profiles. 'unread' when it has neither data nor profiles
+// beside `vendor_name`, when its data is not a JSON object, or when its
+// profiles have no JSON form, as with a recursive alias.
+function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
+    'unread' {
+  if (e.data == null && e.profiles === undefined) return 'unread';
+  let data: unknown = e.data == null ? {profiles: e.profiles} : e.data;
+  if (typeof data === 'string') {
+    try {
+      data = JSON.parse(data);
+    } catch {
+      return 'unread';
+    }
+  }
+  if (!isRecord(data)) return 'unread';
+  if (data.profiles === undefined) return 'none';
+  try {
+    return {json: JSON.stringify({profiles: data.profiles})};
+  } catch {
+    return 'unread';
+  }
+}
+
+/**
+ * The profiles the model in a vanilla document carries in its GOOGLE blocks,
+ * read as a load reads them, without loading the rest of the model. So a
+ * caller finds a profile even in a model that does not load, as it finds a
+ * profile file. Only the profiles in the model's GOOGLE blocks are read, and
+ * the load reports a problem with any other key. Empty for a document that is
+ * not a vanilla model.
+ *
+ * A profile's field binding that is not blank needs the SQL parser, so call
+ * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
+ *
+ * A GOOGLE block whose shape the load rejects is read too, and the load
+ * reports its shape. Its profiles may be in data written as a JSON string or
+ * as a YAML mapping, or listed beside `vendor_name` with no data. Throws
+ * SemanticModelError on profiles a load rejects, on data that sets `profiles`
+ * twice or a key twice inside them, and on data that is not a JSON object in
+ * a block whose shape the load accepts.
+ *
+ * Text that is not valid YAML is read as far as it parses. A document whose
+ * root keys are all strings, and that sets `version` once, to a string other
+ * than the vanilla one, gives none when each YAML error is a key set twice.
+ * Past any other YAML error, it gives none only when the first line that is
+ * not blank or a comment sets that version alone, and the text holds the word
+ * `version` nowhere else, since such an error can change the version or hide
+ * a second one. Otherwise its profiles are read as in
+ * text that parses, and only when that reading is unambiguous. Each YAML error
+ * is a key set twice or an alias whose anchor is not set, since any other
+ * error, such as a bad indent, can move the blocks, cut them short or change
+ * the version. The document sets `version` once, to the vanilla one, and
+ * `semantic_model` at most once. Its model sets `custom_extensions` at most
+ * once, and each block that is a mapping sets `vendor_name` once, to a string.
+ * A GOOGLE block sets `data` and `profiles` at most once each, and holds no
+ * alias. Every key of a mapping on that path is a string, so not an alias or a
+ * merge key, and no value on it is an alias. No key is set twice inside
+ * `custom_extensions`. When any of these fails, when a GOOGLE block cannot be
+ * read, or when a load rejects its profiles, it throws the error a load
+ * reports for the text. So does a vanilla model whose text has more aliases
+ * than a load expands, or a merge key whose value is not a mapping.
+ */
+export function googleBlockProfiles(text: string): ProfileSpec[] {
+  let doc: unknown;
+  try {
+    doc = yaml.parse(text, YAML_OPTIONS);
+  } catch (err: any) {
+    return googleBlockProfilesPastYamlError(text, err?.message ?? String(err));
+  }
+  return blockProfilesOf(doc);
+}
+
+// The profiles in the GOOGLE blocks of the model in the parsed document `doc`,
+// read as googleBlockProfiles reads text that parses. When `unreadable` is
+// set, a GOOGLE block whose profiles cannot be read throws it.
+function blockProfilesOf(
+    doc: unknown, unreadable?: SemanticModelError): ProfileSpec[] {
+  if (!isRecord(doc) || doc.version !== OSSIE_VERSION) return [];
+  // The load rejects a `semantic_model` written as one mapping, and reports it.
+  const m = asList(doc.semantic_model)[0];
+  if (!isRecord(m)) return [];
+  const blocks: CustomExtensionDoc[] = [];
+  // The load rejects a `custom_extensions` written as one mapping, and reports
+  // it. The mapping is read as one block.
+  for (const e of asList(m.custom_extensions)) {
+    if (!isRecord(e) || e.vendor_name !== GOOGLE_VENDOR) continue;
+    const ext = customExtensionSchema.safeParse(e);
+    const listed = listedProfiles(e);
+    if (listed === 'unread' && unreadable) throw unreadable;
+    if (typeof listed === 'object') {
+      // Data that sets `profiles` twice, or a key twice inside them, is
+      // rejected as for any block.
+      const data =
+          typeof e.data === 'string' && setsAProfilesKeyTwice(e.data) ?
+          e.data :
+          listed.json;
+      blocks.push({vendor_name: GOOGLE_VENDOR, data});
+    } else if (listed === 'unread' && ext.success) {
+      // Data that is not a JSON object, rejected as for any block.
+      blocks.push(ext.data);
+    }
+  }
+  const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
+  return readGoogleBlocks(blocks, OSSIE_VERSION, 'model', label)
+             .values.profiles ??
+      [];
+}
+
+// The profiles the model in a vanilla document carries in its GOOGLE blocks,
+// when its text is not valid YAML. `parseError` is the error a load reports
+// for the text. A document whose version is read past the error as another
+// version gives none (see versionPastYamlError). Otherwise the profiles are
+// read as in text that parses, when that reading is unambiguous (see
+// blocksReadOneWay). When it is not, when a GOOGLE block cannot be read, or
+// when a load rejects its profiles, throws the load's error for the text.
+function googleBlockProfilesPastYamlError(
+    text: string, parseError: string): ProfileSpec[] {
+  const yamlError = new SemanticModelError(
+      `Semantic model load error: could not parse input: ${parseError}`);
+  // An alias whose anchor is not set stays an alias here, so the checks see
+  // it.
+  const parsed = yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false});
+  const errors = yaml.parseDocument(text, YAML_OPTIONS).errors;
+  const version = versionPastYamlError(text, parsed, errors);
+  if (version !== undefined && version !== OSSIE_VERSION) return [];
+  if (version === undefined || !blocksReadOneWay(parsed, errors)) {
+    throw yamlError;
+  }
+  let doc: unknown;
+  try {
+    doc = parseLeniently(text).toJS();
+  } catch {
+    // More aliases than a load expands, or a merge key whose value is not a
+    // mapping.
+    throw yamlError;
+  }
+  try {
+    return blockProfilesOf(doc, yamlError);
+  } catch (err) {
+    if (err instanceof SemanticModelError) throw yamlError;
+    throw err;
+  }
+}
+
+/**
+ * The `version` the model document `text` sets, as googleBlockProfiles reads
+ * it. Valid YAML gives its version. Past a YAML error, the version is read
+ * only when every root key is a string, and the root sets `version` once, to a
+ * string. Past an error other than a key set twice, the first line that is not
+ * blank or a comment must also set that version alone, and the text may hold
+ * the word `version` nowhere else. Undefined otherwise, and when the text sets
+ * no string version.
+ */
+export function modelDocumentVersion(text: string): string|undefined {
+  let doc: unknown;
+  try {
+    doc = yaml.parse(text, YAML_OPTIONS);
+  } catch {
+    return versionPastYamlError(
+        text, yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
+        yaml.parseDocument(text, YAML_OPTIONS).errors);
+  }
+  return isRecord(doc) && typeof doc.version === 'string' ? doc.version :
+                                                             undefined;
+}
+
+// The value of `key` in `node`, read past a YAML error: undefined when `node`
+// is not a mapping, does not set `key`, or writes `key` with no colon, as in
+// `{data}`, and null when the mapping has a key that is not a string, such as
+// an alias or a merge key, sets `key` twice, or gives it an alias.
+function onlyValue(node: unknown, key: string): unknown {
+  if (!yaml.isMap(node)) return undefined;
+  if (!node.items.every(
+          p => yaml.isScalar(p.key) && typeof p.key.value === 'string')) {
+    return null;
+  }
+  const pairs = node.items.filter(p => (p.key as yaml.Scalar).value === key);
+  if (pairs.length > 1 || yaml.isAlias(pairs[0]?.value)) return null;
+  return pairs[0]?.value ?? undefined;
+}
+
+// The first line of a text that is not blank or a comment, when it is
+// `version:` followed by the version alone, plain or quoted, and maybe a
+// comment. The version is the first group that is set.
+const FIRST_LINE_VERSION = new RegExp(
+    String.raw`^(?:[ \t]*(?:#.*)?\r?\n)*version:[ \t]*` +
+    String.raw`(?:"([^"\s,]+)"|'([^'\s,]+)'|([^\s,#'"{}[\]]+))[ \t]*(?:#.*)?$`,
+    'm');
+
+// The version `text` sets, read past a YAML error. `parsed` is the text parsed
+// with keys set twice allowed, and `errors` are the errors of the strict parse.
+// Every root key must be a string, and the root must set `version` once, to a
+// string. When each error is a key set twice, the text's structure is as
+// written, so that string is the version. Any other error can change the
+// version or hide a second one, from before the version, on its line or after
+// it. The version is then read only when the first line that is not blank or
+// a comment sets it alone, and the text holds the word `version` nowhere else.
+// Undefined otherwise.
+function versionPastYamlError(
+    text: string, parsed: yaml.Document.Parsed,
+    errors: yaml.YAMLError[]): string|undefined {
+  const version = onlyValue(parsed.contents, 'version');
+  if (!yaml.isScalar(version) || typeof version.value !== 'string') {
+    return undefined;
+  }
+  if (errors.every(err => err.code === 'DUPLICATE_KEY')) return version.value;
+  const first = FIRST_LINE_VERSION.exec(text);
+  const written = first && (first[1] ?? first[2] ?? first[3]);
+  if (first?.index !== 0 || written !== version.value ||
+      text.split('version').length !== 2) {
+    return undefined;
+  }
+  return version.value;
+}
+
+// Whether a text that is not valid YAML gives one reading of its model's GOOGLE
+// blocks. `parsed` is the text parsed with keys set twice allowed, and `errors`
+// are the errors of the strict parse. Each error is a key set twice, since any
+// other error, such as a bad indent, can move the blocks or cut them short. The
+// document sets `semantic_model` at most once, its first model sets
+// `custom_extensions` at most once, and each block that is a mapping sets
+// `vendor_name` once, to a string. A GOOGLE block sets `data` and `profiles` at
+// most once each, and holds no alias, since an alias may name an anchor set on
+// a key set twice. Every key of a mapping on that path is a string, so not an
+// alias or a merge key, and no value on it is an alias. No key is set twice
+// inside `custom_extensions`.
+function blocksReadOneWay(
+    parsed: yaml.Document.Parsed, errors: yaml.YAMLError[]): boolean {
+  if (errors.some(err => err.code !== 'DUPLICATE_KEY')) return false;
+  const models = onlyValue(parsed.contents, 'semantic_model');
+  if (models === null) return false;
+  const model = yaml.isSeq(models) ? models.items[0] : models;
+  if (yaml.isAlias(model)) return false;
+  const exts = onlyValue(model, 'custom_extensions');
+  if (exts === null) return false;
+  if (!yaml.isNode(exts)) return true;
+  const [start, , end] = exts.range ?? [0, 0, 0];
+  if (errors.some(err => err.pos[0] >= start && err.pos[0] < end)) {
+    return false;
+  }
+  for (const block of yaml.isSeq(exts) ? exts.items : [exts]) {
+    if (yaml.isAlias(block)) return false;
+    if (!yaml.isMap(block)) continue;
+    const vendor = onlyValue(block, 'vendor_name');
+    if (!yaml.isScalar(vendor) || typeof vendor.value !== 'string') {
+      return false;
+    }
+    if (vendor.value !== GOOGLE_VENDOR) continue;
+    if (onlyValue(block, 'data') === null ||
+        onlyValue(block, 'profiles') === null || holdsAlias(block)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Whether `node` holds an alias, as a key or a value at any depth.
+function holdsAlias(node: yaml.Node): boolean {
+  let found = false;
+  yaml.visit(node, {
+    Alias: () => {
+      found = true;
+      return yaml.visit.BREAK;
+    },
+  });
+  return found;
 }
 
 // Ossie's Relationship has no `description` key and its objects are closed, so
@@ -1719,8 +2206,8 @@ function keyWarning(
 // Infers the entities a metric's expressions reach across all dialect entries,
 // and returns the warning the metric gives when an expression could not be
 // parsed or when it states no `entity` and its expressions name none. An
-// authored anchor (Google flavor only) settles which entity the metric belongs
-// to, so a `COUNT(*)` with one is not warned about.
+// authored anchor, which vanilla writes in a GOOGLE block, settles which entity
+// the metric belongs to, so a `COUNT(*)` with one is not warned about.
 export function inferMetricEntities(
     metric: Pick<
         Metric,
@@ -1754,7 +2241,9 @@ export function inferMetricEntities(
   const referenced = entitiesReached(allCols, entityNames);
   if (metric.authoredEntity === undefined && !referenced.length) {
     const entityHint = version === OSSIE_VERSION ?
-        `use version '${GOOGLE_VERSION}' and set 'entity' on the metric` :
+        `set 'entity' in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
+            `metric, or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
+            `the metric` :
         `set 'entity' on the metric`;
     return {
       referenced,
@@ -1836,18 +2325,36 @@ function rejectDuplicateNames(
   }
 }
 
+// Rejects a name that breaks its kind's pattern or length limit (see
+// names.ts), naming the scope it is in when one is given.
+function rejectInvalidName(kind: NameKind, name: string, scope?: string): void {
+  const problem = nameProblem(kind, name);
+  if (problem) {
+    throw new SemanticModelError(scope ? `${scope}: ${problem}` : problem);
+  }
+}
+
 function convertModel(
     m: ModelDoc, version: FormatVersion, opts: LoadOptions,
     warnings: string[]): SemanticModel {
   const dialect = opts.dialect ?? DEFAULT_DIALECT;
+  rejectInvalidName('model', m.name);
 
-  rejectGoogleBlock(m.custom_extensions, version, 'model', `model '${m.name}'`);
+  const block = readGoogleBlocks(
+      m.custom_extensions, version, 'model', `model '${m.name}'`);
+  // A dataset's GOOGLE blocks are read before the bindings are checked, so a
+  // dataset that declares `abstract` in one is told that vanilla has no
+  // abstract dataset, even when it names no `source`.
+  const datasetBlocks = m.datasets.map(
+      ds => readGoogleBlocks(
+          ds.custom_extensions, version, 'dataset', `dataset '${ds.name}'`));
   if (version === OSSIE_VERSION) {
     requireVanillaBindings(m);
   }
 
   const entities = m.datasets.map(
-      ds => convertDataset(ds, version, opts, warnings, dialect));
+      (ds, i) => convertDataset(
+          ds, datasetBlocks[i], version, opts, warnings, dialect));
   rejectDuplicateNames(
       entities.map(e => e.name), 'dataset name', `model '${m.name}'`);
 
@@ -1949,7 +2456,11 @@ function convertModel(
   rejectDuplicateNames(
       constraints.map(c => c.name), 'constraint name', `model '${m.name}'`);
 
-  const deployments = (m.deployments ?? []).map(d => ({
+  const deploymentDocs = m.deployments ?? block.values.deployments ?? [];
+  for (const d of deploymentDocs) {
+    rejectInvalidName('deployment', d.name, `model '${m.name}'`);
+  }
+  const deployments = deploymentDocs.map(d => ({
     name: d.name,
     target: d.target,
     ...(d.profile !== undefined ? {profile: d.profile} : {}),
@@ -1982,16 +2493,18 @@ function convertModel(
   if (actions.length) model.actions = actions;
   if (constraints.length) model.constraints = constraints;
   if (deployments.length) model.deployments = deployments;
+  if (block.values.profiles?.length) model.profiles = block.values.profiles;
   if (description) model.description = description;
   const ai = aiContextOrUndefined(m.ai_context);
   if (ai) model.aiContext = ai;
-  // Authored custom extensions are carried verbatim. Under the extended
+  // The blocks the model keeps are carried verbatim. Under the extended
   // profile the native `deployments` list (or legacy `deployment_target` key)
   // is folded into a GOOGLE block appended after them; no authored GOOGLE block
   // can collide with it, since that flavor rejects one (see rejectGoogleBlock).
-  const ce = toCustomExtensions(m.custom_extensions);
-  if (ce) model.customExtensions = ce;
-  const foldedTargets = deployments.map(d => d.target);
+  // Vanilla deployments, read from a GOOGLE block, are not folded.
+  if (block.kept) model.customExtensions = block.kept;
+  const foldedTargets =
+      version === GOOGLE_VERSION ? deployments.map(d => d.target) : [];
   if (foldedTargets.length) {
     model.customExtensions = [
       ...(model.customExtensions ?? []),
@@ -2057,9 +2570,13 @@ function convertGlossary(g: GlossaryDoc): Glossary {
   return out;
 }
 
+// Converts the dataset `ds`, whose GOOGLE blocks convertModel has read into
+// `block`.
 function convertDataset(
-    ds: DatasetDoc, version: FormatVersion, opts: LoadOptions,
-    warnings: string[], dialect: string): Entity {
+    ds: DatasetDoc, block: ReturnType<typeof readGoogleBlocks>,
+    version: FormatVersion, opts: LoadOptions, warnings: string[],
+    dialect: string): Entity {
+  rejectInvalidName('entity', ds.name);
   const ctxLabel = `dataset '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
@@ -2091,7 +2608,8 @@ function convertDataset(
   if (parsedSource) entity.authoredSource = parsedSource.authoredSource;
   if (ds.unique_keys && ds.unique_keys.length)
     entity.uniqueKeys = ds.unique_keys;
-  if (ds.extends && ds.extends.length) entity.extends = ds.extends;
+  const parents = ds.extends ?? block.values.extends;
+  if (parents && parents.length) entity.extends = parents;
   if (definition) {
     entity.definition = definition;
     // `abstract` on a defined entity is redundant (it has no table either way)
@@ -2137,9 +2655,7 @@ function convertDataset(
   if (description) entity.description = description;
   const ai = aiContextOrUndefined(ds.ai_context);
   if (ai) entity.aiContext = ai;
-  rejectGoogleBlock(ds.custom_extensions, version, 'dataset', ctxLabel);
-  const ce = toCustomExtensions(ds.custom_extensions);
-  if (ce) entity.customExtensions = ce;
+  if (block.kept) entity.customExtensions = block.kept;
   return entity;
 }
 
@@ -2283,6 +2799,7 @@ export function parseFieldBinding(
 function convertField(
     f: FieldDoc, entityName: string, version: FormatVersion,
     warnings: string[], dialect: string): Field {
+  rejectInvalidName('field', f.name, `dataset '${entityName}'`);
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
   // own destination and a 1P round-trip stays lossless.
@@ -2333,6 +2850,7 @@ function convertField(
 function convertRelationship(
     r: RelationshipDoc, version: FormatVersion,
     entityNames: Set<string>): Relationship {
+  rejectInvalidName('relationship', r.name);
   const ctx = `relationship '${r.name}'`;
   rejectVanillaRelationshipDescription(r, version);
   if (!entityNames.has(r.from)) {
@@ -2355,21 +2873,19 @@ function convertRelationship(
     source: {entity: r.from, columns: fromColumns},
     destination: {entity: r.to, columns: toColumns},
   };
-  // Relationship inheritance is carried as declared, exactly like a dataset's
-  // `extends`: an `extends` naming no relationship (or a cycle) is accepted
-  // here and reported once by validate, not thrown from the loader.
   if (r.extends && r.extends.length) relationship.extends = r.extends;
   if (r.abstract) relationship.abstract = true;
-  const description = composeDescription(r.description);
+  const block =
+      readGoogleBlocks(r.custom_extensions, version, 'relationship', ctx);
+  const description =
+      composeDescription(r.description ?? block.values.description);
   if (description) relationship.description = description;
   const ai = aiContextOrUndefined(r.ai_context);
   if (ai) relationship.aiContext = ai;
   if (r.inverse !== undefined) relationship.inverse = r.inverse;
   if (r.via !== undefined) relationship.via = r.via.map(parseStep);
   if (r.filter !== undefined) relationship.filter = r.filter;
-  rejectGoogleBlock(r.custom_extensions, version, 'relationship', ctx);
-  const ce = toCustomExtensions(r.custom_extensions);
-  if (ce) relationship.customExtensions = ce;
+  if (block.kept) relationship.customExtensions = block.kept;
   return relationship;
 }
 
@@ -2436,7 +2952,11 @@ function warnRelationshipInheritance(
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entityNames: string[],
     warnings: string[], dialect: string, impliedDialect?: string): Metric {
+  rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
+  const block = readGoogleBlocks(mt.custom_extensions, version, 'metric', ctx);
+  // The anchor the author wrote, natively or in a vanilla GOOGLE block.
+  const authored = mt.entity ?? block.values.entity;
   const {dialects, stringForm, picked} =
       convertExpression(mt.expression, version, dialect, ctx);
   const ew = expressionWarning({dialects, stringForm}, ctx, dialect);
@@ -2445,7 +2965,7 @@ function convertMetric(
   const {referenced, warning: mw} = inferMetricEntities(
       {
         name: mt.name,
-        authoredEntity: mt.entity,
+        authoredEntity: authored,
         expression: picked.expression,
         importedExpression: picked.importedExpression,
         importedDialect: picked.importedDialect,
@@ -2454,18 +2974,18 @@ function convertMetric(
       entityNames, dialect, impliedDialect, version);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};
-  if (mt.entity !== undefined) {
+  if (authored !== undefined) {
     // Like a relationship endpoint, an anchor must name a dataset the model
     // declares; a dangling one would attach the metric to nothing downstream.
-    if (!entityNames.includes(mt.entity)) {
+    if (!entityNames.includes(authored)) {
       throw new SemanticModelError(
-          `Semantic model load error: ${ctx}: 'entity' names '${mt.entity}', ` +
+          `Semantic model load error: ${ctx}: 'entity' names '${authored}', ` +
           `which is not a dataset in this model.`);
     }
     // What the author wrote wins over inference. `authoredEntity` records that
     // it was written, so a pull can write it back rather than re-infer it.
-    metric.authoredEntity = mt.entity;
-    metric.entity = mt.entity;
+    metric.authoredEntity = authored;
+    metric.entity = authored;
   } else if (referenced.length === 1) {
     // Attach only when the reference is unambiguous; a cross-entity metric is
     // left unattached (its qualifiers stay inline in the expression for
@@ -2483,9 +3003,7 @@ function convertMetric(
   if (description) metric.description = description;
   const ai = aiContextOrUndefined(mt.ai_context);
   if (ai) metric.aiContext = ai;
-  rejectGoogleBlock(mt.custom_extensions, version, 'metric', ctx);
-  const ce = toCustomExtensions(mt.custom_extensions);
-  if (ce) metric.customExtensions = ce;
+  if (block.kept) metric.customExtensions = block.kept;
   return metric;
 }
 

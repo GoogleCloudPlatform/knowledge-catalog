@@ -337,6 +337,61 @@ describe('SemanticModelLayout profile file rules', () => {
     expect(l.profileDocuments('other')).toEqual([]);
   });
 
+  test('a model name the loader rejects is reported before the file names', async () => {
+    // Naming the files after 'Sales Orders' could not work, so the name is the
+    // first thing to fix.
+    writeToGroup('sales.yaml', MODEL("'Sales Orders'"));
+    writeToGroup('sales.profile.prod.yaml', 'name: prod\n');
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('sales'))
+        .toThrow("Model file 'sales.yaml': Model name 'Sales Orders' is not valid");
+  });
+
+  // A YAML error can change the name the text seems to declare. The load
+  // reports the error.
+  test('the model name is not checked in a model file that is not valid YAML', async () => {
+    writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
+    for (const model of ['  - name: retail\n    name: sales\n',
+                         '  - name: "retail\n    description: x\n']) {
+      writeToGroup('retail.yaml', `version: 0.2.0.dev0/google\nsemantic_model:\n${model}`);
+      expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
+          .toEqual(['prod']);
+      writeToGroup('retail.yaml', `version: 0.2.0.dev0\nsemantic_model:\n${model}`);
+      const l = await layout('eg');
+      expect(() => l.profileDocuments('retail'))
+          .toThrow("sits beside 'retail.yaml', which is a 0.2.0.dev0 document");
+    }
+  });
+
+  // The layout reads the version as the lookup of block profiles reads it. A
+  // version set twice, or one a YAML error may change or hide, is not read past
+  // the error, so the file is not taken as vanilla, and the lookup reports the
+  // error. A version set once is read past
+  // an error after it, such as more aliases than a load expands.
+  test('the version of a model file that is not valid YAML is read as the block profile lookup reads it', async () => {
+    writeToGroup('retail.profile.prod.yaml', 'name: prod\n');
+    const rest = 'semantic_model:\n  - name: retail\n';
+    for (const text of [
+      'version: 0.2.0.dev0/google\nversion: 0.2.0.dev0\n' + rest,
+      'version: 0.2.0.dev0\n  bad: 1\n' + rest,
+      // A later version hidden by a bad indent.
+      'meta:\nversion: 0.2.0.dev0\n' + rest + '   version: 0.2.0.dev0/google\n',
+      // A version split on its line, and a first version taken into a quote
+      // left open ahead of it.
+      '{version: "0.2.0.dev0", /google, label: "\nsemantic_model: [{name: retail}]}\n',
+      'label: "\n  version: \'0.2.0.dev0/google\'\n  note: "\nversion: "0.2.0.dev0"\nx: "\n' + rest,
+    ]) {
+      writeToGroup('retail.yaml', text);
+      expect((await layout('eg')).profileDocuments('retail').map(d => d.name))
+          .toEqual(['prod']);
+    }
+    writeToGroup('retail.yaml',
+                 `version: 0.2.0.dev0\nx: &a 1\nys:\n${'  - *a\n'.repeat(101)}${rest}`);
+    const l = await layout('eg');
+    expect(() => l.profileDocuments('retail'))
+        .toThrow("sits beside 'retail.yaml', which is a 0.2.0.dev0 document");
+  });
+
   test('profileDocument reads one profile by name, under the same rules', async () => {
     writeToGroup('retail.yaml', MODEL('retail'));
     writeToGroup('retail.profile.prod.yaml', 'name: prod\n');

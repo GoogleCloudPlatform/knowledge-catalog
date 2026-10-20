@@ -44,6 +44,17 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
         expect(responses[0].error).toBeDefined();
       });
 
+  test('does not translate SQL Server text', async () => {
+    // The engine gets common T-SQL forms wrong without an error (a CONVERT
+    // style, DATEDIFF(dd, ...), DATEPART, N'' strings), so SQL Server text is
+    // kept as written rather than translated.
+    const [response] = await polyglotTranspiler(
+        [{id: '0', dialect: 'SQLSERVER', expression: 'ISNULL(x, 0)'}],
+        'BIGQUERY');
+    expect(response.sql).toBeUndefined();
+    expect(response.error).toBeDefined();
+  });
+
   test(
       'errors every request for an unsupported target dialect rather than ' +
           'silently emitting BigQuery',

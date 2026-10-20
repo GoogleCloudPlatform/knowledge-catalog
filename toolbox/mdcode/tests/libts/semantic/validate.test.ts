@@ -76,8 +76,32 @@ describe('validatePushRequirements', () => {
         validatePushRequirements([loaded(model({version: '0.2.0.dev0'}))]);
     expect(vanillaErrs).toHaveLength(1);
     expect(vanillaErrs[0]).toEndWith(
-        "; set version: '0.2.0.dev0/google' and use 'deployments:'");
+        "; list 'deployments' in a GOOGLE custom_extensions block on the " +
+        "model, or set version: '0.2.0.dev0/google' and use 'deployments:'");
     expect(vanillaErrs[0]).not.toContain("under 'deployments'");
+  });
+
+  // A vanilla model that lists deployments has them in its GOOGLE block, so
+  // the message says where they are instead of how to declare them.
+  test('a vanilla model is told its GOOGLE block holds its deployments', () => {
+    const twice = model({
+      version: '0.2.0.dev0',
+      deployments: [
+        {name: 'a', target: BQ_TARGET},
+        {name: 'b', target: SPANNER_TARGET},
+      ],
+    });
+    expect(validatePushRequirements([loaded(twice)])[0]).toEndWith(
+        'with a BigQuery Graph or Spanner Graph target under ' +
+        "'deployments' in its GOOGLE custom_extensions block.");
+    const alloy = model({
+      version: '0.2.0.dev0',
+      deployments: [{name: 'a', target: ALLOYDB_TARGET}],
+    });
+    expect(validatePushRequirements([loaded(alloy)])[0]).toContain(
+        "Declare a BigQuery or Spanner Graph target (under 'deployments' in " +
+        'its GOOGLE custom_extensions block; push uses exactly one ' +
+        'deployment for now)');
   });
 
   test(
@@ -143,7 +167,8 @@ describe('validatePushRequirements', () => {
     // The version hint goes with the graph target it enables, not with the
     // catalog-only option.
     expect(vanillaErrs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (set version: " +
+        "Declare a BigQuery or Spanner Graph target (list 'deployments' in " +
+        "a GOOGLE custom_extensions block on the model, or set version: " +
         "'0.2.0.dev0/google' and use 'deployments:'; push uses exactly one " +
         "deployment for now), or run 'kcmd push --no-profile' to publish to " +
         "Knowledge Catalog only.");
@@ -176,7 +201,8 @@ describe('validatePushRequirements', () => {
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs).toHaveLength(1);
     expect(errs[0]).toEndWith(
-        "with a BigQuery Graph or Spanner Graph target; set version: " +
+        "with a BigQuery Graph or Spanner Graph target; list 'deployments' " +
+        "in a GOOGLE custom_extensions block on the model, or set version: " +
         "'0.2.0.dev0/google' and use 'deployments:'");
   });
 
@@ -1890,8 +1916,8 @@ describe('field and metric expression references', () => {
           "references multiple entities (NET, orders); the BigQuery generator reads every '<entity>.' " +
           "outside comments as a qualifier, including a function namespace such as 'NET.'");
 
-      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` unset:
-      // KC-only push accepts it, while BigQuery graph push rejects it naming what the BigQuery generator reads.
+      // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` set
+      // from the block, so a KC-only push and a BigQuery graph push both accept it.
       const vanillaDoc = loadModels(`version: "0.2.0.dev0"
 semantic_model:
   - name: sales
@@ -1914,9 +1940,9 @@ semantic_model:
         expression:
           dialects: [{ dialect: BIGQUERY, expression: "COUNT(*)" }]
 `).models[0];
+      expect(vanillaDoc.metrics[0].entity).toBe('orders');
       expect(validatePushRequirements([loaded(vanillaDoc)], {targetOptional: true})).toEqual([]);
-      expect(validatePushRequirements([loaded(vanillaDoc)]).join('\n'))
-          .toContain("the BigQuery generator reads '<entity>.' qualifiers in the expression or top-level 'entity'");
+      expect(validatePushRequirements([loaded(vanillaDoc)])).toEqual([]);
 
       // Metric with only a non-BigQuery dialect expression is rejected without --transpile.
       expect(bqPush([orders()], {
@@ -1927,6 +1953,39 @@ semantic_model:
         authoredEntity: 'orders',
         dialects: [{dialect: 'POSTGRES', expression: 'SUM("orders"."net_amount")'}],
       })).toContain("targets a BigQuery graph with only a 'POSTGRES' expression");
+    });
+
+    test('the BigQuery placement error offers the anchor the flavor writes', () => {
+      // The generator reads no entity from this expression, so only an anchor
+      // places the metric.
+      const vanilla = (metricBlock: string) => loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deployments: [{name: 'g', target: BQ_TARGET}]})}'
+    datasets:
+      - name: orders
+        source: bigquery:p.d.orders
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: o_id }]
+    metrics:
+      - name: n
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: "COUNT(o.id) FROM orders o" }]
+${metricBlock}`).models[0];
+      expect(validatePushRequirements([loaded(vanilla(''))])).toContain(
+          "metric 'n' in model 'sales' (doc) targets a BigQuery graph but does not resolve to a " +
+          "single entity; the BigQuery generator reads '<entity>.' qualifiers in the expression " +
+          "or 'entity' in a GOOGLE custom_extensions block on the metric.");
+      // The block anchor the error offers places the metric.
+      expect(validatePushRequirements([loaded(vanilla(`        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity": "orders"}'
+`))])).toEqual([]);
     });
   });
 
@@ -2617,5 +2676,100 @@ ${extraMetric}`;
                  .join('\n'))
           .toContain("entity 'orders' has no field 'no_such_field'");
     });
+  });
+});
+
+
+// Push checks names again, for a model built in memory and a profile that
+// reaches `model.profiles` without the loader, and is the only place the
+// description limit applies.
+describe('push checks names and description lengths', () => {
+  const withNames = (over: Partial<SemanticModel> = {}) => model({
+    entities: [{
+      name: 'orders', dataSource: 'p.d.o', keys: ['id'],
+      fields: [{name: 'id', expression: 'id'}],
+    }],
+    ...over,
+  });
+  const errorsOf = (m: SemanticModel) =>
+      validatePushRequirements([loaded(m)], {targetOptional: true});
+
+  test('a valid model passes', () => {
+    expect(errorsOf(withNames())).toEqual([]);
+  });
+
+  test('each name a model built in memory carries is checked', () => {
+    const m = withNames({
+      name: 'sales/orders',
+      entities: [{
+        name: 'my-entity', dataSource: 'p.d.o', keys: ['id'],
+        fields: [{name: 'order date', expression: 'id'}],
+      }],
+      metrics: [{name: '2024_orders', expression: 'COUNT(*)'} as Metric],
+      relationships: [{
+        name: 'placed-by', source: {entity: 'my-entity', columns: []},
+        destination: {entity: 'my-entity', columns: []},
+      }],
+      deployments: [{name: 'prod,us', target: BQ_TARGET}],
+      profiles: [{name: 'eu west', entities: [], relationships: []}],
+    });
+    const errors = errorsOf(m).join('\n');
+    for (const message of [
+           "model 'sales/orders' (doc): Model name 'sales/orders' is not valid",
+           "Entity name 'my-entity' is not valid",
+           "Field name 'order date' is not valid",
+           "Metric name '2024_orders' is not valid",
+           "Relationship name 'placed-by' is not valid",
+           "Deployment name 'prod,us' is not valid",
+           "Profile name 'eu west' is not valid",
+         ]) {
+      expect(errors).toContain(message);
+    }
+  });
+
+  test('a profile may not be named default, in any case', () => {
+    for (const name of ['default', 'Default', 'DEFAULT']) {
+      expect(errorsOf(withNames({profiles: [{name, entities: [], relationships: []}]})))
+          .toEqual([
+            `[doc] a binding profile may not be named 'default' -- that name ` +
+            `refers to the model's inline bindings. Rename the profile.`,
+          ]);
+    }
+    expect(errorsOf(withNames({
+      profiles: [{name: 'default_eu', entities: [], relationships: []}],
+    }))).toEqual([]);
+  });
+
+  test('a description may have 2,000 characters on the model, an entity, a metric or a relationship', () => {
+    const described = (length: number) => withNames({
+      description: 'm'.repeat(length),
+      entities: [{
+        name: 'orders', dataSource: 'p.d.o', keys: ['id'],
+        fields: [{name: 'id', expression: 'id', description: 'f'.repeat(length)}],
+        description: 'e'.repeat(length),
+      }],
+      metrics: [{
+        name: 'order_count', expression: 'COUNT(orders.id)', entity: 'orders',
+        description: 'x'.repeat(length),
+      } as Metric],
+      relationships: [{
+        name: 'self_ref', source: {entity: 'orders', columns: ['id']},
+        destination: {entity: 'orders', columns: ['id']},
+        description: 'r'.repeat(length),
+      }],
+    });
+    expect(errorsOf(described(2000))).toEqual([]);
+    const errors = errorsOf(described(2001));
+    for (const what of [
+           "model 'm'", "entity 'orders'", "metric 'order_count'",
+           "relationship 'self_ref'",
+         ]) {
+      expect(errors).toContain(
+          `model 'm' (doc): the description of ${what} is 2001 characters ` +
+          `long; a Knowledge Catalog entry's description holds at most 2000.`);
+    }
+    // A field's description is not stored as an entry's description, so it
+    // has no limit.
+    expect(errors).toHaveLength(4);
   });
 });

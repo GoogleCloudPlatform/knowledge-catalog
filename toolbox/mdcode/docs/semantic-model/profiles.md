@@ -108,7 +108,7 @@ leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, metrics, or actions exist, and what each means |
 | a field's column or computation (its `expression`), for a field the entity declares or inherits | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile (`fields_exclude`) | the graph shape (`from`/`to`) and the cardinality a relationship's join columns imply |
-| an entity's key columns (`primary_key`, `unique_keys`): restated with the model file's shape where it states keys, and stated alike in every profile where it states none | an entity's key shape once the model file states a key: how many keys and how wide each is |
+| an entity's key columns (`primary_key`, `unique_keys`): restated with the model file's shape where it states keys, and stated alike in every profile where it states none | an entity's key shape once the model file states a key: how many keys and how wide each is. An empty unique key counts as none. |
 | an entity's `hydration` — how its table is reshaped into the entity, from a closed set of rules — in the `<model>.profiles/` layout (see [Hydration](#hydration--reshaping-a-table-into-the-entity)) | SQL of any kind in `hydration` (there is no SQL rule); `hydration` in a profile file |
 | an entity's `mode` — `view` (the default: read through a generated node view) or `direct` — in the `<model>.profiles/` layout | `mode` in a profile file |
 | a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself | |
@@ -601,11 +601,15 @@ the checks and writes nothing.
   to one `deployment_target`.
 - **Declaration override** — a profile that sets a `label`, `dimension`,
   `ai_context`, a `metric`, or a relationship's `from`/`to` is rejected, naming
-  the offending path.
-- **Unknown name** — a profile element whose `name` is not in the logical model
+  the offending p- **Unknown name** — a profile element whose `name` is not in the logical model
   is rejected. Profiles bind declarations; they do not add them. A field counts
   as in the model on an entity that declares it or inherits it through
   `extends` (transitively).
+- **Incomplete profile** — a push checks every named profile of each model it
+  deploys or publishes, whichever binding it deploys: each profile file, and
+  each profile a vanilla model carries in its `GOOGLE` block. A profile that
+  leaves an entity without a source or a relationship without join columns
+  fails the push.
 - **Hydration** — an unknown rule or key, a malformed date or factor, a
   `constraints` value other than `enforce`, or a `mode` other than `view` /
   `direct` is rejected when the profile merges, naming the profile and entity;

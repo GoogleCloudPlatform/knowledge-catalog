@@ -154,7 +154,7 @@ actions:
         fs.readFileSync(path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
     expect(skill).toContain('Store: none.');
     expect(skill).toContain(
-        "binding profile 'prod' is a profile file, which names no deployment " +
+        "binding profile 'prod' is a named profile, which names no deployment " +
         'target');
   });
 });
@@ -200,7 +200,7 @@ describe('kcmd skills-generate: two models, one name', () => {
     // A skill name is a lossy form of a model name. Writing both would leave
     // the second on disk and the first gone, with two "Wrote ..." lines and an
     // exit code of 0 saying otherwise.
-    writeModel('a.yaml', modelText('Sales Orders', 'PlaceOrder'));
+    writeModel('a.yaml', modelText('sales-orders', 'PlaceOrder'));
     writeModel('b.yaml', modelText('sales_orders', 'CancelOrder'));
     const code = await skillsGenerate({out: 'skills'});
     expect(code).toBe(1);
@@ -505,8 +505,10 @@ semantic_model:
                 ],
                 [
                   '{not-json',
-                  "Error: Model 'commerce': GOOGLE custom_extension 'data' " +
-                      'is not valid JSON.',
+                  "Error: Model document 'commerce': Semantic model load " +
+                      "error: model 'commerce': the " +
+                      "'data' of a GOOGLE custom_extensions block must be a " +
+                      'JSON object.',
                 ],
               ]) {
            logs = [];

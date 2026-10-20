@@ -39,11 +39,12 @@ import * as yaml from 'yaml';
 
 import {hydrationDocErrors, isDerivedEntity, modeDocError} from './hydration';
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, halfBoundJoinMessage, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
+import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {withHydrationBindings} from './node_views';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
+import {transpilesFrom} from './transpile';
 import {generatesVocabularyView, withVocabularyBindings} from './vocabulary';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -1017,6 +1018,21 @@ export function isProfileFileForm(text: string): boolean {
   }
 }
 
+// Whether `text` reads as a legacy `semantic_model:` wrapper: a mapping with a
+// `semantic_model` list and no key but `version` beside it, as mergeProfile
+// reads one. A text that does not parse is not one, so loadProfileFile
+// reports it.
+export function isLegacyWrapper(text: string): boolean {
+  try {
+    const doc = yaml.parse(text, YAML_OPTIONS);
+    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
+        Array.isArray(doc.semantic_model) &&
+        Object.keys(doc).every(k => k === 'semantic_model' || k === 'version');
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Parses a logical model document and a binding profile document, merges the
  * profile onto the model by name, and returns the merged authoring text plus
@@ -1070,16 +1086,23 @@ export function mergeProfileOntoDoc(
  * follows in a model file. A source is kept as written, and applyProfile reads
  * it with the loader's reader too. A field expression's short form means
  * `ANSI_SQL` in either flavor. Actions are out of scope for the preview, so
- * nothing more is checked.
+ * nothing more is checked. With `skipActions`, the profile's actions are not
+ * read.
  */
-export function loadProfileFile(text: string, profileName: string):
-    ProfileSpec {
+export function loadProfileFile(
+    text: string, profileName: string,
+    opts: {skipActions?: boolean} = {}): ProfileSpec {
   let doc: any;
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
     throw new SemanticModelError(
         `profile '${profileName}' does not parse: ${err?.message ?? err}`);
+  }
+  if (opts.skipActions && doc && typeof doc === 'object' &&
+      !Array.isArray(doc)) {
+    const {actions: _, ...rest} = doc;
+    doc = rest;
   }
   return profileSpecOf(doc, profileName);
 }
@@ -1110,7 +1133,8 @@ export interface ApplyProfileOptions {
  * Throws, naming the profile, when the profile repeats a name, leaves a field
  * entry with nothing to bind, both binds and excludes a field, puts "*" inside
  * a list, names something the model does not declare, binds an abstract
- * entity, gives join columns a load would reject, gives a source or
+ * entity, states one of a relationship's join column lists without the
+ * other or gives both lists with different lengths, gives a source or
  * expression the loader's readers reject, or is applied to a model that
  * declares a `sql` executor, which belongs in each profile.
  */
@@ -1248,6 +1272,32 @@ function applyToDocument(
 export type DeclaredProfile = {name: string; text: string}|
     {name: string; spec: ProfileSpec};
 
+/**
+ * The profiles the model document `doc` declares: `files`, its profile files,
+ * then the profiles a vanilla model carries in its GOOGLE block, by name, as
+ * the layout orders profile files. Push, `kcmd profiles` and the runtime all
+ * read them here, so they agree. Throws SemanticModelError, naming the
+ * document as a load does, when googleBlockProfiles throws, such as on block
+ * profiles a load rejects.
+ */
+export function declaredProfiles(
+    doc: {name: string; text: string},
+    files: Array<{name: string; text: string}>): DeclaredProfile[] {
+  let blockProfiles: ProfileSpec[];
+  try {
+    blockProfiles = googleBlockProfiles(doc.text);
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    throw new SemanticModelError(
+        `Model document '${doc.name}': ${err.message}`);
+  }
+  return [
+    ...files,
+    ...blockProfiles.map(spec => ({name: spec.name, spec}))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+  ];
+}
+
 /** A profile, in either form, applied to one model document. */
 export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
   // A legacy `semantic_model:` wrapper, merged into the document's text.
@@ -1302,6 +1352,25 @@ export function modelFileAloneMessage(
           `on its own before the profile applies)`;
 }
 
+/**
+ * The error a command gives when a profile cannot be applied to the model
+ * document `docName`, whose profile files are `profileFiles`. An error applying
+ * a profile file names that file, as the profile checks do. An error merging a
+ * legacy wrapper names the model document.
+ */
+export function profileErrorMessage(
+    docName: string, res: Extract<DocumentProfile, {kind: 'error'}>,
+    profileName: string,
+    profileFiles: Array<{name: string; text: string; fileName: string}>):
+    string {
+  if (res.stage === 'load') {
+    return modelFileAloneMessage(res.error, profileName);
+  }
+  const file = profileFiles.find(
+      p => p.name === profileName && !isLegacyWrapper(p.text));
+  return `[${file?.fileName ?? docName}] ${res.error}`;
+}
+
 /** The error for a profile name a model document does not declare. */
 export function unknownProfileMessage(
     profileName: string, model: string, declared: string[]): string {
@@ -1323,7 +1392,7 @@ export function reservedProfileNameError(
   }
   return `[${docName}] a binding profile may not be named '${
              DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
-      `bindings. Rename the profile file.`;
+      `bindings. Rename the profile.`;
 }
 
 /** The error for a concrete entity no profile file or model file binds. */
@@ -1418,25 +1487,34 @@ function profileProblems(model: SemanticModel, profile: ProfileSpec): string[] {
 }
 
 // Why `profile` cannot apply to `model`, or undefined: the first of
-// profileProblems, then the join columns each relationship ends up with,
-// checked as a load checks them: both lists or neither, of equal length.
+// profileProblems, then the join columns the profile states for each
+// relationship. One list without the other gets the completeness check's
+// error, and two lists must have equal length. A relationship the profile
+// gives neither list keeps the model file's join columns, which the
+// completeness check reports.
 function profileApplyError(
     model: SemanticModel, profile: ProfileSpec): string|undefined {
   const problems = profileProblems(model, profile);
   if (problems.length) return problems[0];
   const at = `profile '${profile.name}'`;
-  for (const pr of profile.relationships) {
-    const r = (model.relationships ?? []).find(x => x.name === pr.name)!;
-    const from = pr.fromColumns.length ? pr.fromColumns : r.source.columns;
-    const to = pr.toColumns.length ? pr.toColumns : r.destination.columns;
+  for (const {name, fromColumns: from, toColumns: to} of
+           profile.relationships) {
     if (!from.length !== !to.length) {
-      return `${at}: ${halfBoundJoinMessage(r.name)}`;
+      return `${at}: ${profileJoinMessage(name)}`;
     }
     if (from.length !== to.length) {
-      return `${at}: ${joinLengthMessage(r.name, from.length, to.length)}`;
+      return `${at}: ${joinLengthMessage(name, from.length, to.length)}`;
     }
   }
   return undefined;
+}
+
+// The error for a relationship a named profile does not bind with both
+// 'from_columns' and 'to_columns'.
+function profileJoinMessage(relationship: string): string {
+  return `relationship '${relationship}' has no join columns in this ` +
+      `profile; a named profile states both 'from_columns' and ` +
+      `'to_columns' itself`;
 }
 
 // What loadProfileFile rejects in a profile's structure, in the order it
@@ -1678,9 +1756,10 @@ function entitiesWithDescendants(model: SemanticModel): Set<string> {
 }
 
 // Reads a parsed profile file into a ProfileSpec, throwing on anything a
-// profile may not say. Shared by loadProfileFile and mergeProfileFile, so the
-// two agree on what a valid profile file is.
-function profileSpecOf(doc: any, profileName: string): ProfileSpec {
+// profile may not say. Shared by loadProfileFile, mergeProfileFile and the
+// loader's reading of a vanilla GOOGLE block's profiles, so the three agree on
+// what a valid profile is.
+export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
   const where = `profile '${profileName}'`;
   if (!doc || typeof doc !== 'object' || Array.isArray(doc) ||
       doc.semantic_model !== undefined) {
@@ -1840,12 +1919,6 @@ const DIALECT_OF_SYSTEM: Record<string, string> = {
   cloudsql_mysql: 'MYSQL',
   cloudsql_postgresql: 'POSTGRES',
 };
-// Whether a bound field has a text an engine of `dialect` can run: the one
-// textsFor selects for it.
-function runsOn(f: Field, dialect: string): boolean {
-  return textsFor(f, dialect).length > 0;
-}
-
 // Each text a field's or metric's expression carries, with the dialect it is
 // written in.
 export function expressionSources(
@@ -1880,6 +1953,27 @@ function textsFor(
   // ANSI_SQL one.
   const text = expressionForDialect(f, dialect as SqlDialect);
   return text !== undefined ? [{text, dialect}] : [];
+}
+
+// The texts a profile of `dialect` evaluates for a field or metric, as
+// textsFor gives them. With `transpiled`, the caller translates a text written
+// only in a vendor dialect its translator reads into BigQuery SQL, so a
+// BigQuery profile evaluates that text too, read in the dialect it is written
+// in.
+function evaluatedTexts(
+    f: Parameters<typeof textsFor>[0], dialect: string|undefined,
+    transpiled: boolean): Array<{text: string; dialect: string}> {
+  const out = textsFor(f, dialect);
+  if (out.length || !transpiled || dialect !== 'BIGQUERY' ||
+      f.expression !== undefined || !f.importedExpression ||
+      !transpilesFrom(f.importedDialect ?? '')) {
+    return out;
+  }
+  const written = f.importedDialect || 'ANSI_SQL';
+  return [{
+    text: f.importedExpression,
+    dialect: written === 'ANSI_SQL' ? dialect : written,
+  }];
 }
 
 // The texts pruning reads: those a profile of `dialect` evaluates, and the text
@@ -1937,6 +2031,34 @@ function dialectOfSources(sources: string[]): string|undefined {
   return [...dialects][0];
 }
 
+/** What the caller of validateProfileCompleteness checks itself. */
+export interface CompletenessOptions {
+  // The caller checks the model the profile gives, as push does for the
+  // profile it selects. The rules the caller's check covers are left out:
+  // whether the hierarchy still resolves, what the profile's field
+  // expressions read, and whether its key and join columns are column names.
+  // No warning is given for SQL the parser cannot read, since the caller's
+  // check gives it. When the hierarchy does not resolve with the profile
+  // applied, the caller stops reading what the SQL reads. This check then
+  // reads what the profile's field expressions read, and gives the warning.
+  applied?: boolean;
+  // The caller warns about the model file's SQL that it reads, which it does
+  // only when the hierarchy of the model it checks resolves. It reads an
+  // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
+  // every other entry in its own dialect. It does not read the model file's
+  // text of a field in `rebound`, written as 'Entity.field', because the
+  // profile it applies rebinds or excludes that field. A warning about the
+  // model file's SQL is left out when the field is not in `rebound` and the
+  // caller reads each text this check cannot read the same way: an entry in a
+  // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
+  // dialect is `dialect`.
+  ownSqlOnly?: {dialect?: string; rebound?: string[]};
+  // The caller transpiles a field or metric whose only text is in a vendor
+  // dialect its translator reads into BigQuery SQL, so a BigQuery profile can
+  // run it. The rules that read references then read that text.
+  transpiled?: boolean;
+}
+
 /**
  * Returns one message per reason `profile` cannot be deployed against
  * `baseModel`, or an empty list. Checks a single profile: nothing unknown,
@@ -1947,13 +2069,16 @@ function dialectOfSources(sources: string[]): string|undefined {
  * dependency, metrics included. Rules that compare profiles with each other
  * are in validateProfileConsistency. An expression the SQL parser cannot read
  * is skipped by the rules that read references, with a message in `warnings`.
+ * `opts` says what the caller checks itself, so that nothing is reported
+ * twice.
  */
 export function validateProfileCompleteness(
-    baseModel: SemanticModel, profile: ProfileSpec,
-    warnings: string[] = []): string[] {
+    baseModel: SemanticModel, profile: ProfileSpec, warnings: string[] = [],
+    opts: CompletenessOptions = {}): string[] {
+  const applied = !!opts.applied;
   const errors: string[] = [];
-  // "field 'Entity.field'" or "metric 'name'", for each expression the parser
-  // cannot read, reported once.
+  // Each field or metric whose SQL the parser cannot read, reported once, by
+  // the label fieldLabel or metricLabel gives it.
   const unreadable = new Set<string>();
   const at = `profile '${profile.name}'`;
   // What a profile file could not say, for a profile built in memory, and
@@ -1963,17 +2088,24 @@ export function validateProfileCompleteness(
   const byName = new Map(entities.map(e => [e.name, e]));
   // Declared plus inherited fields, in the model file and as this profile sees
   // the model: the profile applied as push applies it, and each excluded field
-  // left off the entity that names it. A broken hierarchy in
-  // the model file is reported by push; one the profile itself creates, by
-  // binding a field on two unrelated branches, is reported here.
+  // left off the entity that names it. Push reports a broken hierarchy in the
+  // model file. A profile breaks the hierarchy itself when it binds a field on
+  // two unrelated branches. That is reported here once the model file's
+  // hierarchy resolves, unless `applied`, since push then reports it. The
+  // rules below still run on a broken hierarchy, apart from the check that
+  // each inherited field holds SQL, which push also skips then. An entity
+  // whose own ancestors do not resolve shows only its declared fields, so the
+  // rules that need what it inherits leave it out.
   const fieldsOf = fieldsByEntity(baseModel);
+  // The entities whose own ancestors do not resolve in the model file, so
+  // what they inherit is not known.
+  const unknownAncestry = unresolvedEntities(baseModel);
   const {model: profiled, errors: unread} =
       applyBindings(baseModel, profile, {});
   errors.push(...unread.map(e => `${at}: ${e}`));
   const profiledError = inheritanceErrorOf(profiled);
-  if (profiledError && !inheritanceErrorOf(baseModel)) {
+  if (profiledError && !inheritanceErrorOf(baseModel) && !applied) {
     errors.push(`${at}: ${profiledError}`);
-    return errors;
   }
   // A field the profile binds is checked on each entity that inherits it, as
   // applyProfile checks it. A binding the reader rejects only for holding no
@@ -1996,6 +2128,8 @@ export function validateProfileCompleteness(
   // by design needs no source (see tablelessByDesign).
   const databases = new Map<string, string>();
   const stated: string[] = [];
+  // The entities whose source the loader's reader rejects.
+  const rejected = new Set<string>();
   for (const e of entities) {
     if (e.abstract) continue;
     const pe = bindingOf.get(e.name);
@@ -2007,9 +2141,13 @@ export function validateProfileCompleteness(
     }
     // A source the loader's reader rejects, an empty one included, is already
     // reported, and the reader accepts only a form databaseOf reads once
-    // trimmed.
+    // trimmed. Such a source names no database, so its entity's fields are
+    // not held to the dialect the other sources imply.
     const db = databaseOf(pe.source.trim());
-    if (!db) continue;
+    if (!db) {
+      rejected.add(e.name);
+      continue;
+    }
     stated.push(pe.source);
     if (!databases.has(db)) databases.set(db, e.name);
   }
@@ -2022,8 +2160,9 @@ export function validateProfileCompleteness(
   const dialect = dialectOfSources(stated);
 
 
-  // The expressions of each entity the profile may bind.
-  for (const pe of profile.entities) {
+  // The expressions of each entity the profile may bind, unless `applied` and
+  // the hierarchy resolves, when the caller reads them.
+  for (const pe of applied && !profiledError ? [] : profile.entities) {
     const e = byName.get(pe.name);
     if (!e || e.abstract) continue;
     const known = fieldsOf.get(pe.name)!;
@@ -2045,7 +2184,7 @@ export function validateProfileCompleteness(
         const columns = columnReferences(
             text, written === 'ANSI_SQL' && dialect ? dialect : written);
         if (!columns) {
-          unreadable.add(`field '${pe.name}.${pf.name}'`);
+          unreadable.add(fieldLabel(pe.name, pf.name));
           continue;
         }
         for (const other of others) {
@@ -2056,7 +2195,7 @@ export function validateProfileCompleteness(
           }
         }
         for (const ref of fieldsReadOn(columns, pe.name)) {
-          if (!known.has(ref)) {
+          if (!known.has(ref) && !unknownAncestry.has(pe.name)) {
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
                     ref}', which is not a field of '${pe.name}'`);
@@ -2066,8 +2205,8 @@ export function validateProfileCompleteness(
     }
   }
 
-  // A profile's key columns are physical column names.
-  for (const pe of profile.entities) {
+  // A profile's key columns are physical column names, unless `applied`.
+  for (const pe of applied ? [] : profile.entities) {
     const keyColumns = [...(pe.primaryKey ?? []), ...(pe.uniqueKeys ?? []).flat()];
     const bad = keyColumns.filter(c => !isColumnName(c));
     if (bad.length) {
@@ -2081,9 +2220,7 @@ export function validateProfileCompleteness(
   // Key shapes against the model file's, where it states keys.
   for (const e of entities) {
     const pe = bindingOf.get(e.name);
-    if (!pe || e.abstract) continue;
-    const inlineHasKey = e.keys.length > 0 || !!e.uniqueKeys?.length;
-    if (!inlineHasKey) continue;
+    if (!pe || e.abstract || !statesKey(e.keys, e.uniqueKeys)) continue;
     if (pe.primaryKey !== undefined && pe.primaryKey.length !== e.keys.length) {
       errors.push(
           `${at}: entity '${e.name}' restates its primary key with ${
@@ -2109,14 +2246,11 @@ export function validateProfileCompleteness(
     const from = pr?.fromColumns ?? [];
     const to = pr?.toColumns ?? [];
     if (!from.length || !to.length) {
-      errors.push(
-          `${at}: relationship '${r.name}' has no join columns in this ` +
-          `profile; a named profile states both 'from_columns' and ` +
-          `'to_columns' itself`);
+      errors.push(`${at}: ${profileJoinMessage(r.name)}`);
     } else if (from.length !== to.length) {
       errors.push(
           `${at}: ${joinLengthMessage(r.name, from.length, to.length)}`);
-    } else {
+    } else if (!applied) {
       const bad = [...from, ...to].filter(c => !isColumnName(c));
       if (bad.length) {
         errors.push(
@@ -2133,6 +2267,9 @@ export function validateProfileCompleteness(
   // (see withDefaultBindings), as pruning judges it.
   const defaultBound = fieldsByEntity(withDefaultBindings(profiled));
   const excluded = new Set<string>();
+  // The entities whose own ancestors do not resolve with the profile applied.
+  // A line on one that restates an inherited field is not judged unbound.
+  const unknownProfiled = unresolvedEntities(profiled);
   for (const e of entities) {
     if (e.abstract) continue;
     const pe = bindingOf.get(e.name);
@@ -2149,20 +2286,39 @@ export function validateProfileCompleteness(
                  .map(f => f.name)
                  .filter(n => x === e || fieldsOf.get(x.name)?.has(n))));
     for (const f of defaultBound.get(e.name)?.values() ?? []) {
-      if (!isFieldBound(f) && !rebound.has(f.name)) {
+      if (!isFieldBound(f) && !rebound.has(f.name) &&
+          !(unknownProfiled.has(e.name) &&
+            inheritedNamesOf(profiled, e.name).has(f.name))) {
         errors.push(
             `${at}: field '${e.name}.${f.name}' has no binding in the model ` +
             `file; bind it in 'fields' or leave it out in 'fields_exclude'`);
       }
     }
   }
+  // The texts this profile evaluates for a field or metric.
+  const profileTexts: typeof textsFor = (f, d) =>
+      evaluatedTexts(f, d, !!opts.transpiled);
+  // Each field or metric, as "field 'Entity.field'" or "metric 'name'", with
+  // a text this check cannot read that push reads in another dialect: an
+  // ANSI_SQL text, which push reads in its own dialect. Push reads every
+  // other entry in the dialect it is written in, as this check does.
+  const readOtherwise = new Set<string>();
+  const noteUnread =
+      (what: string, owner: Pick<Field, 'dialects'>,
+       text: {text: string; dialect: string}) => {
+        const asWritten = text.dialect !== 'ANSI_SQL' &&
+            (owner.dialects ?? []).some(
+                d => d.dialect === text.dialect && d.expression === text.text);
+        if (!asWritten) readOtherwise.add(what);
+      };
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
   if (dialect) {
+    const runs = (f: Field) => profileTexts(f, dialect).length > 0;
     for (const e of entities) {
-      if (e.abstract) continue;
+      if (e.abstract || rejected.has(e.name)) continue;
       for (const f of seenOf.get(e.name)?.values() ?? []) {
-        if (isFieldBound(f) && !runsOn(f, dialect)) {
+        if (isFieldBound(f) && !runs(f)) {
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
@@ -2173,7 +2329,7 @@ export function validateProfileCompleteness(
     if (profile.metricsExclude !== '*') {
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
-        if (!excludedMetrics.has(m.name) && !runsOn(m as Field, dialect)) {
+        if (!excludedMetrics.has(m.name) && !runs(m as Field)) {
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
               `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +
@@ -2198,7 +2354,8 @@ export function validateProfileCompleteness(
         // inherited field is read in the form its declaring ancestor wrote it,
         // because inheritance strips the qualifier when it copies one down.
         for (const dep of fieldDependencies(
-                 profiled, e.name, f.name, unreadable, dialect)) {
+                 profiled, e.name, f.name, unreadable, dialect,
+                 profileTexts, noteUnread)) {
           const target = `${e.name}.${dep}`;
           if (excluded.has(target) || dangling.has(target)) {
             dangling.set(key, dangling.get(target) ?? target);
@@ -2222,14 +2379,15 @@ export function validateProfileCompleteness(
     for (const m of baseModel.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
       const read: Array<ReadonlyArray<SqlColumn>> = [];
-      for (const text of textsFor(m as Field, dialect)) {
+      for (const text of profileTexts(m as Field, dialect)) {
         // A text with no SQL has nothing to read.
         if (noSqlReason(text.text, text.dialect) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);
         if (columns) {
           read.push(columns);
         } else {
-          unreadable.add(`metric '${m.name}'`);
+          unreadable.add(metricLabel(m.name));
+          noteUnread(metricLabel(m.name), m, text);
         }
       }
       const reached = [...excluded, ...dangling.keys()].filter(target => {
@@ -2244,7 +2402,21 @@ export function validateProfileCompleteness(
       }
     }
   }
+  // The fields this profile binds, whose SQL the profile writes.
+  const own = new Set(profile.entities.flatMap(
+      pe => (pe.fields ?? []).map(pf => fieldLabel(pe.name, pf.name))));
+  // Whether the caller warns itself about this model file SQL.
+  const caller = opts.ownSqlOnly;
+  const callerWarns = (what: string) => !!caller &&
+      (caller.dialect === dialect || !readOtherwise.has(what)) &&
+      !(caller.rebound ?? []).some(f => {
+        const dot = f.indexOf('.');
+        return what === fieldLabel(f.slice(0, dot), f.slice(dot + 1));
+      });
   for (const what of unreadable) {
+    if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
+      continue;
+    }
     warnings.push(
         `${at}: kcmd could not read the SQL of ${what}, so the fields it ` +
         `reads were not checked`);
@@ -2358,17 +2530,18 @@ export function validateProfileConsistency(
 }
 
 // Each entity's fields, declared plus inherited, by name. Resolution throws on a
-// broken hierarchy, which push reports elsewhere; this then falls back to
-// declared fields.
+// broken hierarchy, which push reports elsewhere. Each entity is then resolved
+// with only its own ancestors, and one whose own ancestors do not resolve
+// keeps its declared fields.
 function fieldsByEntity(model: SemanticModel): Map<string, Map<string, Field>> {
   let resolved: Entity[] = model.entities ?? [];
   if (resolved.some(e => e.extends?.length)) {
     try {
       resolved = resolveInheritance(model).model.entities ?? resolved;
     } catch (err) {
-      // A broken hierarchy keeps the declared fields; it is reported
-      // elsewhere. Anything else is a bug.
+      // Anything but a broken hierarchy is a bug.
       if (!(err instanceof InheritanceError)) throw err;
+      resolved = resolved.map(e => resolvedAlone(model, e.name) ?? e);
     }
   }
   // Resolution already leaves excluded fields off; this covers a model with no
@@ -2382,9 +2555,41 @@ function fieldsByEntity(model: SemanticModel): Map<string, Map<string, Field>> {
   }));
 }
 
+// The entity `name` resolved with only its ancestors, or undefined when its
+// own ancestors do not resolve.
+function resolvedAlone(model: SemanticModel, name: string): Entity|undefined {
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
+  const line = new Set<string>();
+  const queue = [name];
+  while (queue.length) {
+    const n = queue.shift()!;
+    if (line.has(n)) continue;
+    line.add(n);
+    queue.push(...(byName.get(n)?.extends ?? []));
+  }
+  try {
+    const entities = (model.entities ?? []).filter(e => line.has(e.name));
+    return resolveInheritance({...model, entities})
+        .model.entities?.find(e => e.name === name);
+  } catch (err) {
+    if (!(err instanceof InheritanceError)) throw err;
+    return undefined;
+  }
+}
+
+// The entities of `model` whose own ancestors do not resolve, so what they
+// inherit is not known. Empty when the hierarchy resolves.
+function unresolvedEntities(model: SemanticModel): Set<string> {
+  if (!inheritanceErrorOf(model)) return new Set();
+  return new Set((model.entities ?? [])
+                     .filter(e => e.extends?.length &&
+                                 !resolvedAlone(model, e.name))
+                     .map(e => e.name));
+}
+
 // The message of the inheritance error resolving `model` throws, or undefined
 // when it resolves.
-function inheritanceErrorOf(model: SemanticModel): string|undefined {
+export function inheritanceErrorOf(model: SemanticModel): string|undefined {
   if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
   try {
     resolveInheritance(model);
@@ -2395,45 +2600,72 @@ function inheritanceErrorOf(model: SemanticModel): string|undefined {
   }
 }
 
+// How a warning names a field, "field 'Entity.field'". The checks that skip a
+// warning compare these labels, so each label comes from here.
+function fieldLabel(entity: string, field: string): string {
+  return `field '${entity}.${field}'`;
+}
+
+// How a warning names a metric, "metric 'name'".
+function metricLabel(name: string): string {
+  return `metric '${name}'`;
+}
+
 // The fields of its own entity that `field` reads on `entityName`, from the
 // texts `texts` picks for a profile of `dialect` (textsFor unless pruning
-// passes prunedTexts) as written: the entity's own declaration when it binds
-// the field, otherwise that of the nearest ancestor that does, read with that
-// ancestor's qualifier.
+// passes prunedTexts) as written. The declaration read is the one whose
+// binding inheritance keeps: the entity's own when it binds the field,
+// otherwise, of the ancestors that bind it, the one with the most ancestors.
+// It is read with that ancestor's qualifier.
 function fieldDependencies(
     model: SemanticModel, entityName: string, field: string,
     unreadable: Set<string>, dialect?: string,
-    texts: typeof textsFor = textsFor): string[] {
+    texts: typeof textsFor = textsFor,
+    onUnread?: (what: string, owner: Field,
+                text: {text: string; dialect: string}) => void): string[] {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
-  const queue = [entityName];
-  const seen = new Set<string>();
-  while (queue.length) {
-    const name = queue.shift()!;
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const e = byName.get(name);
-    const own = e?.fields.find(f => f.name === field && isFieldBound(f));
-    if (own) {
-      const deps = new Set<string>();
-      for (const text of texts(own, dialect)) {
-        // A text with no SQL has nothing to read.
-        if (noSqlReason(text.text, text.dialect, name) !== undefined) continue;
-        const columns = columnReferences(text.text, text.dialect);
-        if (!columns) {
-          unreadable.add(`field '${name}.${field}'`);
-          continue;
-        }
-        for (const dep of fieldsReadOn(columns, name)) deps.add(dep);
-      }
-      return [...deps];
+  const bindingOn = (name: string) => byName.get(name)?.fields.find(
+      f => f.name === field && isFieldBound(f));
+  let name = bindingOn(entityName) ? entityName : undefined;
+  if (!name) {
+    let depth = -1;
+    for (const a of ancestorsOf(entityName, byName)) {
+      const d = bindingOn(a.name) ? ancestorsOf(a.name, byName).length : -1;
+      if (d > depth) [name, depth] = [a.name, d];
     }
-    queue.push(...(e?.extends ?? []));
   }
-  return [];
+  if (!name) return [];
+  const deps = new Set<string>();
+  for (const text of texts(bindingOn(name)!, dialect)) {
+    // A text with no SQL has nothing to read.
+    if (noSqlReason(text.text, text.dialect, name) !== undefined) continue;
+    const columns = columnReferences(text.text, text.dialect);
+    if (!columns) {
+      unreadable.add(fieldLabel(name, field));
+      onUnread?.(fieldLabel(name, field), bindingOn(name)!, text);
+      continue;
+    }
+    for (const dep of fieldsReadOn(columns, name)) deps.add(dep);
+  }
+  return [...deps];
 }
 
-// "[2, 1]": how many unique keys, and how wide each is.
+// Whether a primary key and unique keys state a key. An empty unique key
+// counts as none.
+function statesKey(
+    primaryKey: string[]|undefined, uniqueKeys: string[][]|undefined): boolean {
+  return !!primaryKey?.length || nonEmptyKeys(uniqueKeys).length > 0;
+}
+
+// The unique keys in `keys` that hold a column. An empty unique key counts as
+// none.
+function nonEmptyKeys(keys: string[][]|undefined): string[][] {
+  return (keys ?? []).filter(k => k.length > 0);
+}
+
+// "[2, 1]": how many unique keys, and how wide each is. An empty unique key
+// counts as none.
 function shapeOf(keys: string[][]): string {
-  return `[${keys.map(k => k.length).join(', ')}]`;
+  return `[${nonEmptyKeys(keys).map(k => k.length).join(', ')}]`;
 }
 

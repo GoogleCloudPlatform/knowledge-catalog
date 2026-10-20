@@ -130,6 +130,22 @@ semantic_model:
     expect(declaresGraphTarget(withExtension)).toBe(true);
   });
 
+  test('detects a GOOGLE custom_extension deployments list, unless it is empty', () => {
+    const vanilla = (deployments: object[]) => `
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({deployments})}'
+`;
+    expect(declaresGraphTarget(vanilla([{
+      name: 'prod',
+      target: '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+    }]))).toBe(true);
+    expect(declaresGraphTarget(vanilla([]))).toBe(false);
+  });
+
   test('a purely logical model declares no graph target', () => {
     expect(declaresGraphTarget(logicalOnly)).toBe(false);
   });
@@ -204,6 +220,31 @@ semantic_model:
         data: 'not json'
 `)).toBe(true);
        });
+
+  const withData = (data: string) => `
+version: 0.2.0.dev0
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${data}'
+`;
+
+  test('GOOGLE data the strict load rejects resolves to true', () => {
+    for (const data of [
+           '[]',
+           'null',
+           '"x"',
+           '{"deployments": null}',
+           '{"deployments": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+           '{"deploymentTargets": null}',
+           '{"deploymentTargets": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+           '{"deployments": [{"name": "a", "target": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}], "deployments": []}',
+           '{"deploymentTargets": ["//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"], "deploymentTargets": []}',
+         ]) {
+      expect(declaresGraphTarget(withData(data))).toBe(true);
+    }
+  });
 });
 
 
@@ -240,7 +281,7 @@ describe('a graph push of a profile file', () => {
   test('is refused before any deploy, since a profile file names no target', () => {
     expect(profileFileGraphError(
                [{name: 'retail', text: '', applied: {} as any}], 'prod'))
-        .toContain("binding profile 'prod' is a profile file, which names no deployment target");
+        .toContain("binding profile 'prod' is a named profile, which names no deployment target");
     expect(profileFileGraphError([{name: 'retail', text: ''}], 'prod'))
         .toBeUndefined();
   });
@@ -433,7 +474,7 @@ semantic_model:
     expect(profErrors.split('names profile').length - 1).toBe(1);
     for (const name of ['other', 'spanner_binding']) {
       expect(profErrors).toContain(
-          `[sales] binding profile '${name}' is a profile file, which names ` +
+          `[sales] binding profile '${name}' is a named profile, which names ` +
           'no deployment target');
     }
   });

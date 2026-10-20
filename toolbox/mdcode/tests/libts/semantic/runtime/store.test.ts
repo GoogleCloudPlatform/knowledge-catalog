@@ -322,12 +322,27 @@ describe('a model that declares more than one deployment target', () => {
         .toContain('2 AlloyDB deployment targets');
   });
 
-  // A vanilla model cannot write 'deployments', so the message names the
-  // GOOGLE block and gives no advice about 'deployments'.
+  // A vanilla model whose GOOGLE block lists 'deploymentTargets' is told about
+  // that key, and how to list a deployment in the block.
   test('a GOOGLE block with no target names the block', () => {
     expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
       error: "Model 'm' declares no deployment target in its GOOGLE block's " +
-          "'deploymentTargets', so there is no store to run against.",
+          "'deploymentTargets', so there is no store to run against. In a " +
+          "GOOGLE custom_extensions block on the model, declare a " +
+          "deployment in 'deployments' whose target names a database.",
+    });
+  });
+
+  // The loader removes a GOOGLE block that lists no 'deploymentTargets', so a
+  // vanilla model with no target and no such block is told about
+  // 'deployments'.
+  test('a vanilla model with no deploymentTargets block is told about deployments', () => {
+    const none = {...targets([], `${DB}/tables/Customer`), customExtensions: undefined};
+    expect(resolveStore(none)).toEqual({
+      error: "Model 'm' declares no deployment target in 'deployments', so " +
+          'there is no store to run against. In a GOOGLE custom_extensions ' +
+          "block on the model, declare a deployment in 'deployments' whose " +
+          'target names a database.',
     });
   });
 
@@ -431,7 +446,7 @@ describe('the store a profile uses', () => {
     const store = resolveStore(threeProfiles, 'staging');
     expect('error' in store && store.error)
         .toBe(
-            "binding profile 'staging' is a profile file, which names no " +
+            "binding profile 'staging' is a named profile, which names no " +
             "deployment target, and no deployment in 'deployments' uses it, so " +
             'there is no database to run it against');
   });
@@ -470,6 +485,66 @@ describe('the store a profile uses', () => {
             "declares 2 Spanner deployment targets in 'deployments' for " +
             "profile 'operational' (spanner_a, spanner_b), so which store it " +
             'runs against is ambiguous');
+  });
+
+  // A vanilla model whose GOOGLE block holds `data`.
+  function vanillaModel(data: object): SemanticModel {
+    return loadModels(
+        `version: "0.2.0.dev0"\nsemantic_model:\n  - name: m\n` +
+        `    custom_extensions:\n` +
+        `      - vendor_name: GOOGLE\n` +
+        `        data: '${JSON.stringify(data)}'\n` +
+        `    datasets:\n` +
+        `      - name: Customer\n` +
+        `        source: ${DB}/tables/Customer\n` +
+        `        primary_key: [id]\n` +
+        `        fields:\n` +
+        `          - name: id\n` +
+        `            expression: {dialects: [{dialect: SPANNER, expression: id}]}\n`)
+        .models[0];
+  }
+
+  // A vanilla model lists its deployments in its GOOGLE block, and the
+  // messages say so, as push's do.
+  test('several block deployments of a vanilla model fail, naming the block', () => {
+    const vanilla = vanillaModel({
+      deployments: [
+        {name: 'spanner_a', target: SPANNER_GRAPH},
+        {name: 'spanner_b', target: `${DB}2/propertyGraphs/g`},
+      ],
+    });
+    const store = resolveStore(vanilla, 'default');
+    expect('error' in store && store.error)
+        .toContain(
+            "declares 2 Spanner deployment targets in its GOOGLE block's " +
+            "'deployments' for profile 'default' (spanner_a, spanner_b), so " +
+            'which store it runs against is ambiguous');
+  });
+
+  test('default has no store when every block deployment names a profile, naming the block', () => {
+    const vanilla = vanillaModel({
+      profiles: [{name: 'operational'}],
+      deployments: [{name: 'spanner_a', target: SPANNER_GRAPH, profile: 'operational'}],
+    });
+    const store = resolveStore(vanilla, 'default');
+    expect('error' in store && store.error)
+        .toBe(
+            "Model 'm' declares no deployment without a 'profile' in its " +
+            "GOOGLE block's 'deployments', so there is no store to run " +
+            "against under binding profile 'default'.");
+  });
+
+  test('a block profile no block deployment uses has no store, naming the block', () => {
+    const vanilla = vanillaModel({
+      profiles: [{name: 'operational'}, {name: 'staging'}],
+      deployments: [{name: 'spanner_a', target: SPANNER_GRAPH, profile: 'operational'}],
+    });
+    const store = resolveStore(vanilla, 'staging');
+    expect('error' in store && store.error)
+        .toBe(
+            "binding profile 'staging' is a named profile, which names no " +
+            "deployment target, and no deployment in its GOOGLE block's " +
+            "'deployments' uses it, so there is no database to run it against");
   });
 
   test('a deployment that names no destination is reported beside one that does',
@@ -524,7 +599,7 @@ describe('the store a profile uses', () => {
     };
     expect(resolveStore(vanilla, 'prod'))
         .toEqual({
-          error: "binding profile 'prod' is a profile file, which names no " +
+          error: "binding profile 'prod' is a named profile, which names no " +
               'deployment target, so there is no database to run it against',
         });
     const store = resolveStore(vanilla, 'default');
@@ -552,7 +627,7 @@ describe('the store a profile uses', () => {
     const emptyDeployments: SemanticModel = {...threeProfiles, deployments: []};
     expect(resolveStore(emptyDeployments, 'prod'))
         .toEqual({
-          error: "binding profile 'prod' is a profile file, which names no " +
+          error: "binding profile 'prod' is a named profile, which names no " +
               'deployment target, so there is no database to run it against',
         });
   });

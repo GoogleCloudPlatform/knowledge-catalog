@@ -735,16 +735,16 @@ function relationshipLink(
     return undefined;
 
   // The name lives only in the link id (schema-join's aspect has no name
-  // field), and link ids are normalized -- lowercase, hyphens only. When the
-  // authored name is not already in that form and the anchor does not index
-  // it (no ai-context aspect), a later pull recovers it lowercased and
-  // hyphenated, not verbatim; warn so the round-trip change is not a surprise.
-  const normalizedName = linkSlug(rel.name);
+  // field), and link ids are normalized -- lowercase, hyphens only. A pull that
+  // rebuilds the model reads each hyphen back as an underscore, so it returns
+  // the name lowercased; warn when that differs from the authored name, unless
+  // the anchor indexes it (semantic-ai-context aspect).
+  const normalizedName = linkSlug(rel.name).replace(/-/g, '_');
   if (normalizedName !== rel.name && !namesIndexed) {
     warnings.push(
         `relationship '${rel.name}': Knowledge Catalog stores the name only ` +
-        `in the normalized link id, so a pull returns it lowercased/hyphenated ` +
-        `(e.g. '${normalizedName}'), not '${rel.name}'.`);
+        `in the normalized link id, so a pull that rebuilds the model returns ` +
+        `it as '${normalizedName}'.`);
   }
 
   return {

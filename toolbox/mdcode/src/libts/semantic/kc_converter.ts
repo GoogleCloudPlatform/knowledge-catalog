@@ -55,8 +55,8 @@
 // back un-typed: the metric aspect persists only `dataType` (both collapse to
 // `STRING`, with no metadataType to disambiguate), so -- as with a plain STRING
 // field -- the reader leaves it un-typed rather than guess. Relationship NAMES
-// come back normalized (lowercased/hyphenated), since the emitter encodes the
-// name only in the link id (via `linkSlug`), not in the join aspect.
+// come back lowercased, since the emitter encodes the name only in the link id
+// (via `linkSlug`), not in the join aspect.
 //
 // K1 (lossless push/pull): when the push attached kcmd's annotation aspects
 // (`semantic-ai-context`, `semantic-expressions`, `semantic-binding`; see
@@ -538,6 +538,14 @@ function readMetric(
     // fall back to the attach entity the emitter persisted (metricAspectData)
     // rather than dropping it.
     metric.entity = persistedEntity;
+    // A recovered expression that cannot re-derive the anchor means the author
+    // wrote it; mark it authored so the serializer writes `entity:` back. Not
+    // when the anchor names a dataset this pull did not rebuild: a derived
+    // anchor is persisted too, and `entity:` naming no dataset would not load.
+    // With no expression (a default push) the metric cannot reload either way.
+    if (exprForRefs && entityNames.includes(persistedEntity)) {
+      metric.authoredEntity = persistedEntity;
+    }
   } else if (cols !== undefined && exprForRefs && !referenced.length) {
     // Parity with the loader's convertMetric: an expression that qualifies no
     // known entity is flagged as potentially unplaceable downstream.
@@ -976,17 +984,17 @@ export function linkDedupKey(link: EntryLink): string {
 
 
 // Best-effort recovery of the relationship name from the link id, which the
-// emitter built as linkSlug(`<model>-<name>`) (lowercased/hyphenated -- see
-// knowledge_catalog.ts). Strips the model prefix when present; the name comes
-// back normalized, never verbatim.
+// emitter built as linkSlug(`<model>-<name>`) (lowercased, with each underscore
+// turned into a hyphen -- see knowledge_catalog.ts). Strips the model prefix
+// when present. A relationship name has no hyphen, so each hyphen left is read
+// back as an underscore; the name comes back lowercased.
 function relationshipName(
     linkName: string|undefined, modelPrefix: string): string {
   const id = idOf(linkName ?? '');
-  if (modelPrefix && id.startsWith(`${modelPrefix}-`)) {
-    const rest = id.slice(modelPrefix.length + 1);
-    if (rest) return rest;
-  }
-  return id;
+  const rest = modelPrefix && id.startsWith(`${modelPrefix}-`) ?
+      id.slice(modelPrefix.length + 1) :
+      '';
+  return (rest || id).replace(/-/g, '_');
 }
 
 

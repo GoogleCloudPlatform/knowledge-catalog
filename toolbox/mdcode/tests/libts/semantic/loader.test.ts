@@ -9,8 +9,11 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { deploymentTargetUris } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
+import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
+import { loadProfileFile, validateProfileCompleteness, validateProfileConsistency } from '../../../src/libts/semantic/resolve_profiles';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -806,17 +809,14 @@ describe('richer IR fields carry through from the format', () => {
     ]);
   });
 
-  test('a malformed GOOGLE block is kept verbatim without warning (not parsed)', () => {
-    const { models, warnings } = fromDocument({ version: '0.2.0.dev0',
+  test('a malformed GOOGLE block is rejected, naming the model', () => {
+    expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
         name: 'm',
         custom_extensions: [{ vendor_name: 'GOOGLE', data: '{not json' }],
         datasets: [{ name: 'a', source: 'bigquery:p.d.a', primary_key: ['id'], fields: [] }],
       }],
-    });
-    // The loader never parses the block, so malformed JSON is not its concern.
-    expect(models[0].customExtensions).toEqual([{ vendorName: 'GOOGLE', data: '{not json' }]);
-    expect(warnings).toEqual([]);
+    })).toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block must be a JSON object.");
   });
 
   test('ai_context instructions and synonyms are structural, not folded into description', () => {
@@ -973,8 +973,8 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
     expect(metric.aiContext?.synonyms).toEqual(['revenue']);
   });
 
-  test('all eight allowed dialects and ten datatypes are accepted, while non-SQL dialects (MDX, TABLEAU, MAQL) are rejected', () => {
-    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SNOWFLAKE', 'DATABRICKS'];
+  test('all nine allowed dialects and ten datatypes are accepted, while MDX, TABLEAU, MAQL, THOUGHTSPOT and TSQL are rejected', () => {
+    const dialects = ['ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL', 'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS'];
     const datatypes = [...DATA_TYPES];  // the loader accepts exactly the IR vocabulary
     const { models } = fromDocument({
       version: '0.2.0.dev0',
@@ -1009,6 +1009,21 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
         }],
       })).toThrow(`Unknown dialect '${nonSql}'`);
     }
+
+    // SQL Server is named SQLSERVER only; TSQL is not a synonym.
+    expect(() => fromDocument({
+      version: '0.2.0.dev0',
+      semantic_model: [{
+        name: 'm',
+        datasets: [{
+          name: 'd', source: 'bigquery:p.d.d', primary_key: ['id'],
+          fields: [{
+            name: 'f',
+            expression: { dialects: [{ dialect: 'TSQL', expression: 'd.c' }] },
+          }],
+        }],
+      }],
+    })).toThrow(`Unknown dialect 'TSQL'`);
   });
 });
 
@@ -1627,8 +1642,7 @@ describe('custom_extensions: where each vendor block is accepted', () => {
       if (level === 'field') {
         expect(run).toThrow(/cannot carry a 'GOOGLE' custom_extensions block on a field/);
       } else {
-        expect(irAt(run().models[0], level).customExtensions)
-          .toEqual([{ vendorName: 'GOOGLE', data: '{}' }]);
+        expect(irAt(run().models[0], level).customExtensions).toBeUndefined();
       }
     }
   });
@@ -1666,8 +1680,8 @@ describe('relationship description', () => {
     const m = load(VANILLA, fullModel('relationship', {
       custom_extensions: [{ vendor_name: 'GOOGLE', data: '{"description": "d"}' }],
     })).models[0];
-    expect(m.relationships[0].customExtensions)
-      .toEqual([{ vendorName: 'GOOGLE', data: '{"description": "d"}' }]);
+    expect(m.relationships[0].description).toBe('d');
+    expect(m.relationships[0].customExtensions).toBeUndefined();
   });
 });
 
@@ -1785,8 +1799,902 @@ semantic_model:
     const vanillaUnparseable = load(VANILLA, fullModel('metric', { expression: expr('SUM(orders.id') }));
     expect(vanillaUnparseable.warnings).toContain(
         "metric 'order_count': expression could not be parsed; entity inference was " +
-        "skipped (use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
+        "skipped (set 'entity' in a GOOGLE custom_extensions block on the metric, " +
+        "or use version '0.2.0.dev0/google' and set 'entity' on the metric, or " +
         "backtick-quote a reserved qualifier, such as `Date`.amount)");
+  });
+});
+
+describe('vanilla: GOOGLE blocks are read into the model', () => {
+  const google = (data: object|string) => ({
+    vendor_name: 'GOOGLE', data: typeof data === 'string' ? data : JSON.stringify(data),
+  });
+  const ACME = { vendor_name: 'ACME', data: '{"a":1}' };
+  const G = '//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail';
+  const PROD = { name: 'prod', entities: [{ name: 'orders', source: 'bigquery:p.prod.orders' }] };
+  const LABEL = {
+    model: "model 'm'", dataset: "dataset 'orders'",
+    relationship: "relationship 'orders_to_customers'", metric: "metric 'order_count'",
+  } as const;
+  const atLevel = (level: keyof typeof LABEL, ...blocks: object[]) =>
+    fullModel(level, { custom_extensions: blocks });
+
+  // fullModel, with `orders` extending a `base_order` that declares a field,
+  // and each key at its own level either in a GOOGLE block beside a
+  // third-party block or, in the Google flavor, natively.
+  function retail(version: string): any {
+    const m = fullModel();
+    const vanilla = version === VANILLA;
+    m.datasets.push({ name: 'base_order', source: 'bigquery:p.d.base_order', primary_key: ['id'],
+      fields: [{ name: 'placed_at', expression: expr('placed_at') }] });
+    const keys: [any, object][] = [
+      [m, { deployments: [{ name: 'bq_prod', target: G }] }],
+      [m.datasets[0], { extends: ['base_order'] }],
+      [m.relationships[0], { description: 'who placed it' }],
+      [m.metrics[0], { entity: 'orders' }],
+    ];
+    for (const [o, key] of keys) {
+      if (vanilla) o.custom_extensions = [google(key), ACME];
+      else Object.assign(o, key);
+    }
+    if (vanilla) m.custom_extensions[0] = google({ profiles: [PROD], deployments: [{ name: 'bq_prod', target: G }] });
+    return m;
+  }
+
+  test('each key loads, its block is removed, and a third-party block stays', () => {
+    const m = load(VANILLA, retail(VANILLA)).models[0];
+    expect(m.profiles).toEqual([loadProfileFile(JSON.stringify(PROD), 'prod')]);
+    expect(m.deployments).toEqual([{ name: 'bq_prod', target: G }]);
+    expect(deploymentTargetUris(m)).toEqual([G]);
+    expect(m.entities[0].extends).toEqual(['base_order']);
+    expect(m.relationships[0].description).toBe('who placed it');
+    expect(m.metrics[0].authoredEntity).toBe('orders');
+    expect(m.metrics[0].entity).toBe('orders');
+    // No folded `deploymentTargets` copy joins the model's blocks.
+    for (const o of [m, m.entities[0], m.relationships[0], m.metrics[0]]) {
+      expect(o.customExtensions).toEqual([{ vendorName: 'ACME', data: '{"a":1}' }]);
+    }
+  });
+
+  test('the keys load as the Google flavor loads them, and extends is read before inheritance resolves', () => {
+    const vanilla = load(VANILLA, retail(VANILLA)).models[0];
+    const google = load(GOOGLE, retail(GOOGLE)).models[0];
+    const withoutBlocks = (o: any) => { const { customExtensions, ...rest } = o; return rest; };
+    for (const key of ['entities', 'relationships', 'metrics'] as const) {
+      expect(vanilla[key].map(withoutBlocks)).toEqual(google[key].map(withoutBlocks));
+    }
+    expect(vanilla.deployments).toEqual(google.deployments);
+    const fields = (m: any) => resolveInheritance(m).model.entities[0].fields.map((f: any) => f.name);
+    expect(fields(vanilla)).toEqual(['id', 'customer_id', 'placed_at']);
+    expect(fields(vanilla)).toEqual(fields(google));
+  });
+
+  test('data that is not a JSON object fails, naming the object', () => {
+    for (const level of ['model', 'dataset', 'relationship', 'metric'] as const) {
+      for (const data of ['{not json', '[]', '"x"', 'null']) {
+        expect(() => load(VANILLA, atLevel(level, google(data)))).toThrow(
+          `${LABEL[level]}: the 'data' of a GOOGLE custom_extensions block must be a JSON object.`);
+      }
+    }
+  });
+
+  test('a key the level does not take fails, naming the object', () => {
+    const cases = [
+      ['model', 'extends', "'profiles' and 'deployments'"],
+      ['dataset', 'entity', "'extends'"],
+      ['dataset', 'deploymentTargets', "'extends'"],
+      ['relationship', 'deployments', "'description'"],
+      ['metric', 'description', "'entity'"],
+    ] as const;
+    for (const [level, key, takes] of cases) {
+      expect(() => load(VANILLA, atLevel(level, google({ [key]: 'x' })))).toThrow(
+        `${LABEL[level]}: '${key}' is not a key a GOOGLE custom_extensions block takes on a ` +
+        `${level}; it takes ${takes}.`);
+    }
+  });
+
+  test('abstract fails, naming the dataset and the Google flavor', () => {
+    expect(() => load(VANILLA, atLevel('dataset', google({ abstract: true })))).toThrow(
+      "dataset 'orders': a GOOGLE custom_extensions block cannot declare 'abstract' in a " +
+      "'0.2.0.dev0' document. An abstract dataset has no table, and every '0.2.0.dev0' " +
+      "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
+  });
+
+  // An abstract dataset has no table, so it names no source and binds no
+  // field. Its block is read before the bindings are checked.
+  test('abstract on a dataset with no source and an unbound field fails the same way', () => {
+    const m = fullModel();
+    m.datasets[0].custom_extensions = [google({ extends: ['Party'] })];
+    m.datasets.push({
+      name: 'Party',
+      custom_extensions: [google({ abstract: true })],
+      fields: [{ name: 'id', datatype: 'String' }],
+    });
+    expect(() => load(VANILLA, m)).toThrow(
+      "dataset 'Party': a GOOGLE custom_extensions block cannot declare 'abstract' in a " +
+      "'0.2.0.dev0' document. An abstract dataset has no table, and every '0.2.0.dev0' " +
+      "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
+  });
+
+  test('deploymentTargets that is not a list, or that two blocks set, fails', () => {
+    const cases = [
+      [google({ deploymentTargets: G }), 'expected array, received string'],
+      [google({ deploymentTargets: null }), 'expected array, received null'],
+    ] as const;
+    for (const [block, problem] of cases) {
+      expect(() => load(VANILLA, atLevel('model', block))).toThrow(
+        "model 'm': 'deploymentTargets' in a GOOGLE custom_extensions block: " +
+        `Invalid input: ${problem}`);
+    }
+    const twice = atLevel('model', google({ deploymentTargets: [G] }), google({ deploymentTargets: [G] }));
+    expect(() => load(VANILLA, twice)).toThrow(
+      "model 'm': two GOOGLE custom_extensions blocks both set 'deploymentTargets'; " +
+      'set it in one block.');
+  });
+
+  test('a value the Google flavor rejects for the same key fails', () => {
+    const cases = [
+      ['model', { deployments: [{ name: 'a' }] }],
+      ['model', { deployments: [{ name: 'a', target: G, extra: 1 }] }],
+      ['dataset', { extends: 'base_order' }],
+      ['relationship', { description: 5 }],
+      ['metric', { entity: ['orders'] }],
+    ] as const;
+    for (const [level, data] of cases) {
+      expect(() => load(VANILLA, atLevel(level, google(data)))).toThrow(
+        `${LABEL[level]}: '${Object.keys(data)[0]}' in a GOOGLE custom_extensions block: `);
+    }
+    expect(() => load(VANILLA, atLevel('metric', google({ entity: 'nope' })))).toThrow(
+      "metric 'order_count': 'entity' names 'nope', which is not a dataset in this model.");
+    expect(() => load(VANILLA, atLevel('model', google({ deployments: [
+      { name: 'a', target: G }, { name: 'b', target: G }] })))).toThrow(
+      "deployments 'a' and 'b' target the same resource");
+  });
+
+  test('each profile is read as a profile file is, and two may not share a name', () => {
+    const fileError = (text: string) => {
+      try {
+        loadProfileFile(text, 'prod');
+      } catch (err: any) {
+        return err.message;
+      }
+    };
+    for (const profile of [{ name: 'prod', datasets: [] }, { name: 'prod', entities: 'orders' }]) {
+      expect(() => load(VANILLA, atLevel('model', google({ profiles: [profile] })))).toThrow(
+        `model 'm': ${fileError(JSON.stringify(profile))}`);
+    }
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: PROD })))).toThrow(
+      "model 'm': 'profiles' in a GOOGLE custom_extensions block must be a list.");
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: [{ entities: [] }] })))).toThrow(
+      "model 'm': each profile in a GOOGLE custom_extensions block must be a mapping with a 'name'.");
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: [PROD, PROD] })))).toThrow(
+      "model 'm': duplicate profile name 'prod'");
+  });
+
+  test('a profile name follows the rules the layout gives a profile file name', () => {
+    const loadProfile = (name: string) => load(VANILLA, atLevel('model', google({ profiles: [{ name }] })));
+    for (const name of ['', '1prod', 'a b', 'a/../b', 'x'.repeat(501)]) {
+      expect(() => loadProfile(name)).toThrow(
+        `model 'm': profile name '${name}' in a GOOGLE custom_extensions block is not valid; a ` +
+        'profile name is a letter followed by up to 499 letters, digits, underscores and hyphens.');
+    }
+    for (const name of ['prod-eu_2', 'x'.repeat(500)]) {
+      expect(loadProfile(name).models[0].profiles?.map(p => p.name)).toEqual([name]);
+    }
+    for (const name of ['default', 'Default']) {
+      expect(() => loadProfile(name)).toThrow(
+        `model 'm': a profile in a GOOGLE custom_extensions block may not be named '${name}'; ` +
+        "'default' names the model's inline bindings.");
+    }
+    expect(() => load(VANILLA, atLevel('model', google({ profiles: [{ name: 'Prod' }, { name: 'prod' }] }))))
+      .toThrow("model 'm': profiles 'Prod' and 'prod' in a GOOGLE custom_extensions block name the " +
+        'same profile; profile names are unique ignoring case.');
+  });
+
+  test("a profile that sets 'version' or 'semantic_model' is told so without mention of a file", () => {
+    for (const key of ['version', 'semantic_model']) {
+      expect(() => load(VANILLA, atLevel('model', google({ profiles: [{ name: 'prod', [key]: VANILLA }] }))))
+        .toThrow(`model 'm': profile 'prod' in a GOOGLE custom_extensions block sets '${key}', which a ` +
+          'profile may not set.');
+    }
+  });
+
+  test('a key two GOOGLE blocks on one object both set fails, naming the key', () => {
+    expect(() => load(VANILLA, atLevel('metric', google({ entity: 'orders' }), google({ entity: 'orders' }))))
+      .toThrow("metric 'order_count': two GOOGLE custom_extensions blocks both set 'entity'; set it " +
+        'in one block.');
+    expect(() => load(VANILLA, atLevel('dataset', google({ extends: ['customers'] }), google({ extends: ['customers'] }))))
+      .toThrow("dataset 'orders': two GOOGLE custom_extensions blocks both set 'extends'; set it in " +
+        'one block, listing every parent there.');
+  });
+
+  test('a key one GOOGLE block sets twice fails, as a repeated YAML key does', () => {
+    expect(() => load(VANILLA, atLevel('metric', google('{"entity": "nope", "entity": "orders"}'))))
+      .toThrow("metric 'order_count': the 'data' of a GOOGLE custom_extensions block sets a key " +
+        'twice; set each key once.');
+    expect(() => load(VANILLA, atLevel('model', google('{"profiles": [{"name": "prod", "name": "dev"}]}'))))
+      .toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block sets a key twice");
+  });
+
+  test('a value error is reported on one line', () => {
+    expect(() => load(VANILLA, atLevel('model', google({ deployments: null })))).toThrow(
+      "model 'm': 'deployments' in a GOOGLE custom_extensions block: Invalid input: expected array, " +
+      'received null');
+  });
+
+  test('deploymentTargets stays in its block on the model, and deployments beside it fail', () => {
+    const targets = google({ deploymentTargets: [G] });
+    const m = load(VANILLA, atLevel('model', targets)).models[0];
+    expect(m.customExtensions).toEqual([{ vendorName: 'GOOGLE', data: targets.data }]);
+    expect(m.deployments).toBeUndefined();
+    expect(deploymentTargetUris(m)).toEqual([G]);
+    const deployments = { deployments: [{ name: 'a', target: G }] };
+    for (const blocks of [[google({ deploymentTargets: [G], ...deployments })], [targets, google(deployments)]]) {
+      expect(() => load(VANILLA, atLevel('model', ...blocks))).toThrow(
+        "model 'm': set either 'deployments' or 'deploymentTargets' in its GOOGLE custom_extensions blocks, not both.");
+    }
+  });
+
+  test("a metric's block entity fills authoredEntity and entity, so COUNT(*) gives no warning", () => {
+    const { models, warnings } = load(VANILLA, fullModel('metric', {
+      expression: expr('COUNT(*)'), custom_extensions: [google({ entity: 'orders' })],
+    }));
+    expect(models[0].metrics[0].authoredEntity).toBe('orders');
+    expect(models[0].metrics[0].entity).toBe('orders');
+    expect(warnings.some(w => w.includes('references no known entity'))).toBe(false);
+  });
+
+  test("the native anchor error offers the GOOGLE block", () => {
+    expect(() => load(VANILLA, fullModel('metric', { entity: 'orders' }))).toThrow(
+      "To anchor it explicitly, set 'entity' in a GOOGLE custom_extensions block on the " +
+      "metric, or set the document version to '0.2.0.dev0/google'.");
+  });
+
+  test("a 'Google' block is a third-party block: neither read nor removed", () => {
+    const block = { vendor_name: 'Google', data: '{"entity": "nope", "abstract": true}' };
+    for (const level of ['dataset', 'metric'] as const) {
+      const m = load(VANILLA, atLevel(level, block)).models[0];
+      expect(irAt(m, level).customExtensions).toEqual([{ vendorName: 'Google', data: block.data }]);
+      expect(m.metrics[0].authoredEntity).toBeUndefined();
+    }
+  });
+
+  test('a block profile, a block extends and a block anchor get the checks for an expression with no SQL', () => {
+    // A block profile's binding is rejected as a profile file's is.
+    for (const expression of ['  ', '-- todo', 'orders.']) {
+      const profile = { name: 'prod', entities: [{ name: 'orders', fields: [{ name: 'customer_id', expression }] }] };
+      let fileError = '';
+      try {
+        loadProfileFile(JSON.stringify(profile), 'prod');
+      } catch (err: any) {
+        fileError = err.message;
+      }
+      expect(fileError).toContain("write the field's SQL");
+      expect(() => load(VANILLA, atLevel('model', google({ profiles: [profile] })))).toThrow(
+        `model 'm': ${fileError}`);
+    }
+    // An inherited field is checked on the entity that extends its parent in a
+    // block, as it is with a native extends.
+    for (const version of [VANILLA, GOOGLE]) {
+      const m = retail(version);
+      m.datasets[2].fields[0].expression = expr('base_order.orders.');
+      expect(() => load(version, m)).toThrow(
+        "model 'm': entity 'orders' inherits field 'placed_at': read on 'orders', the BIGQUERY entry of " +
+        "'expression' is only the qualifier 'orders.'; write the field's SQL");
+    }
+    // A metric anchored in its block still needs SQL.
+    expect(() => load(VANILLA, fullModel('metric', {
+      expression: expr(' '), custom_extensions: [google({ entity: 'orders' })],
+    }))).toThrow("metric 'order_count': the BIGQUERY entry of 'expression' is blank; write the metric's SQL");
+  });
+
+  test('profiles from the block get the checks profile files get', () => {
+    const join = { name: 'orders_to_customers', from_columns: ['customer_id'], to_columns: ['id'] };
+    const prod = { name: 'prod', relationships: [join], entities: [
+      { name: 'orders', source: 'bigquery:p.prod.orders' },
+      { name: 'customers', source: 'bigquery:p.prod.customers' }] };
+    const dev = { name: 'dev', relationships: [{ ...join, to_columns: undefined }] };
+    const vanilla = load(VANILLA, atLevel('model', google({ profiles: [prod, dev] }))).models[0];
+    const google_ = load(GOOGLE, fullModel()).models[0];
+    const files = [prod, dev].map(p => loadProfileFile(JSON.stringify(p), p.name));
+    expect(vanilla.profiles).toEqual(files);
+    const checks = (m: any, specs: any[]) =>
+      [...specs.map(p => validateProfileCompleteness(m, p)), validateProfileConsistency(m, specs)];
+    expect(checks(vanilla, vanilla.profiles!)).toEqual(checks(google_, files));
+    expect(validateProfileCompleteness(vanilla, vanilla.profiles![0])).toEqual([]);
+    expect(validateProfileCompleteness(vanilla, vanilla.profiles![1])).not.toEqual([]);
+  });
+
+  test('googleBlockProfiles reads the profiles without loading the rest of the model', () => {
+    const doc = (version: string, model: object) => JSON.stringify({ version, semantic_model: [model] });
+    const unloadable = doc(VANILLA, { name: 'm', custom_extensions: [google({ profiles: [PROD] })], datasets: [] });
+    expect(() => loadModels(unloadable)).toThrow();
+    expect(googleBlockProfiles(unloadable)).toEqual([loadProfileFile(JSON.stringify(PROD), 'prod')]);
+    expect(googleBlockProfiles(doc(GOOGLE, fullModel()))).toEqual([]);
+    // Text whose version cannot be read may be a vanilla model.
+    expect(() => googleBlockProfiles('{not yaml')).toThrow(
+      'Semantic model load error: could not parse input: ');
+    expect(() => googleBlockProfiles(doc(VANILLA, { name: 'm', custom_extensions: [google('[]')] })))
+      .toThrow("model 'm': the 'data' of a GOOGLE custom_extensions block must be a JSON object.");
+  });
+
+  test('googleBlockProfiles skips a block the load rejects for its shape', () => {
+    const beside = (block: object) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: [google({ profiles: [PROD] }), block] })] });
+    for (const block of [
+      { vendor_name: 'GOOGLE', data: 123 },
+      { ...google({}), note: 'x' },
+      { vendor_name: 'GOOGLE', data: { entity: 'orders' } },
+      { vendor_name: 'ACME', data: 123 },
+    ]) {
+      expect(() => loadModels(beside(block))).toThrow('custom_extensions');
+      expect(googleBlockProfiles(beside(block)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles reads the profiles in a GOOGLE block whose shape the load rejects', () => {
+    const doc = (exts: unknown) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: exts })] });
+    for (const exts of [
+      [{ vendor_name: 'GOOGLE', data: { profiles: [PROD] } }],
+      [{ ...google({ profiles: [PROD] }), note: 'x' }],
+      google({ profiles: [PROD] }),
+      [{ vendor_name: 'GOOGLE', profiles: [PROD] }],
+      [{ vendor_name: 'GOOGLE', data: null, profiles: [PROD] }],
+    ]) {
+      expect(() => loadModels(doc(exts))).toThrow('custom_extensions');
+      expect(googleBlockProfiles(doc(exts)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  // As a profile file is found beside a model file the load rejects, a key
+  // other than `profiles` that the load rejects does not hide the profiles.
+  test('googleBlockProfiles reads only the profiles of a GOOGLE block whose shape the load accepts', () => {
+    const doc = (exts: object[]) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: exts })] });
+    for (const exts of [
+      [google({ profiles: [PROD], deployments: [{ name: 'main' }] })],
+      [google({ profiles: [PROD] }), google({ deployments: [{ name: 'main' }] })],
+      [google({ profiles: [PROD], bogus: 1 })],
+      [google({ profiles: [PROD], deploymentTargets: [G], deployments: [] })],
+      [google({ profiles: [PROD] }), google('{"deployments": [{"name": "a", "name": "b"}]}')],
+      [google(`{"x": 1, "profiles": ${JSON.stringify([PROD])}, "x": 2}`)],
+    ]) {
+      expect(() => loadModels(doc(exts))).toThrow("model 'm'");
+      expect(googleBlockProfiles(doc(exts)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  test('googleBlockProfiles rejects data that sets profiles twice or a key twice inside them, whatever the shape of its block', () => {
+    const doc = (block: object) => JSON.stringify({ version: VANILLA, semantic_model: [
+      fullModel('model', { custom_extensions: [block] })] });
+    for (const data of [
+      `{"profiles": ${JSON.stringify([PROD])}, "profiles": []}`,
+      `{"profiles": [{"name": "prod", "name": "dev"}]}`,
+    ]) {
+      for (const block of [google(data), { ...google(data), note: 'x' }]) {
+        expect(() => googleBlockProfiles(doc(block))).toThrow(
+          "model 'm': the 'data' of a GOOGLE custom_extensions block sets a key twice");
+      }
+    }
+  });
+
+  test('googleBlockProfiles reads past a YAML error elsewhere in the text', () => {
+    const text = (extra: string) => `version: "${VANILLA}"
+semantic_model:
+  - name: m
+${extra}    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({ profiles: [PROD] })}'
+`;
+    for (const [extra, problem] of [
+      ['    description: a\n    description: b\n', 'Map keys must be unique'],
+      ['    description: *nope\n', 'Unresolved alias'],
+    ]) {
+      expect(() => loadModels(text(extra))).toThrow(problem);
+      expect(googleBlockProfiles(text(extra)).map(p => p.name)).toEqual(['prod']);
+    }
+  });
+
+  // Which of the two values holds the profiles is not known.
+  test('googleBlockProfiles reports the YAML error for a document that sets semantic_model twice', () => {
+    const model = (exts: object[]) => JSON.stringify([{ name: 'm', custom_extensions: exts }]);
+    const text = (first: object[], second: object[]) =>
+      `version: "${VANILLA}"\nsemantic_model: ${model(first)}\nsemantic_model: ${model(second)}\n`;
+    const block = google({ profiles: [PROD] });
+    for (const [first, second] of [[[block], []], [[], [block]]]) {
+      expect(() => loadModels(text(first, second))).toThrow('Map keys must be unique');
+      expect(() => googleBlockProfiles(text(first, second))).toThrow(
+        'Semantic model load error: could not parse input: Map keys must be unique');
+    }
+  });
+
+  test('googleBlockProfiles reports the YAML error for a model that sets custom_extensions twice', () => {
+    const text = (first: object, second: object) => `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    custom_extensions: ${JSON.stringify([first])}
+    custom_extensions: ${JSON.stringify([second])}
+`;
+    const block = google({ profiles: [PROD] });
+    for (const [first, second] of [[block, ACME], [ACME, block]]) {
+      expect(() => loadModels(text(first, second))).toThrow('Map keys must be unique');
+      expect(() => googleBlockProfiles(text(first, second))).toThrow(
+        'Semantic model load error: could not parse input: Map keys must be unique');
+    }
+  });
+
+  test('googleBlockProfiles reads only the profiles of each block in text with a YAML error', () => {
+    const text = `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    description: a
+    description: b
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '${JSON.stringify({ profiles: [PROD], bogus: 1 })}'
+`;
+    expect(() => loadModels(text)).toThrow('Map keys must be unique');
+    expect(googleBlockProfiles(text).map(p => p.name)).toEqual(['prod']);
+  });
+
+  test('googleBlockProfiles reports the YAML error when it cuts the GOOGLE block short', () => {
+    const text = `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"profiles": [
+    datasets: [
+`;
+    expect(() => loadModels(text)).toThrow('could not parse input');
+    expect(() => googleBlockProfiles(text)).toThrow(
+      'Semantic model load error: could not parse input: ');
+  });
+
+  describe('googleBlockProfiles in text that is not valid YAML', () => {
+    const data = (v: object) => `'${JSON.stringify(v)}'`;
+    const blockYaml = (d: string) => `      - vendor_name: GOOGLE\n        data: ${d}\n`;
+    const PROD_BLOCK = blockYaml(data({ profiles: [PROD] }));
+    const section = (exts: string, extra = '') =>
+      `  - name: m\n${extra}    custom_extensions:\n${exts}`;
+    const vanilla = (exts: string, extra = '') =>
+      `version: "${VANILLA}"\nsemantic_model:\n${section(exts, extra)}`;
+    const names = (text: string) => googleBlockProfiles(text).map(p => p.name);
+    // A key set twice on the path to the blocks leaves the reading ambiguous.
+    const ambiguous: [string, string, string][] = [
+      ['a repeated semantic_model section',
+        `version: "${VANILLA}"\nsemantic_model:\n${section(PROD_BLOCK)}semantic_model:\n${section(PROD_BLOCK)}`,
+        'Map keys must be unique'],
+      ['a document written twice', vanilla(PROD_BLOCK).repeat(2), 'Map keys must be unique'],
+      ['a repeated custom_extensions section',
+        vanilla(`${PROD_BLOCK}    custom_extensions:\n${PROD_BLOCK}`), 'Map keys must be unique'],
+      ['a later semantic_model that is empty', `${vanilla(PROD_BLOCK)}semantic_model: []\n`,
+        'Map keys must be unique'],
+      ['a block that sets data twice, the profiles in the first',
+        vanilla(`${PROD_BLOCK}        data: '{}'\n`), 'Map keys must be unique'],
+    ];
+    for (const [what, text, problem] of ambiguous) {
+      test(`reports the YAML error past ${what}`, () => {
+        expect(() => loadModels(text)).toThrow(problem);
+        expect(() => googleBlockProfiles(text)).toThrow(
+          `Semantic model load error: could not parse input: ${problem}`);
+      });
+    }
+
+    // A YAML error away from the blocks leaves them one reading.
+    const cases: [string, string, string][] = [
+      ['an alias whose anchor is not set, beside a key the block may not set',
+        vanilla(blockYaml(data({ profiles: [PROD], bogus: 1 })), '    description: *nope\n'),
+        'Unresolved alias'],
+      ['a key set twice, beside data that sets another key twice',
+        vanilla(blockYaml(`'{"profiles": ${JSON.stringify([PROD])}, "x": 1, "x": 2}'`),
+          '    description: a\n    description: b\n'),
+        'Map keys must be unique'],
+    ];
+    for (const [what, text, problem] of cases) {
+      test(`finds the profile past ${what}`, () => {
+        expect(() => loadModels(text)).toThrow(problem);
+        expect(names(text)).toEqual(['prod']);
+      });
+    }
+
+    // Each text sets `description` twice, so it is not valid YAML. An alias or
+    // a merge key on the path to the blocks leaves the reading ambiguous.
+    const aliasedKeys: [string, string][] = [
+      ['a data key written as an alias', `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    label: &k data
+    description: a
+    description: b
+    custom_extensions:
+      - vendor_name: GOOGLE
+        *k : ${data({ profiles: [PROD] })}
+`],
+      ['a custom_extensions key written as an alias', `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    label: &k custom_extensions
+    description: a
+    description: b
+    *k :
+${PROD_BLOCK}`],
+      ['a block that takes its data from a merge key', `%YAML 1.1
+---
+base: &base
+  vendor_name: GOOGLE
+  data: ${data({ profiles: [PROD] })}
+version: "${VANILLA}"
+semantic_model:
+  - name: m
+    description: a
+    description: b
+    custom_extensions:
+      - <<: *base
+`],
+    ];
+    for (const [what, text] of aliasedKeys) {
+      test(`reports the YAML error past ${what}`, () => {
+        expect(() => loadModels(text)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      });
+    }
+
+    // Past a YAML error, merge keys on the path give the YAML error too,
+    // whether or not the block's own `data` would win over the merged one.
+    test('reports the YAML error for YAML 1.1 merge keys past a YAML error', () => {
+      const merged = (model: string) => `%YAML 1.1
+---
+base: &base
+  custom_extensions:
+    - vendor_name: GOOGLE
+      data: ${data({ profiles: [PROD] })}
+data: &data
+  data: ${data({ profiles: [PROD] })}
+version: "${VANILLA}"
+semantic_model:
+  - name: m
+    description: a
+    description: b
+${model}`;
+      for (const model of [
+        '    <<: *base\n',
+        `    custom_extensions:\n      - vendor_name: GOOGLE\n        <<: *data\n        data: '{}'\n`,
+      ]) {
+        expect(() => googleBlockProfiles(merged(model))).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // A block the load would reject, such as two that both set `profiles`, is
+    // reported as the YAML error.
+    test('reports the YAML error for blocks a load rejects', () => {
+      const named = (name: string) => blockYaml(data({ profiles: [{ ...PROD, name }] }));
+      for (const blocks of [named('Prod') + named('prod'), named('default')]) {
+        const text = vanilla(blocks, '    description: a\n    description: b\n');
+        expect(() => loadModels(text)).toThrow('Map keys must be unique');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // The YAML error may have cut the block short or moved a line in it.
+    test('reports the YAML error when the error falls inside custom_extensions', () => {
+      const profile = (indent: string, name: string) =>
+        `${indent}- name: ${name}\n${indent}  entities: [{name: orders, source: "bigquery:p.${name}.orders"}]\n`;
+      const block = (indent: string) => '      - vendor_name: GOOGLE\n        data:\n          profiles:\n' +
+        profile('            ', 'prod') + profile(indent, 'dev');
+      expect(names(vanilla(block('            ')))).toEqual(['prod', 'dev']);
+      expect(() => loadModels(vanilla(block('           ')))).toThrow('could not parse input');
+      expect(() => googleBlockProfiles(vanilla(block('           ')))).toThrow(
+        'Semantic model load error: could not parse input: ');
+    });
+
+    // The yaml library expands at most 100 aliases.
+    // A Google-flavor model gives no profiles, so its profile files stay listed.
+    test('reports the YAML error for a vanilla model with more aliases than a load expands', () => {
+      for (const version of [VANILLA, GOOGLE]) {
+        const text = `version: "${version}"\nx: &a 1\nys:\n${'  - *a\n'.repeat(101)}` +
+          `semantic_model:\n${section(PROD_BLOCK)}`;
+        expect(() => loadModels(text)).toThrow('could not parse input: Excessive alias count');
+        if (version === VANILLA) {
+          expect(() => googleBlockProfiles(text)).toThrow(
+            'Semantic model load error: could not parse input: Excessive alias count');
+        } else {
+          expect(googleBlockProfiles(text)).toEqual([]);
+        }
+      }
+    });
+
+    // A YAML error other than a key set twice can move custom_extensions out
+    // of the model, or cut it short where it ends.
+    test('reports the YAML error when an error may move or cut the blocks', () => {
+      const head = `version: "${VANILLA}"\nsemantic_model:\n  - name: m\n`;
+      const exts = `    custom_extensions:\n${PROD_BLOCK}`;
+      const acme = '    custom_extensions:\n      - vendor_name: ACME\n        data: x\n';
+      for (const [broken, fixed] of [
+        [head + '   description: x\n' + exts, head + '    description: x\n' + exts],
+        [head + '    label: y\n     description: x\n' + exts, head + '    label: y\n    description: x\n' + exts],
+        [head + '\tdescription: x\n' + exts, head + '    description: x\n' + exts],
+        [head + '    description: x\n    oops\n' + exts, head + '    description: x\n' + exts],
+        [head + '    description: |\n  bad\n' + exts, head + '    description: |\n      bad\n' + exts],
+        [head + exts.replace('custom_extensions:\n', 'custom_extensions:'), head + exts],
+        [head + '    custom_extensions:\n      - vendor_name: ACME\n\t        data: x\n' + PROD_BLOCK,
+          head + '    custom_extensions:\n      - vendor_name: ACME\n        data: x\n' + PROD_BLOCK],
+        [head + acme.replace('        data', '    \t    data') + PROD_BLOCK, head + acme + PROD_BLOCK],
+        [head + acme + "    '" + PROD_BLOCK.slice(4), head + acme + PROD_BLOCK],
+        [head + acme.replace('      - vendor_name: ACME', '  - vendor_name: ACME') + PROD_BLOCK, head + acme + PROD_BLOCK],
+        [head + exts + '    description: [x\n', head + exts + '    description: x\n'],
+      ]) {
+        expect(names(fixed)).toEqual(['prod']);
+        expect(() => loadModels(broken)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(broken)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // A key set twice, or an alias whose anchor is not set, cannot cut the
+    // blocks short, so it does not hide them wherever it is.
+    test('finds the profile past a key set twice or an unset alias after the blocks', () => {
+      const text = (extra: string) =>
+        `version: "${VANILLA}"\nsemantic_model:\n  - name: m\n    custom_extensions:\n${PROD_BLOCK}${extra}`;
+      for (const extra of ['    description: a\n    description: b\n', '    description: *nope\n']) {
+        expect(() => loadModels(text(extra))).toThrow('could not parse input');
+        expect(names(text(extra))).toEqual(['prod']);
+      }
+    });
+
+    // A version set twice or written as an alias cannot be read past the
+    // error, whichever version it names.
+    test('reports the YAML error for a document with more aliases than a load expands whose version cannot be read', () => {
+      const aliases = `x: &a 1\nys:\n${'  - *a\n'.repeat(101)}`;
+      const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
+      for (const head of [
+        `version: "${GOOGLE}"\nversion: "${VANILLA}"\n`,
+        `version: "${VANILLA}"\nversion: "${GOOGLE}"\n`,
+        `v: &v "${VANILLA}"\nversion: *v\n`,
+        `v: &v "${GOOGLE}"\nversion: *v\n`,
+      ]) {
+        expect(() => googleBlockProfiles(head + aliases + rest)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // Only a key set twice leaves the text's structure as written. Any other
+    // YAML error can move the blocks, cut them short or change the version.
+    test('reports the YAML error past any YAML error other than a key set twice', () => {
+      const head = `version: "${VANILLA}"\nsemantic_model:\n  - name: m\n`;
+      const exts = `    custom_extensions:\n${PROD_BLOCK}`;
+      const dataset = '    datasets:\n      - name: d1\n';
+      for (const [broken, fixed, profiles] of [
+        // A syntax error ahead of the blocks.
+        [head + '    description: [x\n' + exts, head + '    description: [x]\n' + exts, ['prod']],
+        // A bad indent ahead of the blocks that moves a second model's blocks
+        // onto the first model.
+        [head + dataset + '       - name: m2\n' + exts, head + dataset + '  - name: m2\n' + exts, []],
+        // A tab ahead of the first block, so a GOOGLE block may be the data of
+        // a third-party block or a block of its own.
+        [head + '    custom_extensions:\n    \t-\n        vendor_name: ACME\n        data:\n' +
+            PROD_BLOCK.replace(/^ {6}/gm, '        '),
+          head + '    custom_extensions:\n      -\n        vendor_name: ACME\n        data:\n' +
+            PROD_BLOCK.replace(/^ {6}/gm, '        '), []],
+        // custom_extensions left with no value, beside an earlier bad indent.
+        [head + dataset + '        source: bigquery:p.d.t\n       primary_key: [id]\n' +
+            '    custom_extensions:\n' + PROD_BLOCK.replace(/^ {6}/gm, '  '),
+          head + dataset + '        source: bigquery:p.d.t\n        primary_key: [id]\n' +
+            '    custom_extensions:\n' + PROD_BLOCK.replace(/^ {6}/gm, '  '), []],
+        // A second document.
+        [head + exts + '---\nx: 1\n', head + exts, ['prod']],
+      ] as [string, string, string[]][]) {
+        expect(names(fixed)).toEqual(profiles);
+        expect(() => loadModels(broken)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(broken)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // A YAML error at the root can change the version the text seems to set,
+    // so the document may be vanilla whatever the version reads as.
+    test('reports the YAML error when an error may change the version', () => {
+      const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
+      for (const [broken, fixed] of [
+        [`version: ${VANILLA}\n  bad: 1\n${rest}`, `version: ${VANILLA}\nbad: 1\n${rest}`],
+        [`version: "${VANILLA}\n${rest}`, `version: "${VANILLA}"\n${rest}`],
+        [`bad: 1\n version: "${VANILLA}"\n${rest}`, `bad: 1\nversion: "${VANILLA}"\n${rest}`],
+        [`bad\nversion: "${VANILLA}"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
+        // A quote left open on the version and closed on the next line, or on
+        // the same line.
+        [`version: "${VANILLA}\n  label: "\nx: "\n${rest}`,
+          `version: "${VANILLA}"\nlabel: ""\nx: ""\n${rest}`],
+        [`version: "${VANILLA} # "\nlabel: "\n${rest}`,
+          `version: "${VANILLA}" # "\nlabel: ""\n${rest}`],
+        // A quote left open ahead of the version takes in a first version.
+        [`label: "\n  version: '${VANILLA}'\n  note: "\nversion: "${GOOGLE}"\nx: "\n${rest}`,
+          `label: ""\nversion: '${VANILLA}'\nnote: |\n  version: "${GOOGLE}"\n  x: "\n${rest}`],
+      ]) {
+        expect(names(fixed)).toEqual(['prod']);
+        expect(() => loadModels(broken)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(broken)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // A YAML error after the version may hide a second version, so which one
+    // holds is not known.
+    test('reports the YAML error when an error may hide a second version', () => {
+      const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
+      for (const text of [
+        `version: "${GOOGLE}"\nlabel: [x,\n${rest}version: "${VANILLA}"\n`,
+        `version: "${GOOGLE}"\n${rest}---\nversion: "${VANILLA}"\n${rest}`,
+        `meta:\nversion: "${GOOGLE}"\n${rest}   version: "${VANILLA}"\n`,
+        `version: "${GOOGLE}"\nlabel: [{x: 1}"version": "${VANILLA}"\n${rest}`,
+        `meta:\nversion: "${GOOGLE}"\n${rest}   ? version # comment\n   : "${VANILLA}"\n`,
+      ]) {
+        expect(() => loadModels(text)).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: ');
+      }
+    });
+
+    // A key written with no value sets it to null, as in text that parses.
+    test('reads past a key set twice beside a key written with no value', () => {
+      const dup = '    description: a\n    description: b\n';
+      expect(names(vanilla(
+        `      - { vendor_name: GOOGLE, data, profiles: ${JSON.stringify([PROD])} }\n`, dup)))
+        .toEqual(['prod']);
+      const noExts = `version: "${VANILLA}"\nsemantic_model:\n` +
+        '  - { name: m, description: a, description: b, custom_extensions }\n';
+      expect(() => loadModels(noExts)).toThrow('Map keys must be unique');
+      expect(names(noExts)).toEqual([]);
+    });
+
+    // A YAML error after the version leaves it as written, so a Google-flavor
+    // model gives none and its profile files stay listed.
+    test('gives none for a Google-flavor model past a YAML error after its version', () => {
+      for (const extra of ['    description: [x\n', '    description: a\n    description: b\n']) {
+        for (const head of ['', '# A model.\n\n']) {
+          const text = `${head}version: "${GOOGLE}"\nsemantic_model:\n  - name: m\n${extra}`;
+          expect(() => loadModels(text)).toThrow('could not parse input');
+          expect(googleBlockProfiles(text)).toEqual([]);
+        }
+      }
+    });
+
+    // The checks on the path apply to mappings. A block that is not a mapping
+    // cannot become a GOOGLE block when a key set twice is fixed. A root key
+    // that is not a string leaves the version unread, in either flavor.
+    test('reads past a block that is not a mapping, and not past a root key that is not a string', () => {
+      const dup = '    description: a\n    description: b\n';
+      expect(names(vanilla(`      - just text\n${PROD_BLOCK}`, dup))).toEqual(['prod']);
+      for (const version of [VANILLA, GOOGLE]) {
+        const text = `version: "${version}"\n2024: launch\nsemantic_model:\n${section(PROD_BLOCK, dup)}`;
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // An alias in a GOOGLE block may name an anchor set on a key set twice,
+    // and its value then depends on which key the fix keeps.
+    test('reports the YAML error when a GOOGLE block holds an alias', () => {
+      const DEV = { ...PROD, name: 'dev' };
+      const anchors = `p: &p ${JSON.stringify([PROD])}\np: &p ${JSON.stringify([DEV])}\n` +
+        `n: &n prod\nn: &n dev\nb: &b {profiles: ${JSON.stringify([PROD])}}\n` +
+        `b: &b {profiles: ${JSON.stringify([DEV])}}\n`;
+      const entities = '            entities: [{name: orders, source: bigquery:p.prod.orders}]\n';
+      for (const [block, yaml11] of [
+        ['      - vendor_name: GOOGLE\n        data:\n          profiles: *p\n', false],
+        ['      - vendor_name: GOOGLE\n        profiles: [*p]\n', false],
+        ['      - vendor_name: GOOGLE\n        profiles:\n          - name: *n\n' + entities, false],
+        ['      - vendor_name: GOOGLE\n        data:\n          profiles:\n            - name: *n\n' +
+          entities.replace(/^ {12}/, '              '), false],
+        ['      - vendor_name: GOOGLE\n        data:\n          <<: *b\n', true],
+      ] as [string, boolean][]) {
+        const text = `${yaml11 ? '%YAML 1.1\n---\n' : ''}version: "${VANILLA}"\n${anchors}` +
+          `semantic_model:\n${section(block)}`;
+        expect(() => loadModels(text)).toThrow('Map keys must be unique');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+      // An alias whose anchor is not set inside a profile reads as null past
+      // the error, and the fix gives it a value.
+      const unset = vanilla('      - vendor_name: GOOGLE\n        profiles:\n          - name: prod\n' +
+        '            entities: [{name: orders, source: *nope}]\n');
+      expect(() => googleBlockProfiles(unset)).toThrow('could not parse input: Unresolved alias');
+    });
+
+    // Which version holds is not known, so neither order is read.
+    test('reports the YAML error for a version set twice', () => {
+      const text = (first: string, last: string) =>
+        `version: "${first}"\nversion: "${last}"\nsemantic_model:\n${section(PROD_BLOCK)}`;
+      for (const [first, last] of [[GOOGLE, VANILLA], [VANILLA, GOOGLE]]) {
+        expect(() => googleBlockProfiles(text(first, last))).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    test('reports the YAML error when the profiles are an alias whose anchor is not set', () => {
+      const text = vanilla('      - vendor_name: GOOGLE\n        data:\n          profiles: *nope\n');
+      expect(() => googleBlockProfiles(text)).toThrow('could not parse input: Unresolved alias');
+    });
+
+    // A block whose data the YAML error leaves unset cannot be read.
+    test('reports the YAML error when a block has no data and no profiles beside it', () => {
+      for (const [block, problem] of [
+        ['      - vendor_name: GOOGLE\n        data: *nope\n', 'Unresolved alias'],
+        [`      - vendor_name: GOOGLE\n       data: ${data({ profiles: [PROD] })}\n`, ''],
+      ]) {
+        expect(() => loadModels(vanilla(block))).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(vanilla(block))).toThrow(
+          `Semantic model load error: could not parse input: ${problem}`);
+      }
+    });
+
+    // JSON.parse keeps the last of a repeated key, so such data cannot be read.
+    test('reports the YAML error when a block sets profiles twice or a key twice inside them', () => {
+      for (const d of [
+        `'{"profiles": [{"name": "prod", "name": "dev"}]}'`,
+        `'{"profiles": ${JSON.stringify([PROD])}, "profiles": []}'`,
+      ]) {
+        const text = vanilla(blockYaml(d), '    description: a\n    description: b\n');
+        expect(() => loadModels(text)).toThrow('Map keys must be unique');
+        expect(() => googleBlockProfiles(text)).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // The lenient parse keeps the last of a repeated key too, so profiles
+    // written as YAML that repeat a key cannot be read either.
+    test('reports the YAML error when profiles written as YAML set a key twice', () => {
+      for (const block of [
+        `      - vendor_name: GOOGLE\n        data:\n          profiles: ${JSON.stringify([PROD])}\n          profiles: []\n`,
+        '      - vendor_name: GOOGLE\n        data:\n          profiles:\n            - name: prod\n              name: dev\n',
+        '      - vendor_name: GOOGLE\n        data:\n          profiles:\n            - name: prod\n              entities:\n' +
+          '                - name: orders\n                  source: bigquery:p.a.orders\n                  source: bigquery:p.b.orders\n',
+        `      - vendor_name: GOOGLE\n        profiles: ${JSON.stringify([PROD])}\n        profiles: []\n`,
+        '      - vendor_name: GOOGLE\n        profiles:\n          - name: prod\n            name: dev\n',
+      ]) {
+        expect(() => loadModels(vanilla(block))).toThrow('Map keys must be unique');
+        expect(() => googleBlockProfiles(vanilla(block))).toThrow(
+          'Semantic model load error: could not parse input: Map keys must be unique');
+      }
+    });
+
+    // A block whose vendor the YAML error leaves unknown cannot be read.
+    test('reports the YAML error when a block\'s vendor_name is unset, not a string, or set twice', () => {
+      for (const [block, problem] of [
+        [`      - vendor_name: *nope\n        data: ${data({ profiles: [PROD] })}\n`, 'Unresolved alias'],
+        [`      - vendor_name: GOOGLE\n         data: ${data({ profiles: [PROD] })}\n`, ''],
+        [`      - vendor_name: GOOGLE\n        vendor_name: ACME\n        data: ${data({ profiles: [PROD] })}\n`,
+          'Map keys must be unique'],
+      ]) {
+        expect(() => loadModels(vanilla(block))).toThrow('could not parse input');
+        expect(() => googleBlockProfiles(vanilla(block))).toThrow(
+          `Semantic model load error: could not parse input: ${problem}`);
+      }
+    });
+  });
+
+  test('googleBlockProfiles reads a semantic_model written as one mapping', () => {
+    const text = JSON.stringify({ version: VANILLA, semantic_model: {
+      name: 'm', custom_extensions: [google({ profiles: [PROD] })] } });
+    expect(() => loadModels(text)).toThrow('semantic_model');
+    expect(googleBlockProfiles(text).map(p => p.name)).toEqual(['prod']);
+  });
+
+  test('googleBlockProfiles skips profiles with no JSON form, such as a recursive alias', () => {
+    const text = (block: string) => `version: "${VANILLA}"
+semantic_model:
+  - name: m
+    custom_extensions:
+${block}`;
+    for (const block of [
+      '      - vendor_name: GOOGLE\n        profiles: &p\n          - name: prod\n            self: *p\n',
+      '      - vendor_name: GOOGLE\n        data: &d\n          profiles:\n            - name: prod\n              self: *d\n',
+    ]) {
+      expect(googleBlockProfiles(text(block))).toEqual([]);
+    }
   });
 });
 
@@ -2623,7 +3531,7 @@ describe('deployments and inline profiles', () => {
         { name: '', target: BQ_TARGET },
       ],
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
-    })).toThrow('Too small: expected string to have >=1 characters');
+    })).toThrow("Deployment name '' is not valid");
 
     expect(() => load(GOOGLE, {
       name: 'sales',
@@ -2695,7 +3603,9 @@ describe('deployments and inline profiles', () => {
       deployment_target: BQ_TARGET,
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "model 'sales': 'deployment_target' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
+      "model 'sales': 'deployment_target' is not in the open format ('0.2.0.dev0'); list " +
+      "'deployments' in a GOOGLE custom_extensions block on the model, or set version: " +
+      "'0.2.0.dev0/google' and use 'deployments:'",
     );
 
     expect(() => load(VANILLA, {
@@ -2703,7 +3613,9 @@ describe('deployments and inline profiles', () => {
       deployments: [{ name: 'prod', target: BQ_TARGET }],
       datasets: [{ name: 'orders', source: 'bigquery:acme.raw.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "model 'sales': 'deployments' is not in the open format ('0.2.0.dev0'); set version: '0.2.0.dev0/google' and use 'deployments:'",
+      "model 'sales': 'deployments' is not in the open format ('0.2.0.dev0'); list " +
+      "'deployments' in a GOOGLE custom_extensions block on the model, or set version: " +
+      "'0.2.0.dev0/google' and use 'deployments:'",
     );
   });
 
@@ -2778,4 +3690,85 @@ ${extra}    ${key}:
       expect(res.error).toContain(message);
     });
   }
+});
+
+
+// Each name the loader reads is held to its kind's pattern (see names.ts and
+// names.test.ts for the rules themselves). These pin that every kind is
+// checked on load, with the scope named where the name alone does not say it.
+describe('names are checked on load', () => {
+  // A small model in which each name can be replaced.
+  const doc = (n: Partial<Record<
+      'model'|'entity'|'field'|'relationship'|'metric'|'deployment', string>> = {}) => ({
+    name: n.model ?? 'sales-analytics',
+    deployments: [{
+      name: n.deployment ?? 'prod-us',
+      target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+    }],
+    datasets: [
+      { name: n.entity ?? 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [
+          { name: 'id', expression: 'id' },
+          { name: n.field ?? '_customer_id', expression: 'customer_id' },
+        ] },
+      { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'], fields: [] },
+    ],
+    relationships: [{
+      name: n.relationship ?? 'orders_to_customers', from: n.entity ?? 'orders',
+      to: 'customers', from_columns: [n.field ?? '_customer_id'], to_columns: ['id'],
+    }],
+    metrics: [{ name: n.metric ?? 'order_count', expression: `COUNT(${n.entity ?? 'orders'}.id)` }],
+  });
+
+  test('valid names load, with a hyphen in the model and deployment names and a leading underscore in a field', () => {
+    expect(load(GOOGLE, doc()).models[0].name).toBe('sales-analytics');
+  });
+
+  test('each kind rejects a name that breaks its pattern', () => {
+    const cases: Array<[Parameters<typeof doc>[0], string]> = [
+      [{ model: 'sales/orders' }, "Model name 'sales/orders' is not valid"],
+      [{ entity: 'my-entity' }, "Entity name 'my-entity' is not valid"],
+      [{ field: 'order date' }, "dataset 'orders': Field name 'order date' is not valid"],
+      [{ relationship: 'placed-by' }, "Relationship name 'placed-by' is not valid"],
+      [{ metric: '2024_orders' }, "Metric name '2024_orders' is not valid"],
+      [{ deployment: 'prod,us' }, "model 'sales-analytics': Deployment name 'prod,us' is not valid"],
+    ];
+    for (const [names, message] of cases) {
+      expect(() => load(GOOGLE, doc(names))).toThrow(message);
+    }
+  });
+
+  test('a name over its length limit is rejected', () => {
+    expect(() => load(GOOGLE, doc({ entity: 'e'.repeat(501) })))
+        .toThrow('is 501 characters long; names may be at most 500 characters.');
+    expect(() => load(GOOGLE, doc({ field: 'f'.repeat(301) })))
+        .toThrow('is 301 characters long; names may be at most 300 characters.');
+    expect(load(GOOGLE, doc({ entity: 'e'.repeat(500), field: 'f'.repeat(300) })).models)
+        .toHaveLength(1);
+  });
+
+  test('a deployment name in a vanilla GOOGLE block is checked on load', () => {
+    const vanilla = {
+      name: 'sales',
+      custom_extensions: [{
+        vendor_name: 'GOOGLE',
+        data: JSON.stringify({deployments: [{
+          name: 'prod,us',
+          target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+        }]}),
+      }],
+      datasets: [{
+        name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'],
+        fields: [{name: 'id', expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'id'}]}}],
+      }],
+    };
+    expect(() => load(VANILLA, vanilla))
+        .toThrow("model 'sales': Deployment name 'prod,us' is not valid");
+  });
+
+  test('a vanilla document is held to the same patterns', () => {
+    const vanilla = doc({ entity: 'my-entity' }) as any;
+    delete vanilla.deployments;
+    expect(() => load(VANILLA, vanilla)).toThrow("Entity name 'my-entity' is not valid");
+  });
 });

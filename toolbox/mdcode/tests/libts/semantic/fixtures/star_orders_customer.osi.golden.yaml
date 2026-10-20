@@ -17,18 +17,18 @@ semantic_model:
           - name: o_orderkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_orderkey
             description: Order identifier
           - name: o_custkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_custkey
           - name: o_orderdate
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_orderdate
             label: Order Date
             dimension:
@@ -40,7 +40,7 @@ semantic_model:
           - name: o_totalprice
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_totalprice
       - name: customer
         source: samples.tpch.customer
@@ -50,12 +50,12 @@ semantic_model:
           - name: c_custkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: c_custkey
           - name: c_name
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: c_name
             description: Customer name
     relationships:
@@ -70,7 +70,7 @@ semantic_model:
       - name: total_revenue
         expression:
           dialects:
-            - dialect: BIGQUERY
+            - dialect: ANSI_SQL
               expression: SUM(orders.o_totalprice)
         description: Total order revenue
         ai_context:
@@ -80,6 +80,6 @@ semantic_model:
       - name: order_count
         expression:
           dialects:
-            - dialect: BIGQUERY
+            - dialect: ANSI_SQL
               expression: COUNT(orders.o_orderkey)
         description: Number of orders

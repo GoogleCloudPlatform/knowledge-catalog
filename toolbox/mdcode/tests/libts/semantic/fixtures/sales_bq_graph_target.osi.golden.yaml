@@ -13,16 +13,16 @@ semantic_model:
           - name: o_orderkey
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_orderkey
           - name: o_totalprice
             expression:
               dialects:
-                - dialect: BIGQUERY
+                - dialect: ANSI_SQL
                   expression: o_totalprice
     metrics:
       - name: total_revenue
         expression:
           dialects:
-            - dialect: BIGQUERY
+            - dialect: ANSI_SQL
               expression: SUM(orders.o_totalprice)

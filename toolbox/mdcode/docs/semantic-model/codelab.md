@@ -324,8 +324,6 @@ A bare `kcmd push` governs the logical model in Knowledge Catalog.
 
 ```
 Validating semantic model for Knowledge Catalog...
-Warning: [sales] relationship 'placed_by': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'placed-by'), not 'placed_by'.
-Warning: [sales] relationship 'part_of': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'part-of'), not 'part_of'.
 -- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
   6 entries:
@@ -340,12 +338,6 @@ Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
     - sales-part-of
 Validation complete; no changes applied.
 ```
-
-The two warnings are informational, and every Knowledge Catalog push repeats
-them: relationship names come back from a `kcmd pull` lowercased and hyphenated
-(`placed-by`), because Knowledge Catalog keeps the name only in the
-normalized link id. Nothing is wrong — the graph itself keeps the authored
-`placed_by`.
 
 ### Write the entries (available later)
 

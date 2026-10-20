@@ -14,6 +14,8 @@ import * as yaml from 'yaml';
 
 import {CatalogLayout} from '../layout';
 import * as md from '../metadata';
+import {modelDocumentVersion} from '../semantic/loader';
+import {nameProblem} from '../semantic/names';
 import {YAML_OPTIONS} from '../semantic/yaml_options';
 
 // Sidecar suffixes that are NOT model documents.
@@ -25,10 +27,6 @@ const PROFILE_FILE = /^(.+)\.profile\.([^.]+)\.yaml$/;
 // Any file shaped like a profile file, including a nameless one and one whose
 // profile name has a dot, which is never a model either.
 const ANY_PROFILE_FILE = /\.profile\.(.*\.)?yaml$/;
-// A profile name: a letter, then letters, digits, underscores and hyphens, at
-// most 500 characters. A profile name never appears in SQL, so a hyphen is
-// safe.
-const PROFILE_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,499}$/;
 
 // The profile name reserved for the inline bindings in the model file.
 const DEFAULT_PROFILE_NAME = 'default';
@@ -146,7 +144,7 @@ export class SemanticModelLayout implements CatalogLayout {
   localProfileFiles(model: string): {path: string; profileName?: string}[] {
     return [
       ...this._siblingProfilePaths(model)
-          .filter(p => PROFILE_NAME.test(p.name))
+          .filter(p => !nameProblem('profile', p.name))
           .map(p => ({path: p.path, profileName: p.name})),
       ...this._legacyProfilePaths(model).map(p => ({path: p.path})),
     ];
@@ -179,7 +177,8 @@ export class SemanticModelLayout implements CatalogLayout {
         fs.readdirSync(this._groupDir()).find(f => {
           if (!f.startsWith(prefix) || !f.endsWith('.yaml')) return false;
           const n = f.slice(prefix.length, -'.yaml'.length);
-          return f !== `${model}.profile.yaml` && !PROFILE_NAME.test(n);
+          return f !== `${model}.profile.yaml` &&
+              nameProblem('profile', n) !== undefined;
         }) :
         undefined;
     if (badName) {
@@ -198,6 +197,9 @@ export class SemanticModelLayout implements CatalogLayout {
     const modelFile = `${model}.yaml`;
     const header = this._modelHeader(model);
     if (header.name !== undefined && header.name !== model) {
+      // A name the loader rejects cannot name the files either.
+      const problem = nameProblem('model', header.name);
+      if (problem) throw new Error(`Model file '${modelFile}': ${problem}`);
       throw new Error(
           `Profile file '${path.basename(siblings[0].path)}' is named after ` +
           `'${modelFile}', which declares model '${header.name}'; a profile ` +
@@ -268,7 +270,7 @@ export class SemanticModelLayout implements CatalogLayout {
     if (/[\\/]/.test(model)) {
       throw new Error(`Model name '${model}' is not valid in a file name.`);
     }
-    if (!PROFILE_NAME.test(profileName)) {
+    if (nameProblem('profile', profileName)) {
       throw new Error(
           `Profile name '${profileName}' is not valid; a profile name is a ` +
           `letter, then letters, digits, underscores or hyphens.`);
@@ -374,17 +376,27 @@ export class SemanticModelLayout implements CatalogLayout {
   }
 
   // The `version` and model `name` a model document declares, each undefined
-  // when the document has none or does not parse; the loader reports both.
+  // when the document has none. In a document with a YAML error, the version
+  // is read as the lookup of its GOOGLE block profiles reads it, and is
+  // undefined when the error may change it. The name is undefined then, since
+  // the error can change the name the text seems to declare. The loader
+  // reports the error.
   private _modelHeader(model: string): {version?: string; name?: string} {
     const localPath = this._index.get(model);
     if (!localPath) return {};
     try {
-      const doc = yaml.parse(fs.readFileSync(localPath, 'utf8'), YAML_OPTIONS);
+      const text = fs.readFileSync(localPath, 'utf8');
+      let doc: any;
+      try {
+        doc = yaml.parse(text, YAML_OPTIONS);
+      } catch {
+        // A YAML error; the name stays undefined.
+      }
       const name = Array.isArray(doc?.semantic_model) ?
           doc.semantic_model[0]?.name :
           undefined;
       return {
-        version: typeof doc?.version === 'string' ? doc.version : undefined,
+        version: modelDocumentVersion(text),
         name: typeof name === 'string' ? name : undefined,
       };
     } catch {
@@ -451,6 +463,15 @@ export class SemanticModelLayout implements CatalogLayout {
     throw new Error(
         'The SemanticModel layout does not support deleting per-entry files yet.');
   }
+}
+
+// The name push gives a model file or profile file of the model `model`: its
+// path relative to the entry group directory, with `/` between segments.
+export function fileNameOf(
+    layout: SemanticModelLayout, model: string, localPath: string): string {
+  return path.relative(path.dirname(layout.modelPath(model)), localPath)
+      .split(path.sep)
+      .join('/');
 }
 
 // The `name` a profile file declares at its top level, or undefined when it
