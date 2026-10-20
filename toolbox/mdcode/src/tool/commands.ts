@@ -2356,6 +2356,7 @@ export async function owl(
 
   // Every name the import derives, from the file name and from the ontology,
   // must be one the loader accepts.
+  await loadSqlEngine();
   const loaded = loadSemanticModels(
       [{name: modelName, text: result.yaml}], {bindingOptional: true});
   if (loaded.error) {
