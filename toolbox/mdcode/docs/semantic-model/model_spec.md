@@ -43,16 +43,19 @@ was used.
 Ossie compatibility is a property of the **vanilla** version, and the contract
 runs in both directions:
 
-> **Every Ossie `0.2.0.dev0` document is a valid `kcmd` model.** The reverse holds
-> for a vanilla `kcmd` model that uses no extensions ([§5](#5-extensions)) *and* no
-> relaxations ([§4](#4-narrowings-and-relaxations)) — a fully-bound model with only
-> Ossie constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model
-> and it is a valid Ossie document.
+> **An Ossie `0.2.0.dev0` document is a valid `kcmd` model unless it breaks a
+> narrowing ([§4.1](#41-narrowings-stricter-than-ossie)), such as an expression in
+> a non-SQL dialect.** The reverse holds for a vanilla `kcmd` model that uses no
+> extensions ([§5](#5-extensions)) *and* no relaxations
+> ([§4](#4-narrowings-and-relaxations)) — a fully-bound model with only Ossie
+> constructs. Strip the `GOOGLE` `custom_extensions` blocks from such a model and
+> it is a valid Ossie document.
 
-Under vanilla, `kcmd`'s deployment and binding additions ride in a `custom_extensions`
-block an Ossie-only tool ignores (see [§6](#6-the-extension-mechanism)), so those never
-fork the document; inheritance and the `entities` spelling have no vanilla form and
-exist only under `0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile trades that wire
+Under vanilla, `kcmd`'s deployment, binding and inheritance additions ride in a
+`custom_extensions` block an Ossie-only tool ignores (see
+[§6](#6-the-extension-mechanism)), so those never fork the document; `abstract` and
+the `entities` spelling have no vanilla form and exist only under
+`0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile trades that wire
 compatibility for readable native keys; it is `kcmd`'s own surface, converted to or
 from vanilla by choosing the `version`.
 
@@ -99,6 +102,8 @@ semantic_model:                # one or more models; kcmd deploys exactly one pe
     datasets: [ … ]            # one or more; the entities (§2.1). Spelled `entities:` under /google (§5)
     relationships: [ … ]       # optional (§2.2)
     metrics: [ … ]             # optional (§2.3)
+    actions: [ … ]             # optional; /google only (§5)
+    constraints: [ … ]         # optional; /google only (§5)
     description: "…"           # optional
     ai_context: { … }          # optional (§2.4)
     custom_extensions: [ … ]   # vanilla only (§6); rejected under /google
@@ -106,10 +111,10 @@ semantic_model:                # one or more models; kcmd deploys exactly one pe
 ```
 
 A document MUST contain at least one model, and each model MUST contain at least
-one dataset. Every named object (dataset, field, relationship, metric) MUST have a
-name unique within its scope; a duplicate name is a **hard load error** (agreed
-with Dmitri), because it would make the generated node, property, edge, or measure
-ambiguous.
+one dataset. Every named object (dataset, field, relationship, metric,
+action, constraint) MUST have a name unique within its scope. A duplicate name is
+a **hard load error** (agreed with Dmitri), because nothing reading the model can
+tell two objects of the same name apart.
 
 Objects are **closed**: an unknown sibling key inside a validated object is a
 **hard error**, not silently dropped (agreed with Dmitri). This is what makes the
@@ -130,7 +135,7 @@ A dataset is one concept in the business.
 |---|---|---|
 | `name` | string | required |
 | `fields` | list of [field](#211-field) | the concept's attributes |
-| `primary_key` | list of strings | the field(s) that identify a row |
+| `primary_key` | list of strings | the physical column(s) that identify a row |
 | `unique_keys` | list of lists of strings | additional unique column-sets |
 | `extends` | list of strings | supertype dataset names — extension ([§2.1.2](#212-inheritance-extends), [§5](#5-extensions)) |
 | `abstract` | boolean | a concept with no table — extension ([§5](#5-extensions)) |
@@ -181,9 +186,13 @@ MUST be marked `abstract: true` (also an extension).
 
 The format rule is only that supertypes are named datasets in the same model. An
 `extends` that names a dataset not defined in the model is a **hard error** (a typo
-must not silently drop inheritance — agreed with Dmitri). The resolver breaks
-cycles with a warning and flattens diamonds (each ancestor contributes once,
-nearest-first).
+must not silently drop inheritance — agreed with Dmitri). A cycle in `extends` is
+an error. A diamond flattens, with each ancestor contributing once. A field
+declared or rebound by two supertypes that do not extend each other is an error,
+because nothing says which one wins. A subtype MAY redeclare an inherited field
+only to bind it, with an `expression` and nothing else; the definition comes
+from the ancestor that declares it. A relationship endpoint and a metric's entity MUST be a concrete
+leaf: not abstract, and not extended by another dataset.
 How the hierarchy is *lowered* into each store (labels, field flattening) and the
 downstream limits (e.g. a supertype whose label is shared across subtype tables
 cannot carry a measure) are operational — see
@@ -208,14 +217,18 @@ A relationship is a directed edge between two datasets.
 `from_columns` and `to_columns` are the edge's join keys. They MUST be given
 together (a bound edge) or both omitted (a logical edge); one without the other is
 rejected. When both are given they MUST have equal length. `from` and `to` MUST
-name datasets declared in the same model.
+name datasets declared in the same model. `to_columns` MUST contain every column
+of a primary or unique key of the `to` dataset; a superset of a key counts. The
+key they cover decides whether the edge is N:1 or 1:1, so join columns that
+cover no key are rejected on every push, a catalog-only push included. Every
+binding of the relationship covers the same keys.
 
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
 that lets a relationship be governed before it is bound. A graph deploy still
-requires them (see [§4](#4-narrowings-and-relaxations)). Unlike `source` and field `expression`,
-join columns are declared on the logical model and are not profile-swappable
-([§7](#7-the-binding-layer)).
+requires them (see [§4](#4-narrowings-and-relaxations)). Like `source` and a field's
+`expression`, join columns are a binding: a profile may supply or override them,
+and a named profile states them itself ([§7](#7-the-binding-layer)).
 
 > **Many-to-many is not yet authorable.** A junction-table (M:N) relationship
 > exists in `kcmd`'s internal representation but has **no YAML syntax** in
@@ -254,9 +267,8 @@ ai_context:
 
 There is no top-level `synonyms` key on any object; synonyms are always
 `ai_context.synonyms`. `instructions`, `synonyms`, and `examples` are all
-Ossie-native. `kcmd` accepts `examples` leniently — items of any shape, keeping
-only the string ones — where Ossie constrains items to strings; authored documents
-SHOULD use string examples for portability. Which parts of `ai_context` reach
+Ossie-native. Each `examples` item MUST be a string, as in Ossie; any other item
+is a load error. Which parts of `ai_context` reach
 which destination is in [What push and pull preserve](fidelity.md).
 
 ### 2.5. Expressions
@@ -279,8 +291,10 @@ portable fallback. An `expression` references logical fields as
 ([§2.3](#23-metric)).
 
 Ossie closes `dialect` to an enum — `ANSI_SQL`, `SNOWFLAKE`, `MDX`, `TABLEAU`,
-`DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. `kcmd`'s parser accepts any
-string here (a relaxation); authored documents SHOULD use an Ossie dialect name.
+`DATABRICKS`, `MAQL`, `BIGQUERY`, `THOUGHTSPOT`. `kcmd` accepts the SQL
+dialects `ANSI_SQL`, `BIGQUERY`, `SPANNER`, `MYSQL`, `POSTGRES`, `ALLOYDB`,
+`SQLSERVER`, `SNOWFLAKE` and `DATABRICKS`, and rejects any other name.
+`SQLSERVER` text is read as T-SQL.
 
 ## 3. Conformance summary
 
@@ -307,10 +321,12 @@ extension, [§5](#5-extensions)), or *rejected* / *not authorable* (excluded).
 | relationship `from_columns` / `to_columns` | required | optional | model before binding; none = logical edge · [§4.2](#42-relaxations-looser-than-ossie) |
 | relationship M:N (`association`) | — | not authorable (reserved) | no M:N syntax yet · [§2.2](#22-relationship) |
 | `metrics`, metric `expression` | required | same; graph-bound stricter | a graph measure binds one node and aggregate · [§4.1](#41-narrowings-stricter-than-ossie) |
-| `expression.dialects` | closed enum | any dialect string | tolerate imported / newer input · [§4.2](#42-relaxations-looser-than-ossie) |
+| `expression.dialects` | closed enum | stricter; adds names | SQL dialects only; adds Google Cloud engines · [§2.5](#25-expressions), [§4.1](#41-narrowings-stricter-than-ossie), [§4.2](#42-relaxations-looser-than-ossie) |
+| `actions` | — | added | write operations declared over the ontology; `/google` only · [§5](#5-extensions) |
+| `constraints` | — | added | named invariants over the ontology; `/google` only · [§5](#5-extensions) |
 | field `expression` (column binding) | required | optional | model before binding; unbound is pruned · [§4.2](#42-relaxations-looser-than-ossie), [§7](#7-the-binding-layer) |
 | `source` (table binding) | required | optional | logical-only models; graph deploy still needs it · [§4.2](#42-relaxations-looser-than-ossie), [§7.1](#71-table-sources) |
-| `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same; `examples` any shape | tolerate imports; non-strings dropped · [§2.4](#24-ai_context), [§4.2](#42-relaxations-looser-than-ossie) |
+| `ai_context` (`instructions`, `synonyms`, `examples`) | `examples` are strings | same | [§2.4](#24-ai_context) |
 | `custom_extensions` (`vendor_name`, `data`) | the extension carrier | rejected | `/google` uses native keys; nothing to carry · [§6](#6-the-extension-mechanism) |
 | `deployment_target` | — | added | OSI omits deployment; vanilla carries it in `custom_extensions` · [§5](#5-extensions), [§7.2](#72-deployment-target) |
 | binding profiles | — | added | one model, many stores · [§7.3](#73-binding-profiles) |
@@ -368,19 +384,18 @@ Each rule and its reason:
 - **An unknown supertype is rejected.** An `extends` that names a dataset not in the
   model is a hard load error (see [§2.1.2](#212-inheritance-extends)).
 
-- **A graph measure binds only to a leaf type.** For a BigQuery target, a metric
-  whose entity is a supertype — one another entity `extends` — cannot become a
-  `MEASURE` and is skipped with a warning: the supertype's label is shared across
-  its subtype tables, and BigQuery forbids a `MEASURE` on a shared label. Like the
-  single-aggregate rule this is a SHOULD, not a MUST — the metric still reaches
-  Knowledge Catalog; it simply has no graph measure. See [Reference → Class
-  hierarchies](reference.md#class-hierarchies-extends--labels).
+- **A metric belongs to a concrete leaf.** A metric whose entity is abstract, or
+  extended by another entity, is rejected on every push.
 
-Not a narrowing, contrary to a common assumption: **diamonds in a class hierarchy
-are not rejected.** The resolver flattens them (each ancestor once) and breaks
-cycles with a warning. What *is* rejected is downstream and store-specific — a
-BigQuery `MEASURE` cannot bind to a label shared across subtype tables. See
-[§2.1.2](#212-inheritance-extends).
+- **Only SQL dialects are accepted.** An expression entry whose `dialect` is
+  `MDX`, `TABLEAU`, `MAQL` or `THOUGHTSPOT` is a hard load error
+  ([§2.5](#25-expressions)). *Why:* every accepted dialect names a SQL engine,
+  and no engine on the list runs text in those languages.
+
+A diamond in a class hierarchy is allowed when both paths reach one
+declaration: the resolver keeps that field once. A cycle in `extends` is
+rejected, and so is a field that two ancestors which do not extend each other
+both declare or both rebind. See [§2.1.2](#212-inheritance-extends).
 
 ### 4.2. Relaxations (looser than Ossie)
 
@@ -403,19 +418,11 @@ logical edge.
 - **`from_columns` / `to_columns` on a relationship** — both required in Ossie;
   `kcmd` allows both omitted (a logical edge).
 
-**Value constraints loosened — to tolerate imported and future inputs.** Ossie
-closes these to a fixed set; `kcmd`'s parser accepts more so a document produced by
-an importer or by a newer Ossie is loaded (with a warning), not rejected, then
-normalized on the way to a store. *Why:* these carry no deploy-time meaning that a
-stricter check would protect — an unknown `dialect` is only ever selected against a
-known one, and a non-string example is discarded — so rejecting the whole document
-over them costs portability for no safety. Authored documents SHOULD still use the
-Ossie-valid forms.
-
-- **`dialect` value** — a closed enum in Ossie; any string in `kcmd`'s parser
-  (an unrecognized dialect is ignored when a canonical variant is selected).
-- **`ai_context.examples` items** — strings in Ossie; any shape in `kcmd`
-  (non-strings are dropped on load).
+**Dialect names added for Google Cloud databases.** Ossie's `dialect` enum has
+no name for Spanner, AlloyDB or the Cloud SQL engines. `kcmd` accepts `SPANNER`,
+`MYSQL`, `POSTGRES`, `ALLOYDB` and `SQLSERVER` in both versions
+([§2.5](#25-expressions)). A vanilla document that uses one of them is not a
+valid Ossie document.
 
 The operational form of every rule in this section (hard error vs.
 skip-with-warning, and the exact message) is in
@@ -432,31 +439,155 @@ reads the document ([§6](#6-the-extension-mechanism)).
   vanilla Ossie the key is not accepted; use `datasets`. `kcmd`'s pull always emits
   `entities`.
 
-- **`extends` on a dataset (extended profile only).** Class inheritance — a
-  subtype names its supertype datasets. Ossie `0.2.0.dev0` has no inheritance
-  construct, so it is accepted only under `0.2.0.dev0/google`. See
+- **`extends` on a dataset.** Class inheritance — a subtype names its supertype
+  datasets. Ossie `0.2.0.dev0` has no inheritance construct, so `extends` is a
+  native key only under `0.2.0.dev0/google`. A vanilla document writes it in a
+  `GOOGLE` block on the dataset ([§6](#6-the-extension-mechanism)). See
   [§2.1.2](#212-inheritance-extends).
 
 - **`abstract: true` on a dataset (extended profile only).** Marks a concept with
   no physical table (typically an `extends` supertype). An abstract dataset produces
-  no node table and MUST NOT declare a `source`. Accepted only under
+  no node table and MUST NOT declare a `source`, keys or field expressions.
+  Accepted only under
   `0.2.0.dev0/google`.
 
 - **`deployment_target` (extended profile only).** The physical destination — one
   graph in one store — as a first-class model-level (or profile-level) key, accepted
-  under `0.2.0.dev0/google`. Under vanilla Ossie there is no native key; the same
-  target is written as a `GOOGLE` `custom_extensions` block carrying
-  `{"deploymentTargets": ["…"]}` ([§6](#6-the-extension-mechanism)). Grammar in
-  [§7](#7-the-binding-layer).
+  under `0.2.0.dev0/google`. Under vanilla Ossie there is no native key; the
+  model's deployments are written as a `GOOGLE` `custom_extensions` block carrying
+  `{"deployments": [{"name": "…", "target": "…"}]}`, and the older
+  `{"deploymentTargets": ["…"]}` form is still read
+  ([§6](#6-the-extension-mechanism)). Grammar in [§7](#7-the-binding-layer).
+
+- **`actions` (extended profile only).** Model-level write operations, the
+  write-side counterpart to a metric. An action names an operation, points at the
+  executor that performs it, and types each parameter against the ontology. Every
+  parameter carries one scalar value and MUST settle on one scalar datatype: it
+  either projects a field — naming the `concept` and `field` (or the one-key
+  shorthand `field: Concept.field`) whose datatype, description, label and AI
+  context it takes — or declares a scalar `type` (or `datatype`) of its
+  own. Naming an entity or a relationship as a `type` is a **hard load error**,
+  and so is restating `type` or `datatype` beside `concept`/`field` — the field
+  is the one place the datatype is stated. Its optional `guards` lists, by
+  name, the constraints that gate it; each name MUST resolve to a constraint the
+  same model declares, and a repeated name is a **hard load error**. Its
+  optional `affects` lists what the call changes. Each entry is either a bare
+  concept name or a record — `{concept, operation?, fields?}` — and both forms
+  normalize to the same thing. Every `concept` MUST resolve to an entity or a
+  relationship the same model declares; the two are named the same way, because
+  the model already records which one a name is. `operation` is drawn from one
+  closed vocabulary, `create` / `modify` / `delete`, whatever the concept is: a
+  many-to-many relationship is backed by a junction table with fields of its
+  own, so an edge is modified exactly as an entity is. `fields` MUST name fields
+  of the concept and MUST NOT accompany a `delete`, which takes the whole
+  instance. A repeated concept-and-operation pair is a **hard load error**.
+  Accepted only under
+  `0.2.0.dev0/google`. `kcmd` publishes an action and never calls its executor,
+  so `affects` is the author's declaration and nothing verifies it against what
+  the executor does. See [Modeling write operations](actions.md).
+
+  An executor is a **physical binding**, not part of the declaration: it is
+  OPTIONAL on the action, and a [binding profile](profiles.md) MAY supply or
+  replace it, exactly as it supplies an entity's `source`. An action a profile
+  does not mention keeps the model's executor; `executor: null` in a profile
+  withdraws it. An action in a model a profile names MUST NOT declare a `sql`
+  executor; merging such a model is a **hard error**. The other three kinds MAY
+  be declared in the model and replaced per profile. An action left with no
+  executor is declared and not performable under that binding, which the
+  availability pass reports; it is not an error.
+
+  An executor, where one is written, MUST declare exactly one kind. Three of
+  them — `mcp`, `rest` and `grpc` — name a system that performs the write; the
+  fourth, `sql`, carries the
+  write itself as an ordered list of `statements`. Because that one is the only
+  kind whose text the model can read, it is the only one with rules about that
+  text: each statement MUST be a single `INSERT`, `UPDATE` or `DELETE`, MUST NOT
+  contain a `;` other than a trailing one, and MUST reference only `@parameter`
+  names the action declares. Those rules are what let every value be bound
+  rather than interpolated, so an argument cannot reach the store as SQL. Where
+  the key of an inserted row comes from is the statement's own business, and
+  `affects` has no bearing on it.
+
+- **`constraints` (extended profile only).** Model-level named invariants over
+  the ontology, accepted only under `0.2.0.dev0/google`. Each states exactly one
+  condition, in one body.
+
+  **`judgment`** is the rule in words, settled by a language model reading the
+  attempted call: whether a discount is justified by the reason given, whether a
+  refund note explains the exception it claims, whether a credit stays under a
+  ceiling. Field names in a judgment are written model-qualified
+  (`Order.discount_reason` rather than "the reason"), so the reference is
+  checked against the model and lives in the sentence that uses it. A constraint
+  declaring no judgment is a load error.
+
+  `judgment` is the only body a constraint has, which puts a model call on every
+  guarded write and means a threshold a subtraction would settle identically can
+  come back differently twice. [Actions → What a judgment
+  costs](actions.md#what-a-judgment-costs) says where that leaves a rule.
+  `expression` is a reserved key: a document stating one is refused with a
+  sentence telling the author to restate the rule in words.
+
+  A policy that branches — a large refund is held for a director, a disguised
+  one is refused, a vague reason is only reported — becomes one constraint per
+  branch, each with its own name, `on_violation` and `severity`, which `guards`
+  on the action lists together. That keeps each branch independently searchable,
+  revisable and owned. [Actions → A credit policy, worked
+  through](actions.md#a-credit-policy-worked-through) works a credit policy
+  through end to end.
+
+  A constraint takes effect only where something references it. Declaring one
+  adds a rule to the catalog and refuses nothing, so publishing a rule cannot
+  change what an already-working call does. `guards` on an action is the only
+  reference the model defines, and it is where a rule over an action's
+  parameters belongs, having no other moment to run. A rule that turns on a
+  stored value can be declared there too, but nothing fetches that value: a
+  judge is given the rule, the action and the arguments, so such a rule is
+  recorded rather than enforced, and its enforcement belongs in your schema.
+  Status: authored, validated, published, and settled at run time. Whatever
+  dispatches a call puts each guard to a language model before the transaction
+  opens and routes the verdict by `on_violation`; given no judge, the action is
+  refused rather than run past its rules. The [commerce
+  demo](../../demo/semantic-model/skill/README.md) shows what hiring a judge
+  takes, in recorded runs — nothing in this repository embeds one today.
+  Rules in [Reference → Validation](reference.md#validation).
+
+  A constraint says two things about a violation, under two separate keys.
+  **`on_violation`** is what a violation does to the write that tripped it:
+  `reject` refuses it outright and nobody may approve it, `escalate` holds it
+  for a human decision, `warn` lets it proceed and reports it. It is required.
+  **`severity`** is how grave a violation is — `critical`, `high`, `medium` or
+  `low` — for ranking and reporting. It is optional, carries no default, and
+  nothing ranks or routes on it yet.
+
+  When an action's `guards` names several constraints and a write violates more
+  than one, the strictest outcome among them applies: any `reject` refuses the
+  call, failing that any `escalate` holds it, failing that any `warn` lets it
+  through with the violations reported. That combination is fixed and no part of
+  the model states it, which is why an action can name any number of guards
+  without saying how to add them up.
+
+  A constraint MUST state `on_violation`, and it MAY be any of the three words.
+  Omitting the key is the only error: an unmarked constraint rejects, and that
+  is too strong a consequence for an author to inherit by silence. Pairing a
+  judgment with `reject` is the riskiest thing the format can express, because a
+  language model can decide two identical proposals differently and `reject`
+  leaves no appeal. It is published rather than refused, and made findable: a
+  constraint is an entry of its own, so the unappealable rules a model states
+  are one query over them.
+
+  They are two keys because they answer different questions, and neither one
+  implies the other. A `low` rule can still be an absolute refusal, and a
+  `critical` one can be a warning because the organization is not yet ready to
+  block on it. `escalate` states that an approver exists; it does not state who,
+  because an approver role is not modeled yet.
 
 - **Binding profiles.** A separate document that supplies only the physical
   bindings, so one logical model serves several stores. Not part of the Ossie
   document; a `kcmd`-specific file alongside it ([§7](#7-the-binding-layer)).
 
-Deliberately **not** extensions in `0.2.0.dev0`, to avoid the impression they
-exist: there is **no `actions` block** and **no authorable M:N `association`
-syntax**. Both are reserved for future consideration; neither is part of the
-format today.
+One construct is reserved rather than added. `0.2.0.dev0` has **no authorable
+M:N `association` syntax**. The construct is under consideration for a future
+version and is not part of the format today.
 
 ## 6. The extension mechanism
 
@@ -474,12 +605,14 @@ custom_extensions:
 ```
 
 `custom_extensions` MAY appear on the model, a dataset, a field, a relationship,
-and a metric. `data` is opaque at the format level: nothing is interpreted when the
-document is parsed, and it round-trips verbatim. An Ossie-only tool treats a
-`GOOGLE` block as a vendor extension it does not recognize and passes it through
-unchanged — so a vanilla `kcmd` model is still a valid Ossie document, and stripping
-the `GOOGLE` blocks yields plain Ossie. A model's deployment target rides here as a
-`GOOGLE` block carrying `{"deploymentTargets": ["…"]}`. The native keys (`entities`,
+and a metric. `data` is opaque to Ossie. `kcmd` reads a `GOOGLE` block's payload
+into the model when it parses the document, and carries any other vendor's block
+verbatim. An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
+not recognize and passes it through unchanged — so a vanilla `kcmd` model is still
+a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
+model's deployments ride here as a `GOOGLE` block carrying
+`{"deployments": [{"name": "…", "target": "…"}]}`. The older form,
+`{"deploymentTargets": ["…"]}`, is still read. The native keys (`entities`,
 `deployment_target`, `extends`, `abstract`) are **not accepted** under vanilla —
 each is an unknown key and rejected ([§4.1](#41-narrowings-stricter-than-ossie)).
 
@@ -492,10 +625,10 @@ own tools emit: readable, but no longer a vanilla-Ossie document.
 
 **Converting between the two** is the `version` plus a mechanical fold: a vanilla
 `GOOGLE` deployment-target block becomes a native `deployment_target:` key under
-`/google`, and back. Both parse to the identical IR. Constructs that exist only as
-native keys (inheritance, the `entities` spelling) have no vanilla form and are
-simply unavailable there. What survives a push and a pull through each surface is in
-[What push and pull preserve](fidelity.md).
+`/google`, and back. Both parse to the identical IR. Vanilla writes inheritance in
+a `GOOGLE` block on the dataset, as `{"extends": ["…"]}`. The `entities` spelling
+and `abstract` have no vanilla form. What survives a push and a pull through each
+surface is in [What push and pull preserve](fidelity.md).
 
 ## 7. The binding layer
 
@@ -516,14 +649,15 @@ and relationship join columns — from required to optional ([§4.2](#42-relaxat
 so a model with none of them is a complete *logical* model that can be governed in
 Knowledge Catalog as-is. The bindings are required only to deploy to a store.
 
-The physical bindings divide by what a profile can move. **`source` and a field's
-`expression` are profile-swappable**: a [binding profile](#73-binding-profiles)
-supplies or overrides them, so one logical model deploys to several stores. **A
-relationship's join columns are not** — they are declared on the logical model and
-a profile MUST NOT set them ([§7.3](#73-binding-profiles)), so they are fixed for
-every binding of the model. In practice this holds because join keys are usually
-stable across stores even when table and column names differ; a store that needs
-different join keys needs a different logical model.
+Every physical binding is profile-swappable. **`source`, an entity's key
+columns, a field's `expression`, a relationship's join columns, and an action's
+`executor`** are supplied or overridden by a [binding
+profile](#73-binding-profiles), so one logical model deploys to several stores,
+in each store's own table and column names, and performs its writes by whatever
+mechanism each store has. A named profile states every relationship's join
+columns itself ([§7.3](#73-binding-profiles)). What a profile cannot change is
+the shape those bindings must keep: an entity's key shape, and which key a
+relationship's join columns cover, are the same under every binding.
 
 ### 7.1. Table sources
 
@@ -565,22 +699,29 @@ A **binding profile** is a separate document that supplies only the physical
 bindings for a model, so one logical model can deploy to several stores from one
 definition. A profile:
 
-- is a `semantic_model` document in the **same schema** as the logical model, but
-  MUST set only physical-binding keys: at the model level `deployment_target` and
-  `datasets`/`entities`; at the dataset level `source` and `fields`; at the field
-  level `expression`. Setting any logical key (a new field, `primary_key`, a
-  relationship, …) in a profile is an error — the logical model owns those.
-- binds by `name` at each level. A field a profile does not bind is left **unbound**
-  for that profile (selecting a profile clears the logical model's inline column
-  bindings, so the profile alone decides what is bound); there is no `unbound` flag.
-- MUST express a field `expression` as a **bare column reference**, not arbitrary
-  SQL — the computation belongs to the logical model.
+- MUST set only physical-binding keys: `source`, `primary_key`, `unique_keys`,
+  `fields` and `fields_exclude` on an entity; `from_columns` and `to_columns` on
+  a relationship; `expression` on a field; `executor` on an action; and
+  `metrics_exclude`. Setting any logical key (a new field, a datatype, a
+  relationship's endpoints, an action's `guards`, …) in a profile is an error —
+  the logical model owns those.
+- binds by `name` at each level, including a field the entity inherits. It is an
+  overlay: a field the profile does not name keeps the model file's binding, and a
+  field in `fields_exclude` is left **unbound** for that profile; there is no
+  `unbound` flag. An action the profile does not mention keeps the model's
+  executor, and `executor: null` withdraws it.
+- MAY give a field any expression the logical model could: a column, a
+  computation, or the `dialects` form.
 
 The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
 (sidecar files `*.aspects.yaml` / `*.overview.yaml` are not models). Profiles live
-alongside it at `catalog/EntryGroups/<entryGroup>/<model>.profiles/<name>.yaml`;
-the profile's name is the file's basename. The name `default` is reserved for the
-model's own inline bindings and MUST NOT be used as a profile file. A
+beside it as `catalog/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`, and
+a profile file's `name:` MUST equal its `<name>`. The older
+`<model>.profiles/<name>.yaml` directory is still read when a model has no sibling
+profile file. A vanilla `0.2.0.dev0` model lists its profiles instead in a
+`GOOGLE` block on the model, as `{"profiles": [...]}`, each with the keys a
+profile file takes. The name `default` is reserved for the model's own inline
+bindings and MUST NOT be used as a profile name. A
 `default_profile` in `catalog.yaml` selects which profile the default push uses.
 The full merge behavior and worked examples are in
 [Binding profiles](profiles.md).
@@ -602,12 +743,12 @@ The full merge behavior and worked examples are in
   candidate to upstream into Ossie (e.g. `deployment_target`, `entities`) or a
   Google-store specific that stays `kcmd`'s own. The vanilla version stays a strict
   Ossie superset: its only extension is the `GOOGLE` `custom_extensions` carrier,
-  and constructs with no vanilla form (inheritance, the `entities` spelling) are
+  and constructs with no vanilla form (`abstract`, the `entities` spelling) are
   simply unavailable there — a model that needs them uses `0.2.0.dev0/google`.
 
-- **Reserved constructs.** `association` (M:N) and any `actions`-like write-side
-  construct are reserved: recognized as future work, not authorable today. A
-  document MUST NOT rely on either in `0.2.0.dev0`.
+- **Reserved constructs.** `association` (M:N) is reserved. It is under
+  consideration for a future version and cannot be authored today, so a document
+  MUST NOT rely on it in `0.2.0.dev0`.
 
 ## Appendix: annotated example
 

@@ -22,8 +22,25 @@ export interface AspectType {
   [key: string]: any;
 }
 
+// A long-running operation. Creating or updating a type is asynchronous: the
+// call returns one of these immediately, `done` flips to true at completion,
+// and `error` is set when the operation failed.
+export interface Operation {
+  name?: string;
+  done?: boolean;
+  error?: { code?: number; message?: string; };
+}
+
+// Renders a finished operation's failure as a message, or returns undefined
+// when it succeeded.
+function operationFailure(op: Operation, what: string): string|undefined {
+  if (!op.error) return undefined;
+  return `${what}: ${op.error.message || `operation failed (${op.error.code})`}`;
+}
+
 export interface Aspect {
   aspectType?: string;
+  path?: string;
   data?: Record<string, any>;
 }
 
@@ -35,6 +52,8 @@ export interface Entry {
   updateTime?: string;
   entrySource?: {
     resource?: string;
+    system?: string;
+    platform?: string;
     ancestors?: {
       name: string;
       type: string;
@@ -110,8 +129,10 @@ export class CatalogClient extends api.ApiClient {
     return await this._get(name);
   }
 
+  // `fix.keepSourceResource` returns `entrySource.resource` exactly as stored.
   async getEntry(project: string, location: string, entryGroup: string, entry: string,
-                 aspects?: string[]): Promise<api.ApiResult<Entry>> {
+                 aspects?: string[],
+                 fix: FixOptions = {}): Promise<api.ApiResult<Entry>> {
     const name = `${catalogContainer(project, location, entryGroup)}/entries/${entry}`;
     const params: Record<string, any> = { view: 'BASIC' };
     if (aspects && aspects.length) {
@@ -121,7 +142,7 @@ export class CatalogClient extends api.ApiClient {
 
     const res = await this._get<Entry>(name, params);
     if (res.status == 200 && res.result) {
-      await _fixEntry(res.result, this.context);
+      await _fixEntry(res.result, this.context, fix);
     }
 
     return res;
@@ -162,15 +183,21 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async updateEntry(entry: Entry,
-                    updateMask?: string[],
-                    aspectKeys?: string[]): Promise<api.ApiResult<Entry>> {
+  // `deleteMissingAspects` removes each aspect `aspectKeys` names that `entry`
+  // does not carry. Without it Dataplex keeps such an aspect. The returned
+  // entry leaves out every aspect the update removed.
+  async updateEntry(entry: Entry, updateMask?: string[], aspectKeys?: string[],
+                    deleteMissingAspects?: boolean):
+      Promise<api.ApiResult<Entry>> {
     const params: Record<string, any> = {};
     if (updateMask && updateMask.length) {
       params.updateMask = updateMask.join(',');
     }
     if (aspectKeys && aspectKeys.length) {
       params.aspectKeys = aspectKeys;
+    }
+    if (deleteMissingAspects) {
+      params.deleteMissingAspects = true;
     }
 
     const res = await this._patch<Entry>(entry.name, entry, params);
@@ -181,8 +208,10 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  async *listEntries(project: string, location: string,
-                     entryGroup: string): AsyncGenerator<Entry, void, unknown> {
+  // `fix.keepSourceResource` returns each `entrySource.resource` exactly as
+  // stored.
+  async *listEntries(project: string, location: string, entryGroup: string,
+                     fix: FixOptions = {}): AsyncGenerator<Entry, void, unknown> {
     const parent = catalogContainer(project, location, entryGroup);
     const resourceName = `${parent}/entries`;
 
@@ -200,7 +229,7 @@ export class CatalogClient extends api.ApiClient {
 
       const entries = res.result?.entries || [];
       for (const entry of entries) {
-        await _fixEntry(entry, this.context);
+        await _fixEntry(entry, this.context, fix);
         yield entry;
       }
 
@@ -242,6 +271,80 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  // Creates a custom aspect type. `aspectType` carries the display name,
+  // description and metadataTemplate; the resource name comes from the id.
+  async createAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Omit<AspectType, 'name'>): Promise<api.ApiResult<Operation>> {
+    const resourceName = `${catalogContainer(project, location)}/aspectTypes`;
+
+    const params: Record<string, any> = { aspectTypeId };
+
+    return await this._post<Operation>(resourceName, aspectType, params);
+  }
+
+  // Patches an existing aspect type. Dataplex rejects a backwards-incompatible
+  // metadataTemplate change, so an update only ever adds fields.
+  async updateAspectType(project: string, location: string, aspectTypeId: string,
+                         aspectType: Omit<AspectType, 'name'>,
+                         updateMask?: string[]): Promise<api.ApiResult<Operation>> {
+    const name = `${catalogContainer(project, location)}/aspectTypes/${aspectTypeId}`;
+
+    const params: Record<string, any> = {};
+    if (updateMask && updateMask.length) {
+      params.updateMask = updateMask.join(',');
+    }
+
+    return await this._patch<Operation>(name, aspectType, params);
+  }
+
+  // Creates a custom entry type.
+  async createEntryType(project: string, location: string, entryTypeId: string,
+                        entryType: Omit<EntryType, 'name'>): Promise<api.ApiResult<Operation>> {
+    const resourceName = `${catalogContainer(project, location)}/entryTypes`;
+
+    const params: Record<string, any> = { entryTypeId };
+
+    return await this._post<Operation>(resourceName, entryType, params);
+  }
+
+  // Fetches a long-running operation by the resource name the call that started
+  // it returned.
+  async getOperation(operationName: string): Promise<api.ApiResult<Operation>> {
+    return await this._get<Operation>(operationName);
+  }
+
+  // Polls a long-running operation until it finishes, and returns a message
+  // describing the failure when it fails or does not finish in time. Creating a
+  // type is asynchronous, so a caller that skips this races the server: an
+  // entry type that names an aspect type the server cannot see yet is rejected
+  // with `The following aspect types do not exist`.
+  async awaitOperation(op: Operation|undefined, what: string,
+                       timeoutMs = 120000): Promise<string|undefined> {
+    // A response that carries no operation name is already the final resource,
+    // which is what a synchronous implementation of the same call returns.
+    if (!op || !op.name) return undefined;
+    if (op.done) return operationFailure(op, what);
+
+    const deadline = Date.now() + timeoutMs;
+    let delayMs = 500;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      delayMs = Math.min(delayMs * 2, 5000);
+
+      const polled = await this.getOperation(op.name);
+      // A client error will not resolve itself, so report it rather than spend
+      // the whole timeout rediscovering it and then blame the timeout. A 5xx or
+      // a throttle is worth another attempt.
+      if (polled.status >= 400 && polled.status < 500 &&
+          polled.status !== 429) {
+        return `${what}: reading ${op.name}: ${polled.message || polled.status}`;
+      }
+      if (polled.status !== 200 || !polled.result) continue;
+      if (polled.result.done) return operationFailure(polled.result, what);
+    }
+    return `${what}: timed out after ${timeoutMs}ms waiting for ${op.name}`;
+  }
+
   async createEntryLink(project: string, location: string, entryGroup: string,
                         entryLinkId: string,
                         entryLink: EntryLink): Promise<api.ApiResult<EntryLink>> {
@@ -264,6 +367,11 @@ export class CatalogClient extends api.ApiClient {
       params.aspectKeys = aspectKeys;
     }
     return await this._patch<EntryLink>(entryLink.name!, entryLink, params);
+  }
+
+  // Reads an entry link by its full resource name.
+  async getEntryLink(name: string): Promise<api.ApiResult<EntryLink>> {
+    return await this._get<EntryLink>(name);
   }
 
   async deleteEntryLink(project: string, location: string, entryGroup: string,
@@ -313,30 +421,45 @@ export class CatalogClient extends api.ApiClient {
 }
 
 
-// Fix all entries and aspects to consistently use project id. Its currently a mess with an
-// inconsistent mix of project ids and unusable project numbers.
-async function _fixEntry(entry: Entry, ctx: context.ApiContext): Promise<void> {
+// How `_fixEntry` treats an entry. `keepSourceResource` leaves
+// `entrySource.resource` as stored, so a caller that writes it back changes
+// nothing and makes no Resource Manager lookup for it.
+export interface FixOptions {
+  keepSourceResource?: boolean;
+}
+
+// Normalises an entry and its aspects in place so resource names and aspect
+// keys consistently use project IDs (rather than project numbers), while
+// preserving `@<path>` suffixes and `path` fields on field-level aspects.
+// Drops an aspect whose value is null or has no fields. An update's response
+// lists each aspect it removed with an empty value.
+export async function _fixEntry(entry: Entry, ctx: context.ApiContext,
+                                fix: FixOptions = {}): Promise<void> {
   entry.name = await crm.fixProject(entry.name, ctx);
   entry.entryType = await crm.fixProject(entry.entryType, ctx);
-  if (entry.entrySource?.resource) {
+  if (entry.entrySource?.resource && !fix.keepSourceResource) {
     entry.entrySource.resource = await crm.fixProject(entry.entrySource.resource, ctx);
   }
 
   if (entry.aspects) {
     const fixedAspects: Record<string, Aspect> = {};
     for (const [aspectKey, aspectValue] of Object.entries(entry.aspects)) {
-      let aspectType = '';
-      if (!aspectValue || Object.keys(aspectValue).length) {
-        aspectType = _typeRefToName(aspectKey, 'aspect');
-      }
-      else {
-        aspectType = aspectValue['aspectType'] as string;
-      }
-      aspectType = await crm.fixProject(aspectType, ctx);
+      if (!aspectValue || !Object.keys(aspectValue).length) continue;
+      const atIdx = aspectKey.indexOf('@');
+      const typeRef = atIdx === -1 ? aspectKey : aspectKey.slice(0, atIdx);
+      const keyPath = atIdx === -1 ? undefined : aspectKey.slice(atIdx + 1);
 
-      fixedAspects[_nameToTypeRef(aspectType)] = {
+      const aspectType =
+          await crm.fixProject(_typeRefToName(typeRef, 'aspect'), ctx);
+
+      const path = aspectValue.path || keyPath;
+      const baseKey = _nameToTypeRef(aspectType);
+      const fixedKey = path ? `${baseKey}@${path}` : baseKey;
+
+      fixedAspects[fixedKey] = {
         aspectType: aspectType,
-        data: aspectValue['data'] ?? {}
+        ...(path ? { path } : {}),
+        data: aspectValue.data ?? {}
       };
     }
     entry.aspects = fixedAspects;

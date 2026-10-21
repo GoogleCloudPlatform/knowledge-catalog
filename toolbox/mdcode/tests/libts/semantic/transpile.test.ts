@@ -7,9 +7,10 @@
 // @polyglot-sql/sdk adapter is exercised separately in
 // transpile.polyglot.test.ts and end-to-end in transpile.e2e.test.ts.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 
 import {SemanticModel} from '../../../src/libts/semantic/ir';
+import * as sqlParser from '../../../src/libts/semantic/sql_parser';
 import {SqlTranspiler, transpileModel, transpileModels, TranspileRequest,} from '../../../src/libts/semantic/transpile';
 
 // Builds a one-entity, one-metric model whose interesting fields/metric carry
@@ -58,9 +59,12 @@ function fakeTranspiler(
 
 describe('transpileModel', () => {
   test('fills a missing target expression from the imported form', async () => {
+    const loadSpy = spyOn(sqlParser, 'loadSqlEngine');
     const {transpiler} = fakeTranspiler(() => 'IF(orders.s = 1, 1, 0)');
     const {model, warnings} = await transpileModel(baseModel(), {transpiler});
 
+    expect(loadSpy).toHaveBeenCalledTimes(1);
+    loadSpy.mockRestore();
     const label = model.entities[0].fields[1];
     expect(label.expression).toBe('IF(orders.s = 1, 1, 0)');
     // The imported form is retained (round-trip fidelity; the KC leg may emit
@@ -317,6 +321,55 @@ describe('transpileModel', () => {
         };
         await transpileModel(baseModel(), {transpiler, target: 'SPARK'});
         expect(sawTarget).toBe('SPARK');
+      });
+
+  test(
+      'qualifier guard does not mistake a struct subfield for a re-cased entity qualifier',
+      async () => {
+        const m: SemanticModel = {
+          name: 'sales',
+          entities: [
+            {
+              name: 'orders',
+              dataSource: 'p.d.orders',
+              keys: ['o_id'],
+              fields: [{name: 'customer', expression: 'orders.customer'}],
+            },
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: ['c_id'],
+              fields: [{name: 'id', expression: 'customer.c_id'}],
+            },
+          ],
+          relationships: [],
+          metrics: [{
+            name: 'cust_count',
+            importedExpression: 'COUNT(orders.Customer.id)',
+            importedDialect: 'SNOWFLAKE',
+            entity: 'orders',
+          }],
+        };
+        const {model: out, warnings} = await transpileModel(m, {
+          transpiler: async reqs =>
+              reqs.map(r => ({id: r.id, sql: 'COUNT(orders.Customer.id)'})),
+        });
+        expect(out.metrics[0].expression).toBe('COUNT(orders.Customer.id)');
+        expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
+      });
+
+  test(
+      'warns and keeps transpiled SQL when the qualifier check cannot parse the transpiled output',
+      async () => {
+        const {model: out, warnings} = await transpileModel(baseModel(), {
+          transpiler: async reqs =>
+              reqs.map(r => ({id: r.id, sql: 'SUM(orders.amt'})),
+        });
+        expect(out.metrics[0].expression).toBe('SUM(orders.amt');
+        expect(warnings.some(
+                   w => w.includes(`metric 'rev'`) &&
+                       w.includes('could not be parsed; qualifier check was skipped')))
+            .toBe(true);
       });
 });
 

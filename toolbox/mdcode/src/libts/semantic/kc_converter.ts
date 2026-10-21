@@ -32,9 +32,10 @@
 // `guidelines` aspect, on the model/entity/metric), each metric's attach entity
 // (re-derived from its expression, as the loader does, when the catalog holds
 // one, else the value the emitter persisted), the model's deployment targets
-// (from the semantic-model aspect, back into the GOOGLE `custom_extensions`
-// block), and 1:1 / 1:N relationships (from the `schema-join` entry links a
-// pull fetched -- see `modelsFromCatalogResources`'s `entryLinks` argument).
+// (from the semantic-model aspect, back into `deployments` and the GOOGLE
+// `custom_extensions` block), and 1:1 / 1:N relationships (from the
+// `schema-join` entry links a pull fetched -- see
+// `modelsFromCatalogResources`'s `entryLinks` argument).
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
@@ -49,17 +50,42 @@
 // back un-typed: the metric aspect persists only `dataType` (both collapse to
 // `STRING`, with no metadataType to disambiguate), so -- as with a plain STRING
 // field -- the reader leaves it un-typed rather than guess. Relationship NAMES
-// come back normalized (lowercased/hyphenated), since the emitter encodes the
-// name only in the link id (via `linkSlug`), not in the join aspect.
+// come back lowercased, since the emitter encodes the name only in the link id
+// (via `linkSlug`), not in the join aspect.
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {AiContext, CustomExtension, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
-import {referencedEntityNames} from './sql_expr_utils';
+import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {isActionEntry, readAction} from './kc_actions';
+import {isConstraintEntry, readConstraint} from './kc_constraints';
+import {unnamedDeployments} from './deployment_target';
+import {noSqlReason, sourceToDataSource} from './loader';
+import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
   models: SemanticModel[];
   warnings: string[];
+}
+
+// A guard naming a constraint this pull did not recover -- because its entry was
+// absent, or was skipped as unreadable. readAction keeps the name so the
+// author's model is not silently rewritten, which leaves the document one that
+// push will reject. Reporting it here puts the message on the command that
+// produced the document rather than on the next one.
+function warnDanglingGuards(
+    actions: Action[], constraints: Constraint[], modelName: string,
+    warnings: string[]): void {
+  if (!actions.length) return;
+  const recovered = new Set(constraints.map(c => c.name));
+  for (const action of actions) {
+    for (const guard of action.guards ?? []) {
+      if (recovered.has(guard)) continue;
+      warnings.push(
+          `model '${modelName}': action '${action.name}' is guarded by ` +
+          `'${guard}', but no constraint of that name was recovered; the ` +
+          `name is kept, and a push rejects it until the constraint is back`);
+    }
+  }
 }
 
 /**
@@ -84,6 +110,11 @@ export function modelsFromCatalogResources(
       entries.filter(e => semanticType(e) === 'semantic-entity');
   const metricEntries =
       entries.filter(e => semanticType(e) === 'semantic-metric');
+  // Actions have no built-in system type; `kc_actions.ts` owns the custom one
+  // and recognizes an entry carrying it. Constraints are the same, through
+  // `kc_constraints.ts`.
+  const actionEntries = entries.filter(isActionEntry);
+  const constraintEntries = entries.filter(isConstraintEntry);
 
   if (!anchors.length) {
     warnings.push('no semantic-model entry found; nothing to reconstruct');
@@ -127,10 +158,23 @@ export function modelsFromCatalogResources(
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
     if (description !== undefined) model.description = description;
-    // Deployment targets ride back in the same GOOGLE custom_extensions block
-    // the author wrote them in (the inverse of the emitter's modelAspectData).
-    const targets = readDeploymentTargets(anchor);
-    if (targets) model.customExtensions = [targets];
+    const actions = childrenOf(anchor.name, actionEntries)
+                        .map(e => readAction(e, warnings))
+                        .filter((a): a is Action => a !== undefined);
+    if (actions.length) model.actions = actions;
+    const constraints = childrenOf(anchor.name, constraintEntries)
+                            .map(e => readConstraint(e, warnings))
+                            .filter((c): c is Constraint => c !== undefined);
+    if (constraints.length) model.constraints = constraints;
+    warnDanglingGuards(actions, constraints, name, warnings);
+    // Deployment targets ride back in both the GOOGLE custom_extensions block
+    // and as synthesized `deployments` entries (`default` when one,
+    // `deployment_1`, `deployment_2`, ... when several).
+    const targets = readDeploymentTargets(anchor, name, warnings);
+    if (targets) {
+      model.customExtensions = [targets.extension];
+      model.deployments = targets.deployments;
+    }
     const ai = readAiContext(anchor);
     if (ai) model.aiContext = ai;
     return model;
@@ -139,7 +183,8 @@ export function modelsFromCatalogResources(
   // Flag children that resolved to no anchor at all (only possible with
   // multiple anchors, where the sole-anchor fallback does not apply).
   if (!soleAnchor) {
-    for (const child of [...entityEntries, ...metricEntries]) {
+    for (const child of [...entityEntries, ...metricEntries, ...actionEntries,
+                         ...constraintEntries]) {
       if (!child.parentEntry || !anchorNames.has(child.parentEntry)) {
         warnings.push(`entry '${
             child.name}' has no resolvable parent semantic-model; omitted`);
@@ -163,7 +208,12 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         name}': no semantic-entity aspect data (fetch with the aspect type)`);
   }
 
-  const dataSource = dataSourceFromResource(semantic?.source?.resources?.[0]);
+  // A source written as a catalog name is stored in `importedResource`, with
+  // `resources` left empty.
+  const imported = semantic?.source?.importedResource;
+  const rawResource = (semantic?.source?.resources?.[0] ?? '').trim() ||
+      (typeof imported === 'string' ? imported.trim() : '');
+  const dataSource = dataSourceFromResource(rawResource);
   if (!dataSource) {
     warnings.push(
         `entity '${name}': no backing data source in the semantic-entity ` +
@@ -172,6 +222,7 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   const entity: Entity = {
     name,
     dataSource,
+    ...(rawResource ? {authoredSource: rawResource} : {}),
     // The grain / primary key, from the schema aspect's primaryKey.fields
     // (ordered, so a composite key's ordinal positions round-trip).
     keys: stringList(schema.primaryKey?.fields),
@@ -224,7 +275,17 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
   }
   const field: Field = {name};
   const sem = fd?.semantics ?? {};
-  if (sem.expression !== undefined) field.expression = sem.expression;
+  // An expression with no SQL does not load, so the field is read as unbound.
+  const noSql = typeof sem.expression === 'string' ?
+      noSqlReason(sem.expression, 'ANSI_SQL', entityName) :
+      undefined;
+  if (noSql) {
+    warnings.push(
+        `entity '${entityName}': field '${name}': its expression in the ` +
+        `catalog ${noSql}, so the field is read as unbound`);
+  } else if (sem.expression !== undefined) {
+    field.expression = sem.expression;
+  }
   const type = irDataType(fd?.dataType, fd?.metadataType);
   if (type !== undefined) field.type = type;
   if (sem.role === 'DIMENSION') field.dimension = {};
@@ -248,12 +309,25 @@ function readMetric(
   const data = aspectData(entry, 'semantic-metric');
 
   const metric: Metric = {name};
-  if (data.expression !== undefined) metric.expression = data.expression;
-  const exprForRefs = data.expression ?? '';
-  const referenced = referencedEntityNames(exprForRefs, entityNames);
+  // An expression with no SQL does not load, so it is read as absent, and the
+  // serializer warns that the metric needs one.
+  const expression = typeof data.expression === 'string' &&
+          noSqlReason(data.expression, 'ANSI_SQL') ?
+      undefined :
+      data.expression;
+  if (expression !== undefined) metric.expression = expression;
+  const exprForRefs = expression ?? '';
+  const cols = exprForRefs ? columnReferences(exprForRefs, 'BIGQUERY') : [];
+  const referenced = entitiesReached(cols ?? [], entityNames);
   const persistedEntity =
       typeof data.entity === 'string' && data.entity !== '' ? data.entity :
                                                               undefined;
+  if (cols === undefined && persistedEntity === undefined) {
+    warnings.push(
+        `metric '${name}': expression could not be parsed; entity inference ` +
+        `was skipped (set 'entity' on the metric, or backtick-quote a ` +
+        `reserved qualifier, such as \`Date\`.amount)`);
+  }
   if (referenced.length === 1) {
     // The expression pins exactly one known entity; re-derive it (as the loader
     // does) so the attach entity stays consistent with the reconstructed set.
@@ -263,7 +337,15 @@ function readMetric(
     // fall back to the attach entity the emitter persisted (metricAspectData)
     // rather than dropping it.
     metric.entity = persistedEntity;
-  } else if (exprForRefs && !referenced.length) {
+    // A recovered expression that cannot re-derive the anchor means the author
+    // wrote it; mark it authored so the serializer writes `entity:` back. Not
+    // when the anchor names a dataset this pull did not rebuild: a derived
+    // anchor is persisted too, and `entity:` naming no dataset would not load.
+    // With no expression (a default push) the metric cannot reload either way.
+    if (exprForRefs && entityNames.includes(persistedEntity)) {
+      metric.authoredEntity = persistedEntity;
+    }
+  } else if (cols !== undefined && exprForRefs && !referenced.length) {
     // Parity with the loader's convertMetric: an expression that qualifies no
     // known entity is flagged as potentially unplaceable downstream.
     warnings.push(
@@ -284,6 +366,7 @@ function readMetric(
   if (ai) metric.aiContext = ai;
   return metric;
 }
+
 
 
 // The inverse of columnDataType/columnMetadataType: maps the schema aspect's
@@ -320,14 +403,13 @@ function irDataType(dataType: string|undefined, metadataType: string|undefined):
 }
 
 
-// The inverse of resourcePath: a BigQuery linked-resource URI becomes the
-// canonical `project.dataset.table` string; anything else (a verbatim query or
-// a passthrough reference) is returned unchanged.
+// The inverse of entityAspectData, through the loader's own conversion: a
+// BigQuery or BigLake resource URI or resource name, or a `bigquery:` catalog
+// name, becomes the dot-separated table string. A Spanner or AlloyDB resource
+// name becomes its resource URI. Anything else is returned trimmed. An absent
+// resource reads as ''.
 function dataSourceFromResource(resource: string|undefined): string {
-  const value = (resource ?? '').trim();
-  const m = value.match(
-      /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/]+)\/tables\/([^/]+)$/);
-  return m ? `${m[1]}.${m[2]}.${m[3]}` : value;
+  return sourceToDataSource(resource ?? '');
 }
 
 
@@ -369,16 +451,28 @@ function aspectDataOf(aspects: Record<string, Aspect>|undefined, type: string):
 
 
 // Recovers the model's deployment targets from its semantic-model aspect back
-// into the GOOGLE custom_extension the author declared them in (the inverse of
-// the emitter's modelAspectData). Returns undefined when the model has none.
-function readDeploymentTargets(anchor: Entry): CustomExtension|undefined {
-  const targets =
+// into both the GOOGLE custom_extension shim and a `deployments` list (`default`
+// when there is one target, `deployment_1`, `deployment_2`, ... when there are
+// several), warning that the original deployment names were not recovered.
+// Returns undefined when the model has none.
+function readDeploymentTargets(
+    anchor: Entry, modelName: string, warnings: string[]):
+    {extension: CustomExtension; deployments: DeploymentSpec[]}|undefined {
+  const deployments: DeploymentSpec[] = unnamedDeployments(
       asArray(aspectData(anchor, 'semantic-model').deploymentTargets)
-          .filter((t): t is string => typeof t === 'string' && t !== '');
-  if (!targets.length) return undefined;
+          .filter((t): t is string => typeof t === 'string'));
+  if (!deployments.length) return undefined;
+  const targets = deployments.map(d => d.target);
+  warnings.push(
+      `model '${modelName}': deployment names were not recovered (the ` +
+      `catalog stores target URIs only); using ${
+          deployments.map(d => `'${d.name}'`).join(', ')}`);
   return {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: targets})
+    extension: {
+      vendorName: 'GOOGLE',
+      data: JSON.stringify({deploymentTargets: targets}),
+    },
+    deployments,
   };
 }
 
@@ -468,22 +562,22 @@ function readRelationships(
 export function linkDedupKey(link: EntryLink): string {
   if (link.name) return link.name;
   const refs = (link.entryReferences ?? []).map(r => r.name).sort();
-  return `${refs.join(' ')} ${link.entryLinkType ?? ''}`;
+  return `${refs.join('\0')}\0${link.entryLinkType ?? ''}`;
 }
 
 
 // Best-effort recovery of the relationship name from the link id, which the
-// emitter built as linkSlug(`<model>-<name>`) (lowercased/hyphenated -- see
-// knowledge_catalog.ts). Strips the model prefix when present; the name comes
-// back normalized, never verbatim.
+// emitter built as linkSlug(`<model>-<name>`) (lowercased, with each underscore
+// turned into a hyphen -- see knowledge_catalog.ts). Strips the model prefix
+// when present. A relationship name has no hyphen, so each hyphen left is read
+// back as an underscore; the name comes back lowercased.
 function relationshipName(
     linkName: string|undefined, modelPrefix: string): string {
   const id = idOf(linkName ?? '');
-  if (modelPrefix && id.startsWith(`${modelPrefix}-`)) {
-    const rest = id.slice(modelPrefix.length + 1);
-    if (rest) return rest;
-  }
-  return id;
+  const rest = modelPrefix && id.startsWith(`${modelPrefix}-`) ?
+      id.slice(modelPrefix.length + 1) :
+      '';
+  return (rest || id).replace(/-/g, '_');
 }
 
 

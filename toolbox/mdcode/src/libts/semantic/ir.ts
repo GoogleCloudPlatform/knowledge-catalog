@@ -23,6 +23,11 @@ export interface AiContext {
   synonyms?: string[];
   // Example questions / usages illustrating the annotated object.
   examples?: string[];
+  // Custom members, preserved verbatim for round-trip: the members under
+  // `custom:` in the Google flavor, and the sibling members beside the three
+  // standard ones in vanilla. A member whose name is a whole number sorts
+  // first, so document order holds for the rest only.
+  additionalProperties?: Record<string, unknown>;
 }
 
 /**
@@ -32,7 +37,7 @@ export interface AiContext {
  * `data` is opaque to the IR — a vendor-serialized payload (typically a JSON
  * string) — and is preserved unparsed so nothing is lost and a 1P round-trip
  * stays lossless. Typed views over specific vendors are derived by the
- * consumers that need them, from this same source (e.g. the GOOGLE block).
+ * consumers that need them, from this same source.
  */
 export interface CustomExtension {
   vendorName: string;
@@ -43,10 +48,11 @@ export interface CustomExtension {
  * A semantic model: a graph of entities (nodes) connected by relationships
  * (edges), with model-level metrics defined over them.
  *
- * The IR is primarily semantics. Deployment/target configuration lives in the
- * project manifest (`catalog.yaml`); when the open format carries it inline in a
- * model-level GOOGLE `custom_extensions` block, that block rides along verbatim
- * in `customExtensions` and is interpreted by the consumer that acts on it.
+ * The IR is primarily semantics. The loader reads a model's named
+ * `deployments:` list onto `deployments`. In the Google flavor it also folds
+ * their target URIs into a model-level GOOGLE `custom_extensions` block for the
+ * consumers that read it. A vanilla model lists its deployments in its GOOGLE
+ * block, which the loader reads and does not fold.
  */
 export interface SemanticModel {
   name: string;
@@ -55,13 +61,36 @@ export interface SemanticModel {
   // examples), kept separate from `description` so an emitter can route them to
   // their own aspects rather than the entry description.
   aiContext?: AiContext;
-  entities: Entity[];        // the open format's `datasets`
+  entities: Entity[];  // the open format's `datasets`
   relationships: Relationship[];
   metrics: Metric[];
-  // Vendor extension blocks carried verbatim (round-trip fidelity), including the
-  // model-level GOOGLE block. A typed deployment-target view is derived by the
-  // consumer that acts on it (e.g. the CLI push), not surfaced on the IR yet.
+  // Model-level write operations over the ontology -- the write-side
+  // counterpart to metrics (which are the read side). Like metrics they are
+  // defined over the concepts and their relationships, not bound to a single
+  // entity. Optional and absent on models authored before actions existed, so
+  // consumers read it as `actions ?? []`. See Action.
+  actions?: Action[];
+  // Named invariants over the ontology, each stating one condition that must
+  // hold for every instance, as a `judgment` in words -- the one body a
+  // constraint has, settled by a language model reading the attempted call.
+  // Model-level, like metrics and actions. Optional, and
+  // absent on models authored before constraints existed, so consumers read it
+  // as `constraints ?? []`. See Constraint.
+  constraints?: Constraint[];
+  // Vendor extension blocks carried verbatim (round-trip fidelity), including a
+  // vanilla model's GOOGLE block that holds `deploymentTargets`.
   customExtensions?: CustomExtension[];
+  version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
+  // Named profiles. A Google-flavor model's come from its
+  // <model>.profile.<name>.yaml files, which the loader does not attach yet,
+  // and a vanilla model's from its GOOGLE block, which the loader reads.
+  profiles?: ProfileSpec[];
+  // Named targets from `deployments:`, each naming the profile it deploys.
+  deployments?: DeploymentSpec[];
+  // Metrics the binding profile in use names in `metrics_exclude`. They stay
+  // in `metrics`, so a catalog push still publishes them; pruning drops them.
+  // Set when a profile is applied; absent otherwise.
+  excludedMetrics?: string[];
 }
 
 /**
@@ -70,14 +99,16 @@ export interface SemanticModel {
  */
 export interface Entity {
   name: string;
-  // A reference to the backing physical source, fully qualified so it identifies
-  // that source unambiguously. The IR treats it as an opaque identifier: it fixes
-  // neither a syntax (separators, number of parts, quoting) nor a naming scheme
-  // -- both are whatever the source system uses. Each producer normalizes it into
-  // its own canonical form, and downstream consumers map it to their target's
-  // addressing scheme.
+  // A reference to the backing physical source, fully qualified so it
+  // identifies that source unambiguously. The IR treats it as an opaque
+  // identifier: it fixes neither a syntax (separators, number of parts,
+  // quoting) nor a naming scheme
+  // -- both are whatever the source system uses. Each producer normalizes it
+  // into its own canonical form, and downstream consumers map it to their
+  // target's addressing scheme.
   dataSource: string;
-  keys: string[];        // grain / primary key
+  authoredSource?: string;  // the source string as typed
+  keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array
   // is one unique column set (maps to the Schema aspect's uniqueConstraints).
   uniqueKeys?: string[][];
@@ -110,17 +141,36 @@ export interface Entity {
   aiContext?: AiContext;
   fields: Field[];       // dimensions / attributes
   customExtensions?: CustomExtension[];
+  // Fields this entity does not expose under the binding profile in use:
+  // the ones the profile names in `fields_exclude`, and
+  // declarations kept only for descendants that inherit them. Inheritance
+  // resolution leaves them off this entity, declared or inherited, and its
+  // descendants still inherit the declarations, because a binding is a fact
+  // about one table. Set when a profile is applied; absent otherwise.
+  excludedFields?: string[];
 }
 
 /**
  * Dimension metadata on a field, mirroring the open format's `dimension` block
  * (e.g. Apache Ossie's `OSIDimension`). An empty block still marks the field as
- * a dimension, which enables temporal inference from `type` (see isTimeDimension).
+ * a dimension, which enables temporal inference from `type` (see
+ * isTimeDimension).
  */
 export interface Dimension {
-  // Explicit temporal-dimension flag. When unset, the effective role is inferred
-  // from a temporal `type` (see isTimeDimension).
+  // Explicit temporal-dimension flag. When unset, the effective role is
+  // inferred from a temporal `type` (see isTimeDimension).
   isTime?: boolean;
+}
+
+export const ALLOWED_DIALECTS = [
+  'ANSI_SQL', 'BIGQUERY', 'SPANNER', 'MYSQL',
+  'POSTGRES', 'ALLOYDB', 'SQLSERVER', 'SNOWFLAKE', 'DATABRICKS',
+] as const;
+export type SqlDialect = (typeof ALLOWED_DIALECTS)[number];
+
+export interface DialectExpression {
+  dialect: SqlDialect;
+  expression: string;
 }
 
 /**
@@ -130,24 +180,31 @@ export interface Dimension {
  * not fields.
  *
  * Expression fidelity: the format may supply an expression in several SQL
- * dialects. We keep at most two forms — a target/canonical `expression` that is
- * valid against the target (GoogleSQL/ANSI), and the original vendor SQL in
- * `importedExpression` (with its `importedDialect`). At least one of the two is
- * set. When only `importedExpression` is present, `expression` awaits a
- * transpile pass (see ./transpile) that fills it from the imported form.
+ * dialects (or as a single string in the Google flavor). The loader keeps every
+ * entry in `dialects` in the order written and records `stringForm` (`true`
+ * when authored as `expression: "<sql>"`, `false` when authored as a `dialects`
+ * list). It also populates `expression` (the target-dialect text, or else the
+ * `ANSI_SQL` one) and `importedExpression` (the first other vendor entry, with
+ * its `importedDialect`) via `pickDialect`. A bound field sets at least one of
+ * `expression`, `importedExpression` or a non-empty `dialects` (the loader sets
+ * one of the first two whenever it writes the third). When only
+ * `importedExpression` is present, `expression` awaits a transpile pass (see
+ * ./transpile) that fills it from the imported form.
  */
 export interface Field {
   name: string;
-  expression?: string;             // target/canonical (GoogleSQL-valid) SQL
+  expression?: string;             // the BIGQUERY text, else the ANSI_SQL one
   importedExpression?: string;     // original vendor SQL, verbatim
   importedDialect?: string;        // dialect of `importedExpression` (e.g. 'SNOWFLAKE')
+  dialects?: DialectExpression[];  // every entry, in the order written
+  stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // A field with NO physical column under the current binding is UNBOUND:
   // structurally absent, not null. There is no explicit flag -- a field is
-  // unbound exactly when it carries no `expression` (and no
-  // `importedExpression`); see fieldBinding. A metric, relationship, or action
-  // that reads an unbound field is unavailable here rather than reading a null
-  // (see the binding-profiles guide). This is the field-level analogue of an
-  // entity's `abstract` (a whole class with no table).
+  // unbound exactly when it carries no `expression`, no `importedExpression`
+  // and no non-empty `dialects`; see isFieldBound. A metric, relationship, or
+  // action that reads an unbound field is unavailable here rather than reading
+  // a null (see the binding-profiles guide). This is the field-level analogue
+  // of an entity's `abstract` (a whole class with no table).
   dimension?: Dimension;           // dimension metadata (e.g. temporal role)
 
   label?: string;                  // human display label (distinct from name/description)
@@ -160,22 +217,66 @@ export interface Field {
 /**
  * The open format's `datatype` vocabulary, mirroring Apache Ossie's `DataType`:
  * a CLOSED, case-sensitive set of logical types, independent of physical
- * representation. It is optional (omit when unknown); a type outside the
- * vocabulary is expressed as `Opaque` plus a `customExtensions` block, never an
- * invented value. The loader enforces this set at parse time, so a `type` on the
- * IR is always one of these.
+ * representation. It is optional; omit it when the type is unknown. `Opaque`
+ * marks an unknown type: the loader reads it as no type, and the catalog stores
+ * it where a type is required. No custom extension supplies a real type for
+ * it. The loader enforces this set at parse time, so a `type` on the IR is
+ * always one of these.
  */
 export const DATA_TYPES = [
-  'String', 'Integer', 'Decimal', 'Float', 'Boolean',
-  'Date', 'Time', 'DateTime', 'DateTimeTz', 'Opaque',
+  'String',
+  'Integer',
+  'Decimal',
+  'Float',
+  'Boolean',
+  'Date',
+  'Time',
+  'DateTime',
+  'DateTimeTz',
+  'Opaque',
 ] as const;
 
 export type DataType = typeof DATA_TYPES[number];
 
-// The temporal subset of DataType (Date / Time / DateTime / DateTimeTz); a field
-// of one of these types is a time dimension by default (see isTimeDimension).
+const CANONICAL_DATA_TYPES = DATA_TYPES.filter(
+    (t): t is Exclude<DataType, 'Opaque'> => t !== 'Opaque');
+
+/**
+ * Normalizes a raw `datatype` string according to the document's flavor.
+ *
+ * In `0.2.0.dev0`, matching is strictly case-sensitive. In `0.2.0.dev0/google`,
+ * matching is case-insensitive and returns the canonical spelling. In both
+ * flavors, an omitted `datatype` and `Opaque` normalize to `type: undefined`.
+ */
+export function normalizeDataType(
+    raw: string|undefined,
+    version: '0.2.0.dev0'|'0.2.0.dev0/google',
+    ): {ok: true; type: Exclude<DataType, 'Opaque'>|undefined}|{ok: false} {
+  if (raw === undefined) {
+    return {ok: true, type: undefined};
+  }
+  const caseInsensitive = version === '0.2.0.dev0/google';
+  const matches = (a: string, b: string) =>
+      caseInsensitive ? a.toLowerCase() === b.toLowerCase() : a === b;
+
+  if (matches(raw, 'Opaque')) {
+    return {ok: true, type: undefined};
+  }
+  const found = CANONICAL_DATA_TYPES.find(t => matches(raw, t));
+  if (found) {
+    return {ok: true, type: found};
+  }
+  return {ok: false};
+}
+
+// The temporal subset of DataType (Date / Time / DateTime / DateTimeTz); a
+// field of one of these types is a time dimension by default (see
+// isTimeDimension).
 const TEMPORAL_TYPES: ReadonlySet<DataType> = new Set([
-  'Date', 'Time', 'DateTime', 'DateTimeTz',
+  'Date',
+  'Time',
+  'DateTime',
+  'DateTimeTz',
 ]);
 
 /**
@@ -190,16 +291,105 @@ export function isTimeDimension(field: Field): boolean {
   return field.type !== undefined && TEMPORAL_TYPES.has(field.type);
 }
 
-// The physical column (or SQL) a field binds to under the current binding, or
-// undefined when the field is unbound (structurally absent -- no column). A
-// field's target/canonical `expression` wins; a field awaiting transpilation
-// falls back to its imported vendor expression, which still names a real column,
-// so it is bound rather than unbound. A field with neither is unbound (no
-// column at all). This is the single source of truth for "is this field bound";
-// availability pruning and the BigQuery generator both consult it so they never
-// disagree.
-export function fieldBinding(field: Field): string | undefined {
+// The physical column (or SQL) a field binds to when no engine is named, or
+// undefined when it carries neither expression. A field's target/canonical
+// `expression` wins; a field awaiting transpilation falls back to its imported
+// vendor expression, which still names a real column. Undefined here is not
+// the same as unbound: a field bound only through a `dialects` list has no
+// text here yet counts as bound (see isFieldBound). The BigQuery generator
+// asks for its own engine's text through `expressionForDialect` instead.
+export function fieldBinding(
+    field: Pick<Field, 'expression'|'importedExpression'>): string|undefined {
   return field.expression ?? field.importedExpression;
+}
+
+// The properties of a field that bind it to a column, and the ones that define
+// what it is. A subtype that redeclares an inherited field may set binding
+// properties and never definition properties. Together with `name` they are
+// every property a field has; the check below fails to compile if a property
+// is added to Field without being placed in one list or the other.
+export const FIELD_BINDING_KEYS = [
+  'expression', 'dialects', 'stringForm', 'importedExpression',
+  'importedDialect',
+] as const satisfies ReadonlyArray<keyof Field>;
+export const FIELD_DEFINITION_KEYS = [
+  'type', 'label', 'dimension', 'description', 'aiContext', 'customExtensions',
+] as const satisfies ReadonlyArray<keyof Field>;
+type UnlistedFieldKey = Exclude<
+    keyof Field,
+    'name'|(typeof FIELD_BINDING_KEYS)[number]|
+    (typeof FIELD_DEFINITION_KEYS)[number]>;
+const everyFieldKeyListed: [UnlistedFieldKey] extends [never] ? true : never =
+    true;
+void everyFieldKeyListed;
+
+/**
+ * Whether a field is bound to a column under the current binding: it carries an
+ * expression, an imported vendor expression, or a non-empty dialect list.
+ * `stringForm` and `importedDialect` describe a binding and are not one on
+ * their own. Inheritance, profile pruning and push validation use this test.
+ * A graph generator asks a narrower question, whether the field has SQL for its
+ * engine (see expressionForDialect), so a bound field can still be left out of
+ * one engine's graph.
+ */
+export function isFieldBound(
+    field: Pick<Field, 'expression'|'importedExpression'|'dialects'>): boolean {
+  return fieldBinding(field) !== undefined || (field.dialects?.length ?? 0) > 0;
+}
+
+/**
+ * The keys a relationship's `to_columns` cover, as "the primary key" and
+ * "unique key k" (from 1), in that order. A key is covered when every one of
+ * its columns is among `to_columns`, so a superset of a key covers it, since
+ * each row still matches at most one target row. An empty result means the
+ * join reaches no key. Column names compare as BigQuery compares them: ignoring
+ * case, and without the backticks that only quote a name.
+ */
+export function keysCoveredBy(
+    toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
+    string[] {
+  const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
+  const has = new Set(toColumns.map(columnKey));
+  const covers = (key: string[]) =>
+      key.length > 0 && key.every(c => has.has(columnKey(c)));
+  const out: string[] = [];
+  if (covers(primaryKey)) out.push('the primary key');
+  uniqueKeys.forEach((key, i) => {
+    if (covers(key)) out.push(`unique key ${i + 1}`);
+  });
+  return out;
+}
+
+/**
+ * Selects the SQL expression for a target engine from a Field or Metric.
+ *
+ * With a non-empty `dialects` list, returns the entry matching `targetDialect`;
+ * failing that, and where the target is not already `ANSI_SQL`, falls back to
+ * the `ANSI_SQL` entry; failing both, returns `undefined`. With `dialects`
+ * empty or absent, returns `item.importedExpression` when `importedDialect` is
+ * the target, and `item.expression` otherwise.
+ */
+export function expressionForDialect(
+    item: {
+      expression?: string; dialects?: DialectExpression[];
+      importedExpression?: string;
+      importedDialect?: string;
+    },
+    targetDialect: (typeof ALLOWED_DIALECTS)[number]): string|undefined {
+  if (item.dialects && item.dialects.length > 0) {
+    const exact = item.dialects.find(d => d.dialect === targetDialect);
+    if (exact) return exact.expression;
+    if (targetDialect !== 'ANSI_SQL') {
+      const ansi = item.dialects.find(d => d.dialect === 'ANSI_SQL');
+      if (ansi) return ansi.expression;
+    }
+    return undefined;
+  }
+  if (item.importedExpression !== undefined &&
+      item.importedDialect === targetDialect) {
+    return item.importedExpression;
+  }
+  return item.expression;
 }
 
 
@@ -233,26 +423,28 @@ export interface RelationshipEnd {
 /**
  * An association (junction) table backing a many-to-many relationship.
  *
- * A many-to-many link cannot be a foreign key: an FK column holds a single value
- * and so references at most one row (a to-one direction), which cannot encode a
- * pairing where each side maps to many of the other. The pairs instead live in a
- * separate junction table, one row per (source, destination) -- e.g. an
- * `enrollment` row per (student, course).
+ * A many-to-many link cannot be a foreign key: an FK column holds a single
+ * value and so references at most one row (a to-one direction), which cannot
+ * encode a pairing where each side maps to many of the other. The pairs instead
+ * live in a separate junction table, one row per (source, destination) -- e.g.
+ * an `enrollment` row per (student, course).
  *
  * Unlike a direct foreign key -- which the open format expresses and the loader
- * produces -- a junction edge is backed by its OWN table (`dataSource`) with its
- * OWN key (`keys`) and may carry edge `fields` (properties of the association
- * itself, e.g. an enrollment's grade). Each side names the columns ON THE
- * JUNCTION TABLE that reference the corresponding endpoint entity's declared
- * `keys`. The open format has no association-table syntax yet, so this is
- * produced by hand-built IR (or a future format extension), not the loader.
+ * produces -- a junction edge is backed by its OWN table (`dataSource`) with
+ * its OWN key (`keys`) and may carry edge `fields` (properties of the
+ * association itself, e.g. an enrollment's grade). Each side names the columns
+ * ON THE JUNCTION TABLE that reference the corresponding endpoint entity's
+ * declared `keys`. The open format has no association-table syntax yet, so this
+ * is produced by hand-built IR (or a future format extension), not the loader.
  */
 export interface Association {
-  dataSource: string;            // the junction table backing the edge
-  keys: string[];                // the edge's own key on the junction table
-  sourceColumns: string[];       // junction columns referencing the source entity's key
-  destinationColumns: string[];  // junction columns referencing the destination entity's key
-  fields?: Field[];              // edge properties (junction non-key columns)
+  dataSource: string;  // the junction table backing the edge
+  keys: string[];      // the edge's own key on the junction table
+  sourceColumns:
+      string[];  // junction columns referencing the source entity's key
+  destinationColumns:
+      string[];  // junction columns referencing the destination entity's key
+  fields?: Field[];  // edge properties (junction non-key columns)
 }
 
 /**
@@ -268,20 +460,431 @@ export interface Association {
  */
 export interface Metric {
   name: string;
-  expression?: string;   // target/canonical aggregate; may reference entity-qualified fields
-  importedExpression?: string; // original vendor SQL, verbatim
-  importedDialect?: string;    // dialect of `importedExpression`
+  expression?: string;          // target/canonical aggregate; may reference
+                                // entity-qualified fields
+  importedExpression?: string;  // original vendor SQL, verbatim
+  importedDialect?: string;     // dialect of `importedExpression`
+  dialects?: DialectExpression[];  // every entry, in the order written
+  stringForm?: boolean;            // true if authored as `expression: "<sql>"`
   // The single entity this metric attaches to -- the node it hangs off -- when
-  // its `expression` references exactly one. NOT part of the open format (Ossie's
-  // Metric has no such field): the loader DERIVES it by scanning the expression
-  // for known `entity.column` qualifiers (see referencedEntityNames). Omitted
-  // when the expression names no known entity (e.g. `COUNT(*)`; the loader warns)
-  // or references several -- a cross-entity metric whose join path consumers
-  // resolve from the model's relationships (the qualifiers stay inline in the
-  // expression).
+  // its expressions reference exactly one across all dialect entries (or when
+  // the author states `entity` on the metric). NOT part of the open format
+  // (Ossie's Metric has no such field): the loader DERIVES it by parsing the
+  // metric's expressions with `columnReferences` and collecting the known
+  // entity qualifiers (see `entitiesReached`). Omitted when the expressions
+  // name no known entity (e.g. `COUNT(*)`; the loader warns) or reference
+  // several -- a cross-entity metric whose join path consumers resolve from the
+  // model's relationships (the qualifiers stay inline in the expression).
   entity?: string;
+  authoredEntity?: string;          // an anchor the author wrote, vs one inferred
   description?: string;
-  type?: DataType;       // logical datatype of the result (the open format's `datatype`)
+  type?: DataType;  // logical datatype of the result (the open format's
+                    // `datatype`)
   aiContext?: AiContext;
   customExtensions?: CustomExtension[];
+}
+
+/**
+ * An action: a model-level, named write operation over the ontology -- the
+ * write-side counterpart to a metric's read. Like a metric it lives on the
+ * model (not a single entity) and may span several entities via its typed
+ * `parameters`.
+ *
+ * The model contributes only what the ontology can say that a plain tool schema
+ * cannot: parameters typed from the ontology (a projected one takes its type
+ * and its wording from the field it names) and the
+ * constraints that gate the call. The mechanics of running it are delegated to
+ * an `executor` (e.g. an MCP tool in Agent Registry); `description` is
+ * informational and does not affect runtime.
+ */
+export interface Action {
+  name: string;
+  description?: string;
+  // How the action is executed: exactly one executor kind, normalized by the
+  // loader from the open format's single-key object to this discriminated form.
+  //
+  // This is the action's PHYSICAL BINDING, and the one part of an action that
+  // is not a logical declaration. The same operation is performed differently
+  // in different stores -- DML where the data sits in a relational database, a
+  // call to whoever owns the data where it does not -- so a binding profile may
+  // supply or replace it, exactly as it supplies an entity's `source`.
+  //
+  // Absent when no binding supplies one. That makes the action unavailable,
+  // not invalid: an action with no executor still declares what it does, what
+  // gates it, and what it changes, which is the whole of what a reader needs.
+  executor?: Executor;
+  // Inputs, each a scalar value. One is either projected from a field the
+  // model declares, which is where its type and its wording come from, or
+  // declared standalone with a type of its own. See ActionParameter.
+  parameters: ActionParameter[];
+  // The constraints that gate this action, by name. This list is what gives a
+  // constraint effect over the action. A constraint no action names is a
+  // catalogued rule that no call consults, so adding one to a model cannot
+  // silently start refusing calls that succeeded before it was published.
+  //
+  // Both kinds of rule belong here. One reading the action's parameters has no
+  // other moment to run. One over stored data, guarded, says the call must not
+  // proceed from a state that is already broken -- which is less than the rule
+  // itself says, because nothing binds a check to the state a write produces.
+  guards?: string[];
+  // What the call changes: its blast radius, one entry per concept touched.
+  // Declared rather than derived, because the executor is opaque -- nothing
+  // reading the model can see what an MCP tool writes. See AffectedConcept.
+  affects?: AffectedConcept[];
+  aiContext?: AiContext;
+  customExtensions?: CustomExtension[];
+}
+
+/**
+ * One concept an action changes, and how.
+ *
+ * `concept` is the authored name of an entity or a relationship, kept verbatim
+ * for a lossless round-trip. Which of the two it is, is deliberately NOT
+ * recorded: it is a fact about the model, it changes nothing about what the
+ * entry means, and the same three operations apply either way. Whoever needs
+ * the distinction -- validate does, to know which fields the concept has --
+ * resolves it against the model, so there is one place it can be wrong instead
+ * of two. The loader warns about a name that resolves to neither.
+ *
+ * `operation` and `fields` are optional, and their absence means "unspecified"
+ * rather than "nothing". The open format accepts a bare name as shorthand for
+ * an entry with neither -- `affects: [Order]` is the coarse blast radius the
+ * proposal describes -- so a model can start there and add precision only
+ * where a rule needs it.
+ */
+export interface AffectedConcept {
+  concept: string;  // entity or relationship name, as authored
+  operation?: ConceptOperation;
+  // The fields the operation touches, when it touches only some of them. Each
+  // must be a field of `concept`. Meaningless for a `delete`, which takes the
+  // whole instance, which is why validate rejects that pairing.
+  fields?: string[];
+}
+
+/**
+ * What an action does to a concept it affects.
+ *
+ * One vocabulary covers entities and relationships alike, because both admit
+ * the same three acts. An edge is not only added and removed: a many-to-many
+ * relationship is backed by a junction table with fields of its own (see
+ * Association), so modifying an enrollment's grade is as ordinary as modifying
+ * an order's total. Splitting the vocabulary by kind would make that change
+ * inexpressible and would buy a policy predicate nothing.
+ */
+export const CONCEPT_OPERATIONS = ['create', 'modify', 'delete'] as const;
+export type ConceptOperation = typeof CONCEPT_OPERATIONS[number];
+
+/**
+ * One input to an action. Always a SCALAR value: a parameter carries a value,
+ * never an object the runtime has to go and find first.
+ *
+ * There are two ways to author one.
+ *
+ * DERIVED. `concept` plus `field` PROJECT the parameter from a field the model
+ * already declares -- of an entity or of a relationship, the same two things
+ * `affects` may name:
+ *
+ *     - {concept: Account, field: accountId}
+ *     - {name: sourceAccountId, concept: Account, field: accountId,
+ *        description: The account money leaves.}
+ *
+ * `name` defaults to the field's name, so the one-key form above declares a
+ * parameter called `accountId`. `type` MUST NOT be authored: it is the field's,
+ * and a parameter restating it is a second place for it to be wrong. The
+ * loader copies `type`, `description`, `label` and `aiContext` down from the
+ * field; the parameter's own wording wins over the field's where it states any,
+ * and the type never does.
+ *
+ * STANDALONE. Nothing in the model corresponds -- a free-text `memo`, a reason
+ * code -- so the parameter declares its own scalar `type` and names no field:
+ *
+ *     - {name: memo, type: String, description: Why the credit was issued.}
+ *
+ * `concept` and `field` are kept on the IR ALONGSIDE what they resolved to, so
+ * the reference round-trips as the author wrote it while a consumer that does
+ * not have the model -- a catalog reader, an agent holding only the published
+ * aspect -- can still read the resolved type.
+ *
+ * `required` and `default` are always the parameter's own and are never
+ * inherited: a field describes what a thing HAS, and says nothing about whether
+ * a CALL must supply a value for it.
+ *
+ * `type` is optional only as an AUTHORED key. After a load it is populated on
+ * every parameter -- stated by a standalone one, resolved from the field by a
+ * derived one. The single exception is a parameter the loader could resolve
+ * neither way, which is kept verbatim and warned about, and which validate.ts
+ * then rejects.
+ */
+export interface ActionParameter {
+  name: string;
+  // The scalar DataType. Authored by a standalone parameter, resolved from the
+  // field by a derived one; always set once the model has loaded.
+  type?: string;
+  // The entity or relationship this parameter's definition is projected from,
+  // and the field within it. Both or neither.
+  concept?: string;
+  field?: string;
+  description?: string;
+  label?: string;
+  aiContext?: AiContext;
+  required?: boolean;
+  default?: unknown;
+}
+
+/**
+ * The mechanics of how an action is executed: exactly one kind, tagged so
+ * consumers can switch on it. The open format expresses it as an object with a
+ * single kind key (`mcp` / `rest` / `grpc`); the loader normalizes that to this
+ * discriminated union. Other kinds (SQL DML, CLI, ...) can be added later.
+ */
+export type Executor =
+  | { kind: 'mcp'; mcp: McpExecutor }
+  | { kind: 'rest'; rest: RestExecutor }
+  | { kind: 'grpc'; grpc: GrpcExecutor }
+  | { kind: 'sql'; sql: SqlExecutor };
+
+/**
+ * A SQL executor: the write itself, declared in the model as an ordered list of
+ * DML statements.
+ *
+ * The other three executor kinds name a system that performs the write, so what
+ * the write does is opaque to the model. This one contains it, which buys two
+ * things the opaque kinds cannot offer.
+ *
+ *   - The blast radius is checkable. `affects` can be read against the
+ *     statements rather than taken on trust.
+ *   - A guard becomes a real gate. An MCP, REST or gRPC call commits inside a
+ *     system the caller does not control, so a write it performed could not be
+ *     rolled back if the rest of the action failed; a statement run in a
+ *     database transaction can be. Guards settle before that transaction opens,
+ *     so a refusal leaves the store untouched and no check ever observes the
+ *     write it gates.
+ *
+ * The narrowness is the safety argument, and validate.ts enforces it. A
+ * statement is a single INSERT, UPDATE or DELETE. Every `@name` it binds names
+ * a parameter the action declares, so an argument reaches the store as a bound
+ * value and never as SQL. There is no control flow, no statement composed at
+ * call time, and no way for a caller to supply a statement of its own: an
+ * action whose body arrives with the call declares nothing, and a gate cannot
+ * check what was never declared.
+ *
+ * A row the statement inserts needs a primary key, and the statement is what
+ * decides where it comes from: a UUID function the store offers, a value the
+ * caller passes as an ordinary parameter, or the key column left out where it
+ * has a default. The runtime generates nothing on its behalf. A key that comes
+ * in as a parameter is one the caller chooses, and the check in validate.ts
+ * reads only a statement's first word, so an upsert passes and overwrites the
+ * row that key names.
+ */
+export interface SqlExecutor {
+  // The statements, run in order inside the action's transaction. Each is a
+  // single DML statement; parameters are referenced as `@name`.
+  statements: string[];
+}
+
+// The verbs a SQL executor's statement may begin with. A statement is one write,
+// so there is no SELECT here and no DDL: a statement that reads is a query and
+// belongs in a metric, and a statement that reshapes the schema is not an action.
+export const SQL_EXECUTOR_VERBS = ['INSERT', 'UPDATE', 'DELETE'] as const;
+
+/**
+ * An MCP executor: references a tool already registered in Agent Registry, by
+ * the MCP server's resource name plus the tool's in-server selector. Agent
+ * Registry is the canonical source consumed at runtime (e.g. by an agent).
+ */
+export interface McpExecutor {
+  server: string;   // e.g. //agentregistry.googleapis.com/.../mcpServers/commerce
+  tool: string;     // the tool's name within that server
+}
+
+/** A REST executor: an HTTP endpoint and method. */
+export interface RestExecutor {
+  endpoint: string;
+  method: string;
+}
+
+/** A gRPC executor: a fully-qualified service and method. */
+export interface GrpcExecutor {
+  service: string;
+  method: string;
+}
+
+/**
+ * What a violated constraint does to the write that tripped it.
+ *
+ *   - `reject`   the write is refused. Nobody is allowed to approve it, which
+ *                is what makes the rule an invariant rather than a policy.
+ *   - `escalate` the write is held and a person decides. The rule is a business
+ *                threshold, so somebody is allowed to say yes.
+ *   - `warn`     the write proceeds and the violation is reported.
+ *
+ * An engine reading the catalog needs this in order to route. Without it every
+ * rule publishes with the same shape, and a $30 credit that needs a supervisor
+ * is indistinguishable from one that is simply forbidden.
+ *
+ * This is a disposition, not a magnitude, and the two are deliberately separate
+ * keys. `escalate` is not "between" reject and warn on a scale of badness: it is
+ * a different control flow, and what it really states is that an approver
+ * exists. Two rules can be equally grave -- both guarding a million-dollar write
+ * -- and differ only in whether anyone in the organization is entitled to say
+ * yes. See CONSTRAINT_SEVERITIES for the magnitude.
+ *
+ * `escalate` names that an approver exists. It does not name who: an approver
+ * role is not modeled yet.
+ *
+ * The consequence is a field rather than something a `judgment` states in its
+ * own prose, because three things need it without running a judge. An
+ * unrunnable judge -- none configured, a failed call, a timeout -- still has to
+ * route the breach it could not evaluate. A search for the rules that can stop
+ * a write cannot read prose. And a policy DSL states its effect in the rule
+ * head, so a rule whose consequence is only implied by its wording cannot be
+ * lowered into OPA or Cedar.
+ *
+ * A judgment may declare any of the three, `reject` included. What settles a
+ * judgment can decide two identical proposals differently, and `reject` leaves
+ * no appeal, so that pairing is the riskiest thing this model can express. It
+ * is still a bet an organization is entitled to place, and refusing to
+ * represent it would move the policy out of the catalog rather than prevent it.
+ * It is made auditable instead: `evaluation` publishes `judged` beside the
+ * word, so "unappealable rules settled by a model" is one query. `onViolation`
+ * is required on a judgment rather than defaulted, because a forgotten word
+ * would produce exactly that pairing silently.
+ *
+ * A constraint's word is the consequence of the one condition it states. A
+ * policy whose conditions carry different consequences is written as several
+ * constraints, which `guards` on an action lists together; the strictest
+ * consequence among the violated ones is what the action does. See
+ * docs/semantic-model/actions.md for a worked policy.
+ *
+ * STATUS: the declared word is published, read back, and routed on for the
+ * rules something settles. A judgment is settled where an action names it in
+ * `guards`, and `warn` reports while `reject` and `escalate` stop the call;
+ * `escalate` says so in the refusal, because nothing here has an approver to
+ * route to. An expression is still text nothing computes, so its word decides
+ * nothing yet.
+ */
+export const VIOLATION_EFFECTS = ['reject', 'escalate', 'warn'] as const;
+
+export type ViolationEffect = (typeof VIOLATION_EFFECTS)[number];
+
+/**
+ * How grave a violation of a constraint is, independent of what the engine does
+ * about it.
+ *
+ * Ranking and reporting want this: which of forty violations in a batch to show
+ * a human first, which to page on. Enforcement does not -- that is
+ * `onViolation`, and the split is the point. A `low` rule may still be an
+ * absolute `reject`, and a `critical` one may be a `warn` because the
+ * organization is not ready to block on it yet.
+ *
+ * The scale is the ordinary four-point one, and it avoids `warning` on purpose:
+ * a severity called `warning` sitting beside an effect called `warn` would read
+ * as the same statement made twice.
+ *
+ * STATUS: authored, published and read back. Nothing ranks or routes on it yet.
+ */
+export const CONSTRAINT_SEVERITIES =
+    ['critical', 'high', 'medium', 'low'] as const;
+
+export type ConstraintSeverity = (typeof CONSTRAINT_SEVERITIES)[number];
+
+/**
+ * A constraint: a model-level, named invariant over the ontology, stated in
+ * words and settled by a language model reading the call that would break it.
+ *
+ * A `judgment` is the rule as a sentence: *the credit memo must name a specific
+ * service failure*, *the order must be within the customer's standing limit*.
+ * It is the one body a constraint has, so settling any rule is a model call;
+ * `expression` is a reserved key the loader refuses. See "what a judgment
+ * costs" in docs/semantic-model/actions.md.
+ *
+ * A judgment states ONE condition, because the consequence is carried by
+ * `onViolation` and one word cannot route two branches. A policy whose branches
+ * end differently -- a missing approval is held for a person, a disguised
+ * transaction is refused -- is written as one constraint per branch, and
+ * `guards` on the action lists them together.
+ *
+ * What the catalog offers a judged rule is identity and governance, never
+ * determinism: one name, one owner, one version, one declared consequence, and
+ * the same text for every caller instead of prose re-improvised per call. A
+ * language model can still decide two identical proposals differently, and no
+ * schema changes that. `onViolation` is required so that the consequence of
+ * that non-determinism is always stated rather than inherited.
+ *
+ * STATUS: authored, validated, published and enforced. kcmd carries a
+ * constraint to Knowledge Catalog, where an agent can read the rules a model
+ * requires. Where an action names a constraint in `guards`, the judgment is
+ * settled before the transaction opens, which is why it reads the attempted
+ * call and never the state the write produced: a rule about the RESULT of a
+ * write is not something this body states. A caller that supplies no judge gets
+ * nothing settled -- the action is refused rather than run past the rule.
+ *
+ * `description` is the error text a violation would surface, so write it to
+ * steer an agent's next move -- "reduce the order quantity or choose another
+ * customer" -- rather than to label the rule.
+ */
+export interface Constraint {
+  name: string;
+  // The rule in words. Write field names model-qualified (`LineItem.memo`
+  // rather than "the memo"): validate resolves every `Entity.field` token in
+  // the text, so the reference is checked, and it lives in the sentence that
+  // uses it rather than in a second list that drifts from the prose beside it.
+  // States one condition, in the form of what must be true rather than what to
+  // do, and says what does not satisfy it: a policy with several conditions
+  // goes in several constraints, regrouped by `guards` on the action. The
+  // consequence goes in `onViolation`, not the prose. Optional on the type and
+  // required in fact -- validate reports a constraint that states none, so the
+  // author gets a message naming the constraint rather than a schema error
+  // naming a position in the document.
+  judgment?: string;
+  description?: string;  // human-readable summary; also the violation error
+  // What a violation of this constraint does to the write. Required, any of the
+  // three words, because inheriting the harshest one by silence is not a thing
+  // to do to a rule a model settles. See VIOLATION_EFFECTS.
+  onViolation?: ViolationEffect;
+  // How grave a violation is, for ranking and reporting. Orthogonal to
+  // `onViolation`, and carries no default -- an author who did not say has not
+  // said, and nothing reads it yet. See CONSTRAINT_SEVERITIES.
+  severity?: ConstraintSeverity;
+  aiContext?: AiContext;
+  // No `customExtensions`: the loader's constraint schema takes no
+  // `custom_extensions`, so no document can give a constraint one.
+}
+
+export interface DeploymentSpec {
+  name: string;      // unique among the model's deployments
+  // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
+  // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
+  // `deployment_target.ts` already parses all three. Keep this opaque.
+  target: string;
+  profile?: string;  // absent means the model's inline bindings
+}
+
+export interface ProfileEntityBinding {
+  name: string;
+  source?: string;          // as the profile wrote it
+  primaryKey?: string[];    // physical column names
+  uniqueKeys?: string[][];
+  fields?: Array<Pick<
+      Field,
+      'name'|'expression'|'dialects'|'stringForm'|'importedExpression'|
+      'importedDialect'>>;
+  fieldsExclude?: string[]; // fields this profile deliberately leaves unbound
+}
+
+export interface ProfileRelationshipBinding {
+  name: string;
+  fromColumns: string[];    // pairs positionally with toColumns
+  toColumns: string[];
+}
+
+export interface ProfileSpec {
+  name: string;
+  entities: ProfileEntityBinding[];
+  relationships: ProfileRelationshipBinding[];
+  metricsExclude?: '*'|string[];  // '*' means all of them, now and later
+  // Actions are out of scope for preview. Hold what the loader already
+  // accepts — `loader.ts:288` allows a missing executor and an explicit null,
+  // and an executor may be mcp, rest, grpc or sql. Do not tighten it.
+  actions?: Array<{name: string; executor?: Executor|null}>;
 }

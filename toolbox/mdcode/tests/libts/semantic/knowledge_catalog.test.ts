@@ -14,10 +14,13 @@
 //   - IR-contract cases the loader never produces (a metric with an explicit
 //     type, a cross-entity metric with no attach entity, duplicate ids).
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {loadModels} from '../../../src/libts/semantic/loader';
+import * as resolveInheritanceModule from '../../../src/libts/semantic/resolve_inheritance';
+import {applyProfileFile, mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 
 const OPTS = {
   project: 'dest-proj',
@@ -327,6 +330,12 @@ describe('entity dataSource maps to a resource path', () => {
   test('an under-qualified reference is kept verbatim', () => {
     expect(resources('ds.tbl')).toEqual(['ds.tbl']);
   });
+  test('a source containing / or : is returned unchanged', () => {
+    const spUri = '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
+    const mysqlCat = 'cloudsql_mysql:acme.us.inst.shop.payments';
+    expect(resources(spUri)).toEqual([spUri]);
+    expect(resources(mysqlCat)).toEqual([mysqlCat]);
+  });
 });
 
 
@@ -433,12 +442,14 @@ describe('model-level structure', () => {
       });
 
   test(
-      'a model targeting both BigQuery and Spanner records both URIs, BigQuery first',
+      'a model targeting Spanner, BigQuery, and AlloyDB records all three URIs in declaration order',
       () => {
         const bqUri =
             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const spannerUri =
             '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+        const alloyUri =
+            '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
         const model: SemanticModel = {
           name: 'm',
           relationships: [],
@@ -446,13 +457,40 @@ describe('model-level structure', () => {
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
           customExtensions: [{
             vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri]}),
+            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri, alloyUri]}),
           }],
         };
         const {entries} = generateCatalogResources(model, OPTS);
         const anchor = entries[0];
         expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
-            .toEqual({deploymentTargets: [bqUri, spannerUri]});
+            .toEqual({deploymentTargets: [spannerUri, bqUri, alloyUri]});
+      });
+
+  test(
+      'a model preserves every declared target in order even when deployment_target.ts does not recognize it',
+      () => {
+        const clusterAlloyUri =
+            '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
+        const alloyCatalogName = 'alloydb:p.us-central1.c.db';
+        const bqUri =
+            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const customTarget = 'bigquery:p.d.graph_name';
+        const targets =
+            [clusterAlloyUri, bqUri, alloyCatalogName, customTarget];
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: targets}),
+          }],
+        };
+        const {entries} = generateCatalogResources(model, OPTS);
+        const anchor = entries[0];
+        expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
+            .toEqual({deploymentTargets: targets});
       });
 
   test('the anchor is emitted first and is the parent of every child', () => {
@@ -514,7 +552,7 @@ describe('relationships map to schema-join entry links', () => {
         },
       ],
       relationships: [{
-        name: 'orders-to-customer',
+        name: 'placed',
         source: {entity: 'orders', columns: ['custkey']},
         destination: {entity: 'customer', columns: ['c_key']},
         description: 'each order belongs to a customer',
@@ -530,7 +568,7 @@ describe('relationships map to schema-join entry links', () => {
 
     // Link id is slugged and undirected: two UNSPECIFIED references naming the
     // endpoint entities' entries, typed schema-join.
-    expect(link.name!.endsWith('/entryLinks/m-orders-to-customer')).toBe(true);
+    expect(link.name!.endsWith('/entryLinks/m-placed')).toBe(true);
     // Already-normalized name: no rename, so no normalization warning.
     expect(link.entryLinkType.endsWith('/entryLinkTypes/schema-join'))
         .toBe(true);
@@ -570,7 +608,7 @@ describe('relationships map to schema-join entry links', () => {
         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
         expect(entryLinks.length).toBe(0);
         expect(warnings.some(
-                   w => w.includes('orders-to-customer') &&
+                   w => w.includes('relationship \'placed\'') &&
                        w.includes('many-to-many')))
             .toBe(true);
       });
@@ -583,7 +621,8 @@ describe('relationships map to schema-join entry links', () => {
     const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
     expect(entryLinks.length).toBe(0);
     expect(warnings.some(
-               w => w.includes('orders-to-customer') && w.includes('ghost')))
+               w => w.includes('relationship \'placed\'') &&
+                   w.includes('ghost')))
         .toBe(true);
   });
 
@@ -599,7 +638,7 @@ describe('relationships map to schema-join entry links', () => {
          const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
          expect(entryLinks.length).toBe(0);
          expect(warnings.some(
-                    w => w.includes('orders-to-customer') &&
+                    w => w.includes('relationship \'placed\'') &&
                         w.includes('no join columns')))
              .toBe(true);
        });
@@ -616,8 +655,287 @@ describe('relationships map to schema-join entry links', () => {
         expect(entryLinks.length).toBe(1);
         expect(warnings.some(
                    w => w.includes('Orders_To_Customer') &&
-                       w.includes('orders-to-customer')))
+                       w.includes("'orders_to_customer'")))
             .toBe(true);
+      });
+
+  test(
+      'two relationships between the same pair of entities, flag off, ' +
+          'emit one link and warn on the second',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'billing',
+            source: {entity: 'orders', columns: ['billing_custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'shipping',
+            source: {entity: 'customer', columns: ['c_key']},
+            destination: {entity: 'orders', columns: ['shipping_custkey']},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-billing',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'shipping\': shares entities \'customer\' ' +
+              'and \'orders\' with relationship \'billing\'; ' +
+              'skipped because the catalog shows one join for those entities.',
+        ]);
+      });
+
+  test(
+      'two relationships that share one entity on different pairs both ' +
+          'emit a link',
+      () => {
+        // `customer` sorts first in both pairs, so a pair key built from one
+        // entity alone would wrongly skip the second relationship.
+        const model = directFkModel();
+        model.entities.push({
+          name: 'supplier',
+          dataSource: 'p.d.supplier',
+          keys: ['s_key'],
+          fields: [],
+        });
+        model.relationships = [
+          {
+            name: 'billing',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'sourcing',
+            source: {entity: 'customer', columns: ['suppkey']},
+            destination: {entity: 'supplier', columns: ['s_key']},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/m-billing',
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-sourcing',
+        ]);
+        expect(warnings).toEqual([]);
+      });
+
+  test(
+      'a relationship from an entity to itself, flag off, is skipped with ' +
+          'a warning, and a second one gets no shared-pair warning',
+      () => {
+        const model = directFkModel();
+        model.relationships.push(
+            {
+              name: 'referrer',
+              source: {entity: 'customer', columns: ['referred_by']},
+              destination: {entity: 'customer', columns: ['c_key']},
+            },
+            {
+              name: 'parent',
+              source: {entity: 'customer', columns: ['parent_key']},
+              destination: {entity: 'customer', columns: ['c_key']},
+            });
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-placed',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'referrer\': skipped because Knowledge Catalog ' +
+              'does not support a relationship from an entity to itself.',
+          'relationship \'parent\': skipped because Knowledge Catalog ' +
+              'does not support a relationship from an entity to itself.',
+        ]);
+      });
+
+  test(
+      'an unpublishable relationship does not claim the entity pair ' +
+          'ahead of a valid relationship',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'assoc',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+            association: {
+              dataSource: 'p.d.order_customer',
+              keys: ['id'],
+              sourceColumns: ['o_key'],
+              destinationColumns: ['c_key'],
+            },
+          },
+          {
+            name: 'placed',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-placed',
+        ]);
+        expect(warnings.length).toBe(1);
+        expect(warnings[0]).toContain('relationship \'assoc\'');
+      });
+
+  test(
+      'an unpublishable relationship after a valid relationship on the same ' +
+          'entity pair or on a self-relationship warns with its ' +
+          'unpublishable reason',
+      () => {
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'placed',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'assoc',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+            association: {
+              dataSource: 'p.d.order_customer',
+              keys: ['id'],
+              sourceColumns: ['o_key'],
+              destinationColumns: ['c_key'],
+            },
+          },
+          {
+            name: 'self_assoc',
+            source: {entity: 'orders', columns: ['o_key']},
+            destination: {entity: 'orders', columns: ['o_key']},
+            association: {
+              dataSource: 'p.d.order_related',
+              keys: ['id'],
+              sourceColumns: ['o_key'],
+              destinationColumns: ['related_key'],
+            },
+          },
+        ];
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-placed',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'assoc\': many-to-many (association) edges are not ' +
+              'published to Knowledge Catalog yet; the edge lives in the ' +
+              'BigQuery property graph.',
+          'relationship \'self_assoc\': many-to-many (association) edges are ' +
+              'not published to Knowledge Catalog yet; the edge lives in the ' +
+              'BigQuery property graph.',
+        ]);
+      });
+
+  test(
+      'a column-less relationship after a valid one on the same pair warns ' +
+          'about its join columns, a self relationship on an unpublished ' +
+          'entity warns about that entity, and a column-less self ' +
+          'relationship gets the self warning',
+      () => {
+        // Adding join columns does not publish a relationship from an entity
+        // to itself, so the self warning is the one that applies to it.
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'placed',
+            source: {entity: 'orders', columns: ['custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'logical',
+            source: {entity: 'orders', columns: []},
+            destination: {entity: 'customer', columns: []},
+          },
+          {
+            name: 'ghost_self',
+            source: {entity: 'ghost', columns: ['parent_key']},
+            destination: {entity: 'ghost', columns: ['g_key']},
+          },
+          {
+            name: 'logical_self',
+            source: {entity: 'customer', columns: []},
+            destination: {entity: 'customer', columns: []},
+          },
+        ];
+
+        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+
+        expect(entryLinks.map(l => l.name)).toEqual([
+          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
+              'm-placed',
+        ]);
+        expect(warnings).toEqual([
+          'relationship \'logical\': no join columns, so it is not published ' +
+              'to Knowledge Catalog yet; add its from_columns and to_columns ' +
+              'to the relationship in the model to publish the link.',
+          'relationship \'ghost_self\': endpoint entity \'ghost\' is not a ' +
+              'published entity; the relationship link is skipped.',
+          'relationship \'logical_self\': skipped because Knowledge Catalog ' +
+              'does not support a relationship from an entity to itself.',
+        ]);
+      });
+
+  test(
+      'under v2Aspects, two relationships between the same pair of ' +
+          'entities both emit a link, and Dataplex refuses the second',
+      () => {
+        // The emitter writes `schema-join` links under both layouts, and
+        // Dataplex allows one link of a type between two entries. This pins
+        // today's output until the V2 design settles this case.
+        const model = directFkModel();
+        model.relationships = [
+          {
+            name: 'billing',
+            source: {entity: 'orders', columns: ['billing_custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+          {
+            name: 'shipping',
+            source: {entity: 'orders', columns: ['shipping_custkey']},
+            destination: {entity: 'customer', columns: ['c_key']},
+          },
+        ];
+
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, {...OPTS, v2Aspects: true});
+
+        expect(entryLinks.length).toBe(2);
+        expect(warnings).toEqual([]);
+      });
+
+  test(
+      'under v2Aspects, a relationship from an entity to itself still ' +
+          'emits a link',
+      () => {
+        // Only the flag-off path skips it. Dataplex refuses this
+        // `schema-join` link too, and the V2 design decides this case.
+        const model = directFkModel();
+        model.relationships = [{
+          name: 'referrer',
+          source: {entity: 'customer', columns: ['referred_by']},
+          destination: {entity: 'customer', columns: ['c_key']},
+        }];
+
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, {...OPTS, v2Aspects: true});
+
+        expect(entryLinks.length).toBe(1);
+        expect(warnings).toEqual([]);
       });
 });
 
@@ -647,7 +965,7 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
         },
       ],
       relationships: [{
-        name: 'orders-to-customer',
+        name: 'placed',
         source: {entity: 'orders', columns: ['custkey']},
         destination: {entity: 'customer', columns: ['c_key']},
       }],
@@ -721,5 +1039,362 @@ describe('abstract entities are skipped for Knowledge Catalog', () => {
         entries.find(e => e.entryType.endsWith('/semantic-entity'));
     expect(person).toBeDefined();
     expect(person!.entrySource!.displayName).toBe('Person');
+  });
+});
+
+
+describe('a field a binding profile excludes', () => {
+  // Pruning marks a field excluded on an entity another extends, and a pruned
+  // push publishes what the profile answers.
+  test('is left out of the schema aspect once pruning marks it', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      entities: [{
+        name: 'e', dataSource: 'p.d.t', keys: ['k'],
+        fields: [{name: 'k', expression: 'k'}, {name: 'secret', expression: 'secret'}],
+        excludedFields: ['secret'],
+      }],
+      relationships: [], metrics: [],
+    };
+    const {entries} = generateCatalogResources(model, OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    const fields = entity.aspects!['dataplex-types.global.schema'].data!.fields;
+    expect(fields.map((f: any) => f.name)).toEqual(['k']);
+  });
+
+  // A catalog-only push publishes the whole logical model,
+  // so it applies none of the exclusions the merge returns.
+  test('is still published by a catalog-only push, with an excluded metric', () => {
+    const merged = mergeProfileOntoDoc(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: orders
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: amount, expression: amount }
+          - { name: secret, expression: secret }
+    metrics:
+      - { name: revenue, expression: SUM(orders.amount) }
+`, `name: ops
+entities:
+  - name: orders
+    source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders_ops
+    fields_exclude: [secret]
+metrics_exclude: "*"
+`, 'ops');
+    if ('error' in merged) throw new Error(merged.error);
+    expect(merged.excluded).toEqual([
+      {model: 'shop', entity: 'orders', field: 'secret'},
+      {model: 'shop', metric: 'revenue'},
+    ]);
+    const {models} = loadModels(merged.text, {bindingOptional: true});
+    const {entries} = generateCatalogResources(models[0], OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    expect(entity.aspects!['dataplex-types.global.schema'].data!.fields
+               .map((f: any) => f.name))
+        .toEqual(['id', 'amount', 'secret']);
+    expect(entries.filter(e => e.entryType.endsWith('/semantic-metric')).length)
+        .toBe(1);
+  });
+});
+
+
+describe('each model and profile file is stored in a file-copy entry', () => {
+  const MODEL: SemanticModel = {
+    name: 'retail',
+    entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
+    relationships: [],
+    metrics: [],
+  };
+  const FILES = [
+    {fileName: 'retail.yaml', content: '# the model\nversion: x\n'},
+    {fileName: 'retail.profiles/prod.yaml', content: 'name: prod\n'},
+    {fileName: 'retail.profile.dev.yaml', content: 'name: dev\n'},
+  ];
+  const copies = (opts: Record<string, any>) =>
+      generateCatalogResources(MODEL, {...OPTS, ...opts})
+          .entries.filter(e => e.entryType.endsWith('/semantic-model-file'));
+
+  test('one child entry of the model entry per file', () => {
+    const entries = copies({sourceFiles: FILES});
+    const prefix = 'projects/dest-proj/locations/us/entryGroups/eg/entries/';
+    expect(entries.map(e => e.name)).toEqual([
+      `${prefix}retail.files.retail.yaml`,
+      `${prefix}retail.files.retail.profiles_prod.yaml`,
+      `${prefix}retail.files.retail.profile.dev.yaml`,
+    ]);
+    // The type is custom, so it lives in the destination project.
+    expect(entries[0]).toEqual({
+      name: `${prefix}retail.files.retail.yaml`,
+      entryType:
+          'projects/dest-proj/locations/global/entryTypes/semantic-model-file',
+      parentEntry: `${prefix}retail`,
+      aspects: {
+        'dest-proj.global.semantic-model-file': {
+          aspectType: 'projects/dest-proj/locations/global/aspectTypes/' +
+              'semantic-model-file',
+          data: FILES[0],
+        },
+      },
+    });
+  });
+
+  test('none with v2Aspects on, and none without sourceFiles', () => {
+    expect(copies({sourceFiles: FILES, v2Aspects: true})).toEqual([]);
+    expect(copies({})).toEqual([]);
+  });
+
+  // A pull compares the label with the push id on the copies.
+  test('the model entry carries the copies\' push id in the kcmd-push-id ' +
+           'label, only when copies are stored',
+       () => {
+         const anchor = (opts: Record<string, any>) =>
+             generateCatalogResources(MODEL, {...OPTS, ...opts}).entries[0];
+         const stamped = FILES.map(f => ({...f, pushId: 'push-7'}));
+         expect(anchor({sourceFiles: stamped}).entrySource).toEqual({
+           displayName: 'retail',
+           labels: {'kcmd-push-id': 'push-7'},
+         });
+         expect(anchor({sourceFiles: stamped, v2Aspects: true}).entrySource)
+             .toEqual({displayName: 'retail'});
+         expect(anchor({}).entrySource).toEqual({displayName: 'retail'});
+       });
+
+  // `slug` turns a space into `_`, and names in the older profile directory
+  // are not checked, so two of them can share an id.
+  test('two file names that map to one entry id throw, naming both', () => {
+    expect(() => copies({
+             sourceFiles: [
+               {fileName: 'retail.profiles/a b.yaml', content: 'x'},
+               {fileName: 'retail.profiles/a_b.yaml', content: 'y'},
+             ]
+           }))
+        .toThrow(
+            'files \'retail.profiles/a b.yaml\' and ' +
+            '\'retail.profiles/a_b.yaml\' both map to entry id ' +
+            '\'retail.files.retail.profiles_a_b.yaml\'; rename one of them');
+  });
+
+  test('every copy sits under a prefix the model owns', () => {
+    const {entries, ownedPrefixes} =
+        generateCatalogResources(MODEL, {...OPTS, sourceFiles: FILES});
+    for (const e of entries.filter(
+             e => e.entryType.endsWith('/semantic-model-file'))) {
+      const id = e.name.split('/').pop()!;
+      expect(ownedPrefixes.some(p => id.startsWith(p))).toBe(true);
+    }
+  });
+});
+
+
+describe('an entity source is stored as written', () => {
+  function sourceRecord(authoredSource: string, dataSource: string) {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities:
+          [{name: 'e', authoredSource, dataSource, keys: ['k'], fields: []}],
+    };
+    const {entries} = generateCatalogResources(model, OPTS);
+    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+    return entity.aspects!['dataplex-types.global.semantic-entity']
+        .data!.source;
+  }
+
+  test('a catalog name goes to importedResource, leaving resources empty',
+       () => {
+         expect(sourceRecord('bigquery:proj.ds.tbl', 'proj.ds.tbl')).toEqual({
+           resources: [],
+           importedResource: 'bigquery:proj.ds.tbl',
+         });
+         const spanner = 'spanner:p.regional-us.i.db.Orders';
+         expect(sourceRecord(spanner, spanner))
+             .toEqual({resources: [], importedResource: spanner});
+       });
+
+  test('a resource URI stays in resources unchanged', () => {
+    const uri =
+        '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
+    expect(sourceRecord(uri, uri)).toEqual({resources: [uri]});
+  });
+});
+
+
+describe('a third-party custom_extensions block is noted once', () => {
+  const NOTE = 'custom_extensions from vendors other than GOOGLE are not ' +
+      'indexed by the Knowledge Catalog aspects; the stored copy of the ' +
+      'model file preserves them';
+  const SOURCE_FILES = [{fileName: 'm.yaml', content: 'x'}];
+  const withExtensions =
+      (model: SemanticModel['customExtensions'],
+       field: SemanticModel['customExtensions']): SemanticModel => ({
+        name: 'm',
+        customExtensions: model,
+        entities: [{
+          name: 'e',
+          dataSource: 'p.d.t',
+          keys: ['k'],
+          fields: [{name: 'k', customExtensions: field}],
+        }],
+        relationships: [],
+        metrics: [],
+      });
+
+  test('once, however many blocks there are', () => {
+    const model = withExtensions(
+        [{vendorName: 'GOODDATA', data: '{}'}],
+        [{vendorName: 'LOOKER', data: '{}'}]);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES});
+    expect(warnings.filter(w => w === NOTE)).toHaveLength(1);
+  });
+
+  test('not at all with KC_V2_ASPECTS on', () => {
+    const model =
+        withExtensions([{vendorName: 'GOODDATA', data: '{}'}], undefined);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES, v2Aspects: true});
+    expect(warnings).not.toContain(NOTE);
+  });
+
+  test('for a block on a field alone', () => {
+    const model =
+        withExtensions(undefined, [{vendorName: 'LOOKER', data: '{}'}]);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES});
+    expect(warnings).toContain(NOTE);
+  });
+
+  test('for a block on an entity, a relationship, a metric or an action alone',
+       () => {
+         const block = [{vendorName: 'LOOKER', data: '{}'}];
+         const base = withExtensions(undefined, undefined);
+         const entity = base.entities[0];
+         const relationship = {
+           name: 'r',
+           source: {entity: 'e', columns: []},
+           destination: {entity: 'e', columns: []},
+         };
+         const metric = {name: 'n', expression: 'COUNT(*)'};
+         const action = {name: 'a', parameters: []};
+         const variants: SemanticModel[] = [
+           {...base, entities: [{...entity, customExtensions: block}]},
+           {...base, relationships: [{...relationship, customExtensions: block}]},
+           {...base, metrics: [{...metric, customExtensions: block}]},
+           {...base, actions: [{...action, customExtensions: block}]},
+         ];
+         for (const model of variants) {
+           const {warnings} = generateCatalogResources(
+               model, {...OPTS, sourceFiles: SOURCE_FILES});
+           expect(warnings).toContain(NOTE);
+         }
+       });
+
+  test('not at all with only a GOOGLE block', () => {
+    const model = withExtensions(
+        [{vendorName: 'GOOGLE', data: '{"deploymentTargets":[]}'}], undefined);
+    const {warnings} = generateCatalogResources(
+        model, {...OPTS, sourceFiles: SOURCE_FILES});
+    expect(warnings).not.toContain(NOTE);
+  });
+});
+
+
+describe('a subtype field that only rebinds an inherited field', () => {
+  const MODEL_FILE = (customerFields: string) => `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    entities:
+      - name: Party
+        abstract: true
+        fields:
+          - { name: id, datatype: Integer, description: The party id, label: Party ID }
+      - name: Customer
+        extends: [Party]
+        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        primary_key: [id]
+        fields:
+${customerFields}`;
+  const ANCESTOR = {
+    name: 'id',
+    dataType: 'INT64',
+    metadataType: 'NUMBER',
+    description: 'The party id',
+    annotations: {label: 'Party ID'},
+  };
+
+  function customerField(
+      model: SemanticModel, name: string, v2Aspects = false): any {
+    const {entries} = generateCatalogResources(model, {...OPTS, v2Aspects});
+    const customer = entries.find(e => e.entrySource?.displayName === 'Customer')!;
+    return customer.aspects!['dataplex-types.global.schema'].data!.fields.find(
+        (f: any) => f.name === name);
+  }
+
+  test('is published with the ancestor\'s datatype, description and label',
+       () => {
+         const {models} = loadModels(
+             MODEL_FILE('          - { name: id, expression: cust_id }\n'),
+             {bindingOptional: true});
+         expect(customerField(models[0], 'id')).toEqual(ANCESTOR);
+         // The second-generation layout lists inherited fields another way.
+         expect(customerField(models[0], 'id', true).dataType).toBe('STRING');
+       });
+
+  // Push rejects a subtype that sets a definition on an inherited field, so
+  // only the emitter's own rule is exercised here.
+  test('keeps a datatype, description and label it sets itself', () => {
+    const {models} = loadModels(
+        MODEL_FILE('          - { name: id, expression: cust_id }\n'),
+        {bindingOptional: true});
+    const model = structuredClone(models[0]);
+    const id = model.entities.find(e => e.name === 'Customer')!.fields[0];
+    Object.assign(id, {
+      type: 'String',
+      description: 'The customer id',
+      label: 'Customer ID',
+    });
+    expect(customerField(model, 'id')).toEqual({
+      name: 'id',
+      dataType: 'STRING',
+      metadataType: 'STRING',
+      description: 'The customer id',
+      annotations: {label: 'Customer ID'},
+    });
+  });
+
+  test('an error from resolving inheritance that is not an InheritanceError ' +
+           'is not swallowed',
+       () => {
+         const {models} = loadModels(
+             MODEL_FILE('          - { name: id, expression: cust_id }\n'),
+             {bindingOptional: true});
+         spyOn(resolveInheritanceModule, 'resolveInheritance')
+             .mockImplementation(() => {
+               throw new Error('resolver bug');
+             });
+         try {
+           expect(() => customerField(models[0], 'id')).toThrow('resolver bug');
+         } finally {
+           mock.restore();
+         }
+       });
+
+  test('is published the same way when a profile rebinds it', () => {
+    const {models} = loadModels(
+        MODEL_FILE('          - { name: tier, datatype: String }\n'),
+        {bindingOptional: true});
+    const applied = applyProfileFile(models[0], `name: prod
+entities:
+  - name: Customer
+    fields:
+      - { name: id, expression: cust_key }
+`, 'prod');
+    if ('error' in applied) throw new Error(applied.error);
+    expect(customerField(applied.model, 'id')).toEqual(ANCESTOR);
   });
 });
