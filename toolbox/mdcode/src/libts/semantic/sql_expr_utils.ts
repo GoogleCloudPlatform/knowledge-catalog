@@ -8,7 +8,7 @@
 // aware regex helpers (`referencedEntityNames`, `stripQualifier`).
 //
 
-import {Entity, Field, fieldBinding, keysCoveredBy} from './ir';
+import {coversKey, Entity, Field, fieldBinding} from './ir';
 import {SqlColumn, sqlColumns, withoutComments} from './sql_parser';
 
 // Matches a single- or double-quoted SQL string literal, honoring backslash
@@ -109,18 +109,18 @@ export function keyColumn(
                               stripQualifier(expr, entity.name).trim();
 }
 
-// Which keys `toColumns` cover once every name is read as its column (see
-// keysCoveredBy), or undefined when that cannot be told yet: a join column or
-// a key column names a field with no column in this binding.
-export function keysCoveredByColumns(
+// Whether `toColumns` cover a key once every name is read as its column (see
+// coversKey), or undefined when that cannot be told yet: a join column or a
+// key column names a field with no column in this binding.
+export function coversKeyByColumns(
     entity: Pick<Entity, 'name'|'fields'>, toColumns: string[],
-    primaryKey: string[], uniqueKeys: string[][]): string[]|undefined {
+    primaryKey: string[], uniqueKeys: string[][]): boolean|undefined {
   const col = (name: string) => keyColumn(entity, name);
   const to = toColumns.map(col);
   if (to.some(c => c === undefined)) return undefined;
   const keys = [primaryKey, ...uniqueKeys].map(k => k.map(col));
   if (keys.some(k => k.some(c => c === undefined))) return undefined;
-  return keysCoveredBy(
+  return coversKey(
       to as string[], keys[0] as string[], keys.slice(1) as string[][]);
 }
 

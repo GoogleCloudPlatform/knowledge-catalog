@@ -406,8 +406,7 @@ picks its own backend. The two bindings answer different parts of the same model
 - Every named profile must state each relationship's join columns itself. The
   model file's join columns are the inline binding's, and do not stand in for a
   named profile's. In every binding, `to_columns` must contain every column of
-  a primary or unique key of the target, a superset counting, and cover the
-  same keys as every other binding.
+  a primary or unique key of the target, a superset counting.
 - An entity or field named only in the logical model keeps its declaration and
   any inline column binding; a profile element whose `name` is not in the
   logical model is rejected.
@@ -485,12 +484,11 @@ writes nothing.
   each profile a vanilla model carries in its `GOOGLE` block. A profile that
   leaves an entity without a source or a relationship without join columns
   fails the push.
-- **Profiles that disagree** — every push compares the keys and join columns of
+- **Keys and join columns** — every push checks the keys and join columns of
   the model file, each profile file and each `GOOGLE` block profile. The push
-  fails when a relationship's `to_columns` cover no key of the target, or cover
-  different keys in different bindings. Where the model file gives an entity no
-  key, the push also fails unless every profile gives it keys of one shape or
-  none does.
+  fails when any binding of a relationship has `to_columns` that cover no key of
+  the target. Where the model file gives an entity no key, the push also fails
+  unless every profile gives it keys of one shape or none does.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is

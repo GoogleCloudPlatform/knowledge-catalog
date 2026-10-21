@@ -19,7 +19,7 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfileExclusions, expressionSources, ProfileExclusion, reservedProfileNameError, sourcesDialect} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
+import {columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
 
@@ -1041,11 +1041,11 @@ function validateColumnsAndRelationships(
 }
 
 // A relationship's `to_columns` must cover a primary or unique key of the `to`
-// entity. A relationship is many-to-one or one-to-one, and the key its
-// `to_columns` cover decides which, so a join that covers no key is invalid in
+// entity. A relationship is many-to-one or one-to-one only when its
+// `to_columns` cover a key, so a join that covers no key is invalid in
 // every model, whatever it deploys to. The check runs on every push, a
 // catalog-only push included. A superset of a key covers it (see
-// keysCoveredBy). Keys and join columns are compared as the physical
+// coversKey). Keys and join columns are compared as the physical
 // columns they name, and a key that names a field with no column yet cannot be
 // judged until a binding gives it one. Skipped here when the check's own inputs
 // are absent or already invalid (reported by their own checks): an association
@@ -1070,9 +1070,9 @@ function relationshipKeyErrors(
         !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
       continue;
     }
-    const covered = keysCoveredByColumns(
+    const covered = coversKeyByColumns(
         target, to, target.keys, target.uniqueKeys ?? []);
-    if (covered && !covered.length) {
+    if (covered === false) {
       errors.push(
           `relationship '${rel.name}' in model '${model.name}' (${
               document}): its to_columns ${

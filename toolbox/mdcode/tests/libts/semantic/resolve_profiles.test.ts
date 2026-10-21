@@ -1690,7 +1690,7 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
     }
   });
 
-  test('cardinality: a model file with no join columns is left out; the k-th unique key counts', () => {
+  test('cardinality: a model file with no join columns is left out; a join on a unique key counts', () => {
     const m = irModel();
     m.relationships[0].destination.columns = [];
     m.relationships[0].source.columns = [];
@@ -1704,7 +1704,7 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
     const errors = validateProfileConsistency(m2, [
       {name: 'a', entities: [], relationships: [{name: 'PlacedBy', fromColumns: ['x'], toColumns: ['email']}]},
     ]);
-    expect(errors.join('\n')).toContain("profile 'a': unique key 1");
+    expect(errors).toEqual([]);
   });
 
   test('loadProfileFile reads actions, rejects bad shapes, and matches dialects exactly', () => {
@@ -2117,9 +2117,7 @@ describe('completeness sees the model as the profile does', () => {
 describe('profile rules', () => {
   const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
-  // Every binding that states the join columns gives the same cardinality
-  // answer, the model file's included.
-  test('cardinality compares the model file\'s binding when it states join columns', () => {
+  test('cardinality: bindings may join on different keys', () => {
     // The model file joins on customer's primary key; prod restates both keys
     // and joins on its unique key instead.
     const model = (inlineJoin: boolean): SemanticModel => ({
@@ -2141,8 +2139,7 @@ describe('profile rules', () => {
                   uniqueKeys: [['c_email']]}],
       relationships: [{name: 'placed_by', fromColumns: ['o_mail'], toColumns: ['c_email']}],
     };
-    expect(validateProfileConsistency(model(true), [prod]).join('\n'))
-        .toContain("relationship 'placed_by' covers different keys under different bindings");
+    expect(validateProfileConsistency(model(true), [prod])).toEqual([]);
     expect(validateProfileConsistency(model(false), [prod])).toEqual([]);
   });
 
@@ -3484,8 +3481,8 @@ describe('excluding a field a subtype redeclares', () => {
 });
 
 
-// A relationship's to_columns must cover a key of its target, a superset
-// counts, and every binding covers the same keys.
+// A relationship's to_columns must cover a key of its target in every binding,
+// and a superset counts.
 describe('a relationship joins on a key of its target', () => {
   const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const model = (customer: object, to: string[]) => ({
@@ -3518,12 +3515,13 @@ describe('a relationship joins on a key of its target', () => {
                    "primary or unique key of 'customer'");
   });
 
-  test('covering more keys in one binding than another is a different cardinality', () => {
-    const errors = validateProfileConsistency(
-        model({keys: ['id'], uniqueKeys: [['email']]}, ['id']), [prod(['id', 'email'])]);
-    expect(errors.join('\n')).toContain(
-        "relationship 'placed_by' covers different keys under different bindings " +
-        "(the model file: the primary key; profile 'prod': the primary key and unique key 1)");
+  // The primary key [tenant_id, id] contains the unique key [id]. The model
+  // file joins on the unique key and prod on both keys.
+  test('covering more keys in one binding than another is accepted', () => {
+    expect(validateProfileConsistency(
+               model({keys: ['tenant_id', 'id'], uniqueKeys: [['id']]}, ['id']),
+               [prod(['tenant_id', 'id'])]))
+        .toEqual([]);
   });
 });
 

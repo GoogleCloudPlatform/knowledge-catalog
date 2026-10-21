@@ -1552,17 +1552,14 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
           "'from_columns' and 'to_columns' itself",
     ];
     // Expects one error from every binding.
-    const everyPush = (e: string, label?: string) =>
-        expectPushes({default: [e], a: [e], b: [e]}, label);
-    // `model` with the unique key c_email on customer.
-    const emailKey = (model: string) => model.replace(
-        'primary_key: [c_id]',
-        'primary_key: [c_id]\n        unique_keys: [[c_email]]');
-    // The error when profile b joins on c_email and the others on c_id.
-    const DIFFERENT_KEYS = "[commerce] relationship 'placed_by' covers " +
-        "different keys under different bindings (the model file, profile " +
-        "'a': the primary key; profile 'b': unique key 1); its 'to_columns' " +
-        'must cover the same keys in every binding';
+    const everyPush = (e: string) =>
+        expectPushes({default: [e], a: [e], b: [e]});
+    // The error when profiles a and b give keyless purchase primary keys of
+    // one and two columns.
+    const KEY_SHAPES = "[commerce] entity 'purchase' has no key in the model " +
+        'file, and its profiles disagree on one (a: primary key of 1, unique ' +
+        'keys []; b: primary key of 2, unique keys []); every profile states ' +
+        'keys of one shape, or none does';
 
     test('when the push deploys another binding', async () => {
       writeScope({
@@ -1718,30 +1715,16 @@ relationships:
       });
     });
 
-    test('when the bindings disagree on keys', async () => {
+    test('when the profiles disagree on a keyless entity\'s keys', async () => {
       const table = BQ('prod', 'purchase');
       const purchaseKey = (name: string, key: string) => profileFile(name)
           .replace(table, `${table}\n    primary_key: [${key}]`);
-      const cases: Array<[string, Record<string, string>, string]> = [
-        ['joins on different keys', {
-          'commerce.yaml': emailKey(commerce()),
-          'commerce.profile.a.yaml': profileFile('a'),
-          'commerce.profile.b.yaml': joinOnEmail(profileFile('b')),
-        }, DIFFERENT_KEYS],
-        ['purchase has no key in the model file', {
-          'commerce.yaml':
-              commerce().replace('        primary_key: [p_id]\n', ''),
-          'commerce.profile.a.yaml': purchaseKey('a', 'p_id'),
-          'commerce.profile.b.yaml': purchaseKey('b', 'p_id, p_line'),
-        }, "[commerce] entity 'purchase' has no key in the model file, and " +
-               'its profiles disagree on one (a: primary key of 1, unique ' +
-               'keys []; b: primary key of 2, unique keys []); every profile ' +
-               'states keys of one shape, or none does'],
-      ];
-      for (const [label, files, error] of cases) {
-        writeScope(files);
-        await everyPush(error, label);
-      }
+      writeScope({
+        'commerce.yaml': commerce().replace('        primary_key: [p_id]\n', ''),
+        'commerce.profile.a.yaml': purchaseKey('a', 'p_id'),
+        'commerce.profile.b.yaml': purchaseKey('b', 'p_id, p_line'),
+      });
+      await everyPush(KEY_SHAPES);
     });
 
     // The rules push leaves out for the profile it applies still run on
@@ -1821,38 +1804,7 @@ entities:
       });
     });
 
-    test('and still pushes when they are complete and agree', async () => {
-      // Profile b restates customer's unique keys in another order.
-      const model = joinOnEmail(commerce())
-          .replace(
-              'primary_key: [c_id]',
-              'primary_key: [c_id]\n        unique_keys: [[c_email], [c_phone]]')
-          .replace(
-              '- { name: c_id, expression: c_id }',
-              '- { name: c_id, expression: c_id }\n' +
-                  '          - { name: email, expression: c_email }\n' +
-                  '          - { name: phone, expression: c_phone }');
-      const restated = (keys: string, rest = '') =>
-          profileFile('b').replace(
-              'primary_key: ["c_id"]',
-              `primary_key: ["c_id"]\n    unique_keys: ${keys}${rest}`);
-      const cases: Array<[string, string]> = [
-        ['same names', joinOnEmail(restated('[[c_phone], [c_email]]'))],
-        ['same names, field email excluded', joinOnEmail(restated(
-             '[[c_phone], [c_email]]', '\n    fields_exclude: [email]'))],
-        ['the columns of the same fields', restated(
-             '[[phone_no], [mail]]',
-             '\n    fields:\n      - { name: email, expression: mail }\n' +
-                 '      - { name: phone, expression: phone_no }')
-             .replace('to_columns: [c_id]', 'to_columns: [mail]')],
-      ];
-      for (const [label, b] of cases) {
-        writeScope({'commerce.yaml': model, 'commerce.profile.b.yaml': b});
-        for (const profile of [undefined, 'b']) {
-          expect({label, profile, ...await pushResult(profile)})
-              .toEqual({label, profile, code: 0, errors: []});
-        }
-      }
+    test('and still pushes when they are complete', async () => {
       writeScope({
         'commerce.yaml': commerce({targets: 1}),
         'commerce.profile.a.yaml': profileFile('a'),
@@ -1959,9 +1911,6 @@ entities:
     // reports, and compares no join until the hierarchy resolves.
     test('and reports each key and join problem at most once', async () => {
       const model = (targets = 0) => joinOnEmail(commerce({targets}));
-      const shape = "[commerce.profile.a.yaml] profile 'a': entity " +
-          "'customer' restates its primary key with 1 column(s); the model " +
-          "file's has 0";
       const unknown = (binding: string) =>
           `model 'commerce' (${binding}): entity 'customer' extends unknown ` +
           "entity 'nope'; it is not defined in the model. Checks that need " +
@@ -1994,10 +1943,6 @@ entities:
           a: [own("commerce, profile 'a'", 'c_name')],
           default: [compared("profile 'a'", 'c_name')],
         }],
-        ['a key restated in another shape, which completeness reports', {
-          'commerce.yaml': uniqueKeysOnly(commerce()),
-          'commerce.profile.a.yaml': profileFile('a'),
-        }, {default: [shape], a: [shape]}],
         ['customer extends an unknown entity, so no join is compared', {
           'commerce.yaml': commerce().replace(
               'name: customer\n', 'name: customer\n        extends: [nope]\n'),
@@ -2870,13 +2815,15 @@ semantic_model:
             .toEqual({code: 1, errors: incomplete('commerce')});
       });
 
-      // Push compares the block profiles with each other and with the model
-      // file, as it compares profile files.
+      // Push compares the block profiles with each other, as it compares
+      // profile files.
       test('compares them with each other', async () => {
-        const b = complete('b');
-        b.relationships[0].to_columns = ['c_email'];
-        writeScope({'commerce.yaml': emailKey(vanilla([complete('a'), b]))});
-        await everyPush(DIFFERENT_KEYS);
+        const [a, b]: any[] = [complete('a'), complete('b')];
+        a.entities[1].primary_key = ['p_id'];
+        b.entities[1].primary_key = ['p_id', 'p_line'];
+        writeScope({'commerce.yaml': vanilla([a, b]).replace(
+            '        primary_key: [p_id]\n', '')});
+        await everyPush(KEY_SHAPES);
       });
 
       // Each model in a scope may declare its profiles in either form. A

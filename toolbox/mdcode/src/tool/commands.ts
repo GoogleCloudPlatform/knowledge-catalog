@@ -615,8 +615,8 @@ const PUSH_REPORT: PrepareReport = {
 // legacy `semantic_model:` wrapper, and a file under the reserved name
 // 'default', which no push deploys, are not read here. With `transpile`, push
 // fills in BigQuery SQL for a text written only in a vendor dialect its
-// translator reads. The named profiles are also compared with each other and
-// with the model file. The warnings go to `warnings`.
+// translator reads. Push also checks the keys and join columns of the model
+// file and of each named profile. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     profileName: string, profileDocs: ProfileDocs, declared: DeclaredProfiles,

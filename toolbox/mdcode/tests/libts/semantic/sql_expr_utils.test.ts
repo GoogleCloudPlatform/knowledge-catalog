@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -332,20 +332,20 @@ describe('stripQualifier', () => {
   });
 });
 
-describe('keysCoveredByColumns', () => {
+describe('coversKeyByColumns', () => {
   test('gives no answer while a key names a field with no column', () => {
-    // The primary key reads field `id`, unbound here, so which keys a join
-    // covers cannot be told, even though it covers the unique key.
+    // The primary key reads field `id`, unbound here, so whether a join covers
+    // a key cannot be told, even though it covers the unique key.
     const customer = {
       name: 'customer',
       fields: [{name: 'id'}, {name: 'email', expression: 'email'}],
     };
-    expect(keysCoveredByColumns(customer, ['email'], ['id'], [['email']]))
+    expect(coversKeyByColumns(customer, ['email'], ['id'], [['email']]))
         .toBeUndefined();
-    expect(keysCoveredByColumns(
+    expect(coversKeyByColumns(
                {...customer, fields: [{name: 'email', expression: 'email'}]},
                ['email'], ['id'], [['email']]))
-        .toEqual(['unique key 1']);
+        .toBe(true);
   });
 
   test('reads a key field\'s column without its comment, as the generators do', () => {
@@ -353,8 +353,7 @@ describe('keysCoveredByColumns', () => {
       name: 'orders',
       fields: [{name: 'id', expression: 'orders.order_id -- the key'}],
     };
-    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], []))
-        .toEqual(['the primary key']);
+    expect(coversKeyByColumns(orders, ['order_id'], ['id'], [])).toBe(true);
   });
 
   test('reads a key field\'s vendor SQL in its own dialect, as the generators do', () => {
@@ -369,7 +368,7 @@ describe('keysCoveredByColumns', () => {
         importedDialect: 'POSTGRES' as const,
       }],
     };
-    expect(keysCoveredByColumns(orders, ['order_id'], ['id'], [])).toEqual([]);
+    expect(coversKeyByColumns(orders, ['order_id'], ['id'], [])).toBe(false);
     // A target text is read as BigQuery, even when a PostgreSQL entry holds
     // the same text.
     const shared = {
@@ -383,7 +382,6 @@ describe('keysCoveredByColumns', () => {
         ],
       }],
     };
-    expect(keysCoveredByColumns(shared, ['order_id'], ['id'], []))
-        .toEqual(['the primary key']);
+    expect(coversKeyByColumns(shared, ['order_id'], ['id'], [])).toBe(true);
   });
 });

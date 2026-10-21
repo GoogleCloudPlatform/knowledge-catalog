@@ -1063,9 +1063,9 @@ semantic_model:
 });
 
 
-// A relationship's cardinality comes from the key its to_columns cover, so a
-// join that covers no key is rejected on every push, a catalog-only one
-// included.
+// A relationship is many-to-one or one-to-one only when its to_columns cover a
+// key, so a join that covers no key is rejected on every push, a catalog-only
+// one included.
 describe('a relationship joins on a key of its target', () => {
   const ent = (name: string, over: Partial<Entity> = {}): Entity => ({
     name, dataSource: `p.d.${name}`, keys: ['id'], fields: [], ...over,

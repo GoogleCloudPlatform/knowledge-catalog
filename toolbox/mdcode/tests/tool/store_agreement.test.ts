@@ -17,7 +17,7 @@
 // expression, action or constraint still gets a store and a skill. Like push,
 // the runtime loads every profile file except a legacy wrapper of a profile
 // it does not read. It does not run push's checks that every named profile
-// applies to the model, is complete and agrees with the others on keys. So a
+// applies to the model, is complete and has valid keys and join columns. So a
 // model whose profile file or GOOGLE block profile those checks refuse still
 // gets a store and a skill under the default profile. The runtime skips the
 // checks of push's Knowledge Catalog leg: one model per entry group, and with

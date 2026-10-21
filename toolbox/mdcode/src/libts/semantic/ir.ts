@@ -338,26 +338,19 @@ export function isFieldBound(
 }
 
 /**
- * The keys a relationship's `to_columns` cover, as "the primary key" and
- * "unique key k" (from 1), in that order. A key is covered when every one of
- * its columns is among `to_columns`, so a superset of a key covers it, since
- * each row still matches at most one target row. An empty result means the
- * join reaches no key. Column names compare as BigQuery compares them: ignoring
- * case, and without the backticks that only quote a name.
+ * Whether a relationship's `to_columns` cover the primary key or a unique key.
+ * A key is covered when every one of its columns is among `to_columns`, so a
+ * superset of a key covers it, since each row still matches at most one target
+ * row. Column names compare as BigQuery compares them: ignoring case, and
+ * without the backticks that only quote a name.
  */
-export function keysCoveredBy(
+export function coversKey(
     toColumns: string[], primaryKey: string[], uniqueKeys: string[][]):
-    string[] {
+    boolean {
   const columnKey = (c: string) => c.replace(/^`(.*)`$/, '$1').toLowerCase();
   const has = new Set(toColumns.map(columnKey));
-  const covers = (key: string[]) =>
-      key.length > 0 && key.every(c => has.has(columnKey(c)));
-  const out: string[] = [];
-  if (covers(primaryKey)) out.push('the primary key');
-  uniqueKeys.forEach((key, i) => {
-    if (covers(key)) out.push(`unique key ${i + 1}`);
-  });
-  return out;
+  return [primaryKey, ...uniqueKeys].some(
+      key => key.length > 0 && key.every(c => has.has(columnKey(c))));
 }
 
 /**

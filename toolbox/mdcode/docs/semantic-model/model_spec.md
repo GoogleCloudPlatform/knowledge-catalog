@@ -218,10 +218,10 @@ A relationship is a directed edge between two datasets.
 together (a bound edge) or both omitted (a logical edge); one without the other is
 rejected. When both are given they MUST have equal length. `from` and `to` MUST
 name datasets declared in the same model. `to_columns` MUST contain every column
-of a primary or unique key of the `to` dataset; a superset of a key counts. The
-key they cover decides whether the edge is N:1 or 1:1, so join columns that
-cover no key are rejected on every push, a catalog-only push included. Every
-binding of the relationship covers the same keys.
+of a primary or unique key of the `to` dataset; a superset of a key counts.
+An edge is N:1 or 1:1 only when its join columns cover a key, so join columns
+that cover no key are rejected on every push, a catalog-only push included.
+Each binding of the relationship may cover a different key.
 
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
@@ -656,8 +656,8 @@ profile](#73-binding-profiles), so one logical model deploys to several stores,
 in each store's own table and column names, and performs its writes by whatever
 mechanism each store has. A named profile states every relationship's join
 columns itself ([§7.3](#73-binding-profiles)). What a profile cannot change is
-the shape those bindings must keep: an entity's key shape, and which key a
-relationship's join columns cover, are the same under every binding.
+an entity's key shape, which is the same under every binding. In every binding,
+a relationship's join columns cover a key of its target.
 
 ### 7.1. Table sources
 
