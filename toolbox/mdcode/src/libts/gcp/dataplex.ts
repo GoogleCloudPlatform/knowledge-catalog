@@ -29,6 +29,22 @@ export interface Operation {
   name?: string;
   done?: boolean;
   error?: { code?: number; message?: string; };
+  // BatchChangeMetadata reports per-change failures keyed by the change's
+  // 0-based index in the request.
+  metadata?: {
+    failedRequests?: Record<string, { code?: number; message?: string; }>;
+  };
+}
+
+// One element of a BatchChangeMetadata request. Exactly one arm is set.
+export interface MetadataChange {
+  createEntryRequest?: { parent: string; entryId: string; entry: Entry; };
+  updateEntryRequest?: {
+    entry: Entry;
+    updateMask: string;
+    aspectKeys: string[];
+    deleteMissingAspects: boolean;
+  };
 }
 
 // Renders a finished operation's failure as a message, or returns undefined
@@ -292,7 +308,18 @@ export class CatalogClient extends api.ApiClient {
     return await this._delete<Entry>(name);
   }
 
-  async createEntryGroup(project: string, location: string, 
+  // Applies up to 250 entry changes to one entry group in a single call, and
+  // returns the LRO to poll. Per-change failures arrive in the operation's
+  // metadata rather than as a non-200.
+  async batchChangeMetadata(project: string, location: string,
+                            entryGroup: string, changes: MetadataChange[]):
+      Promise<api.ApiResult<Operation>> {
+    const name = catalogContainer(project, location, entryGroup);
+    return await this._post<Operation>(`${name}:batchChangeMetadata`,
+                                       { name, changes });
+  }
+
+  async createEntryGroup(project: string, location: string,
                          entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);
     const resourceName = `${parent}/entryGroups`;
