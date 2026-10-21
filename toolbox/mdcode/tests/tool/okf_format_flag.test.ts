@@ -160,12 +160,14 @@ describe('without the flag the existing paths are untouched', () => {
   });
 });
 
-describe('the stubs report not-implemented', () => {
+describe('the remaining stubs report not-implemented', () => {
+  // catalogToOkf is implemented now; it is covered by catalog_to_okf.test.ts.
+  // These two are still stubs, and this fails the moment either becomes real
+  // -- the reminder to give it a test of its own.
   test('each returns a non-zero exit code', async () => {
     const snapshot = {manifest: {source: {name: 'test-project.us.kb'}}} as any;
     const manifest = {source: {name: 'test-project.us.kb'}} as any;
 
-    expect(await catalogToOkfMod.catalogToOkf(CTX, snapshot)).toBe(1);
     expect(await okfToCatalogMod.okfToCatalog(CTX, snapshot)).toBe(1);
     expect(await initOkfMod.initOkfWorkspace(CTX, manifest)).toBe(1);
   });
