@@ -1,3 +1,9 @@
 build/
 dist/
 node_modules/
+
+# Generated skill output. The skills.md quickstart runs
+# `kcmd skills-generate --out .gemini/skills` inside a catalog scope, which
+# writes into the agent's skills directory next to the model being read.
+.gemini/
+.agents/

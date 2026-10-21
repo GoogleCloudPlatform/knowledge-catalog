@@ -1,6 +1,6 @@
-# Environment swap: the same schema in a different project/dataset. Selecting a
-# profile clears the model's inline bindings, so this profile re-declares every
-# column -- here to the same column names, over the prod tables. The golden shows
+# Environment swap: the same schema in a different project/dataset. This
+# profile re-declares every column -- here to the same column names, over the
+# prod tables. The golden shows
 # the prod tables with the identical column set and all three metrics intact.
 version: "0.2.0.dev0/google"
 semantic_model:

@@ -9,10 +9,19 @@
 // they read the GOOGLE deployment-target extension the BigQuery leg owns.
 
 import {BigQueryClient} from '../gcp/bigquery';
+import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {SemanticModel} from './ir';
-import {LoadedModel} from './loader';
+import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {bindScalar, sentence, storeCodeFor} from './parameters';
+import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
+import {applyProfileExclusions, expressionSources, ProfileExclusion, reservedProfileNameError, sourcesDialect} from './resolve_profiles';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns, referencedEntityNames} from './sql_expr_utils';
+import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
+import {SqlColumn, withoutComments} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -21,12 +30,33 @@ import {LoadedModel} from './loader';
 // `targetOptional` permits a model with NO deployment target -- the case for a
 // Knowledge-Catalog-only push, which governs the logical model and deploys no
 // graph. A graph leg never sets it, so a bq/spanner/all push still requires
-// exactly one target. A KC-only push ignores its deployment target entirely --
-// it deploys no graph.
+// exactly one target. A KC-only push skips the target count and kind checks,
+// while still rejecting a repeated target URI.
+//
+// `fieldsPruned` says the caller has already dropped every field the selected
+// binding profile leaves unbound, so `entity.fields` is a subset of what the
+// author declared. Checks that read a field list have to stand down for such a
+// model (see validateConstraints).
+//
+// `warnings` collects non-fatal messages (such as an expression the SQL parser
+// could not read, whose field references were therefore not checked) for the
+// caller to print.
+//
+// `liftedExclusions` are the fields a binding profile excludes, which a
+// catalog-only push takes off the model so that it publishes every field. The
+// check that each inherited field holds SQL still leaves each one off the
+// entity that excludes it, as applying the profile does.
 export function validatePushRequirements(
-    models: LoadedModel[], opts: {targetOptional?: boolean} = {}): string[] {
+    models: LoadedModel[],
+    opts: {
+      targetOptional?: boolean;
+      fieldsPruned?: boolean;
+      warnings?: string[];
+      liftedExclusions?: ReadonlyArray<ProfileExclusion>;
+    } = {}): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
+    errors.push(...nameAndDescriptionErrors(model, document));
     let deployInfo: ReturnType<typeof googleDeploymentTargets>;
     try {
       // One pass over the model's GOOGLE extension(s): both checks below read
@@ -39,50 +69,70 @@ export function validatePushRequirements(
       continue;
     }
 
+    // A resource name and its URI name the same resource.
+    const seenUris = new Set<string>();
+    for (const uri of deployInfo.uris) {
+      if (seenUris.has(asResourceUri(uri))) {
+        errors.push(
+            `model '${model.name}' (${document}) declares duplicate ` +
+            `deployment target '${uri}'; each deployment must target a ` +
+            `distinct resource.`);
+        break;
+      }
+      seenUris.add(asResourceUri(uri));
+    }
+
     // A graph push must declare exactly one deployment target -- a single
     // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
     // graphs per model). The target's host selects which deploy leg runs.
     //
+    // An AlloyDB target parses, and is still not one of those two: it names a
+    // database a model RUNS against rather than a graph a push publishes. It
+    // gets its own arm below so it is not reported as a typo.
+    //
     // A KC-only push (targetOptional) deploys no graph, so its deployment
-    // target is irrelevant: skip the check entirely. Such a push may carry no
-    // target (a logical model), one, or even both backends (whose KC aspect
-    // records both)
-    // -- none of that affects the Knowledge Catalog write.
+    // target count and kind are irrelevant: skip this check (duplicate targets
+    // were already rejected above). Such a push may carry no target (a logical
+    // model), one, or even several backends (whose KC aspect records all of
+    // them) -- none of that affects the Knowledge Catalog write.
     if (!opts.targetOptional) {
-      if (deployInfo.uris.length !== 1) {
+      // Where the model lists its deployments. A vanilla model with no
+      // `deployments` in its GOOGLE block is told how to declare them instead.
+      const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
+          model.deployments?.length ?
+          `under 'deployments' in its GOOGLE custom_extensions block` :
+          undefined;
+      if (deployInfo.malformed.length) {
+        // A target in no accepted form is named, alone or beside others, so
+        // the author knows which entry to fix.
         errors.push(
-            `model '${model.name}' (${document}) declares ${
-                deployInfo.uris
-                    .length} deploymentTargets; exactly one BigQuery ` +
-            `Graph or Spanner Graph target is required under its GOOGLE ` +
-            `custom_extension.`);
-      } else if (deployInfo.bigQuery.length + deployInfo.spanner.length === 0) {
-        // The single target is present but is not a supported graph URI.
-        errors.push(
-            `model '${model.name}' (${document}) deploymentTarget '${
+            `model '${model.name}' (${document}) target '${
                 deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
             `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
             `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
             `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
-      }
-    }
-
-    // A model that targets a BigQuery graph must have every metric resolve to a
-    // single entity, or the metric cannot lower to a MEASURE and would be
-    // silently dropped from the graph. The loader sets metric.entity only when
-    // the expression resolves to exactly one entity, so an unset entity is the
-    // "references zero or multiple entities" case. Spanner Graph has no
-    // MEASURE, so it imposes no such requirement (its metrics are dropped by
-    // design).
-    if (deployInfo.bigQuery.length > 0) {
-      for (const metric of model.metrics ?? []) {
-        if (!metric.entity) {
-          errors.push(
-              `metric '${metric.name}' in model '${model.name}' (${
-                  document}) targets a BigQuery graph but does not resolve to a ` +
-              `single entity; set its attach entity or scope its expression to ` +
-              `one entity.`);
-        }
+      } else if (deployInfo.uris.length !== 1) {
+        errors.push(
+            `model '${model.name}' (${document}) declares ${
+                deployInfo.uris
+                    .length} deployments; push uses ` +
+            `exactly one deployment for now, with a BigQuery Graph or ` +
+            `Spanner Graph target${
+                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
+      } else if (deployInfo.alloyDb.length) {
+        // Parseable, supported, and for the other command. AlloyDB has no
+        // property-graph DDL, so there is no graph here for a push to deploy
+        // -- which makes this a deployment pointed at the wrong verb rather
+        // than a URI to correct, and the message says which verb it is for.
+        errors.push(
+            `model '${model.name}' (${document}) target '${
+                deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
+            `model runs against rather than deploys to; AlloyDB has no ` +
+            `property graph for a push to publish. Declare a BigQuery or ` +
+            `Spanner Graph target (${
+                where ?? DEPLOYMENTS_VERSION_HINT}; push uses exactly one ` +
+            `deployment for now), or run 'kcmd push --no-profile' to publish ` +
+            `to Knowledge Catalog only.`);
       }
     }
 
@@ -96,11 +146,11 @@ export function validatePushRequirements(
     if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
         // An M:N edge binds through its junction table (association), so its
-        // direct source/destination columns are empty by design -- bigquery.ts
-        // renders it from `rel.association`. Only a plain FK edge needs direct
-        // join columns.
+        // direct source/destination columns are empty by design -- the graph
+        // generators render it from `rel.association`. Only a plain FK edge
+        // needs direct join columns.
         if (rel.association) continue;
-        if (!rel.source.columns.length || !rel.destination.columns.length) {
+        if (!rel.source.columns.length && !rel.destination.columns.length) {
           errors.push(
               `relationship '${rel.name}' in model '${model.name}' (${
                   document}) targets a graph but has no join columns; add its ` +
@@ -109,8 +159,1311 @@ export function validatePushRequirements(
         }
       }
     }
+
+    errors.push(...validateInheritance([{document, model}]));
+    errors.push(...validateColumnsAndRelationships(model, document));
+    errors.push(...relationshipKeyErrors(model, document));
+    const flaggedMetrics = new Set<string>();
+    errors.push(...validateExpressionReferences(
+        [{document, model}], !!opts.fieldsPruned, opts.warnings,
+        flaggedMetrics, opts.liftedExclusions));
+    if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
+      errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
+    }
+
+    // An action reaches Knowledge Catalog only, so its checks are
+    // target-independent: each parameter's type must resolve to something in
+    // the ontology, the executor must carry the coordinates a runtime needs to
+    // dispatch it, and each guard must name a constraint the model declares.
+    // (The "exactly one executor kind" rule is already guaranteed by the loader
+    // schema, so it cannot reach here.)
+    errors.push(...validateActions(model, document, !!opts.fieldsPruned, true));
+
+    // Constraints are logical invariants, target-independent like actions.
+    errors.push(...validateConstraints(model, document, !!opts.fieldsPruned));
   }
   return errors;
+}
+
+// Each name in `model` that breaks its kind's pattern or length limit, and each
+// description too long for the Knowledge Catalog entry that stores it. The
+// loader checks names too; this check is for a model built in memory and a
+// profile that reaches `model.profiles` some other way. Description limits are
+// checked at push only.
+function nameAndDescriptionErrors(
+    model: SemanticModel, document: string): string[] {
+  const at = `model '${model.name}' (${document})`;
+  const errors: string[] = [];
+  const check = (kind: NameKind, name: string) => {
+    const problem = nameProblem(kind, name);
+    if (problem) errors.push(`${at}: ${problem}`);
+  };
+  const tooLong = (what: string, description: string|undefined) => {
+    if (description !== undefined &&
+        description.length > MAX_ENTRY_DESCRIPTION) {
+      errors.push(
+          `${at}: the description of ${what} is ${
+              description.length} characters long; a Knowledge Catalog ` +
+          `entry's description holds at most ${MAX_ENTRY_DESCRIPTION}.`);
+    }
+  };
+  check('model', model.name);
+  tooLong(`model '${model.name}'`, model.description);
+  for (const e of model.entities ?? []) {
+    check('entity', e.name);
+    tooLong(`entity '${e.name}'`, e.description);
+    for (const f of e.fields ?? []) check('field', f.name);
+  }
+  for (const m of model.metrics ?? []) {
+    check('metric', m.name);
+    tooLong(`metric '${m.name}'`, m.description);
+  }
+  for (const r of model.relationships ?? []) {
+    check('relationship', r.name);
+    tooLong(`relationship '${r.name}'`, r.description);
+  }
+  for (const d of model.deployments ?? []) check('deployment', d.name);
+  for (const p of model.profiles ?? []) check('profile', p.name);
+  const reserved = reservedProfileNameError(document, model.profiles ?? []);
+  if (reserved) errors.push(reserved);
+  return errors;
+}
+
+// Static, target-independent checks for a model's actions. Returns one message
+// per violation. What can be statically wrong once the model has parsed:
+//   - a parameter projects from a concept the model does not declare, or a
+//     field that concept does not have (the loader kept it and only warned) --
+//     each reported as itself, because "fix the concept" and "fix the field"
+//     are two different repairs;
+//   - a parameter resolved to no scalar type at all, or to something that is
+//     not one -- the commonest case being an entity name written as the
+//     parameter's `type`, which is the old object-reference spelling;
+//   - an executor is missing a coordinate a runtime needs to dispatch it (an
+//     empty server/tool, endpoint/method, or service/method) -- the schema
+//     accepts empty strings, so this is caught here rather than at parse;
+//   - a guard names a constraint the model does not declare;
+//   - an `affects` entry names a concept the model does not declare, names
+//     fields on a 'delete' (which takes the whole instance), or names a field
+//     the concept does not have.
+//
+// Every `affects` check is a hard error for the reason the guard check is: an
+// entry that names nothing real leaves a reader believing the blast radius is
+// described when it is not, and a consumer routing on it would route on a
+// concept that does not exist.
+function validateActions(
+    model: SemanticModel, document: string, fieldsPruned: boolean,
+    checkDescriptions: boolean): string[] {
+  const errors: string[] = [];
+  const actions = model.actions ?? [];
+  if (!actions.length) return errors;
+  const constraintNames = new Set((model.constraints ?? []).map(c => c.name));
+  // Built when an `affects` entry or a projected parameter will actually read
+  // it, and through `ifResolvable` because declaredConcepts resolves
+  // inheritance.
+  //
+  // `fieldsPruned` stands the whole lookup down, which is what a profile push
+  // needs: pruning removes unbound and unavailable fields, so the field a
+  // parameter projects from may be gone from the model in hand even though the
+  // author's document names one that exists. A parameter needs only
+  // the logical definition and the loader already copied it down, so nothing
+  // about the push depends on resolving the reference a second time here.
+  // A `type` naming something that is not a scalar counts too, and it is the
+  // case that most needs the lookup: the message worth printing is "that is an
+  // entity, project the field you meant", and only the concept table can tell
+  // an entity from a typo. Leaving it out meant the one model making exactly
+  // this mistake -- the migration from an entity-reference parameter, with no
+  // `affects` and nothing yet projected -- got the generic "not a scalar
+  // datatype" instead of the instruction.
+  const needsConcepts = actions.some(
+      a => a.affects?.length ||
+          a.parameters.some(
+              p => p.concept ||
+                  (p.type &&
+                   !(DATA_TYPES as readonly string[]).includes(p.type))));
+  const concepts = !fieldsPruned && needsConcepts ?
+      ifResolvable(() => declaredConcepts(model)) :
+      undefined;
+  for (const action of actions) {
+    const where =
+        `action '${action.name}' in model '${model.name}' (${document})`;
+    // Two parameters are confusable when a caller cannot tell from their types
+    // which is which, so this keys on the datatype the caller actually sees in
+    // the tool schema. Projecting the SAME field is the stronger case of that
+    // -- two Account.accountId parameters are not merely both integers, they
+    // denote the same kind of thing -- but it needs no key of its own: a
+    // projected parameter takes the field's type, so a same-field pair is
+    // already a same-type pair. The projection only picks the wording below.
+    const byIdentity = new Map<string, ActionParameter[]>();
+    for (const param of action.parameters) {
+      errors.push(...parameterTypeErrors(param, where, concepts));
+      if (param.required === true && param.default !== undefined) {
+        errors.push(
+            `${where} has parameter '${param.name}' with both ` +
+            `'required: true' and a 'default'; a parameter with a default is ` +
+            `optional.`);
+      }
+      // Every parameter is a scalar now, so every default is checkable --
+      // including one on a parameter whose definition came from a field.
+      if (param.default !== undefined && param.default !== null &&
+          param.type !== undefined) {
+        const bound = bindScalar(param, param.default);
+        if ('error' in bound) {
+          errors.push(`${where} has parameter '${param.name}' whose default '${
+              param.default}' is invalid: ${bound.error}`);
+        }
+      }
+      const identity = param.type ?? '';
+      if (identity === '') continue;
+      const list = byIdentity.get(identity) ?? [];
+      list.push(param);
+      byIdentity.set(identity, list);
+    }
+    if (checkDescriptions) {
+      for (const [identity, params] of byIdentity) {
+        if (params.length <= 1) continue;
+        // A description has to be the parameter's OWN to separate it from its
+        // twin. Two parameters projected from one field come out of the loader
+        // carrying that field's wording verbatim, so both are described and
+        // neither is distinguished -- an identical description is worth no
+        // more here than a missing one.
+        const shares = new Map<string, number>();
+        for (const p of params) {
+          const said = p.description?.trim() ?? '';
+          shares.set(said, (shares.get(said) ?? 0) + 1);
+        }
+        const indistinct = params.filter(
+            p => shares.get(p.description?.trim() ?? '')! > 1 ||
+                !p.description?.trim());
+        if (indistinct.length > 0) {
+          const names = indistinct.map(p => `'${p.name}'`);
+          // Name the projection only when every one of them came from the one
+          // field AND that field is what more than one parameter came from.
+          // A mixed bucket has nothing in common but the datatype. So does a
+          // bucket holding a single projection beside a described parameter of
+          // the same type: the projection is indistinct, but blaming
+          // "multiple parameters projected from Account.accountId" names a
+          // duplication that is not there, and sends the author looking for a
+          // second projection to delete.
+          const pairOf = (p: ActionParameter) =>
+              p.concept !== undefined ? `${p.concept}.${p.field}` : '';
+          const projections = new Set(indistinct.map(pairOf));
+          const only = projections.size === 1 ? [...projections][0] : '';
+          const from =
+              only !== '' && params.filter(p => pairOf(p) === only).length > 1 ?
+              only :
+              '';
+          const shared = from !== '' ?
+              `multiple parameters projected from '${from}'` :
+              `multiple parameters of type '${identity}'`;
+          const one = names.length === 1;
+          errors.push(`${where} has ${shared}, so ${
+              one ? `parameter ${names[0]}` :
+                    `parameters ${names.slice(0, -1).join(', ')} and ${
+                        names[names.length - 1]}`} must ${
+              one ? 'have' : 'each have'} a 'description' of ${
+              one ? 'its' :
+                    'their'} own to distinguish ${one ? 'it' : 'them'}.`);
+        }
+      }
+    }
+    // No executor is not an error: it is an action no binding performs here,
+    // which the availability pass reports rather than the validator.
+    const executor = action.executor;
+    if (executor !== undefined) {
+      for (const missing of missingExecutorFields(executor)) {
+        errors.push(`${where} has an ${executor.kind} executor whose '${
+            missing}' is missing or blank.`);
+      }
+    }
+    // An unresolved guard leaves the author believing the write is checked when
+    // nothing checks it, so it fails the push rather than warning. Constraint
+    // names are model-scoped and the loader rejects duplicates, so a name
+    // either resolves here or names nothing at all.
+    for (const guard of action.guards ?? []) {
+      if (!constraintNames.has(guard)) {
+        errors.push(`${where} is guarded by '${guard}', but model '${
+            model.name}' declares no constraint of that name.`);
+      }
+    }
+    errors.push(...affectedConceptErrors(action, where, concepts));
+    errors.push(...sqlExecutorErrors(action, where));
+  }
+  return errors;
+}
+
+// The errors in a SQL executor's statements. Nothing here for the other three
+// executor kinds: they name a system that performs the write, so the model has
+// no text to check.
+//
+// A SQL executor contains the write, which is what makes its blast radius
+// checkable and its guards enforceable. The same property makes it the one
+// executor kind that could smuggle an unreviewed write into a governed model, so
+// the shape is pinned rather than trusted:
+//
+//   - One DML verb per statement. A statement that reads is a query, and a
+//     statement that reshapes the schema is not an action.
+//   - No statement separator. Each statement is executed on its own, so a
+//     semicolon means the author expected a second statement to run and it
+//     silently would not.
+//   - Every `@parameter` is declared. This is the load-bearing one: it is what
+//     lets the runtime BIND every value instead of interpolating it, so no
+//     argument can reach the store as SQL.
+function sqlExecutorErrors(action: Action, where: string): string[] {
+  if (action.executor?.kind !== 'sql') return [];
+  const executor = action.executor;
+  const errors: string[] = [];
+  const bindable = new Set(action.parameters.map(p => p.name));
+  executor.sql.statements.forEach((stmt, i) => {
+    const at = `${where} has a sql executor whose statement ${i + 1}`;
+    const text = stmt.trim();
+    if (!text) {
+      errors.push(`${at} is blank.`);
+      return;
+    }
+    // The same reader the runtime uses, deliberately: what a model may
+    // PUBLISH and what the runtime will EXECUTE have to agree about where a
+    // statement's verb is. A naive first-word read disagreed -- the runtime
+    // ran `-- why\nUPDATE ...` and a CTE ahead of the verb, both covered by
+    // tests, while this rejected them at push time, so the library accepted an
+    // authored executor `kcmd` refused. Sharing the scanner does not widen
+    // what may be published: it can return MERGE, which SQL_EXECUTOR_VERBS
+    // does not list, so a MERGE is still refused here.
+    const verb = leadingDmlVerb(text);
+    if (!(SQL_EXECUTOR_VERBS as readonly string[]).includes(verb)) {
+      // Name what the author wrote, not merely that nothing was found. The
+      // scanner reads DML verbs only, so a SELECT executor -- the likeliest
+      // mistake here -- comes back empty, and 'has no readable DML verb' would
+      // describe a query the author can see perfectly well. When the statement
+      // does not plainly open with a word, the first token is a comment marker
+      // and names nothing, so report the absence instead.
+      const first = text.split(/\s/, 1)[0].toUpperCase();
+      const wrote = verb || (/^[A-Z_][A-Z0-9_]*$/.test(first) ? first : '');
+      errors.push(
+          `${at} ${
+              wrote ? `starts with '${wrote}'` :
+                      'has no readable DML verb'}, but a statement must be ` +
+          `one of ${SQL_EXECUTOR_VERBS.join(', ')}.`);
+    }
+    if (text.slice(0, -1).includes(';')) {
+      errors.push(
+          `${at} contains ';'. Each statement runs on its own, so write ` +
+          `one statement per list entry.`);
+    }
+    for (const name of referencedParameters(text)) {
+      if (!bindable.has(name)) {
+        errors.push(
+            `${at} binds '@${name}', but action '${action.name}' ` +
+            `declares no parameter of that name.`);
+      }
+    }
+  });
+  return errors;
+}
+
+// The errors in one action's `affects`. Split out because the checks chain: a
+// concept that does not resolve makes every later check about it meaningless,
+// so an entry that fails one of those says nothing more. Undeclared fields do
+// not chain -- each is an independent fact about a concept that did resolve --
+// so an entry reports all of them.
+//
+// An absent `concepts` says the model reaching this point is a profile's view
+// of the author's model, not the author's model. Everything that reads the
+// ontology stands down there, because pruneUnavailable drops the fields a
+// profile leaves unbound, and the metrics that read them. An entry naming a
+// dropped field is the profile's doing rather than the author's, and failing
+// the deploy over it would fail it for no reason. An action reaches no graph in any case. What is left is the one
+// check that reads only the entry itself.
+function affectedConceptErrors(
+    action: Action, where: string,
+    concepts: Map<string, DeclaredConcept>|undefined): string[] {
+  const errors: string[] = [];
+  for (const affected of action.affects ?? []) {
+    // A `delete` takes the whole instance, so naming fields alongside one is
+    // self-contradictory whatever the ontology says.
+    if (affected.fields?.length && affected.operation === 'delete') {
+      errors.push(
+          `${where} affects '${affected.concept}' with operation 'delete' ` +
+          `and also names fields. A 'delete' takes the whole instance; drop ` +
+          `the fields.`);
+      continue;
+    }
+    if (!concepts) continue;
+
+    const concept = concepts.get(affected.concept);
+    if (!concept) {
+      errors.push(
+          `${where} affects '${affected.concept}', which is neither an ` +
+          `entity nor a relationship this model declares.`);
+      continue;
+    }
+    for (const field of affected.fields ?? []) {
+      if (!concept.fields.has(field)) {
+        errors.push(`${where} affects '${affected.concept}.${field}', but ${
+            concept.kind} '${affected.concept}' declares no field '${field}'.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// What a `concept` may name, and the fields it has. Shared with the loader --
+// which resolves a projected parameter against exactly this -- so the two can
+// never disagree about whether `Order` exists or what it declares.
+const declaredConcepts = declaredConceptFields;
+
+
+// Why a parameter has no usable scalar type, or nothing when it has one.
+//
+// Each shape of the mistake gets its own message, because each has its own
+// repair. Telling an author who misspelled a field that the concept is
+// unknown, or telling one who wrote `type: Account` that `Account` is not a
+// datatype, sends them to the wrong line.
+//
+// The projection is checked only when the ontology is in hand: `concepts` is
+// absent for a profile's pruned view, where a concept the author named may
+// legitimately be gone (see affectedConceptErrors). The type check below
+// survives that, because the loader resolved the type before any pruning ran.
+function parameterTypeErrors(
+    param: ActionParameter, where: string,
+    concepts: Map<string, DeclaredConcept>|undefined): string[] {
+  const errors: string[] = [];
+  if (param.concept !== undefined && concepts) {
+    const concept = concepts.get(param.concept);
+    if (!concept) {
+      errors.push(
+          `${where} has parameter '${param.name}' projected from '${
+              param.concept}', which is neither an entity nor a ` +
+          `relationship this model declares.`);
+    } else if (!concept.fields.has(param.field ?? '')) {
+      errors.push(`${where} has parameter '${
+          param.name}' projected from field '${param.field}', which ${
+          concept.kind} '${param.concept}' does not declare.`);
+    }
+  }
+  if (param.type === undefined) {
+    // A projection this pass could not resolve at all says nothing about the
+    // field. `concepts` is undefined when the concept table would not build --
+    // a dangling `extends`, which is reported on its own line -- and the
+    // loader then drops `extends` model-wide, so a parameter projecting from
+    // an INHERITED field arrives here typeless for a reason that has nothing
+    // to do with the field. Blaming it would send the author to a field that
+    // is correctly typed, and away from the `extends` that is the actual
+    // fault.
+    if (param.concept !== undefined && !concepts) return errors;
+    // A projection that failed above already says why there is no type; a
+    // second line repeating it would only add noise.
+    if (!errors.length) {
+      errors.push(
+          param.concept !== undefined ?
+              // The projection resolved -- the field is simply untyped. Saying
+              // "state a type, or project one from a field" here would advise
+              // the author to do what they already did, and send them looking
+              // at the action instead of at the field that is missing one.
+              `${where} has parameter '${param.name}' projected from field '${
+                  param.concept}.${param.field}', which declares no ` +
+                  `datatype. Give that field a scalar 'type' (${
+                      DATA_TYPES.join('/')}) and the parameter takes it.` :
+              `${where} has parameter '${param.name}' with no type. A ` +
+                  `parameter states a scalar 'type' (${
+                      DATA_TYPES.join('/')}), or projects one from a field ` +
+                  `with 'concept' and 'field'.`);
+    }
+    return errors;
+  }
+  if ((DATA_TYPES as readonly string[]).includes(param.type)) return errors;
+  const named = concepts?.get(param.type);
+  errors.push(
+      named ? `${where} has parameter '${param.name}' typed '${
+                  param.type}', which is ${
+                  named.kind === 'entity' ? 'an entity' : 'a relationship'} ` +
+              `rather than a scalar datatype. A parameter carries a value, ` +
+              `so take one from ${param.type} by projecting it: ` +
+              `{concept: ${param.type}, field: <field>}.` :
+              `${where} has parameter '${param.name}' typed '${
+                  param.type}', which is not a scalar datatype (${
+                  DATA_TYPES.join('/')}).`);
+  return errors;
+}
+
+
+// Static, target-independent checks for a model's constraints.
+//
+// A constraint states its rule as a `judgment`, and every constraint must state
+// one: a constraint with no body states no rule at all. (A document that states
+// the removed `expression` body never gets this far -- rejectExpressionBody in
+// loader.ts fails the parse and says where the rule goes instead.)
+//
+// A judgment gets two checks, in judgedConstraintErrors: it must say what a
+// violation does, and every `<Entity>.<field>` token naming a KNOWN entity must
+// name a field that entity declares. The second catches a typo that would
+// otherwise surface only inside an agent's rejected action -- a rule is as easy
+// to misspell in a sentence as anywhere else, and a judge handed `Order.totl`
+// is being asked about a column that does not exist.
+//
+// Everything else is left alone. So a leading qualifier that is not a known
+// entity is not guessed at here: a relationship-qualified name like
+// `OrderedAs.quantity`, a metric reference, an ordinary English word that
+// happens to contain a dot. A valid constraint must never be falsely rejected.
+//
+// Keeping that promise takes care, because the model reaching this function is
+// not the document the author wrote. Its field lists have moved twice:
+//   - Inheritance is still AS DECLARED. `extends` is flattened by the graph
+//     legs, which run after this gate, so a subtype's `fields` here omit every
+//     field it inherits. Looking the field up on the resolved model fixes that.
+//   - A profile push has already pruned unbound fields (`fieldsPruned`). The
+//     author's field is gone from the model, and resolving does not bring it
+//     back, so the field check stands down. A constraint reaches no graph in
+//     any case, and failing a push over a field this profile does not bind
+//     would refuse a deploy for no reason.
+function validateConstraints(
+    model: SemanticModel, document: string, fieldsPruned: boolean): string[] {
+  const errors: string[] = [];
+  const constraints = model.constraints ?? [];
+  if (!constraints.length) return errors;
+  const fieldsByEntity =
+      fieldsPruned ? undefined : ifResolvable(() => declaredFields(model));
+  // Names the model declares that are not fields of any one entity, which a
+  // token's tail may legitimately carry. See unknownFieldRefs.
+  const nonFieldNames = new Set([
+    ...(model.relationships ?? []).map(r => r.name),
+    ...(model.metrics ?? []).map(m => m.name),
+  ]);
+
+  for (const c of constraints) {
+    const where =
+        `constraint '${c.name}' in model '${model.name}' (${document})`;
+    if (c.judgment === undefined) {
+      errors.push(
+          `${where} declares no judgment. A constraint states its rule in ` +
+          `words, under 'judgment', and says what a violation does, under ` +
+          `'on_violation'.`);
+      continue;
+    }
+    errors.push(
+        ...judgedConstraintErrors(c, where, fieldsByEntity, nonFieldNames));
+  }
+  return errors;
+}
+
+// What a constraint must satisfy, beyond stating a body at all.
+//
+// It must say what a violation does. Any of the three words is allowed,
+// `reject` included, but silence is not: an unmarked constraint rejects, and
+// inheriting the harshest consequence by omission is the one outcome an author
+// is least likely to have meant. Nothing here reads the prose to check the word
+// against it -- the prose is prose, and a check that asked a model whether a
+// sentence means refusal would be no guardrail at all.
+//
+// The other check resolves the `Entity.field` tokens the prose mentions, which
+// is the whole of the static checking a rule settled by reading can get.
+function judgedConstraintErrors(
+    c: Constraint, where: string,
+    fieldsByEntity: Map<string, Set<string>>|undefined,
+    nonFieldNames: Set<string>): string[] {
+  const errors: string[] = [];
+  // The two checks are independent, so an empty judgment does not skip the
+  // routing one. Reporting only the empty body would send the author back for a
+  // second failure over a key they were never told about.
+  const empty = !c.judgment!.trim();
+  if (empty) {
+    errors.push(`${where} has an empty judgment.`);
+  }
+  if (c.onViolation === undefined) {
+    errors.push(
+        `${where} must state on_violation: 'reject' to ` +
+        `refuse the write, 'escalate' to hold it for a person, or 'warn' to ` +
+        `let it through and report it. An unmarked constraint rejects, which ` +
+        `is too strong a thing to inherit by leaving the key out.`);
+  }
+  if (!empty) {
+    errors.push(
+        ...unknownFieldRefs(c.judgment!, where, fieldsByEntity, nonFieldNames));
+  }
+  return errors;
+}
+
+// Every `Entity.field` token in a judgment whose entity the model declares and
+// whose field it does not.
+//
+// What makes a token a reference is that the model declares the entity, so no
+// spelling heuristic is needed and none is used: entity names here are as often
+// lowercase (`customer`, `orders`) as capitalized, and a rule keyed on the
+// capital would check some models and quietly skip others. An unrecognized
+// entity name is left alone on the principle that keeps this scan
+// conservative -- a rule may name a concept from another system, and
+// refusing to guess is what stops a valid rule being falsely rejected. A known
+// entity with an unknown field is the case where the author plainly meant this
+// model and got the name wrong, so that one is an error.
+
+// An entity that declares no fields at all is unknowable in the same way an
+// unrecognized name is, so the scan stands down there too. Fields are optional
+// on an entity, and a logical model bound to nothing but Knowledge Catalog
+// routinely declares none; reading an empty set as "this entity has no such
+// field" would refuse every constraint such a model can write.
+//
+// A tail that names something the model declares is not a misspelled field
+// either. Traversal has no syntax in the model today, so a prose token like
+// `Customer.Order` or `LineItem.BelongsTo` reads as a field of the head and
+// would be rejected for a field the author never claimed existed; the same goes
+// for `Order.total_revenue`, where metrics are model-level and the qualifier is
+// the entity the metric hangs off. The scan therefore settles only the case it
+// can: a tail the model does not declare under any kind is the misspelling.
+//
+// The two segments must be adjacent to the dot, which is what keeps a sentence
+// boundary ("check the memo. Every credit...") out of the scan. A decimal
+// number cannot survive either, since no entity is named `30`.
+function unknownFieldRefs(
+    judgment: string, where: string,
+    fieldsByEntity: Map<string, Set<string>>|undefined,
+    nonFieldNames: Set<string>): string[] {
+  if (!fieldsByEntity) return [];
+  const errors: string[] = [];
+  const seen = new Set<string>();
+  const token = /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g;
+  for (let m = token.exec(judgment); m; m = token.exec(judgment)) {
+    const [, entity, field] = m;
+    // A token with a third segment (`Order.lineItems.amount`) is a path rather
+    // than a field of `Order`, and reading its middle segment as one would
+    // reject it for a field the author never claimed existed. Nothing in the
+    // model defines path syntax today, so the scan declines to guess in both
+    // directions: a token followed by another dotted segment is skipped, and so
+    // is one preceded by a dot, which is how the tail of a path presents.
+    const after = judgment.slice(m.index + m[0].length);
+    if (/^\.\w/.test(after) || (m.index > 0 && judgment[m.index - 1] === '.')) {
+      continue;
+    }
+    const fields = fieldsByEntity.get(entity);
+    if (!fields || !fields.size || fields.has(field)) continue;
+    // The tail names something the model declares that is not a field of the
+    // head: another entity, a relationship, or a metric. `Customer.Order` and
+    // `LineItem.BelongsTo` are traversals and `Order.total_revenue` is a metric
+    // reference, none of which this scan can settle, and all of which an author
+    // writing prose reaches for. Only a tail the model does not declare at all
+    // is read as the misspelling this check exists to catch.
+    if (fieldsByEntity.has(field) || nonFieldNames.has(field)) continue;
+    const ref = `${entity}.${field}`;
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    errors.push(
+        `${where} references '${ref}', but entity '${entity}' declares no ` +
+        `field '${field}'.`);
+  }
+  return errors;
+}
+
+// What `build` returns, or nothing when the model's inheritance does not
+// resolve.
+//
+// `declaredFields` and `declaredConcepts` both resolve inheritance, and
+// resolving THROWS on an `extends` naming an entity the model does not declare,
+// on a cycle, and on an ambiguously inherited field, rather than reporting it.
+// The loader accepts such a model, a
+// Knowledge-Catalog-only push reaches no graph leg to catch it, and a profile
+// push can create one by pruning a supertype whole. A validation gate reports;
+// it does not stack-trace, so every caller that resolves inheritance to answer
+// a question comes through here and stands its own check down when the answer
+// is unavailable. That is the same thing a pruned profile does. Standing down
+// is not silence: validatePushRequirements reports the resolution failure once
+// per model, so the larger problem is named and only the checks that depend on
+// the resolved model go quiet.
+function ifResolvable<T>(build: () => T): T|undefined {
+  try {
+    return build();
+  } catch {
+    return undefined;
+  }
+}
+
+// Why resolving the model's inheritance fails, or nothing when it succeeds.
+//
+// Reported rather than thrown, and reported once for the model rather than once
+// per check that needed it. A model declaring no inheritance cannot fail, and
+// resolving clones, so it is not asked.
+function inheritanceFailure(model: SemanticModel):
+    {kind: InheritanceError['kind']|'other'; message: string}|undefined {
+  if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
+  try {
+    resolveInheritance(model);
+    return undefined;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    return {
+      kind: e instanceof InheritanceError ? e.kind : 'other',
+      message: message.endsWith('.') ? message : `${message}.`,
+    };
+  }
+}
+
+// The authored name of each property that defines a field rather than binds
+// it, for messages.
+const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
+  type: 'datatype',
+  aiContext: 'ai_context',
+  customExtensions: 'custom_extensions',
+};
+
+/**
+ * Returns one message per broken inheritance or concrete-leaf rule, or an
+ * empty list: a cycle, an unknown parent, or a field
+ * inherited from two unrelated ancestors; a redeclared inherited field; an
+ * abstract entity with a table; and a relationship or metric on an entity that
+ * is not a concrete leaf. Pruning can remove the field a rule is about, so a
+ * push that prunes runs this on the model before pruning as well as after.
+ */
+export function validateInheritance(models: LoadedModel[]): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    // Resolving inheritance throws on an `extends` naming an entity the model
+    // does not declare, on a cycle, and on a field inherited from two unrelated
+    // ancestors, and the checks below stand down rather than stack-trace on
+    // one. Standing down has to mean reporting somewhere or it means
+    // publishing a broken model in silence: the loader accepts such a model,
+    // and a Knowledge-Catalog-only push reaches no graph leg that would resolve
+    // inheritance and catch it. So the failure is reported here, once per
+    // model. Pruning never removes an entity, so an unknown parent is always
+    // the author's.
+    const failure = inheritanceFailure(model);
+    if (failure) {
+      errors.push(
+          `model '${model.name}' (${document}): ${failure.message} Checks ` +
+          `that need the resolved model are skipped until this is fixed.`);
+    }
+    errors.push(...inheritanceRuleErrors(model, document));
+  }
+  return errors;
+}
+
+// The rules inheritance puts on a model beyond resolving it:
+//   - a subtype may redeclare an inherited field only to rebind it: the line
+//     sets `expression` and nothing else;
+//   - an abstract entity has no table, so it declares no source, no key and no
+//     bound field;
+//   - a relationship endpoint, and the entity a metric belongs to, is a
+//     concrete leaf: not abstract, and extended by no other entity. An edge
+//     joins one table to one table and a measure binds to one table, while a
+//     non-leaf entity stands for the union of its descendants' tables.
+// The first rule needs the resolved model and is skipped when resolution
+// fails; that failure is reported once elsewhere.
+function inheritanceRuleErrors(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entities = model.entities ?? [];
+  const where = (name: string) =>
+      `entity '${name}' in model '${model.name}' (${document})`;
+
+  const resolved = entities.some(e => e.extends?.length) ?
+      ifResolvable(() => resolveInheritance(model).model.entities ?? []) :
+      undefined;
+  if (resolved) {
+    const ancestorsOf =
+        new Map(resolved.map(e => [e.name, e.extends ?? []]));
+    const ownNames = new Map(
+        entities.map(e => [e.name, new Set(e.fields.map(f => f.name))]));
+    for (const entity of entities) {
+      const inherited = new Set(
+          (ancestorsOf.get(entity.name) ?? [])
+              .flatMap(a => [...(ownNames.get(a) ?? [])]));
+      for (const field of entity.fields) {
+        if (!inherited.has(field.name)) continue;
+        const defined =
+            FIELD_DEFINITION_KEYS.filter(k => field[k] !== undefined)
+                .map(k => `'${AUTHORED_NAME[k] ?? k}'`);
+        if (defined.length) {
+          errors.push(
+              `${where(entity.name)}: field '${field.name}' is inherited, so ` +
+              `it may only be rebound to a column; remove ${
+                  defined.join(', ')}, which an ancestor defines.`);
+        } else if (!isFieldBound(field)) {
+          // A redeclaration sets `expression` and nothing else, so a line with
+          // only the name is not one.
+          const from = (ancestorsOf.get(entity.name) ?? [])
+                           .find(a => ownNames.get(a)?.has(field.name));
+          errors.push(
+              `${where(entity.name)}: field '${field.name}' is inherited from ` +
+              `'${from}'; restate it only to rebind it with 'expression', or ` +
+              `remove the line.`);
+        }
+      }
+    }
+  }
+
+  for (const entity of entities) {
+    if (!entity.abstract) continue;
+    if (entity.dataSource || entity.authoredSource) {
+      errors.push(
+          `${where(entity.name)} is abstract, so it has no table and cannot ` +
+          `declare a source.`);
+    }
+    if (entity.keys.length || entity.uniqueKeys?.length) {
+      errors.push(
+          `${where(entity.name)} is abstract, so it has no table and cannot ` +
+          `declare a primary key or unique keys.`);
+    }
+    for (const field of entity.fields) {
+      if (isFieldBound(field)) {
+        errors.push(
+            `${where(entity.name)} is abstract, so its field '${
+                field.name}' cannot carry an expression; bind it on each ` +
+            `concrete subtype instead.`);
+      }
+    }
+  }
+
+  const abstractNames =
+      new Set(entities.filter(e => e.abstract).map(e => e.name));
+  const extendedNames = new Set(entities.flatMap(e => e.extends ?? []));
+  const notLeaf = (name: string): string|undefined => abstractNames.has(name) ?
+      'abstract' :
+      extendedNames.has(name) ? 'extended by another entity' : undefined;
+  for (const rel of model.relationships ?? []) {
+    // A relationship from an entity to itself is reported once.
+    for (const end of new Set([rel.source.entity, rel.destination.entity])) {
+      const why = notLeaf(end);
+      if (why) {
+        errors.push(
+            `relationship '${rel.name}' in model '${model.name}' (${
+                document}) connects '${end}', which is ${why}; a ` +
+            `relationship may connect only concrete leaf entities.`);
+      }
+    }
+  }
+  for (const metric of model.metrics ?? []) {
+    const owner = metric.authoredEntity ?? metric.entity;
+    const why = owner ? notLeaf(owner) : undefined;
+    if (why) {
+      errors.push(
+          `metric '${metric.name}' in model '${model.name}' (${
+              document}) belongs to '${owner}', which is ${why}; a metric ` +
+          `may belong only to a concrete leaf entity.`);
+    }
+  }
+  return errors;
+}
+
+// True when a rejected column string could be a column name written without
+// backticks, such as `order date`, `order-date`, `margin%` or `R&D cost`. An
+// empty value gets no hint. Neither does a value that starts or ends with
+// whitespace, because the fix there is to delete the whitespace. BigQuery
+// allows only letters, numeric characters, marks, connector punctuation,
+// dashes, whitespace and `& % = + : ' < > # |` in a column name, so any other
+// character rules out the hint. Of the operators isColumnName rejects,
+// BigQuery allows `- + % = < > | &`. Each of those counts as an operator at
+// the start of the value, or next to whitespace unless it ends the value. No
+// operator among them can end an expression, so `growth %` keeps the hint. A
+// value made only of words, such as `a AND b`, passes this test, so the hint
+// is worded as a condition.
+function couldBeUnquotedColumnName(col: string): boolean {
+  return col === col.trim() &&
+      /^[\p{L}\p{N}\p{Pc}\p{Pd}\p{M}\s&%=+:'<>#|]+$/u.test(col) &&
+      !/^[-+%=<>|&]|\s[-+%=<>|&](?!$)|[-+%=<>|&]\s/.test(col);
+}
+
+function invalidColumnNameError(
+    owner: string, modelName: string, document: string, slot: string,
+    col: string): string {
+  const hint = couldBeUnquotedColumnName(col) ?
+      ' (if it names a column with spaces or special characters, wrap it ' +
+          'in backticks, for example `order date`)' :
+      '';
+  return `${owner} in model '${modelName}' (${document}): ${slot} column '${
+      col}' is not a physical column name; keys and join columns must name ` +
+      `physical table columns, not expressions or field references${hint}.`;
+}
+
+// Checks that every key column and join column is a physical column name and
+// not a SQL expression or an entity-qualified reference. Key columns are the
+// entries of `primary_key` and `unique_keys`. Join columns are the entries of
+// `from_columns` and `to_columns`. Also checks that every relationship's
+// endpoints name entities the model declares, and that its two join column
+// lists have equal length. The loader checks endpoints and lengths for a model
+// it reads, and this repeats them for a model built in memory. Push runs this
+// on the model with its profile applied, so it also checks the key and join
+// columns a profile file supplies. An abstract entity's keys and an
+// association's direct join columns are not checked.
+function validateColumnsAndRelationships(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entityNames = new Set((model.entities ?? []).map(e => e.name));
+
+  for (const entity of model.entities ?? []) {
+    if (entity.abstract) continue;
+    const owner = `entity '${entity.name}'`;
+    for (const col of entity.keys) {
+      if (!isColumnName(col)) {
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'primary_key', col));
+      }
+    }
+    for (const uk of entity.uniqueKeys ?? []) {
+      for (const col of uk) {
+        if (!isColumnName(col)) {
+          errors.push(invalidColumnNameError(
+              owner, model.name, document, 'unique_keys', col));
+        }
+      }
+    }
+  }
+
+  for (const rel of model.relationships ?? []) {
+    const owner = `relationship '${rel.name}'`;
+    const at = `${owner} in model '${model.name}' (${document})`;
+    if (!entityNames.has(rel.source.entity)) {
+      errors.push(
+          `${at}: ${undefinedEndpointProblem('from', rel.source.entity)}.`);
+    }
+    if (!entityNames.has(rel.destination.entity)) {
+      errors.push(
+          `${at}: ${undefinedEndpointProblem('to', rel.destination.entity)}.`);
+    }
+    if (rel.association) continue;
+    const fromCount = rel.source.columns.length;
+    const toCount = rel.destination.columns.length;
+    if (!fromCount !== !toCount) {
+      errors.push(`${at}: ${HALF_BOUND_JOIN_PROBLEM}`);
+    } else if (fromCount !== toCount) {
+      errors.push(`${at}: ${joinLengthProblem(fromCount, toCount)}.`);
+    }
+    for (const col of rel.source.columns) {
+      if (!isColumnName(col)) {
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'from_columns', col));
+      }
+    }
+    for (const col of rel.destination.columns) {
+      if (!isColumnName(col)) {
+        errors.push(invalidColumnNameError(
+            owner, model.name, document, 'to_columns', col));
+      }
+    }
+  }
+
+  return errors;
+}
+
+// A relationship's `to_columns` must cover a primary or unique key of the `to`
+// entity. A relationship is many-to-one or one-to-one, and the key its
+// `to_columns` cover decides which, so a join that covers no key is invalid in
+// every model, whatever it deploys to. The check runs on every push, a
+// catalog-only push included. A superset of a key covers it (see
+// keysCoveredBy). Keys and join columns are compared as the physical
+// columns they name, and a key that names a field with no column yet cannot be
+// judged until a binding gives it one. Skipped here when the check's own inputs
+// are absent or already invalid (reported by their own checks): an association
+// (junction-table) relationship, an empty `to_columns` list, a non-column entry
+// in `to_columns`, an undeclared or abstract `to` entity, or a non-column entry
+// in the `to` entity's `primary_key` or `unique_keys`.
+function relationshipKeyErrors(
+    model: SemanticModel, document: string): string[] {
+  const errors: string[] = [];
+  const entities = (model.entities ?? []).some(e => e.extends?.length) ?
+      ifResolvable(() => resolveInheritance(model).model.entities) ??
+          model.entities :
+      model.entities ?? [];
+  const byName = new Map(entities.map(e => [e.name, e]));
+  for (const rel of model.relationships ?? []) {
+    const to = rel.destination.columns;
+    if (rel.association || !to.length) continue;
+    if (!to.every(isColumnName)) continue;
+    const target = byName.get(rel.destination.entity);
+    if (!target || target.abstract) continue;
+    if (!target.keys.every(isColumnName) ||
+        !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
+      continue;
+    }
+    const covered = keysCoveredByColumns(
+        target, to, target.keys, target.uniqueKeys ?? []);
+    if (covered && !covered.length) {
+      errors.push(
+          `relationship '${rel.name}' in model '${model.name}' (${
+              document}): its to_columns ${
+              JSON.stringify(to)} cover no primary or unique key of '${
+              target.name}'; join on every column of one of its keys, and ` +
+          `declare that key if '${target.name}' has none.`);
+    }
+  }
+  return errors;
+}
+
+// Why each field of `model` holds no SQL, in the loader's words. Each field
+// is read on the entity that declares it, and each field an entity inherits
+// is read on that entity, as the loader does, less each field in
+// `liftedExclusions` on the entity that excludes it. An association's field
+// is an edge property, read on its relationship.
+function fieldNoSqlErrors(
+    model: SemanticModel, document: string,
+    liftedExclusions: ReadonlyArray<ProfileExclusion> = []): string[] {
+  const where = `in model '${model.name}' (${document})`;
+  const errors: string[] = [];
+  for (const e of model.entities ?? []) {
+    for (const f of e.fields ?? []) {
+      const problem = noSqlProblemOf(f, e.name);
+      if (problem) {
+        errors.push(
+            `field '${e.name}.${f.name}' ${where}: ${problem}; write the ` +
+            `field's SQL, or remove 'expression' to leave the field unbound.`);
+      }
+    }
+  }
+  if ((model.entities ?? []).some(e => e.extends?.length)) {
+    const marked = applyProfileExclusions(model, liftedExclusions);
+    const concepts = ifResolvable(() => declaredConcepts(marked));
+    const inherited = concepts ?
+        inheritedNoSqlProblems(marked.entities ?? [], concepts, noSqlProblemOf) :
+        [];
+    for (const problem of inherited) {
+      errors.push(`model '${model.name}' (${document}): ${problem}.`);
+    }
+  }
+  for (const rel of model.relationships ?? []) {
+    for (const f of rel.association?.fields ?? []) {
+      const problem = noSqlProblemOf(f, rel.name);
+      if (problem) {
+        errors.push(
+            `relationship '${rel.name}' field '${f.name}' ${where}: ${
+                problem}; write the field's SQL.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// The error for a metric with no SQL, or undefined. A metric is rejected when
+// none of its texts holds SQL, with or without an anchor, since the graph
+// would drop it. It is also rejected when any one of its texts holds none, as
+// the loader rejects it, since a model built in memory skips the loader.
+function metricNoSqlError(
+    metric: Metric, model: SemanticModel, document: string): string|undefined {
+  const where = `metric '${metric.name}' in model '${model.name}' (${document})`;
+  const readable = expressionSources(metric).filter(
+      s => noSqlReason(s.text, s.dialect) === undefined);
+  if (!readable.length) {
+    return `${where} has no SQL in 'expression'; write the metric's SQL.`;
+  }
+  const problem = noSqlProblemOf(metric);
+  return problem && `${where}: ${problem}; write the metric's SQL.`;
+}
+
+// Validates field and metric expressions:
+//   - Reject a field or a metric with no SQL, as the loader does, since a
+//     model built in memory skips the loader (see fieldNoSqlErrors and
+//     metricNoSqlError).
+// The rules below run when inheritance resolved cleanly:
+//   - For each metric:
+//     1. Unless it has no SQL, reject a metric with no `authoredEntity` when
+//        its expressions, read together, reach no entity or more than one.
+//     2. Reject when `authoredEntity ?? entity` does not name a declared
+//        entity (runs on every push).
+//     3. When `authoredEntity` is set and the expressions reference at least
+//        one entity, at least one of those must be `authoredEntity`.
+//     4. For every referenced entity, every field it is referenced with must
+//        be declared or inherited on that entity (gated on `!fieldsPruned`,
+//        and run before pruning).
+//     5. Reject a column reference with no entity qualifier, or a qualified
+//        reference whose qualifier is not a declared entity (including when it
+//        differs in case from a declared entity), in a metric expression.
+//   - For each field on each entity E:
+//     1. Reject any reference to an entity other than E.
+//     2. For references to E itself, every field named must be declared or
+//        inherited on E (gated on `!fieldsPruned`, and run before pruning).
+//
+// Exported so `commands.ts` can also run it on the unpruned model before
+// `pruneUnavailable` drops unbound fields and metrics on a graph push. When
+// given, `flaggedMetrics` collects the name of each metric it reports.
+// `liftedExclusions` is as validatePushRequirements takes it.
+export function validateExpressionReferences(
+    models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
+    flaggedMetrics?: Set<string>,
+    liftedExclusions?: ReadonlyArray<ProfileExclusion>): string[] {
+  const errors: string[] = [];
+  for (const {document, model} of models) {
+    errors.push(...fieldNoSqlErrors(model, document, liftedExclusions));
+    const fieldsByEntity = ifResolvable(() => declaredFields(model));
+    if (!fieldsByEntity) {
+      for (const metric of model.metrics ?? []) {
+        const noSql = metricNoSqlError(metric, model, document);
+        if (!noSql) continue;
+        errors.push(noSql);
+        flaggedMetrics?.add(metric.name);
+      }
+      continue;
+    }
+    const entityNames = [...fieldsByEntity.keys()];
+    const impliedDialect = sourcesDialect(model);
+    const addUnreadableWarning =
+        (what: string, total: number, unreadDialects: string[]) => {
+          if (!unreadDialects.length) return;
+          if (unreadDialects.length === total) {
+            warnings.push(
+                `${what} in model '${model.name}' (${document}): kcmd could ` +
+                `not read its SQL, so the fields it reads were not checked.`);
+          } else {
+            const listed = unreadDialects.map(d => `'${d}'`).join(', ');
+            const entryText = unreadDialects.length === 1 ?
+                'that entry reads' :
+                'those entries read';
+            warnings.push(
+                `${what} in model '${model.name}' (${document}): kcmd could ` +
+                `not read its ${listed} SQL, so the fields ${entryText} were ` +
+                `not checked.`);
+          }
+        };
+
+    for (const entity of model.entities ?? []) {
+      const others = entityNames.filter(n => n !== entity.name);
+      const knownFields = fieldsByEntity.get(entity.name)!;
+      for (const field of entity.fields ?? []) {
+        // A text with no SQL has nothing to read, so it gets no warning.
+        const sources = expressionSources(field).filter(
+            s => noSqlReason(s.text, s.dialect, entity.name) === undefined);
+        const allColumns: SqlColumn[] = [];
+        const unreadDialects: string[] = [];
+        for (const {text, dialect} of sources) {
+          const columns = columnsForSource(text, dialect, impliedDialect);
+          if (!columns) {
+            unreadDialects.push(dialect);
+            continue;
+          }
+          allColumns.push(...columns);
+        }
+        addUnreadableWarning(
+            `field '${entity.name}.${field.name}'`, sources.length,
+            unreadDialects);
+        for (const other of others) {
+          const refs = fieldsReadOn(allColumns, other);
+          if (refs.length) {
+            errors.push(
+                `field '${entity.name}.${field.name}' in model '${
+                    model.name}' (${document}) references entity '${
+                    other}' ('${other}.${
+                    refs[0]}'); a field expression may only reference its ` +
+                `own entity '${
+                    entity.name}' or unqualified columns of its backing ` +
+                `table.`);
+          }
+        }
+        if (!fieldsPruned) {
+          for (const ref of fieldsReadOn(allColumns, entity.name)) {
+            if (!knownFields.has(ref)) {
+              errors.push(
+                  `field '${entity.name}.${field.name}' in model '${
+                      model.name}' (${document}) references '${
+                      entity.name}.${ref}', which is not a declared or ` +
+                  `inherited field of '${entity.name}'.`);
+            }
+          }
+        }
+      }
+    }
+
+    for (const metric of model.metrics ?? []) {
+      const before = errors.length;
+      const sources = expressionSources(metric);
+      // A text with no SQL has nothing to read, so it gets no warning.
+      const readable =
+          sources.filter(s => noSqlReason(s.text, s.dialect) === undefined);
+      const allColumns: SqlColumn[] = [];
+      const unreadDialects: string[] = [];
+      for (const {text, dialect} of readable) {
+        const columns = columnsForSource(text, dialect, impliedDialect);
+        if (!columns) {
+          unreadDialects.push(dialect);
+          continue;
+        }
+        allColumns.push(...columns);
+      }
+      addUnreadableWarning(
+          `metric '${metric.name}'`, readable.length, unreadDialects);
+
+      const authored = metric.authoredEntity;
+      const anchor = authored ?? metric.entity;
+      const reached = entitiesReached(allColumns, entityNames);
+
+      // An anchor does not make up for missing SQL: the graph would drop the
+      // metric.
+      const noSql = metricNoSqlError(metric, model, document);
+      if (noSql) {
+        errors.push(noSql);
+      } else if (
+          !authored && unreadDialects.length === 0 && allColumns.length === 0 ||
+          !authored && reached.length > 1) {
+        const fixHint = model.version === '0.2.0.dev0' ?
+            `set 'entity' in a GOOGLE custom_extensions block on the metric ` +
+            `(or use version '0.2.0.dev0/google' and set 'entity' on the ` +
+            `metric) or scope its expression to one entity.` :
+            `set 'entity' on the metric or scope its expression to one entity.`;
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) has no 'entity' anchor and its expression${
+                reached.length === 0 ?
+                    ' reaches no declared entity' :
+                    ` reaches multiple entities (${reached.join(', ')})`}, ` +
+            `so it does not resolve to a single entity; ${fixHint}`);
+      }
+
+      if (anchor !== undefined && !fieldsByEntity.has(anchor)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}): entity '${
+                anchor}' is not declared in the model.`);
+      }
+
+      if (authored !== undefined && fieldsByEntity.has(authored) &&
+          reached.length > 0 && !reached.includes(authored)) {
+        errors.push(
+            `metric '${metric.name}' in model '${model.name}' (${
+                document}) is anchored to entity '${
+                authored}', but its expression only references ${
+                reached.map(e => `'${e}'`).join(', ')}; the anchor ` +
+            `contradicts the SQL.`);
+      }
+
+      if (!fieldsPruned) {
+        for (const entityName of reached) {
+          const knownFields = fieldsByEntity.get(entityName)!;
+          for (const ref of fieldsReadOn(allColumns, entityName)) {
+            if (!knownFields.has(ref)) {
+              errors.push(
+                  `metric '${metric.name}' in model '${model.name}' (${
+                      document}): expression references '${entityName}.${
+                      ref}', but entity '${entityName}' has no field '${
+                      ref}'; metric expressions must reference declared ` +
+                  `fields, not physical columns.`);
+            }
+          }
+        }
+      }
+
+      const seenUnqualified = new Set<string>();
+      for (const col of allColumns) {
+        if (col.qualifier !== undefined &&
+            (fieldsByEntity.has(col.qualifier) || col.qualifier === anchor)) {
+          continue;
+        }
+        const token = col.qualifier !== undefined ?
+            `${col.qualifier}.${col.name}` :
+            col.name;
+        if (seenUnqualified.has(token)) continue;
+        seenUnqualified.add(token);
+        if (col.qualifier === undefined) {
+          errors.push(
+              `metric '${metric.name}' in model '${model.name}' (${
+                  document}): '${token}' must be written as ` +
+              `'entity.field'; a metric reads fields, never columns.`);
+        } else {
+          const sameNameOtherCase = entityNames.find(
+              n => n.toLowerCase() === col.qualifier!.toLowerCase());
+          if (sameNameOtherCase) {
+            errors.push(
+                `metric '${metric.name}' in model '${model.name}' (${
+                    document}): '${token}' uses qualifier '${
+                    col.qualifier}', which differs in case from entity '${
+                    sameNameOtherCase}'; entity names are case-sensitive.`);
+          } else {
+            errors.push(
+                `metric '${metric.name}' in model '${model.name}' (${
+                    document}): '${token}' has qualifier '${
+                    col.qualifier}', which is not a declared entity in ` +
+                `model '${model.name}'; write 'entity.field' starting with ` +
+                `a declared entity.`);
+          }
+        }
+      }
+      if (errors.length > before) flaggedMetrics?.add(metric.name);
+    }
+  }
+  return errors;
+}
+
+// Temporary BigQuery-only metric check, until the BigQuery generator places
+// measures with the SQL parser. Rejects a metric that the generator
+// (`bigquery.ts`) would skip: one with only another engine's SQL, which the
+// generator does not emit, or one it drops because its regex
+// (`referencedEntityNames`) disagrees with the parser or because
+// `metric.entity` is unset. Reports only metrics that
+// `validateExpressionReferences` has not already flagged.
+function validateBigQueryMetrics(
+    model: SemanticModel, document: string,
+    alreadyFlagged: ReadonlySet<string>): string[] {
+  const errors: string[] = [];
+  const entityNames = (model.entities ?? []).map(e => e.name);
+  for (const metric of model.metrics ?? []) {
+    if (alreadyFlagged.has(metric.name)) continue;
+    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
+    if (metric.expression === undefined &&
+        metric.importedExpression !== undefined) {
+      errors.push(
+          `${prefix} targets a BigQuery graph with only a '${
+              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
+      continue;
+    }
+    // The generator reads the expression with its comments removed.
+    const expr = withoutComments(
+        metric.expression ?? metric.importedExpression ?? '', 'BIGQUERY');
+    let referenced = referencedEntityNames(expr, entityNames);
+    if (referenced.length === 0 && metric.entity) {
+      referenced = [metric.entity];
+    }
+    if (referenced.length > 1) {
+      errors.push(
+          `${prefix} targets a BigQuery graph and references multiple ` +
+          `entities (${referenced.join(', ')}); the BigQuery generator ` +
+          `reads every '<entity>.' outside comments as a qualifier, ` +
+          `including a function namespace such as 'NET.', so remove the ` +
+          `extra '<entity>.' match or scope its expression to one entity.`);
+    } else if (referenced.length === 0) {
+      const anchor = model.version === OSSIE_VERSION ?
+          `'entity' in a GOOGLE custom_extensions block on the metric` :
+          `top-level 'entity'`;
+      errors.push(
+          `${prefix} targets a BigQuery graph but does not resolve to a ` +
+          `single entity; the BigQuery generator reads '<entity>.' ` +
+          `qualifiers in the expression or ${anchor}.`);
+    }
+  }
+  return errors;
+}
+
+// Every field each entity has, inherited and profile-excluded ones included so
+// an unpruned check before `pruneUnavailable` does not report a profile-excluded
+// inherited field as undeclared. Inheritance is resolved through the same pass
+// the graph legs use rather than by walking `extends` here, so the two can
+// never disagree about what a subtype has. The pass clones, so it is skipped
+// for a model that declares no inheritance.
+function declaredFields(model: SemanticModel): Map<string, Set<string>> {
+  const inherits = (model.entities ?? []).some(e => e.extends?.length);
+  const entities =
+      (inherits ? resolveInheritance(model).model : model).entities ?? [];
+  return new Map(entities.map(
+      e => [
+        e.name,
+        new Set([
+          ...(e.fields ?? []).map(f => f.name),
+          ...(e.excludedFields ?? []),
+        ]),
+      ]));
+}
+
+// The executor coordinate fields that are absent or blank. An executor with no
+// gaps yields an empty list.
+function missingExecutorFields(ex: Executor): string[] {
+  const blank = (s: string) => s.trim().length === 0;
+  switch (ex.kind) {
+    case 'mcp':
+      return [['server', ex.mcp.server], ['tool', ex.mcp.tool]]
+          .filter(([, v]) => blank(v))
+          .map(([k]) => k);
+    case 'rest':
+      return [['endpoint', ex.rest.endpoint], ['method', ex.rest.method]]
+          .filter(([, v]) => blank(v))
+          .map(([k]) => k);
+    case 'grpc':
+      return [['service', ex.grpc.service], ['method', ex.grpc.method]]
+          .filter(([, v]) => blank(v))
+          .map(([k]) => k);
+    case 'sql':
+      return ex.sql.statements.every(blank) ? ['statements'] : [];
+  }
 }
 
 
@@ -205,20 +1558,272 @@ function billingProject(model: SemanticModel, defaultProject: string): string {
 
 
 // A source that can be probed as a BigQuery table: the canonical `dataSource`,
-// trimmed, or null when it is not a table reference -- empty, or a query the
-// loader kept verbatim (contains whitespace). Unlike a tables.get probe this
-// imposes no part-count limit, so a three-part `project.dataset.table` and a
-// four-part REST-catalog / Lakehouse name are both returned for the dry-run to
-// resolve.
+// trimmed, or null when it is empty or a non-BigQuery resource URI. Unlike a
+// tables.get probe this imposes no part-count limit, so a three-part
+// `project.dataset.table` and a four-part BigLake / REST-catalog name are both
+// returned for the dry-run to resolve.
 function probeableRef(dataSource: string|undefined): string|null {
   const trimmed = (dataSource ?? '').trim();
-  if (!trimmed || /\s/.test(trimmed)) return null;
+  if (!trimmed) return null;
   // A non-BigQuery resource URI (Spanner/AlloyDB/iceberg/...) is not a
   // BigQuery table, so the BigQuery pre-flight does not probe it. (BigQuery
-  // source URIs are normalized to project.dataset.table by the loader, so a
+  // and BigLake source URIs are normalized to dotted names by the loader, so a
   // URI reaching here is non-BigQuery.)
   if (trimmed.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
     return null;
   }
   return trimmed;
+}
+
+
+// Live pre-flight over an action's DML: asks the store the profile binds to
+// parse, resolve and type-check every `sql` executor statement BEFORE the model
+// is published, without executing any of it. A statement that names a table or
+// column the database does not have fails the push instead of the first agent
+// that calls the action.
+//
+// WHY THIS EXISTS AT PUSH AND NOWHERE ELSE. An action's statements are handed
+// to the store verbatim -- unlike a metric, nothing translates the model's
+// names into the binding's -- and kcmd does not execute actions. A statement is
+// authored here, published here, and then run by somebody else's agent harness
+// through the generated skill. Push is the last moment the authoring toolchain
+// sees the text, so a check that does not happen here does not happen.
+//
+// WHY THE STORE AND NOT A NAME COMPARISON. The profile does hold the physical
+// names, so an offline pass could catch `accountId` where the column is
+// `account_id`. It could not catch the rest: a parameter placeholder or a
+// function from the wrong dialect (every identifier correct, the statement
+// still invalid), or a value assigned to a column of another type. Only the
+// engine that will run the statement knows all three, and asking it also yields
+// a better message than one assembled here -- both backends answer an unknown
+// column with "Did you mean account_id?".
+//
+// The two backends differ only in the request that means "plan, do not run":
+// Spanner takes `queryMode: PLAN` on a session (see SpannerClient.planDml),
+// BigQuery takes `dryRun` on jobs.query. Neither writes anything.
+
+
+// One `sql` executor statement awaiting its pre-flight, with everything a
+// message about it needs.
+interface PendingStatement {
+  document: string;
+  model: string;
+  action: Action;
+  // 0-based position in the executor's `statements` list; reported 1-based.
+  index: number;
+  sql: string;
+}
+
+
+// Every `sql` executor statement in a model, in declaration order. A blank one
+// is skipped: sqlExecutorErrors has already failed the push over it, and
+// sending it would earn a second, less useful complaint from the store.
+function pendingStatements({document, model}: LoadedModel): PendingStatement[] {
+  const pending: PendingStatement[] = [];
+  for (const action of model.actions ?? []) {
+    if (action.executor?.kind !== 'sql') continue;
+    const executor = action.executor as Extract<Executor, {kind: 'sql'}>;
+    executor.sql.statements.forEach((sql, index) => {
+      if (!sql.trim()) return;
+      pending.push({document, model: model.name, action, index, sql});
+    });
+  }
+  return pending;
+}
+
+
+// The parameter types to send with one statement's pre-flight request, keyed by
+// `@name`.
+//
+// Only the parameters the statement actually references are sent, and only
+// those whose declared type maps to a store type we can state. An `Opaque` type
+// is exactly the case we cannot: it means the model does not know the type, so
+// asserting one would invent a constraint the author never wrote. Those are
+// left out and the store resolves them from context, which both backends do.
+//
+// Sending the types at all is optional -- a statement with no parameter types
+// passes either backend's dry run. It is worth doing because it turns the
+// action's DECLARED parameter types into a claim checked against the real
+// column types, so a model that says `Float` where the column is a STRING fails
+// here rather than on the first call.
+function statementParameterTypes(
+    action: Action, sql: string): Record<string, string> {
+  const declared = new Map(action.parameters.map(p => [p.name, p.type]));
+  const types: Record<string, string> = {};
+  for (const name of referencedParameters(sql)) {
+    const type = declared.get(name);
+    if (!type || type === 'Opaque') continue;
+    types[name] = storeCodeFor(type);
+  }
+  return types;
+}
+
+
+// The message for a statement the store refused. `store` names the database so
+// a multi-profile push says which one answered.
+function rejectedStatement(
+    pending: PendingStatement, store: string, detail: string): string {
+  return `action '${pending.action.name}' in model '${pending.model}' (${
+             pending.document}): statement ${
+             pending.index + 1} of its sql executor was rejected by ${store}: ${
+             detail} Statements reach the store exactly as written, so every ` +
+      `table and column has to be the name the database uses.`;
+}
+
+
+// The first line of a multi-line diagnosis. The lines after it echo the
+// statement and point a caret at the offending token, which is worth nothing
+// here: the author has the statement open in the profile, the position in
+// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
+// place once the message is embedded in a longer sentence.
+//
+// `\n` is matched in both its forms because Spanner's top-level `error.message`
+// arrives with its newlines ESCAPED -- a literal backslash and an n survive
+// JSON.parse -- while every other message uses real ones.
+function firstLine(message: string): string {
+  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
+}
+
+
+// An error body reduced to the sentence worth showing. Both backends return a
+// google.rpc-shaped JSON whose message already reads as a diagnosis
+// ("Unrecognized name: accountId; Did you mean account_id? [at 1:54]"), so pull
+// that out when it parses and fall back to the raw text when it does not.
+//
+// A LocalizedMessage detail is preferred over the top-level `error.message`
+// because Spanner escapes the latter: a statement it quotes back comes through
+// as `Unexpected \"$1\"`, where the detail says `Unexpected "$1"`. BigQuery
+// sends no such detail, so the fallback is the normal path there, not an
+// unusual one.
+function storeMessage(body: string|undefined, status: number): string {
+  const raw = (body ?? '').trim();
+  if (!raw) return `HTTP ${status}.`;
+  try {
+    const error = JSON.parse(raw)?.error;
+    const details: unknown[] =
+        Array.isArray(error?.details) ? error.details : [];
+    for (const detail of details) {
+      const d = detail as {'@type'?: string, message?: unknown};
+      if (!d?.['@type']?.endsWith('LocalizedMessage')) continue;
+      if (typeof d.message === 'string' && d.message.trim()) {
+        return sentence(firstLine(d.message));
+      }
+    }
+    if (typeof error?.message === 'string' && error.message.trim()) {
+      return sentence(firstLine(error.message));
+    }
+  } catch {
+    // Not JSON (an HTML error page from a proxy, say): show what came back.
+  }
+  return sentence(firstLine(raw));
+}
+
+
+// The Spanner arm. Each distinct database gets one session, reused across every
+// statement bound to it and deleted at the end -- which also discards the
+// read-write transactions PLAN had to begin and never committed. Returns one
+// message per statement that failed to plan, empty when all pass.
+export async function validateSpannerActionStatements(
+    models: LoadedModel[], spanner: SpannerClient): Promise<string[]> {
+  // Group by database so a model set sharing one target opens one session
+  // rather than one per statement.
+  const byDatabase = new Map<
+      string, {target: SpannerGraphTarget, statements: PendingStatement[]}>();
+  for (const loaded of models) {
+    const statements = pendingStatements(loaded);
+    if (!statements.length) continue;
+    // The database an action writes to is the one this profile deploys its
+    // graph to: on Spanner the published graph and the operational rows live in
+    // the same database. A model with no parseable Spanner target contributes
+    // nothing -- validatePushRequirements has already reported that.
+    let target: SpannerGraphTarget|undefined;
+    try {
+      target = spannerGraphTargets(loaded.model).targets[0];
+    } catch {
+      continue;
+    }
+    if (!target) continue;
+    const key = `${target.project}/${target.instance}/${target.database}`;
+    const entry = byDatabase.get(key) ?? {target, statements: []};
+    entry.statements.push(...statements);
+    byDatabase.set(key, entry);
+  }
+
+  const errors: string[] = [];
+  for (const {target, statements} of byDatabase.values()) {
+    const store = `Spanner database '${target.project}/${target.instance}/${
+        target.database}'`;
+    const opened = await spanner.createSession(
+        target.project, target.instance, target.database);
+    const session = opened.result?.name;
+    if (!session) {
+      // Reaching the database is the whole check, so failing to open a session
+      // is reported rather than skipped: a push that could not verify its
+      // statements must not proceed as though it had.
+      errors.push(
+          `could not open a session on ${store} to verify the sql executor ` +
+          `statements in model '${statements[0].model}' (${
+              statements[0].document}): ${
+              storeMessage(opened.message, opened.status)}`);
+      continue;
+    }
+    try {
+      for (const pending of statements) {
+        const types = statementParameterTypes(pending.action, pending.sql);
+        const params: Record<string, null> = {};
+        const paramTypes: Record<string, {code: string}> = {};
+        for (const [name, code] of Object.entries(types)) {
+          params[name] = null;
+          paramTypes[name] = {code};
+        }
+        const res =
+            await spanner.planDml(session, pending.sql, params, paramTypes);
+        if (res.status === 200) continue;
+        errors.push(rejectedStatement(
+            pending, store, storeMessage(res.message, res.status)));
+      }
+    } finally {
+      // Best effort, and the catch is what makes it one. A leaked session
+      // expires on its own, while letting a cleanup failure escape would throw
+      // away every statement error collected above and report a transport
+      // problem as though the statements had never been checked.
+      try {
+        await spanner.deleteSession(session);
+      } catch {
+        // Nothing to say: the session is the store's to reclaim.
+      }
+    }
+  }
+  return errors;
+}
+
+
+// The BigQuery arm. Each statement is dry-run on jobs.query, billed to the same
+// project the model's graph deploys to (a dry run scans nothing, but it still
+// needs a project to run in). There is no session to manage: a dry run is a
+// single stateless call. Returns one message per statement BigQuery refused.
+//
+// Note what this does NOT settle. BigQuery accepts DML against a native or
+// managed table and refuses it against most external ones, and a dry run
+// reports that refusal -- which is the point, because a real run would hit the
+// same wall.
+export async function validateBigQueryActionStatements(
+    models: LoadedModel[], bq: BigQueryClient,
+    defaultProject: string): Promise<string[]> {
+  const errors: string[] = [];
+  for (const loaded of models) {
+    const statements = pendingStatements(loaded);
+    if (!statements.length) continue;
+    const project = billingProject(loaded.model, defaultProject);
+    const store = `BigQuery (project '${project}')`;
+    for (const pending of statements) {
+      const res = await bq.query(
+          project, pending.sql, undefined, true,
+          statementParameterTypes(pending.action, pending.sql));
+      if (res.status === 200) continue;
+      errors.push(rejectedStatement(
+          pending, store, storeMessage(res.message, res.status)));
+    }
+  }
+  return errors;
 }

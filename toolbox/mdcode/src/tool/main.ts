@@ -38,10 +38,10 @@ cli.command('init', 'Initialize a new catalog snapshot')
 cli.command('pull', 'Pull catalog entries')
     .option(
         '--dry-run',
-        'Reconstruct and report only; do not write files (semantic-model scope)')
+        'Reconstruct and report only; do not write or delete files (semantic-model scope)')
     .option(
         '--force-remove',
-        'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails (semantic-model scope)')
+        'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails. Also deletes a local profile file the catalog\'s stored copies do not include (semantic-model scope)')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -77,7 +77,7 @@ cli.command('push', 'Push catalog entries')
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
     .option(
         '--profile [name]',
-        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
+        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml; a sibling <model>.profile.<name>.yaml, or a profile in a 0.2.0.dev0 model\'s GOOGLE block, cannot be deployed as a graph yet); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
     .option(
         '--all-profiles',
         'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
@@ -96,11 +96,17 @@ cli.command('push', 'Push catalog entries')
 
 cli.command(
        'profiles',
-       'List a semantic model\'s binding profiles and what each can answer')
-    .action(async () => {
+       'List a semantic model\'s binding profiles, what each can answer, and what push would reject')
+    .option(
+        '--profile [name]',
+        'Report only this binding profile; defaults to every profile the model declares')
+    .option(
+        '--print-store',
+        'Print only the store the profile deploys to, on one line and nothing else, for a script to read: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
+    .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.profiles();
+        exitCode = await commands.profiles(options);
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;
@@ -132,6 +138,34 @@ cli.command(
     });
 
 
+cli.command(
+       'skills-generate',
+       'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
+    .option(
+        '--out <dir>',
+        'Directory to write the skill directories under; each skill takes a directory of its own, named after the skill. Defaults to `skills`')
+    .option(
+        '--name <name>',
+        'Name the skill, and so its directory; lowercase letters, digits and single hyphens. Defaults to the model\'s own name. Applies only to a scope with one model')
+    .option(
+        '--profile [name]',
+        'Read the model under this binding profile, which is what the skill\'s one deployment-specific section describes; defaults to default_profile, else the inline bindings')
+    .option(
+        '--force',
+        'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
+    .action(async (options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.skillsGenerate(options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
     .option('--path <path>', 'Path to the catalog snapshot root directory')
     .action(async (options) => {
@@ -151,11 +185,49 @@ try {
   process.exit(1);
 }
 
+// When cac serves `--help` or `--version` itself it prints and then calls
+// unsetMatchedCommand(), so a request that was answered arrives at the block
+// below looking exactly like a command that was never found. Take it as
+// handled: it has already printed, and asking for help is not an error.
+//
+// The cleared match is what makes it safe to exit here, so test for that
+// rather than for the flag. cac serves `--version` only when no command
+// matched; with one matched it runs the action instead and leaves the match
+// in place, and since every action is async, `cli.parse()` has returned while
+// the action is still pending at its first await. Exiting on the flag alone
+// would kill `kcmd push --version` mid-write and report success.
+//
+// It is not enough on its own, though. cac serves `--help` for a command it
+// never found, so a typo'd verb with `--help` on it arrives here cleared in
+// exactly the same way and would exit 0 -- a script that misspells a
+// subcommand would read success. What separates the two is the verb the caller
+// actually typed, which cac does not keep once it has cleared the match, so
+// read it off `process.argv` rather than off `cli.args`. `cli.args` cannot
+// answer this: cac strips a matched command's own name from it and clears the
+// match in the same breath, so `owl import --help` arrives holding
+// `import` and `bogusverb --help` holding `bogusverb`, and neither of those
+// words names a command.
+//
+// The verb is the first token that is not a flag, not the first token: the
+// flag may come first, and `kcmd --help bogusverb` still misspells a
+// subcommand. Scanning is exact here because the only options cac takes ahead
+// of a command are `--help` and `--version`, and neither swallows a value that
+// could be mistaken for the verb.
+const typed = process.argv.slice(2).find(arg => !arg.startsWith('-'));
+const verbIsKnown =
+    typed === undefined || cli.commands.some(c => c.name === typed);
+if (!cli.matchedCommand && (cli.options.help || cli.options.version) &&
+    verbIsKnown) {
+  process.exit(0);
+}
+
 if (!cli.matchedCommand) {
   if (cli.args.length > 0) {
     console.error(`Error: Unknown command '${cli.args[0]}'`);
   }
 
-  cli.outputHelp();
+  // cac has already printed usage if it was `--help` that got us here, and a
+  // second copy of it under the error reads as two separate answers.
+  if (!cli.options.help) cli.outputHelp();
   process.exit(1);
 }

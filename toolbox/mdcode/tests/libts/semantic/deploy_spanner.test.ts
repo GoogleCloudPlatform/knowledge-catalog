@@ -20,7 +20,8 @@ const CTX = new ApiContext('test-project', 'us', 'test-token');
 
 function models(
     docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(docs, {defaultProject});
+  const r = loadSemanticModels(
+      docs, {defaultProject, allowLegacyBareSource: true});
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -71,8 +72,20 @@ describe('spannerGraphTargets', () => {
     expect(malformed).toEqual([]);
   });
 
+  // Same for the other recognized destination. An AlloyDB target is a store to
+  // run against rather than a graph to deploy, so the Spanner leg passes over
+  // it -- and it is not a typo, so it must not be reported as one either.
+  test('an AlloyDB target is not a Spanner target, and not malformed', () => {
+    const pg =
+        '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
+    const {targets, malformed} = spannerGraphTargets(
+        modelWithExtension(JSON.stringify({deploymentTargets: [pg]})));
+    expect(targets).toEqual([]);
+    expect(malformed).toEqual([]);
+  });
+
   test('an unsupported URI is collected as malformed', () => {
-    const bad = '//alloydb.googleapis.com/projects/p/whatever';
+    const bad = '//cloudsql.googleapis.com/projects/p/whatever';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [bad]})));
     expect(targets).toEqual([]);

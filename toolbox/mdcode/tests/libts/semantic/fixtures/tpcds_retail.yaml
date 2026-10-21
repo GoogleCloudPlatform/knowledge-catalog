@@ -498,6 +498,9 @@ semantic_model:
             - "LTV"
             - "customer value"
             - "lifetime revenue"
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity": "store_sales"}'
       - name: sales_by_brand
         expression:
           dialects:
@@ -520,6 +523,9 @@ semantic_model:
             - "sales per employee"
             - "employee productivity"
             - "revenue per employee"
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity": "store_sales"}'
 
     custom_extensions:
       - vendor_name: SALESFORCE

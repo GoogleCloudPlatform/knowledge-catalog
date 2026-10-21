@@ -3,3 +3,11 @@ catalog.yaml
 .state/
 pulled/
 !okf/catalog/
+
+# The agent demo's workspace is authored rather than pulled: its model and
+# binding profile ARE the demo, and its manifest is two static lines.
+!semantic-model/agent/catalog/
+!semantic-model/agent/catalog.yaml
+# The demo's own dependency, resolved on install. Left unpinned because 2,000
+# lines of transitive lockfile would be most of the demo's diff.
+semantic-model/agent/package-lock.json

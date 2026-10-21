@@ -19,6 +19,9 @@
 //   - degenerate inputs the format forbids (a model with no datasets) and pure
 //     GenerateOptions behavior (graph naming; a source `dataSource` is emitted
 //     verbatim, never re-qualified from options).
+//   - which SQL each field and metric emits, case by case: a dialect list with
+//     no `expression` beside it, and an `expression` the transpile pass wrote
+//     next to vendor-only SQL.
 // Plus a structural invariant guard that parses generated DDL and asserts the
 // shape BigQuery enforces for measures, run over the loaded fixtures.
 //
@@ -28,7 +31,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
-import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -38,8 +41,11 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // capture.
 function loadFixture(fixture: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  const {models} = loadModels(
-      text, {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'});
+  const {models} = loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+  });
   return models[0];
 }
 const GEN_OPTS: GenerateOptions = {
@@ -269,6 +275,28 @@ describe('IR-contract metric cases the loader cannot produce', () => {
             .toBe(false);
         expect(ddl).toContain('AS weird_sum');
       });
+
+  test(
+      'a measure over a struct path whose subfield matches another entity name is placed on the leading qualifier entity',
+      () => {
+        const model = orders();
+        model.entities.push({
+          name: 'customer',
+          dataSource: 'customer',
+          keys: ['c_id'],
+          fields: [{name: 'c_id', expression: 'customer.c_id'}],
+        });
+        model.metrics = [{
+          name: 'cust_amount',
+          expression: 'SUM(orders.customer.amount)',
+          entity: 'orders',
+        }];
+        const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+        expect(warnings.some(w => w.includes('spans multiple tables')))
+            .toBe(false);
+        expect(ddl).toContain('customer.amount AS cust_amount_input');
+        expect(ddl).toContain('MEASURE(SUM(cust_amount_input)) AS cust_amount');
+      });
 });
 
 
@@ -409,6 +437,25 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
         expect(ddl).toContain('CREATE OR REPLACE PROPERTY GRAPH `g`');
         expect(ddl).not.toContain('`p.g`');
       });
+
+  test(
+      'a dataSource whose table name contains spaces is backtick-quoted without a query warning',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [{
+            name: 'order_items',
+            dataSource: 'acme.sales.order items',
+            keys: ['id'],
+            fields: [{name: 'id', expression: 'order_items.id'}]
+          }],
+        };
+        const {ddl, warnings} = generatePropertyGraph(model);
+        expect(warnings).toEqual([]);
+        expect(ddl).toContain('`acme.sales.order items` AS order_items');
+      });
 });
 
 
@@ -486,6 +533,27 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
         expect(ddl).toContain('one row per order');  // entity instructions
         expect(ddl).toContain('Examples: how many orders?');
         expect(ddl).toContain('Order amount');  // field label leads
+      });
+
+  test(
+      'examples render as a joined line and custom ai_context members stay out of the DDL',
+      () => {
+        const m = model();
+        m.entities[0].fields[1].aiContext = {
+          instructions: 'Use for net revenue',
+          synonyms: ['total', 'value'],
+          examples: ['net revenue last month', 'revenue by region'],
+          additionalProperties: {
+            custom_hint: 'prioritize verified orders',
+          },
+        };
+        const {ddl} = generatePropertyGraph(m, GEN_OPTS);
+        expect(ddl).toContain(
+            'Examples: net revenue last month; revenue by region');
+        // A custom member has no slot in a property-graph deployment; it
+        // reaches Knowledge Catalog only.
+        expect(ddl).not.toContain('custom_hint');
+        expect(ddl).not.toContain('prioritize verified orders');
       });
 
   test(
@@ -985,5 +1053,489 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
     expect(ddl).toContain('KEY(`order`)');
     expect(ddl).toContain('SOURCE KEY(`order`) REFERENCES `Order`(`order`)');
     expect(ddl).toContain('DESTINATION KEY(id) REFERENCES `Group`(id)');
+  });
+});
+
+
+describe('a comment in a field expression', () => {
+  // Left in, a line comment runs to the end of the line and swallows the
+  // ` AS <name>` after the expression, and the comma after that.
+  const model: SemanticModel = {
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'p.d.orders',
+      keys: ['id'],
+      fields: [
+        {name: 'id', expression: 'order_id -- the key'},
+        {name: 'total', expression: 'amount -- in cents'},
+        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'status', expression: 'status # open or closed'},
+        {name: 'code', expression: "CONCAT('--', code)"},
+      ],
+    }],
+  };
+
+  test('is removed before the field is written', () => {
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount AS total,\n      notes,\n' +
+        "      status,\n      CONCAT('--', code) AS code\n");
+    expect(ddl).not.toContain('the key');
+    expect(ddl).not.toContain('free text');
+    expect(warnings).toEqual([]);
+  });
+
+  test('is removed from a metric before it is lowered', () => {
+    const withMetric: SemanticModel = {
+      ...model,
+      metrics: [{name: 'revenue', entity: 'orders',
+                 expression: 'SUM(orders.amount -- in cents\n)'}],
+    };
+    const {ddl, warnings} = generatePropertyGraph(withMetric, GEN_OPTS);
+    expect(ddl).toContain('MEASURE(SUM(total)) AS revenue');
+    expect(warnings).toEqual([]);
+  });
+
+  test('a metric whose aggregate has no operand is skipped with a warning', () => {
+    // Lowered, it would give a measure input property with no SQL.
+    for (const expression of [
+           'SUM()', 'SUM(/* in cents */)', 'SUM(orders.)', 'COUNT(DISTINCT)',
+           'SUM(DISTINCT orders.)', 'COUNT(DISTINCT /* in cents */)']) {
+      const {ddl, warnings} = generatePropertyGraph(
+          {...model, metrics: [{name: 'revenue', entity: 'orders', expression}]},
+          GEN_OPTS);
+      expect(ddl).not.toContain('revenue');
+      expect(warnings.some(w => w.startsWith("metric 'revenue' expression"))).toBe(true);
+    }
+  });
+
+  test('is read as BigQuery reads it, even when a PostgreSQL entry holds the same text', () => {
+    // A target text is read as the graph's engine reads it, so `# in cents`
+    // comes out of `net`. A field or metric with only imported PostgreSQL SQL
+    // has nothing BigQuery runs, so it is left out however its comments read.
+    const vendor: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'id'},
+          {name: 'flags', dialects: [{dialect: 'POSTGRES', expression: 'flags # 1'}],
+           importedExpression: 'flags # 1', importedDialect: 'POSTGRES'},
+          {name: 'total', dialects: [{dialect: 'POSTGRES', expression: 'amount -- in cents'}],
+           importedExpression: 'amount -- in cents', importedDialect: 'POSTGRES'},
+          {name: 'net', expression: 'net_amount # in cents',
+           dialects: [{dialect: 'POSTGRES', expression: 'net_amount # in cents'},
+                      {dialect: 'BIGQUERY', expression: 'net_amount # in cents'}]},
+        ],
+      }],
+      metrics: [{
+        name: 'xor_bits',
+        entity: 'orders',
+        dialects: [{dialect: 'POSTGRES', expression: 'SUM(orders.bits # 1\n)'}],
+        importedExpression: 'SUM(orders.bits # 1\n)',
+        importedDialect: 'POSTGRES',
+      }],
+    };
+    const {ddl, warnings} = generatePropertyGraph(vendor, GEN_OPTS);
+    expect(ddl).toContain('net_amount AS net');
+    expect(ddl).not.toContain('flags');
+    expect(ddl).not.toContain('AS total');
+    expect(ddl).not.toContain('xor_bits');
+    expect(warnings).toEqual([
+      `metric 'xor_bits' has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped ` +
+          `(nothing to emit as a MEASURE)`,
+      `entity 'orders': field 'flags' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+          `expression; omitted from the node table`,
+      `entity 'orders': field 'total' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+          `expression; omitted from the node table`,
+    ]);
+  });
+
+  test('next to a dot leaves no space, so the qualifier still comes off', () => {
+    const dotted: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [{name: 'revenue', entity: 'orders',
+                 expression: 'SUM(orders/* in cents */.amount)'}],
+      entities: [{
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['id'],
+        fields: [
+          {name: 'id', expression: 'orders./* the key */order_id'},
+          {name: 'amount', expression: 'orders/* in cents */.amount'},
+          {name: 'select', expression: 'orders. /* a keyword */ select'},
+        ],
+      }],
+    };
+    const {ddl, warnings} = generatePropertyGraph(dotted, GEN_OPTS);
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        '      order_id AS id,\n      amount,\n      `select`,\n' +
+        '      MEASURE(SUM(amount)) AS revenue\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('on an inherited field is read in its own dialect, even when a vendor entry holds the same text', () => {
+    // Read as PostgreSQL, where `#` is an operator, the apostrophe opens a
+    // string, the subtype's copy keeps `base.second`, and the generator warns
+    // that the subtype remaps a property it only inherits.
+    const text = "base.first # base's first\n|| base.second || ' '";
+    const inherited: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'base',
+          dataSource: 'p.d.base',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'label', expression: text, importedExpression: text,
+             importedDialect: 'POSTGRES',
+             dialects: [{dialect: 'POSTGRES', expression: text},
+                        {dialect: 'BIGQUERY', expression: text}]},
+          ],
+        },
+        {name: 'orders', dataSource: 'p.d.orders', keys: ['id'],
+         extends: ['base'], fields: []},
+      ],
+    };
+    const {ddl, warnings} = generatePropertyGraph(inherited, GEN_OPTS);
+    expect(ddl).not.toContain('base.second');
+    expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(3);
+    expect(warnings).toEqual([]);
+  });
+});
+
+
+describe('each field and metric emits BigQuery\'s own SQL', () => {
+  // Fields and metrics carry only a dialect list here, with no `expression`
+  // beside it, so the emitted text can only have come from the list. (The
+  // loader also copies the BIGQUERY or ANSI_SQL entry into `expression`.)
+  const orders = (): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'orders',
+      keys: ['o_orderkey'],
+      fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+    }],
+  });
+
+  // Built the way the loader builds a field written only for Snowflake. Leave
+  // `importedExpression` in: without it the field has nothing to emit however
+  // the generator chooses.
+  const snowflakeOnly =
+      (): Pick<Field, 'dialects'|'importedExpression'|'importedDialect'> => ({
+    dialects: [{dialect: 'SNOWFLAKE', expression: 'DIV0(a,b)'}],
+    importedExpression: 'DIV0(a,b)',
+    importedDialect: 'SNOWFLAKE',
+  });
+
+  test('a BIGQUERY entry beats ANSI_SQL, and ANSI_SQL is used without one', () => {
+    const model = orders();
+    model.entities[0].fields.push(
+        {
+          name: 'order_month',
+          dialects: [
+            {
+              dialect: 'ANSI_SQL',
+              expression: 'DATE_TRUNC(\'month\', orders.order_ts)'
+            },
+            {
+              dialect: 'BIGQUERY',
+              expression: 'TIMESTAMP_TRUNC(orders.order_ts, MONTH)'
+            },
+          ],
+        },
+        {
+          name: 'net',
+          dialects: [
+            {dialect: 'SNOWFLAKE', expression: 'DIV0(orders.a, orders.b)'},
+            {dialect: 'ANSI_SQL', expression: 'orders.a / NULLIF(orders.b, 0)'},
+          ],
+        });
+    model.metrics = [
+      {
+        name: 'revenue',
+        dialects: [
+          {dialect: 'ANSI_SQL', expression: 'SUM(orders.amount)'},
+          {dialect: 'BIGQUERY', expression: 'SUM(orders.amount_usd)'},
+        ],
+      },
+      {
+        name: 'units',
+        dialects: [
+          {dialect: 'SNOWFLAKE', expression: 'SUM(ZEROIFNULL(orders.qty))'},
+          {dialect: 'ANSI_SQL', expression: 'SUM(COALESCE(orders.qty, 0))'},
+        ],
+      },
+    ];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('TIMESTAMP_TRUNC(order_ts, MONTH) AS order_month');
+    expect(ddl).toContain('a / NULLIF(b, 0) AS net');
+    expect(ddl).toContain('MEASURE(SUM(amount_usd)) AS revenue');
+    expect(ddl).toContain('COALESCE(qty, 0) AS units_input');
+    expect(ddl).toContain('MEASURE(SUM(units_input)) AS units');
+    expect(ddl).not.toContain('DATE_TRUNC');
+    expect(ddl).not.toContain('DIV0');
+    expect(ddl).not.toContain('ZEROIFNULL');
+    expect(warnings).toEqual([]);
+  });
+
+  test('another engine\'s SQL is never emitted', () => {
+    const model = orders();
+    model.entities[0].fields.push({name: 'ratio', ...snowflakeOnly()});
+    model.metrics = [{name: 'revenue', ...snowflakeOnly(), entity: 'orders'}];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).not.toContain('DIV0');
+    expect(ddl).not.toContain('ratio');
+    expect(ddl).not.toContain('revenue');
+    expect(warnings).toContain(
+        `entity 'orders': field 'ratio' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+        `expression; omitted from the node table`);
+    expect(warnings).toContain(
+        `metric 'revenue' has no 'BIGQUERY' or 'ANSI_SQL' expression; ` +
+        `skipped (nothing to emit as a MEASURE)`);
+  });
+
+  test('SQL the transpile pass wrote into expression is still emitted', () => {
+    const model = orders();
+    model.entities[0].fields.push(
+        {name: 'ratio', ...snowflakeOnly(), expression: 'IF(b = 0, 0, a / b)'});
+    model.metrics = [{
+      name: 'revenue',
+      ...snowflakeOnly(),
+      expression: 'SUM(orders.amount)',
+    }];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('IF(b = 0, 0, a / b) AS ratio');
+    expect(ddl).toContain('MEASURE(SUM(amount)) AS revenue');
+    expect(ddl).not.toContain('DIV0');
+    expect(warnings).toEqual([]);
+  });
+
+  test('a field or metric with no SQL at all keeps the unbound message', () => {
+    const model = orders();
+    model.entities[0].fields.push({name: 'notes'});
+    model.metrics = [{name: 'revenue', entity: 'orders'}];
+    const {warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(warnings).toEqual([
+      `metric 'revenue' has no expression; skipped (nothing to emit as a ` +
+          `MEASURE)`,
+      `entity 'orders': field 'notes' has no column under this binding; ` +
+          `omitted from the node table (bind it, or govern the logical model ` +
+          `in Knowledge Catalog instead)`,
+    ]);
+  });
+
+  test('a subtype that rebinds an inherited field with only a dialect list emits its own SQL', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'party',
+          dataSource: '',
+          keys: [],
+          abstract: true,
+          fields: [{name: 'nm', expression: 'party.display_name'}],
+        },
+        {
+          name: 'person',
+          dataSource: 'p.d.people',
+          keys: ['id'],
+          extends: ['party'],
+          fields: [
+            {name: 'id', expression: 'person.id'},
+            {
+              name: 'nm',
+              dialects: [{dialect: 'BIGQUERY', expression: 'person.full_name'}],
+            },
+          ],
+        },
+      ],
+    };
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('full_name AS nm');
+    expect(ddl).not.toContain('display_name');
+  });
+
+  test('a concrete parent\'s field with no BigQuery SQL is left out of the parent\'s label on every table', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'person',
+          dataSource: 'p.d.person',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'person.id'},
+            {name: 'nick', ...snowflakeOnly()},
+          ],
+        },
+        {
+          name: 'customer',
+          dataSource: 'p.d.customer',
+          keys: ['id'],
+          extends: ['person'],
+          fields: [{name: 'id', expression: 'customer.id'}],
+        },
+      ],
+    };
+    expect(generatePropertyGraph(model, GEN_OPTS).ddl).not.toMatch(/\bnick\b/);
+    // A subtype that binds the field in BigQuery SQL keeps its own SQL.
+    model.entities[1].fields.push({name: 'nick', expression: 'customer.nick2'});
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('nick2 AS nick');
+    expect(ddl).not.toMatch(/^\s+nick,?$/m);
+  });
+
+  test('an abstract parent\'s label leaves out a field one leaf has no BigQuery SQL for, on every leaf', () => {
+    const leaf = (
+        name: string,
+        code: Pick<Field, 'expression'|'dialects'|'importedExpression'|
+                          'importedDialect'>): SemanticModel['entities'][number] => ({
+      name,
+      dataSource: `p.d.${name}`,
+      keys: ['id'],
+      extends: ['party'],
+      fields: [
+        {name: 'id', expression: `${name}.id`},
+        {name: 'nm', expression: `${name}.${name}_nm`},
+        {name: 'code', ...code},
+      ],
+    });
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'party',
+          abstract: true,
+          dataSource: '',
+          keys: [],
+          fields: [{name: 'nm'}, {name: 'code'}],
+        },
+        leaf('person', {expression: 'person.p_code'}),
+        leaf('org', snowflakeOnly()),
+      ],
+    };
+    const labels = (ddl: string) =>
+        [...ddl.matchAll(/LABEL party\s+(PROPERTIES\([^)]*\)|NO PROPERTIES)/g)]
+            .map(m => m[1].replace(/\s+/g, ' '));
+    expect(labels(generatePropertyGraph(model, GEN_OPTS).ddl)).toEqual([
+      'PROPERTIES( person_nm AS nm )',
+      'PROPERTIES( org_nm AS nm )',
+    ]);
+    // When nothing else is left, the label lists no properties, since a bare
+    // LABEL exposes every column of its table.
+    for (const e of model.entities) e.fields = e.fields.filter(f => f.name !== 'nm');
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(labels(ddl)).toEqual(['NO PROPERTIES', 'NO PROPERTIES']);
+    expect(ddl).toContain('p_code AS code');
+  });
+
+  test('a metric over a field with no BigQuery SQL is skipped', () => {
+    const model = orders();
+    model.entities[0].fields.push({name: 'ratio', ...snowflakeOnly()});
+    model.metrics = [{name: 'total_ratio', expression: 'SUM(orders.ratio)'}];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).not.toContain('ratio');
+    expect(warnings).toContain(
+        `metric 'total_ratio' aggregates field 'ratio', which has no ` +
+        `'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to emit as a ` +
+        `MEASURE)`);
+  });
+
+  test('a key field with only Snowflake SQL keeps its column in KEY', () => {
+    const model = orders();
+    model.entities[0].keys = ['order_id'];
+    model.entities[0].fields = [{
+      name: 'order_id',
+      dialects: [{dialect: 'SNOWFLAKE', expression: 'o_orderkey'}],
+      importedExpression: 'o_orderkey',
+      importedDialect: 'SNOWFLAKE',
+    }];
+    const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('KEY(o_orderkey)');
+    expect(ddl).not.toContain('order_id');
+  });
+
+  test('an association field with no BigQuery SQL is left out of its edge', () => {
+    const model = orders();
+    model.entities.push({
+      name: 'parts',
+      dataSource: 'parts',
+      keys: ['p_partkey'],
+      fields: [{name: 'p_partkey', expression: 'parts.p_partkey'}],
+    });
+    model.relationships = [{
+      name: 'contains',
+      source: {entity: 'orders', columns: ['o_orderkey']},
+      destination: {entity: 'parts', columns: ['p_partkey']},
+      association: {
+        dataSource: 'lineitem',
+        keys: ['l_orderkey', 'l_partkey'],
+        sourceColumns: ['l_orderkey'],
+        destinationColumns: ['l_partkey'],
+        fields: [{name: 'ratio', ...snowflakeOnly()}],
+      },
+    }];
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).not.toContain('ratio');
+    expect(warnings).toContain(
+        `relationship 'contains': field 'ratio' has no 'BIGQUERY' or ` +
+        `'ANSI_SQL' expression; omitted from the edge table`);
+  });
+
+  test('a subtype that restates an inherited field in Snowflake SQL only keeps the supertype\'s definition under its label', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'person',
+          dataSource: 'p.d.person',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'person.id'},
+            {name: 'nick', expression: 'person.nick'},
+          ],
+        },
+        {
+          name: 'customer',
+          dataSource: 'p.d.customer',
+          keys: ['id'],
+          extends: ['person'],
+          fields: [
+            {name: 'id', expression: 'customer.id'},
+            {name: 'nick', ...snowflakeOnly()},
+          ],
+        },
+      ],
+    };
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toMatch(/LABEL person\s+PROPERTIES\(\s+id,\s+nick\s+\)/);
+    expect(warnings).toContain(
+        `entity 'customer': field 'nick' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+        `expression; omitted from the node table's own label, and the ` +
+        `supertype's label keeps the supertype's definition`);
   });
 });

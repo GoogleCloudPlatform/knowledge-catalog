@@ -1,0 +1,14 @@
+# Local configuration (never commit)
+.env
+
+# Python, virtual environments and tool caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+uv.lock
+
+# ADK local runtime state (sessions, artifacts)
+.adk/
+session.db

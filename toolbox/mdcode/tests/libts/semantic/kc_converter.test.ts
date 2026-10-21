@@ -70,6 +70,7 @@ describe('emitter -> reader round trip (lossless slice)', () => {
     description: 'the sales model',
     entities: [{
       name: 'orders',
+      authoredSource: '//bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders',
       dataSource: 'demo.sales.orders',
       keys: [],  // no keys: an entity with none writes no primaryKey
       fields: [
@@ -265,7 +266,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
       });
 
   test(
-      'a relationship name comes back normalized (lowercased/hyphenated)',
+      'a relationship name comes back lowercased, with its underscores',
       () => {
         const model: SemanticModel = {
           name: 'sales',
@@ -279,7 +280,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
           metrics: [],
         };
         expect(roundTrip(model).models[0].relationships[0].name)
-            .toBe('places-order');
+            .toBe('places_order');
       });
 
   test('a many-to-many (association) relationship is not recovered', () => {
@@ -401,7 +402,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
             metrics: [],
           };
           expect(roundTrip(model).models[0].relationships[0].name)
-              .toBe('rel-one');
+              .toBe('rel_one');
         }
       });
 
@@ -425,13 +426,56 @@ describe('relationship recovery (schema-join links -> IR)', () => {
         entries, [...nameless, ...nameless.map(l => ({...l}))]);
     expect(models[0].relationships).toHaveLength(1);
   });
+
+  test(
+      'a relationship between bigquery: and BigLake entities preserves direction without warnings',
+      () => {
+        // `sales-customer` sorts before `sales-orders` in the link's
+        // entryReferences, so `readRelationships` sees [customer, orders] and
+        // must match the converted `dataSource` of both (`p.d.customer` and
+        // `p.c.n.orders`) against the schema-join aspect to flip the edge back
+        // to `orders -> customer`.
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: [
+            {
+              name: 'customer',
+              authoredSource: 'bigquery:p.d.customer',
+              dataSource: 'p.d.customer',
+              keys: ['c_custkey'],
+              fields: [{name: 'c_custkey', expression: 'customer.c_custkey'}],
+            },
+            {
+              name: 'orders',
+              authoredSource:
+                  '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders',
+              dataSource: 'p.c.n.orders',
+              keys: ['o_orderkey'],
+              fields: [{name: 'o_custkey', expression: 'orders.o_custkey'}],
+            },
+          ],
+          relationships: [{
+            name: 'places',
+            source: {entity: 'orders', columns: ['o_custkey']},
+            destination: {entity: 'customer', columns: ['c_custkey']},
+          }],
+          metrics: [],
+        };
+        const {models, warnings} = roundTrip(model);
+        expect(warnings).toEqual([]);
+        expect(models[0].relationships).toEqual([{
+          name: 'places',
+          source: {entity: 'orders', columns: ['o_custkey']},
+          destination: {entity: 'customer', columns: ['c_custkey']},
+        }]);
+      });
 });
 
 
 describe(
-    'deployment-target recovery (semantic-model aspect -> custom_extensions)',
+    'deployment-target recovery (semantic-model aspect -> deployments + custom_extensions)',
     () => {
-      test('the GOOGLE deployment targets ride back verbatim', () => {
+      test('the GOOGLE deployment targets ride back onto deployments and custom_extensions with a name warning', () => {
         const uri =
             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const data = JSON.stringify({deploymentTargets: [uri]});
@@ -442,13 +486,18 @@ describe(
           relationships: [],
           metrics: [],
         };
-        expect(roundTrip(model).models[0].customExtensions).toEqual([
+        const {models, warnings} = roundTrip(model);
+        expect(models[0].deployments).toEqual([{name: 'default', target: uri}]);
+        expect(models[0].customExtensions).toEqual([
           {vendorName: 'GOOGLE', data}
+        ]);
+        expect(warnings).toEqual([
+          "model 'sales': deployment names were not recovered (the catalog stores target URIs only); using 'default'",
         ]);
       });
 
       test(
-          'a model with no deployment targets recovers no custom_extensions',
+          'a model with no deployment targets recovers no deployments or custom_extensions',
           () => {
             const model: SemanticModel = {
               name: 'sales',
@@ -457,7 +506,68 @@ describe(
               relationships: [],
               metrics: [],
             };
-            expect(roundTrip(model).models[0].customExtensions).toBeUndefined();
+            const {models, warnings} = roundTrip(model);
+            expect(models[0].deployments).toBeUndefined();
+            expect(models[0].customExtensions).toBeUndefined();
+            expect(warnings).toEqual([]);
+          });
+
+      test('skips repeated target URIs in the semantic-model aspect', () => {
+        const uri =
+            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const model: SemanticModel = {
+          name: 'sales',
+          customExtensions: [{
+            vendorName: 'GOOGLE',
+            data: JSON.stringify({deploymentTargets: [uri, uri]}),
+          }],
+          entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: []}],
+          relationships: [],
+          metrics: [],
+        };
+        const {models} = roundTrip(model);
+        expect(models[0].deployments).toEqual([{name: 'default', target: uri}]);
+        expect(models[0].customExtensions).toEqual([
+          {vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [uri]})},
+        ]);
+      });
+
+      test(
+          'trims stored targets and entity source resources, and drops empty targets',
+          () => {
+            const uri =
+                '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            const model: SemanticModel = {
+              name: 'sales',
+              entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: []}],
+              relationships: [],
+              metrics: [],
+            };
+            const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+            const anchor =
+                entries.find(e => e.entryType.endsWith('/semantic-model'))!;
+            anchor.aspects!['dataplex-types.global.semantic-model'].data = {
+              deploymentTargets: ['   ', `  ${uri}  `, ''],
+            };
+            const entityEntry =
+                entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+            entityEntry.aspects!['dataplex-types.global.semantic-entity'].data =
+                {
+                  source: {resources: ['  bigquery:p.d.t  ']},
+                };
+            const {models} = modelsFromCatalogResources(entries, entryLinks);
+            expect(models[0].deployments).toEqual([
+              {name: 'default', target: uri},
+            ]);
+            expect(models[0].customExtensions).toEqual([
+              {
+                vendorName: 'GOOGLE',
+                data: JSON.stringify({deploymentTargets: [uri]}),
+              },
+            ]);
+            expect(models[0].entities[0].authoredSource)
+                .toBe('bigquery:p.d.t');
+            expect(models[0].entities[0].dataSource).toBe('p.d.t');
           });
     });
 
@@ -607,6 +717,135 @@ describe('data source resource-path parsing', () => {
     const query = 'SELECT * FROM t';
     expect(readDataSource(query)).toBe(query);
   });
+
+  // Push stores a catalog name in `importedResource` and leaves `resources`
+  // empty, so the reader takes the source from there.
+  test('a catalog name is read back from importedResource', () => {
+    const read = (authoredSource: string, dataSource: string) => roundTrip({
+                   name: 'm',
+                   entities: [
+                     {name: 'e', authoredSource, dataSource, keys: [], fields: []}
+                   ],
+                   relationships: [],
+                   metrics: [],
+                 }).models[0].entities[0];
+    const bq = read('bigquery:proj.ds.tbl', 'proj.ds.tbl');
+    expect(bq.dataSource).toBe('proj.ds.tbl');
+    expect(bq.authoredSource).toBe('bigquery:proj.ds.tbl');
+    const cloudSql = 'cloudsql_mysql:acme.us.inst.shop.payments';
+    const cs = read(cloudSql, cloudSql);
+    expect(cs.dataSource).toBe(cloudSql);
+    expect(cs.authoredSource).toBe(cloudSql);
+  });
+
+  // A GCP resource name is the resource URI without the leading `//`. Push
+  // stores it as written in `resources`, not as a catalog name, and pull
+  // returns it unchanged, with the same `dataSource` the URI gives. A target
+  // is likewise stored and returned as written.
+  test('a source and target written as resource names round-trip as written', () => {
+    const bqTable = (t: string) =>
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    const spTable =
+        'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Items';
+    const target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const [model] = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    deployments:
+      - { name: default, target: "${target}" }
+    entities:
+      - name: orders
+        source: "${bqTable('orders')}"
+        primary_key: [o_id]
+        fields:
+          - { name: o_id, expression: o_id }
+          - { name: o_custkey, expression: o_custkey }
+      - name: customer
+        source: "${bqTable('customer')}"
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+      - name: items
+        source: "${spTable}"
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customer
+        from_columns: [o_custkey]
+        to_columns: [c_id]
+`).models;
+
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const entityData = (name: string) => entries
+        .find(e => e.entrySource?.displayName === name)!
+        .aspects!['dataplex-types.global.semantic-entity'].data!;
+    expect(entityData('orders').source).toEqual({resources: [bqTable('orders')]});
+    expect(entityData('items').source).toEqual({resources: [spTable]});
+
+    const {models: [read]} = modelsFromCatalogResources(entries, entryLinks);
+    const entity = (name: string) => read.entities.find(e => e.name === name)!;
+    for (const name of ['orders', 'customer', 'items']) {
+      expect(entity(name).authoredSource)
+          .toBe(model.entities.find(e => e.name === name)!.authoredSource);
+      expect(entity(name).dataSource)
+          .toBe(model.entities.find(e => e.name === name)!.dataSource);
+    }
+    expect(read.deployments).toEqual([{name: 'default', target}]);
+    // The relationship keeps its direction, which the reader works out by
+    // matching each join table against an entity's dataSource.
+    expect(read.relationships.map(r => [r.source.entity, r.destination.entity]))
+        .toEqual([['orders', 'customer']]);
+
+    // The pulled model serializes to a file that loads with the same forms.
+    const [again] = loadModels(serializeModel(read).yaml).models;
+    expect(again.entities.map(e => e.authoredSource))
+        .toEqual(model.entities.map(e => e.authoredSource));
+    expect(again.deployments).toEqual([{name: 'default', target}]);
+  });
+
+  // A catalog written by an older kcmd or another tool can list one target in
+  // both spellings. Pull keeps one, so the file it writes loads.
+  test('a pulled target listed in both spellings writes a file that loads', () => {
+    const target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const [model] = loadModels(`version: "0.2.0.dev0"
+semantic_model:
+  - name: sales
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["//${target}", "${target}"]}'
+    datasets:
+      - name: orders
+        source: "bigquery.googleapis.com/projects/p/datasets/d/tables/orders"
+        primary_key: [o_id]
+        fields:
+          - name: o_id
+            expression: { dialects: [{ dialect: ANSI_SQL, expression: o_id }] }
+`).models;
+    const {entries, entryLinks} = generateCatalogResources(model, OPTS);
+    const {models: [read]} = modelsFromCatalogResources(entries, entryLinks);
+    expect(() => loadModels(serializeModel(read).yaml)).not.toThrow();
+  });
+
+  test('a legacy instance-based AlloyDB source written as a name is stored as written', () => {
+    const source = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/instances/i/databases/db/tables/orders';
+    const [model] = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: m
+    entities:
+      - name: orders
+        source: ${source}
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+`, {allowLegacyBareSource: true}).models;
+    const {entries} = generateCatalogResources(model, OPTS);
+    const entry = entries.find(e => e.entrySource?.displayName === 'orders')!;
+    expect(entry.aspects!['dataplex-types.global.semantic-entity'].data!.source)
+        .toEqual({resources: [source]});
+  });
 });
 
 
@@ -675,6 +914,173 @@ describe('metric attach entity is re-derived from the expression', () => {
         };
         const {models} = roundTrip(model);
         expect(models[0].metrics[0].entity).toBe('orders');
+      });
+
+  test(
+      'push -> pull -> serialize keeps an authored metric entity the expression cannot pin',
+      () => {
+        const model: SemanticModel = {
+          name: 'm',
+          entities: [
+            {
+              name: 'orders',
+              authoredSource: 'bigquery:p.d.orders',
+              dataSource: 'p.d.orders',
+              keys: ['id'],
+              fields: [
+                {name: 'id', expression: 'orders.id'},
+                {name: 'amt', expression: 'orders.amt'},
+              ],
+            },
+            {
+              name: 'customer',
+              authoredSource: 'bigquery:p.d.customer',
+              dataSource: 'p.d.customer',
+              keys: ['id'],
+              fields: [
+                {name: 'id', expression: 'customer.id'},
+                {name: 'region', expression: 'customer.region'},
+              ],
+            },
+          ],
+          relationships: [],
+          metrics: [{
+            name: 'mix',
+            entity: 'orders',
+            expression: 'SUM(orders.amt) / COUNT(customer.region)',
+          }],
+        };
+
+        const {models} = roundTripFull(model);
+        const {yaml} = serializeModel(models[0]);
+        const reloaded = loadModels(yaml).models[0];
+
+        expect(models[0].metrics[0].authoredEntity).toBe('orders');
+        expect(reloaded.metrics[0].entity).toBe('orders');
+      });
+
+  test(
+      'a persisted metric entity the pull did not reconstruct is not marked authored',
+      () => {
+        const authored = [
+          'version: 0.2.0.dev0/google',
+          'semantic_model:',
+          '  - name: m',
+          '    entities:',
+          '      - name: orders',
+          '        source: bigquery:p.d.orders',
+          '        primary_key: [amt]',
+          '        fields: [{name: amt, expression: orders.amt}]',
+          '      - name: customer',
+          '        source: bigquery:p.d.customer',
+          '        primary_key: [region]',
+          '        fields: [{name: region, expression: customer.region}]',
+          '    metrics:',
+          '      - name: total',
+          '        expression: SUM(orders.amt)',
+        ].join('\n');
+        const [source] = loadModels(authored).models;
+
+        const {entries, entryLinks} =
+            generateCatalogResources(source, {...OPTS, emitExpressions: true});
+        const kept = entries.filter(
+            e =>
+                !(e.entryType?.endsWith('/semantic-entity') &&
+                  e.name?.endsWith('.orders')));
+        const [pulled] = modelsFromCatalogResources(kept, entryLinks).models;
+        const {yaml: text} = serializeModel(pulled);
+
+        expect(source.metrics[0].authoredEntity).toBeUndefined();
+        expect(pulled.entities.map(e => e.name)).toEqual(['customer']);
+        expect(pulled.metrics[0].authoredEntity).toBeUndefined();
+        expect(() => loadModels(text)).not.toThrow();
+      });
+
+  test(
+      'infers metric entity from the leading qualifier of a struct path and ignores function namespaces like NET.HOST',
+      () => {
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: [
+            {
+              name: 'orders',
+              dataSource: 'p.d.orders',
+              keys: ['o_id'],
+              fields: [
+                {
+                  name: 'shipping_address',
+                  expression: 'orders.shipping_address',
+                },
+                {
+                  name: 'url',
+                  expression: 'orders.url',
+                },
+              ],
+            },
+            {
+              name: 'shipping_address',
+              dataSource: 'p.d.shipping_address',
+              keys: ['addr_id'],
+              fields: [{name: 'city', expression: 'shipping_address.city'}],
+            },
+            {
+              name: 'NET',
+              dataSource: 'p.d.net',
+              keys: ['n_id'],
+              fields: [{name: 'HOST', expression: 'NET.HOST'}],
+            },
+          ],
+          relationships: [],
+          metrics: [
+            {
+              name: 'city_count',
+              expression: 'COUNT(orders.shipping_address.city)',
+            },
+            {
+              name: 'host_count',
+              expression: 'COUNT(DISTINCT NET.HOST(orders.url))',
+            },
+          ],
+        };
+        const {models, warnings} = roundTripFull(model);
+        expect(models[0].metrics[0].entity).toBe('orders');
+        expect(models[0].metrics[1].entity).toBe('orders');
+        expect(warnings).toEqual([]);
+      });
+
+  test(
+      'warns when a metric expression cannot be parsed and does not also emit the no-known-entity warning',
+      () => {
+        const model: SemanticModel = {
+          name: 'sales',
+          entities: [{
+            name: 'orders',
+            dataSource: 'p.d.orders',
+            keys: ['o_id'],
+            fields: [{name: 'amt', expression: 'orders.amt'}],
+          }],
+          relationships: [],
+          metrics: [{
+            name: 'broken',
+            expression: 'SUM(orders.amt',
+          }],
+        };
+        const {models, warnings} = roundTripFull(model);
+        expect(models[0].metrics[0].entity).toBeUndefined();
+        expect(warnings).toEqual([
+          "metric 'broken': expression could not be parsed; entity inference " +
+          "was skipped (set 'entity' on the metric, or backtick-quote a " +
+          "reserved qualifier, such as `Date`.amount)",
+        ]);
+
+        // When the pulled aspect already carries `entity`, entity inference is
+        // not needed to place the metric, so no warning is emitted.
+        const withEntity = roundTripFull({
+          ...model,
+          metrics: [{name: 'broken', entity: 'orders', expression: 'SUM(orders.amt'}],
+        });
+        expect(withEntity.models[0].metrics[0].entity).toBe('orders');
+        expect(withEntity.warnings).toEqual([]);
       });
 });
 
@@ -753,6 +1159,9 @@ describe(
         'sales_bq_graph_target.yaml',
         'star_orders_customer.yaml',
         'tpcds_date_edge.yaml',
+        // Actions and constraints publish under custom types, so this is the
+        // fixture whose pull golden shows them recovered.
+        'actions_place_order.yaml',
       ];
       const kcGoldenPath = (fixture: string) => path.join(
           FIXTURES,
@@ -807,7 +1216,11 @@ describe(
         'tpcds_date_edge.yaml',
       ];
       // Same load defaults as the OSI / KC / pull goldens.
-      const LOAD = {defaultProject: 'sqlgen-testing', defaultDataset: 'demo'};
+      const LOAD = {
+        defaultProject: 'sqlgen-testing',
+        defaultDataset: 'demo',
+        allowLegacyBareSource: true,
+      };
 
       for (const fixture of CORPUS) {
         test(fixture, () => {
@@ -816,8 +1229,11 @@ describe(
             const {models, warnings} = roundTrip(authored);
             expect(models).toHaveLength(1);
             expect(stripToKcFloor(models[0])).toEqual(stripToKcFloor(authored));
-            // A clean corpus model round-trips without reader warnings.
-            expect(warnings).toEqual([]);
+            // A clean corpus model only warns when deployment names had to be
+            // synthesized from target URIs.
+            expect(
+                warnings.filter(w => !/deployment names were not recovered/.test(w)))
+                .toEqual([]);
           }
         });
       }
@@ -832,6 +1248,18 @@ describe(
 // above.
 function stripToKcFloor(model: SemanticModel): SemanticModel {
   const m = structuredClone(model);
+
+  // The flavor the document declared (`version`) has nowhere to live in the
+  // current catalog aspects, so it does not survive a round trip through them.
+  delete m.version;
+  if (m.deployments?.length) {
+    m.deployments = m.deployments.map((d, i, arr) => ({
+      name: arr.length === 1 ? 'default' : `deployment_${i + 1}`,
+      target: d.target,
+    }));
+  } else {
+    delete m.deployments;
+  }
 
   // ai_context rides back through the built-in `guidelines` aspect, but only
   // `instructions` -- synonyms/examples are not persisted. Reduce every
@@ -853,6 +1281,7 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     floorAiContext(e);
     if (e.uniqueKeys && !e.uniqueKeys.length) delete e.uniqueKeys;
     delete e.customExtensions;
+    delete e.authoredSource;
     for (const f of e.fields) {
       // Field label now persists via the schema aspect's per-field annotations;
       // field-level ai_context does not (only entry-backed objects get a
@@ -860,6 +1289,8 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
       delete f.aiContext;
       delete f.importedExpression;  // vendor SQL is not persisted
       delete f.importedDialect;
+      delete f.dialects;
+      delete f.stringForm;
       delete f.customExtensions;
       // A default push omits the per-field `semantics` block, so the field
       // expression and the DIMENSION role are not persisted (they ride back
@@ -882,6 +1313,8 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
     floorAiContext(metric);
     delete metric.importedExpression;
     delete metric.importedDialect;
+    delete metric.dialects;
+    delete metric.stringForm;
     delete metric.customExtensions;
     delete metric.expression;  // omitted by a default push, like field ones
     // The metric aspect stores only a dataType (no metadataType), so it cannot
@@ -920,6 +1353,49 @@ function floorAiContext(obj: {aiContext?: {instructions?: string}}): void {
   }
 }
 
+
+describe('an expression with no SQL stored in the catalog', () => {
+  // A push made with --emit-expressions before the loader rejected an
+  // expression with no SQL could store one in the catalog.
+  const sales = (fieldExpression: string, metricExpression: string): SemanticModel => ({
+    name: 'sales',
+    entities: [{
+      name: 'orders',
+      authoredSource: '//bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders',
+      dataSource: 'demo.sales.orders',
+      keys: ['id'],
+      fields: [
+        {name: 'id', expression: 'id'},
+        {name: 'amount', expression: 'amount'},
+        {name: 'notes', expression: fieldExpression},
+      ],
+    }],
+    relationships: [],
+    metrics: [{name: 'total', expression: metricExpression, entity: 'orders'}],
+  });
+
+  test('a field pulls unbound with a warning, so the pulled file loads', () => {
+    for (const [text, reason] of [
+           ['  ', 'is blank'], ['-- todo', 'is only a comment'],
+           ['orders.', "is only the qualifier 'orders.'"]]) {
+      const {models, warnings} = roundTripFull(sales(text, 'SUM(orders.amount)'));
+      expect(models[0].entities[0].fields[2].expression).toBeUndefined();
+      expect(warnings).toContain(
+          `entity 'orders': field 'notes': its expression in the catalog ${
+              reason}, so the field is read as unbound`);
+      expect(() => loadModels(serializeModel(models[0]).yaml)).not.toThrow();
+    }
+  });
+
+  test('a metric pulls with no expression, and the serializer says it needs one', () => {
+    const {models} = roundTripFull(sales('notes', '  '));
+    expect(models[0].metrics[0].expression).toBeUndefined();
+    expect(serializeModel(models[0]).warnings)
+        .toContain(
+            "metric 'total': no expression; the loader requires one per metric " +
+            'and the document will not load until it is set.');
+  });
+});
 
 // The inverse-canonical of the emitter's deployment-target persistence,
 // matching the reader's readDeploymentTargets: keep only GOOGLE

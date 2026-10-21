@@ -233,8 +233,9 @@ describe('org ontology exercises datatypes, keys, and binding', () => {
       lastLogin: 'DateTime',
       startDate: 'Date',
     });
-    // A range outside the mapped set falls back to Opaque.
-    expect(project.fields.find(f => f.name === 'notes')!.type).toBe('Opaque');
+    // A range outside the mapped set is emitted as Opaque, which the loader
+    // reads as no type (the same as leaving `datatype` out).
+    expect(project.fields.find(f => f.name === 'notes')!.type).toBeUndefined();
 
     // Keys: single, and inverse-functional employeeId that IS the key is NOT
     // also emitted as a unique_keys constraint.
@@ -430,8 +431,9 @@ describe('datatype mapping (rdfs:range xsd:* -> DataType)', () => {
       tm: 'Time',
       dtm: 'DateTime',
       tz: 'DateTimeTz',
-      un: 'Opaque',  // range outside the set
-      nr: 'Opaque',  // no range at all
+      // Emitted as Opaque, which loads as no type:
+      un: undefined,  // range outside the set
+      nr: undefined,  // no range at all
     });
   });
 
@@ -1021,5 +1023,35 @@ describe('the owl import handler wires --compact through to the serializer', () 
     // Layout differs, content does not.
     expect(compact).not.toEqual(block);
     expect(yaml.parse(compact)).toEqual(yaml.parse(block));
+  });
+});
+
+
+describe('the owl import handler writes only a model that loads', () => {
+  // The model name comes from the file name and the other names from the
+  // ontology, so either can produce a name the loader rejects. The import
+  // stops there rather than writing a file every other command refuses.
+  test('a file name that is not a valid model name is refused', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owl-names-'));
+    const src = path.join(dir, 'retail.v2.ttl');
+    fs.writeFileSync(src, readFixture('sales.owl.ttl'));
+    const out = path.join(dir, 'out.yaml');
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.join(' ')); };
+    try {
+      expect(await owl('import', src, {out})).toBe(1);
+    } finally {
+      console.error = original;
+    }
+    expect(fs.existsSync(out)).toBe(false);
+    expect(errors.join('\n')).toContain(
+        `'${src}' converts to a model that does not load`);
+    expect(errors.join('\n')).toContain("Model name 'retail.v2' is not valid");
+
+    // The same ontology under a valid file name imports.
+    const ok = path.join(dir, 'retail_v2.ttl');
+    fs.writeFileSync(ok, readFixture('sales.owl.ttl'));
+    expect(await owl('import', ok, {out})).toBe(0);
   });
 });

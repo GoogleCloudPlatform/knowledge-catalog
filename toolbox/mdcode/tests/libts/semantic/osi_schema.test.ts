@@ -116,15 +116,15 @@ function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
 }
 
 // Released Apache OSI (osi-schema.json) is vanilla `0.2.0.dev0`: it pins the
-// `version` const, requires `datasets`, and knows no native `deployment_target`
-// key. Many fixtures declare the extended `0.2.0.dev0/google` profile, whose
-// surface deltas -- the version suffix, the `entities` alias for `datasets`, and
-// the native `deployment_target` key -- are deliberate supersets, not drift.
-// Fold those back to the vanilla surface before validating, so the released
-// schema still checks the deep content (dialects, datatypes, field/metric
-// shapes); the remaining deep supersets (`extends`/`abstract`) and the logical
-// goldens' omitted bindings are tolerated by the checks below, exactly as they
-// were for vanilla fixtures.
+// `version` const, requires `datasets`, and knows no native `deployments` (or
+// legacy `deployment_target`) key. Many fixtures declare the extended
+// `0.2.0.dev0/google` profile, whose surface deltas -- the version suffix, the
+// `entities` alias for `datasets`, and the native `deployments` list -- are
+// deliberate supersets, not drift. Fold those back to the vanilla surface before
+// validating, so the released schema still checks the deep content (dialects,
+// datatypes, field/metric shapes); the remaining deep supersets
+// (`extends`/`abstract`) and the logical goldens' omitted bindings are tolerated
+// by the checks below, exactly as they were for vanilla fixtures.
 function toSchemaShape(doc: any): any {
   if (!doc || typeof doc !== 'object') return doc;
   const d = structuredClone(doc);
@@ -136,8 +136,54 @@ function toSchemaShape(doc: any): any {
       delete m.entities;
     }
     delete m.deployment_target;
+    delete m.deployments;
   }
   return d;
+}
+
+// `actions` (model-level write operations, the write-side counterpart to
+// metrics) are a deliberate SUPERSET of released Apache OSI: the Extended-spec
+// proposal adds them, but the vendored osi-schema.json -- pinned to released
+// v0.2.0.dev0 -- does not yet know the keyword, so a model carrying `actions`
+// trips `additionalProperties: false` on the semantic_model item. We tolerate
+// EXACTLY that one extra property (an additionalProperties error naming
+// `actions` on a /semantic_model/<n> path) and nothing else, so an actions
+// fixture validates while every other drift from the spec still fails. When
+// upstream OSI adopts actions, re-vendoring the schema makes this pass with no
+// special-casing and this tolerance can be removed.
+// The model-level write-side blocks that are a deliberate superset of released
+// OSI (the Extended-spec proposal): `actions` and the `constraints` that gate
+// them.
+const EXTENDED_MODEL_BLOCKS = new Set(['actions', 'constraints']);
+
+function onlyExtendedModelBlocks(errors: typeof validate.errors): boolean {
+  return !!errors && errors.length > 0 &&
+    errors.every(
+      e => e.keyword === 'additionalProperties' &&
+        EXTENDED_MODEL_BLOCKS.has(
+          (e.params as {additionalProperty?: string}).additionalProperty ?? '') &&
+        /\/semantic_model\/\d+$/.test(e.instancePath));
+}
+
+// A `.pull.golden.yaml` of a fixture that declares actions or constraints trips
+// two tolerated classes at once: the #290 missing-`expression` gap and the
+// extended model blocks. Each predicate above is all-or-nothing, so a document
+// hitting both passes neither. This one tolerates their union, and is applied
+// only to that combination, so neither predicate has to loosen for every other
+// fixture.
+function onlyExpressionGapAndExtendedBlocks(
+  errors: typeof validate.errors): boolean {
+  return !!errors && errors.length > 0 &&
+    errors.every(
+      e =>
+        (e.keyword === 'required' &&
+          (e.params as {missingProperty?: string}).missingProperty ===
+            'expression') ||
+        (e.keyword === 'additionalProperties' &&
+          EXTENDED_MODEL_BLOCKS.has(
+            (e.params as {additionalProperty?: string}).additionalProperty ??
+            '') &&
+          /\/semantic_model\/\d+$/.test(e.instancePath)));
 }
 
 describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
@@ -171,6 +217,17 @@ describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () =>
         if ((rel === 'hierarchy_graph.yaml' ||
              rel === 'reserved_words_inherit.yaml') &&
             onlyExtendsExtension(validate.errors)) {
+          return;
+        }
+        // The model-level `actions` and `constraints` blocks are a superset
+        // of released OSI, proposed in the Extended spec. Tolerate those two
+        // extra properties and nothing else, and only on the fixtures that
+        // carry them, so a stray `actions` or `constraints` slipping into any
+        // other fixture still fails.
+        if (rel.startsWith('actions_') &&
+            (rel.endsWith('.pull.golden.yaml') ?
+                 onlyExpressionGapAndExtendedBlocks(validate.errors) :
+                 onlyExtendedModelBlocks(validate.errors))) {
           return;
         }
         const details = (validate.errors ?? [])
