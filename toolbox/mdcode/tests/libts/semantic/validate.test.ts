@@ -7,7 +7,7 @@ import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../s
 import {listed, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
+import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
@@ -2918,6 +2918,41 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     expect(check(hierarchy(false)))
         .toEqual([UNBOUND(['bigquery', 'spanner'])]);
     expect(check(hierarchy(true))).toEqual([]);
+  });
+
+  test('incomplete inline bindings give one warning when the model declares no deployment', () => {
+    const warned = (m: SemanticModel, named = false) =>
+        inlineBindingWarnings(m, 'commerce', named);
+    const NON_EXECUTABLE = (left: string) =>
+        `model 'commerce' (commerce) is non-executable: the model file leaves ${
+            left}, and the model declares no named profile. It cannot be ` +
+        'queried until it is bound.';
+    const NO_DEFAULT = "model 'commerce' (commerce) has an unbound 'default' " +
+        "profile: the model file leaves entity 'customer' without a source " +
+        "and relationship 'placed_by' without join columns. It cannot be " +
+        "queried through 'default'.";
+    // Complete bindings give nothing, and fields without an expression do not
+    // count. Neither do incomplete bindings a deployment uses, which the
+    // deployment rules reject.
+    for (const [i, m] of [
+           commerce(), commerce({deployments: BQ}),
+           commerce({customer: false, deployments: BQ}),
+         ].entries()) {
+      expect({i, warnings: [...warned(m), ...warned(m, true)]})
+          .toEqual({i, warnings: []});
+    }
+    for (const [m, left] of [
+           [commerce({customer: false}), "entity 'customer' without a source"],
+           [
+             commerce({join: false}),
+             "relationship 'placed_by' without join columns",
+           ],
+    ] as const) {
+      expect(warned(m)).toEqual([NON_EXECUTABLE(left)]);
+    }
+    // Beside named profiles.
+    expect(warned(commerce({customer: false, join: false}), true))
+        .toEqual([NO_DEFAULT]);
   });
 
   // A BigQuery graph turns each metric into a measure: one aggregate on the

@@ -128,6 +128,7 @@ beforeEach(() => {
     logs.push(a.join(' '));
     errs.push(a.join(' '));
   });
+  spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -876,7 +877,6 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
         .mockResolvedValue({status: 200, result: {}} as any);
     spyOn(CatalogClient.prototype, 'getAspectType')
         .mockResolvedValue({status: 200, result: {}} as any);
-    spyOn(console, 'warn').mockImplementation(() => {});
   });
 
   test('a profile push accepts keeps its report and exits 0', async () => {
@@ -2909,7 +2909,7 @@ semantic_model:
         `      - ${metric}\n`;
 
     // Each unbound entity or relationship is reported once, by push's own
-    // checks where they see it and by this check otherwise.
+    // checks where they see it and by this check otherwise. No warning prints.
     test('rejects a deployment that uses incomplete inline bindings, on every push but a legacy wrapper push', async () => {
       const unbound = (left = "entity 'customer' without a source") =>
           `${OWN}which leave ${left}; a deployment needs every entity and ` +
@@ -2948,6 +2948,7 @@ semantic_model:
         errors: [unbound("entity 'customer' without a source and " +
                          "relationship 'placed_by' without join columns")],
       });
+      expect(console.warn).not.toHaveBeenCalled();
     });
 
     // A push that fails this check prints no pruning note. An AlloyDB
@@ -3081,6 +3082,55 @@ semantic_model:
                  "'purchase', which has no primary key or unique key, so the " +
                  'graph has no node table for it.'],
       });
+    });
+
+    // Push warns and still pushes when the model file's own bindings are
+    // incomplete and the model declares no deployment. `kcmd profiles` prints
+    // the warning under the default binding, unless it reports another profile.
+    test('warns about incomplete inline bindings when the model declares no deployment, on push and in the report', async () => {
+      const warned: string[] = [];
+      spyOn(console, 'warn').mockImplementation((m: any) => {
+        warned.push(String(m));
+      });
+      // The warnings printed since the last call.
+      const newWarnings = () => warned.splice(0);
+      const left = "the model file leaves entity 'customer' without a source";
+      const NON_EXECUTABLE = "model 'commerce' (commerce) is non-executable: " +
+          `${left}, and the model declares no named profile. It cannot be ` +
+          'queried until it is bound.';
+      const NO_DEFAULT = "model 'commerce' (commerce) has an unbound " +
+          `'default' profile: ${left}. It cannot be queried through 'default'.`;
+      const reported = (w: string) => [`  profile 'default': warning: ${w}`];
+      writeScope({'commerce.yaml': commerce()});
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+      expect(await profiles()).toBe(0);
+      expect(newWarnings()).toEqual([]);
+      writeScope({'commerce.yaml': customerUnbound(commerce())});
+      expect(await pushResult()).toEqual({code: 0, errors: []});
+      expect(newWarnings()).toEqual([`Warning: ${NON_EXECUTABLE}`]);
+      expect(await profiles()).toBe(0);
+      expect(newWarnings()).toEqual(reported(NON_EXECUTABLE));
+      writeScope({'commerce.profile.prod.yaml': profileFile('prod')});
+      for (const profile of [undefined, 'prod']) {
+        expect(await pushResult(profile)).toEqual({code: 0, errors: []});
+        expect(newWarnings()).toEqual([`Warning: ${NO_DEFAULT}`]);
+      }
+      for (const profile of [undefined, 'default']) {
+        expect(await profiles({profile})).toBe(0);
+        expect(newWarnings()).toEqual(reported(NO_DEFAULT));
+      }
+      expect(await profiles({profile: 'prod'})).toBe(0);
+      expect(newWarnings()).toEqual([]);
+
+      // A deployment that names a profile gets no warning, in push or in the
+      // report.
+      writeScope({
+        'commerce.yaml': customerUnbound(commerce({targets: 1}))
+            .replace(/(target: \S+)\n/, '$1\n        profile: prod\n'),
+      });
+      expect((await pushResult(noProfile)).code).toBe(1);
+      expect(await profiles()).toBe(1);
+      expect(newWarnings()).toEqual([]);
     });
 
     // A named profile that keeps the field unchanged gets no error of its
