@@ -82,7 +82,9 @@ model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles and still checks each
 profile. When `default_profile` names a profile that a model does not declare,
 a push that names no profile fails. That error prints above the model's
-profiles.
+profiles. When push warns that the model file's own bindings are incomplete,
+the report prints that warning under `profile 'default'`, unless `--profile`
+names another profile.
 
 The command is read-only. It applies and prunes each profile and generates each
 graph as `push --validate-only` does, but deploys nothing and calls no service,

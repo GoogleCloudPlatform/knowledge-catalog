@@ -357,6 +357,24 @@ export function validateInlineDialects(
   return errors;
 }
 
+// The warning for a model file whose own bindings are incomplete and that
+// declares no deployment. With `namedProfiles`, it says 'default' is unbound,
+// and otherwise that the model cannot be queried at all.
+export function inlineBindingWarnings(
+    model: SemanticModel, document: string, namedProfiles: boolean): string[] {
+  const unbound = unboundInline(model, true);
+  if (!unbound || model.deployments?.length) return [];
+  const where = `model '${model.name}' (${document})`;
+  return [
+    namedProfiles ?
+        `${where} has an unbound 'default' profile: the model file leaves ${
+            unbound}. It cannot be queried through 'default'.` :
+        `${where} is non-executable: the model file leaves ${
+            unbound}, and the model declares no named profile. It cannot be ` +
+            `queried until it is bound.`,
+  ];
+}
+
 // What the model file's own bindings leave unbound, such as "entity 'a'
 // without a source", or '' when nothing is. Relationships count only with
 // `joins`.

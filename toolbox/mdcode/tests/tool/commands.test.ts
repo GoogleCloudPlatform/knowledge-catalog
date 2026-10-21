@@ -106,6 +106,12 @@ describe('push prints Knowledge Catalog warnings', () => {
     success: true, created: 1, updated: 0, deleted: 0, linked: 0, unlinked: 0,
     warnings: ['a relationship is skipped'], plan: [],
   };
+  // The model binds no table and declares no named profile, so push warns
+  // before it reaches the catalog.
+  const NON_EXECUTABLE = "Warning: model 'commerce' (commerce) is " +
+      "non-executable: the model file leaves entity 'Customer' without a " +
+      'source, and the model declares no named profile. It cannot be ' +
+      'queried until it is bound.';
 
   test('before the first catalog write, once each', async () => {
     writeWorkspace();
@@ -122,6 +128,7 @@ describe('push prints Knowledge Catalog warnings', () => {
 
     expect(await push({})).toBe(0);
     expect(events).toEqual([
+      NON_EXECUTABLE,
       'Warning: a relationship is skipped',
       'first catalog write',
     ]);
@@ -134,6 +141,7 @@ describe('push prints Knowledge Catalog warnings', () => {
 
     expect(await push({validateOnly: true})).toBe(0);
     expect(warn.mock.calls.map(c => String(c[0]))).toEqual([
+      NON_EXECUTABLE,
       'Warning: a relationship is skipped',
     ]);
   });

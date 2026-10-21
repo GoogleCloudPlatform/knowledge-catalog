@@ -28,7 +28,7 @@ import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -719,9 +719,11 @@ function namedProfileErrors(
 }
 
 // The errors validateInlineDialects and validateDeployments give for each
-// model file in `docs`, whichever binding push deploys.
+// model file in `docs`, whichever binding push deploys. The warnings from
+// inlineBindingWarnings go to `warnings`.
 function modelFileBindingErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
+    declared: DeclaredProfiles, warnings: string[],
     transpile: boolean): string[] {
   const errors: string[] = [];
   for (const d of docs) {
@@ -729,6 +731,13 @@ function modelFileBindingErrors(
     if (!base) continue;
     errors.push(
         ...validateInlineDialects(base, d.name, {transpiled: transpile}));
+    try {
+      const named = declared(d).some(
+          p => p.name.toLowerCase() !== DEFAULT_PROFILE);
+      warnings.push(...inlineBindingWarnings(base, d.name, named));
+    } catch {
+      // namedProfileErrors reports a profile that does not load.
+    }
     // A legacy wrapper push deploys the wrapper's bindings, not these.
     if (d.excluded) continue;
     // Push reports missing join columns itself for a model with a graph target.
@@ -836,7 +845,8 @@ async function prepareModels(
     ...namedProfileErrors(
         docs, checkedByDoc, profileName, opts.profileDocs, opts.declared,
         unprunedWarnings, !!opts.transpile),
-    ...modelFileBindingErrors(docs, checkedByDoc, !!opts.transpile),
+    ...modelFileBindingErrors(
+        docs, checkedByDoc, opts.declared, unprunedWarnings, !!opts.transpile),
   ];
   let unprunedErrors: string[] = [];
   if (opts.transpile) {
@@ -1601,6 +1611,17 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const inlineHeader =
       `  profile '${DEFAULT_PROFILE}': the model document's own inline ` +
       `bindings, as authored -- nothing merged, nothing withheld.`;
+  // Prints the warnings push gives about the model file's own bindings in
+  // `doc`, unless the model file does not load on its own.
+  const warnInline = (doc: {name: string; text: string}, named: boolean) => {
+    const loaded =
+        loadSemanticModels([doc], {defaultProject, bindingOptional: true});
+    if (loaded.error) return;
+    for (const w of inlineBindingWarnings(
+             loaded.models[0].model, doc.name, named)) {
+      console.warn(`  profile '${DEFAULT_PROFILE}': warning: ${w}`);
+    }
+  };
 
   // The profiles are read before anything prints, as a graph push reads them.
   // A profile file that breaks a layout rule throws. When a model's GOOGLE
@@ -1648,6 +1669,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     // universally valid name undeclared.
     if (only === DEFAULT_PROFILE) {
       console.log(inlineHeader);
+      warnInline(doc, declared.length > 0);
       printRejects('    ', await errorsFor(doc, DEFAULT_PROFILE));
       continue;
     }
@@ -1673,6 +1695,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       console.log(
           `  no binding profiles; the model document is its own inline ` +
           `'default' binding.`);
+      warnInline(doc, declared.length > 0);
       printRejects('    ', await errorsFor(doc, DEFAULT_PROFILE));
       continue;
     }
@@ -1734,6 +1757,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     if (!only) {
       const errors = await errorsFor(doc, DEFAULT_PROFILE);
       if (errors.length) console.log(inlineHeader);
+      warnInline(doc, declared.length > 0);
       printRejects('    ', errors);
     }
   }

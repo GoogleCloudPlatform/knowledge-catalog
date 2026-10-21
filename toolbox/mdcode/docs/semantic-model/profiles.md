@@ -493,6 +493,12 @@ writes nothing.
   bindings against the rules of each deployment's engine, whichever binding the
   push deploys. Each field they bind also needs a text its entity's database
   runs. See [Validation](reference.md#validation).
+- **Unbound inline bindings** — when the model file's own bindings leave an
+  entity without a source or a relationship without join columns, and the
+  model declares no deployment, push warns and still pushes. The warning says
+  the model is non-executable when it declares no named profile, and that
+  `default` is unbound when it declares one. `kcmd profiles` prints it under
+  the `default` binding.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is
