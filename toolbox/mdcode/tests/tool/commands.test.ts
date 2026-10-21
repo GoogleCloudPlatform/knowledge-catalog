@@ -22,7 +22,7 @@ import * as pullKc from '../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
-import {kcV2Aspects, profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
+import {kcV2Aspects, profiles, pull, push, PushOptions, skillsGenerate} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -271,7 +271,8 @@ entities:
     expect(refusal).toContain(
         "Run 'kcmd push --profile default' to deploy the model file's own " +
         "bindings, or 'kcmd push --no-profile' to publish to Knowledge " +
-        'Catalog without deploying a graph.');
+        "Catalog without deploying a graph. Both need the model file's own " +
+        'bindings to be complete.');
     expect(bqSpy).not.toHaveBeenCalled();
 
     // The command it names deploys the model file's own bindings.
@@ -1003,9 +1004,12 @@ semantic_model:
           "Warning: metric 'broken_metric' in model 'commerce' (commerce): kcmd " +
           'could not read its SQL, so the fields it reads were not checked.',
         ]);
+    // The BigQuery measure rule also runs the reference rules, to leave the
+    // metrics they report to them.
     expect(order).toEqual([
       'loadSqlEngine',
       'loadSemanticModels',
+      'validateExpressionReferences',
       'validateExpressionReferences',
       'validatePushRequirements',
       'validateExpressionReferences',
@@ -2418,14 +2422,14 @@ describe('push applies, loads and checks a profile', () => {
     });
   }
 
-  // Two deployments stop the push after pruning, before any live check.
-  test('a pruned push notes the fields its profile leaves unbound', async () => {
-    writeModel(`version: "0.2.0.dev0/google"
+  // A model whose field 'customer.ltv' has no expression, with a BigQuery
+  // deployment for each name in `deployments`, and then the `rest` lines.
+  const ltvUnbound = (deployments: string[], rest = '') =>
+      `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     deployments:
-      - { name: a, target: "//${BQ}/propertyGraphs/a" }
-      - { name: b, target: "//${BQ}/propertyGraphs/b" }
+${deployments.map(d => `      - { name: ${d}, target: "//${BQ}/propertyGraphs/${d}" }`).join('\n')}
     entities:
       - name: customer
         source: //${BQ}/tables/customer
@@ -2433,11 +2437,63 @@ semantic_model:
         fields:
           - { name: c_id, expression: c_id }
           - { name: ltv }
+${rest}`;
+
+  // Push prints the pruning note once the checks before the deploy loop
+  // pass, after their warnings. A push that then fails a source check still
+  // prints it.
+  const NOTE = "Note: profile 'default' leaves 1 field(s) unbound.";
+  const validateNoKc = {validateOnly: true, kc: false};
+  const pruned: Array<[
+    outcome: string, deployments: string[], rest: string, options: PushOptions,
+    errors: string[], warnings: string[], sources?: string[]]> = [
+    ['stopped by two deployments', ['a', 'b'], '', {validateOnly: true},
+     ["Error: model 'commerce' (commerce) declares 2 deployments; push uses " +
+      'exactly one deployment for now, with a BigQuery Graph or Spanner ' +
+      "Graph target under 'deployments'."], []],
+    // Under --all-profiles a legacy profile that passes comes first. The
+    // default binding then fails the rule on the fields a metric reads.
+    ['stopped by a later binding under --all-profiles', ['g'],
+     '    metrics:\n' +
+         '      - { name: total_ltv, expression: "SUM(customer.ltv)" }\n',
+     {...validateNoKc, allProfiles: true},
+     ["Error: model 'commerce' (commerce) deployment 'g' uses the model " +
+      "file's own bindings, under which metric 'total_ltv' reads field " +
+      "'customer.ltv', which has no expression; a deployment needs every " +
+      'field its metrics read bound.'], []],
+    ['that passes', ['a'], '', validateNoKc, [], [NOTE]],
+    ['that warns', ['g'], '          - { name: odd, expression: "odd +* (" }\n',
+     validateNoKc, [],
+     ["Warning: field 'customer.odd' in model 'commerce' (commerce): kcmd " +
+      'could not read its SQL, so the fields it reads were not checked.', NOTE]],
+    ['that fails a source check', ['g'], '', validateNoKc,
+     ['Error: the table is gone'], [NOTE], ['the table is gone']],
+  ];
+  for (const [outcome, deployments, rest, options, errors, warnings, sources = []]
+       of pruned) {
+    const note = warnings.includes(NOTE) ? 'its' : 'no';
+    test(`a pruned push ${outcome} gives ${note} pruning note`, async () => {
+      const eg = writeModel(ltvUnbound(deployments, rest));
+      if (options.allProfiles) {
+        fs.mkdirSync(path.join(eg, 'commerce.profiles'));
+        fs.writeFileSync(
+            path.join(eg, 'commerce.profiles', 'staging.yaml'),
+            `semantic_model:
+  - name: commerce
+    deployment_target: //${BQ}/propertyGraphs/staging
+    entities: [{ name: customer, source: "//${BQ}/tables/customer_staging" }]
 `);
-    expect(await push({validateOnly: true})).toBe(1);
-    expect(prints(console.warn))
-        .toContain("Note: profile 'default' leaves 1 field(s) unbound.");
-  });
+      }
+      spyOn(validateMod, 'validateBigQueryDataSources')
+          .mockResolvedValue(sources);
+      const bqSpy = spyOn(bqLeg, 'deployBigQuery').mockResolvedValue(
+          {success: true, deployed: 0, ddl: [], warnings: []} as any);
+      expect(await push(options)).toBe(errors.length ? 1 : 0);
+      expect(prints(console.error)).toEqual(errors);
+      expect(prints(console.warn)).toEqual(warnings);
+      expect(bqSpy).toHaveBeenCalledTimes(errors.length ? 0 : 1);
+    });
+  }
 
   // Unlike a field with no expression, a field with a blank one stops the push
   // when its model file loads.

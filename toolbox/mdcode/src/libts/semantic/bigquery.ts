@@ -21,7 +21,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {referencedEntityNames, sqlWithoutComments, stripQualifier} from './sql_expr_utils';
+import {referencedEntityNames, sqlWithoutComments, stripQualifier, SUPPORTED_AGGREGATES} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
@@ -31,16 +31,6 @@ export interface GenerateOptions {
 }
 
 export type {GenerateResult};
-
-// Aggregate functions BigQuery accepts inside MEASURE(...). This is the
-// COMPLETE allowed set, not a convenience subset: BigQuery rejects any other
-// aggregate in a measure expression with "Aggregate function <name> is not
-// allowed in a measure expression in BigQuery" (verified live — STDDEV,
-// VARIANCE, COUNTIF, APPROX_COUNT_DISTINCT, ANY_VALUE, LOGICAL_AND/OR,
-// BIT_AND/OR/XOR all rejected). A metric using an aggregate outside this set
-// therefore cannot be a MEASURE and is skipped + warned rather than emitted as
-// DDL BigQuery would reject.
-const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
 
 /**
  * Generates the BigQuery property-graph DDL for a semantic model.

@@ -530,7 +530,7 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
       ]);
       expect(metricNames(model)).toEqual(['gross']);
       expect(report.droppedMetrics).toEqual([
-        {name: 'total_tax', reason: 'field Order.tax is unavailable'},
+        {name: 'total_tax', reason: 'field Order.tax is unavailable', field: 'Order.tax'},
       ]);
     }
   });
@@ -649,7 +649,7 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const {model, report} = pruneUnavailable(m, 'default');
     expect(metricNames(model)).toEqual([]);
     expect(report.droppedMetrics).toEqual(
-        [{name: 'holidays', reason: 'field Date.is_holiday is unbound'}]);
+        [{name: 'holidays', reason: 'field Date.is_holiday is unbound', field: 'Date.is_holiday'}]);
   });
 
   test('a metric is dropped when its readable text joins unconnected entities', () => {
@@ -708,7 +708,7 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
       const {model, report} = pruneUnavailable(m, 'operational');
       expect(metricNames(model)).toEqual(['order_count']);
       expect(report.droppedMetrics).toContainEqual(
-          {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound'});
+          {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound', field: 'Customer.lifetimeValue'});
     }
   });
 
@@ -732,7 +732,7 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const transpiled = pruneUnavailable(m, 'operational');
     expect(metricNames(transpiled.model)).toEqual(['order_count']);
     expect(transpiled.report.droppedMetrics).toContainEqual(
-        {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound'});
+        {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound', field: 'Customer.lifetimeValue'});
   });
 
   test("a metric is judged by the text its sources' dialect evaluates", () => {

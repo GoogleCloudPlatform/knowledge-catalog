@@ -489,6 +489,10 @@ writes nothing.
   fails when any binding of a relationship has `to_columns` that cover no key of
   the target. Where the model file gives an entity no key, the push also fails
   unless every profile gives it keys of one shape or none does.
+- **Deployments and field dialects** — every push checks the model file's own
+  bindings against the rules of each deployment's engine, whichever binding the
+  push deploys. Each field they bind also needs a text its entity's database
+  runs. See [Validation](reference.md#validation).
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is

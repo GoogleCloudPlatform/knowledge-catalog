@@ -93,23 +93,29 @@ export interface SqlColumn {
 // Throws when the engine is not loaded.
 export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
     undefined {
+  const tree = sqlExpressionTree(expression, dialect);
+  if (!expression.trim()) return [];
+  if (!tree) return undefined;
+  const columns: SqlColumn[] = [];
+  collectColumns(tree, columns, new Set(),
+                 PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic');
+  return columns;
+}
+
+// The engine's tree of `expression` read as one expression in `dialect`, or
+// undefined when it cannot be read so or is empty. A text that starts with a
+// keyword, such as `Order.amount`, is read again inside parentheses on lines
+// of their own, so a trailing `--` comment stays inside.
+export function sqlExpressionTree(expression: string, dialect: string): any {
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
-  if (!expression.trim()) return [];
+  if (!expression.trim()) return undefined;
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  // Read as written first. A text that starts with a keyword, such as the
-  // entity name in `Order.amount - Order.discount`, reads as a clause there,
-  // so it is read again inside parentheses. Either way the text must parse as
-  // one expression and nothing more. The line breaks keep a trailing `--`
-  // comment from swallowing the closing parenthesis.
-  const ast = oneExpression(engineDialect, `SELECT ${expression}`) ??
+  const ast: any = oneExpression(engineDialect, `SELECT ${expression}`) ??
       oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
-  if (!ast) return undefined;
-  const columns: SqlColumn[] = [];
-  collectColumns(ast, columns, new Set(), engineDialect);
-  return columns;
+  return ast?.select.expressions[0];
 }
 
 // The parsed statement when `sql` is a `SELECT` of exactly one expression and

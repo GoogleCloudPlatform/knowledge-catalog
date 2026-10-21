@@ -12,14 +12,14 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfileExclusions, expressionSources, ProfileExclusion, reservedProfileNameError, sourcesDialect} from './resolve_profiles';
-import {columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, referencedEntityNames} from './sql_expr_utils';
+import {applyProfileExclusions, DEFAULT_PROFILE, evaluatedTexts, expressionSources, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
 
@@ -141,8 +141,8 @@ export function validatePushRequirements(
     // relationship so a purely logical model (an OWL import) loads and pushes
     // to Knowledge Catalog, but a graph deploy would emit an invalid
     // `DESTINATION KEY () REFERENCES Dest ()` for such an edge -- so reject it
-    // here rather than generate broken DDL. A KC-only push declares no graph
-    // target (both arrays empty), so this is skipped.
+    // here rather than generate broken DDL. A model with no graph target
+    // skips it.
     if (deployInfo.bigQuery.length + deployInfo.spanner.length > 0) {
       for (const rel of model.relationships ?? []) {
         // An M:N edge binds through its junction table (association), so its
@@ -227,6 +227,146 @@ function nameAndDescriptionErrors(
   const reserved = reservedProfileNameError(document, model.profiles ?? []);
   if (reserved) errors.push(reserved);
   return errors;
+}
+
+// Checks the model file's own bindings against the engine of each deployment
+// of `model`, and returns one message per problem. With `opts.joinsChecked`,
+// missing join columns are left to the caller.
+export function validateDeployments(
+    model: SemanticModel, document: string,
+    opts: {joinsChecked?: boolean} = {}): string[] {
+  const errors: string[] = [];
+  const unbound = unboundInline(model, !opts.joinsChecked);
+  // The metrics the reference rules report, which the BigQuery rule leaves to
+  // them.
+  let referenced: Set<string>|undefined;
+  for (const d of model.deployments ?? []) {
+    const at = `model '${model.name}' (${document}) deployment '${d.name}'`;
+    const resolved = resolveModelDeployments(model, [d.name]);
+    const engine =
+        'error' in resolved ? undefined : resolved.deployments[0].engine;
+    const alloyDb = engine === 'alloydb';
+    if (unbound) {
+      errors.push(
+          `${at} uses the model file's own bindings, which leave ${
+              unbound}; a deployment needs every entity and relationship ` +
+          `bound.`);
+    }
+    // A Spanner deployment deploys no metric.
+    if (engine === 'spanner') continue;
+    const {report} = pruneUnavailable(
+        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model),
+        {noGraph: alloyDb});
+    for (const {name, field} of report.droppedMetrics) {
+      if (field === undefined) continue;
+      errors.push(
+          `${at} uses the model file's own bindings, under which metric '${
+              name}' reads field '${field}', which ${
+              report.unboundFields.includes(field) ?
+                  'has no expression' :
+                  'reads a field with no expression, directly or through ' +
+                      'other fields'}; a deployment needs every field its ` +
+          `metrics read bound.`);
+    }
+    if (engine !== 'bigquery') continue;
+    if (!referenced) {
+      referenced = new Set();
+      validateExpressionReferences([{document, model}], false, [], referenced);
+    }
+    for (const m of model.metrics ?? []) {
+      // The loop above reports a metric that pruning drops.
+      const problem = !referenced.has(m.name) &&
+          !report.droppedMetrics.some(x => x.name === m.name) &&
+          measureProblem(model, m);
+      if (problem) {
+        errors.push(
+            `${at} targets BigQuery, where metric '${
+                m.name}' cannot be a measure: ${problem}.`);
+      }
+    }
+  }
+  return errors;
+}
+
+// Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves
+// out a metric that validateBigQueryMetrics or the inheritance rules report:
+// one that reads several entities or none, or one on an abstract or extended
+// entity.
+function measureProblem(
+    model: SemanticModel, metric: Metric): string|undefined {
+  const text = expressionForDialect(metric, 'BIGQUERY');
+  if (text === undefined) return undefined;
+  const columns = columnsForSource(text, 'BIGQUERY');
+  if (!columns) return undefined;
+  const entities = model.entities ?? [];
+  const names = entities.map(e => e.name);
+  const matched = referencedEntityNames(
+      withoutComments(metric.expression ?? '', 'BIGQUERY'), names);
+  if (matched.length > 1 || !matched.length && !metric.entity) return undefined;
+  const reached = entitiesReached(columns, names);
+  const name = reached.length > 1 ? undefined : reached[0] ?? metric.entity;
+  const entity = entities.find(e => e.name === name);
+  if (!entity || entity.abstract ||
+      entities.some(e => e.extends?.includes(entity.name))) {
+    return undefined;
+  }
+  if (!isSingleAggregate(text, 'BIGQUERY')) {
+    return 'it is not SUM, AVG, COUNT, MIN or MAX over one operand';
+  }
+  if (!statesKey(entity.keys, entity.uniqueKeys)) {
+    return `it belongs to entity '${entity.name}', which has no primary key ` +
+        `or unique key, so the graph has no node table for it`;
+  }
+  return undefined;
+}
+
+// Checks that each bound field of the model file has a text for the dialect
+// of its entity's source, and returns one message per field. With
+// `opts.transpiled`, a text that --transpile translates also counts.
+export function validateInlineDialects(
+    model: SemanticModel, document: string,
+    opts: {transpiled?: boolean} = {}): string[] {
+  const errors: string[] = [];
+  for (const e of resolvedEntities(model)) {
+    const dialect = sourcesDialect({entities: [e]});
+    if (!dialect) continue;
+    for (const f of e.fields ?? []) {
+      if (!isFieldBound(f) ||
+          evaluatedTexts(f, dialect, !!opts.transpiled).length) {
+        continue;
+      }
+      const hint = evaluatedTexts(f, dialect, true).length ?
+          '; give it one, or pass --transpile' : '';
+      errors.push(
+          `field '${e.name}.${f.name}' in model '${model.name}' (${
+              document}) has no expression for ${dialect} or ANSI_SQL, and ` +
+          `the model file binds entity '${e.name}' to ${
+              /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${hint}.`);
+    }
+  }
+  return errors;
+}
+
+// What the model file's own bindings leave unbound, such as "entity 'a'
+// without a source", or '' when nothing is. Relationships count only with
+// `joins`.
+function unboundInline(model: SemanticModel, joins: boolean): string {
+  const sourceless = (model.entities ?? [])
+                         .filter(e => !e.abstract && !e.dataSource)
+                         .map(e => e.name);
+  const unjoined = !joins ? [] :
+      (model.relationships ?? [])
+          .filter(r => !r.association &&
+                      !(r.source.columns.length && r.destination.columns.length))
+          .map(r => r.name);
+  const part = (names: string[], one: string, many: string, without: string) =>
+      names.length ? `${names.length === 1 ? one : many} ${
+                         listed(names.map(n => `'${n}'`))} without ${without}` :
+                     '';
+  return [
+    part(sourceless, 'entity', 'entities', 'a source'),
+    part(unjoined, 'relationship', 'relationships', 'join columns'),
+  ].filter(p => p).join(' and ');
 }
 
 // Static, target-independent checks for a model's actions. Returns one message

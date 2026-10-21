@@ -60,10 +60,12 @@ agree on every structural row and differ only where a Spanner target has no
    so the dimension role is written only with `--emit-expressions` — and then
    comes back as a bare `dimension: {}` marker (without `is_time`, and so on). A
    default push drops the marker entirely.
-4. **Metric shape.** A metric must resolve to exactly one entity (otherwise the
-   push is rejected) and reduce to one supported aggregate — `SUM` / `AVG` /
-   `COUNT` / `MIN` / `MAX` — over one operand (otherwise it is skipped with a
-   warning).
+4. **Metric shape.** A metric must resolve to exactly one entity, or the push
+   is rejected. It must also reduce to one supported aggregate over one
+   operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
+   rejected. A push of a profile in the older `<model>.profiles/` layout
+   skips the metric with a warning instead, and so does a `--transpile` push
+   of a metric with only a vendor text.
 5. **Metric type.** A metric's expression is gated behind `--emit-expressions`;
    its data type round-trips only for a concrete type (e.g. `Decimal`) — an
    untyped, `String`, or `Opaque` metric comes back un-typed.
@@ -97,7 +99,8 @@ agree on every structural row and differ only where a Spanner target has no
     a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one, else the
     SQL `push --transpile` translated from the vendor text. It never emits the
     vendor text. A field with none of these is left out of its node table with
-    a warning. A metric with none, or one that aggregates such a field, is
+    a warning, though push rejects such a field in the model file first. A
+    metric with none, or one that aggregates such a field, is
     skipped with a warning. A Spanner graph reads a field's `SPANNER` entry,
     else its `ANSI_SQL` one, and leaves out a field with neither. See
     [Model spec §2.5](model_spec.md#25-expressions).
@@ -265,7 +268,8 @@ into Knowledge Catalog instead. Unique keys beyond the primary key are also
 dropped (only the primary key is emitted). The imported vendor SQL is never
 emitted. The graph builds each field and metric from its `BIGQUERY` entry, else
 its `ANSI_SQL` one, else the SQL `push --transpile` translated from the vendor
-SQL. A field with none of these is left out of its node table with a warning. A
+SQL. A field with none of these is left out of its node table with a warning,
+though push rejects such a field in the model file first. A
 metric with none, or one that aggregates such a field, is skipped with a
 warning.
 

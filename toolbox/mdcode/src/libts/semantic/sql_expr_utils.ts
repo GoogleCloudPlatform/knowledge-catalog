@@ -9,7 +9,7 @@
 //
 
 import {coversKey, Entity, Field, fieldBinding} from './ir';
-import {SqlColumn, sqlColumns, withoutComments} from './sql_parser';
+import {SqlColumn, sqlColumns, sqlExpressionTree, withoutComments} from './sql_parser';
 
 // Matches a single- or double-quoted SQL string literal, honoring backslash
 // escapes. (Triple-quoted / raw literals are uncommon in these expressions and
@@ -199,6 +199,59 @@ export function fieldsReadOn(
     }
   }
   return fields;
+}
+
+// The aggregates BigQuery accepts in a MEASURE, its complete list. BigQuery
+// rejects any other there, such as COUNTIF or APPROX_COUNT_DISTINCT.
+export const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
+
+// Whether `expression`, read in `dialect`, is one of SUPPORTED_AGGREGATES over
+// one operand, or COUNT(*), with at most DISTINCT or ALL. The operand holds no
+// other aggregate, window or subquery.
+export function isSingleAggregate(expression: string, dialect: string):
+    boolean {
+  const node = unwrapped(sqlExpressionTree(expression, dialect));
+  const kind = node && Object.keys(node).length === 1 ? Object.keys(node)[0] :
+                                                        undefined;
+  if (!kind || !SUPPORTED_AGGREGATES.includes(kind.toUpperCase())) {
+    return false;
+  }
+  const call = node[kind];
+  const star = kind === 'count' && call.star === true && !call.this;
+  const operand = unwrapped(call.this);
+  if (!star &&
+      (!operand || operand.star || operand.tuple ||
+       nestsAggregateOrSubquery(operand))) {
+    return false;
+  }
+  // The parser keeps the call's name in `name` or `original_name`.
+  const known = new Set(['this', 'star', 'distinct', 'name', 'original_name']);
+  return Object.entries(call).every(
+      ([key, v]) => known.has(key) || v === null || v === undefined ||
+          v === false || (Array.isArray(v) && v.length === 0));
+}
+
+// The parser's tree `node` without the parentheses and comments around it.
+function unwrapped(node: any): any {
+  while (node?.paren || node?.annotated) {
+    node = (node.paren ?? node.annotated).this;
+  }
+  return node;
+}
+
+// Whether the parser's tree `node` holds an aggregate, a window or a subquery
+// at any depth. The parser gives an aggregate call `distinct` and `filter`
+// keys, or the kind `aggregate_function`.
+function nestsAggregateOrSubquery(node: unknown): boolean {
+  if (Array.isArray(node)) return node.some(nestsAggregateOrSubquery);
+  if (node === null || typeof node !== 'object') return false;
+  return Object.entries(node).some(
+      ([kind, value]) => kind === 'aggregate_function' ||
+          kind === 'window_function' || kind === 'subquery' ||
+          kind === 'select' ||
+          (value !== null && typeof value === 'object' && 'distinct' in value &&
+           'filter' in value) ||
+          nestsAggregateOrSubquery(value));
 }
 
 // Whether a key or join column is a physical column name rather than an

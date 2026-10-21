@@ -358,15 +358,14 @@ Each rule and its reason:
   every metric's expression MUST reference exactly one entity, so the metric can
   attach to one node table. *Why:* a graph measure binds to a single element.
   Spanner imposes no such rule (it has no measures). A metric that resolves to no
-  entity or spans several is rejected/skipped at emit.
+  entity or spans several is rejected at push.
 
-- **A graph-bound metric SHOULD reduce to one supported aggregate.** For a
+- **A graph-bound metric MUST reduce to one supported aggregate.** For a
   BigQuery target, a metric that is not a single supported aggregate
-  (`SUM`, `AVG`, `COUNT`, `MIN`, `MAX`) over one operand — with `COUNT(*)` over a
-  keyed node the one special case — cannot become a `MEASURE` and is skipped with
-  a warning. *Why:* BigQuery Graph measures are single-aggregate. This is a SHOULD,
-  not a MUST: the metric still reaches Knowledge Catalog; it simply has no graph
-  measure.
+  (`SUM`, `AVG`, `COUNT`, `MIN`, `MAX`) over one operand cannot become a
+  `MEASURE`, and the push is rejected (see [Validation](reference.md#validation)).
+  `COUNT(*)` on a keyed node also passes. *Why:* BigQuery Graph measures are
+  single-aggregate.
 
 - **A graph-bound relationship MUST have its join columns bound.** For any graph
   target, a non-M:N relationship MUST supply both `from_columns` and `to_columns`

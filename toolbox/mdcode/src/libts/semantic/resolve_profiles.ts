@@ -626,7 +626,9 @@ export interface AvailabilityReport {
   // No pruning rule drops an entity or a relationship, so droppedEntities and
   // droppedRelationships are always empty (see the file header).
   droppedEntities: {name: string; reason: string}[];
-  droppedMetrics: {name: string; reason: string}[];
+  // `field` is the unavailable field the metric reads, as "Entity.field",
+  // when that is why it is dropped.
+  droppedMetrics: {name: string; reason: string; field?: string}[];
   droppedRelationships: {name: string; reason: string}[];
   // An action this profile cannot perform: it binds no executor for it.
   droppedActions: {name: string; reason: string}[];
@@ -648,15 +650,19 @@ export interface AvailabilityReport {
  * it. What a field or metric reads comes from the text `dialect` evaluates
  * (see prunedTexts). `dialect` defaults to the dialect the model's sources
  * imply. When the sources are in systems of different dialects, or one names
- * no system, there is no dialect and every text counts.
+ * no system, there is no dialect and every text counts. With `opts.noGraph`,
+ * only the text `dialect` evaluates counts, as on a database with no graph
+ * such as AlloyDB.
  * The input is never mutated. The report names each dropped block
  * and the unbound field that stops it, so a caller can state the withheld
  * coverage. A model with nothing unbound resolves unchanged.
  */
 export function pruneUnavailable(
     model: SemanticModel, profileName: string,
-    dialect: string|undefined = sourcesDialect(model)):
+    dialect: string|undefined = sourcesDialect(model),
+    opts: {noGraph?: boolean} = {}):
     {model: SemanticModel; report: AvailabilityReport} {
+  const texts = opts.noGraph ? textsFor : prunedTexts;
   const clone: SemanticModel = structuredClone(model);
   const report: AvailabilityReport = {
     profile: profileName,
@@ -712,7 +718,7 @@ export function pruneUnavailable(
         dependencies.set(
             key,
             fieldDependencies(
-                clone, e.name, f.name, unreadable, dialect, prunedTexts)
+                clone, e.name, f.name, unreadable, dialect, texts)
                 .map(dep => `${e.name}.${dep}`));
       }
     }
@@ -793,7 +799,7 @@ export function pruneUnavailable(
     }
     const columns: SqlColumn[] = [];
     // A text with no SQL has nothing to read.
-    const sources = prunedTexts(mt, dialect)
+    const sources = texts(mt, dialect)
                         .filter(s => noSqlReason(s.text, s.dialect) === undefined);
     let unread = 0;
     for (const {text, dialect} of sources) {
@@ -809,6 +815,7 @@ export function pruneUnavailable(
       report.droppedMetrics.push({
         name: mt.name,
         reason: `field ${hit} is ${unbound.has(hit) ? 'unbound' : 'unavailable'}`,
+        field: hit,
       });
       continue;
     }
@@ -854,7 +861,7 @@ export function pruneUnavailable(
 // Each entity resolved for inheritance, or as declared when the hierarchy is
 // broken, which push reports elsewhere. `extends` is expanded to every
 // ancestor.
-function resolvedEntities(model: SemanticModel): Entity[] {
+export function resolvedEntities(model: SemanticModel): Entity[] {
   const entities = model.entities ?? [];
   if (!entities.some(e => e.extends?.length)) return entities;
   try {
@@ -1884,7 +1891,7 @@ function textsFor(
 // only in a vendor dialect its translator reads into BigQuery SQL, so a
 // BigQuery profile evaluates that text too, read in the dialect it is written
 // in.
-function evaluatedTexts(
+export function evaluatedTexts(
     f: Parameters<typeof textsFor>[0], dialect: string|undefined,
     transpiled: boolean): Array<{text: string; dialect: string}> {
   const out = textsFor(f, dialect);
@@ -2229,7 +2236,13 @@ export function validateProfileCompleteness(
     for (const e of entities) {
       if (e.abstract || rejected.has(e.name)) continue;
       for (const f of seenOf.get(e.name)?.values() ?? []) {
-        if (isFieldBound(f) && !runs(f)) {
+        // validateInlineDialects reports a field inherited unchanged.
+        const asInModelFile = fieldsOf.get(e.name)?.get(f.name);
+        const reported = !!asInModelFile &&
+            JSON.stringify(expressionSources(f)) ===
+                JSON.stringify(expressionSources(asInModelFile)) &&
+            sourcesDialect({entities: [e]}) === dialect;
+        if (isFieldBound(f) && !runs(f) && !reported) {
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
@@ -2564,7 +2577,7 @@ function fieldDependencies(
 
 // Whether a primary key and unique keys state a key. An empty unique key
 // counts as none.
-function statesKey(
+export function statesKey(
     primaryKey: string[]|undefined, uniqueKeys: string[][]|undefined): boolean {
   return !!primaryKey?.length || nonEmptyKeys(uniqueKeys).length > 0;
 }

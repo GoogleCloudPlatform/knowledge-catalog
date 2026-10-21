@@ -28,7 +28,7 @@ import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validateExpressionReferences, validateInheritance, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -463,7 +463,8 @@ export function profileFileGraphError(
       `name a profile yet; a graph push would deploy it into the model ` +
       `file's own target. Run 'kcmd push --profile default' to deploy the ` +
       `model file's own bindings, or 'kcmd push --no-profile' to publish to ` +
-      `Knowledge Catalog without deploying a graph.`;
+      `Knowledge Catalog without deploying a graph. Both need the model file's ` +
+      `own bindings to be complete.`;
 }
 
 // Gives a model's profile files as layout.profileDocuments does, each with
@@ -717,6 +718,28 @@ function namedProfileErrors(
   return errors;
 }
 
+// The errors validateInlineDialects and validateDeployments give for each
+// model file in `docs`, whichever binding push deploys.
+function modelFileBindingErrors(
+    docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
+    transpile: boolean): string[] {
+  const errors: string[] = [];
+  for (const d of docs) {
+    const base = d.base ?? (d.excluded ? undefined : checkedByDoc.get(d.name));
+    if (!base) continue;
+    errors.push(
+        ...validateInlineDialects(base, d.name, {transpiled: transpile}));
+    // A legacy wrapper push deploys the wrapper's bindings, not these.
+    if (d.excluded) continue;
+    // Push reports missing join columns itself for a model with a graph target.
+    const loaded = {document: d.name, model: base};
+    const joinsChecked = !d.applied &&
+        (hasTargetType(loaded, 'bigquery') || hasTargetType(loaded, 'spanner'));
+    errors.push(...validateDeployments(base, d.name, {joinsChecked}));
+  }
+  return errors;
+}
+
 // The fields of the model file `base`, each as 'Entity.field', whose SQL
 // `pushed` does not keep, because the profile push applies rebinds or
 // excludes them. Push never reads the model file's SQL for these.
@@ -737,9 +760,9 @@ function reboundFields(base: SemanticModel, pushed: SemanticModel): string[] {
 // catalog-only push leaves it off to publish the whole logical model. Once
 // the documents load and no deployment names a profile, every named profile
 // the models declare is checked too: the profile files `profileDocs` reads,
-// and the GOOGLE block profiles `declared` adds. Runs local checks only.
-// Returns the models and the target partition the graph legs need, or null
-// after reporting an error.
+// and the GOOGLE block profiles `declared` adds. So is each deployment. Runs
+// local checks only. Returns the models and the target partition the graph
+// legs need, or null after reporting an error.
 async function prepareModels(
     docs: ProfiledDoc[], profileName: string, opts: {
       prune: boolean; defaultProject: string; profileDocs: ProfileDocs;
@@ -809,9 +832,12 @@ async function prepareModels(
     return [document, applyProfileExclusions(model, excluded)] as const;
   }));
   const unprunedWarnings: string[] = [];
-  const profileErrors = namedProfileErrors(
-      docs, checkedByDoc, profileName, opts.profileDocs, opts.declared,
-      unprunedWarnings, !!opts.transpile);
+  const profileErrors = [
+    ...namedProfileErrors(
+        docs, checkedByDoc, profileName, opts.profileDocs, opts.declared,
+        unprunedWarnings, !!opts.transpile),
+    ...modelFileBindingErrors(docs, checkedByDoc, !!opts.transpile),
+  ];
   let unprunedErrors: string[] = [];
   if (opts.transpile) {
     const transpiled = await transpileModels(models);
@@ -1073,12 +1099,15 @@ export async function push(options: PushOptions): Promise<number> {
     // --all-profiles prepares several bindings, and each one checks every
     // profile file again, so a warning prints the first time only.
     const warned = new Set<string>();
+    // Pruning notes, printed once the checks before the deploy loop pass.
+    const pruningNotes: string[] = [];
     const report: PrepareReport = {
       ...PUSH_REPORT,
       warning: m => {
         if (!warned.has(m)) PUSH_REPORT.warning(m);
         warned.add(m);
       },
+      note: m => pruningNotes.push(m),
     };
     const prepareOnce = async(
         docs: ProfiledDoc[], profileName: string,
@@ -1258,6 +1287,7 @@ export async function push(options: PushOptions): Promise<number> {
       }
       fileCopies = copies.files;
     }
+    for (const n of pruningNotes) PUSH_REPORT.note(n);
 
     for (const {profileName, prepared} of graphPlans) {
       if (multiProfile) console.log(`\n-- Binding profile '${profileName}' --`);

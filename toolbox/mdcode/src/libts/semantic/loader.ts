@@ -284,7 +284,7 @@ function noSqlProblem(
 }
 
 // `problems` as one list, "a, b and c", or undefined when there are none.
-function listed(problems: string[]): string|undefined {
+export function listed(problems: string[]): string|undefined {
   if (problems.length < 2) return problems[0];
   return `${problems.slice(0, -1).join(', ')} and ${
       problems[problems.length - 1]}`;
