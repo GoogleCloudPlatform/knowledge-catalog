@@ -27,6 +27,16 @@ const NATIVE_PATHS: ReadonlyArray<[string, string]> = [
   ['entrySource.resource', 'resource'],
 ];
 
+/** The aspect whose `type` field becomes the concept's OKF `type`. */
+export function typeFacetKey(entryType?: string): string | undefined {
+  const short = entryType?.split('/').pop();
+  return short ? `dataplex-types.global.${short}` : undefined;
+}
+
+function liftedType(data: Record<string, unknown> | undefined): boolean {
+  return typeof data?.['type'] === 'string' && data['type'] !== '';
+}
+
 /** Collects what OKF cannot express. Undefined when there is nothing. */
 export function buildResidue(
   entry: gcp.Entry,
@@ -47,9 +57,15 @@ export function buildResidue(
   }
   if (Object.keys(carried).length) residue['entrySource'] = carried;
 
+  const facetKey = typeFacetKey(entry.entryType);
   const aspects: Record<string, unknown> = {};
   for (const [key, aspect] of Object.entries(entry.aspects ?? {})) {
     if (key === overviewAspectKey) continue;
+    if (key === facetKey && liftedType(aspect.data)) {
+      const {type, ...rest} = aspect.data as Record<string, unknown>;
+      aspects[key] = rest;
+      continue;
+    }
     aspects[key] = aspect.data;
   }
   if (Object.keys(aspects).length) residue['aspects'] = aspects;
@@ -84,6 +100,17 @@ export function assertResidueOnly(frontmatter: Record<string, unknown>): void {
     if (at(residue, dotted) !== undefined) {
       found.push(`${RESIDUE_KEY}.${dotted} (${native})`);
     }
+  }
+  const entryType = residue['entryType'];
+  const facetKey = typeFacetKey(
+    typeof entryType === 'string' ? entryType : undefined,
+  );
+  const facet = facetKey
+    ? (at(residue, 'aspects') as Record<string, unknown>)?.[facetKey]
+    : undefined;
+  if (facet && typeof facet === 'object' &&
+      (facet as Record<string, unknown>)['type'] !== undefined) {
+    found.push(`${RESIDUE_KEY}.aspects.${facetKey}.type (type)`);
   }
   if (found.length) {
     throw new ResidueError(

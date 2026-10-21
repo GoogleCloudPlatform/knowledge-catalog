@@ -1,7 +1,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Entry} from '../../../src/libts/gcp/dataplex';
-import {assertResidueOnly, buildResidue, ResidueError, RESIDUE_VERSION} from '../../../src/libts/okf/catalog_residue';
+import {assertResidueOnly, buildResidue, ResidueError, RESIDUE_VERSION, typeFacetKey} from '../../../src/libts/okf/catalog_residue';
 import {RESIDUE_KEY} from '../../../src/libts/okf/concept';
 
 const OVERVIEW = 'dataplex-types.global.overview';
@@ -69,6 +69,66 @@ describe('buildResidue', () => {
     const bare = {name: 'n', entryType: ''} as Entry;
     expect(buildResidue(bare, OVERVIEW)).toBeUndefined();
   });
+
+  test('omits the facet type that became the concept type', () => {
+    const r = buildResidue(
+      entry({
+        entryType: 'projects/dataplex-types/locations/global/entryTypes/document',
+        aspects: {
+          'dataplex-types.global.document': {
+            data: {type: 'knowledge-base', job: {name: 'enrich-1'}},
+          },
+        },
+      } as Partial<Entry>),
+      OVERVIEW,
+    )!;
+    const facet = (r['aspects'] as Record<string, any>)[
+      'dataplex-types.global.document'
+    ];
+    expect(facet).toEqual({job: {name: 'enrich-1'}});
+  });
+
+  test('keeps the facet present when type was its only field', () => {
+    const r = buildResidue(
+      entry({
+        entryType: 'projects/dataplex-types/locations/global/entryTypes/document',
+        aspects: {
+          'dataplex-types.global.document': {data: {type: 'table-context'}},
+        },
+      } as Partial<Entry>),
+      OVERVIEW,
+    )!;
+    const aspects = r['aspects'] as Record<string, unknown>;
+    expect(Object.keys(aspects)).toEqual(['dataplex-types.global.document']);
+    expect(aspects['dataplex-types.global.document']).toEqual({});
+  });
+
+  test('keeps a type field on an aspect that is not the facet', () => {
+    const r = buildResidue(
+      entry({
+        entryType: 'projects/dataplex-types/locations/global/entryTypes/document',
+        aspects: {
+          'dataplex-types.global.schema': {data: {type: 'RECORD'}},
+        },
+      } as Partial<Entry>),
+      OVERVIEW,
+    )!;
+    const aspects = r['aspects'] as Record<string, any>;
+    expect(aspects['dataplex-types.global.schema']).toEqual({type: 'RECORD'});
+  });
+});
+
+describe('typeFacetKey', () => {
+  test('derives the facet from the entry type', () => {
+    expect(
+      typeFacetKey('projects/dataplex-types/locations/global/entryTypes/document'),
+    ).toBe('dataplex-types.global.document');
+  });
+
+  test('is undefined without an entry type', () => {
+    expect(typeFacetKey(undefined)).toBeUndefined();
+    expect(typeFacetKey('')).toBeUndefined();
+  });
 });
 
 describe('assertResidueOnly', () => {
@@ -99,5 +159,33 @@ describe('assertResidueOnly', () => {
 
   test('a non-mapping residue throws', () => {
     expect(() => assertResidueOnly({[RESIDUE_KEY]: 'nope'})).toThrow(ResidueError);
+  });
+
+  test('rejects the facet type duplicated inside aspects', () => {
+    expect(() =>
+      assertResidueOnly({
+        type: 'knowledge-base',
+        [RESIDUE_KEY]: {
+          v: 1,
+          entryType:
+            'projects/dataplex-types/locations/global/entryTypes/document',
+          aspects: {'dataplex-types.global.document': {type: 'knowledge-base'}},
+        },
+      }),
+    ).toThrow(/aspects\.dataplex-types\.global\.document\.type/);
+  });
+
+  test('accepts a type field on an aspect that is not the facet', () => {
+    expect(() =>
+      assertResidueOnly({
+        type: 'knowledge-base',
+        [RESIDUE_KEY]: {
+          v: 1,
+          entryType:
+            'projects/dataplex-types/locations/global/entryTypes/document',
+          aspects: {'dataplex-types.global.schema': {type: 'RECORD'}},
+        },
+      }),
+    ).not.toThrow();
   });
 });

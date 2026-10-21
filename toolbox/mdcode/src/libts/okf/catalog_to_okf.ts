@@ -7,7 +7,7 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
-import {assertResidueOnly, buildResidue} from './catalog_residue';
+import {assertResidueOnly, buildResidue, typeFacetKey} from './catalog_residue';
 import {Concept, conceptToFileContent, RESIDUE_KEY} from './concept';
 
 /** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
@@ -106,11 +106,10 @@ function entryToConcept(
 }
 
 function conceptType(entry: gcp.Entry): string {
-  const short = entry.entryType?.split('/').pop();
-  if (short) {
-    const facet = entry.aspects?.[`dataplex-types.global.${short}`];
-    const label = facet?.data?.['type'];
+  const key = typeFacetKey(entry.entryType);
+  if (key) {
+    const label = entry.aspects?.[key]?.data?.['type'];
     if (typeof label === 'string' && label) return label;
   }
-  return short || 'concept';
+  return entry.entryType?.split('/').pop() || 'concept';
 }
