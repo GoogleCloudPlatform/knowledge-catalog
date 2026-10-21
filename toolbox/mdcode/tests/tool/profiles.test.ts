@@ -714,6 +714,23 @@ ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : 
   const customerUnbound = (model: string) =>
       model.replace(`        source: ${BQ('dev', 'customer')}\n`, '');
 
+  // `text` with the join on c_email in place of c_id.
+  const joinOnEmail = (text: string) =>
+      text.replace('to_columns: [c_id]', 'to_columns: [c_email]');
+
+  // The profile comparison's error for a join of `who` on `to` that covers no
+  // key of customer.
+  const compared = (who: string, to: string) =>
+      `[commerce] relationship 'placed_by': ${who} joins on to_columns ` +
+      `["${to}"], which cover no primary or unique key of 'customer'`;
+
+  // Push's own error for a join on `to` in `binding` that covers no key.
+  const own = (binding: string, to: string) =>
+      `relationship 'placed_by' in model 'commerce' (${binding}): its ` +
+      `to_columns ["${to}"] cover no primary or unique key of 'customer'; ` +
+      "join on every column of one of its keys, and declare that key if " +
+      "'customer' has none.";
+
   // A profile file that binds both entities to the prod tables, customer with
   // key `key`, and the join between them.
   function profileFile(name: string, key = 'c_id'): string {
@@ -1197,17 +1214,22 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
          async () => {
            writeScope(
                {
-                 'commerce.yaml': commerce().replace(
-                     'to_columns: [c_id]', 'to_columns: [c_email]'),
+                 'commerce.yaml': joinOnEmail(commerce()),
                  'commerce.profile.prod.yaml': profileFile('prod'),
                },
                defaultProfile);
-           expect(await pushResult('prod')).toEqual({code: 0, errors: []});
+           // A push of prod fails on the model file's join too. The profile
+           // comparison reports it, so its message differs from push's own.
+           const prod = await pushResult('prod');
+           expect(prod).toEqual(
+               {code: 1, errors: [compared('the model file', 'c_email')]});
            const pushed = await pushResult('default');
-           expect(pushed.errors).toEqual(
-               [expect.stringContaining("(commerce): its to_columns")]);
+           expect(pushed).toEqual(
+               {code: 1, errors: [own('commerce', 'c_email')]});
            expect(await profiles()).toBe(1);
-           expect(errs.some(l => l.includes("profile 'prod'"))).toBe(false);
+           const marker = defaultProfile === 'prod' ? ' (default)' : '';
+           expect(rejects(section(`  profile 'prod'${marker}`)))
+               .toEqual(prod.errors);
            expect(rejects(section(INLINE))).toEqual(pushed.errors);
          });
   }

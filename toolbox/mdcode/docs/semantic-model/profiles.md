@@ -485,6 +485,12 @@ writes nothing.
   each profile a vanilla model carries in its `GOOGLE` block. A profile that
   leaves an entity without a source or a relationship without join columns
   fails the push.
+- **Profiles that disagree** — every push compares the keys and join columns of
+  the model file, each profile file and each `GOOGLE` block profile. The push
+  fails when a relationship's `to_columns` cover no key of the target, or cover
+  different keys in different bindings. Where the model file gives an entity no
+  key, the push also fails unless every profile gives it keys of one shape or
+  none does.
 - **Unresolvable source** — the BigQuery table a profile binds is probed with a
   dry run; a table that is missing or inaccessible fails and names it. Column
   names are not probed here — a mistyped column resolves to a real table and is

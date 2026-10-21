@@ -40,7 +40,7 @@ import * as yaml from 'yaml';
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keysCoveredByColumns} from './sql_expr_utils';
+import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, keyColumn, keysCoveredByColumns} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {transpilesFrom} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
@@ -2144,20 +2144,8 @@ export function validateProfileCompleteness(
   // Key shapes against the model file's, where it states keys.
   for (const e of entities) {
     const pe = bindingOf.get(e.name);
-    if (!pe || e.abstract || !statesKey(e.keys, e.uniqueKeys)) continue;
-    if (pe.primaryKey !== undefined && pe.primaryKey.length !== e.keys.length) {
-      errors.push(
-          `${at}: entity '${e.name}' restates its primary key with ${
-              pe.primaryKey.length} column(s); the model file's has ${
-              e.keys.length}`);
-    }
-    if (pe.uniqueKeys !== undefined &&
-        shapeOf(pe.uniqueKeys) !== shapeOf(e.uniqueKeys ?? [])) {
-      errors.push(
-          `${at}: entity '${e.name}' restates its unique keys as ${
-              shapeOf(pe.uniqueKeys)}; the model file's are ${
-              shapeOf(e.uniqueKeys ?? [])}`);
-    }
+    if (!pe || e.abstract) continue;
+    errors.push(...keyShapeProblems(e, pe).map(m => `${at}: ${m}`));
   }
 
   // Every relationship bound, by the profile itself: a named profile states
@@ -2354,9 +2342,15 @@ export function validateProfileCompleteness(
  *     target, and the same keys in every binding, because cardinality is a
  *     property of the model. A superset of a key
  *     covers it (see keysCoveredBy).
+ * Relationships are compared only after the hierarchy resolves. A binding
+ * whose key or join columns are not all column names is left out, and so is
+ * a profile that restates the model file's keys in another shape. `applied`
+ * names the profile the push applies. The "covers no key" check then leaves
+ * out that profile's join, or the model file's when the profile states none.
  */
 export function validateProfileConsistency(
-    baseModel: SemanticModel, profiles: ProfileSpec[]): string[] {
+    baseModel: SemanticModel, profiles: ProfileSpec[],
+    applied?: string): string[] {
   const errors: string[] = [];
   const entities = baseModel.entities ?? [];
   const bindingIn = (p: ProfileSpec, entity: string) =>
@@ -2383,6 +2377,8 @@ export function validateProfileConsistency(
     }
   }
 
+  // What an entity inherits is not known until the hierarchy resolves.
+  if (inheritanceErrorOf(baseModel)) return errors;
   const byName = new Map(entities.map(e => [e.name, e]));
   // Each binding's fields, so a key or join column that names a field is read
   // as that field's column, as the graph generators read it. A value the
@@ -2403,10 +2399,21 @@ export function validateProfileConsistency(
     // that states no join columns does not bind the relationship and is left
     // out; for a named profile, completeness reports that.
     const answers = new Map<string, string[]>();
+    const modelUks = target.uniqueKeys ?? [];
+    const appliedJoin = profiles.find(p => p.name === applied)
+                            ?.relationships.find(x => x.name === r.name);
+    // The binding whose join push's own key check reports.
+    const checkedByPush = applied === undefined ? undefined :
+        appliedJoin?.toColumns.length ? `profile '${applied}'` :
+                                        'the model file';
     const record =
         (who: string, fields: Map<string, Map<string, Field>>, to: string[],
          pk: string[], uks: string[][]) => {
-          if (!to.length) return;
+          // The column name checks report a value that is not a column name.
+          if (!to.length ||
+              ![...to, ...pk, ...uks.flat()].every(isColumnName)) {
+            return;
+          }
           const entity = {
             name: target.name,
             fields: [...(fields.get(target.name)?.values() ?? [])],
@@ -2416,10 +2423,12 @@ export function validateProfileConsistency(
           // judged here.
           if (!covered) return;
           if (!covered.length) {
-            errors.push(
-                `relationship '${r.name}': ${who} joins on to_columns ${
-                    JSON.stringify(to)}, which cover no primary or unique key ` +
-                `of '${target.name}'`);
+            if (who !== checkedByPush) {
+              errors.push(
+                  `relationship '${r.name}': ${who} joins on to_columns ${
+                      JSON.stringify(to)}, which cover no primary or unique ` +
+                  `key of '${target.name}'`);
+            }
             return;
           }
           const a = covered.join(' and ');
@@ -2427,15 +2436,37 @@ export function validateProfileConsistency(
         };
     record(
         'the model file', baseFields, r.destination.columns, target.keys,
-        target.uniqueKeys ?? []);
+        modelUks);
+    // `keys` with each column named by the field of `fields` that reads it.
+    const byField =
+        (keys: string[][], fields: Map<string, Field> = new Map()) => {
+          const e = {name: target.name, fields: [...fields.values()]};
+          return keys.map(k => k.map(c => e.fields.find(f => f.name === c ||
+              keyColumn(e, f.name)?.toLowerCase() === c.toLowerCase())
+              ?.name ?? c));
+        };
+    const modelFields = baseFields.get(target.name);
+    const modelNames = byField(modelUks, modelFields);
     for (const p of profiles) {
       const pr = p.relationships.find(x => x.name === r.name);
       const pe = bindingIn(p, target.name);
+      // Completeness reports keys restated in another shape.
+      if (pe && keyShapeProblems(target, pe).length) continue;
+      // Unique keys restated in another order, under the same names or the
+      // columns of the same fields, keep the model file's numbering. A field
+      // the profile excludes still reads its model file column here.
+      const restated = pe?.uniqueKeys;
+      const named = restated && byField(restated, new Map([
+        ...modelFields ?? [],
+        ...profileFields.get(p.name)!.get(target.name) ?? [],
+      ]));
+      const uks = !restated || !named ? modelUks :
+          keySet(named) !== keySet(modelNames) ? restated :
+          modelNames.map(
+              n => restated[named.findIndex(o => keySet([o]) === keySet([n]))]);
       record(
           `profile '${p.name}'`, profileFields.get(p.name)!,
-          pr?.toColumns ?? [],
-          pe?.primaryKey ?? target.keys,
-          pe?.uniqueKeys ?? target.uniqueKeys ?? []);
+          pr?.toColumns ?? [], pe?.primaryKey ?? target.keys, uks);
     }
     if (answers.size > 1) {
       const detail =
@@ -2568,6 +2599,33 @@ function fieldDependencies(
     for (const dep of fieldsReadOn(columns, name)) deps.add(dep);
   }
   return [...deps];
+}
+
+// `keys` as one text that ignores order and letter case.
+function keySet(keys: string[][]): string {
+  return JSON.stringify(
+      keys.map(k => k.map(c => c.toLowerCase()).sort().join()).sort());
+}
+
+// One message for each key list of `e` that `pe` restates in a different
+// shape. Empty when the model file states no key.
+function keyShapeProblems(e: Entity, pe: ProfileEntityBinding): string[] {
+  if (!statesKey(e.keys, e.uniqueKeys)) return [];
+  const problems: string[] = [];
+  if (pe.primaryKey !== undefined && pe.primaryKey.length !== e.keys.length) {
+    problems.push(
+        `entity '${e.name}' restates its primary key with ${
+            pe.primaryKey.length} column(s); the model file's has ${
+            e.keys.length}`);
+  }
+  if (pe.uniqueKeys !== undefined &&
+      shapeOf(pe.uniqueKeys) !== shapeOf(e.uniqueKeys ?? [])) {
+    problems.push(
+        `entity '${e.name}' restates its unique keys as ${
+            shapeOf(pe.uniqueKeys)}; the model file's are ${
+            shapeOf(e.uniqueKeys ?? [])}`);
+  }
+  return problems;
 }
 
 // Whether a primary key and unique keys state a key. An empty unique key

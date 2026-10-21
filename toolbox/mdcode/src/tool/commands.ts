@@ -22,7 +22,7 @@ import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semant
 import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness,} from '../libts/semantic/resolve_profiles';
+import {applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -615,7 +615,8 @@ const PUSH_REPORT: PrepareReport = {
 // legacy `semantic_model:` wrapper, and a file under the reserved name
 // 'default', which no push deploys, are not read here. With `transpile`, push
 // fills in BigQuery SQL for a text written only in a vendor dialect its
-// translator reads. The warnings go to `warnings`.
+// translator reads. The named profiles are also compared with each other and
+// with the model file. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     profileName: string, profileDocs: ProfileDocs, declared: DeclaredProfiles,
@@ -685,6 +686,7 @@ function namedProfileErrors(
       dialect: sourcesDialect(pushed),
       rebound: reboundFields(base, pushed),
     } : undefined;
+    const specs: ProfileSpec[] = [];
     for (const p of named) {
       const at = (m: string) => `[${p.label}] ${m}`;
       let spec: ProfileSpec;
@@ -695,6 +697,7 @@ function namedProfileErrors(
         errors.push(at(err.message));
         continue;
       }
+      specs.push(spec);
       const profileWarnings: string[] = [];
       errors.push(
           ...validateProfileCompleteness(logical, spec, profileWarnings, {
@@ -704,6 +707,8 @@ function namedProfileErrors(
           }).map(at));
       warnings.push(...profileWarnings.map(at));
     }
+    errors.push(...validateProfileConsistency(logical, specs, profileName)
+                    .map(e => `[${d.name}] ${e}`));
   }
   return errors;
 }
