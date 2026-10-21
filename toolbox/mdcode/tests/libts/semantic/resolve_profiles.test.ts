@@ -1517,6 +1517,10 @@ describe('validateProfileConsistency', () => {
       p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
       p('b', {entities: [{name: 'Order', primaryKey: ['oid']}]}),
     ])).toEqual([]);
+    expect(validateProfileConsistency(m, [
+      p('a', {entities: [{name: 'Order', uniqueKeys: [['id'], ['tenant', 'oid']]}]}),
+      p('b', {entities: [{name: 'Order', uniqueKeys: [['tenant', 'oid'], ['id']]}]}),
+    ])).toEqual([]);
   });
 
   test('cardinality may not vary by profile', () => {

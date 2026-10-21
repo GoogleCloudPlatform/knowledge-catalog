@@ -2584,9 +2584,10 @@ function nonEmptyKeys(keys: string[][]|undefined): string[][] {
   return (keys ?? []).filter(k => k.length > 0);
 }
 
-// "[2, 1]": how many unique keys, and how wide each is. An empty unique key
+// "[1, 2]": how wide each unique key is, narrowest first. An empty unique key
 // counts as none.
 function shapeOf(keys: string[][]): string {
-  return `[${nonEmptyKeys(keys).map(k => k.length).join(', ')}]`;
+  const widths = nonEmptyKeys(keys).map(k => k.length).sort((a, b) => a - b);
+  return `[${widths.join(', ')}]`;
 }
 
