@@ -830,13 +830,13 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
     return out;
   }
 
-  // Each push in `pushes` fails with exactly its errors, and `kcmd profiles`
-  // shows them under that binding. A key names the profile the push applies,
-  // or 'default' for none.
+  // Each push in `pushes` fails with exactly its errors, or passes with none,
+  // and `kcmd profiles` shows them under that binding. A key names the profile
+  // the push applies, or 'default' for none.
   async function expectPushes(pushes: Record<string, string[]>, label = '') {
     for (const [profile, errors] of Object.entries(pushes)) {
       expect({label, profile, ...await pushResult(profile)})
-          .toEqual({label, profile, code: 1, errors});
+          .toEqual({label, profile, code: errors.length ? 1 : 0, errors});
     }
     expect(await profiles()).toBe(1);
     const inline = logs.includes(INLINE) ? INLINE : NO_PROFILES;
@@ -1542,6 +1542,11 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
   // Push checks every named profile the model declares, whichever binding it
   // deploys.
   describe('push checks every named profile', () => {
+    // `profile` with its prod tables on AlloyDB.
+    const onAlloy = (profile: string) => profile.replaceAll(
+        BQ('prod', ''),
+        '//alloydb.googleapis.com/projects/acme/locations/us/clusters/c/' +
+            'databases/db/schemas/public/tables/');
     const STAGING = `name: staging\nentities:\n  - name: customer\n    source: ${
         BQ('staging', 'customer')}\n`;
     const incomplete = (file: string) => [
@@ -1858,9 +1863,6 @@ entities:
     // the check of an AlloyDB profile reads the ALLOYDB one, so push alone
     // warns that it cannot read that entry.
     test('and warns once for a model file entry in another dialect that the parser cannot read', async () => {
-      const AL = (t: string) =>
-          '//alloydb.googleapis.com/projects/acme/locations/us/clusters/c/' +
-          `databases/db/schemas/public/tables/${t}`;
       writeScope({
         'commerce.yaml': commerce().replace(
             '          - { name: c_id, expression: c_id }\n',
@@ -1870,9 +1872,7 @@ entities:
                 '              dialects:\n' +
                 '                - { dialect: BIGQUERY, expression: c_name }\n' +
                 '                - { dialect: ALLOYDB, expression: "LOWER(c_name" }\n'),
-        'commerce.profile.alloy.yaml': profileFile('alloy')
-                                           .replace(BQ('prod', 'customer'), AL('customer'))
-                                           .replace(BQ('prod', 'purchase'), AL('purchase')),
+        'commerce.profile.alloy.yaml': onAlloy(profileFile('alloy')),
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
       expect(await pushResult()).toEqual({code: 0, errors: []});
@@ -1908,7 +1908,8 @@ entities:
     });
 
     // The comparison skips what push's key check or the completeness check
-    // reports, and compares no join until the hierarchy resolves.
+    // reports, and what push's key check may misread. It compares no join
+    // until the hierarchy resolves.
     test('and reports each key and join problem at most once', async () => {
       const model = (targets = 0) => joinOnEmail(commerce({targets}));
       const unknown = (binding: string) =>
@@ -1938,11 +1939,20 @@ entities:
         ['profile a\'s own join', {
           'commerce.yaml': commerce(),
           'commerce.profile.a.yaml': profileFile('a').replace(
-              'to_columns: [c_id]', 'to_columns: [c_name]'),
+              'to_columns: [c_id]', 'to_columns: ["`c_name`"]'),
         }, {
-          a: [own("commerce, profile 'a'", 'c_name')],
-          default: [compared("profile 'a'", 'c_name')],
+          a: [own("commerce, profile 'a'", '`c_name`')],
+          default: [compared("profile 'a'", '`c_name`')],
         }],
+        ['an AlloyDB key field bound to "c_id", which push may misread', {
+          'commerce.yaml': commerce()
+              .replace('primary_key: [c_id]', 'primary_key: [c_key]')
+              .replace('name: c_id,', 'name: c_key,'),
+          'commerce.profile.x.yaml': onAlloy(profileFile('x', 'c_key')).replace(
+              '    primary_key', '    fields:\n      - { name: c_key, ' +
+                  'expression: {dialects: [{dialect: ALLOYDB, expression: ' +
+                  '\'"c_id"\'}]} }\n    primary_key'),
+        }, {x: [own("commerce, profile 'x'", 'c_id')], default: []}],
         ['customer extends an unknown entity, so no join is compared', {
           'commerce.yaml': commerce().replace(
               'name: customer\n', 'name: customer\n        extends: [nope]\n'),

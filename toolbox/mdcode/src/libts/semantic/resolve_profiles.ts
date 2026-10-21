@@ -40,7 +40,7 @@ import * as yaml from 'yaml';
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, fieldBinding, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
+import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, keyColumn} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {transpilesFrom} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
@@ -2353,9 +2353,10 @@ export function validateProfileCompleteness(
  *     file's included, its `to_columns` cover a primary or unique key of the
  *     target. A superset of a key covers it (see coversKey).
  * Relationships are checked only after the hierarchy resolves. A binding
- * whose key or join columns are not all column names is left out. `applied`
- * names the profile the push applies. The "covers no key" check then leaves
- * out that profile's join, or the model file's when the profile states none.
+ * whose key or join columns do not all read as bare or backtick-quoted columns
+ * is left out. `applied` names the profile the push applies. The "covers no
+ * key" check then leaves out that profile's join, or the model file's when the
+ * profile states none.
  */
 export function validateProfileConsistency(
     baseModel: SemanticModel, profiles: ProfileSpec[],
@@ -2412,15 +2413,17 @@ export function validateProfileConsistency(
     const record =
         (who: string, fields: Map<string, Map<string, Field>>, to: string[],
          pk: string[], uks: string[][]) => {
-          // The column name checks report a value that is not a column name.
-          if (!to.length ||
-              ![...to, ...pk, ...uks.flat()].every(isColumnName)) {
-            return;
-          }
           const entity = {
             name: target.name,
             fields: [...(fields.get(target.name)?.values() ?? [])],
           };
+          // The column name checks report a value that is not a column name.
+          // Push's key check may misread a field bound to anything but a bare
+          // or backtick-quoted column, such as PostgreSQL's "c_id".
+          if (!to.length || ![...to, ...pk, ...uks.flat()].every(
+                  c => /^(\w+|`[^`]+`)$/.test(keyColumn(entity, c) ?? c))) {
+            return;
+          }
           const covered = coversKeyByColumns(entity, to, pk, uks);
           // A key that names a field with no column in this binding cannot be
           // judged here.
