@@ -113,7 +113,7 @@ function toChange(
     return {
       updateEntryRequest: {
         entry,
-        updateMask: 'aspects',
+        updateMask: 'aspects,entry_source',
         aspectKeys: Object.keys(entry.aspects ?? {}),
         deleteMissingAspects: false,
       },
@@ -205,7 +205,7 @@ async function applyViaEntries(
         target.project,
         target.location,
         update.entry,
-        ['aspects'],
+        ['aspects', 'entry_source'],
         update.aspectKeys,
       );
     } else {

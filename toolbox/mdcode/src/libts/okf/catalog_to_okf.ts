@@ -9,6 +9,7 @@ import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
 import {assertResidueOnly, buildResidue, OVERVIEW_ASPECT_KEY, typeFacetKey} from './catalog_residue';
 import {Concept, conceptToFileContent, RESIDUE_KEY} from './concept';
+import {splitOkfMetadata} from './okf_metadata';
 
 /** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
 const BUNDLE_DIR = 'bundle';
@@ -27,6 +28,9 @@ export async function catalogToOkf(
 ): Promise<number> {
   const concepts: Concept[] = [];
   for await (const entry of fetchEntries(ctx, snapshot)) {
+    // Dataplex owns the `<group>_entry` entry and recreates it itself, so push
+    // skips it; writing it here would put a file in the bundle push ignores.
+    if (entry.entryType?.endsWith('/entrygroup')) continue;
     concepts.push(entryToConcept(entry, snapshot));
   }
 
@@ -87,12 +91,14 @@ function entryToConcept(
   if (source.resource) frontmatter['resource'] = source.resource;
 
   const overview = entry.aspects?.[OVERVIEW_ASPECT_KEY];
-  const body =
+  const content =
     typeof overview?.data?.['content'] === 'string'
       ? (overview.data['content'] as string)
       : '';
+  const {body, metadata} = splitOkfMetadata(content);
+  Object.assign(frontmatter, metadata);
 
-  const residue = buildResidue(entry, OVERVIEW_ASPECT_KEY);
+  const residue = buildResidue(entry, OVERVIEW_ASPECT_KEY, body);
   if (residue) frontmatter[RESIDUE_KEY] = residue;
   assertResidueOnly(frontmatter);
 

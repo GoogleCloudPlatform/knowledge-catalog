@@ -3,6 +3,7 @@
 import * as gcp from '../gcp';
 import {OVERVIEW_ASPECT_KEY, typeFacetKey} from './catalog_residue';
 import {Concept, RESIDUE_KEY} from './concept';
+import {appendOkfMetadata} from './okf_metadata';
 
 export class ConceptError extends Error {}
 
@@ -64,9 +65,9 @@ export function conceptToEntry(concept: Concept, entryGroup: string): gcp.Entry 
     aspects[facetKey] = {data: {type: conceptType, ...aspects[facetKey].data}};
   }
 
-  const content = bodyContent(
-    concept.body,
-    residue['trailingNewline'] !== false,
+  const content = appendOkfMetadata(
+    bodyContent(concept.body, residue['trailingNewline'] !== false),
+    frontmatter,
   );
   if (content) {
     aspects[OVERVIEW_ASPECT_KEY] = {data: {content, contentType: 'MARKDOWN'}};

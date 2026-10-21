@@ -43,6 +43,7 @@ function liftedType(data: Record<string, unknown> | undefined): boolean {
 export function buildResidue(
   entry: gcp.Entry,
   overviewAspectKey: string,
+  body?: string,
 ): Record<string, unknown> | undefined {
   const residue: Record<string, unknown> = {};
 
@@ -60,7 +61,9 @@ export function buildResidue(
   if (Object.keys(carried).length) residue['entrySource'] = carried;
 
   // An OKF file always ends in a newline, so a body that does not must say so.
-  const content = entry.aspects?.[overviewAspectKey]?.data?.['content'];
+  // This is the body as written to disk, after any trailing section is split
+  // off, since that is what push has to reconstruct.
+  const content = body ?? entry.aspects?.[overviewAspectKey]?.data?.['content'];
   if (typeof content === 'string' && content && !content.endsWith('\n')) {
     residue['trailingNewline'] = false;
   }

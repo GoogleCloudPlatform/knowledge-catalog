@@ -127,7 +127,7 @@ describe('okfToCatalog', () => {
     batch.mockRestore();
   });
 
-  test('an entry that already exists becomes an aspects-only update', async () => {
+  test('an entry that already exists becomes an update', async () => {
     let sent: MetadataChange[] = [];
     const batch = spyOn(CatalogClient.prototype, 'batchChangeMetadata')
       .mockImplementation(async (_p, _l, _g, changes: MetadataChange[]) => {
@@ -145,7 +145,13 @@ describe('okfToCatalog', () => {
     await okfToCatalog(CTX, snapshotFor(bundle(), ['assets']));
 
     const update = sent.find((c) => c.updateEntryRequest);
-    expect(update?.updateEntryRequest?.updateMask).toBe('aspects');
+    // entry_source is replace-semantics server-side, so the mask is only safe
+    // because conceptToEntry rebuilds the whole source, not just displayName.
+    expect(update?.updateEntryRequest?.updateMask).toBe('aspects,entry_source');
+    expect(update?.updateEntryRequest?.entry.entrySource?.displayName).toBe(
+      'assets',
+    );
+    expect(update?.updateEntryRequest?.updateMask).not.toContain('parent_entry');
     expect(update?.updateEntryRequest?.deleteMissingAspects).toBe(false);
     expect(sent.filter((c) => c.createEntryRequest)).toHaveLength(1);
     batch.mockRestore();
