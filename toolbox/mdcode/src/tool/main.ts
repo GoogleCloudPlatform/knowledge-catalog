@@ -22,6 +22,9 @@ cli.command('init', 'Initialize a new catalog snapshot')
         '--semantic-model <id>',
         'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
     .option('--pull', 'Optionally pull catalog entries during initialization')
+    .option(
+        '--format <format>',
+        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -42,6 +45,9 @@ cli.command('pull', 'Pull catalog entries')
     .option(
         '--force-remove',
         'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails. Also deletes a local profile file the catalog\'s stored copies do not include (semantic-model scope)')
+    .option(
+        '--format <format>',
+        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -86,6 +92,9 @@ cli.command('push', 'Push catalog entries')
     .option('--deployment [names...]', 'Deploy only these deployments, by name')
     .option(
         '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
+    .option(
+        '--format <format>',
+        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {

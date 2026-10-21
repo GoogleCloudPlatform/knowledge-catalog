@@ -12,6 +12,9 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {fileNameOf, formatOverviewSidecar, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {catalogToOkf} from '../libts/okf/catalog_to_okf';
+import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
+import {okfToCatalog} from '../libts/okf/okf_to_catalog';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
@@ -35,7 +38,24 @@ import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
 
+
+// `--format` selects an alternate on-disk format. Only `okf` exists; anything
+// else throws rather than falling back to the default layout, which would
+// write a tree the caller did not ask for. main.ts turns the throw into
+// `Error: <message>` and exit 1, as it does for every other command failure.
+export const OKF_FORMAT = 'okf';
+
+function okfSelected(options: {format?: string}, command: string): boolean {
+  if (options.format === undefined) return false;
+  if (options.format === OKF_FORMAT) return true;
+  throw new Error(
+      `unknown --format '${options.format}' for kcmd ${command}. ` +
+      `Only '${OKF_FORMAT}' is supported.`);
+}
+
 export interface InitOptions {
+  // Alternate on-disk format; only `okf`. Omitted means the default layout.
+  format?: string;
   entryGroup?: string;
   bigqueryDataset?: string|string[];
   kb?: string;
@@ -62,6 +82,8 @@ interface CatalogOnlyCounts {
 }
 
 export interface PushOptions {
+  // Alternate on-disk format; only `okf`. Omitted means the default layout.
+  format?: string;
   // Generic push flag for non-semantic-model (CatalogSync) scopes;
   // forwarded to CatalogSync.push. The semantic-model legs ignore it.
   // The catch-all "force the push" toggle -- distinct from
@@ -258,6 +280,8 @@ function pruningDialect(model: SemanticModel): string|undefined {
 
 
 export async function init(options: InitOptions): Promise<number> {
+  const okf = okfSelected(options, 'init');
+
   const ctx = context.ApiContext.default();
 
   let manifest: kcmd.CatalogManifest;
@@ -319,6 +343,10 @@ export async function init(options: InitOptions): Promise<number> {
     return 1;
   }
 
+  if (okf) {
+    return await initOkfWorkspace(ctx, manifest, {pull: options.pull});
+  }
+
   // Re-running init for the same scope leaves catalog.yaml as it was, so
   // default_profile, every other key and the comments are kept. Init for
   // another scope writes a new file.
@@ -352,6 +380,8 @@ function scopeOf(text: string): string|undefined {
 
 
 export interface PullOptions {
+  // Alternate on-disk format; only `okf`. Omitted means the default layout.
+  format?: string;
   // Reconstruct + report only; never writes a file. Mirrors push
   // --validate-only.
   dryRun?: boolean;
@@ -364,8 +394,14 @@ export interface PullOptions {
 
 
 export async function pull(options: PullOptions = {}): Promise<number> {
+  const okf = okfSelected(options, 'pull');
+
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+
+  if (okf) {
+    return await catalogToOkf(ctx, snapshot, {dryRun: options.dryRun});
+  }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     return await pullSemanticModel(ctx, snapshot, options);
@@ -1084,8 +1120,14 @@ async function generateOffline(
 }
 
 export async function push(options: PushOptions): Promise<number> {
+  const okf = okfSelected(options, 'push');
+
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+
+  if (okf) {
+    return await okfToCatalog(ctx, snapshot, {validateOnly: options.validateOnly});
+  }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout
