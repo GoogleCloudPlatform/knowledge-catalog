@@ -17,9 +17,9 @@
 // expression, action or constraint still gets a store and a skill. Like push,
 // the runtime loads every profile file except a legacy wrapper of a profile
 // it does not read. It does not run push's checks that every named profile
-// applies to the model and is complete. So a model whose profile file or
-// GOOGLE block profile those checks refuse still gets a store and a skill
-// under the default profile. The runtime also skips the
+// applies to the model, is complete and agrees with the others on keys. So a
+// model whose profile file or GOOGLE block profile those checks refuse still
+// gets a store and a skill under the default profile. The runtime skips the
 // checks of push's Knowledge Catalog leg: one model per entry group, and with
 // KC_V2_ASPECTS off the checks on the copies of the model and profile files,
 // such as whether each is valid UTF-8. Two models that deploy to one graph
