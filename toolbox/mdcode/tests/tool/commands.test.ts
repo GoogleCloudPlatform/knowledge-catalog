@@ -1190,7 +1190,8 @@ describe('the file copy round trip', () => {
                  'file \'commerce.profile.prod.yaml\' is too large to store ' +
                  'in Knowledge Catalog');
          expect(messages(errorSpy))
-             .toContain('at most 16 parts of at most 122880 bytes each');
+             .toContain(
+                 `at most 16 parts of at most ${kc.MAX_PART_DATA_BYTES} bytes each`);
          // The check is local, so the push stops before it reads the catalog.
          expect(list).not.toHaveBeenCalled();
          expect(create).not.toHaveBeenCalled();

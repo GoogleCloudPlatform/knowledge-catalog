@@ -508,6 +508,13 @@ function validateEntryGroup(
 // bytes, with escaping counted. The schema aspect may hold 2 MiB.
 export const MAX_ASPECT_DATA_BYTES = 120 * 1024;
 
+// Protobuf Struct wire-format overhead (field tags, type wrappers, length
+// varints) adds ~1 KiB when Dataplex deserializes aspect data on the server.
+// We reserve headroom so each stored part stays safely within the 120 KiB limit.
+export const ASPECT_DATA_HEADROOM_BYTES = 2048;
+export const MAX_PART_DATA_BYTES =
+    MAX_ASPECT_DATA_BYTES - ASPECT_DATA_HEADROOM_BYTES;
+
 // The most parts push stores one file in: sixteen aspects, a little under
 // 2 MiB of file text. A file whose copy needs more is too large to store.
 export const MAX_FILE_COPY_PARTS = 16;
@@ -568,18 +575,18 @@ export function storedFileCopies(
 function fileCopyParts(file: FileCopy):
     {parts: FileCopy[]; error?: undefined}|{parts?: undefined; error: string} {
   const whole = dataBytes(kcEmit.fileCopyData(file));
-  if (whole <= MAX_ASPECT_DATA_BYTES) return {parts: [file]};
+  if (whole <= MAX_PART_DATA_BYTES) return {parts: [file]};
   const tooLarge = {
     error: `file '${file.fileName}' is too large to store in Knowledge ` +
         `Catalog: its copy takes ${whole} bytes, and push stores a file in at ` +
         `most ${MAX_FILE_COPY_PARTS} parts of at most ${
-               MAX_ASPECT_DATA_BYTES} bytes each.`,
+               MAX_PART_DATA_BYTES} bytes each.`,
   };
   const text = file.content;
   const n = text.length;
   // Each UTF-16 unit takes at least one byte of aspect data, so a longer text
   // cannot fit in the parts at all.
-  if (n > MAX_FILE_COPY_PARTS * MAX_ASPECT_DATA_BYTES) return tooLarge;
+  if (n > MAX_FILE_COPY_PARTS * MAX_PART_DATA_BYTES) return tooLarge;
 
   // `at[i]` is how many bytes `text[0, i)` takes inside the JSON string, in
   // UTF-8 with escapes, so a slice takes `at[end] - at[start]`.
@@ -588,7 +595,7 @@ function fileCopyParts(file: FileCopy):
 
   // The room a part leaves for its text: the limit less the aspect data
   // around the text, which grows with the digits of its numbers.
-  const room = (part: number, partCount: number) => MAX_ASPECT_DATA_BYTES -
+  const room = (part: number, partCount: number) => MAX_PART_DATA_BYTES -
       dataBytes(kcEmit.fileCopyData({...file, content: '', part, partCount}));
   // The furthest end of a part from `start` whose text fits in `bytes`. It
   // never falls between the two units of a surrogate pair.

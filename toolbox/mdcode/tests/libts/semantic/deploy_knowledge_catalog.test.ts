@@ -16,7 +16,7 @@ import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, MAX_FILE_COPY_PARTS, preflightKnowledgeCatalog, storedFileCopies,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, MAX_FILE_COPY_PARTS, MAX_PART_DATA_BYTES, preflightKnowledgeCatalog, storedFileCopies,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {FileCopy} from '../../../src/libts/semantic/kc_custom_types';
 import {fileCopyData} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
@@ -732,19 +732,19 @@ describe('storedFileCopies: a file too large for one aspect', () => {
     });
     // A copy exactly at the limit is still one copy.
     const content =
-        'x'.repeat(MAX_ASPECT_DATA_BYTES - envelope('sales.yaml'));
+        'x'.repeat(MAX_PART_DATA_BYTES - envelope('sales.yaml'));
     const {files: [only]} =
         storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
     expect(only).toEqual(
         {fileName: 'sales.yaml', content, pushId: PUSH, pushFileCount: 1});
-    expect(bytes(only)).toBe(MAX_ASPECT_DATA_BYTES);
+    expect(bytes(only)).toBe(MAX_PART_DATA_BYTES);
   });
 
   test('a file one byte over is stored in two parts that end at a line ' +
            'break and join back exactly',
        () => {
          const content =
-             lines(MAX_ASPECT_DATA_BYTES - envelope('sales.yaml') + 1);
+             lines(MAX_PART_DATA_BYTES - envelope('sales.yaml') + 1);
          const {files, error} =
              storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
          expect(error).toBeUndefined();
@@ -767,7 +767,7 @@ describe('storedFileCopies: a file too large for one aspect', () => {
          expect(files.map(f => f.content).join('')).toBe(content);
          expect(files[0].content.endsWith('\n')).toBe(true);
          for (const f of files) {
-           expect(bytes(f)).toBeLessThanOrEqual(MAX_ASPECT_DATA_BYTES);
+           expect(bytes(f)).toBeLessThanOrEqual(MAX_PART_DATA_BYTES);
          }
        });
 
@@ -779,7 +779,7 @@ describe('storedFileCopies: a file too large for one aspect', () => {
            'but the last is full',
        () => {
          const pattern = 'é€😀"\\\t\u0001a';
-         const size = MAX_ASPECT_DATA_BYTES - envelope('sales.yaml');
+         const size = MAX_PART_DATA_BYTES - envelope('sales.yaml');
          const body =
              pattern.repeat(Math.ceil(size / textBytes(pattern)) + 1);
          for (let shift = 0; shift < textBytes(pattern) + 2; shift++) {
@@ -790,12 +790,12 @@ describe('storedFileCopies: a file too large for one aspect', () => {
            expect(files.map(f => f.content).join('')).toBe(content);
            for (const f of files) {
              expect(LONE.test(f.content)).toBe(false);
-             expect(bytes(f)).toBeLessThanOrEqual(MAX_ASPECT_DATA_BYTES);
+             expect(bytes(f)).toBeLessThanOrEqual(MAX_PART_DATA_BYTES);
            }
            // The character after the cut does not fit in part 1.
            const next = String.fromCodePoint(files[1].content.codePointAt(0)!);
            expect(bytes({...files[0], content: files[0].content + next}))
-               .toBeGreaterThan(MAX_ASPECT_DATA_BYTES);
+               .toBeGreaterThan(MAX_PART_DATA_BYTES);
          }
        });
 
@@ -803,7 +803,7 @@ describe('storedFileCopies: a file too large for one aspect', () => {
            'another part',
        () => {
          // One early line break, then more than one part holds.
-         const size = 2 * (MAX_ASPECT_DATA_BYTES - 300);
+         const size = 2 * (MAX_PART_DATA_BYTES - 300);
          const content = `${'x'.repeat(5000)}\n${'y'.repeat(size - 5002)}`;
          const {files} =
              storedFileCopies([{fileName: 'sales.yaml', content}], PUSH);
@@ -816,7 +816,7 @@ describe('storedFileCopies: a file too large for one aspect', () => {
   test('the copy count counts every file', () => {
     const {files} = storedFileCopies(
         [
-          {fileName: 'sales.yaml', content: lines(MAX_ASPECT_DATA_BYTES + 1000)},
+          {fileName: 'sales.yaml', content: lines(MAX_PART_DATA_BYTES + 1000)},
           {fileName: 'sales.profile.prod.yaml', content: 'name: prod\n'},
         ],
         PUSH);
@@ -833,7 +833,7 @@ describe('storedFileCopies: a file too large for one aspect', () => {
          expect(MAX_FILE_COPY_PARTS).toBe(16);
          // The room part `part` of 16 leaves for text, in one push of `count`
          // copies.
-         const room = (part: number, count: number) => MAX_ASPECT_DATA_BYTES -
+         const room = (part: number, count: number) => MAX_PART_DATA_BYTES -
              bytes({
                fileName: 'big.yaml',
                content: '',
@@ -862,7 +862,7 @@ describe('storedFileCopies: a file too large for one aspect', () => {
                files: [],
                error: `file 'big.yaml' is too large to store in Knowledge ` +
                    `Catalog: its copy takes ${whole} bytes, and push stores a ` +
-                   `file in at most 16 parts of at most 122880 bytes each.`,
+                   `file in at most 16 parts of at most ${MAX_PART_DATA_BYTES} bytes each.`,
              });
        });
 });
