@@ -30,9 +30,11 @@
 //     consuming leg's concern (see graph_ddl.ts). This pass is leg-agnostic.
 //
 // Errors, all thrown: a cycle in `extends`; a parent that is not an entity in
-// the model; and a field inherited from two ancestors that each declare it
-// with neither extending the other, since nothing says which definition wins.
-// A diamond is not that case: two paths reaching ONE declaration resolve to it.
+// the model; a field inherited from two ancestors that each declare it with
+// neither extending the other, since nothing says which definition wins; and
+// two fields of one entity, declared or inherited, whose names differ only in
+// case. A diamond is not the third case: two paths reaching ONE declaration
+// resolve to it, and an exact redeclaration of an inherited field rebinds it.
 
 import {Entity, Field, FIELD_BINDING_KEYS, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel} from './ir';
 import {sqlWithoutComments, stripQualifier} from './sql_expr_utils';
@@ -154,13 +156,25 @@ export function resolveInheritance(
     // changes nothing, so it is not a declarer. Counting it would make a
     // diamond ambiguous over a line that has no effect.
     const declarers = new Map<string, string[]>();
+    const inheritedByLower = new Map<string, {name: string; from: string}>();
     for (const anc of ancestors) {
       for (const f of ownFields.get(anc) ?? []) {
+        const lower = f.name.toLowerCase();
+        const prior = inheritedByLower.get(lower);
+        if (prior && prior.name !== f.name) {
+          throw new InheritanceError(
+              'ambiguous-field',
+              `entity '${entity.name}' inherits field '${prior.name}' from '${
+                  prior.from}' and field '${f.name}' from '${
+                  anc}' (case-insensitive collision); field names on an ` +
+                  `entity must be unique ignoring case`);
+        }
         if (setsNothing(f) &&
             (ancestorsOf.get(anc) ?? [])
                 .some(a => ownFields.get(a)?.some(g => g.name === f.name))) {
           continue;
         }
+        if (!prior) inheritedByLower.set(lower, {name: f.name, from: anc});
         const list = declarers.get(f.name) ?? [];
         if (!list.includes(anc)) list.push(anc);
         declarers.set(f.name, list);
@@ -176,6 +190,16 @@ export function resolveInheritance(
     const seenField = new Set<string>();
     const flattened: Field[] = [];
     for (const f of ownFields.get(entity.name) ?? []) {
+      const inherited = inheritedByLower.get(f.name.toLowerCase());
+      if (inherited && inherited.name !== f.name) {
+        throw new InheritanceError(
+            'ambiguous-field',
+            `entity '${entity.name}' declares field '${
+                f.name}', which collides ignoring case with field '${
+                inherited.name}' inherited from '${
+                inherited.from}'; field names on an entity must be unique ` +
+                `ignoring case`);
+      }
       if (seenField.has(f.name)) continue;  // a self-duplicate; keep the first
       seenField.add(f.name);
       const chain = declarers.get(f.name);

@@ -491,4 +491,23 @@ describe('a subtype rebinding an inherited field', () => {
     expect(entityOf(r, 'Person').fields.find(f => f.name === 'nm')!.dialects)
         .toEqual([{dialect: 'BIGQUERY', expression: 'nm'}]);
   });
+
+  test('two fields on one entity whose names differ only in case are rejected', () => {
+    expect(() => resolveInheritance(model([
+      entity('customer', ['customer_id']),
+      entity('vip_customer', ['Customer_ID'], ['customer']),
+    ]))).toThrow(
+        "entity 'vip_customer' declares field 'Customer_ID', which collides " +
+        "ignoring case with field 'customer_id' inherited from 'customer'; " +
+        'field names on an entity must be unique ignoring case');
+
+    expect(() => resolveInheritance(model([
+      entity('parent_a', ['Id']),
+      entity('parent_b', ['id']),
+      entity('child', ['tier'], ['parent_a', 'parent_b']),
+    ]))).toThrow(
+        "entity 'child' inherits field 'Id' from 'parent_a' and field 'id' " +
+        "from 'parent_b' (case-insensitive collision); field names on an " +
+        'entity must be unique ignoring case');
+  });
 });

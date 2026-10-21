@@ -2087,16 +2087,21 @@ function readVersion(doc: unknown): FormatVersion {
 // required for a valid graph: a duplicate dataset, field, metric, or
 // relationship name makes the generated nodes, properties, or edges ambiguous,
 // so a duplicate is a hard load error (agreed with Dmitri) rather than a
-// warning.
+// warning. With `ignoreCase`, two names that differ only in case are rejected
+// too, naming the first-seen spelling.
 function rejectDuplicateNames(
-    names: string[], kind: string, scope: string): void {
-  const seen = new Set<string>();
+    names: string[], kind: string, scope: string, ignoreCase = false): void {
+  const seen = new Map<string, string>();
   for (const n of names) {
-    if (seen.has(n)) {
-      throw new SemanticModelError(
-          `${scope}: duplicate ${kind} '${n}'; names must be unique.`);
+    const key = ignoreCase ? n.toLowerCase() : n;
+    const first = seen.get(key);
+    if (first !== undefined) {
+      const collision =
+          first === n ? '' : ` (case-insensitive collision with '${first}')`;
+      throw new SemanticModelError(`${scope}: duplicate ${kind} '${n}'${
+          collision}; names must be unique.`);
     }
-    seen.add(n);
+    seen.set(key, n);
   }
 }
 
@@ -2131,7 +2136,7 @@ function convertModel(
       (ds, i) => convertDataset(
           ds, datasetBlocks[i], version, opts, warnings, dialect));
   rejectDuplicateNames(
-      entities.map(e => e.name), 'dataset name', `model '${m.name}'`);
+      entities.map(e => e.name), 'dataset name', `model '${m.name}'`, true);
 
   const entityNames = entities.map(e => e.name);
   const entityNameSet = new Set(entityNames);
@@ -2139,14 +2144,15 @@ function convertModel(
   const relationships = (m.relationships ?? []).map(
       r => convertRelationship(r, version, entityNameSet));
   rejectDuplicateNames(
-      relationships.map(r => r.name), 'relationship name', `model '${m.name}'`);
+      relationships.map(r => r.name), 'relationship name', `model '${m.name}'`,
+      true);
 
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(
           mt, version, entityNames, warnings, dialect, impliedDialect));
   rejectDuplicateNames(
-      metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`);
+      metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, true);
 
   // Actions name both entities and relationships -- as affected concepts, and
   // as the concept a parameter projects its definition from -- so they are
@@ -2214,7 +2220,8 @@ function convertModel(
     ...(d.profile !== undefined ? {profile: d.profile} : {}),
   }));
   rejectDuplicateNames(
-      deployments.map(d => d.name), 'deployment name', `model '${m.name}'`);
+      deployments.map(d => d.name), 'deployment name', `model '${m.name}'`,
+      true);
   // A resource name and its URI name the same resource.
   const seenTargets = new Map<string, string>();
   for (const d of deployments) {
@@ -2283,7 +2290,7 @@ function convertDataset(
   const fields = (ds.fields ?? []).map(
       f => convertField(f, ds.name, version, warnings, dialect));
   rejectDuplicateNames(
-      fields.map(f => f.name), 'field name', `dataset '${ds.name}'`);
+      fields.map(f => f.name), 'field name', `dataset '${ds.name}'`, true);
 
   const entity: Entity = {name: ds.name, dataSource, keys, fields};
   if (parsedSource) entity.authoredSource = parsedSource.authoredSource;

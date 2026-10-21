@@ -303,8 +303,9 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
       deploymentTarget: wrapped.get(document),
     });
     // Resolving throws on an `extends` that names an entity the model does
-    // not declare, on a cycle, and on a field inherited from two unrelated
-    // ancestors. The loader lets each through, and push reports it as an
+    // not declare, on a cycle, on a field inherited from two unrelated
+    // ancestors, and on two fields of one entity whose names differ only in
+    // case. The loader lets each through, and push reports it as an
     // error. An AlloyDB database runs an inherited text as PostgreSQL, where
     // `#` starts no comment.
     let resolved: ResolveResult;

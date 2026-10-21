@@ -14,6 +14,7 @@ import {SpannerClient} from '../gcp/spanner';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {relationshipLinkId} from './kc_ids';
 import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
@@ -185,11 +186,12 @@ export function validatePushRequirements(
   return errors;
 }
 
-// Each name in `model` that breaks its kind's pattern or length limit, and each
-// description too long for the Knowledge Catalog entry that stores it. The
-// loader checks names too; this check is for a model built in memory and a
-// profile that reaches `model.profiles` some other way. Description limits are
-// checked at push only.
+// Each name in `model` that breaks its kind's pattern or length limit, each
+// pair of relationships whose names give one Knowledge Catalog link ID, and
+// each description too long for the Knowledge Catalog entry that stores it.
+// The loader checks names too; this check is for a model built in memory and
+// a profile that reaches `model.profiles` some other way. Link IDs and
+// description limits are checked at push only, since only push writes them.
 function nameAndDescriptionErrors(
     model: SemanticModel, document: string): string[] {
   const at = `model '${model.name}' (${document})`;
@@ -218,9 +220,21 @@ function nameAndDescriptionErrors(
     check('metric', m.name);
     tooLong(`metric '${m.name}'`, m.description);
   }
+  // The relationship that first took each link ID.
+  const byLinkId = new Map<string, string>();
   for (const r of model.relationships ?? []) {
     check('relationship', r.name);
     tooLong(`relationship '${r.name}'`, r.description);
+    const linkId = relationshipLinkId(model.name, r.name);
+    const first = byLinkId.get(linkId);
+    if (first === undefined) {
+      byLinkId.set(linkId, r.name);
+    } else {
+      errors.push(
+          `Relationships '${first}' and '${r.name}' in model '${
+              model.name}' (${document}) collide on Knowledge Catalog link ` +
+          `ID '${linkId}'; rename one of them.`);
+    }
   }
   for (const d of model.deployments ?? []) check('deployment', d.name);
   for (const p of model.profiles ?? []) check('profile', p.name);
@@ -395,6 +409,23 @@ function unboundInline(model: SemanticModel, joins: boolean): string {
     part(sourceless, 'entity', 'entities', 'a source'),
     part(unjoined, 'relationship', 'relationships', 'join columns'),
   ].filter(p => p).join(' and ');
+}
+
+// The error for a metric whose name matches, ignoring case, a declared or
+// inherited field of `owner`, or undefined.
+function metricFieldCollisionError(
+    metric: Metric, owner: string|undefined,
+    fieldsByEntity: Map<string, Set<string>>, model: SemanticModel,
+    document: string): string|undefined {
+  const fields = owner === undefined ? undefined : fieldsByEntity.get(owner);
+  if (!fields) return undefined;
+  const lower = metric.name.toLowerCase();
+  const match = [...fields].find(f => f.toLowerCase() === lower);
+  if (match === undefined) return undefined;
+  return `Metric '${metric.name}' in model '${model.name}' (${
+             document}) collides with field '${match}' on entity '${
+             owner}'; metrics and fields on the same entity share a ` +
+      `namespace.`;
 }
 
 // Static, target-independent checks for a model's actions. Returns one message
@@ -972,8 +1003,9 @@ const AUTHORED_NAME: Partial<Record<keyof Field, string>> = {
 
 /**
  * Returns one message per broken inheritance or concrete-leaf rule, or an
- * empty list: a cycle, an unknown parent, or a field
- * inherited from two unrelated ancestors; a redeclared inherited field; an
+ * empty list: a cycle, an unknown parent, a field inherited from two
+ * unrelated ancestors, or two fields of one entity whose names differ only in
+ * case; a redeclared inherited field; an
  * abstract entity with a table; and a relationship or metric on an entity that
  * is not a concrete leaf. Pruning can remove the field a rule is about, so a
  * push that prunes runs this on the model before pruning as well as after.
@@ -982,8 +1014,9 @@ export function validateInheritance(models: LoadedModel[]): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     // Resolving inheritance throws on an `extends` naming an entity the model
-    // does not declare, on a cycle, and on a field inherited from two unrelated
-    // ancestors, and the checks below stand down rather than stack-trace on
+    // does not declare, on a cycle, on a field inherited from two unrelated
+    // ancestors, and on two fields of one entity whose names differ only in
+    // case, and the checks below stand down rather than stack-trace on
     // one. Standing down has to mean reporting somewhere or it means
     // publishing a broken model in silence: the loader accepts such a model,
     // and a Knowledge-Catalog-only push reaches no graph leg that would resolve
@@ -1329,6 +1362,10 @@ function metricNoSqlError(
 //     5. Reject a column reference with no entity qualifier, or a qualified
 //        reference whose qualifier is not a declared entity (including when it
 //        differs in case from a declared entity), in a metric expression.
+//     6. Reject a metric whose name matches, ignoring case, a declared or
+//        inherited field of `authoredEntity ?? entity`, since metrics and
+//        fields on one entity share a namespace. This runs before pruning, so
+//        a graph push catches it even when pruning drops either side.
 //   - For each field on each entity E:
 //     1. Reject any reference to an entity other than E.
 //     2. For references to E itself, every field named must be declared or
@@ -1445,6 +1482,10 @@ export function validateExpressionReferences(
       const authored = metric.authoredEntity;
       const anchor = authored ?? metric.entity;
       const reached = entitiesReached(allColumns, entityNames);
+
+      const collision = metricFieldCollisionError(
+          metric, anchor, fieldsByEntity, model, document);
+      if (collision) errors.push(collision);
 
       // An anchor does not make up for missing SQL: the graph would drop the
       // metric.

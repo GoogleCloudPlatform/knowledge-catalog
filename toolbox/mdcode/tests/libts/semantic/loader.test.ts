@@ -3771,4 +3771,75 @@ describe('names are checked on load', () => {
     delete vanilla.deployments;
     expect(() => load(VANILLA, vanilla)).toThrow("Entity name 'my-entity' is not valid");
   });
+
+  test('exact and case-only duplicates give their own messages across datasets, fields, metrics, relationships and deployments', () => {
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [
+        {
+          datasets: [
+            { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'],
+              fields: [
+                { name: 'customer_id', expression: 'customer_id' },
+                { name: 'customer_id', expression: 'customer_id_2' },
+              ] },
+          ],
+          relationships: [], metrics: [],
+        },
+        "dataset 'customers': duplicate field name 'customer_id'; names must be unique."
+      ],
+      [
+        {
+          datasets: [
+            { name: 'customers', source: 'bigquery:p.d.customers', primary_key: ['id'],
+              fields: [
+                { name: 'customer_id', expression: 'customer_id' },
+                { name: 'Customer_ID', expression: 'customer_id_2' },
+              ] },
+          ],
+          relationships: [], metrics: [],
+        },
+        "dataset 'customers': duplicate field name 'Customer_ID' (case-insensitive collision with 'customer_id'); names must be unique."
+      ],
+      [
+        {
+          datasets: [
+            { name: 'orders', source: 'bigquery:p.d.orders', primary_key: ['id'], fields: [] },
+            { name: 'Orders', source: 'bigquery:p.d.orders2', primary_key: ['id'], fields: [] },
+          ],
+          relationships: [], metrics: [],
+        },
+        "model 'sales-analytics': duplicate dataset name 'Orders' (case-insensitive collision with 'orders'); names must be unique."
+      ],
+      [
+        {
+          metrics: [
+            { name: 'order_count', expression: 'COUNT(orders.id)' },
+            { name: 'Order_Count', expression: 'COUNT(orders.id)' },
+          ],
+        },
+        "model 'sales-analytics': duplicate metric name 'Order_Count' (case-insensitive collision with 'order_count'); names must be unique."
+      ],
+      [
+        {
+          relationships: [
+            { name: 'orders_to_customers', from: 'orders', to: 'customers', from_columns: ['_customer_id'], to_columns: ['id'] },
+            { name: 'Orders_To_Customers', from: 'orders', to: 'customers', from_columns: ['_customer_id'], to_columns: ['id'] },
+          ],
+        },
+        "model 'sales-analytics': duplicate relationship name 'Orders_To_Customers' (case-insensitive collision with 'orders_to_customers'); names must be unique."
+      ],
+      [
+        {
+          deployments: [
+            { name: 'prod-us', target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g1' },
+            { name: 'Prod-US', target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2' },
+          ],
+        },
+        "model 'sales-analytics': duplicate deployment name 'Prod-US' (case-insensitive collision with 'prod-us'); names must be unique."
+      ],
+    ];
+    for (const [over, want] of cases) {
+      expect(() => load(GOOGLE, {...doc(), ...over})).toThrow(want);
+    }
+  });
 });

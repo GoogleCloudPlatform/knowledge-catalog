@@ -3,7 +3,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Action, CustomExtension, Entity, Field, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {listed, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
@@ -2649,7 +2649,7 @@ ${extraMetric}`;
 
 // Push checks names again, for a model built in memory and a profile that
 // reaches `model.profiles` without the loader, and is the only place the
-// description limit applies.
+// description limit, link IDs and metric-field collisions are checked.
 describe('push checks names and description lengths', () => {
   const withNames = (over: Partial<SemanticModel> = {}) => model({
     entities: [{
@@ -2738,6 +2738,67 @@ describe('push checks names and description lengths', () => {
     // A field's description is not stored as an entry's description, so it
     // has no limit.
     expect(errors).toHaveLength(4);
+  });
+
+  // Metrics and fields on one entity share a namespace, ignoring case. The
+  // check runs before pruning, so a field pruning drops still counts.
+  describe('a metric and a field on one entity', () => {
+    const party: Entity = {
+      name: 'party', abstract: true, dataSource: '', keys: [],
+      fields: [{name: 'Customer_ID', type: 'String'}],
+    };
+    const customers = (fields: Field[] = []): Entity => ({
+      name: 'customers', extends: ['party'], dataSource: 'p.d.c', keys: ['id'],
+      fields: [{name: 'id', expression: 'id'}, ...fields],
+    });
+    const COLLIDES = (metric: string, field: string) =>
+        `Metric '${metric}' in model 'm' (doc) collides with field '${
+            field}' on entity 'customers'; metrics and fields on the same ` +
+        `entity share a namespace.`;
+    const withMetric = (name: string, fields?: Field[]) => withNames({
+      entities: [party, customers(fields)],
+      metrics: [{
+        name, expression: 'COUNT(customers.id)', entity: 'customers',
+      } as Metric],
+    });
+
+    test('collide when the field is declared or inherited', () => {
+      expect(errorsOf(withMetric('status', [{name: 'Status', expression: 's'}])))
+          .toEqual([COLLIDES('status', 'Status')]);
+      expect(errorsOf(withMetric('customer_id')))
+          .toEqual([COLLIDES('customer_id', 'Customer_ID')]);
+      expect(errorsOf(withMetric('order_count'))).toEqual([]);
+    });
+
+    test('collide before pruning drops an unbound field', () => {
+      const m = withMetric('revenue', [{name: 'revenue'}]);
+      expect(validateExpressionReferences([loaded(m)], false))
+          .toEqual([COLLIDES('revenue', 'revenue')]);
+    });
+  });
+
+  // Normalising a name to a link ID loses information: `__` reads as `-`, and
+  // everything past 63 characters is cut, which a long model name makes
+  // likely.
+  test('rejects two relationships whose names give one Knowledge Catalog link ID', () => {
+    const rel = (name: string) => ({
+      name,
+      source: {entity: 'orders', columns: ['id']},
+      destination: {entity: 'orders', columns: ['id']},
+    });
+    const longModel = `m_${'a'.repeat(50)}`;
+    const cases: Array<[model: string, a: string, b: string, linkId: string]> = [
+      ['retail', 'order_customer', 'order__customer', 'retail-order-customer'],
+      [longModel, 'rel_shared_prefix_one', 'rel_shared_prefix_two',
+       `m-${'a'.repeat(50)}-rel-shared`],
+    ];
+    for (const [name, a, b, linkId] of cases) {
+      expect(errorsOf(withNames({name, relationships: [rel(a), rel(b)]})))
+          .toEqual([
+            `Relationships '${a}' and '${b}' in model '${name}' (doc) collide ` +
+            `on Knowledge Catalog link ID '${linkId}'; rename one of them.`,
+          ]);
+    }
   });
 });
 
