@@ -14,7 +14,9 @@
 // Of push's checks on the model itself, the runtime runs only the one on
 // inheritance. A model that push refuses for an entity with no source, a
 // relationship with no join columns, a key that is not a column, or a broken
-// expression, action or constraint still gets a store and a skill. Like push,
+// expression, action or constraint still gets a store and a skill. So does a
+// model whose deployment breaks the rules of its engine, or whose model file
+// binds a field with no text in the dialect of its entity's source. Like push,
 // the runtime loads every profile file except a legacy wrapper of a profile
 // it does not read. It does not run push's checks that every named profile
 // applies to the model, is complete and has valid keys and join columns. So a

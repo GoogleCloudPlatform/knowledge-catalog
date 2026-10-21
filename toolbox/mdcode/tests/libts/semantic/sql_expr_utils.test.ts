@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -383,5 +383,36 @@ describe('coversKeyByColumns', () => {
       }],
     };
     expect(coversKeyByColumns(shared, ['order_id'], ['id'], [])).toBe(true);
+  });
+});
+
+describe('isSingleAggregate', () => {
+  test('reads one of the five aggregates over one operand, and nothing else', () => {
+    const read = (text: string, dialect = 'BIGQUERY') =>
+        ({text, single: isSingleAggregate(text, dialect)});
+    for (const text of [
+           'SUM(o.amount)', 'avg(o.amount * o.qty)', 'COUNT(DISTINCT o.id)',
+           'SUM(ALL o.amount)', 'COUNT(*)', '(SUM(o.amount))',
+           'SUM(o.amount) -- net', '/* net */ MIN(o.amount)', 'SUM((o.amount))',
+           'SUM(IF(o.a, o.b, 0))', 'SUM(CASE WHEN o.a THEN o.b END)',
+           'MAX(GREATEST(o.a, o.b))', 'SUM(SAFE.DIVIDE(o.a, o.b))',
+         ]) {
+      expect(read(text)).toEqual({text, single: true});
+    }
+    expect(read('MIN(o.amount)', 'POSTGRES').single).toBe(true);
+    expect(read('MAX(o.amount)', 'ANSI_SQL').single).toBe(true);
+    for (const text of [
+           'o.amount', 'SUM(o.amount) / COUNT(o.id)', 'SUM(o.amount) + 0',
+           'COUNTIF(o.amount > 0)', 'APPROX_COUNT_DISTINCT(o.id)',
+           'SUM(o.amount) OVER ()', 'COUNT(o.a, o.b)', 'MIN(o.a, o.b)',
+           'COUNT(DISTINCT o.a, o.b)', 'SUM(*)', 'COUNT(DISTINCT *)',
+           'SUM(o.amount) FILTER (WHERE o.amount > 0)',
+           'SUM(o.amount ORDER BY o.id)', 'SUM(o.amount IGNORE NULLS)',
+           'MAX(o.amount HAVING MAX o.id)', 'SUM(MAX(o.amount))',
+           'SUM(SUM(o.amount) OVER ())', 'SUM((SELECT 1))', 'COUNT((*))',
+           'SUM(((o.a, o.b)))', 'SUM(', '  ',
+         ]) {
+      expect(read(text)).toEqual({text, single: false});
+    }
   });
 });

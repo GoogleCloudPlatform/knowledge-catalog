@@ -7,7 +7,7 @@ import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../s
 import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
-import {validateBigQueryActionStatements, validateBigQueryDataSources, validateExpressionReferences, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
+import {validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
@@ -2738,5 +2738,348 @@ describe('push checks names and description lengths', () => {
     // A field's description is not stored as an entry's description, so it
     // has no limit.
     expect(errors).toHaveLength(4);
+  });
+});
+
+// Loads model `name` from the YAML of its lists, with bindings optional.
+const loadOne = (name: string, lists: string) => loadModels(
+    `version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: ${name}\n${lists}`,
+    {bindingOptional: true}).models[0];
+const BQ_TABLE = (t: string) =>
+    `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+// One target of each engine.
+const TARGET = {
+  bigquery: BQ_TARGET,
+  spanner: SPANNER_TARGET,
+  alloydb:
+      'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db',
+};
+
+// Every deployment is held to the rules of its engine on the model file's own
+// bindings, whatever profile it names.
+describe('validateDeployments', () => {
+  type Engine = keyof typeof TARGET;
+  // A deployment entry named after its engine.
+  const deployment = (engine: Engine, profile?: string) =>
+      `      - name: ${engine}\n        target: ${TARGET[engine]}\n` +
+      (profile ? `        profile: ${profile}\n` : '');
+  const BQ = deployment('bigquery');
+  // Purchases join customers, with the customer table and the join bound
+  // unless `customer` or `join` is false. `deployments` holds deployment
+  // entries and `metric` one metric, as YAML.
+  const commerce =
+      ({customer = true, join = true, deployments = '', metric = ''} = {}) =>
+          loadOne('commerce', `${deployments && `    deployments:\n${deployments}`}\
+    entities:
+      - name: customer
+${customer ? `        source: ${BQ_TABLE('customer')}\n` : ''}\
+        primary_key: [c_id]
+        fields: [{ name: c_id, expression: c_id }, { name: c_name }]
+      - name: purchase
+        source: ${BQ_TABLE('purchase')}
+        primary_key: [p_id]
+        fields:
+          - { name: p_id, expression: p_id }
+          - { name: amount, expression: amt }
+          - { name: note }
+          - { name: noted, expression: "purchase.note || '!'" }
+    relationships:
+      - { name: placed_by, from: purchase, to: customer${
+          join ? ', from_columns: [p_customer], to_columns: [c_id]' : ''} }
+${metric && `    metrics:\n      - ${metric}\n`}`);
+  const check = (m: SemanticModel,
+                 opts: Parameters<typeof validateDeployments>[2] = {}) =>
+      validateDeployments(m, 'commerce', opts);
+  // The start of the error for deployment `engine` when it uses the model
+  // file's own bindings.
+  const OWN = (engine: Engine) => `model 'commerce' (commerce) deployment '${
+      engine}' uses the model file's own bindings, `;
+  const UNBOUND =
+      (engine: Engine, left = "entity 'customer' without a source") =>
+          `${OWN(engine)}which leave ${left}; a deployment needs every ` +
+      'entity and relationship bound.';
+  // The error for metric `metric` reading `field`. The field has no
+  // expression, or with `direct` false, reads a field that has none.
+  const READS =
+      (engine: Engine, metric: string, field: string, direct = true) =>
+          `${OWN(engine)}under which metric '${metric}' reads field '${
+              field}', which ${
+              direct ? 'has no expression' :
+                       'reads a field with no expression, directly or ' +
+                           'through other fields'}; a deployment needs ` +
+      'every field its metrics read bound.';
+
+  // Every engine needs the bindings complete. A Spanner deployment of the
+  // model file's own bindings deploys no metric, so only the others need the
+  // fields a metric reads, directly or through another field.
+  test('holds a deployment of each engine to its own rules, and passes a model with no deployments', () => {
+    expect(check(commerce({customer: false, join: false}))).toEqual([]);
+    const all = BQ + deployment('spanner') + deployment('alloydb');
+    expect(check(commerce({customer: false, deployments: all}))).toEqual([
+      UNBOUND('bigquery'), UNBOUND('spanner'), UNBOUND('alloydb'),
+    ]);
+    expect(check(commerce(
+               {customer: false, deployments: deployment('bigquery', 'default')})))
+        .toEqual([UNBOUND('bigquery')]);
+    const notes = '{ name: m, expression: "COUNT(purchase.note)" }';
+    expect(check(commerce({deployments: all, metric: notes}))).toEqual([
+      READS('bigquery', 'm', 'purchase.note'),
+      READS('alloydb', 'm', 'purchase.note'),
+    ]);
+    const noted = '{ name: m, expression: "COUNT(purchase.noted)" }';
+    expect(check(commerce({deployments: BQ, metric: noted})))
+        .toEqual([READS('bigquery', 'm', 'purchase.noted', false)]);
+  });
+
+  // An AlloyDB database runs a metric's ALLOYDB text, or its ANSI_SQL one,
+  // and holds no graph. A BigQuery deployment counts the texts a graph push's
+  // pruning reads: the one the sources' dialect selects, and the one the
+  // graph holds.
+  test('an AlloyDB deployment checks only the fields that a metric\'s ALLOYDB or ANSI_SQL text reads', () => {
+    // `metric` is the expression of metric `m`, and `label` that of field
+    // `label`. With `shop`, a BigQuery table joins the bindings, so they span
+    // systems.
+    const alloyDb = (metric: string, {label = 'c_id', shop = false} = {}) =>
+        loadOne('commerce', `    deployments:\n${deployment('alloydb')}${BQ}\
+    entities:
+      - name: customer
+        source: ${TARGET.alloydb}/schemas/public/tables/customer
+        primary_key: [c_id]
+        fields:
+          - { name: c_id, expression: c_id }
+          - { name: note }
+          - { name: label, expression: ${label} }
+${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id],
+          fields: [{ name: s_id, expression: s_id }] }\n` : ''}\
+    metrics:
+      - { name: m, expression: ${metric} }
+`);
+    // A dialect list with one text per [dialect, text] entry.
+    const texts = (...entries: Array<[string, string]>) => `{ dialects: [${
+        entries.map(([d, e]) => `{ dialect: ${d}, expression: "${e}" }`)
+            .join(', ')}] }`;
+    const both = (bigQuery: string, alloyDbText: string) =>
+        texts(['BIGQUERY', bigQuery], ['ALLOYDB', alloyDbText]);
+    const [NOTE, C_ID] = ['COUNT(customer.note)', 'COUNT(customer.c_id)'];
+    const noteInBigQuery = both(NOTE, C_ID);
+    const bigQueryOnly = [READS('bigquery', 'm', 'customer.note')];
+    expect(check(alloyDb(noteInBigQuery))).toEqual(bigQueryOnly);
+    expect(check(alloyDb(noteInBigQuery, {shop: true}))).toEqual(bigQueryOnly);
+    expect(check(alloyDb(texts(['BIGQUERY', NOTE], ['ANSI_SQL', C_ID]))))
+        .toEqual(bigQueryOnly);
+    expect(check(alloyDb(both(C_ID, NOTE))))
+        .toEqual([READS('alloydb', 'm', 'customer.note'), ...bigQueryOnly]);
+    // A field the metric reads is read the same way. A field reads a sibling
+    // field as `entity.field`.
+    const viaLabel = '"COUNT(customer.label)"';
+    expect(check(alloyDb(viaLabel, {label: both('customer.note', 'c_id')})))
+        .toEqual([READS('bigquery', 'm', 'customer.label', false)]);
+    expect(check(alloyDb(viaLabel, {label: both('c_id', 'customer.note')})))
+        .toEqual([
+          READS('alloydb', 'm', 'customer.label', false),
+          READS('bigquery', 'm', 'customer.label', false),
+        ]);
+  });
+
+  test('names every concrete entity and relationship left unbound, and leaves out the relationships under joinsChecked', () => {
+    const m = commerce(
+        {customer: false, join: false, deployments: deployment('alloydb')});
+    m.entities[1].dataSource = '';
+    m.relationships.push({...m.relationships[0], name: 'billed_to'});
+    expect(check(m)).toEqual([UNBOUND(
+        'alloydb',
+        "entities 'customer' and 'purchase' without a source and " +
+            "relationships 'placed_by' and 'billed_to' without join columns")]);
+    // The caller reports a relationship with no join columns itself.
+    const noJoin = (customer: boolean) => check(
+        commerce({customer, join: false, deployments: BQ}),
+        {joinsChecked: true});
+    expect(noJoin(true)).toEqual([]);
+    expect(noJoin(false)).toEqual([UNBOUND('bigquery')]);
+    // An abstract entity has no table, so it needs no source.
+    const exempt = commerce({deployments: BQ});
+    exempt.entities.push(
+        {name: 'party', dataSource: '', keys: [], fields: [], abstract: true});
+    expect(check(exempt)).toEqual([]);
+    // A concrete entity that another extends has a table of its own, so it
+    // needs a source too.
+    const hierarchy = (abstract: boolean) => loadOne('commerce', `    deployments:
+${BQ}${deployment('spanner')}\
+    entities:
+      - name: customer
+${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
+        fields: [{ name: c_id${abstract ? '' : ', expression: c_id'} }]
+      - name: vip
+        extends: [customer]
+        source: ${BQ_TABLE('vip')}
+        primary_key: [c_id]
+        fields: [{ name: c_id, expression: c_id }]
+`);
+    expect(check(hierarchy(false)))
+        .toEqual([UNBOUND('bigquery'), UNBOUND('spanner')]);
+    expect(check(hierarchy(true))).toEqual([]);
+  });
+
+  // A BigQuery graph turns each metric into a measure: one aggregate on the
+  // node table of a keyed entity.
+  describe('BigQuery', () => {
+    // The model with metric `metric` on a BigQuery deployment, with
+    // `purchase` merged into entity purchase. bigQuery gives its errors.
+    const onBigQuery = (metric: string, purchase?: Partial<Entity>) => {
+      const m = commerce({deployments: BQ, metric});
+      Object.assign(m.entities[1], purchase);
+      return m;
+    };
+    const bigQuery = (metric: string, purchase?: Partial<Entity>) =>
+        check(onBigQuery(metric, purchase));
+    const MEASURE = (why: string) => `model 'commerce' (commerce) deployment ` +
+        `'bigquery' targets BigQuery, where metric 'm' cannot be a measure: ${
+            why}.`;
+    const anchored = (e: string) =>
+        `{ name: m, entity: purchase, expression: "${e}" }`;
+
+    test('rejects a metric that is not one aggregate or whose entity has no key, on BigQuery only, and passes one aggregate', () => {
+      for (const e of [
+             'SUM(purchase.amount) / 2', 'COUNTIF(purchase.amount > 0)',
+             'SUM(purchase.amount) OVER ()', 'MIN(purchase.amount, purchase.p_id)',
+           ]) {
+        expect({e, errors: bigQuery(anchored(e))}).toEqual({e, errors: [
+          MEASURE('it is not SUM, AVG, COUNT, MIN or MAX over one operand'),
+        ]});
+      }
+      expect(check(commerce({
+        deployments: deployment('spanner') + deployment('alloydb'),
+        metric: '{ name: m, expression: "SUM(purchase.amount) / 2" }',
+      }))).toEqual([]);
+      for (const e of [
+             'SUM(purchase.amount)', 'COUNT(DISTINCT purchase.p_id)',
+             '(MAX(purchase.amount)) -- top',
+           ]) {
+        expect({e, errors: bigQuery(`{ name: m, expression: "${e}" }`)})
+            .toEqual({e, errors: []});
+      }
+      expect(bigQuery(anchored('COUNT(*)'))).toEqual([]);
+      // A graph builds no node table for an entity with no key.
+      for (const e of ['SUM(purchase.amount)', 'COUNT(*)']) {
+        expect({e, errors: bigQuery(anchored(e), {keys: []})}).toEqual({e, errors: [
+          MEASURE("it belongs to entity 'purchase', which has no primary key " +
+                  'or unique key, so the graph has no node table for it'),
+        ]});
+        expect({e, errors: bigQuery(anchored(e), {keys: [], uniqueKeys: [['p_id']]})})
+            .toEqual({e, errors: []});
+      }
+    });
+
+    // Each metric is reported once.
+    test('leaves a metric another check reports to it', () => {
+      // The rule that a metric resolves to exactly one entity: two entities,
+      // as the parser or that rule's patterns read them, or two that no
+      // relationship connects, so that pruning drops the metric first.
+      const two =
+          onBigQuery(anchored('SUM(purchase.amount + customer.c_id) / 2'));
+      const safe = onBigQuery(anchored('safe.divide(SUM(purchase.amount), 2)'));
+      safe.entities.push({...safe.entities[0], name: 'safe'});
+      const apart =
+          onBigQuery(anchored('SUM(purchase.amount * shop.c_id) / 2'));
+      apart.entities.push({...apart.entities[0], name: 'shop'});
+      for (const [m, read] of [[two, 'purchase, customer'], [safe, 'safe, purchase'],
+                               [apart, 'purchase, shop']] as const) {
+        expect(check(m)).toEqual([]);
+        expect(validatePushRequirements([loaded(m, 'commerce')])
+                   .filter(e => e.includes("metric 'm'")))
+            .toEqual([expect.stringContaining(
+                `references multiple entities (${read})`)]);
+      }
+      // The reference rules: a field the entity does not declare.
+      expect(bigQuery(anchored('SUM(purchase.amt) / 2'))).toEqual([]);
+      // The binding rule: a field with no expression.
+      expect(bigQuery('{ name: m, expression: "SUM(purchase.note) / 2" }'))
+          .toEqual([READS('bigquery', 'm', 'purchase.note')]);
+      // The inheritance rules: an abstract entity, and one that another extends.
+      expect(bigQuery(anchored('SUM(purchase.amount) / 2'), {abstract: true}))
+          .toEqual([]);
+      const extended = onBigQuery(
+          '{ name: m, entity: customer, expression: "SUM(customer.c_id) / 2" }');
+      extended.entities.push(
+          {...extended.entities[0], name: 'vip', extends: ['customer']});
+      expect(check(extended)).toEqual([]);
+    });
+  });
+});
+
+describe('validateInlineDialects', () => {
+  const SPANNER_TABLE =
+      'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t';
+  // A model whose entity `e` reads `source` and has field `f` with
+  // `expression`, written as YAML. `extra` is the YAML of more entities.
+  const withField = (source: string, expression: string, extra = '') =>
+      loadOne('m', `    entities:
+      - name: e
+        source: ${source}
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: f, expression: ${expression} }
+${extra}`);
+  const dialects = (...entries: string[]) =>
+      `{ dialects: [${entries.map(e => `{ dialect: ${e}, expression: x }`)}] }`;
+  const check = (m: SemanticModel, transpiled = false) =>
+      validateInlineDialects(m, 'doc', {transpiled});
+  // The error for field `f` of `entity`, whose source has `dialect`, ending
+  // in `hint`. `a` is the article before the dialect.
+  const MISSING = (entity: string, dialect: string, hint = '', a = 'a') =>
+      `field '${entity}.f' in model 'm' (doc) has no expression for ${
+          dialect} or ANSI_SQL, and the model file binds entity '${
+          entity}' to ${a} ${dialect} source${hint}.`;
+  const HINT = '; give it one, or pass --transpile';
+
+  // A bound field needs a text for its source's dialect, an ANSI_SQL text, or
+  // the string form. An inherited field is judged by the source of the entity
+  // that inherits it.
+  test('holds each bound field to the dialect of its own entity\'s source, and suggests --transpile only for a text it translates', () => {
+    const bigQueryText = dialects('BIGQUERY');
+    // Entity `other` on Spanner has field `f` with only a BigQuery text, and
+    // entity `leaf` on Spanner inherits `f` from `e`.
+    const other = `      - { name: other, source: ${SPANNER_TABLE},
+          primary_key: [id], fields: [{ name: id, expression: id },
+            { name: f, expression: ${bigQueryText} }] }\n`;
+    const leaf = `      - { name: leaf, extends: [e], source: ${SPANNER_TABLE},
+          primary_key: [id], fields: [{ name: id, expression: id }] }\n`;
+    const alloyDb = `${TARGET.alloydb}/schemas/s/tables/t`;
+    const cases: Array<[source: string, expression: string, extra: string,
+                        errors: string[], transpiled?: boolean]> = [
+      [SPANNER_TABLE, bigQueryText, '', [MISSING('e', 'SPANNER')]],
+      [SPANNER_TABLE, dialects('SPANNER'), '', []],
+      [SPANNER_TABLE, dialects('BIGQUERY', 'ANSI_SQL'), '', []],
+      [SPANNER_TABLE, 'x', '', []],
+      [BQ_TABLE('t'), bigQueryText, other, [MISSING('other', 'SPANNER')]],
+      [BQ_TABLE('t'), bigQueryText, leaf, [MISSING('leaf', 'SPANNER')]],
+      [BQ_TABLE('t'), dialects('SNOWFLAKE'), other,
+       [MISSING('e', 'BIGQUERY', HINT), MISSING('other', 'SPANNER')]],
+      // The message reads "an" before a dialect that starts with a vowel.
+      [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', '', 'an')]],
+      // With --transpile, push translates a Snowflake text into BigQuery SQL.
+      // It translates no Spanner or AlloyDB text.
+      [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [MISSING('e', 'BIGQUERY', HINT)]],
+      [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [], true],
+      [SPANNER_TABLE, dialects('SNOWFLAKE'), '', [MISSING('e', 'SPANNER')], true],
+      [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY')]],
+      [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY')], true],
+      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY')]],
+      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY')], true],
+    ];
+    for (const [source, expression, extra, errors, transpiled] of cases) {
+      const actual = check(withField(source, expression, extra), transpiled);
+      expect({source, expression, extra, transpiled, errors: actual})
+          .toEqual({source, expression, extra, transpiled, errors});
+    }
+    // An unbound field and an entity with no source are skipped.
+    const unbound = withField(SPANNER_TABLE, bigQueryText);
+    unbound.entities[0].fields[1] = {name: 'f'};
+    expect(check(unbound)).toEqual([]);
+    const noSource = withField(SPANNER_TABLE, bigQueryText);
+    noSource.entities[0].dataSource = '';
+    delete noSource.entities[0].authoredSource;
+    expect(check(noSource)).toEqual([]);
   });
 });

@@ -3466,6 +3466,10 @@ semantic_model:
     const {model: pruned, report} = pruneUnavailable(marked, 'ops');
     expect(pruned.metrics).toEqual([]);
     expect(report.droppedMetrics).toEqual([{name: 'revenue', reason: 'excluded'}]);
+    // An excluded metric names no field, even when the field it reads is unbound.
+    const unbound = {...marked, entities: shop({}).entities};
+    expect(pruneUnavailable(unbound, 'ops').report.droppedMetrics)
+        .toEqual([{name: 'revenue', reason: 'excluded'}]);
   });
 
   // Actions are out of preview scope and gain no new checks.

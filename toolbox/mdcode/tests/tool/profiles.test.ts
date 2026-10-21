@@ -773,21 +773,27 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
     }
   }
 
-  // The exit code of `kcmd push --validate-only` for `profile`, or for the
-  // default binding with no profile, and the errors it prints. An error push
-  // throws counts as one, as the command line prints it and exits 1.
-  async function pushResult(profile?: string):
+  // The exit code of `kcmd push --validate-only` for profile `opts` when it is
+  // a name, or with options `opts` otherwise, and the errors it prints. An
+  // error push throws counts as one, as the command line prints it and exits 1.
+  async function pushResult(opts: string|Parameters<typeof push>[0] = {}):
       Promise<{code: number; errors: string[]}> {
     logs.length = 0;
+    errs.length = 0;
     let code: number;
     const thrown: string[] = [];
     try {
-      code = await push({validateOnly: true, profile});
+      code = await push({
+        validateOnly: true,
+        ...(typeof opts === 'string' ? {profile: opts} : opts),
+      });
     } catch (err: any) {
       code = 1;
       thrown.push(err.message);
     }
     const leg = /^Error pushing semantic model to [^:]*: /;
+    expect(errs.filter(e => !e.startsWith('Error: ') && !leg.test(e)))
+        .toEqual([]);
     const errors = [
       ...logs.filter(l => l.startsWith('Error: '))
           .map(l => l.slice('Error: '.length)),
@@ -847,6 +853,19 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
           .toEqual({label, profile, errors});
     }
   }
+
+  // The model file's error for field `name`, written 'entity.field', with no
+  // text for the `dialect` of its entity's source.
+  const modelNoText = (name: string, dialect = 'BIGQUERY') =>
+      `field '${name}' in model 'commerce' (commerce) has no expression for ` +
+      `${dialect} or ANSI_SQL, and the model file binds entity '${
+          name.split('.')[0]}' to a ${dialect} source`;
+  // The end of the error for a field whose text --transpile can translate.
+  const HINT = '; give it one, or pass --transpile.';
+  // Field amount, whose one text is `text` in `dialect`.
+  const amount = (dialect: string, text: string) =>
+      `{ name: amount, expression: { dialects: [{ dialect: ${dialect}, ` +
+      `expression: ${text} }] } }`;
 
   beforeEach(() => {
     // Push probes BigQuery before it generates a graph; that probe passes.
@@ -2744,6 +2763,18 @@ semantic_model:
         }
       });
 
+      // The model file's error names the text to fix, so a block profile that
+      // inherits the field unchanged gets no error of its own.
+      test('reports a model file field with only a vendor text once', async () => {
+        writeScope({
+          'commerce.yaml': vanilla([complete('prod')]).replace(
+              'expression: p_id}]}\n',
+              p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`),
+        });
+        const error = modelNoText('purchase.amount') + HINT;
+        await expectPushes({default: [error], prod: [error]});
+      });
+
       // Push's own checks cover part of the profile it applies, so the
       // selected block profile reports each problem once.
       test('reports each problem of the selected one once', async () => {
@@ -2860,8 +2891,255 @@ semantic_model:
       });
     });
   });
-});
 
+  // Push judges each deployment on the model file as loaded, and `kcmd
+  // profiles` reports what push rejects. Each deployment uses the model
+  // file's own bindings, since push refuses one that names a profile.
+  describe('push holds each deployment to the rules of its engine', () => {
+    const OWN = "model 'commerce' (commerce) deployment 'prod' uses the " +
+        "model file's own bindings, ";
+    const noProfile = {profile: false};
+    // `model`, a commerce() text, with `fields` added to purchase after p_id.
+    const withFields = (model: string, ...fields: string[]) => model.replace(
+        '{ name: p_id, expression: p_id }\n',
+        p => p + fields.map(f => `          - ${f}\n`).join(''));
+    // commerce() with one deployment, `metric`, and `fields` on purchase.
+    const withMetric = (metric: string, ...fields: string[]) =>
+        `${withFields(commerce({targets: 1}), ...fields)}    metrics:\n` +
+        `      - ${metric}\n`;
+
+    // Each unbound entity or relationship is reported once, by push's own
+    // checks where they see it and by this check otherwise.
+    test('rejects a deployment that uses incomplete inline bindings, on every push but a legacy wrapper push', async () => {
+      const unbound = (left = "entity 'customer' without a source") =>
+          `${OWN}which leave ${left}; a deployment needs every entity and ` +
+          'relationship bound.';
+      writeScope({'commerce.yaml': customerUnbound(commerce({targets: 1}))});
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [expect.stringContaining(
+            "dataset 'customer': a non-abstract dataset requires a source")],
+      });
+      expect(await pushResult(noProfile))
+          .toEqual({code: 1, errors: [unbound()]});
+      // A legacy wrapper push deploys the wrapper's bindings.
+      writeScope({'commerce.profiles/legacy.yaml': legacyProfile(false)});
+      expect(await pushResult('legacy')).toEqual({code: 0, errors: []});
+      fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
+
+      writeScope({'commerce.yaml': commerce({targets: 1, joined: false})});
+      const unjoined = await pushResult();
+      expect(unjoined).toEqual({
+        code: 1,
+        errors: [expect.stringContaining(
+            "relationship 'placed_by' in model 'commerce' (commerce) " +
+            'targets a graph but has no join columns')],
+      });
+      expect(await pushResult(noProfile)).toEqual(unjoined);
+      expect(await profiles()).toBe(1);
+      expect(rejects(section(NO_PROFILES))).toEqual(unjoined.errors);
+
+      writeScope({
+        'commerce.yaml': customerUnbound(commerce({targets: 1, joined: false})),
+        'commerce.profile.prod.yaml': profileFile('prod'),
+      }, 'prod');
+      expect(await pushResult(noProfile)).toEqual({
+        code: 1,
+        errors: [unbound("entity 'customer' without a source and " +
+                         "relationship 'placed_by' without join columns")],
+      });
+    });
+
+    // A push that fails this check prints no pruning note. An AlloyDB
+    // deployment reads a metric's ALLOYDB or ANSI_SQL text.
+    test('rejects a deployment whose metric reads a field with no expression, as its engine reads the metric', async () => {
+      // The error for `metric` reading `field`, which has no expression if
+      // `direct` and otherwise reads a field with none.
+      const reads = (metric: string, field: string, direct = true) =>
+          `${OWN}under which metric '${metric}' reads field '${field}', which ${
+              direct ? 'has no expression' :
+                       'reads a field with no expression, directly or ' +
+                           'through other fields'}; a deployment needs every ` +
+          'field its metrics read bound.';
+      writeScope({
+        'commerce.yaml': withMetric(
+            '{ name: notes, expression: "COUNT(purchase.note)" }',
+            '{ name: note }'),
+      });
+      const warn = spyOn(console, 'warn').mockImplementation(() => {});
+      const pushed = await pushResult();
+      expect(warn.mock.calls.filter(c => c.join(' ').startsWith('Note:')))
+          .toEqual([]);
+      expect(pushed)
+          .toEqual({code: 1, errors: [reads('notes', 'purchase.note')]});
+      expect(await profiles()).toBe(1);
+      expect(rejects(section(NO_PROFILES))).toEqual(pushed.errors);
+
+      writeScope({
+        'commerce.yaml': withMetric(
+            '{ name: m, expression: "SUM(purchase.total)" }', '{ name: tax }',
+            '{ name: net, expression: "purchase.tax + 1" }',
+            '{ name: total, expression: "purchase.net * 2" }'),
+      });
+      expect(await pushResult())
+          .toEqual({code: 1, errors: [reads('m', 'purchase.total', false)]});
+
+      // The model on one AlloyDB database, where metric m's BigQuery and
+      // AlloyDB texts each count a field of purchase.
+      const db = '//alloydb.googleapis.com/projects/acme/locations/' +
+          'us-central1/clusters/c/databases/commerce';
+      const alloyDb = (bigQueryField: string, alloyDbField: string) =>
+          withMetric(
+              '{ name: m, expression: { dialects: [{ dialect: BIGQUERY, ' +
+                  `expression: "COUNT(purchase.${bigQueryField})" }, ` +
+                  '{ dialect: ALLOYDB, ' +
+                  `expression: "COUNT(purchase.${alloyDbField})" }] } }`,
+              '{ name: note }')
+              .replace(`${GRAPH}_prod`, db)
+              .replaceAll(BQ('dev', ''), `${db}/schemas/public/tables/`);
+      writeScope({'commerce.yaml': alloyDb('note', 'p_id')});
+      expect(await pushResult(noProfile)).toEqual({code: 0, errors: []});
+      writeScope({'commerce.yaml': alloyDb('p_id', 'note')});
+      expect(await pushResult(noProfile))
+          .toEqual({code: 1, errors: [reads('m', 'purchase.note')]});
+    });
+
+    // Each entity's fields are judged by its own source, whether or not a
+    // deployment uses them. Push's translator reads Snowflake SQL and no
+    // Spanner SQL, so only a Snowflake text gets the --transpile hint, even
+    // one the translator cannot parse.
+    test('rejects a field with no text for its entity\'s source dialect, and suggests --transpile only when push can translate it', async () => {
+      writeScope({
+        'commerce.yaml': commerce()
+            .replace(BQ('dev', 'purchase'), `${SPANNER_DB}/tables/purchase`)
+            .replace('expression: p_id }', 'expression: { dialects: ' +
+                     '[{ dialect: BIGQUERY, expression: p_id }] } }'),
+      });
+      const spanner = `${modelNoText('purchase.p_id', 'SPANNER')}.`;
+      for (const opts of [{}, noProfile]) {
+        expect({opts, ...await pushResult(opts)})
+            .toEqual({opts, code: 1, errors: [spanner]});
+      }
+      expect(await profiles()).toBe(1);
+      expect(rejects(section(NO_PROFILES))).toEqual([spanner]);
+
+      const missing = modelNoText('purchase.amount');
+      for (const targets of [0, 1]) {
+        for (const [dialect, text, errors, transpiledErrors] of [
+               ['SNOWFLAKE', 'amount', [missing + HINT], []],
+               ['SNOWFLAKE', '"amount +"', [missing + HINT], []],
+               ['SPANNER', 'amount', [`${missing}.`], [`${missing}.`]],
+             ] as Array<[string, string, string[], string[]]>) {
+          writeScope({
+            'commerce.yaml':
+                withFields(commerce({targets}), amount(dialect, text)),
+          });
+          const label = {targets, dialect, text};
+          expect({...label, ...await pushResult()})
+              .toEqual({...label, code: 1, errors});
+          expect({...label, ...await pushResult({...noProfile, transpile: true})})
+              .toEqual({...label, code: transpiledErrors.length ? 1 : 0,
+                        errors: transpiledErrors});
+        }
+      }
+    });
+
+    // A BigQuery graph turns each metric into a measure. A vanilla model
+    // anchors a metric in its GOOGLE block.
+    test('rejects a BigQuery metric that is not one aggregate, or on an entity with no key, on push and in the report', async () => {
+      const MEASURE = "model 'commerce' (commerce) deployment 'prod' targets " +
+          'BigQuery, where metric ';
+      writeScope({
+        'commerce.yaml':
+            withMetric('{ name: half, expression: "SUM(purchase.p_id) / 2" }'),
+      });
+      await expectPushes({
+        default: [`${MEASURE}'half' cannot be a measure: it is not SUM, AVG, ` +
+                  'COUNT, MIN or MAX over one operand.'],
+      });
+      const block = (data: object) =>
+          `custom_extensions: [{vendor_name: GOOGLE, data: '${
+              JSON.stringify(data)}'}]`;
+      writeScope({
+        'commerce.yaml': `version: "0.2.0.dev0"
+semantic_model:
+  - name: commerce
+    ${block({deployments: [{name: 'prod', target: `${GRAPH}_prod`}]})}
+    datasets:
+      - name: purchase
+        source: ${BQ('dev', 'purchase')}
+        fields: [{name: p_id, expression: {dialects: [{dialect: ANSI_SQL, expression: p_id}]}}]
+    metrics:
+      - name: n
+        ${block({entity: 'purchase'})}
+        expression: {dialects: [{dialect: ANSI_SQL, expression: "COUNT(*)"}]}
+`,
+      });
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [`${MEASURE}'n' cannot be a measure: it belongs to entity ` +
+                 "'purchase', which has no primary key or unique key, so the " +
+                 'graph has no node table for it.'],
+      });
+    });
+
+    // A named profile that keeps the field unchanged gets no error of its
+    // own when push's own check names it. A profile that rebinds it or is on
+    // another database, or whose field that check skips, keeps its own error.
+    test('reports a model file field with only a vendor text once beside a named profile', async () => {
+      // The error of profile 'prod' for field amount, with no text for the
+      // `dialect` of its sources.
+      const profileError = (dialect = 'BIGQUERY') =>
+          "[commerce.profile.prod.yaml] profile 'prod': field " +
+          `'purchase.amount' has no expression for ${dialect} or ANSI_SQL, ` +
+          `and this profile's sources are ${dialect}`;
+      const hinted = modelNoText('purchase.amount') + HINT;
+      const spannerProfile = profileFile('prod').replaceAll(
+          BQ('prod', ''), `${SPANNER_DB}/tables/`);
+      // Profile prod rebinds purchase's amount to another SNOWFLAKE text.
+      const rebound = profileFile('prod').replace(`${BQ('prod', 'purchase')}\n`,
+          `$&    fields:\n      - ${amount('SNOWFLAKE', '"amount -"')}\n`);
+      // The profile rebinds the parent's amount, and purchase keeps its own.
+      const child = commerce().replace(
+          '      - name: purchase\n',
+          `      - name: item\n        source: ${BQ('dev', 'item')}\n` +
+              '        primary_key: [i_id]\n        fields:\n' +
+              '          - { name: i_id, expression: i_id }\n' +
+              '          - { name: amount, expression: amount }\n' +
+              '      - name: purchase\n        extends: [item]\n');
+      const childProfile = profileFile('prod').replace(
+          '  - name: purchase\n',
+          `  - name: item\n    source: ${BQ('prod', 'item')}\n    fields:\n` +
+              '      - { name: amount, expression: amount2 }\n' +
+              '  - name: purchase\n');
+      const cases: Array<[label: string, model: string, profile: string,
+                          errors: string[]]> = [
+        ['inherited', commerce(), profileFile('prod'), [hinted]],
+        ['rebound', commerce(), rebound, [profileError(), hinted]],
+        ['on Spanner', commerce(), spannerProfile,
+         [profileError('SPANNER'), hinted]],
+        ['declared on the child, rebound on its parent', child, childProfile,
+         [hinted]],
+        ['no source in the model file',
+         commerce().replace(`        source: ${BQ('dev', 'purchase')}\n`, ''),
+         profileFile('prod'), [profileError()]],
+      ];
+      for (const [label, model, profile, errors] of cases) {
+        writeScope({
+          'commerce.yaml': withFields(model, amount('SNOWFLAKE', '"amount +"')),
+          'commerce.profile.prod.yaml': profile,
+        });
+        for (const binding of [undefined, 'prod']) {
+          expect({label, binding, ...await pushResult(binding)})
+              .toEqual({label, binding, code: 1, errors});
+        }
+        expect(await profiles()).toBe(1);
+        expect({label, report: rejects(profileSection('prod'))})
+            .toEqual({label, report: errors});
+      }
+    });
+  });
+});
 
 // `--print-store` is a read of the binding, never a choice of one: it prints
 // where the selected profile deploys to and nothing else, so a setup script can
