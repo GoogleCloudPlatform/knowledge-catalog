@@ -230,27 +230,31 @@ function nameAndDescriptionErrors(
 }
 
 // Checks the model file's own bindings against the engine of each deployment
-// of `model`, and returns one message per problem. With `opts.joinsChecked`,
-// missing join columns are left to the caller.
+// of `model`, and returns one message per problem, naming every deployment it
+// applies to. With `opts.joinsChecked`, missing join columns are left to the
+// caller.
 export function validateDeployments(
     model: SemanticModel, document: string,
     opts: {joinsChecked?: boolean} = {}): string[] {
-  const errors: string[] = [];
+  // The deployments each problem applies to, keyed by the text that follows
+  // their names in the message.
+  const problems = new Map<string, string[]>();
+  const add = (deployment: string, problem: string) =>
+      problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
   const unbound = unboundInline(model, !opts.joinsChecked);
   // The metrics the reference rules report, which the BigQuery rule leaves to
   // them.
   let referenced: Set<string>|undefined;
   for (const d of model.deployments ?? []) {
-    const at = `model '${model.name}' (${document}) deployment '${d.name}'`;
     const resolved = resolveModelDeployments(model, [d.name]);
     const engine =
         'error' in resolved ? undefined : resolved.deployments[0].engine;
     const alloyDb = engine === 'alloydb';
     if (unbound) {
-      errors.push(
-          `${at} uses the model file's own bindings, which leave ${
+      add(d.name,
+          `uses the model file's own bindings, which leave ${
               unbound}; a deployment needs every entity and relationship ` +
-          `bound.`);
+              `bound.`);
     }
     // A Spanner deployment deploys no metric.
     if (engine === 'spanner') continue;
@@ -259,14 +263,14 @@ export function validateDeployments(
         {noGraph: alloyDb});
     for (const {name, field} of report.droppedMetrics) {
       if (field === undefined) continue;
-      errors.push(
-          `${at} uses the model file's own bindings, under which metric '${
+      add(d.name,
+          `uses the model file's own bindings, under which metric '${
               name}' reads field '${field}', which ${
               report.unboundFields.includes(field) ?
                   'has no expression' :
                   'reads a field with no expression, directly or through ' +
                       'other fields'}; a deployment needs every field its ` +
-          `metrics read bound.`);
+              `metrics read bound.`);
     }
     if (engine !== 'bigquery') continue;
     if (!referenced) {
@@ -279,13 +283,19 @@ export function validateDeployments(
           !report.droppedMetrics.some(x => x.name === m.name) &&
           measureProblem(model, m);
       if (problem) {
-        errors.push(
-            `${at} targets BigQuery, where metric '${
-                m.name}' cannot be a measure: ${problem}.`);
+        add(d.name,
+            `targets BigQuery, where metric '${m.name}' cannot be a measure: ${
+                problem}.`);
       }
     }
   }
-  return errors;
+  // The verb that starts each problem agrees with the number of deployments.
+  return [...problems].map(([problem, names]) => {
+    const many = names.length > 1;
+    return `model '${model.name}' (${document}) deployment${many ? 's' : ''} ${
+        listed(names.map(n => `'${n}'`))} ${
+        many ? problem.replace(/^(use|target)s /, '$1 ') : problem}`;
+  });
 }
 
 // Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves

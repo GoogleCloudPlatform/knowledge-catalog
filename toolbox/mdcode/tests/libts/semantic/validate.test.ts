@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
-import {LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {listed, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
 import {validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
@@ -2790,18 +2790,22 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
   const check = (m: SemanticModel,
                  opts: Parameters<typeof validateDeployments>[2] = {}) =>
       validateDeployments(m, 'commerce', opts);
-  // The start of the error for deployment `engine` when it uses the model
-  // file's own bindings.
-  const OWN = (engine: Engine) => `model 'commerce' (commerce) deployment '${
-      engine}' uses the model file's own bindings, `;
+  // The start of the error saying deployment `engine` uses the model file's
+  // own bindings. A list of engines gives the plural form that names each.
+  const OWN = (engine: Engine|Engine[]) => typeof engine === 'string' ?
+      `model 'commerce' (commerce) deployment '${engine}' uses the model ` +
+          `file's own bindings, ` :
+      `model 'commerce' (commerce) deployments ${
+          listed(engine.map(e => `'${e}'`))} use the model file's own ` +
+          `bindings, `;
   const UNBOUND =
-      (engine: Engine, left = "entity 'customer' without a source") =>
+      (engine: Engine|Engine[], left = "entity 'customer' without a source") =>
           `${OWN(engine)}which leave ${left}; a deployment needs every ` +
       'entity and relationship bound.';
   // The error for metric `metric` reading `field`. The field has no
   // expression, or with `direct` false, reads a field that has none.
   const READS =
-      (engine: Engine, metric: string, field: string, direct = true) =>
+      (engine: Engine|Engine[], metric: string, field: string, direct = true) =>
           `${OWN(engine)}under which metric '${metric}' reads field '${
               field}', which ${
               direct ? 'has no expression' :
@@ -2816,15 +2820,14 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
     expect(check(commerce({customer: false, join: false}))).toEqual([]);
     const all = BQ + deployment('spanner') + deployment('alloydb');
     expect(check(commerce({customer: false, deployments: all}))).toEqual([
-      UNBOUND('bigquery'), UNBOUND('spanner'), UNBOUND('alloydb'),
+      UNBOUND(['bigquery', 'spanner', 'alloydb']),
     ]);
     expect(check(commerce(
                {customer: false, deployments: deployment('bigquery', 'default')})))
         .toEqual([UNBOUND('bigquery')]);
     const notes = '{ name: m, expression: "COUNT(purchase.note)" }';
     expect(check(commerce({deployments: all, metric: notes}))).toEqual([
-      READS('bigquery', 'm', 'purchase.note'),
-      READS('alloydb', 'm', 'purchase.note'),
+      READS(['bigquery', 'alloydb'], 'm', 'purchase.note'),
     ]);
     const noted = '{ name: m, expression: "COUNT(purchase.noted)" }';
     expect(check(commerce({deployments: BQ, metric: noted})))
@@ -2868,17 +2871,15 @@ ${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id]
     expect(check(alloyDb(texts(['BIGQUERY', NOTE], ['ANSI_SQL', C_ID]))))
         .toEqual(bigQueryOnly);
     expect(check(alloyDb(both(C_ID, NOTE))))
-        .toEqual([READS('alloydb', 'm', 'customer.note'), ...bigQueryOnly]);
+        .toEqual([READS(['alloydb', 'bigquery'], 'm', 'customer.note')]);
     // A field the metric reads is read the same way. A field reads a sibling
     // field as `entity.field`.
     const viaLabel = '"COUNT(customer.label)"';
     expect(check(alloyDb(viaLabel, {label: both('customer.note', 'c_id')})))
         .toEqual([READS('bigquery', 'm', 'customer.label', false)]);
     expect(check(alloyDb(viaLabel, {label: both('c_id', 'customer.note')})))
-        .toEqual([
-          READS('alloydb', 'm', 'customer.label', false),
-          READS('bigquery', 'm', 'customer.label', false),
-        ]);
+        .toEqual(
+            [READS(['alloydb', 'bigquery'], 'm', 'customer.label', false)]);
   });
 
   test('names every concrete entity and relationship left unbound, and leaves out the relationships under joinsChecked', () => {
@@ -2916,7 +2917,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         fields: [{ name: c_id, expression: c_id }]
 `);
     expect(check(hierarchy(false)))
-        .toEqual([UNBOUND('bigquery'), UNBOUND('spanner')]);
+        .toEqual([UNBOUND(['bigquery', 'spanner'])]);
     expect(check(hierarchy(true))).toEqual([]);
   });
 
@@ -2947,6 +2948,16 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           MEASURE('it is not SUM, AVG, COUNT, MIN or MAX over one operand'),
         ]});
       }
+      // Two BigQuery deployments, on graphs g and g2, get one message that
+      // names both.
+      expect(check(commerce({
+        deployments: `${BQ}      - name: dev\n        target: ${BQ_TARGET}2\n`,
+        metric: anchored('SUM(purchase.amount) / 2'),
+      }))).toEqual([
+        "model 'commerce' (commerce) deployments 'bigquery' and 'dev' target " +
+        "BigQuery, where metric 'm' cannot be a measure: it is not SUM, AVG, " +
+        'COUNT, MIN or MAX over one operand.',
+      ]);
       expect(check(commerce({
         deployments: deployment('spanner') + deployment('alloydb'),
         metric: '{ name: m, expression: "SUM(purchase.amount) / 2" }',
