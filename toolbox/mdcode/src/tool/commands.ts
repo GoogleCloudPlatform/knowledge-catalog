@@ -731,12 +731,14 @@ function modelFileBindingErrors(
     if (!base) continue;
     errors.push(
         ...validateInlineDialects(base, d.name, {transpiled: transpile}));
+    let named: boolean|undefined;
     try {
-      const named = declared(d).some(
-          p => p.name.toLowerCase() !== DEFAULT_PROFILE);
-      warnings.push(...inlineBindingWarnings(base, d.name, named));
+      named = declared(d).some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
     } catch {
       // namedProfileErrors reports a profile that does not load.
+    }
+    if (named !== undefined) {
+      warnings.push(...inlineBindingWarnings(base, d.name, named));
     }
     // A legacy wrapper push deploys the wrapper's bindings, not these.
     if (d.excluded) continue;
