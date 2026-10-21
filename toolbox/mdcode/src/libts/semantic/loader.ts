@@ -122,15 +122,88 @@ export const GOOGLE_VERSION = '0.2.0.dev0/google';
 export const DEPLOYMENTS_VERSION_HINT =
     `list 'deployments' in a GOOGLE custom_extensions block on the model, or ` +
     `set version: '${GOOGLE_VERSION}' and use 'deployments:'`;
-// The declared flavor, as stored on the IR (SemanticModel.version).
-type FormatVersion = NonNullable<SemanticModel['version']>;
-const ACCEPTED_VERSIONS: readonly FormatVersion[] = [OSSIE_VERSION, GOOGLE_VERSION];
+/**
+ * The declared format version, as stored on the IR
+ * (`SemanticModel.version`).
+ */
+export type FormatVersion = NonNullable<SemanticModel['version']>;
+const ACCEPTED_VERSIONS: readonly FormatVersion[] = [
+  OSSIE_VERSION,
+  GOOGLE_VERSION,
+];
 
 function isFormatVersion(v: string): v is FormatVersion {
   return (ACCEPTED_VERSIONS as readonly string[]).includes(v);
 }
 
+/**
+ * The location of an IR construct in documents of a given format version:
+ * - `'native'`: a direct key on the YAML object (`deployments:`, `extends:`)
+ * - `'file'`: a `<model>.profile.<name>.yaml` sidecar file (`profiles`)
+ * - `'block'`: a `GOOGLE` `custom_extensions` block on the owning YAML object
+ * - `'none'`: unsupported in this format version (rejected on load, warned and
+ *   omitted on write)
+ */
+export type ConstructPlacement = 'native'|'file'|'block'|'none';
 
+// One placement per construct key K at an object level.
+type Placements<K extends string> = Readonly<Record<K, ConstructPlacement>>;
+
+/**
+ * The construct placements for a single format version, grouped by owning YAML
+ * object level.
+ */
+export interface ConstructPlacements {
+  readonly model: Placements<'profiles'|'deployments'|'actions'|'constraints'>;
+  readonly dataset: Placements<'extends'|'abstract'>;
+  readonly relationship: Placements<'description'>;
+  readonly metric: Placements<'entity'>;
+}
+
+/**
+ * Where each format version places each Google extension construct. Other
+ * differences between the versions, such as required bindings and datatype
+ * casing, are checked where they are read.
+ */
+export const FORMAT_VERSION_PLACEMENT:
+    Readonly<Record<FormatVersion, ConstructPlacements>> = {
+      [GOOGLE_VERSION]: {
+        model: {
+          profiles: 'file',
+          deployments: 'native',
+          actions: 'native',
+          constraints: 'native',
+        },
+        dataset: {
+          extends: 'native',
+          abstract: 'native',
+        },
+        relationship: {
+          description: 'native',
+        },
+        metric: {
+          entity: 'native',
+        },
+      },
+      [OSSIE_VERSION]: {
+        model: {
+          profiles: 'block',
+          deployments: 'block',
+          actions: 'none',
+          constraints: 'none',
+        },
+        dataset: {
+          extends: 'block',
+          abstract: 'none',
+        },
+        relationship: {
+          description: 'block',
+        },
+        metric: {
+          entity: 'block',
+        },
+      },
+    };
 
 // An expression is supplied as one or more per-dialect variants, or (in the
 // Google flavor only) as a bare SQL string shorthand for a single ANSI_SQL
@@ -725,6 +798,8 @@ const customExtensionsKey = {custom_extensions: z.array(customExtensionSchema).o
 //     prunes it before generation -- so it is not a load error under either
 //     `bindingOptional`.
 function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
+  const placement =
+      FORMAT_VERSION_PLACEMENT[extended ? GOOGLE_VERSION : OSSIE_VERSION];
   // The five data levels take this flavor's ai_context; actions and
   // constraints are Google-only and keep the Google form.
   const aiContext = aiContextSchemaFor(extended);
@@ -742,6 +817,14 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...customExtensionsKey,
        }).strict();
 
+  const datasetExtensions = {
+    ...(placement.dataset.extends === 'native' ?
+            {extends: z.array(z.string()).optional()} :
+            {}),
+    ...(placement.dataset.abstract === 'native' ?
+            {abstract: z.boolean().optional()} :
+            {}),
+  };
   const dataset =
       z.object({
          name: z.string(),
@@ -754,11 +837,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...customExtensionsKey,
          // Inheritance is a native extension: only the extended profile accepts
          // it.
-         ...(extended ? {
-           extends: z.array(z.string()).optional(),
-           abstract: z.boolean().optional(),
-         } :
-                        {}),
+         ...datasetExtensions,
        })
           .strict()
           .superRefine((ds: any, ctx) => {
@@ -846,7 +925,8 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          // An authored anchor is a native extension: extended profile only.
          // Vanilla still declares the key so the refinement below can reject it
          // with a message that names the fix, not a bare "unrecognized key".
-         entity: extended ? z.string().optional() : z.unknown().optional(),
+         entity: placement.metric.entity === 'native' ? z.string().optional() :
+                                                        z.unknown().optional(),
        })
           .strict()
           .superRefine((mt, ctx) => {
@@ -863,7 +943,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                     `metric's SQL`,
               });
             }
-            if (extended || mt.entity === undefined) return;
+            if (placement.metric.entity === 'native' ||
+                mt.entity === undefined) {
+              return;
+            }
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ['entity'],
@@ -914,27 +997,34 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                          .strict()
                          .superRefine(rejectExpressionBody);
 
+  const modelExtensions = {
+    ...(placement.model.deployments === 'native' ? {
+      deployment_target: z.string().optional(),
+      deployments: z.array(deploymentSchema).optional(),
+    } :
+                                                   {}),
+    ...(placement.model.actions === 'native' ?
+            {actions: z.array(action).optional()} :
+            {}),
+    ...(placement.model.constraints === 'native' ?
+            {constraints: z.array(constraint).optional()} :
+            {}),
+  };
   const model = z.object({
-         name: z.string(),
-         description: z.string().optional(),
-         ai_context: aiContext.optional(),
-         datasets: z.array(dataset).min(1),
-         relationships: z.array(relationship).optional(),
-         metrics: z.array(metric).optional(),
-         ...customExtensionsKey,
+                   name: z.string(),
+                   description: z.string().optional(),
+                   ai_context: aiContext.optional(),
+                   datasets: z.array(dataset).min(1),
+                   relationships: z.array(relationship).optional(),
+                   metrics: z.array(metric).optional(),
+                   ...customExtensionsKey,
                    // Native extension keys: extended profile only. `actions`
                    // and `constraints` are among them because vanilla Ossie has
                    // neither construct and no `custom_extensions` encoding for
                    // either, so under OSSIE_VERSION such a key is rejected as
                    // unknown rather than silently dropped.
-         ...(extended ? {
-           deployment_target: z.string().optional(),
-           deployments: z.array(deploymentSchema).optional(),
-           actions: z.array(action).optional(),
-           constraints: z.array(constraint).optional(),
-         } :
-                        {}),
-       }).strict();
+                   ...modelExtensions,
+                 }).strict();
 
   return z
       .object({
@@ -1074,6 +1164,8 @@ function normalizeDocumentSugars(
 function normalizeModelSugars(
     m: any, extended: boolean, allowLegacyBareSource = false): void {
   const label = typeof m.name === 'string' ? `model '${m.name}'` : 'model';
+  const placement =
+      FORMAT_VERSION_PLACEMENT[extended ? GOOGLE_VERSION : OSSIE_VERSION];
 
   // Only a load that still accepts the legacy key can be left holding both.
   // Elsewhere the `deployment_target:` rejection below speaks to it. The open
@@ -1117,7 +1209,7 @@ function normalizeModelSugars(
         `      target: ${target}`);
   }
 
-  if (!extended && m.deployments !== undefined) {
+  if (placement.model.deployments !== 'native' && m.deployments !== undefined) {
     throw new SemanticModelError(
         `Semantic model load error: ${label}: 'deployments' is not in the ` +
         `open format ('${OSSIE_VERSION}'); ${DEPLOYMENTS_VERSION_HINT}`);
@@ -1125,7 +1217,7 @@ function normalizeModelSugars(
 
   // In the Google flavor, binding profiles live in sidecar files
   // (`<model>.profile.<name>.yaml`), never inline under `profiles:`.
-  if (extended && m.profiles !== undefined) {
+  if (placement.model.profiles === 'file' && m.profiles !== undefined) {
     const modelFile = typeof m.name === 'string' ? m.name : '<model>';
     throw new SemanticModelError(
         `Semantic model load error: ${label}: inline 'profiles' are not ` +
@@ -1211,18 +1303,7 @@ function rejectGoogleBlock(
 // The levels a GOOGLE block carries keys on.
 type BlockLevel = Exclude<ExtensionLevel, 'field'>;
 
-// The keys a GOOGLE block takes at each level of a vanilla document. Each is
-// the Google flavor's native key of the same name, apart from `profiles`, which
-// the Google flavor keeps in profile files. A model's block may also carry
-// `deploymentTargets`, which readGoogleBlocks checks is a list and keeps.
-const GOOGLE_BLOCK_KEYS: Record<BlockLevel, readonly string[]> = {
-  model: ['profiles', 'deployments'],
-  dataset: ['extends'],
-  relationship: ['description'],
-  metric: ['entity'],
-};
-
-// How the Google flavor validates each of those native keys. A profile is read
+// How the Google flavor validates each block key. A profile is read
 // as a profile file is instead (readBlockProfiles).
 const GOOGLE_BLOCK_SCHEMAS: Record<string, z.ZodTypeAny> = {
   deployments: z.array(deploymentSchema),
@@ -1261,6 +1342,8 @@ function readGoogleBlocks(
   const error = (problem: string) =>
       new SemanticModelError(`Semantic model load error: ${ctx}: ${problem}`);
   const block = `${GOOGLE_VENDOR} custom_extensions block`;
+  const levelPlacement = FORMAT_VERSION_PLACEMENT[version][level] as
+      Record<string, ConstructPlacement>;
   const values: Record<string, unknown> = {};
   const kept: CustomExtension[] = [];
   let hasTargets = false;
@@ -1306,7 +1389,8 @@ function readGoogleBlocks(
             `'${OSSIE_VERSION}' dataset needs a 'source'. A model that needs ` +
             `an abstract entity uses '${GOOGLE_VERSION}'.`);
       }
-      const allowed = GOOGLE_BLOCK_KEYS[level];
+      const allowed = Object.keys(levelPlacement)
+                          .filter(k => levelPlacement[k] === 'block');
       if (!allowed.includes(key)) {
         throw error(
             `'${key}' is not a key a ${block} takes on a ${level}; it takes ` +
@@ -1696,7 +1780,10 @@ function holdsAlias(node: yaml.Node): boolean {
 // is still expressible there, inside a GOOGLE block; say so, with the notation.
 function rejectVanillaRelationshipDescription(
     r: RelationshipDoc, version: FormatVersion): void {
-  if (version !== OSSIE_VERSION || r.description === undefined) return;
+  if (FORMAT_VERSION_PLACEMENT[version].relationship.description === 'native' ||
+      r.description === undefined) {
+    return;
+  }
   throw new SemanticModelError(
       `Semantic model load error: relationship '${r.name}': a ` +
       `'${OSSIE_VERSION}' document cannot carry a plain 'description' on a ` +
