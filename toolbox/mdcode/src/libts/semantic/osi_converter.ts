@@ -31,11 +31,13 @@
 // `ai_context` (instructions / synonyms / examples / custom properties), keys
 // and unique keys, data sources, field datatypes (omitting `Opaque`) / labels /
 // dimension flags, expressions, relationship join columns, and
-// `custom_extensions`. Output format follows `model.version`: GOOGLE_VERSION
-// ('0.2.0.dev0/google' or unset) writes native extension keys, and
-// `serializeModelFiles` adds one `<model>.profile.<name>.yaml` sidecar file per
-// profile, whereas OSSIE_VERSION ('0.2.0.dev0') writes strict Ossie keys,
-// preserves `GOOGLE` blocks verbatim and writes no profile files.
+// `custom_extensions`. Output format follows `model.version` via
+// `FORMAT_VERSION_PLACEMENT`: GOOGLE_VERSION ('0.2.0.dev0/google' or unset)
+// writes native extension keys and one `<model>.profile.<name>.yaml` sidecar
+// file per profile, whereas OSSIE_VERSION ('0.2.0.dev0') writes strict Ossie
+// keys, encodes `profiles`, `deployments`, `extends`, relationship
+// `description`, and metric `authoredEntity` in `GOOGLE` `custom_extensions`
+// blocks, and writes no profile files.
 //
 // An `association` (junction-table) relationship has no open-format syntax (the
 // loader cannot produce one), so only its direct foreign-key view (from/to +
@@ -45,7 +47,7 @@ import * as yaml from 'yaml';
 
 import {googleBlockTargets, unnamedDeployments} from './deployment_target';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {GOOGLE_VERSION, isAcceptedSource, OSSIE_VERSION} from './loader';
+import {FORMAT_VERSION_PLACEMENT, FormatVersion, GOOGLE_VERSION, isAcceptedSource, OSSIE_VERSION} from './loader';
 import {nameProblem} from './names';
 import {declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE} from './resolve_profiles';
@@ -90,55 +92,87 @@ export interface SerializeOptions {
  * each entry in `model.profiles` follows as
  * `<model.name>.profile.<profile.name>.yaml`, except that a reserved
  * (`default`), invalid, or case-insensitively repeated name is skipped with a
- * warning. Under `OSSIE_VERSION`, no profile files are emitted.
+ * warning. Under `OSSIE_VERSION`, valid profiles are written into the model's
+ * `GOOGLE` `custom_extensions` block and no profile files are emitted.
  */
 export function serializeModelFiles(
     model: SemanticModel, opts: SerializeOptions = {}): SerializeFilesResult {
   const warnings: string[] = [];
+  const version = formatVersionOf(model);
   const document = modelDocument(model, warnings, opts.logical);
   const files: SerializedFile[] = [
     {fileName: `${model.name}.yaml`, content: render(document, opts)},
   ];
 
-  const isGoogleVersion = model.version !== OSSIE_VERSION;
-  if (isGoogleVersion) {
-    // Profile names are unique ignoring case, as the layout reads them; each
-    // lowercased name maps to the spelling serialized first.
-    const seen = new Map<string, string>();
-    for (const profile of model.profiles ?? []) {
-      const lower = profile.name.toLowerCase();
-      if (lower === DEFAULT_PROFILE) {
-        warnings.push(
-            `model '${model.name}': profile '${profile.name}' uses the name ` +
-            `reserved for the model's inline bindings and is not serialized`);
-        continue;
-      }
-      if (nameProblem('profile', profile.name)) {
-        warnings.push(
-            `model '${model.name}': profile '${profile.name}' is not a valid ` +
-            `profile name and is not serialized`);
-        continue;
-      }
-      const first = seen.get(lower);
-      if (first !== undefined) {
-        // Only a case-only repeat needs the ignoring-case rule explained.
-        const repeat = first === profile.name ?
-            `profile '${first}' is listed more than once` :
-            `profiles '${first}' and '${profile.name}' name the same ` +
-                `profile (profile names are unique ignoring case)`;
-        warnings.push(
-            `model '${model.name}': ${repeat}; only '${first}' is serialized`);
-        continue;
-      }
-      seen.set(lower, profile.name);
+  if (FORMAT_VERSION_PLACEMENT[version].model.profiles === 'file') {
+    for (const {name, doc} of profileDocuments(model, warnings)) {
       files.push({
-        fileName: `${model.name}.profile.${profile.name}.yaml`,
-        content: render(profileDocument(profile, warnings), opts),
+        fileName: `${model.name}.profile.${name}.yaml`,
+        content: render(doc, opts),
       });
     }
   }
 
   return {files, warnings: [...new Set(warnings)]};
+}
+
+/**
+ * Returns the format version to serialize `model` as (`model.version`,
+ * defaulting to `GOOGLE_VERSION` when unset).
+ */
+function formatVersionOf(model: SemanticModel): FormatVersion {
+  return model.version === OSSIE_VERSION ? OSSIE_VERSION : GOOGLE_VERSION;
+}
+
+// A profile file's top-level mapping, as `profileDocument` writes it and
+// `profileSpecOf` reads it.
+type ProfileDoc = Record<string, any>;
+
+/**
+ * Validates `model.profiles` and returns the serialized `profileDocument`
+ * mapping for each valid profile.
+ *
+ * Reserved (`default`), invalid, and case-insensitively repeated names are
+ * skipped with a warning, keeping the first spelling, so the output satisfies
+ * the same name rules the profile-file layout and `readBlockProfiles` enforce
+ * on load.
+ */
+function profileDocuments(model: SemanticModel, warnings: string[]):
+    Array<{name: string; doc: ProfileDoc}> {
+  const seen = new Map<string, string>();
+  const out: Array<{name: string; doc: ProfileDoc}> = [];
+  for (const profile of model.profiles ?? []) {
+    const lower = profile.name.toLowerCase();
+    if (lower === DEFAULT_PROFILE) {
+      warnings.push(
+          `model '${model.name}': profile '${profile.name}' uses the name ` +
+          `reserved for the model's inline bindings and is not serialized`);
+      continue;
+    }
+    if (nameProblem('profile', profile.name)) {
+      warnings.push(
+          `model '${model.name}': profile '${profile.name}' is not a valid ` +
+          `profile name and is not serialized`);
+      continue;
+    }
+    const first = seen.get(lower);
+    if (first !== undefined) {
+      // Only a case-only repeat needs the ignoring-case rule explained.
+      const repeat = first === profile.name ?
+          `profile '${first}' is listed more than once` :
+          `profiles '${first}' and '${profile.name}' name the same ` +
+              `profile (profile names are unique ignoring case)`;
+      warnings.push(
+          `model '${model.name}': ${repeat}; only '${first}' is serialized`);
+      continue;
+    }
+    seen.set(lower, profile.name);
+    out.push({
+      name: profile.name,
+      doc: profileDocument(profile, warnings),
+    });
+  }
+  return out;
 }
 
 /**
@@ -241,10 +275,10 @@ function renderCompact(document: Record<string, any>): string {
 export function modelDocument(
     model: SemanticModel, warnings: string[] = [],
     logical = false): Record<string, any> {
-  const isGoogleVersion = model.version !== OSSIE_VERSION;
+  const version = formatVersionOf(model);
   return {
-    version: isGoogleVersion ? GOOGLE_VERSION : OSSIE_VERSION,
-    semantic_model: [modelDoc(model, warnings, logical, isGoogleVersion)],
+    version,
+    semantic_model: [modelDoc(model, warnings, logical, version)],
   };
 }
 
@@ -254,8 +288,7 @@ export function modelDocument(
 // `fields`, `fields_exclude`, `metrics_exclude`, `actions`) are written
 // whenever defined, even when empty, so a ProfileSpec that loadProfileFile read
 // comes back the same from this file.
-function profileDocument(
-    profile: ProfileSpec, warnings: string[]): Record<string, any> {
+function profileDocument(profile: ProfileSpec, warnings: string[]): ProfileDoc {
   return compact({
     name: profile.name,
     entities: nonEmpty(profile.entities.map(
@@ -307,14 +340,15 @@ function profileDocument(
 
 function modelDoc(
     model: SemanticModel, warnings: string[], logical: boolean,
-    isGoogleVersion: boolean): Record<string, any> {
+    version: FormatVersion): Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
   // `datasets` is required (min 1) by the loader. A reconstructed model with no
   // entities (e.g. every entity fetch failed during a pull) would serialize to
   // a document the loader rejects; emit the (empty) array but flag it so the
   // lossy edge is visible rather than surfacing later as an opaque load error.
-  const datasets =
-      (model.entities ??
-       []).map(e => datasetDoc(e, warnings, logical, isGoogleVersion));
+  const datasets = (model.entities ??
+                    []).map(e => datasetDoc(e, warnings, logical, version));
   if (!datasets.length) {
     warnings.push(
         `model '${
@@ -322,24 +356,35 @@ function modelDoc(
         `at least one and will not load until an entity is present.`);
   }
   const tableKey = isGoogleVersion ? 'entities' : 'datasets';
-  // Under GOOGLE_VERSION, deployments come from `model.deployments` (or the
-  // fallback from a GOOGLE `deploymentTargets` block). Under OSSIE_VERSION,
-  // `deployments:` is not a valid key and is omitted.
-  let deployments: Array<{name: string; target: string; profile?: string}>|
+  // Under GOOGLE_VERSION, deployments come from `model.deployments`, or from a
+  // GOOGLE `deploymentTargets` block when that is empty. Under OSSIE_VERSION,
+  // named deployments and profiles go in a GOOGLE block on the model.
+  const namedDeployments = (model.deployments ?? []).map(d => compact({
+                                                           name: d.name,
+                                                           target: d.target,
+                                                           profile: d.profile
+                                                         }));
+  const deployments = placement.model.deployments === 'native' ?
+      nonEmpty(
+          namedDeployments.length ? namedDeployments :
+                                    deploymentsFromGoogleExtensions(model)) :
       undefined;
-  if (isGoogleVersion) {
-    const explicitDeployments =
-        (model.deployments ?? [])
-            .map(
-                d => compact(
-                    {name: d.name, target: d.target, profile: d.profile}));
-    deployments = nonEmpty(
-        explicitDeployments.length ? explicitDeployments :
-                                     deploymentsFromGoogleExtensions(model));
-  }
+  const blockProfiles = placement.model.profiles === 'block' ?
+      nonEmpty(profileDocuments(model, warnings).map(p => p.doc)) :
+      undefined;
+  const blockDeployments = placement.model.deployments === 'block' ?
+      nonEmpty(namedDeployments) :
+      undefined;
+  const blockPayload = compact({
+    profiles: blockProfiles,
+    deployments: blockDeployments,
+  });
+
   if (!isGoogleVersion) warnGoogleOnlyContent(model, warnings);
   const emittedFields =
-      isGoogleVersion && model.actions?.length ? emitted(model) : null;
+      placement.model.actions === 'native' && model.actions?.length ?
+      emitted(model) :
+      null;
   return compact({
     name: model.name,
     description: model.description,
@@ -348,73 +393,51 @@ function modelDoc(
     [tableKey]: datasets,
     relationships:
         nonEmpty((model.relationships ??
-                  []).map(r => relationshipDoc(r, warnings, isGoogleVersion))),
-    metrics: nonEmpty((model.metrics ??
-                       []).map(m => metricDoc(m, warnings, isGoogleVersion))),
+                  []).map(r => relationshipDoc(r, warnings, version))),
+    metrics: nonEmpty(
+        (model.metrics ?? []).map(m => metricDoc(m, warnings, version))),
     // Hoisted out of the map: `emitted` resolves inheritance, which deep-clones
     // the model, and the answer does not vary by action.
-    actions: isGoogleVersion ?
+    actions: placement.model.actions === 'native' ?
         nonEmpty((model.actions ??
                   []).map(a => actionDoc(a, warnings, emittedFields))) :
         undefined,
-    constraints: isGoogleVersion ?
+    constraints: placement.model.constraints === 'native' ?
         nonEmpty((model.constraints ?? []).map(c => constraintDoc(c))) :
         undefined,
     custom_extensions: customExtensionsDoc(
         model.customExtensions, `model '${model.name}'`, isGoogleVersion,
-        /* isModel= */ true, warnings),
+        /* isModel= */ true, warnings, /* isField= */ false, blockPayload),
   });
 }
 
-// Warns about each IR construct OSSIE_VERSION has no native key for, so a
-// '0.2.0.dev0' write flags dropped content just as a GOOGLE_VERSION write flags
-// a dropped GOOGLE block.
+// Warns about each IR construct OSSIE_VERSION has no representation for,
+// natively or in a GOOGLE block, so a '0.2.0.dev0' write flags dropped
+// content just as a GOOGLE_VERSION write flags a dropped GOOGLE block.
 function warnGoogleOnlyContent(model: SemanticModel, warnings: string[]): void {
+  const placement = FORMAT_VERSION_PLACEMENT[OSSIE_VERSION];
   const drop = (where: string, what: string) => warnings.push(
       `${where}: ${what} has no representation under '${OSSIE_VERSION}' and ` +
       `is not serialized`);
-  // A construct a '0.2.0.dev0' document carries in a GOOGLE block, under the
-  // key the Google flavor uses, which this serializer does not write yet.
-  // TODO(b/573772924): write the payload.
-  const unwritten = (where: string, what: string) => warnings.push(
-      `${where}: ${what} goes in a ${GOOGLE_VENDOR} payload under '${
-          OSSIE_VERSION}', which this serializer does not write yet, and is ` +
-      `not serialized`);
   const where = `model '${model.name}'`;
-  if (model.deployments?.length) unwritten(where, `'deployments'`);
-  if (model.profiles?.length && !keptBlockListsProfiles(model)) {
-    unwritten(where, `'profiles'`);
+  if (placement.model.actions === 'none' && model.actions?.length) {
+    drop(where, `'actions'`);
   }
-  if (model.actions?.length) drop(where, `'actions'`);
-  if (model.constraints?.length) drop(where, `'constraints'`);
+  if (placement.model.constraints === 'none' && model.constraints?.length) {
+    drop(where, `'constraints'`);
+  }
   for (const e of model.entities ?? []) {
-    if (e.extends?.length) unwritten(`entity '${e.name}'`, `'extends'`);
-    if (e.abstract) drop(`entity '${e.name}'`, `'abstract'`);
-  }
-  for (const r of model.relationships ?? []) {
-    if (r.description) unwritten(`relationship '${r.name}'`, `'description'`);
-  }
-  for (const m of model.metrics ?? []) {
-    if (m.authoredEntity) unwritten(`metric '${m.name}'`, `'entity'`);
-  }
-}
-
-// Whether a GOOGLE block the model keeps lists its profiles. A '0.2.0.dev0'
-// write emits a kept block as it is.
-function keptBlockListsProfiles(model: SemanticModel): boolean {
-  return (model.customExtensions ?? []).some(e => {
-    if (e.vendorName !== GOOGLE_VENDOR) return false;
-    try {
-      return JSON.parse(e.data)?.profiles !== undefined;
-    } catch {
-      return false;
+    if (placement.dataset.abstract === 'none' && e.abstract) {
+      drop(`entity '${e.name}'`, `'abstract'`);
     }
-  });
+  }
 }
 
 function datasetDoc(
     entity: Entity, warnings: string[], logical: boolean,
-    isGoogleVersion: boolean): Record<string, any> {
+    version: FormatVersion): Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
   // A concrete (non-abstract) entity with no source cannot be reloaded -- the
   // loader requires `source` unless the dataset is abstract -- so surface the
   // gap at write time instead of emitting a document that fails to load. Under
@@ -429,6 +452,15 @@ function datasetDoc(
             isGoogleVersion ? ' and is not abstract' : ''}; the ` +
         `serialized document will not reload until a source is set`);
   }
+  const parents = nonEmpty(entity.extends);
+  const nativeExtends =
+      placement.dataset.extends === 'native' ? parents : undefined;
+  const nativeAbstract = placement.dataset.abstract === 'native' ?
+      (entity.abstract || undefined) :
+      undefined;
+  const blockPayload = placement.dataset.extends === 'block' ?
+      compact({extends: parents}) :
+      undefined;
   return compact({
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit
@@ -439,10 +471,11 @@ function datasetDoc(
     source: (isAcceptedSource(entity.authoredSource) ? entity.authoredSource :
                                                        entity.dataSource) ||
         undefined,
-    // Supertype entities (entity-level inheritance); GOOGLE_VERSION only.
-    extends: isGoogleVersion ? nonEmpty(entity.extends) : undefined,
+    // Supertype entities (entity-level inheritance); native under
+    // GOOGLE_VERSION, or in the dataset's GOOGLE block under OSSIE_VERSION.
+    extends: nativeExtends,
     // Conceptual (table-less) marker; GOOGLE_VERSION only.
-    abstract: isGoogleVersion ? (entity.abstract || undefined) : undefined,
+    abstract: nativeAbstract,
     primary_key: nonEmpty(entity.keys),
     unique_keys: nonEmpty(entity.uniqueKeys),
     description: entity.description,
@@ -456,7 +489,7 @@ function datasetDoc(
                              isGoogleVersion))),
     custom_extensions: customExtensionsDoc(
         entity.customExtensions, `entity '${entity.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings),
+        /* isModel= */ false, warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -501,11 +534,13 @@ function fieldDoc(
   });
 }
 
-function metricDoc(
-    metric: Metric, warnings: string[],
-    isGoogleVersion: boolean): Record<string, any> {
-  // Emit `entity:` only under GOOGLE_VERSION and only from `authoredEntity`. A
-  // derived `metric.entity` is recomputed by the loader from SQL qualifiers.
+function metricDoc(metric: Metric, warnings: string[], version: FormatVersion):
+    Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
+  // Emit `entity` only from `authoredEntity` (natively under GOOGLE_VERSION or
+  // in the metric's GOOGLE block under OSSIE_VERSION). A derived
+  // `metric.entity` is recomputed by the loader from SQL qualifiers.
   const expression = expressionDoc(
       metric, isGoogleVersion, `metric '${metric.name}'`, warnings);
   if (!expression) {
@@ -513,16 +548,20 @@ function metricDoc(
         `metric '${metric.name}': no expression; the loader requires one per ` +
         `metric and the document will not load until it is set.`);
   }
+  const authoredEntity = metric.authoredEntity || undefined;
+  const blockPayload = placement.metric.entity === 'block' ?
+      compact({entity: authoredEntity}) :
+      undefined;
   return compact({
     name: metric.name,
-    entity: isGoogleVersion ? metric.authoredEntity : undefined,
+    entity: placement.metric.entity === 'native' ? authoredEntity : undefined,
     expression,
     datatype: datatypeDoc(metric.type),
     description: metric.description,
     ai_context: aiContextDoc(metric.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         metric.customExtensions, `metric '${metric.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings),
+        /* isModel= */ false, warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -700,7 +739,9 @@ function executorDoc(ex: Executor): Record<string, any> {
 // is emitted and the junction detail is flagged.
 function relationshipDoc(
     rel: Relationship, warnings: string[],
-    isGoogleVersion: boolean): Record<string, any> {
+    version: FormatVersion): Record<string, any> {
+  const isGoogleVersion = version === GOOGLE_VERSION;
+  const placement = FORMAT_VERSION_PLACEMENT[version];
   if (rel.association) {
     warnings.push(
         `relationship '${
@@ -715,17 +756,22 @@ function relationshipDoc(
             OSSIE_VERSION}' document requires from_columns and to_columns ` +
         `and will not load until they are set.`);
   }
+  const description = rel.description || undefined;
+  const blockPayload = placement.relationship.description === 'block' ?
+      compact({description}) :
+      undefined;
   return compact({
     name: rel.name,
     from: rel.source.entity,
     to: rel.destination.entity,
     from_columns: nonEmpty(rel.source.columns),
     to_columns: nonEmpty(rel.destination.columns),
-    description: isGoogleVersion ? rel.description : undefined,
+    description: placement.relationship.description === 'native' ? description :
+                                                                   undefined,
     ai_context: aiContextDoc(rel.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         rel.customExtensions, `relationship '${rel.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings),
+        /* isModel= */ false, warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -849,31 +895,77 @@ function deploymentsFromGoogleExtensions(model: SemanticModel):
   return unnamedDeployments(targets);
 }
 
-// Serializes `custom_extensions` for one IR element. Under OSSIE_VERSION every
-// extension is written back verbatim (`GOOGLE` blocks included, except on a
-// field, where the loader forbids them). Under GOOGLE_VERSION third-party
-// extensions are written out unchanged without warning, while `GOOGLE` blocks
-// are skipped (silently for the model's `deploymentTargets` block, and with a
-// warning for any other `GOOGLE` block).
+// The serialized payload of a synthesized `GOOGLE` `custom_extensions` block
+// (the serializer counterpart to `GoogleBlockValues` in `loader.ts`, covering
+// the `'block'`-placed constructs of
+// `FORMAT_VERSION_PLACEMENT[OSSIE_VERSION]`).
+interface GoogleBlockPayload {
+  profiles?: ProfileDoc[];
+  deployments?: Array<Record<string, any>>;
+  extends?: string[];
+  description?: string;
+  entity?: string;
+}
+
+// Serializes `custom_extensions` for one IR element. Under OSSIE_VERSION,
+// third-party extensions and a model's kept `deploymentTargets` GOOGLE block
+// (when `deployments` is not written) are emitted, followed by a synthesized
+// GOOGLE block when `blockPayload` carries any keys. Any other raw GOOGLE
+// block on the IR is dropped with a warning so it cannot collide with the
+// synthesized block or write keys the loader rejects. Under GOOGLE_VERSION,
+// third-party extensions are written out unchanged without warning, while
+// `GOOGLE` blocks are skipped (silently for the model's `deploymentTargets`
+// block, and with a warning for any other `GOOGLE` block).
 function customExtensionsDoc(
     exts: CustomExtension[]|undefined, where: string, isGoogleVersion: boolean,
-    isModel: boolean, warnings: string[],
-    isField = false): Array<{vendor_name: string; data: string}>|undefined {
-  if (!exts?.length) return undefined;
+    isModel: boolean, warnings: string[], isField = false,
+    blockPayload?: GoogleBlockPayload):
+    Array<{vendor_name: string; data: string}>|undefined {
+  const payload: GoogleBlockPayload = blockPayload ? {...blockPayload} : {};
+  if (!exts?.length && Object.keys(payload).length === 0) return undefined;
   if (!isGoogleVersion) {
-    const kept = exts.filter(e => !(isField && e.vendorName === GOOGLE_VENDOR));
-    if (kept.length < exts.length) {
-      warnings.push(
-          `${where}: ${
-              exts.length -
-              kept.length} GOOGLE custom_extension(s) have no representation ` +
-          `on a field under '${OSSIE_VERSION}' and are not serialized`);
+    const kept: Array<{vendor_name: string; data: string}> = [];
+    let droppedGoogle = 0;
+    for (const e of exts ?? []) {
+      if (e.vendorName !== GOOGLE_VENDOR) {
+        kept.push({vendor_name: e.vendorName, data: e.data});
+        continue;
+      }
+      // The loader keeps a model's `deploymentTargets` block, since no IR field
+      // holds it, and rejects that block beside `deployments`.
+      if (isModel && isDeploymentTargetsBlock(e)) {
+        if (payload.deployments === undefined) {
+          // Profiles this block lists are the model's, as the loader read them.
+          if ('profiles' in JSON.parse(e.data)) delete payload.profiles;
+          kept.push({vendor_name: GOOGLE_VENDOR, data: e.data});
+        }
+        continue;
+      }
+      droppedGoogle += 1;
     }
-    return nonEmpty(kept.map(e => ({vendor_name: e.vendorName, data: e.data})));
+    if (droppedGoogle > 0) {
+      warnings.push(
+          isField ?
+              `${where}: ${droppedGoogle} GOOGLE custom_extension(s) have no ` +
+                  `representation on a field under '${OSSIE_VERSION}' and ` +
+                  `are not serialized` :
+              `${where}: ${droppedGoogle} GOOGLE custom_extension(s) are not ` +
+                  `serialized under '${OSSIE_VERSION}'; its GOOGLE block is ` +
+                  `written from its own fields`);
+    }
+    if (Object.keys(payload).length > 0) {
+      kept.push({
+        vendor_name: GOOGLE_VENDOR,
+        data: JSON.stringify(payload),
+      });
+    }
+    return nonEmpty(kept);
   }
+  // No GOOGLE_VERSION construct has 'block' placement, so `blockPayload` is
+  // empty here.
   const kept: Array<{vendor_name: string; data: string}> = [];
   let droppedGoogle = 0;
-  for (const ext of exts) {
+  for (const ext of exts ?? []) {
     if (ext.vendorName !== GOOGLE_VENDOR) {
       kept.push({vendor_name: ext.vendorName, data: ext.data});
       continue;
@@ -887,6 +979,24 @@ function customExtensionsDoc(
         `representation under '${GOOGLE_VERSION}' and are not serialized`);
   }
   return nonEmpty(kept);
+}
+
+/**
+ * Returns true if `e.data` is a JSON object with a `'deploymentTargets'`
+ * property.
+ *
+ * Matches the check in `readGoogleBlocks` (`loader.ts`), which keeps any
+ * model-level `GOOGLE` block that declares `'deploymentTargets'` (even when the
+ * list is empty or whitespace-only).
+ */
+function isDeploymentTargetsBlock(e: CustomExtension): boolean {
+  try {
+    const d = JSON.parse(e.data);
+    return !!d && typeof d === 'object' &&
+        Object.hasOwn(d, 'deploymentTargets');
+  } catch {
+    return false;
+  }
 }
 
 function blockTargets(ext: CustomExtension, modelName: string): string[] {

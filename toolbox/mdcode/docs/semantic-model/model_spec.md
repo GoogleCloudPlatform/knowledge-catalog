@@ -53,11 +53,11 @@ runs in both directions:
 
 Under vanilla, `kcmd`'s deployment, binding and inheritance additions ride in a
 `custom_extensions` block an Ossie-only tool ignores (see
-[§6](#6-the-extension-mechanism)), so those never fork the document; `abstract` and
-the `entities` spelling have no vanilla form and exist only under
-`0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile trades that wire
-compatibility for readable native keys; it is `kcmd`'s own surface, converted to or
-from vanilla by choosing the `version`.
+[§6](#6-the-extension-mechanism)), so those never fork the document; `abstract`,
+`actions`, `constraints` and the `entities` spelling have no vanilla form and
+exist only under `0.2.0.dev0/google`. The extended `0.2.0.dev0/google` profile
+trades that wire compatibility for readable native keys; it is `kcmd`'s own
+surface, converted to or from vanilla by choosing the `version`.
 
 **How to read this document.** This is a *delta* against the Ossie spec. It does
 not restate constructs `kcmd` adopts unchanged — for those, the Ossie spec is
@@ -623,12 +623,22 @@ therefore nothing left for the carrier to carry, and a `custom_extensions` block
 **not accepted** under `/google` (also an unknown key). This is the profile `kcmd`'s
 own tools emit: readable, but no longer a vanilla-Ossie document.
 
-**Converting between the two** is the `version` plus a mechanical fold: a vanilla
-`GOOGLE` deployment-target block becomes a native `deployment_target:` key under
-`/google`, and back. Both parse to the identical IR. Vanilla writes inheritance in
-a `GOOGLE` block on the dataset, as `{"extends": ["…"]}`. The `entities` spelling
-and `abstract` have no vanilla form. What survives a push and a pull through each
-surface is in [What push and pull preserve](fidelity.md).
+**Converting between the two** is the `version` plus a mechanical fold between
+vanilla `GOOGLE` blocks and `/google` native keys or profile files:
+
+- **Model `GOOGLE` block:** `{"profiles": […], "deployments": […]}` (plus legacy
+  `deploymentTargets` on read) folds to `<model>.profile.<name>.yaml` sidecar
+  files and a native `deployments:` key under `/google`, and back.
+- **Dataset `GOOGLE` block:** `{"extends": ["…"]}` folds to `extends:` on the
+  entity, and back.
+- **Relationship `GOOGLE` block:** `{"description": "…"}` folds to
+  `description:` on the relationship, and back.
+- **Metric `GOOGLE` block:** `{"entity": "…"}` folds to `entity:` on the metric,
+  and back.
+
+Both flavors describe the same model. The `entities` spelling, `abstract`,
+`actions`, and `constraints` have no vanilla form. What survives a push and a
+pull through each surface is in [What push and pull preserve](fidelity.md).
 
 ## 7. The binding layer
 
@@ -743,8 +753,9 @@ The full merge behavior and worked examples are in
   candidate to upstream into Ossie (e.g. `deployment_target`, `entities`) or a
   Google-store specific that stays `kcmd`'s own. The vanilla version stays a strict
   Ossie superset: its only extension is the `GOOGLE` `custom_extensions` carrier,
-  and constructs with no vanilla form (`abstract`, the `entities` spelling) are
-  simply unavailable there — a model that needs them uses `0.2.0.dev0/google`.
+  and constructs with no vanilla form (`abstract`, `actions`, `constraints`, the
+  `entities` spelling) are simply unavailable there — a model that needs them
+  uses `0.2.0.dev0/google`.
 
 - **Reserved constructs.** `association` (M:N) is reserved. It is under
   consideration for a future version and cannot be authored today, so a document
