@@ -2367,11 +2367,11 @@ export function validateProfileConsistency(
       p.entities.find(e => e.name === entity);
 
   for (const e of entities) {
-    if (e.abstract || e.keys.length || e.uniqueKeys?.length) continue;
+    if (e.abstract || statesKey(e.keys, e.uniqueKeys)) continue;
     const shapes = new Map<string, string[]>();
     for (const p of profiles) {
       const pe = bindingIn(p, e.name);
-      const shape = pe && (pe.primaryKey?.length || pe.uniqueKeys?.length) ?
+      const shape = pe && statesKey(pe.primaryKey, pe.uniqueKeys) ?
           `primary key of ${pe.primaryKey?.length ?? 0}, unique keys ${
               shapeOf(pe.uniqueKeys ?? [])}` :
           'no keys';

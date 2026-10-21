@@ -1508,11 +1508,10 @@ describe('validateProfileConsistency', () => {
   test('with no key in the model file, profiles must agree on one shape or none', () => {
     const m = irModel();
     m.entities[1].keys = [];
-    const disagree = validateProfileConsistency(m, [
-      p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
-      p('b'),
-    ]);
-    expect(disagree.join('\n')).toContain("entity 'Order' has no key in the model file");
+    const disagree =
+        [p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}), p('b')];
+    const NO_KEY = "entity 'Order' has no key in the model file";
+    expect(validateProfileConsistency(m, disagree).join('\n')).toContain(NO_KEY);
     expect(validateProfileConsistency(m, [
       p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}),
       p('b', {entities: [{name: 'Order', primaryKey: ['oid']}]}),
@@ -1521,6 +1520,12 @@ describe('validateProfileConsistency', () => {
       p('a', {entities: [{name: 'Order', uniqueKeys: [['id'], ['tenant', 'oid']]}]}),
       p('b', {entities: [{name: 'Order', uniqueKeys: [['tenant', 'oid'], ['id']]}]}),
     ])).toEqual([]);
+    // An empty unique key counts as none, in a profile and in the model file.
+    expect(validateProfileConsistency(m, [
+      p('a', {entities: [{name: 'Order', uniqueKeys: [[]]}]}), p('b'),
+    ])).toEqual([]);
+    m.entities[1].uniqueKeys = [[]];
+    expect(validateProfileConsistency(m, disagree).join('\n')).toContain(NO_KEY);
   });
 
   test('cardinality may not vary by profile', () => {
