@@ -92,9 +92,12 @@ describe('catalogToOkf', () => {
     expect(fs.existsSync(path.join(dir, 'catalog.yaml'))).toBe(true);
     expect(read('tables/trips.md')).toBe(
         '---\n' +
-        'type: Knowledge Catalog Entry\n' +
+        'type: generic\n' +
         'title: trips\n' +
         'resource: bq://tables/trips\n' +
+        'x-kcmd:\n' +
+        '  v: 1\n' +
+        '  entryType: projects/dataplex-types/locations/global/entryTypes/generic\n' +
         '---\n' +
         '# Trips\n\nProse.\n');
   });
@@ -110,7 +113,15 @@ describe('catalogToOkf', () => {
     // conformant and must not be skipped.
     stubCatalog([entry('a')]);
     await pull({format: 'okf'});
-    expect(read('a.md')).toContain('type: Knowledge Catalog Entry');
+    expect(read('a.md')).toContain('type: generic');
+  });
+
+  test('type comes from the aspect naming the entry type', async () => {
+    stubCatalog([entry('a', {
+      aspects: {'dataplex-types.global.generic': {data: {type: 'context-overlay'}}},
+    } as Partial<Entry>)]);
+    await pull({format: 'okf'});
+    expect(read('a.md')).toContain('type: context-overlay');
   });
 
   test('description and resource are omitted when absent', async () => {
@@ -148,9 +159,7 @@ describe('catalogToOkf', () => {
     expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(false);
   });
 
-  test('aspects other than overview are dropped for now', async () => {
-    // Documented at the top of catalog_to_okf.ts; this pins the current
-    // behaviour so the change that adds the residue stash has to update it.
+  test('aspects other than overview ride in the residue', async () => {
     stubCatalog([entry('a', {
       aspects: {
         [OVERVIEW]: {data: {content: 'body'}},
@@ -160,7 +169,10 @@ describe('catalogToOkf', () => {
 
     await pull({format: 'okf'});
 
-    expect(read('a.md')).not.toContain('schema');
-    expect(read('a.md')).not.toContain('fields');
+    const text = read('a.md');
+    expect(text).toContain('dataplex-types.global.schema');
+    expect(text).toContain('fields');
+    // The overview is the body, so it must not also sit in the residue.
+    expect(text.split('---')[1]).not.toContain('content: body');
   });
 });

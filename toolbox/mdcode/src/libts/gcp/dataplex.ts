@@ -149,13 +149,19 @@ export class CatalogClient extends api.ApiClient {
   }
 
   // With `aspects`, `paths` keeps only the aspects at those paths. The path ''
-  // is the entry itself, and `Schema.<field>` is a field.
+  // is the entry itself, and `Schema.<field>` is a field. `allAspects` reads
+  // every aspect instead.
   async lookupEntry(project: string, location: string, name: string,
                     aspects?: string[],
-                    paths?: string[]): Promise<api.ApiResult<Entry>> {
+                    paths?: string[],
+                    allAspects = false): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
     const params: Record<string, any> = { entry: name, view: 'BASIC' };
-    if (aspects && aspects.length) {
+    // ALL needs no aspect-type list, so it reaches aspects whose type the
+    // caller cannot read -- CUSTOM would require naming them.
+    if (allAspects) {
+      params.view = 'ALL';
+    } else if (aspects && aspects.length) {
       params.view = 'CUSTOM';
       params.aspectTypes = aspects;
       params.paths = paths;

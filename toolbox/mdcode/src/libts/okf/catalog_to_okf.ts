@@ -7,7 +7,8 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
-import {Concept, conceptToFileContent} from './concept';
+import {assertResidueOnly, buildResidue} from './catalog_residue';
+import {Concept, conceptToFileContent, RESIDUE_KEY} from './concept';
 
 /** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
 const BUNDLE_DIR = 'bundle';
@@ -54,7 +55,6 @@ async function* fetchEntries(
   snapshot: kcmd.CatalogSnapshot,
 ): AsyncGenerator<gcp.Entry> {
   const catalog = new dataplex.CatalogClient(ctx);
-  const aspectTypes = [...snapshot.aspectTypes.keys()];
   for await (const stub of snapshot.manifest.source.entries(ctx)) {
     // `name` is projects/<p>/locations/<l>/entryGroups/<eg>/entries/<id>.
     const parts = stub.name.split('/');
@@ -62,7 +62,9 @@ async function* fetchEntries(
       parts[1],
       parts[3],
       stub.name,
-      aspectTypes,
+      undefined,
+      undefined,
+      true,
     );
 
     // 403 covers both "no such entry" and "no permission"; falling back to the
@@ -76,13 +78,12 @@ async function* fetchEntries(
   }
 }
 
-function entryToConcept(entry: gcp.Entry, snapshot: kcmd.CatalogSnapshot): Concept {
+function entryToConcept(
+  entry: gcp.Entry,
+  snapshot: kcmd.CatalogSnapshot,
+): Concept {
   const source = entry.entrySource ?? {};
-  const frontmatter: Record<string, unknown> = {
-    // OKF `type` is a freeform label, not the Dataplex resource ref; the real
-    // entry type waits for the residue stash (SPEC §4.1).
-    type: 'Knowledge Catalog Entry',
-  };
+  const frontmatter: Record<string, unknown> = {type: conceptType(entry)};
   if (source.displayName) frontmatter['title'] = source.displayName;
   if (source.description) frontmatter['description'] = source.description;
   if (source.resource) frontmatter['resource'] = source.resource;
@@ -93,9 +94,23 @@ function entryToConcept(entry: gcp.Entry, snapshot: kcmd.CatalogSnapshot): Conce
       ? (overview.data['content'] as string)
       : '';
 
+  const residue = buildResidue(entry, OVERVIEW_ASPECT_KEY);
+  if (residue) frontmatter[RESIDUE_KEY] = residue;
+  assertResidueOnly(frontmatter);
+
   return {
     id: snapshot.manifest.source.localName(entry),
     frontmatter,
     body,
   };
+}
+
+function conceptType(entry: gcp.Entry): string {
+  const short = entry.entryType?.split('/').pop();
+  if (short) {
+    const facet = entry.aspects?.[`dataplex-types.global.${short}`];
+    const label = facet?.data?.['type'];
+    if (typeof label === 'string' && label) return label;
+  }
+  return short || 'concept';
 }
