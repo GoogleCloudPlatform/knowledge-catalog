@@ -7,13 +7,11 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
-import {assertResidueOnly, buildResidue, typeFacetKey} from './catalog_residue';
+import {assertResidueOnly, buildResidue, OVERVIEW_ASPECT_KEY, typeFacetKey} from './catalog_residue';
 import {Concept, conceptToFileContent, RESIDUE_KEY} from './concept';
 
 /** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
 const BUNDLE_DIR = 'bundle';
-
-const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 
 /** Options forwarded from `kcmd pull`. */
 export interface CatalogToOkfOptions {

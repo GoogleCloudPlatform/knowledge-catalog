@@ -5,6 +5,8 @@ import {RESIDUE_KEY} from './concept';
 
 export const RESIDUE_VERSION = 1;
 
+export const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
+
 export class ResidueError extends Error {}
 
 const NATIVE_KEYS: readonly string[] = [
@@ -56,6 +58,12 @@ export function buildResidue(
     carried['labels'] = source.labels;
   }
   if (Object.keys(carried).length) residue['entrySource'] = carried;
+
+  // An OKF file always ends in a newline, so a body that does not must say so.
+  const content = entry.aspects?.[overviewAspectKey]?.data?.['content'];
+  if (typeof content === 'string' && content && !content.endsWith('\n')) {
+    residue['trailingNewline'] = false;
+  }
 
   const facetKey = typeFacetKey(entry.entryType);
   const aspects: Record<string, unknown> = {};

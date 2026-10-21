@@ -65,6 +65,22 @@ describe('buildResidue', () => {
     expect(JSON.stringify(r)).not.toContain('2026-01-01');
   });
 
+  test('records a body that does not end in a newline', () => {
+    const r = buildResidue(
+      entry({aspects: {[OVERVIEW]: {data: {content: 'no newline'}}}} as Partial<Entry>),
+      OVERVIEW,
+    )!;
+    expect(r['trailingNewline']).toBe(false);
+  });
+
+  test('says nothing about a body that already ends in a newline', () => {
+    const r = buildResidue(
+      entry({aspects: {[OVERVIEW]: {data: {content: 'ends\n'}}}} as Partial<Entry>),
+      OVERVIEW,
+    )!;
+    expect(r['trailingNewline']).toBeUndefined();
+  });
+
   test('an entry with nothing to carry yields no block', () => {
     const bare = {name: 'n', entryType: ''} as Entry;
     expect(buildResidue(bare, OVERVIEW)).toBeUndefined();
