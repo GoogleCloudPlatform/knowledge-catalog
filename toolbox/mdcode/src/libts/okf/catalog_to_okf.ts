@@ -4,11 +4,10 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import * as yaml from 'yaml';
-
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
+import {Concept, conceptToFileContent} from './concept';
 
 /** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
 const BUNDLE_DIR = 'bundle';
@@ -19,14 +18,6 @@ const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 export interface CatalogToOkfOptions {
   /** Report what would be written; touch no files. */
   dryRun?: boolean;
-}
-
-/** One concept file, ready to write. */
-interface Concept {
-  /** Path relative to the bundle root, without `.md`. */
-  id: string;
-  frontmatter: Record<string, unknown>;
-  body: string;
 }
 
 /** Materializes the scope's context set as an OKF bundle. Returns an exit code. */
@@ -107,13 +98,4 @@ function entryToConcept(entry: gcp.Entry, snapshot: kcmd.CatalogSnapshot): Conce
     frontmatter,
     body,
   };
-}
-
-function conceptToFileContent(concept: Concept): string {
-  const block = yaml.stringify(concept.frontmatter).trimEnd();
-  const body =
-    concept.body.endsWith('\n') || concept.body === ''
-      ? concept.body
-      : `${concept.body}\n`;
-  return `---\n${block}\n---\n${body}`;
 }
