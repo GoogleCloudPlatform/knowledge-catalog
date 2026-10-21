@@ -2835,9 +2835,8 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
   });
 
   // An AlloyDB database runs a metric's ALLOYDB text, or its ANSI_SQL one,
-  // and holds no graph. A BigQuery deployment counts the texts a graph push's
-  // pruning reads: the one the sources' dialect selects, and the one the
-  // graph holds.
+  // and holds no graph. A BigQuery deployment counts the text a graph push's
+  // pruning reads, the one the sources' dialect selects.
   test('an AlloyDB deployment checks only the fields that a metric\'s ALLOYDB or ANSI_SQL text reads', () => {
     // `metric` is the expression of metric `m`, and `label` that of field
     // `label`. With `shop`, a BigQuery table joins the bindings, so they span
@@ -2866,17 +2865,17 @@ ${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id]
     const [NOTE, C_ID] = ['COUNT(customer.note)', 'COUNT(customer.c_id)'];
     const noteInBigQuery = both(NOTE, C_ID);
     const bigQueryOnly = [READS('bigquery', 'm', 'customer.note')];
-    expect(check(alloyDb(noteInBigQuery))).toEqual(bigQueryOnly);
+    expect(check(alloyDb(noteInBigQuery))).toEqual([]);
     expect(check(alloyDb(noteInBigQuery, {shop: true}))).toEqual(bigQueryOnly);
     expect(check(alloyDb(texts(['BIGQUERY', NOTE], ['ANSI_SQL', C_ID]))))
-        .toEqual(bigQueryOnly);
+        .toEqual([]);
     expect(check(alloyDb(both(C_ID, NOTE))))
         .toEqual([READS(['alloydb', 'bigquery'], 'm', 'customer.note')]);
     // A field the metric reads is read the same way. A field reads a sibling
     // field as `entity.field`.
     const viaLabel = '"COUNT(customer.label)"';
     expect(check(alloyDb(viaLabel, {label: both('customer.note', 'c_id')})))
-        .toEqual([READS('bigquery', 'm', 'customer.label', false)]);
+        .toEqual([]);
     expect(check(alloyDb(viaLabel, {label: both('c_id', 'customer.note')})))
         .toEqual(
             [READS(['alloydb', 'bigquery'], 'm', 'customer.label', false)]);
