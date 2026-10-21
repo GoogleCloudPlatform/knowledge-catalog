@@ -534,10 +534,10 @@ NODE TABLES (
     }
   });
 
-  // A field written only for the other engine is left out. A table or label
-  // that this leaves with nothing to list gets NO PROPERTIES, since a missing
-  // clause would expose every column of its table.
-  test('NO PROPERTIES on an abstract label, a concrete parent\'s label and a table outside any hierarchy', () => {
+  // A field written only for the other engine is left out. A table, label or
+  // edge that this leaves with nothing to list gets NO PROPERTIES, since a
+  // missing clause would expose every column of its table.
+  test('NO PROPERTIES on an abstract label, a concrete parent\'s label, a table outside any hierarchy and an association edge', () => {
     for (const [engine, generate, q] of ENGINES) {
       const otherOnly = (column: string) =>
           texts({[engine === 'Spanner' ? 'BIGQUERY' : 'SPANNER']: column});
@@ -553,7 +553,15 @@ NODE TABLES (
                {extends: ['Person']}),
         entity('Orders', 'Orders', ['id'],
                {id: otherOnly('order_id'), status: otherOnly('order_status')}),
-      ])).ddl).toBe(`\
+      ], {relationships: [{
+        name: 'supplied_by',
+        source: {entity: 'Customer', columns: ['id']},
+        destination: {entity: 'Supplier', columns: ['id']},
+        association: {dataSource: 'CustomerSuppliers', keys: ['link_id'],
+                      sourceColumns: ['customer_id'],
+                      destinationColumns: ['supplier_id'],
+                      fields: [{name: 'grade', ...otherOnly('grade')}]},
+      }]})).ddl).toBe(`\
 CREATE OR REPLACE PROPERTY GRAPH ${q}parties${q}
 NODE TABLES (
   ${q}Customer${q} AS Customer
@@ -587,6 +595,13 @@ NODE TABLES (
     NO PROPERTIES,
   ${q}Orders${q} AS Orders
     KEY(order_id)
+    NO PROPERTIES
+)
+EDGE TABLES (
+  ${q}CustomerSuppliers${q} AS supplied_by
+    KEY(link_id)
+    SOURCE KEY(customer_id) REFERENCES Customer(id)
+    DESTINATION KEY(supplier_id) REFERENCES Supplier(id)
     NO PROPERTIES
 );
 `);

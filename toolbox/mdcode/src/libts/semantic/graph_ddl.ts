@@ -691,7 +691,9 @@ function renderAssociationEdge(
             return false;
           })
           .map(f => renderFieldProperty(f, rel.name, engine));
-  if (properties.length) lines.push(propertiesBlock(properties));
+  lines.push(...propertiesClause(
+      properties,
+      (assoc.fields ?? []).some(f => hasOnlyOtherEnginesSql(f, engine))));
 
   return lines.join('\n');
 }
