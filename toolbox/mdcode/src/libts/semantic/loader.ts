@@ -791,9 +791,11 @@ const customExtensionsKey = {custom_extensions: z.array(customExtensionSchema).o
 // silently dropped. Two axes shape it:
 //   - `extended` selects the version's extension surface: under the extended
 //     profile the native keys (`extends`, `abstract`, `deployments`,
-//     metric `entity`) are accepted; under vanilla Ossie they are not.
-//     (`entities` is folded to `datasets` before validation, so it is never a
-//     schema key -- see normalizeDocumentSugars.)
+//     metric `entity`) are accepted; under vanilla Ossie they are not
+//     (`extends`, `abstract`, and metric `entity` are declared on their schemas
+//     only so refinements can reject them with actionable messages instead of a
+//     bare "unrecognized key", while `entities`, `deployments`, and `profiles`
+//     are handled before validation in normalizeDocumentSugars).
 //   - `bindingOptional` relaxes the source rule: when false (any push with a
 //     graph leg) each concrete dataset must name a `source`; when true (a
 //     Knowledge-Catalog-only push) it is optional, so a purely logical model
@@ -822,14 +824,6 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ...customExtensionsKey,
        }).strict();
 
-  const datasetExtensions = {
-    ...(placement.dataset.extends === 'native' ?
-            {extends: z.array(z.string()).optional()} :
-            {}),
-    ...(placement.dataset.abstract === 'native' ?
-            {abstract: z.boolean().optional()} :
-            {}),
-  };
   const dataset =
       z.object({
          name: z.string(),
@@ -840,13 +834,45 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          ai_context: aiContext.optional(),
          fields: z.array(field).optional(),
          ...customExtensionsKey,
-         // Inheritance is a native extension: only the extended profile accepts
-         // it.
-         ...datasetExtensions,
+         // Inheritance (`extends`, `abstract`) is a native extension in the
+         // extended profile only. Vanilla still declares both keys so the
+         // refinement below can reject each with a message that names the
+         // dataset and the fix, not a bare "unrecognized key".
+         extends: placement.dataset.extends === 'native' ?
+             z.array(z.string()).optional() :
+             z.unknown().optional(),
+         abstract: placement.dataset.abstract === 'native' ?
+             z.boolean().optional() :
+             z.unknown().optional(),
        })
           .strict()
           .superRefine((ds: any, ctx) => {
-            const abstract = ds.abstract === true;
+            if (placement.dataset.extends !== 'native' &&
+                ds.extends !== undefined) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['extends'],
+                message: `dataset '${ds.name}': 'extends' is a ` +
+                    `'${GOOGLE_VERSION}' extension. Set 'extends' in a ` +
+                    `${GOOGLE_VENDOR} custom_extensions block on the ` +
+                    `dataset, or set the document version to ` +
+                    `'${GOOGLE_VERSION}'.`,
+              });
+            }
+            if (placement.dataset.abstract !== 'native' &&
+                ds.abstract !== undefined) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['abstract'],
+                message: `dataset '${ds.name}': 'abstract' is a ` +
+                    `'${GOOGLE_VERSION}' extension. An abstract dataset has ` +
+                    `no table, and every '${OSSIE_VERSION}' dataset needs a ` +
+                    `'source'. A model that needs an abstract entity uses ` +
+                    `'${GOOGLE_VERSION}'.`,
+              });
+            }
+            const abstract =
+                placement.dataset.abstract === 'native' && ds.abstract === true;
             // In the Google flavor, a concrete (non-abstract) dataset must name
             // its backing table; only an abstract one may omit `source`. Relaxed
             // under bindingOptional. Vanilla has no `abstract` and requires
@@ -1147,7 +1173,7 @@ const GOOGLE_VENDOR = 'GOOGLE';
 // Rewrites the author-friendly sugar forms into the canonical wire shape the
 // schema validates, and rejects deprecated or flavor-mismatched model keys up
 // front with actionable messages: the removed `deployment_target:` key,
-// inline `profiles:` in the extended profile, and `deployments:` or
+// inline `profiles:` in either flavor, and `deployments:` or
 // `entities:` in vanilla. Under the extended profile, `entities:` is rewritten
 // to `datasets:` and `deployments:` is left in place here and folded into a
 // GOOGLE `custom_extensions` block on the IR after validation (see
@@ -1221,13 +1247,24 @@ function normalizeModelSugars(
   }
 
   // In the Google flavor, binding profiles live in sidecar files
-  // (`<model>.profile.<name>.yaml`), never inline under `profiles:`.
-  if (placement.model.profiles === 'file' && m.profiles !== undefined) {
+  // (`<model>.profile.<name>.yaml`); in vanilla they live in a GOOGLE
+  // custom_extensions block on the model. Neither flavor takes a native
+  // `profiles:` key on the model.
+  if (m.profiles !== undefined) {
     const modelFile = typeof m.name === 'string' ? m.name : '<model>';
+    if (placement.model.profiles === 'file') {
+      throw new SemanticModelError(
+          `Semantic model load error: ${label}: inline 'profiles' are not ` +
+          `supported in a '${GOOGLE_VERSION}' document; write each binding ` +
+          `profile in its own sidecar file ` +
+          `'${modelFile}.profile.<name>.yaml'.`);
+    }
     throw new SemanticModelError(
-        `Semantic model load error: ${label}: inline 'profiles' are not ` +
-        `supported in a '${GOOGLE_VERSION}' document; write each binding ` +
-        `profile in its own sidecar file '${modelFile}.profile.<name>.yaml'.`);
+        `Semantic model load error: ${label}: 'profiles' is not in the ` +
+        `open format ('${OSSIE_VERSION}'); list 'profiles' in a ` +
+        `${GOOGLE_VENDOR} custom_extensions block on the model, or set ` +
+        `version: '${GOOGLE_VERSION}' and write each binding profile in its ` +
+        `own sidecar file '${modelFile}.profile.<name>.yaml'.`);
   }
 
   // `entities` is a native alias for `datasets`, accepted only under the

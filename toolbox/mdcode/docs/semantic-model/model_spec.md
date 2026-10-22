@@ -612,8 +612,10 @@ a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
 model's deployments ride here as a `GOOGLE` block carrying
 `{"deployments": [{"name": "…", "target": "…"}]}`. The older form,
 `{"deploymentTargets": ["…"]}`, is still read. The native keys (`entities`,
-`deployment_target`, `extends`, `abstract`) are **not accepted** under vanilla —
-each is an unknown key and rejected ([§4.1](#41-narrowings-stricter-than-ossie)).
+`deployments`, `deployment_target`, `profiles`, `extends`, `abstract`, metric
+`entity`, relationship `description`) are **not accepted** under vanilla — each
+is rejected with a message naming the `GOOGLE` `custom_extensions` block or
+`0.2.0.dev0/google` ([§4.1](#41-narrowings-stricter-than-ossie)).
 
 **Extended `0.2.0.dev0/google` — native keys.** Under the extended profile the same
 information is written as first-class keys — `entities`, `deployment_target`,
