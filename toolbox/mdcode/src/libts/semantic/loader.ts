@@ -3573,19 +3573,3 @@ export function loadSemanticModels(
   }
   return {models, warnings};
 }
-
-// Why a loaded model cannot be used yet because one of its deployments names a
-// binding profile, or undefined when none does.
-export function deploymentProfileError(models: LoadedModel[]): string|undefined {
-  for (const {document, model} of models) {
-    for (const d of model.deployments ?? []) {
-      if (d.profile !== undefined) {
-        return `[${document}] model '${model.name}': deployment '${
-            d.name}' names profile '${d.profile}'; remove 'profile' from ` +
-            `the deployment entry so it uses the model file's own bindings.`;
-      }
-    }
-  }
-  return undefined;
-}
-

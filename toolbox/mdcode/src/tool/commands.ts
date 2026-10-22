@@ -20,7 +20,7 @@ import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {deploymentProfileError, isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
+import {isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfile, applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
@@ -29,7 +29,7 @@ import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {inlineBindingWarnings, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -630,6 +630,16 @@ const PUSH_REPORT: PrepareReport = {
   error: m => console.error(`Error: ${m}`),
 };
 
+// An error of a two-phase push's checks, and what it belongs to: the whole
+// push when `document` is unset, the model in `document` when `profile` is
+// unset, and that profile of the model otherwise. A deployment's errors belong
+// to the profile it uses, which is 'default' when it names none.
+interface LocalCheckError {
+  error: string;
+  document?: string;
+  profile?: string;
+}
+
 // The errors the named profiles of each model in `docs` give: each profile
 // file, and each profile a vanilla model carries in its GOOGLE block, checked
 // on its own for completeness. An error about a profile file names that file,
@@ -650,8 +660,9 @@ function namedProfileErrors(
     pushChecks: (doc: ProfiledDoc, profile: string) =>
         {applied?: boolean; sqlWarned?: boolean},
     profileDocs: ProfileDocs, declared: DeclaredProfiles, warnings: string[],
-    transpile: boolean, pushedProfile: string, load: CloudSqlLoad): string[] {
-  const errors: string[] = [];
+    transpile: boolean, pushedProfile: string,
+    load: CloudSqlLoad): LocalCheckError[] {
+  const errors: LocalCheckError[] = [];
   for (const d of docs) {
     // Each named profile, with the label its errors carry and a function that
     // reads it. declared() lists the profile files too, so only its block
@@ -677,7 +688,7 @@ function namedProfileErrors(
     } catch (err: any) {
       // A profile file that breaks one of the layout's file rules, or block
       // profiles a load rejects.
-      errors.push(`${err.message || err}`);
+      errors.push({error: `${err.message || err}`, document: d.name});
       continue;
     }
     // The model file as loaded on its own, which is the model push checks
@@ -697,7 +708,7 @@ function namedProfileErrors(
             if (!(err instanceof SemanticModelError)) throw err;
             error = `[${p.label}] ${err.message}`;
           }
-          errors.push(error);
+          errors.push({error, document: d.name, profile: p.name});
         }
       }
       continue;
@@ -719,12 +730,14 @@ function namedProfileErrors(
     const specs: ProfileSpec[] = [];
     for (const p of named) {
       const at = (m: string) => `[${p.label}] ${m}`;
+      const tag = (m: string) =>
+          ({error: at(m), document: d.name, profile: p.name});
       let spec: ProfileSpec;
       try {
         spec = p.read();
       } catch (err) {
         if (!(err instanceof SemanticModelError)) throw err;
-        errors.push(at(err.message));
+        errors.push(tag(err.message));
         continue;
       }
       specs.push(spec);
@@ -735,11 +748,11 @@ function namedProfileErrors(
             ownSqlOnly,
             transpiled: transpile,
             ...load,
-          }).map(at));
+          }).map(tag));
       warnings.push(...profileWarnings.map(at));
     }
     errors.push(...validateProfileConsistency(logical, specs, pushedProfile)
-                    .map(e => `[${d.name}] ${e}`));
+                    .map(e => ({error: `[${d.name}] ${e}`, document: d.name})));
   }
   return errors;
 }
@@ -796,7 +809,7 @@ function reboundFields(base: SemanticModel, pushed: SemanticModel): string[] {
 // one IR across the push legs. `prune` drops each unbound field, and whatever
 // depends on it, so a deployed graph presents only what its binding answers; a
 // catalog-only push leaves it off to publish the whole logical model. Once
-// the documents load and no deployment names a profile, every named profile
+// the documents load, every named profile
 // the models declare is checked too: the profile files `profileDocs` reads,
 // and the GOOGLE block profiles `declared` adds. So is each deployment. Runs
 // local checks only. Returns the models and the target partition the graph
@@ -857,11 +870,6 @@ async function prepareModels(
           {document: d.name,
            model: prune ? d.applied : withoutExclusions(d.applied)} :
           loadedByDoc.get(d.name)!);
-  const depProfileErr = deploymentProfileError(models);
-  if (depProfileErr) {
-    report.error(depProfileErr);
-    return null;
-  }
   // The fields and metrics a legacy wrapper excludes, by document.
   const excludedByDoc =
       new Map(docs.map(d => [d.name, d.excluded ?? []] as const));
@@ -877,7 +885,8 @@ async function prepareModels(
         docs, checkedByDoc,
         (d, name) => ({applied: !!d.applied && name === profileName}),
         opts.profileDocs, opts.declared, unprunedWarnings, !!opts.transpile,
-        profileName, opts.load),
+        profileName, opts.load)
+        .map(e => e.error),
     ...modelFileBindingErrors(
         docs, checkedByDoc, opts.declared, unprunedWarnings, !!opts.transpile),
   ];
@@ -1074,7 +1083,6 @@ async function generateOffline(
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
-  const {named, negated} = deploymentFlags(options.deployment);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout
@@ -1086,7 +1094,7 @@ export async function push(options: PushOptions): Promise<number> {
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
-    if (named || negated) {
+    if (takesTwoPhasePath(options, layout, layoutDocs)) {
       return pushInTwoPhases(options, {
         ctx,
         layout,
@@ -1534,6 +1542,7 @@ export async function push(options: PushOptions): Promise<number> {
   // These flags only take effect on a semantic-model push; on a regular
   // catalog snapshot they are inert. Warn rather than silently ignore them, so
   // a user who expected (say) --transpile to run isn't misled by a clean exit.
+  const {named, negated} = deploymentFlags(options.deployment);
   const semanticOnlyFlags: Array<[boolean, string]> = [
     [typeof options.profile === 'string', '--profile'],
     [!!options.allProfiles, '--all-profiles'],
@@ -1573,6 +1582,34 @@ export async function push(options: PushOptions): Promise<number> {
 }
 
 
+// Whether a model document's text gives a model a non-empty `deployments`
+// list, directly or in a GOOGLE block's data. YAML or JSON that does not
+// parse lists none.
+function listsDeployments(text: string): boolean {
+  let doc: any;
+  try {
+    doc = yaml.parse(text, YAML_OPTIONS);
+  } catch {
+    return false;
+  }
+  const nonEmpty = (v: unknown) => Array.isArray(v) && v.length > 0;
+  const models = Array.isArray(doc?.semantic_model) ? doc.semantic_model : [];
+  return models.some((m: any) => {
+    if (nonEmpty(m?.deployments)) return true;
+    const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
+    return exts.some((ext: any) => {
+      if (!isGoogleVendor(ext?.vendor_name) || typeof ext?.data !== 'string') {
+        return false;
+      }
+      try {
+        return nonEmpty(JSON.parse(ext.data)?.deployments);
+      } catch {
+        return false;
+      }
+    });
+  });
+}
+
 // Which of `--deployment` and `--no-deployment` the push options carry.
 function deploymentFlags(deployment: PushOptions['deployment']):
     {named: boolean; negated: boolean} {
@@ -1600,6 +1637,25 @@ export function typedDeployment(args: string[]): PushOptions['deployment'] {
     }
   }
   return deploymentFlags(typed).named ? typed : !typed.length;
+}
+
+// Whether push checks everything before it writes anything (see
+// pushInTwoPhases). cac gives an absent `--profile` the value true, so only
+// another defined value counts as passing `--profile` or `--no-profile`.
+function takesTwoPhasePath(
+    options: PushOptions, layout: SemanticModelLayout,
+    docs: {name: string; text: string}[]): boolean {
+  const {named, negated} = deploymentFlags(options.deployment);
+  if (named || negated) return true;
+  if (docs.some(d => listsDeployments(d.text))) return true;
+  if ((options.profile !== undefined && options.profile !== true) ||
+      options.allProfiles) {
+    return false;
+  }
+  // localProfileFiles gives a profile name only to a sibling profile file.
+  return docs.some(
+      d => layout.localProfileFiles(d.name).some(
+          f => f.profileName !== undefined));
 }
 
 // The error for a flag the two-phase path does not take, or undefined.
@@ -1660,7 +1716,7 @@ async function pushInTwoPhases(
     options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>): Promise<number> {
   const {ctx, source} = scope;
   const fail = (...errors: string[]) => {
-    for (const e of errors) console.error(`Error: ${e}`);
+    for (const e of new Set(errors)) console.error(`Error: ${e}`);
     return 1;
   };
   const flagError = twoPhaseFlagError(options);
@@ -1668,7 +1724,7 @@ async function pushInTwoPhases(
   const load = await cloudSqlLoad(ctx, scope.docs, scope.profileDocs);
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
-  if (!checked) return 1;
+  if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
   const {plans, kcModels, fileCopies, notes, overviews} = checked;
   if (fileCopies.length) {
     const problem = await kc.checkCustomTypes(
@@ -1741,25 +1797,27 @@ async function pushInTwoPhases(
 // The local checks of a two-phase push, which call no service: it stops at
 // the first check that fails, and returns each selected deployment's plan, the
 // models the catalog receives, the file copies it stores, the overview sidecars
-// it writes and what pruning leaves out, or undefined after printing why push
-// stops.
+// it writes and what pruning leaves out, or the errors that stop it. With
+// `quiet`, for the `kcmd profiles` report, it prints no warning.
 async function checkBeforeWrites(
-    options: PushOptions, scope: TwoPhaseScope): Promise<{
+    options: PushOptions, scope: TwoPhaseScope, quiet = false): Promise<{
   plans: DeploymentPlan[]; kcModels: LoadedModel[]; fileCopies: FileCopy[];
   notes: string[];
   overviews?: Map<string, OverviewSidecar>;
-}|undefined> {
+}|{errors: LocalCheckError[]}> {
   const {ctx, layout, source, docs, profileDocs, load} = scope;
-  const fail = (...errors: string[]) => {
-    for (const error of new Set(errors)) console.error(`Error: ${error}`);
-    return undefined;
-  };
+  const stop = (errors: LocalCheckError[]) => ({errors});
+  const fail = (...errors: string[]) => stop(errors.map(error => ({error})));
+  const ofModel = (document: string, ...errors: string[]) =>
+      errors.map(error => ({error, document}));
+  const ofProfile = (document: string, profile: string, ...errors: string[]) =>
+      errors.map(error => ({error, document, profile}));
   // Prints each warning once, and none of the loader's 'needs
   // transpilation' warnings under --transpile. A deployment's warning is
   // skipped when the catalog's model printed it as `asCatalog`.
   const printed = new Set<string>();
   const warn = (w: string, asCatalog = w) => {
-    if (options.transpile && w.includes('needs transpilation')) return;
+    if (quiet || options.transpile && w.includes('needs transpilation')) return;
     if (printed.has(w) || printed.has(asCatalog)) return;
     printed.add(w);
     console.warn(`Warning: ${w}`);
@@ -1792,7 +1850,7 @@ async function checkBeforeWrites(
   const models: LoadedModel[] = [];
   for (const base of loaded.models) {
     const model = withProfileFiles(base, profileDocs);
-    if ('error' in model) return fail(model.error);
+    if ('errors' in model) return stop(model.errors);
     models.push(model);
   }
   // Every profile each model declares, legacy wrappers included.
@@ -1821,17 +1879,20 @@ async function checkBeforeWrites(
   const selectedByDoc = new Map<string, ResolvedDeployment[]>();
   for (const {document, model} of models) {
     const every = resolveModelDeployments(model);
-    if ('error' in every) return fail(every.error);
+    if ('error' in every) return stop(ofModel(document, every.error));
     const resolved = noDeployment ? {deployments: []} :
                                     resolveModelDeployments(model, selected);
-    if ('error' in resolved) return fail(resolved.error);
+    if ('error' in resolved) return stop(ofModel(document, resolved.error));
     const undeclared = undeclaredProfileError(
         document, model, declaredNames(document));
-    if (undeclared) return fail(undeclared);
+    if (undeclared) return stop(ofModel(document, undeclared));
     selectedByDoc.set(document, resolved.deployments);
   }
-  const byDefault = defaultProfileCheck(scope, models, declaredBy);
-  if ('error' in byDefault) return fail(byDefault.error);
+  const byDefault = defaultProfileCheck(
+      scope, models, declaredBy, [...selectedByDoc.values()].flat(),
+      defaultProject);
+  if ('errors' in byDefault) return stop(byDefault.errors);
+  if (byDefault.warning) warn(byDefault.warning);
 
   // Every named profile is checked on its own against the model file, and so
   // are the model file's own bindings and each deployment. The catalog's model
@@ -1848,11 +1909,12 @@ async function checkBeforeWrites(
       profileDocs, declaredBy, profileWarnings, !!options.transpile,
       DEFAULT_PROFILE, load);
   for (const {document, model} of models) {
-    profileErrors.push(
+    profileErrors.push(...ofProfile(
+        document, DEFAULT_PROFILE,
         ...validateInlineDialects(
             model, document, {transpiled: !!options.transpile}),
         ...validateInheritedColumns(model, document),
-        ...validateDeployments(model, document));
+        ...validateDeployments(model, document)));
     const named =
         declaredNames(document).some(n => n.toLowerCase() !== DEFAULT_PROFILE);
     profileWarnings.push(...inlineBindingWarnings(model, document, named));
@@ -1865,7 +1927,7 @@ async function checkBeforeWrites(
   }
   const kcWarnings: string[] = [];
   const kcErrors = kcModels.flatMap(
-      m => validatePushRequirements(
+      m => ofModel(m.document, ...validatePushRequirements(
           [m.model.deployments === undefined ?
                m :
                {...m, model: {...m.model, deployments: []}}],
@@ -1873,10 +1935,10 @@ async function checkBeforeWrites(
             targetOptional: true,
             warnings: kcWarnings,
             v2Aspects: kcV2Aspects(),
-          }));
+          })));
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
-    return fail(...profileErrors, ...kcErrors);
+    return stop([...profileErrors, ...kcErrors]);
   }
 
   const plans: DeploymentPlan[] = [];
@@ -1887,7 +1949,8 @@ async function checkBeforeWrites(
           base, profileDocs(base.document), deployment, ctx, options, warn,
           notes);
       if ('errors' in plan) {
-        return fail(...plan.errors);
+        return stop(
+            ofProfile(base.document, deployment.profile, ...plan.errors));
       }
       plans.push(plan);
     }
@@ -1900,17 +1963,17 @@ async function checkBeforeWrites(
 // first profile file that breaks a file rule. A profile file that does not load
 // is left out, for namedProfileErrors to report.
 function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
-    LoadedModel|{error: string} {
+    LoadedModel|{errors: LocalCheckError[]} {
   const {document, model} = base;
   const profiles = [...(model.profiles ?? [])];
   let files: ReturnType<ProfileDocs>;
   try {
     files = profileDocs(document);
   } catch (err: any) {
-    return {error: err.message || String(err)};
+    return {errors: [{error: err.message || String(err), document}]};
   }
   const reserved = reservedProfileNameError(document, files);
-  if (reserved) return {error: reserved};
+  if (reserved) return {errors: [{error: reserved, document}]};
   for (const p of files) {
     if (isLegacyWrapper(p.text)) continue;
     try {
@@ -1922,25 +1985,64 @@ function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
   return {document, model: profiles.length ? {...model, profiles} : model};
 }
 
-// Checks that each model declares catalog.yaml's default_profile, since the
-// runtime refuses a scope whose default_profile a model lacks.
+// Checks a default_profile other than 'default': each model declares it, and
+// it applies with its actions, as the runtime applies it. Gives a warning when
+// no deployment uses it or a selected deployment names no profile.
 function defaultProfileCheck(
-    scope: TwoPhaseScope, models: LoadedModel[], declaredBy: DeclaredProfiles):
-    {error: string}|{} {
-  const {defaultProfile, docs, load} = scope;
-  if (defaultProfile === undefined || defaultProfile === DEFAULT_PROFILE) {
+    scope: TwoPhaseScope, models: LoadedModel[], declaredBy: DeclaredProfiles,
+    selected: ResolvedDeployment[],
+    defaultProject: string): {errors: LocalCheckError[]}|{warning?: string} {
+  const {defaultProfile, docs, profileDocs, load} = scope;
+  if (defaultProfile === undefined || defaultProfile === DEFAULT_PROFILE ||
+      !models.length) {
     return {};
   }
   for (const {document} of models) {
+    const fails = (errors: string[], profile?: string) =>
+        ({errors: errors.map(error => ({error, document, profile}))});
     const doc = docs.find(d => d.name === document)!;
     const res = profileForDocument(doc, declaredBy(doc), defaultProfile, load);
     if (res.kind === 'missing') {
-      return {
-        error: unknownProfileMessage(defaultProfile, document, res.declared),
-      };
+      return fails(
+          [unknownProfileMessage(defaultProfile, document, res.declared)]);
+    }
+    if (res.kind === 'error') {
+      const error = profileErrorMessage(
+          document, res, defaultProfile, profileDocs(document));
+      return fails([error], defaultProfile);
+    }
+    let applied = res.kind === 'file' ? res.model : undefined;
+    if (res.kind === 'wrapper') {
+      const merged = loadSemanticModels(
+          [{name: document, text: res.text, allowLegacyBareSource: true}],
+          {defaultProject, bindingOptional: true, ...load});
+      if (merged.error) return fails([merged.error], defaultProfile);
+      applied = merged.models[0].model;
+    }
+    // Push checks the actions of the profile the runtime applies.
+    if (applied) {
+      const errors = validateActions(
+          applied, `${document}, profile '${defaultProfile}'`, false, true);
+      if (errors.length) return fails(errors, defaultProfile);
     }
   }
-  return {};
+  const used = models.some(
+      ({model}) =>
+          (model.deployments ?? []).some(d => d.profile === defaultProfile));
+  const unnamed = selected.filter(d => d.profile === DEFAULT_PROFILE)
+                      .map(d => `'${d.name}'`);
+  const n = unnamed.length;
+  const ownBindings = n ?
+      ` ${plural(n, 'Deployment', 'Deployments')} ${unnamed.join(', ')} ` +
+          `${plural(n, 'uses', 'use')} the model file's own bindings.` :
+      '';
+  if (used && !ownBindings) return {};
+  return {
+    warning: `catalog.yaml sets default_profile '${defaultProfile}', which ` +
+        `chooses no binding on this push: Knowledge Catalog receives the ` +
+        `model file as written, and each deployment uses the profile it ` +
+        `names.${ownBindings}`,
+  };
 }
 
 // Builds and checks the model `deployment` deploys from `base`, reading its
@@ -2193,7 +2295,8 @@ function printProfileReport(
 // it applies and prunes each profile and runs push's local checks the way push
 // does, but deploys nothing, so a user can see coverage and whether push
 // accepts a profile before choosing one. Its one service call is push's Cloud
-// SQL dialect lookup. Returns a process exit code (0 on success).
+// SQL dialect lookup. When a model in the scope lists deployments, it gives the
+// errors of a plain push instead. Returns a process exit code (0 on success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   if (options.printStore) return await printStore(options);
 
@@ -2246,10 +2349,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // Knowledge Catalog entry, looked up once, as push does.
   const load = await cloudSqlLoad(ctx, docs, profileDocs);
   if (!load) return 1;
-  const errorsFor = (doc: ProfiledDoc, name: string) => pushErrors(
-      doc, name, defaultProject, ctx, profileDocs, declaredBy, load, source,
-      docs.length === 1, overviews,
-      w => console.warn(`  profile '${name}': warning: ${w}`));
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
   // bindings, which every model has.
@@ -2275,21 +2374,51 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   for (const doc of docs) {
     if (!readDeclaredProfiles(declaredBy, doc)) return 1;
   }
+  // The errors of a plain push's checks, when a model lists deployments so
+  // that push runs in two phases. They replace the checks below.
+  let twoPhase: LocalCheckError[]|undefined;
+  if (docs.some(d => listsDeployments(d.text))) {
+    const checked = await checkBeforeWrites(
+        {}, {ctx, layout, source, docs, profileDocs, defaultProfile, load},
+        true);
+    twoPhase = 'errors' in checked ? checked.errors : [];
+    // With KC_V2_ASPECTS on, push prints the emitter's warnings and checks
+    // every aspect's size once the local checks pass, before any write.
+    if (kcV2Aspects() && 'kcModels' in checked) {
+      const {error, warnings} =
+          catalogAspects(checked.kcModels, source, checked.overviews);
+      for (const w of warnings) console.warn(`Warning: ${w}`);
+      if (error) twoPhase.push({error, document: checked.kcModels[0].document});
+    }
+  }
+  const twoPhaseErrors = (belongs: (e: LocalCheckError) => boolean) =>
+      [...new Set((twoPhase ?? []).filter(belongs).map(e => e.error))];
+  // The two-phase errors that belong to `document` and `profile`. With
+  // neither, those of the whole push.
+  const twoPhaseErrorsOf = (document?: string, profile?: string) =>
+      twoPhaseErrors(e => e.document === document && e.profile === profile);
+  const errorsFor = async (doc: ProfiledDoc, name: string) => twoPhase ?
+      twoPhaseErrorsOf(doc.name, name) :
+      pushErrors(
+          doc, name, defaultProject, ctx, profileDocs, declaredBy, load, source,
+          docs.length === 1, overviews,
+          w => console.warn(`  profile '${name}': warning: ${w}`));
+  printRejects('', twoPhaseErrorsOf());
   // Push publishes to Knowledge Catalog one model per entry group.
-  if (docs.length > 1) {
+  if (!twoPhase && docs.length > 1) {
     printRejects(
         '', [kc.oneModelPerEntryGroupMessage(source.entryGroup, docs.length)]);
   }
   // With KC_V2_ASPECTS off, push stores a copy of the model file and of each
   // profile file, and checks the copies before any graph deploys. Its lookup
   // of the type that holds them calls a service, so it runs only at push time.
-  if (!kcV2Aspects() && docs.length === 1) {
+  if (!twoPhase && !kcV2Aspects() && docs.length === 1) {
     const {error} = checkedFileCopies(layout, docs, profileDocs);
     if (error) printRejects('', [error]);
   }
   // With it on, push reads the overview sidecars before any graph deploys.
   let overviews: ReadonlyMap<string, OverviewSidecar> = new Map();
-  if (kcV2Aspects() && docs.length === 1) {
+  if (!twoPhase && kcV2Aspects() && docs.length === 1) {
     try {
       overviews = layout.overviewSidecars();
     } catch (err: any) {
@@ -2300,17 +2429,24 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   for (const doc of docs) {
     console.log(`Model '${doc.name}' (${source.entryGroup}):`);
     const modelProfiles = declaredBy(doc);
-    const modelErrors: string[] = [];
+    // The errors printed above this model's profiles. The two-phase checks
+    // give those of the model and, in a report narrowed to one profile, those
+    // of the other profiles, since any of them stops the push.
+    const modelErrors = twoPhaseErrors(
+        e => e.document === doc.name &&
+            (e.profile === undefined ||
+             (only !== undefined && e.profile !== only)));
     // Push refuses every graph push while a model declares a profile named
     // 'default', whichever binding it deploys.
-    const reserved = reservedProfileNameError(doc.name, modelProfiles);
+    const reserved =
+        !twoPhase && reservedProfileNameError(doc.name, modelProfiles);
     if (reserved) modelErrors.push(reserved);
     // Push deploys no profile under that name, so it is neither merged nor
     // listed.
     const declared =
         modelProfiles.filter(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
     // Push fails when default_profile names a profile this model lacks.
-    if (!only && defaultProfile !== undefined &&
+    if (!twoPhase && !only && defaultProfile !== undefined &&
         defaultProfile !== DEFAULT_PROFILE &&
         !modelProfiles.some(p => p.name === defaultProfile)) {
       modelErrors.push(unknownProfileMessage(
@@ -2358,16 +2494,21 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       if (res.kind === 'missing') continue;
       // Push applies the profile to every model in the scope, so a model that
       // does not declare it fails the push.
+      // A two-phase push applies it only for the deployments that use it.
       const errors = docs.filter(d => d.name !== doc.name).flatMap(d => {
         const names = declaredBy(d).map(p => p.name);
-        return names.includes(name) ?
+        return twoPhase || names.includes(name) ?
             [] :
             [unknownProfileMessage(name, d.name, names)];
       });
       let model: SemanticModel|undefined;
+      // Why the profile does not apply, when it does not.
+      let applyError: string|undefined;
       if (res.kind === 'error') {
-        errors.push(profileErrorMessage(
-            doc.name, res, name, profileDocs(doc.name)));
+        applyError =
+            profileErrorMessage(doc.name, res, name, profileDocs(doc.name));
+        errors.push(
+            ...(twoPhase ? twoPhaseErrorsOf(doc.name, name) : [applyError]));
       } else {
         for (const w of res.warnings) {
           console.warn(`  profile '${name}': warning: ${w}`);
@@ -2396,13 +2537,23 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
           if (!loaded.error) {
             model =
                 applyProfileExclusions(loaded.models[0].model, res.excluded);
+          } else {
+            applyError = loaded.error;
           }
         }
         errors.push(...await errorsFor(profiledDoc(doc, res, load), name));
       }
       const marker = name === defaultProfile ? ' (default)' : '';
       console.log(`  profile '${name}'${marker}`);
-      if (model) printProfileReport(model, name, res.kind === 'file');
+      if (model) {
+        printProfileReport(model, name, res.kind === 'file');
+      } else if (twoPhase && applyError !== undefined && !twoPhase.length) {
+        // Push accepts a profile it does not apply, such as one no deployment
+        // uses. When push gives no error, say why nothing is shown.
+        const [first, ...rest] = applyError.split('\n');
+        console.log(`    not shown: ${first}`);
+        for (const line of rest) console.log(`      ${line}`);
+      }
       printRejects('    ', errors);
     }
     // `kcmd push --profile default`, and a push that names no profile when no

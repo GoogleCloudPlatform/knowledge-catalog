@@ -169,7 +169,8 @@ Spanner, say — and `kcmd push --all-profiles` deploys a graph for each. The
 catalog leg does not fan out with it: it runs once, against the profile named by
 `--profile`, otherwise the default binding. So a bare `kcmd push` and a
 `kcmd push --all-profiles` write the same entries and differ only in how many
-graphs they deploy.
+graphs they deploy. A [push in two phases](reference.md#push) records the model
+file as written instead.
 
 Nor do successive pushes accumulate. Entry ids are derived from logical names
 alone — model, entity, metric — with no profile component, so pushing a second
