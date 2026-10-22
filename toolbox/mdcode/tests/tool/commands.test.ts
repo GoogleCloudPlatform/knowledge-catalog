@@ -2888,9 +2888,10 @@ semantic_model:
       expect(messages(errorSpy)).not.toContain(alone);
     });
 
-    // The layout reads the model file's version as the block lookup reads the
-    // file, so it still refuses a sibling profile file, and the profile is not
-    // listed twice.
+    // Past a key set twice or an alias whose anchor is not set, the layout reads
+    // the model file's version as the block lookup reads the file, so it still
+    // refuses a sibling profile file, and the profile is not listed twice.
+    if (!listed) continue;
     test(`a sibling profile file beside a model file that ${what} is refused`, async () => {
       writeBroken();
       fs.writeFileSync(

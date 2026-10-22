@@ -1465,25 +1465,22 @@ function listedProfiles(e: Record<string, unknown>): {json: string}|'none'|
  *
  * Text that is not valid YAML is read as far as it parses. A document whose
  * root keys are all strings, and that sets `version` once, to a string other
- * than the vanilla one, gives none when each YAML error is a key set twice.
- * Past any other YAML error, it gives none only when the first line that is
- * not blank or a comment sets that version alone, no such error falls from
- * that line to the start of the next root key, and the text holds the word
- * `version` nowhere else and no backslash, since such an error can change the
- * version or hide a second one. Otherwise its profiles are read as in
- * text that parses, and only when that reading is unambiguous. Each YAML error
- * is a key set twice or an alias whose anchor is not set, since any other
- * error, such as a bad indent, can move the blocks, cut them short or change
- * the version. The document sets `version` once, to the vanilla one, and
- * `semantic_model` at most once. Its model sets `custom_extensions` at most
- * once, and each block that is a mapping sets `vendor_name` once, to a string.
- * A GOOGLE block sets `data` and `profiles` at most once each, and holds no
- * alias. Every key of a mapping on that path is a string, so not an alias or a
- * merge key, and no value on it is an alias. No key is set twice inside
- * `custom_extensions`. When any of these fails, when a GOOGLE block cannot be
- * read, or when a load rejects its profiles, it throws the error a load
- * reports for the text. So does a vanilla model whose text has more aliases
- * than a load expands, or a merge key whose value is not a mapping.
+ * than the vanilla one, gives none when each YAML error is a key set twice, an
+ * alias whose anchor is not set, or more aliases than a load expands. Otherwise
+ * its profiles are read as in text that parses, and only when that reading is
+ * unambiguous. Each YAML error is a key set twice or an alias whose anchor is
+ * not set, since any other error, such as a bad indent, can move the blocks,
+ * cut them short or change the version. The document sets `version` once, to
+ * the vanilla one, and `semantic_model` at most once. Its model sets
+ * `custom_extensions` at most once, and each block that is a mapping sets
+ * `vendor_name` once, to a string. A GOOGLE block sets `data` and `profiles` at
+ * most once each, and holds no alias. Every key of a mapping on that path is a
+ * string, so not an alias or a merge key, and no value on it is an alias. No
+ * key is set twice inside `custom_extensions`. When any of these fails, when a
+ * GOOGLE block cannot be read, or when a load rejects its profiles, it throws
+ * the error a load reports for the text. So does a vanilla model whose text has
+ * more aliases than a load expands, or a merge key whose value is not a
+ * mapping.
  */
 export function googleBlockProfiles(text: string): ProfileSpec[] {
   let doc: unknown;
@@ -1546,7 +1543,7 @@ function googleBlockProfilesPastYamlError(
   // it.
   const parsed = yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false});
   const errors = yaml.parseDocument(text, YAML_OPTIONS).errors;
-  const version = versionPastYamlError(text, parsed, errors);
+  const version = versionPastYamlError(parsed, errors);
   if (version !== undefined && version !== OSSIE_VERSION) return [];
   if (version === undefined || !blocksReadOneWay(parsed, errors)) {
     throw yamlError;
@@ -1570,12 +1567,10 @@ function googleBlockProfilesPastYamlError(
 /**
  * The `version` the model document `text` sets, as googleBlockProfiles reads
  * it. Valid YAML gives its version. Past a YAML error, the version is read
- * only when every root key is a string, and the root sets `version` once, to a
- * string. Past an error other than a key set twice, the first line that is not
- * blank or a comment must also set that version alone, no such error may fall
- * from that line to the start of the next root key, and the text may hold the
- * word `version` nowhere else and no backslash. Undefined otherwise, and when
- * the text sets no string version.
+ * only when every root key is a string and the root sets `version` once, to a
+ * string. Each error must be a key set twice, an alias whose anchor is not
+ * set, or more aliases than a load expands. Undefined otherwise, and when the
+ * text sets no string version.
  */
 export function modelDocumentVersion(text: string): string|undefined {
   let doc: unknown;
@@ -1583,7 +1578,7 @@ export function modelDocumentVersion(text: string): string|undefined {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch {
     return versionPastYamlError(
-        text, yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
+        yaml.parseDocument(text, {...YAML_OPTIONS, uniqueKeys: false}),
         yaml.parseDocument(text, YAML_OPTIONS).errors);
   }
   return isRecord(doc) && typeof doc.version === 'string' ? doc.version :
@@ -1605,44 +1600,16 @@ function onlyValue(node: unknown, key: string): unknown {
   return pairs[0]?.value ?? undefined;
 }
 
-// The first line of a text that is not blank or a comment, when it is
-// `version:` followed by the version alone, plain or quoted, and maybe a
-// comment. The version is the first group that is set.
-const FIRST_LINE_VERSION = new RegExp(
-    String.raw`^(?:[ \t]*(?:#.*)?\r?\n)*version:[ \t]*` +
-    String.raw`(?:"([^"\s,]+)"|'([^'\s,]+)'|([^\s,#'"{}[\]]+))[ \t]*(?:#.*)?$`,
-    'm');
-
-// The version `text` sets, read past a YAML error. `parsed` is the text parsed
-// with keys set twice allowed, and `errors` are the errors of the strict parse.
-// Every root key must be a string, and the root must set `version` once, to a
-// string. When each error is a key set twice, the text's structure is as
-// written, so that string is the version. Any other error can change the
-// version or hide a second one, from before the version, on its line or after
-// it. The version is then read only when the first line that is not blank or
-// a comment sets it alone, and the text holds the word `version` nowhere else.
-// No error may fall from that line to the start of the next root key, since
-// the lines between may hold the rest of a version whose quote closes too
-// early, as in `version: "0.2.0"` followed by `  .dev0"`. The text may hold no
-// backslash, since a double-quoted key can spell `version` with an escape, as
-// in `"ver\x73ion"`. Undefined otherwise.
+// The version a model document sets, read past a YAML error. `parsed` is the
+// text parsed with keys set twice allowed, and `errors` are the errors of the
+// strict parse. The version is read only when each error is a key set twice,
+// every root key is a string, and the root sets `version` once, to a string.
+// Any other YAML error can change the version or hide a second one.
 function versionPastYamlError(
-    text: string, parsed: yaml.Document.Parsed,
-    errors: yaml.YAMLError[]): string|undefined {
+    parsed: yaml.Document.Parsed, errors: yaml.YAMLError[]): string|undefined {
   const version = onlyValue(parsed.contents, 'version');
-  if (!yaml.isScalar(version) || typeof version.value !== 'string') {
-    return undefined;
-  }
-  if (errors.every(err => err.code === 'DUPLICATE_KEY')) return version.value;
-  const first = FIRST_LINE_VERSION.exec(text);
-  const written = first && (first[1] ?? first[2] ?? first[3]);
-  // Where the next root key starts.
-  const pairs = (parsed.contents as yaml.YAMLMap).items;
-  const next = pairs[pairs.findIndex(p => p.value === version) + 1];
-  const nextKey = yaml.isNode(next?.key) ? next.key.range?.[0] : undefined;
-  if (first?.index !== 0 || written !== version.value ||
-      errors.some(err => err.pos[0] <= (nextKey ?? Infinity)) ||
-      text.split('version').length !== 2 || text.includes('\\')) {
+  if (!yaml.isScalar(version) || typeof version.value !== 'string' ||
+      errors.some(err => err.code !== 'DUPLICATE_KEY')) {
     return undefined;
   }
   return version.value;
@@ -1650,18 +1617,16 @@ function versionPastYamlError(
 
 // Whether a text that is not valid YAML gives one reading of its model's GOOGLE
 // blocks. `parsed` is the text parsed with keys set twice allowed, and `errors`
-// are the errors of the strict parse. Each error is a key set twice, since any
-// other error, such as a bad indent, can move the blocks or cut them short. The
-// document sets `semantic_model` at most once, its first model sets
-// `custom_extensions` at most once, and each block that is a mapping sets
-// `vendor_name` once, to a string. A GOOGLE block sets `data` and `profiles` at
-// most once each, and holds no alias, since an alias may name an anchor set on
-// a key set twice. Every key of a mapping on that path is a string, so not an
-// alias or a merge key, and no value on it is an alias. No key is set twice
-// inside `custom_extensions`.
+// are the errors of the strict parse, each a key set twice. The document sets
+// `semantic_model` at most once, its first model sets `custom_extensions` at
+// most once, and each block that is a mapping sets `vendor_name` once, to a
+// string. A GOOGLE block sets `data` and `profiles` at most once each, and
+// holds no alias, since an alias may name an anchor set on a key set twice.
+// Every key of a mapping on that path is a string, so not an alias or a merge
+// key, and no value on it is an alias. No key is set twice inside
+// `custom_extensions`.
 function blocksReadOneWay(
     parsed: yaml.Document.Parsed, errors: yaml.YAMLError[]): boolean {
-  if (errors.some(err => err.code !== 'DUPLICATE_KEY')) return false;
   const models = onlyValue(parsed.contents, 'semantic_model');
   if (models === null) return false;
   const model = yaml.isSeq(models) ? models.items[0] : models;

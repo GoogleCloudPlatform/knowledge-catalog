@@ -2480,62 +2480,38 @@ ${model}`;
       }
     });
 
-    // A YAML error at the root can change the version the text seems to set,
-    // so the document may be vanilla whatever the version reads as.
+    // A YAML error other than a key set twice can change the version the text
+    // seems to set, wherever it falls, so the document may be vanilla whatever
+    // the version reads as.
     test('reports the YAML error when an error may change the version', () => {
       const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
-      for (const [broken, fixed] of [
-        [`version: ${VANILLA}\n  bad: 1\n${rest}`, `version: ${VANILLA}\nbad: 1\n${rest}`],
-        [`version: "${VANILLA}\n${rest}`, `version: "${VANILLA}"\n${rest}`],
-        [`bad: 1\n version: "${VANILLA}"\n${rest}`, `bad: 1\nversion: "${VANILLA}"\n${rest}`],
-        [`bad\nversion: "${VANILLA}"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
-        // A quote left open on the version and closed on the next line, or on
-        // the same line.
-        [`version: "${VANILLA}\n  label: "\nx: "\n${rest}`,
+      const described = (quote: string) =>
+        `semantic_model:\n${section(PROD_BLOCK, `    description: ${quote}\n`)}`;
+      const cases = [
+        // A quote closed too early on the version leaves the rest of it, or a
+        // second version, on the next line, as a key or inside a quote that a
+        // later key leaves open.
+        [`version: "0.2.0"\n.dev0": "\n${rest}`, `version: "${VANILLA}"\nlabel: ""\n${rest}`],
+        [`version: "0.2.0"\nlabel: "\n  .dev0"\nx: "\n${rest}`,
           `version: "${VANILLA}"\nlabel: ""\nx: ""\n${rest}`],
-        [`version: "${VANILLA} # "\nlabel: "\n${rest}`,
-          `version: "${VANILLA}" # "\nlabel: ""\n${rest}`],
-        // A quote closed too early on the version, with the rest of the version
-        // on the next line, indented or not.
-        [`version: "0.2.0"\n  .dev0"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
-        [`version: '0.2.0'\n.dev0'\n${rest}`, `version: '${VANILLA}'\n${rest}`],
-        // Another version on the next line, which a fix may keep.
-        [`version: "${GOOGLE}"\n  "${VANILLA}"\n${rest}`, `version:\n  "${VANILLA}"\n${rest}`],
-        // A YAML error on the version's line: a comment with no space before
-        // it, a lone carriage return, a bad escape and a reserved first
-        // character.
-        [`version: "${GOOGLE}"#"\n${rest}`, `version: "${VANILLA}" # /google"\n${rest}`],
-        [`version: "${GOOGLE}"\r"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
-        [`version: "${VANILLA}\\g"\n${rest}`, `version: "${VANILLA}"\n${rest}`],
-        [`version: \`${VANILLA}\n${rest}`, `version: ${VANILLA}\n${rest}`],
-        // A quote left open ahead of the version takes in a first version.
-        [`label: "\n  version: '${VANILLA}'\n  note: "\nversion: "${GOOGLE}"\nx: "\n${rest}`,
-          `label: ""\nversion: '${VANILLA}'\nnote: |\n  version: "${GOOGLE}"\n  x: "\n${rest}`],
-      ]) {
+        [`version: "${GOOGLE}"\nlabel: "\n  ${VANILLA}"\nx: "\n${rest}`,
+          `version: "${VANILLA}"\nlabel: ""\nx: ""\n${rest}`],
+        // A quote left open on the version and closed after a `#` or by the
+        // other quote, or a comment that runs past a lone carriage return.
+        [`version: "${VANILLA}#"\n${described('"')}`, `version: "${VANILLA}" # "\n${described('""')}`],
+        [`version: '${VANILLA}#'\n${described("'")}`, `version: '${VANILLA}' # '\n${described("''")}`],
+        [`version: "${VANILLA}'"\n${described("'")}`, `version: '${VANILLA}'\n${described("''")}`],
+        [`version: "0.2.0" #\r.dev0"\n${described('"')}`, `version: "${VANILLA}"\n${described('""')}`],
+      ];
+      for (const [broken, fixed] of cases) {
         expect(names(fixed)).toEqual(['prod']);
         expect(() => loadModels(broken)).toThrow('could not parse input');
         expect(() => googleBlockProfiles(broken)).toThrow(
           'Semantic model load error: could not parse input: ');
       }
-    });
-
-    // A YAML error after the version may hide a second version, so which one
-    // holds is not known.
-    test('reports the YAML error when an error may hide a second version', () => {
-      const rest = `semantic_model:\n${section(PROD_BLOCK)}`;
-      for (const text of [
-        `version: "${GOOGLE}"\nlabel: [x,\n${rest}version: "${VANILLA}"\n`,
-        `version: "${GOOGLE}"\n${rest}---\nversion: "${VANILLA}"\n${rest}`,
-        `meta:\nversion: "${GOOGLE}"\n${rest}   version: "${VANILLA}"\n`,
-        `version: "${GOOGLE}"\nlabel: [{x: 1}"version": "${VANILLA}"\n${rest}`,
-        `meta:\nversion: "${GOOGLE}"\n${rest}   ? version # comment\n   : "${VANILLA}"\n`,
-        // A second version written with an escape.
-        `version: "${GOOGLE}"\n${rest}   "ver\\x73ion": "${VANILLA}"\n`,
-      ]) {
-        expect(() => loadModels(text)).toThrow('could not parse input');
-        expect(() => googleBlockProfiles(text)).toThrow(
-          'Semantic model load error: could not parse input: ');
-      }
+      expect(() => googleBlockProfiles(cases[0][0])).toThrow(new Error(
+        'Semantic model load error: could not parse input: Missing closing "quote at line 2, ' +
+        'column 10:\n\n.dev0": "\n         ^\n'));
     });
 
     // A key written with no value sets it to null, as in text that parses.
@@ -2548,18 +2524,6 @@ ${model}`;
         '  - { name: m, description: a, description: b, custom_extensions }\n';
       expect(() => loadModels(noExts)).toThrow('Map keys must be unique');
       expect(names(noExts)).toEqual([]);
-    });
-
-    // A YAML error after the version leaves it as written, so a Google-flavor
-    // model gives none and its profile files stay listed.
-    test('gives none for a Google-flavor model past a YAML error after its version', () => {
-      for (const extra of ['    description: [x\n', '    description: a\n    description: b\n']) {
-        for (const head of ['', '# A model.\n\n']) {
-          const text = `${head}version: "${GOOGLE}"\nsemantic_model:\n  - name: m\n${extra}`;
-          expect(() => loadModels(text)).toThrow('could not parse input');
-          expect(googleBlockProfiles(text)).toEqual([]);
-        }
-      }
     });
 
     // The checks on the path apply to mappings. A block that is not a mapping
@@ -2604,14 +2568,18 @@ ${model}`;
       expect(() => googleBlockProfiles(unset)).toThrow('could not parse input: Unresolved alias');
     });
 
-    // Which version holds is not known, so neither order is read.
-    test('reports the YAML error for a version set twice', () => {
+    // A version set once is read past a key set twice, so a Google-flavor
+    // model gives none. Which of two versions holds is not known, so neither
+    // order is read.
+    test('reads the version past a key set twice only when it is set once', () => {
       const text = (first: string, last: string) =>
         `version: "${first}"\nversion: "${last}"\nsemantic_model:\n${section(PROD_BLOCK)}`;
       for (const [first, last] of [[GOOGLE, VANILLA], [VANILLA, GOOGLE]]) {
         expect(() => googleBlockProfiles(text(first, last))).toThrow(
           'Semantic model load error: could not parse input: Map keys must be unique');
       }
+      const dup = '    description: a\n    description: b\n';
+      expect(names(`version: "${GOOGLE}"\nsemantic_model:\n${section(PROD_BLOCK, dup)}`)).toEqual([]);
     });
 
     test('reports the YAML error when the profiles are an alias whose anchor is not set', () => {
