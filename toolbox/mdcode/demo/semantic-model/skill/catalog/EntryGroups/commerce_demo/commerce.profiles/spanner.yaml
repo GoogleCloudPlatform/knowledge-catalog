@@ -17,7 +17,7 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: commerce
-    deployment_target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/propertyGraphs/commerce
+    deployment_target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/graphs/commerce
 
     entities:
       - name: Customer

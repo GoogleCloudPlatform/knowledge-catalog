@@ -10,7 +10,7 @@
 # What each difference is:
 #
 #   * The deployment target names a DATABASE and stops there, where the Spanner
-#     one ends in `/propertyGraphs/commerce`. AlloyDB has no property-graph DDL,
+#     one ends in `/graphs/commerce`. AlloyDB has no property-graph DDL,
 #     so there is no graph to deploy and `kcmd push` has nothing to do under this
 #     profile -- it will say so. The model still RUNS here, which is what a
 #     deployment target is for on this side.

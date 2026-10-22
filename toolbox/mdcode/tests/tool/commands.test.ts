@@ -325,7 +325,7 @@ semantic_model:
         'bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g',
         'bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer'));
     fs.writeFileSync(path.join(eg, 'commerce.profiles', 'sp.yaml'), wrapper(
-        'spanner.googleapis.com/projects/test-project/instances/i/databases/d/propertyGraphs/g',
+        'spanner.googleapis.com/projects/test-project/instances/i/databases/d/graphs/g',
         'spanner.googleapis.com/projects/test-project/instances/i/databases/d/tables/Customer'));
     const seen: Record<string, string[]> = {};
     const record = (name: string) => async (models: any[]) => {
@@ -729,7 +729,7 @@ describe('a model with a Spanner graph target is pruned in the Spanner dialect',
     const table =
         'bigquery.googleapis.com/projects/test-project/datasets/ds/tables/orders';
     const spGraph =
-        'spanner.googleapis.com/projects/test-project/instances/i/databases/db/propertyGraphs/g';
+        'spanner.googleapis.com/projects/test-project/instances/i/databases/db/graphs/g';
     const bqGraph =
         'bigquery.googleapis.com/projects/test-project/datasets/ds/propertyGraphs/g';
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
@@ -814,7 +814,7 @@ semantic_model:
   - name: a
     deployments:
       - name: g
-        target: spanner.googleapis.com/${SPANNER}/propertyGraphs/g
+        target: spanner.googleapis.com/${SPANNER}/graphs/g
     entities:
       - name: X
         source: spanner.googleapis.com/${SPANNER}/tables/X

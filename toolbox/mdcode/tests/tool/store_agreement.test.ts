@@ -155,7 +155,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -255,7 +255,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prdo
     entities:
       - name: Order
@@ -279,7 +279,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prdo
     entities:
       - name: Order
@@ -332,7 +332,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["  ${SPANNER_DB}/propertyGraphs/commerce  ", 42]}'
+        data: '{"deploymentTargets": ["  ${SPANNER_DB}/graphs/commerce  ", 42]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -386,7 +386,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/commerce", "${graph}", "${graph}"]}'
+        data: '{"deploymentTargets": ["${SPANNER_DB}/graphs/commerce", "${graph}", "${graph}"]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -414,7 +414,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/commerce", "${graph}", "${name}"]}'
+        data: '{"deploymentTargets": ["${SPANNER_DB}/graphs/commerce", "${graph}", "${name}"]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -476,7 +476,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         extends: [Missing]
@@ -537,7 +537,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
 ${entities}`});
       const r = await runAll();
@@ -560,7 +560,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prod
     entities:
       - name: Order
@@ -587,7 +587,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: sp
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: bq
         target: ${BQ('graphs')}/propertyGraphs/commerce
     entities:
@@ -608,7 +608,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/propertyGraphs/a", "${SPANNER_DB}2/propertyGraphs/b"]}'
+        data: '{"deploymentTargets": ["${SPANNER_DB}/graphs/a", "${SPANNER_DB}2/graphs/b"]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -653,9 +653,9 @@ semantic_model:
   - name: commerce
     deployments:
       - name: a
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: b
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prod
     entities:
       - name: Order
@@ -675,7 +675,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: a
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: b
         target: ${SPANNER_DB}/propertyGraph/typo
     entities:
@@ -698,7 +698,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: dev
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
       - name: prod
         target: ${prodTarget}
         profile: prod
@@ -730,7 +730,7 @@ entities:
   // runtime uses dev, as the docs say.
   test('a valid deployment for another declared profile: push refuses, the runtime uses dev',
        async () => {
-         writeScope(devAndProd(`${SPANNER_DB}2/propertyGraphs/commerce`));
+         writeScope(devAndProd(`${SPANNER_DB}2/graphs/commerce`));
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
          expect(r.printStore.out).toBe('acme-ops/prod/commerce');
@@ -775,7 +775,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -811,7 +811,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -850,7 +850,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -884,7 +884,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -918,7 +918,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -953,7 +953,7 @@ semantic_model:
     bogus_model_key: 1
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -978,7 +978,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -1007,7 +1007,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: default
     entities:
       - name: Order
@@ -1029,7 +1029,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -1074,7 +1074,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
         profile: prod
     entities:
       - name: Order
@@ -1094,7 +1094,7 @@ entities:
     expect(r.report.out).not.toContain(
         'target: (none; a profile file names no deployment target)');
     expect(r.report.out).toContain(
-        `target: ${SPANNER_DB}/propertyGraphs/commerce`);
+        `target: ${SPANNER_DB}/graphs/commerce`);
   });
 });
 
@@ -1218,7 +1218,7 @@ ${dataset}        fields:
     return {google, vanilla};
   }
 
-  const dev = {name: 'dev', target: `${SPANNER_DB}/propertyGraphs/commerce`};
+  const dev = {name: 'dev', target: `${SPANNER_DB}/graphs/commerce`};
   const prod = (target: string) => ({name: 'prod', target, profile: 'prod'});
 
   // The runtime checks that each deployment's profile is declared. A vanilla
@@ -1226,7 +1226,7 @@ ${dataset}        fields:
   test('a deployment for a declared profile, under default: the runtime uses dev',
        async () => {
          const {google, vanilla} = await bothFlavors(
-             [dev, prod(`${SPANNER_DB}2/propertyGraphs/commerce`)]);
+             [dev, prod(`${SPANNER_DB}2/graphs/commerce`)]);
          expect(codes(google))
              .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
          expect(codes(vanilla)).toEqual(codes(google));
@@ -1238,7 +1238,7 @@ ${dataset}        fields:
   test('a deployment for a declared profile, under it: the runtime uses it',
        async () => {
          const {google, vanilla} = await bothFlavors(
-             [prod(`${SPANNER_DB}/propertyGraphs/commerce`)], 'prod');
+             [prod(`${SPANNER_DB}/graphs/commerce`)], 'prod');
          expect(codes(google))
              .toEqual({push: 1, report: 1, printStore: 0, skills: 0});
          expect(codes(vanilla)).toEqual(codes(google));
@@ -1250,7 +1250,7 @@ ${dataset}        fields:
        async () => {
          const {google, vanilla} = await bothFlavors([
            dev,
-           {name: 'prod', target: `${SPANNER_DB}2/propertyGraphs/commerce`,
+           {name: 'prod', target: `${SPANNER_DB}2/graphs/commerce`,
             profile: 'prdo'},
          ]);
          expect(codes(google))

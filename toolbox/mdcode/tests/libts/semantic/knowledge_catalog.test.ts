@@ -424,7 +424,7 @@ describe('model-level structure', () => {
         // Knowledge Catalog (the aspect used to read only BigQuery targets, so a
         // Spanner-only model round-tripped as UNBOUND).
         const spannerUri =
-            'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+            'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
         const model: SemanticModel = {
           name: 'm',
           relationships: [],
@@ -447,7 +447,7 @@ describe('model-level structure', () => {
         const bqUri =
             'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const spannerUri =
-            'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+            'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
         const alloyUri =
             'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
         const model: SemanticModel = {

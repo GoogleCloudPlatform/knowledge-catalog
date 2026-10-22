@@ -242,7 +242,7 @@ model deploys, written as its GCP resource name. Its host selects the store:
 bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<name>
 
 # Spanner — an operational store
-spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<name>
+spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/graphs/<name>
 ```
 
 A BigQuery target names the project and dataset the model deploys into; a Spanner

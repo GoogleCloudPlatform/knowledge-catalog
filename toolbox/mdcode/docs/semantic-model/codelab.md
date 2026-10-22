@@ -698,7 +698,7 @@ into the same `sales.profiles/` directory:
 export SPANNER_INSTANCE="${SPANNER_INSTANCE:-<your-spanner-instance>}"   # a Spanner ENTERPRISE-edition instance
 export SPANNER_DB="${SPANNER_DB:-<your-googlesql-database>}"
 SPANNER_DB_NAME=projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB
-SPANNER_TARGET=spanner.googleapis.com/$SPANNER_DB_NAME/propertyGraphs/$GRAPH
+SPANNER_TARGET=spanner.googleapis.com/$SPANNER_DB_NAME/graphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/operational.yaml <<YAML
@@ -758,7 +758,7 @@ Model 'sales' ($DATASET):
       lineitem -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/lineitem
     cannot answer: nothing withheld.
   profile 'operational'
-    target: spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
+    target: spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/graphs/sales
     sources:
       orders -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Orders
       customer -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Customers
@@ -821,7 +821,7 @@ kcmd push --profile operational --no-kc --print
 Note: profile 'operational' leaves 1 field(s) unbound; 1 metric(s) and 0 action(s) unavailable.
 Pushing semantic model (Spanner Graph)...
 -- Spanner Graph --
--- spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
+-- spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/graphs/sales
 CREATE OR REPLACE PROPERTY GRAPH sales
 NODE TABLES (
   Orders AS orders

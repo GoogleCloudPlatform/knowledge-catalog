@@ -290,7 +290,7 @@ store. Run this from this directory, the one holding `catalog.yaml`:
 $ kcmd profiles
 Model 'commerce' (commerce_demo):
   spanner  (default)
-    target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/propertyGraphs/commerce
+    target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/graphs/commerce
     entities: Customer, Order, LineItem
     actions: IssueCredit (sql)
 ```

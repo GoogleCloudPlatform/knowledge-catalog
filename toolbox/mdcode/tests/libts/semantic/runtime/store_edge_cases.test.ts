@@ -13,7 +13,7 @@ import {undeclaredProfileError} from '../../../../src/libts/semantic/runtime/run
 import {AlloyDbDatabase, resolveStore, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
-const SPANNER_GRAPH = `${DB}/propertyGraphs/g`;
+const SPANNER_GRAPH = `${DB}/graphs/g`;
 const CLUSTER =
     'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
 
@@ -79,7 +79,7 @@ describe('deployments and the profiles they name', () => {
        () => {
          const m = deployed(
              `      - {name: a, target: "${SPANNER_GRAPH}"}\n` +
-             `      - {name: b, target: "${DB}2/propertyGraphs/g"}\n`);
+             `      - {name: b, target: "${DB}2/graphs/g"}\n`);
          const store = resolveStore(m, 'staging', {legacyWrapper: true});
          expect('error' in store && store.error)
              .not.toContain("for profile 'staging' (a, b)");

@@ -108,7 +108,7 @@ semantic_model:
   - name: sales
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets":["spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g"]}'
+        data: '{"deploymentTargets":["spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g"]}'
 `;
   const logicalOnly = `
 version: 0.2.0.dev0
@@ -635,7 +635,7 @@ semantic_model:
     const eg = setupWorkspace();
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
-    const spGraph = 'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g1';
+    const spGraph = 'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g1';
     const bqGraph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const alloyTarget = 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
 

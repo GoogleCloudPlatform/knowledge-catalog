@@ -357,7 +357,6 @@ what pull can recover. It is recorded here as a write-side follow-up; the reader
   it is the same class of gap as the `semantics` field that gates
   `--emit-expressions`.
 
-(A deployment target in no supported form is **not** a pull gap. A graph push
-rejects it at the validation gate before anything is written; see
-[Validation](reference.md#validation). A catalog-only push (`--no-profile`)
-stores it on the model entry, and pull returns it.)
+(A deployment target in no supported form is **not** a pull gap. Every push
+rejects it at the validation gate before anything is written, a catalog-only
+push (`--no-profile`) too; see [Validation](reference.md#validation).)

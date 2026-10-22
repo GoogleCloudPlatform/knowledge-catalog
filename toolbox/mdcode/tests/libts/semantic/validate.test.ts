@@ -16,7 +16,7 @@ const BQ_TARGET =
 
 // A parsed Spanner Graph deployment target the strict matcher accepts.
 const SPANNER_TARGET =
-    'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+    'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
 
 // A parsed AlloyDB deployment target. Not a graph target: it names a database
 // to run against, which is the whole reason a push has to say something other
@@ -252,6 +252,9 @@ describe('validatePushRequirements', () => {
        `the instance-based AlloyDB name, which names no real resource. An ` +
            `AlloyDB database belongs to its cluster; write ` +
            `'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db'.`],
+      [SPANNER_TARGET.replace('/graphs/', '/propertyGraphs/'),
+       `which names a Spanner graph by 'propertyGraphs'; write its Dataplex ` +
+           `name: '${SPANNER_TARGET}'.`],
       ['bigquery:graph:p.d.g',
        `which is a Knowledge Catalog name. Write the GCP resource name ` +
            `instead: 'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`],

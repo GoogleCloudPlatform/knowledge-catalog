@@ -190,7 +190,7 @@ describe('mergeProfile overlays physical bindings by name', () => {
   test('drops model deployments when a legacy profile sets deployment_target, and keeps them when it does not', () => {
     const deployments = [{
       name: 'prod',
-      target: 'spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/commerce',
+      target: 'spanner.googleapis.com/projects/p/instances/i/databases/d/graphs/commerce',
     }];
     const logical = logicalDoc();
     modelOf(logical).deployments = deployments;

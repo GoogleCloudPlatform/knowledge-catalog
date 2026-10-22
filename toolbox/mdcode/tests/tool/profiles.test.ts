@@ -63,7 +63,7 @@ semantic_model:
 const OPERATIONAL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
+    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/graphs/commerce
     entities:
       - name: Customer
         source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer
@@ -1213,7 +1213,7 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     [
       'Spanner',
       uniqueKeysOnly(commerce({targets: 1}))
-          .replace(`${GRAPH}_prod`, `${SPANNER_DB}/propertyGraphs/commerce`)
+          .replace(`${GRAPH}_prod`, `${SPANNER_DB}/graphs/commerce`)
           .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`),
     ],
   ];
@@ -3219,7 +3219,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
+        target: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/graphs/commerce
     entities:
       - name: Customer
         source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer

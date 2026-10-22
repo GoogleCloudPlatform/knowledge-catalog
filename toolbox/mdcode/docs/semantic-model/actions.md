@@ -288,7 +288,7 @@ declared for `TransferFunds`:
 # payments.profiles/operational.yaml — this store owns the rows, so it writes them
 semantic_model:
   - name: payments
-    deployment_target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
+    deployment_target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/graphs/payments
     entities:
       - name: Account
         source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account

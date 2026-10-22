@@ -126,7 +126,7 @@ describe('the profiles report and --print-store', () => {
         'commerce.yaml',
         model(
             `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        target: ${SPANNER_DB}/graphs/commerce\n` +
                 `        profile: prod\n`,
             `${SPANNER_DB}/tables/Orders`, false));
     writeModel(
@@ -138,7 +138,7 @@ describe('the profiles report and --print-store', () => {
     out = [];
     await profiles({profile: 'prod'});
     const target = out.find(l => l.trim().startsWith('target:'));
-    expect(target).toBe(`    target: ${SPANNER_DB}/propertyGraphs/commerce`);
+    expect(target).toBe(`    target: ${SPANNER_DB}/graphs/commerce`);
   });
 
   test('agree on the target of a legacy wrapper', async () => {
@@ -149,7 +149,7 @@ describe('the profiles report and --print-store', () => {
                 `        target: ${BQ}/datasets/sales/propertyGraphs/commerce\n` +
                 `        profile: analytical\n` +
                 `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+                `        target: ${SPANNER_DB}/graphs/commerce\n`,
             `${SPANNER_DB}/tables/Orders`, false));
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
@@ -166,7 +166,7 @@ describe('the profiles report and --print-store', () => {
     await profiles({profile: 'staging'});
     const target = out.find(l => l.trim().startsWith('target:'));
     expect(target).toBe(
-        `    target: ${SPANNER_DB}/propertyGraphs/commerce`);
+        `    target: ${SPANNER_DB}/graphs/commerce`);
   });
 });
 
@@ -180,7 +180,7 @@ describe('a deployment that names profile default', () => {
              'commerce.yaml',
              model(
                  `      - name: main\n` +
-                     `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                     `        target: ${SPANNER_DB}/graphs/commerce\n` +
                      `        profile: default\n`,
                  `${SPANNER_DB}/tables/Orders`, false));
          const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
@@ -212,7 +212,7 @@ describe('a legacy wrapper whose deployment_target is in no accepted form', () =
         'commerce.yaml',
         model(
             `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n`,
+                `        target: ${SPANNER_DB}/graphs/commerce\n`,
             `${SPANNER_DB}/tables/Orders`, false));
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
@@ -236,7 +236,7 @@ describe('a deployment whose profile is a typo', () => {
         'commerce.yaml',
         model(
             `      - name: prod\n` +
-                `        target: ${SPANNER_DB}/propertyGraphs/commerce\n` +
+                `        target: ${SPANNER_DB}/graphs/commerce\n` +
                 `        profile: prdo\n`,
             `${SPANNER_DB}/tables/Orders`).replace(/        executor:\n(.*\n){3}/, ''));
     writeModel(
@@ -260,7 +260,7 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: ${SPANNER_DB}/propertyGraphs/commerce
+        target: ${SPANNER_DB}/graphs/commerce
     entities:
       - name: A
         extends: [B]

@@ -697,8 +697,12 @@ and the error names the form to write:
 bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 
 # Spanner Graph — operational
-spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
+spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>
 ```
+
+Each is the name Dataplex gives the graph's entry: a BigQuery graph is under
+`propertyGraphs/`, a Spanner graph under `graphs/`. A Spanner graph written with
+`propertyGraphs/` is rejected, and the error names its `graphs/` name.
 
 The name MUST match one of these two shapes. A model bound for a graph MUST declare
 exactly one ([§4](#4-narrowings-and-relaxations)). The identifier segments are

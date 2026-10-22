@@ -380,13 +380,13 @@ concrete leaves).
 
 ## What gets created in Spanner
 
-When the deployment target is a Spanner Graph URI, `push` executes the same
+When the deployment target is a Spanner graph, `push` executes the same
 `CREATE OR REPLACE PROPERTY GRAPH` — but generated for Spanner Graph, which
 differs from BigQuery Graph in five ways:
 
 | Model element | Spanner construct | Notes |
 |---|---|---|
-| Model | `PROPERTY GRAPH` | named by the URI's `propertyGraphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
+| Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
 | Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`spanner.googleapis.com/…/tables/Orders` → `Orders`), a table in the target database |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
@@ -526,15 +526,16 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   be a valid BigQuery Graph or Spanner Graph resource name.** A model with more
   than one is rejected, and so is a single target that matches neither
   `bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
-  `spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
-  (for example a `propertyGraph`/`propertyGraphs` typo, a leading `//`, or a
-  `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
-  target and the expected forms. A **logical model that declares no target** is
-  allowed: it deploys no graph and records to Knowledge Catalog only (so `--no-kc`
-  on it is an error — it would have nowhere to go). This gate runs before any
-  destination leg, so a malformed target writes **nothing** — not to the graph
-  and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
-  entries are created. Defined in [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie)
+  `spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>`
+  (for example a `propertyGraph` typo, a Spanner graph under `propertyGraphs/`,
+  a leading `//`, or a `…/entryGroups/@bigquery/entries/…` entry form). The
+  error names the offending target and what to write instead. A **logical model
+  that declares no target** is allowed: it deploys no graph and records to
+  Knowledge Catalog only (so `--no-kc` on it is an error — it would have
+  nowhere to go). This gate runs before any destination leg, so a malformed
+  target writes **nothing** — not to the graph and **not to Knowledge
+  Catalog**; the push aborts with a non-zero exit and no entries are created.
+  Defined in [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie)
   (one target) and [§7.2](model_spec.md#72-deployment-target) (the grammar).
   *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —

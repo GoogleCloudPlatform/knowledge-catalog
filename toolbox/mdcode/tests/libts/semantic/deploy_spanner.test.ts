@@ -29,7 +29,7 @@ function models(
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 const SPANNER_URI =
-    'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph';
+    'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/sales_graph';
 const BQ_URI =
     'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
 
@@ -94,7 +94,7 @@ describe('spannerGraphTargets', () => {
 
   test('rejects a graph name with an injection character', () => {
     const evil =
-        'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/g`;DROP';
+        'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/g`;DROP';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
     expect(targets).toEqual([]);
@@ -223,12 +223,12 @@ describe('deploySpanner', () => {
   test('a model with no Spanner target, or one that does not parse, fails clearly', async () => {
     const bqDoc = fs.readFileSync(
         path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
-    const typo = 'spanner.googleapis.com/projects/demo/instance/i/databases/d/propertyGraphs/g';
+    const typo = 'spanner.googleapis.com/projects/demo/instance/i/databases/d/graphs/g';
     for (const [text, details] of [
       [bqDoc, 'no Spanner Graph deploymentTarget'],
       [bqDoc.replace(/deployment_target: \S+/, `deployment_target: ${typo}`),
        `could not be parsed: ${typo}. Expected spanner.googleapis.com/` +
-           `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`],
+           `projects/<p>/instances/<i>/databases/<db>/graphs/<g>.`],
     ]) {
       const res = await deploySpanner(
           models([{name: 'sales', text}]), CTX, {validateOnly: true});

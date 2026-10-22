@@ -3279,7 +3279,7 @@ describe('strict entity sources', () => {
     for (const bad of [
       'bigquery.googleapis.com/projects/p/datasets/d',
       'bigquery.googleapis.com/projects/p/datasets/d/tables/a.b',
-      'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g',
+      'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g',
     ]) {
       expect(databaseOf(bad)).toBeUndefined();
       expect(() => load(GOOGLE, {
@@ -3420,7 +3420,7 @@ describe('strict entity sources', () => {
 
 describe('deployments and inline profiles', () => {
   const BQ_TARGET = 'bigquery.googleapis.com/projects/acme/datasets/analytics/propertyGraphs/sales';
-  const SPANNER_TARGET = 'spanner.googleapis.com/projects/acme/instances/test/databases/sales/propertyGraphs/sales';
+  const SPANNER_TARGET = 'spanner.googleapis.com/projects/acme/instances/test/databases/sales/graphs/sales';
 
   test('a named deployments list loads onto model.deployments and folds targets into the GOOGLE custom_extensions shim', () => {
     const { models } = load(GOOGLE, {

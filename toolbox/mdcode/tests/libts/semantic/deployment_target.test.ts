@@ -5,25 +5,18 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {destinationKey, googleDeploymentTargets, parseDeploymentSelection, resolveModelDeployments} from '../../../src/libts/semantic/deployment_target';
+import {ALLOYDB_FORM, BQ_GRAPH_FORM, destinationKey, googleDeploymentTargets, parseDeploymentSelection, resolveModelDeployments, SPANNER_GRAPH_FORM} from '../../../src/libts/semantic/deployment_target';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 
 const BQ =
     'bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail';
 const SPANNER =
-    'spanner.googleapis.com/projects/acme/instances/ops/databases/sales/propertyGraphs/retail';
+    'spanner.googleapis.com/projects/acme/instances/ops/databases/sales/graphs/retail';
 const ALLOY =
     'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main/databases/sales';
 const ALLOY_INSTANCE =
     'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main/instances/primary/databases/sales';
-// The forms each destination is written in, for messages.
-const BQ_FORM =
-    'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>';
-const SPANNER_FORM =
-    'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>';
-const ALLOY_FORM =
-    'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>';
 
 // A Google-flavor model loaded from `deployments:` entries, so it carries the
 // GOOGLE block the loader folds the targets into.
@@ -137,7 +130,7 @@ describe('resolveModelDeployments: rejected targets', () => {
       `Model 'retail': deployment 'prod' targets '${target}', `;
   const notADestination =
       `which is not a BigQuery graph, a Spanner graph or an AlloyDB database. ` +
-      `Write a GCP resource name: '${BQ_FORM}', '${SPANNER_FORM}' or '${ALLOY_FORM}'.`;
+      `Write a GCP resource name: '${BQ_GRAPH_FORM}', '${SPANNER_GRAPH_FORM}' or '${ALLOYDB_FORM}'.`;
   for (const [target, rest] of [
          ...[BQ, SPANNER, ALLOY].map(name => [
            `//${name}`,
@@ -150,15 +143,23 @@ describe('resolveModelDeployments: rejected targets', () => {
                `AlloyDB database belongs to its cluster; write '${ALLOY}'.`,
          ]),
          ...[
-           ['bigquery:graph:acme.sales.retail', BQ_FORM],
-           ['bigquery:propertygraph:acme.sales.retail', BQ_FORM],
-           ['spanner:graph:acme.regional-us-central1.ops.sales.retail', SPANNER_FORM],
-           ['alloydb:acme.us-central1.main.sales', ALLOY_FORM],
+           ['bigquery:graph:acme.sales.retail', BQ_GRAPH_FORM],
+           ['bigquery:propertygraph:acme.sales.retail', BQ_GRAPH_FORM],
+           ['spanner:graph:acme.regional-us-central1.ops.sales.retail', SPANNER_GRAPH_FORM],
+           ['alloydb:acme.us-central1.main.sales', ALLOYDB_FORM],
          ].map(([name, form]) => [
            name,
            `which is a Knowledge Catalog name. Write the GCP resource name ` +
                `instead: '${form}'.`,
          ]),
+         ...[SPANNER, `//${SPANNER}`].map(graph => [
+           graph.replace('/graphs/', '/propertyGraphs/'),
+           `which names a Spanner graph by 'propertyGraphs'; write its ` +
+               `Dataplex name: '${SPANNER}'.`,
+         ]),
+         // A graph name kcmd cannot accept is not given a `graphs/` name to
+         // write, which would be rejected in turn.
+         [SPANNER.replace('/graphs/retail', '/propertyGraphs/bad.name'), notADestination],
          ['bigquery:acme.sales.retail', notADestination],
          ['bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders', notADestination],
          ['//bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders', notADestination],

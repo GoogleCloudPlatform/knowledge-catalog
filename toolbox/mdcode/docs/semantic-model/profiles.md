@@ -353,7 +353,7 @@ calling out:
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/propertyGraphs/commerce
+    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/graphs/commerce
     entities:
       - name: Customer
         source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer

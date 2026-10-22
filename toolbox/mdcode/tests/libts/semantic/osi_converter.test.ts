@@ -114,7 +114,7 @@ describe('serialized document structure', () => {
       'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
   const spTarget =
       'spanner.googleapis.com/projects/p/instances/i/databases/db' +
-      '/propertyGraphs/g';
+      '/graphs/g';
   const ordersEntity: Entity = {
     name: 'orders',
     dataSource: 'p.d.orders',
@@ -1658,7 +1658,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
         const bqTarget =
             'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const spTarget =
-            'spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/g';
+            'spanner.googleapis.com/projects/p/instances/i/databases/d/graphs/g';
         const vipOrders: Entity = {
           name: 'vip_orders',
           dataSource: 'p.d.vip_orders',

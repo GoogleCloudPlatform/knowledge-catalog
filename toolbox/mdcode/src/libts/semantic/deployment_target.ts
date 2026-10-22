@@ -10,7 +10,7 @@
 //   BigQuery Graph:
 //     bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 //   Spanner Graph:
-//     spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
+//     spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>
 //   AlloyDB database:
 //     alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>
 //
@@ -45,13 +45,21 @@ const GOOGLE_VENDOR = 'GOOGLE';
 const BQ_GRAPH_TARGET =
     /^\/\/bigquery\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/datasets\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
 
-// A Spanner Graph deployment target. Instance and database ids follow Spanner's
-// resource-id grammar (lowercase letters, digits, hyphens); the graph name is a
-// GoogleSQL identifier. As with BigQuery, the segments are interpolated into
-// DDL (the graph name) and into the Spanner Admin API path (project/instance/
-// database), so the character classes stay strict.
+// A Spanner Graph deployment target, named as Dataplex names the graph's
+// entry: `graphs/<g>`, where a BigQuery graph is `propertyGraphs/<g>`.
+// Instance and database ids follow Spanner's resource-id grammar (lowercase
+// letters, digits, hyphens); the graph name is a GoogleSQL identifier. As with
+// BigQuery, the segments are interpolated into DDL (the graph name) and into
+// the Spanner Admin API path (project/instance/database), so the character
+// classes stay strict.
 const SPANNER_GRAPH_TARGET =
-    /^\/\/spanner\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
+    /^\/\/spanner\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)\/graphs\/([A-Za-z0-9_-]+)$/;
+
+// A Spanner graph written with BigQuery's `propertyGraphs` segment, which names
+// no Dataplex entry. Push rejects it and names the `graphs` form. Its segments
+// follow SPANNER_GRAPH_TARGET's, so the name it suggests is accepted.
+const SPANNER_PROPERTY_GRAPH =
+    /^(spanner\.googleapis\.com\/projects\/[A-Za-z0-9_-]+\/instances\/[A-Za-z0-9_-]+\/databases\/[A-Za-z0-9_-]+)\/propertyGraphs\/([A-Za-z0-9_-]+)$/;
 
 // An AlloyDB database. A database belongs to its cluster, and AlloyDB locates
 // a cluster by region, which is why there is a `locations` segment here and
@@ -73,8 +81,8 @@ const LEGACY_ALLOYDB_TARGET =
 export const BQ_GRAPH_FORM =
     'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>';
 export const SPANNER_GRAPH_FORM =
-    'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>';
-const ALLOYDB_FORM =
+    'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>';
+export const ALLOYDB_FORM =
     'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>';
 
 // The Knowledge Catalog name prefixes of a graph or an AlloyDB database, each
@@ -251,6 +259,13 @@ export function deploymentTargetKeyError(
       `Model '${model.name}' sets 'deployment_target' to '${target}'`, target);
 }
 
+// The Dataplex name of a Spanner graph `target` names with `propertyGraphs`,
+// or undefined for any other target.
+function spannerGraphName(target: string): string|undefined {
+  const m = asResourceName(target).match(SPANNER_PROPERTY_GRAPH);
+  return m ? `${m[1]}/graphs/${m[2]}` : undefined;
+}
+
 /**
  * Why a push would reject `target`, or undefined when it accepts it. `at` says
  * where it is written.
@@ -271,6 +286,11 @@ export function targetError(at: string, target: string): string {
   const name = asResourceName(target);
   if (name !== target && parseTarget(name, {legacyAlloyDb: false})) {
     return `${at}, which is ${resourceUriFix(target)}.`;
+  }
+  const graph = spannerGraphName(target);
+  if (graph) {
+    return `${at}, which names a Spanner graph by 'propertyGraphs'; write ` +
+        `its Dataplex name: '${graph}'.`;
   }
   const form =
       CATALOG_PREFIXES.find(([prefix]) => target.startsWith(prefix))?.[1];
