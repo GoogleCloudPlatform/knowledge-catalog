@@ -1377,6 +1377,62 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     });
   }
 
+  // `text` with a 130 KiB third-party block on the model, which only the
+  // second-generation aspects store.
+  const bigBlock = (text: string) => text.replace(
+      '  - name: commerce\n',
+      `  - name: commerce\n    custom_extensions:\n      - {vendor_name: DBT, ` +
+          `data: ${'x'.repeat(130 * 1024)}}\n`);
+  // Push checks neither the copies nor the aspects when the scope holds more
+  // than one model document.
+  for (const [label, targets, v2, model] of [
+         ['a file over the size limit', 0, false,
+          `# ${'x'.repeat(130 * 1024)}\n${commerce()}`],
+         ['an aspect over the size limit with KC_V2_ASPECTS on for a graph ' +
+              'push',
+          1, true, bigBlock(commerce({targets: 1}))],
+       ] as const) {
+    test(`prints only the one-model error for two models and ${label}`,
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeScope({
+             'commerce.yaml': model,
+             'shop.yaml': commerce({targets})
+                              .replace('name: commerce', 'name: shop')
+                              .replace(`${GRAPH}_prod`, `${GRAPH}_shop`),
+           });
+           const pushed = await pushResult();
+           expect(pushed.errors).toEqual(
+               [expect.stringContaining('would receive 2 models')]);
+           expect(await profiles()).toBe(1);
+           expect(rejects(logs, '')).toEqual(pushed.errors);
+           expect(logs.join('\n')).not.toContain('too large');
+         });
+  }
+
+  // With KC_V2_ASPECTS on, push checks every aspect the catalog leg writes,
+  // before any graph deploys.
+  for (const [targets, profile] of
+           [[0], [1], [0, 'prod']] as [number, string?][]) {
+    test(`prints push's aspect size error with KC_V2_ASPECTS on${
+             profile ? ' for a named profile' :
+                       targets ? ' for a graph push' : ''}`,
+         async () => {
+           process.env.KC_V2_ASPECTS = '1';
+           writeScope({
+             'commerce.yaml': bigBlock(commerce({targets})),
+             ...profile &&
+                 {[`commerce.profile.${profile}.yaml`]: profileFile(profile)},
+           });
+           const pushed = await pushResult(profile);
+           expect(pushed).toEqual({code: 1, errors: [expect.stringContaining(
+               'too large to store in Knowledge Catalog')]});
+           expect(await profiles()).toBe(1);
+           expect(rejects(profile ? profileSection(profile) : logs))
+               .toEqual(pushed.errors);
+         });
+  }
+
   test('prints push\'s warning for a custom ai_context member push leaves ' +
            'out with KC_V2_ASPECTS on',
        async () => {
@@ -1424,20 +1480,6 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     expect(
         readSpy.mock.calls.filter(c => path.resolve(String(c[0])) === profilePath))
         .toHaveLength(1);
-  });
-
-  // Push skips the copies when the scope holds more than one model document.
-  test('prints only the one-model error for two models and a file over the size limit', async () => {
-    writeScope({
-      'commerce.yaml': `# ${'x'.repeat(130 * 1024)}\n${commerce()}`,
-      'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
-    });
-    const pushed = await pushResult();
-    expect(pushed.errors).toEqual(
-        [expect.stringContaining('would receive 2 models')]);
-    expect(await profiles()).toBe(1);
-    expect(rejects(logs, '')).toEqual(pushed.errors);
-    expect(logs.join('\n')).not.toContain('too large');
   });
 
   // A graph push reads the profile files before anything else, so a profile

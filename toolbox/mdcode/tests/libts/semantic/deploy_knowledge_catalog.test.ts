@@ -101,6 +101,9 @@ const OPTS = {
 };
 const V2_OPTS = {...OPTS, v2Aspects: true};
 
+// The most data Dataplex stores in an aspect other than schema.
+const LIMIT = 122_880;
+
 // bun's spyOn accumulates calls across tests; restore originals after each so
 // per-test call counts and ordering assertions are isolated.
 afterEach(() => {
@@ -146,8 +149,7 @@ function stubClient(opts: {
   links?: (entry: string) => ApiResult<any>,
   // Result of deleteEntryLink, keyed by the entry-link id. Default: 200.
   delLink?: (linkId: string) => ApiResult<any>,
-  // Result of getEntry, which push makes for an entry the listing lacks when
-  // create returns 409, keyed by entry id. Default: 200 with no entrySource.
+  // Result of getEntry, keyed by entry id. Default: 200 with an empty entry.
   getEntry?: (entryId: string) => ApiResult<any>,
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
@@ -627,7 +629,6 @@ describe('checkFileCopies', () => {
 
 
 describe('deployKnowledgeCatalog: the size of a file copy', () => {
-  const LIMIT = 122_880;
   const NAME = 'sales.yaml';
   // The JSON around the content: `{"fileName":"sales.yaml","content":""}`.
   const ENVELOPE = JSON.stringify({fileName: NAME, content: ''}).length;
@@ -4004,6 +4005,25 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
 });
 
 
+// Model shop with entity orders and metric revenue. `aiContext` is the YAML
+// inside the model's ai_context.
+const shopDocs = (aiContext: string) => [{
+  name: 'shop.yaml',
+  text: `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+${aiContext ? `    ai_context:\n      ${aiContext}\n` : ''}    entities:
+      - name: orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: amount, expression: amount }
+    metrics:
+      - { name: revenue, expression: SUM(orders.amount) }
+`,
+}];
+
 type Stubs = NonNullable<Parameters<typeof stubClient>[0]>;
 // Pushes `docs` with KC_V2_ASPECTS on over a catalog that lists `existing`
 // and answers each create with 409. `stubs` overrides any stub.
@@ -4136,4 +4156,298 @@ describe('deployKnowledgeCatalog: V2 relationship entries and links', () => {
       expect(result).toMatchObject({success: false, details});
     });
   }
+});
+
+
+// The error push gives for an aspect over its limit.
+function tooLarge(
+    key: string, owner: string, bytes: number, limit = LIMIT): string {
+  return `aspect 'dataplex-types.global.${key}' of ${owner} is too large to ` +
+      `store in Knowledge Catalog: its data takes ${bytes} bytes, and one ` +
+      `aspect holds at most ${limit}.`;
+}
+
+describe('deployKnowledgeCatalog: V2 overview aspects', () => {
+  const OVERVIEW = 'dataplex-types.global.overview';
+  const OVERVIEW_TYPE =
+      'projects/dataplex-types/locations/global/aspectTypes/overview';
+  const LISTED = [
+    {id: 'shop', type: MODEL_TYPE},
+    {id: 'shop/entities/orders', type: ENTITY_TYPE},
+    {id: 'shop/metrics/revenue', type: METRIC_TYPE},
+  ];
+  // An entry as getEntry returns it, with dataplex-types spelled by its
+  // number. `byPath` maps each overview path to its data, '' for entry level.
+  function withOverviews(
+      id: string, byPath: Record<string, Record<string, any>>): any {
+    const aspects: Record<string, any> = {};
+    for (const [path, data] of Object.entries(byPath)) {
+      const key = `655216118709.global.overview${path ? `@${path}` : ''}`;
+      aspects[key] = {
+        aspectType:
+            'projects/655216118709/locations/global/aspectTypes/overview',
+        ...(path ? {path} : {}),
+        data,
+      };
+    }
+    return {name: entryName(id), entryType: 'x', aspects};
+  }
+  // A getEntry stub that returns the overview instances `stored` holds for
+  // each entry id, by path.
+  const holding = (stored: Record<string, Record<string, any>>) =>
+      (id: string) => ok(stored[id] ? withOverviews(id, stored[id]) : {});
+
+  // Pushes model shop with `examples` over LISTED, whose entries hold the
+  // overview instances `stored`.
+  const pushOver = (stored: Record<string, Record<string, any>>,
+                    examples = '', stub: Stubs = {}) =>
+      pushAgain(shopDocs(examples && `examples: ${examples}`), LISTED,
+                {getEntry: holding(stored), ...stub});
+
+  test('reads only the overview aspect of each model and metric entry, ' +
+           'listed or not',
+       async () => {
+         const {getEntry, result} =
+             await pushOver({}, '', {existing: [LISTED[0]]});
+         expect(result.success).toBe(true);
+         // The listed model entry is read in the preflight. The two entries
+         // the listing lacks are read when their create returns 409.
+         expect(getEntry.mock.calls.map(c => [c[3], c[4]])).toEqual([
+           ['shop', [OVERVIEW_TYPE]],
+           ['shop/entities/orders', undefined],
+           ['shop/metrics/revenue', [OVERVIEW_TYPE]],
+         ]);
+       });
+
+  const overview = (data: Record<string, any>) =>
+      ({aspectType: OVERVIEW_TYPE, data});
+  const CONSOLE = {
+    content: '<p>Console</p>',
+    contentType: 'HTML',
+    links: [{url: 'https://x'}],
+  };
+  // Each case stores overview instances on entry `id` by path and pushes shop
+  // with `examples`. The entry's update must send the overview aspects `sent`
+  // and list exactly the overview keys `keys`.
+  const UPDATES = [
+    {
+      name: 'content from the console survives a push that writes examples',
+      id: 'shop',
+      stored: {'': {...CONSOLE, examples: [{title: 'Old', content: 'old'}]}},
+      examples: '[Sales last month?, By region]',
+      sent: {
+        [OVERVIEW]: overview({
+          ...CONSOLE,
+          examples: [{content: 'Sales last month?'}, {content: 'By region'}],
+        }),
+      },
+      keys: [OVERVIEW],
+    },
+    {
+      name: 'content from the console survives a push that drops the examples',
+      id: 'shop',
+      stored: {'': {content: 'Console', examples: [{content: 'old'}]}},
+      sent: {[OVERVIEW]: overview({content: 'Console'})},
+      keys: [OVERVIEW],
+    },
+    {
+      name: 'an instance that held only examples is removed by its exact key ' +
+          'when the model drops them',
+      id: 'shop/metrics/revenue',
+      stored: {'': {examples: [{content: 'old'}]}},
+      sent: {},
+      keys: [OVERVIEW],
+    },
+    {
+      name: 'an instance with no examples is left alone when the object has ' +
+          'none',
+      id: 'shop',
+      stored: {'': {content: 'Console'}},
+      sent: {},
+      keys: [],
+    },
+    {
+      name: 'an entry not in the listing whose create returns 409 has its ' +
+          'overview read before the update',
+      id: 'shop',
+      stored: {'': {content: 'Console', examples: [{content: 'old'}]}},
+      examples: '[New one]',
+      existing: [],
+      sent: {
+        [OVERVIEW]:
+            overview({content: 'Console', examples: [{content: 'New one'}]}),
+      },
+      keys: [OVERVIEW],
+    },
+  ];
+  for (const c of UPDATES) {
+    test(c.name, async () => {
+      const {update, result} = await pushOver(
+          {[c.id]: c.stored}, c.examples, {existing: c.existing});
+      expect(result.success).toBe(true);
+      const [entry, , keys, deleteMissing]: any[] = update.mock.calls.find(
+          (call: any) => call[0].name === entryName(c.id))!;
+      const isOverview = (key: string) => key.startsWith(OVERVIEW);
+      expect(Object.fromEntries(
+                 Object.entries(entry.aspects).filter(([k]) => isOverview(k))))
+          .toEqual(c.sent);
+      expect(keys.filter(isOverview)).toEqual(c.keys);
+      expect(deleteMissing).toBe(true);
+    });
+  }
+
+  const many: Record<string, Record<string, any>> = {};
+  for (let i = 0; i < 100; i++) many[`Schema.f${i}`] = {content: 'c'};
+  for (const [name, stored, examples, stub, details] of [
+    ['an entry holding 100 overview instances fails the push before any ' +
+         'write, naming it',
+     {shop: many}, '', {},
+     'entry \'shop\' holds 100 or more overview aspects, ' +
+         'and Knowledge Catalog returns at most 100 in one read, so push ' +
+         'cannot keep the ones it does not see; remove some of them, then ' +
+         'push again.'],
+    ['a failed overview read fails the push before any write, naming the ' +
+         'entry',
+     {}, '', {
+       getEntry: (id: string) => id === 'shop/metrics/revenue' ?
+           err(500, 'backend error') :
+           ok({}),
+     },
+     'reading the overview aspects of entry \'shop/metrics/revenue\' ' +
+         'failed: backend error'],
+    // Each < takes six bytes in Dataplex, so 20,000 of them fit until the
+    // examples are added.
+    ['an overview whose console HTML Dataplex escapes past the limit fails ' +
+         'before any write',
+     {shop: {'': {content: '<'.repeat(20_000)}}}, `[${'e'.repeat(3_000)}]`, {},
+     tooLarge('overview', 'entry \'shop\'', 123_042)],
+    ['an entry the listing lacks fails the same way before its update when ' +
+         'its create returns 409',
+     {shop: {'': {content: '<'.repeat(20_000)}}}, `[${'e'.repeat(3_000)}]`,
+     {existing: []},
+     `Model 'shop': ${tooLarge('overview', 'entry \'shop\'', 123_042)}`],
+  ] as [string, Record<string, Record<string, any>>, string, Stubs, string][]) {
+    test(name, async () => {
+      const {create, update, result} = await pushOver(stored, examples, stub);
+      expect(result).toMatchObject({success: false, details});
+      // An entry the listing lacks is read after its create returns 409.
+      expect(create).toHaveBeenCalledTimes(stub.existing ? 1 : 0);
+      expect(update).not.toHaveBeenCalled();
+    });
+  }
+
+  test('a listed entry that is gone when read has no overview to keep',
+       async () => {
+         const {create, result} = await pushOver({}, '[One]', {
+           create: () => ok({}),
+           getEntry: () => err(404, 'not found'),
+         });
+         expect(result.success).toBe(true);
+         const anchor = create.mock.calls.find(c => c[3] === 'shop')![4] as any;
+         expect(anchor.aspects[OVERVIEW].data)
+             .toEqual({examples: [{content: 'One'}]});
+       });
+
+  test('with the flag off, push reads no overview', async () => {
+    const {getEntry} = stubClient({
+      existing: [{id: 'shop', type: MODEL_TYPE}],
+      create: EXISTS,
+    });
+
+    const result = await deployKnowledgeCatalog(
+        models(shopDocs('examples: [One]')), CTX,
+        {...OPTS, sourceFiles: [{fileName: 'shop.yaml', content: 'x'}]});
+
+    expect(result.success).toBe(true);
+    expect(getEntry.mock.calls.every(c => c[4] === undefined)).toBe(true);
+  });
+
+});
+
+
+describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
+  // Model shop with `instructions` and a custom member, and `fields` fields on
+  // entity orders.
+  const shop = (instructions: string, fields: number) =>
+      `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    ai_context:
+      instructions: ${JSON.stringify(instructions)}
+      custom: {owner: ops}
+    entities:
+      - name: orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        primary_key: [f0]
+        fields:
+${Array.from({length: fields}, (_, i) => `          - { name: f${i}, ` +
+    `expression: f${i}, description: ${'d'.repeat(100)} }`).join('\n')}
+`;
+  const push = (instructions: string, fields = 1,
+                opts: Parameters<typeof deployKnowledgeCatalog>[2] = V2_OPTS) =>
+      deployKnowledgeCatalog(
+          models([{name: 'shop.yaml', text: shop(instructions, fields)}]), CTX,
+          opts);
+  // The JSON around the instructions in the guidelines aspect.
+  const ENVELOPE = JSON.stringify(
+      {instructions: '', data: {owner: 'ops'}, userManaged: true}).length;
+
+  for (const [name, instructions, fields, opts, details] of [
+    ['an aspect exactly at the limit fits',
+     'x'.repeat(LIMIT - ENVELOPE), 1, V2_OPTS],
+    ['a schema aspect over 120 KiB and under 2 MiB fits', 'x', 1200, V2_OPTS],
+    ['with the flag off, only file copies are checked',
+     'x'.repeat(LIMIT), 1, {...OPTS, validateOnly: true}],
+    ['a schema aspect over 2 MiB fails', 'x', 16000,
+     {...V2_OPTS, validateOnly: true},
+     tooLarge('schema', 'entry \'shop/entities/orders\'', 2_836_933,
+              2 * 1024 * 1024)],
+  ] as [string, string, number, Parameters<typeof push>[2], string?][]) {
+    test(name, async () => {
+      stubClient();
+      expect(await push(instructions, fields, opts))
+          .toMatchObject(details ? {success: false, details} : {success: true});
+    });
+  }
+
+  // Each case fills the instructions with `ch`, which Dataplex stores in
+  // `width` bytes. JSON.stringify writes < > & = and ' as one byte and U+2028
+  // and U+2029 as three, and Dataplex writes each as six.
+  for (const [ch, width, validateOnly] of [
+         ['x', 1], ['é', 2, true], ['<', 6], ['>', 6], ['&', 6], ['=', 6],
+         ['\'', 6], ['\u2028\u2029', 12]
+       ] as [string, number, boolean?][]) {
+    test(`${validateOnly ? 'validateOnly reports' : 'a push fails on'} an ` +
+             `aspect over 120 KiB of '${ch}', naming the entry and the aspect`,
+         async () => {
+           const {list, create} = stubClient();
+           const count = Math.ceil((LIMIT - ENVELOPE) / width) + 1;
+           const details = tooLarge(
+               'guidelines', 'entry \'shop\'', count * width + ENVELOPE);
+           expect(await push(ch.repeat(count), 1, {...V2_OPTS, validateOnly}))
+               .toMatchObject({success: false, details});
+           expect(list).not.toHaveBeenCalled();
+           expect(create).not.toHaveBeenCalled();
+         });
+  }
+
+  test('a semantic-link aspect is checked too', async () => {
+    stubClient();
+    const relationships = ['r'.repeat(LIMIT)];
+    const entryLinks = [{
+      ...linkEntry('semantic-link-1', []),
+      entryLinkType: SEMANTIC_LINK_TYPE,
+      aspects: {'dataplex-types.global.semantic-link': {data: {relationships}}},
+    }];
+    const entries = [{name: entryName('shop'), entryType: MODEL_TYPE}];
+    const resources =
+        {entries, entryLinks, ownedPrefixes: ['shop/'], warnings: []};
+    const result = await deployEmittedModels(
+        [{model: 'shop', resources}], [], CTX,
+        {...V2_OPTS, validateOnly: true});
+    const details = tooLarge(
+        'semantic-link', 'entry link \'semantic-link-1\'',
+        LIMIT + JSON.stringify({relationships: ['']}).length);
+    expect(result).toMatchObject({success: false, details});
+  });
 });

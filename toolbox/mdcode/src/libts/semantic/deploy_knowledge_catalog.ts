@@ -22,7 +22,9 @@
 //     and that each file copy fits in one aspect, snapshots the destination
 //     entry group to guard against foreign models (unless `--force-remove` is
 //     set), and checks that any required custom entry/aspect types exist in
-//     the target project.
+//     the target project. With the second-generation aspects, it also checks
+//     every aspect's size and reads the overview instances of each listed
+//     entry.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
@@ -49,11 +51,11 @@
 import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import * as crm from '../gcp/crm';
-import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
-import {entryIdOf, slug} from './kc_ids';
+import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntityEntry, isEntryOwner, isLinkOwner, isModelLink, isSemanticObjectEntry, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
+import {entryIdOf, Namer, slug} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -79,14 +81,9 @@ export interface KcDeployOptions {
   emitExpressions?: boolean;
   // Emit the second-generation built-in aspect fields and entry-id layout
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
-  // Consumed by `emitModels` when called through `preflightKnowledgeCatalog` or
-  // `deployKnowledgeCatalog`, and by `updateEntry` when computing `aspectKeys`
-  // (including when called through `deployEmittedModels`, which takes
-  // already-emitted resources from an origin with its own emitter).
   v2Aspects?: boolean;
   // The file copies of the model file and its profile files, which the
-  // emitter stores when v2Aspects is off. Consumed by `emitModels` like
-  // v2Aspects.
+  // emitter stores when v2Aspects is off.
   sourceFiles?: FileCopy[];
   // Set when the caller has already checked that the file-copy type exists
   // in the destination project. The preflight then does not look that type
@@ -168,6 +165,8 @@ export interface KcPreparedDeploy {
   existing: Entry[];
   warnings: string[];
   plan: string[];
+  // By entry id, the exact keys of the overview instances each update removes.
+  removedAspectKeys?: ReadonlyMap<string, readonly string[]>;
 }
 
 type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
@@ -196,6 +195,8 @@ function sleep(ms: number): Promise<void> {
  *      `opts.fileCopyTypeChecked` is set.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
+ * With `opts.v2Aspects` set, step 2 also checks every aspect's size, and step
+ * 5 first merges in the overview instances each listed entry holds.
  */
 export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
@@ -280,7 +281,8 @@ export async function applyKnowledgeCatalog(
   // leave out what the step that threw had already written.
   const written =
       await writeEmittedModels(
-          cat, opts, emitted, existing, counts, isScopeProject)
+          cat, opts, emitted, existing, counts, isScopeProject,
+          prepared.removedAspectKeys)
           .catch((err: any) => ({error: String(err?.message || err).trim()}));
   if (written.error) return failed(written.error);
 
@@ -321,14 +323,18 @@ export async function deployEmittedModels(
  * Runs read-only preflight checks on already-emitted models.
  *
  * The method performs the following checks:
- *   1. Validates locally that `emitted` contains a single model and that each
- *      file copy fits in one aspect, builds the dry-run plan, and returns
- *      early when `opts.validateOnly` is set.
+ *   1. Validates locally that `emitted` contains a single model, that each
+ *      file copy fits in one aspect and, with `opts.v2Aspects` set, that every
+ *      aspect fits. Builds the dry-run plan and returns early when
+ *      `opts.validateOnly` is set.
  *   2. Lists the destination entry group and validates that it contains no
  *      foreign models unless `--force-remove` is set.
  *   3. Validates that every custom type used by the model exists in the
  *      target project. Skips the file-copy type when
  *      `opts.fileCopyTypeChecked` is set.
+ *   4. With `opts.v2Aspects` set, merges in the overview instances of each
+ *      listed model, metric and relationship entry, and checks the size of
+ *      each merged aspect, as `keepOverviews` describes.
  */
 async function preflightEmittedModels(
     emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
@@ -353,6 +359,8 @@ async function preflightEmittedModels(
   const model = emitted[0];
   const sizeValidation = validateFileCopySizes(model, result);
   if (!sizeValidation.success) return {result: sizeValidation};
+  const aspectsError = opts.v2Aspects ? emittedAspectsError(model) : undefined;
+  if (aspectsError) return {result: result(false, aspectsError)};
   plan = buildPlan(emitted, opts);
   if (opts.validateOnly) return {result: result(true)};
 
@@ -374,7 +382,13 @@ async function preflightEmittedModels(
       await validateCustomTypes(cat, model, opts, result);
   if (!customTypesValidation.success) return {result: customTypesValidation};
 
-  return {prepared: {emitted, existing, warnings, plan}};
+  if (!opts.v2Aspects) return {prepared: {emitted, existing, warnings, plan}};
+
+  // 4. Keep what other writers put in the overview instances.
+  const kept = await keepListedOverviews(cat, opts, model, existing);
+  if (kept.error) return {result: result(false, kept.error)};
+  const prepared = {emitted: [kept.model], existing, warnings, plan};
+  return {prepared: {...prepared, removedAspectKeys: kept.removed}};
 }
 
 /**
@@ -455,6 +469,7 @@ function validateEntryGroup(
 // The largest aspect data Dataplex accepts: 120 KiB of its JSON form, in UTF-8
 // bytes, with escaping counted. The schema aspect may hold 2 MiB.
 export const MAX_ASPECT_DATA_BYTES = 120 * 1024;
+const MAX_SCHEMA_ASPECT_DATA_BYTES = 2 * 1024 * 1024;
 
 /**
  * Validates that every file copy in `model` fits in one aspect.
@@ -507,6 +522,173 @@ function fileCopySizeError(data: Record<string, any>): string|undefined {
   return `file '${data.fileName}' is too large to store in Knowledge ` +
       `Catalog: its copy takes ${bytes} bytes, and one aspect holds at most ` +
       `${MAX_ASPECT_DATA_BYTES}.`;
+}
+
+/**
+ * Why push's catalog leg cannot write `models` with v2Aspects on: an emit
+ * error or an aspect too large to store. Calls no service.
+ */
+export function checkCatalogAspects(
+    models: LoadedModel[], opts: KcDeployOptions): string|undefined {
+  const emit = emitModels(models, opts);
+  if (emit.error) return emit.error;
+  for (const model of emit.emitted) {
+    const error = emittedAspectsError(model);
+    if (error) return error;
+  }
+  return undefined;
+}
+
+// Why push cannot write what `model` emits, or undefined when it can.
+function emittedAspectsError(model: EmittedModel): string|undefined {
+  for (const entry of model.resources.entries) {
+    const error = aspectDataError(entry.aspects, `entry '${entryId(entry)}'`);
+    if (error) return error;
+  }
+  for (const link of model.resources.entryLinks) {
+    const error = aspectDataError(link.aspects, `entry link '${linkId(link)}'`);
+    if (error) return error;
+  }
+  return undefined;
+}
+
+// Most aspects Dataplex returns for one entry in one read.
+const MAX_ASPECTS_PER_READ = 100;
+
+// Why Knowledge Catalog cannot store one of `aspects`, which `owner` carries,
+// or undefined when each fits.
+function aspectDataError(
+    aspects: Record<string, Aspect>|undefined, owner: string): string|
+    undefined {
+  for (const [key, aspect] of Object.entries(aspects ?? {})) {
+    const type = aspectTypeIdOfKey(key);
+    const bytes = storedJsonBytes(aspect.data ?? {});
+    const limit = type === 'schema' ? MAX_SCHEMA_ASPECT_DATA_BYTES :
+                                      MAX_ASPECT_DATA_BYTES;
+    if (bytes > limit) {
+      return `aspect '${key}' of ${owner} is too large to store in ` +
+          `Knowledge Catalog: its data takes ${bytes} bytes, and one ` +
+          `aspect holds at most ${limit}.`;
+    }
+  }
+  return undefined;
+}
+
+// The UTF-8 bytes of `data`'s JSON as Dataplex counts them. Dataplex writes
+// < > & = ' U+2028 and U+2029 as six-byte \uXXXX escapes.
+function storedJsonBytes(data: unknown): number {
+  const json = JSON.stringify(data);
+  return new TextEncoder().encode(json).length +
+      5 * (json.match(/[<>&=']/g)?.length ?? 0) +
+      3 * (json.match(/[\u2028\u2029]/g)?.length ?? 0);
+}
+
+// The aspect type id in an aspect key, `<project>.<location>.<type>` with an
+// optional `@<path>`.
+function aspectTypeIdOfKey(key: string): string {
+  return key.split('@')[0].split('.').pop() ?? '';
+}
+
+/**
+ * Reads the overview instances of each listed model, metric and relationship
+ * entry, and merges them in as `keepOverviews` does. Fails naming the first
+ * entry whose read fails with anything but 404.
+ */
+async function keepListedOverviews(
+    cat: CatalogClient, opts: KcDeployOptions, model: EmittedModel,
+    existing: readonly Entry[]): Promise<
+    {model: EmittedModel; removed: Map<string, string[]>; error?: string}> {
+  const listed = new Set(existing.map(entryId));
+  const reads = await Promise.all(model.resources.entries.map(async entry => {
+    const id = entryId(entry);
+    if (!listed.has(id) || !isSemanticObjectEntry(entry) ||
+        isEntityEntry(entry)) {
+      return {entry};
+    }
+    const read = await cat.getEntry(
+        opts.project, opts.location, opts.entryGroup, id,
+        [overviewTypeName(opts)]);
+    if (isNotFoundStatus(read)) return {entry};
+    if (!isOkStatus(read)) {
+      return {
+        entry,
+        error: `reading the overview aspects of entry '${id}' failed: ${
+            errText(read)}`,
+      };
+    }
+    return keepOverviews(entry, read.result, opts);
+  }));
+  const removed = new Map<string, string[]>();
+  for (const read of reads) {
+    if (read.error) return {model, removed, error: read.error};
+    if (read.removed?.length) removed.set(entryId(read.entry), read.removed);
+  }
+  const entries = reads.map(r => r.entry);
+  return {model: {...model, resources: {...model.resources, entries}}, removed};
+}
+
+function overviewTypeName(opts: KcDeployOptions): string {
+  return new Namer(opts).typeName('aspect', 'overview');
+}
+
+/**
+ * Merges the overview instances of `stored` into `entry`, keeping every stored
+ * field but `examples`, and lists the instances left empty in `removed`. Fails
+ * when `stored` holds as many instances as one read returns, or when an aspect
+ * of the merged entry is too large to store.
+ */
+function keepOverviews(
+    entry: Entry, stored: Entry|undefined, opts: KcDeployOptions):
+    {entry: Entry; removed?: string[]; error?: string} {
+  const instances = overviewInstances(stored);
+  const id = entryId(entry);
+  if (instances.size >= MAX_ASPECTS_PER_READ) {
+    return {
+      entry,
+      error: `entry '${id}' holds ${MAX_ASPECTS_PER_READ} or more overview ` +
+          `aspects, and Knowledge Catalog returns at most ` +
+          `${MAX_ASPECTS_PER_READ} in one read, so push cannot keep the ones ` +
+          `it does not see; remove some of them, then push again.`,
+    };
+  }
+  const overviewKey = new Namer(opts).aspectRef('overview');
+  const instanceKey = (path: string) =>
+      path ? `${overviewKey}@${path}` : overviewKey;
+  const aspects: Record<string, Aspect> = {...entry.aspects};
+  const removed: string[] = [];
+  for (const [path, data] of instances) {
+    const key = instanceKey(path);
+    const written = aspects[key];
+    if (written) {
+      aspects[key] = {
+        ...written,
+        data: {...data, examples: written.data?.examples},
+      };
+      continue;
+    }
+    if (!Array.isArray(data.examples) || !data.examples.length) continue;
+    const {examples: _, ...rest} = data;
+    if (Object.keys(rest).length) {
+      aspects[key] = {aspectType: overviewTypeName(opts), data: rest};
+    } else {
+      removed.push(key);
+    }
+  }
+  const tooLarge = aspectDataError(aspects, `entry '${id}'`);
+  if (tooLarge) return {entry, error: tooLarge};
+  return {entry: {...entry, aspects}, removed};
+}
+
+// The overview instances of `entry` as data by path, '' for the entry-level
+// one. A key matches by its type id alone, whatever project it names.
+function overviewInstances(entry: Entry|undefined):
+    Map<string, Record<string, any>> {
+  const out = new Map<string, Record<string, any>>();
+  for (const [key, aspect] of Object.entries(entry?.aspects ?? {})) {
+    if (aspectTypeIdOfKey(key) !== 'overview') continue;
+    out.set(key.split('@').slice(1).join('@'), aspect.data ?? {});
+  }
+  return out;
 }
 
 /**
@@ -665,11 +847,12 @@ function planSummary(
  */
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    existing: Entry[], counts: Counts,
-    isScopeProject: ProjectMatcher): Promise<{error?: string}> {
+    existing: Entry[], counts: Counts, isScopeProject: ProjectMatcher,
+    removedAspectKeys?: ReadonlyMap<string, readonly string[]>):
+    Promise<{error?: string}> {
   for (const {model, resources} of emitted) {
-    const entries =
-        await writeEntries(cat, opts, resources.entries, existing);
+    const entries = await writeEntries(
+        cat, opts, resources.entries, existing, removedAspectKeys);
     counts.created += entries.created;
     counts.updated += entries.updated;
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
@@ -1218,15 +1401,19 @@ interface EntriesOutcome {
  *      entities by name) concurrently.
  *
  * An entry that already exists is updated in place (idempotent re-push).
+ * Its update also removes the aspects `removedAspectKeys` lists for it.
  */
 async function writeEntries(
     cat: CatalogClient, opts: KcDeployOptions, entries: Entry[],
-    existing: Entry[] = []): Promise<EntriesOutcome> {
+    existing: Entry[] = [],
+    removedAspectKeys?: ReadonlyMap<string, readonly string[]>):
+    Promise<EntriesOutcome> {
   if (!entries.length) return {created: 0, updated: 0};
   // The entrySource each entry had before this push. An update keeps the
   // fields kcmd does not own.
   const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
-  const write = (e: Entry) => writeEntry(cat, opts, e, sources);
+  const write = (e: Entry) =>
+      writeEntry(cat, opts, e, sources, removedAspectKeys?.get(entryId(e)));
   const [anchor, ...children] = entries;
 
   const anchorRes = await write(anchor);
@@ -1505,23 +1692,36 @@ function duplicateEndpointsError(link: EntryLink, createError: string): string {
  * if it already exists (HTTP 409), delegates to `updateEntry` with the
  * entrySource `sources` lists for it. An entry `sources` does not hold is read
  * first. That happens after a listing the caller may not make, or when another
- * writer created the entry after the listing.
+ * writer created the entry after the listing. With v2Aspects on, the read of
+ * a model, metric or relationship entry also returns its overview instances
+ * for `keepOverviews`.
  */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
-    sources: ReadonlyMap<string, Entry['entrySource']>): Promise<WriteOutcome> {
+    sources: ReadonlyMap<string, Entry['entrySource']>,
+    removedKeys?: readonly string[]): Promise<WriteOutcome> {
   const id = entryId(entry);
   const res = await createEntry(cat, opts, id, entry);
   if (isExistsStatus(res)) {
-    if (sources.has(id)) return updateEntry(cat, opts, entry, sources.get(id));
+    if (sources.has(id)) {
+      return updateEntry(cat, opts, entry, sources.get(id), removedKeys);
+    }
+    const readOverviews =
+        opts.v2Aspects && isSemanticObjectEntry(entry) && !isEntityEntry(entry);
     const read = await cat.getEntry(
-        opts.project, opts.location, opts.entryGroup, id, undefined,
+        opts.project, opts.location, opts.entryGroup, id,
+        readOverviews ? [overviewTypeName(opts)] : undefined,
         {keepSourceResource: true});
     if (!isOkStatus(read)) {
       return {error: `entry '${id}': reading it before the update: ${
                   errText(read)}`};
     }
-    return updateEntry(cat, opts, entry, read.result?.entrySource);
+    const kept =
+        readOverviews ? keepOverviews(entry, read.result, opts) : undefined;
+    if (kept?.error) return {error: kept.error};
+    return updateEntry(
+        cat, opts, kept?.entry ?? entry, read.result?.entrySource,
+        kept?.removed);
   }
   if (!isOkStatus(res)) return {error: `entry '${id}': ${errText(res)}`};
   return {};
@@ -1545,7 +1745,8 @@ const KEPT_SOURCE_FIELDS =
  * Push owns the optional aspects `entryAspectKeys` lists, so it removes any
  * that the model does not declare even if someone added them in the console.
  * Every other aspect another tool attached is left alone, since `aspectKeys`
- * names only the types kcmd writes.
+ * names only the types kcmd writes. The update also removes the aspects
+ * `removedKeys` names.
  *
  * The update mask replaces the whole entrySource, so the update carries over
  * fields from `source`, the entrySource the entry had before this push. Of
@@ -1560,7 +1761,8 @@ const KEPT_SOURCE_FIELDS =
  */
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
-    source?: Entry['entrySource']): Promise<WriteOutcome> {
+    source?: Entry['entrySource'],
+    removedKeys: readonly string[] = []): Promise<WriteOutcome> {
   const {[PUSH_ID_LABEL]: _own, ...others} = source?.labels ?? {};
   const labels = {...others, ...entry.entrySource?.labels};
   const kept = Object.fromEntries(
@@ -1580,6 +1782,7 @@ async function updateEntry(
   // removed aspect when its key (or `<project>.<location>.guidelines@*` for
   // field-level `guidelines`) is still listed in `aspectKeys`.
   const aspectKeys = entryAspectKeys(entry, opts);
+  for (const key of removedKeys) aspectKeys.add(key);
   const upd = await cat.updateEntry(
       entry, ['entry_source', 'aspects'], [...aspectKeys],
       /* deleteMissingAspects= */ true);

@@ -54,9 +54,9 @@
 // With the second-generation types (v2Aspects on), the model entry carries
 // semantic-model and each metric entry carries semantic-metric and
 // sql-expressions. Model, metric and relationship entries also carry
-// guidelines and semantic-extensions when the object has content for them.
-// `guidelines` holds the object's instructions and, in `data`, its custom
-// `ai_context` members.
+// guidelines, semantic-extensions and overview when the object has content
+// for them. `guidelines` holds the object's instructions and, in `data`, its
+// custom `ai_context` members.
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
@@ -842,14 +842,18 @@ function metricAspectData(
   });
 }
 
-// The guidelines and semantic-extensions aspects of an object's entry, each
-// left out when the object has nothing for it.
+// The guidelines, semantic-extensions and overview aspects of an object's
+// entry, each left out when the object has nothing for it.
 function objectAspectsV2(
     object: {aiContext?: AiContext; customExtensions?: CustomExtension[]}):
     Record<string, any> {
+  const examples = object.aiContext?.examples ?? [];
   return compact({
     guidelines: guidelinesAspectDataV2(object.aiContext),
     'semantic-extensions': extensionsAspectData(object.customExtensions),
+    overview: examples.length ?
+        {examples: examples.map(content => ({content}))} :
+        undefined,
   });
 }
 

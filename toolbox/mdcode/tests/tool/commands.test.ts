@@ -1127,6 +1127,11 @@ function fakeCatalog(opts: {missingType?: string} = {}) {
                 .filter(([, a]) => (aspectTypes ?? []).includes(a.aspectType!)));
         return {status: 200, result: {...structuredClone(e), aspects}};
       });
+  // A get returns what a lookup of the same entry returns.
+  spyOn(P, 'getEntry').mockImplementation(
+      async (p, l, _eg, id, aspectTypes) => P.lookupEntry(p, l,
+          [...entries.keys()].find(n => n.endsWith(`/entries/${id}`)) ?? '',
+          aspectTypes));
   spyOn(P, 'lookupEntryLinks')
       .mockImplementation(async () => ({status: 200, result: []}));
   spyOn(P, 'createEntryLink')
@@ -2456,7 +2461,8 @@ ${rest}`;
   const validateNoKc = {validateOnly: true, kc: false};
   const pruned: Array<[
     outcome: string, deployments: string[], rest: string, options: PushOptions,
-    errors: string[], warnings: string[], sources?: string[]]> = [
+    errors: string[], warnings: string[], sources?: string[],
+    v2Aspects?: boolean]> = [
     ['stopped by two deployments', ['a', 'b'], '', {validateOnly: true},
      ["Error: model 'commerce' (commerce) declares 2 deployments; push uses " +
       'exactly one deployment for now, with a BigQuery Graph or Spanner ' +
@@ -2478,11 +2484,21 @@ ${rest}`;
       'could not read its SQL, so the fields it reads were not checked.', NOTE]],
     ['that fails a source check', ['g'], '', validateNoKc,
      ['Error: the table is gone'], [NOTE], ['the table is gone']],
+    ['that passes with KC_V2_ASPECTS on', ['a'], '', {validateOnly: true}, [],
+     [NOTE], [], true],
+    ['stopped by an aspect too large with KC_V2_ASPECTS on', ['a'],
+     `    ai_context:\n      instructions: ${
+         'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`,
+     {validateOnly: true},
+     [expect.stringContaining("Error: aspect 'dataplex-types.global." +
+                              "guidelines' of entry 'commerce' is too large")],
+     [], [], true],
   ];
-  for (const [outcome, deployments, rest, options, errors, warnings, sources = []]
-       of pruned) {
+  for (const [outcome, deployments, rest, options, errors, warnings,
+              sources = [], v2Aspects = false] of pruned) {
     const note = warnings.includes(NOTE) ? 'its' : 'no';
     test(`a pruned push ${outcome} gives ${note} pruning note`, async () => {
+      if (v2Aspects) process.env.KC_V2_ASPECTS = '1';
       const eg = writeModel(ltvUnbound(deployments, rest));
       if (options.allProfiles) {
         fs.mkdirSync(path.join(eg, 'commerce.profiles'));

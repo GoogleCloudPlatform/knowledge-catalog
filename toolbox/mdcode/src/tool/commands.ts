@@ -991,13 +991,15 @@ function warnModelFileNames(
 // any check runs. Push's checks on the copies it stores of the model and
 // profile files run once for the scope, in profiles(). Its lookup of their type
 // is left out. `profileDocs` reads the model's profile files, and `declared`
-// its declared profiles, like the readers push builds. `onlyModelDoc` says
-// whether `doc` is the scope's only model document. `warn` receives push's
-// warnings about the custom ai_context members it leaves out.
+// its declared profiles, like the readers push builds. `source` is the
+// catalog destination, and `onlyModelDoc` says whether `doc` is the scope's
+// only model document. `warn` receives push's warnings about the custom
+// ai_context members it leaves out.
 async function pushErrors(
     doc: ProfiledDoc, profileName: string, defaultProject: string,
     ctx: context.ApiContext, profileDocs: ProfileDocs,
-    declared: DeclaredProfiles, load: CloudSqlLoad, onlyModelDoc: boolean,
+    declared: DeclaredProfiles, load: CloudSqlLoad,
+    source: SemanticModelSource, onlyModelDoc: boolean,
     warn: (warning: string) => void): Promise<string[]> {
   const graph = declaresGraphTarget(doc.text);
   const refused = graph ? profileFileGraphError([doc], profileName) : undefined;
@@ -1013,14 +1015,16 @@ async function pushErrors(
       });
   if (!prepared) return errors;
   // With KC_V2_ASPECTS on, push warns about each custom ai_context member it
-  // leaves out. A scope with more than one model fails the one-model check
-  // first.
+  // leaves out, and checks every aspect's size before it deploys or writes
+  // anything. A scope with more than one model fails the one-model check first.
   if (kcV2Aspects() && onlyModelDoc) {
     for (const {model} of prepared.models) {
       for (const w of unstorableMemberWarnings(model)) {
         warn(`[${model.name}] ${w}`);
       }
     }
+    const problem = catalogAspectsError(prepared.models, source);
+    if (problem) return [...errors, problem];
   }
   if (!graph) return errors;
   // Push then generates each graph's DDL. Under --validate-only,
@@ -1041,6 +1045,18 @@ async function pushErrors(
     }
   }
   return errors;
+}
+
+// What checkCatalogAspects reports for a flag-on push of `models` to `source`.
+function catalogAspectsError(
+    models: LoadedModel[], source: SemanticModelSource): string|undefined {
+  return kc.checkCatalogAspects(models, {
+    project: source.project,
+    location: source.location,
+    entryGroup: source.entryGroup,
+    systemTypeProject: process.env.KC_TYPE_PROJECT,
+    v2Aspects: true,
+  });
 }
 
 export async function push(options: PushOptions): Promise<number> {
@@ -1383,6 +1399,19 @@ export async function push(options: PushOptions): Promise<number> {
         return 1;
       }
       fileCopies = copies.files;
+    }
+    // With KC_V2_ASPECTS on, a graph push runs checkCatalogAspects here, before
+    // any graph deploys. A scope with more than one model skips it, since the
+    // catalog leg's preflight refuses that scope first.
+    if (kcEnabled && kcV2Aspects() && graphPlans.length &&
+        layoutDocs.length === 1) {
+      const prepared = await prepareKc();
+      if (!prepared) return 1;
+      const problem = catalogAspectsError(prepared.models, source);
+      if (problem) {
+        console.error(`Error: ${problem}`);
+        return 1;
+      }
     }
     for (const n of pruningNotes) PUSH_REPORT.note(n);
 
@@ -1913,7 +1942,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const load = await cloudSqlLoad(ctx, docs, profileDocs);
   if (!load) return 1;
   const errorsFor = (doc: ProfiledDoc, name: string) => pushErrors(
-      doc, name, defaultProject, ctx, profileDocs, declaredBy, load,
+      doc, name, defaultProject, ctx, profileDocs, declaredBy, load, source,
       docs.length === 1,
       w => console.warn(`  profile '${name}': warning: ${w}`));
   // The inline bindings' header. 'default' is not a profile document and
