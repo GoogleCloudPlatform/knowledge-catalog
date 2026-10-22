@@ -103,7 +103,7 @@ store you can bind inline on the model as the `default` profile:
       - name: Customer
         extends: [Party]
         primary_key: [id]
-        source: my-project.sales.customer
+        source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/customer
         fields:
           - { name: id,           expression: c_custkey }
           - { name: name,         expression: c_name }   # the inherited field, bound here
@@ -164,7 +164,7 @@ and each of those is a `Party`:
       - name: Employee
         extends: [Person, Taxpayer]
         primary_key: [id]
-        source: my-project.hr.employee
+        source: bigquery.googleapis.com/projects/my-project/datasets/hr/tables/employee
         fields:
           - { name: id,         expression: e_id }
           - { name: name,       expression: e_name }
@@ -235,7 +235,7 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
       - name: Customer
         extends: [Person]
         primary_key: [id]
-        source: my-project.sales.customer
+        source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/customer
         fields:
           - { name: id,         expression: c_id }
           - { name: name,       expression: c_name }
@@ -244,7 +244,7 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
       - name: Vendor
         extends: [Organization]
         primary_key: [id]
-        source: my-project.sales.vendor
+        source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/vendor
         fields:
           - { name: id,           expression: v_id }
           - { name: name,         expression: v_name }

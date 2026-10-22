@@ -504,7 +504,7 @@ describe('pullKnowledgeCatalog: file copies', () => {
              vendorName: 'GOOGLE',
              data: JSON.stringify({
                deploymentTargets: [
-                 '//bigquery.googleapis.com/projects/demo/datasets/d/propertyGraphs/g',
+                 'bigquery.googleapis.com/projects/demo/datasets/d/propertyGraphs/g',
                ],
              }),
            }],

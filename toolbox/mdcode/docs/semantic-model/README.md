@@ -235,18 +235,18 @@ half-deploys; the checks that gate it are in
 ### Where a model deploys (the deployment target)
 
 A bound model declares exactly one **deployment target**: where in a store the
-model deploys. The host of the target URI selects the store:
+model deploys, written as its GCP resource name. Its host selects the store:
 
 ```
 # BigQuery — an analytical store
-//bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<name>
+bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<name>
 
 # Spanner — an operational store
-//spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<name>
+spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/propertyGraphs/<name>
 ```
 
 A BigQuery target names the project and dataset the model deploys into; a Spanner
-target names the instance and database. Swapping one target URI for the other
+target names the instance and database. Swapping one target for the other
 deploys the same model to the other store — the logical model does not change. The
 target is also recorded on the model's Knowledge Catalog entry. A model with more
 than one deployment target is rejected at push time (see
@@ -254,25 +254,24 @@ than one deployment target is rejected at push time (see
 
 For a model that serves more than one store, the target belongs to a
 [binding profile](profiles.md) rather than the model. `deployment_target` is a
-resource URI and a native key under the extended `0.2.0.dev0/google` profile; under
+resource name and a native key under the extended `0.2.0.dev0/google` profile; under
 vanilla Ossie the same target is written inside a `GOOGLE` custom extension instead
 (see [model spec §6](model_spec.md#6-the-extension-mechanism)).
 
 ### Table sources
 
-Each entity's `source` names its backing table, written as a resource URI:
-`//bigquery.googleapis.com/…/tables/<table>` for BigQuery,
-`//spanner.googleapis.com/…/tables/<table>` for Spanner. A
+Each entity's `source` names its backing table, written as its GCP resource name:
+`bigquery.googleapis.com/…/tables/<table>` for BigQuery,
+`spanner.googleapis.com/…/tables/<table>` for Spanner. A
 [binding profile](profiles.md) can move an entity between stores by swapping this
-URI.
+name.
 
-For BigQuery, a shorthand dotted name also works: `dataset.table` (two parts) is
-qualified with the scope's project from `init`, and `project.dataset.table` names
-a table in another project. A name with more than three parts — a four-part
-`catalog.database.schema.table`, say — points at a table in a **federated REST
-catalog**, such as an Apache Iceberg table exposed through BigLake. Validation
-resolves the name the same way the deploy does (see
-[Validation](reference.md#validation)).
+A table in a **federated REST catalog**, such as an Apache Iceberg table exposed
+through BigLake, is written as its BigLake resource name,
+`biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>`.
+Validation resolves each name the same way the deploy does (see
+[Validation](reference.md#validation)), and [profiles.md](profiles.md#sources)
+lists every accepted store.
 
 ### What push creates
 

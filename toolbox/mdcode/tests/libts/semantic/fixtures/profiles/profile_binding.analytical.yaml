@@ -6,15 +6,15 @@
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/commerce
+    deployment_target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customers
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/customers
         fields:
           - { name: id, expression: cust_id }
           - { name: name, expression: full_name }
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
         fields:
           - { name: id, expression: order_id }
           - { name: customerId, expression: fk_customer }

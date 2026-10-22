@@ -92,7 +92,7 @@ describe('declaresGraphTarget', () => {
 version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    deployment_target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
 `;
   const withDeployments = `
 version: 0.2.0.dev0/google
@@ -100,7 +100,7 @@ semantic_model:
   - name: sales
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
 `;
   const withExtension = `
 version: 0.2.0.dev0
@@ -108,7 +108,7 @@ semantic_model:
   - name: sales
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets":["//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g"]}'
+        data: '{"deploymentTargets":["spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g"]}'
 `;
   const logicalOnly = `
 version: 0.2.0.dev0
@@ -141,7 +141,7 @@ semantic_model:
 `;
     expect(declaresGraphTarget(vanilla([{
       name: 'prod',
-      target: '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+      target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
     }]))).toBe(true);
     expect(declaresGraphTarget(vanilla([]))).toBe(false);
   });
@@ -236,11 +236,11 @@ semantic_model:
            'null',
            '"x"',
            '{"deployments": null}',
-           '{"deployments": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+           '{"deployments": "bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
            '{"deploymentTargets": null}',
-           '{"deploymentTargets": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
-           '{"deployments": [{"name": "a", "target": "//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}], "deployments": []}',
-           '{"deploymentTargets": ["//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"], "deploymentTargets": []}',
+           '{"deploymentTargets": "bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
+           '{"deployments": [{"name": "a", "target": "bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}], "deployments": []}',
+           '{"deploymentTargets": ["bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"], "deploymentTargets": []}',
          ]) {
       expect(declaresGraphTarget(withData(data))).toBe(true);
     }
@@ -326,11 +326,11 @@ semantic_model:
   - name: sales
     deployments:
       - name: g
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
         profile: prod
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -339,7 +339,7 @@ semantic_model:
     for (const name of ['prod', 'qa']) {
       fs.writeFileSync(
           path.join(eg, 'sales.profiles', `${name}.yaml`),
-          `semantic_model:\n  - name: sales\n    datasets:\n      - name: orders\n        source: bigquery:p.d.${name}_orders\n`);
+          `semantic_model:\n  - name: sales\n    datasets:\n      - name: orders\n        source: bigquery.googleapis.com/projects/p/datasets/d/tables/${name}_orders\n`);
     }
 
     expect(await profiles()).toBe(1);
@@ -363,12 +363,12 @@ semantic_model:
     ${target}
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
 `;
-    const graph = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    const graph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
     fs.writeFileSync(
         path.join(eg, 'a.yaml'), model('a', `deployment_target: ${graph}`));
     fs.writeFileSync(
@@ -377,7 +377,7 @@ semantic_model:
     // `kcmd profiles` loads a model file only when it has a profile.
     fs.writeFileSync(
         path.join(eg, 'a.profile.x.yaml'),
-        'name: x\nentities:\n  - name: orders\n    source: bigquery:p.d.orders2\n');
+        'name: x\nentities:\n  - name: orders\n    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders2\n');
 
     expect(await push({})).toBe(1);
     expect(bqSpy).not.toHaveBeenCalled();
@@ -421,11 +421,11 @@ semantic_model:
   - name: sales
     deployments:
       - name: staging
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
         profile: spanner_binding
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -433,10 +433,10 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'sales.yaml'), modelYaml);
     fs.writeFileSync(
         path.join(eg, 'sales.profile.spanner_binding.yaml'),
-        'name: spanner_binding\nentities:\n  - name: orders\n    source: bigquery:p.d.orders\n');
+        'name: spanner_binding\nentities:\n  - name: orders\n    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders\n');
     fs.writeFileSync(
         path.join(eg, 'sales.profile.other.yaml'),
-        'name: other\nentities:\n  - name: orders\n    source: bigquery:p.d.orders2\n');
+        'name: other\nentities:\n  - name: orders\n    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders2\n');
 
     const code = await push({});
     expect(code).toBe(1);
@@ -493,10 +493,10 @@ semantic_model:
   - name: sales
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -504,10 +504,10 @@ semantic_model:
     fs.mkdirSync(path.join(eg, 'sales.profiles'), {recursive: true});
     fs.writeFileSync(path.join(eg, 'sales.profiles', 'staging.yaml'), `semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    deployment_target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
     entities:
       - name: orders
-        source: bigquery:p.d.orders_staging
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders_staging
 `);
 
     expect(await push({allProfiles: true, kc: false, validateOnly: true}))
@@ -517,7 +517,7 @@ semantic_model:
         .toContain(
             "model 'sales' under binding profile 'staging' and model 'sales' " +
             "under binding profile 'default' both deploy to the same graph " +
-            "'//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
+            "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
   // Both models are under one profile, so only their names tell them apart.
@@ -534,10 +534,10 @@ semantic_model:
   - name: ${name}
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -551,7 +551,7 @@ semantic_model:
         .toContain(
             "model 'a' under binding profile 'default' and model 'b' under " +
             "binding profile 'default' both deploy to the same graph " +
-            "'//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
+            "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
   // A resource name and its URI name the same graph.
@@ -572,7 +572,7 @@ semantic_model:
         target: ${target}
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -601,10 +601,10 @@ semantic_model:
   - name: first_model
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g1
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g1
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -614,11 +614,11 @@ semantic_model:
   - name: second_model
     deployments:
       - name: staging
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2
         profile: spanner_binding
     datasets:
       - name: items
-        source: bigquery:p.d.items
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/items
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -650,7 +650,7 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'sales.profiles', 'bq.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    deployment_target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
     datasets:
       - name: orders
         source: p.d.orders
@@ -669,9 +669,9 @@ semantic_model:
     const eg = setupWorkspace();
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
-    const spGraph = '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g1';
-    const bqGraph = '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const alloyTarget = '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+    const spGraph = 'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g1';
+    const bqGraph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+    const alloyTarget = 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
 
     // Primary model pushed without `emitExpressions` (the default push) and
     // pulled through the CLI: two BigQuery entities in the same dataset (short
@@ -690,7 +690,7 @@ semantic_model:
         primary_key: [id]
         fields: [{ name: id, expression: id }]
       - name: bq_uri
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/items
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/items
         primary_key: [id]
         fields: [{ name: id, expression: id }]
 `;
@@ -729,7 +729,7 @@ semantic_model:
     expect(byName.get('bq_short')!.dataSource).toBe('p.d.orders');
     expect(byName.get('bq_short')!.fields[0].expression).toBeUndefined();
     expect(byName.get('bq_uri')!.authoredSource)
-        .toBe('//bigquery.googleapis.com/projects/p/datasets/d/tables/items');
+        .toBe('bigquery.googleapis.com/projects/p/datasets/d/tables/items');
     expect(byName.get('bq_uri')!.dataSource).toBe('p.d.items');
 
     // Each other backend gets its own single-database model and round-trips

@@ -24,7 +24,7 @@ import {skillsGenerate} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
-const SPANNER = '//spanner.googleapis.com/projects/acme-ops/instances/prod';
+const SPANNER = 'spanner.googleapis.com/projects/acme-ops/instances/prod';
 
 function modelText(name: string, action: string): string {
   return `version: "0.2.0.dev0/google"
@@ -218,9 +218,9 @@ describe('kcmd skills-generate: two models, one name', () => {
 describe('createSemanticRuntimes: the store a profile uses', () => {
   const SPANNER_DB = `${SPANNER}/databases/commerce`;
   const BQ =
-      '//bigquery.googleapis.com/projects/acme-analytics/datasets/sales';
+      'bigquery.googleapis.com/projects/acme-analytics/datasets/sales';
   const CLUSTER =
-      '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+      'alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
 
   beforeEach(() => {
     // Nothing here may reach the network; the AlloyDB listing is mocked.
@@ -531,7 +531,7 @@ semantic_model:
                      `${BQ}/propertyGraphs/commerce`)
                  .replace(
                      `${SPANNER}/databases/commerce/tables/Orders`,
-                     '//bigquery.googleapis.com/projects/acme-analytics/' +
+                     'bigquery.googleapis.com/projects/acme-analytics/' +
                          'datasets/raw/tables/orders'));
          expect(await skillsGenerate({out: 'skills'})).toBe(0);
          const skill = fs.readFileSync(
@@ -571,7 +571,7 @@ actions:
 
 describe('createSemanticRuntimes: a column binding is read in the store\'s SQL', () => {
   const CLUSTER =
-      '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+      'alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
   const SPANNER_DB = `${SPANNER}/databases/commerce`;
 
   beforeEach(() => {

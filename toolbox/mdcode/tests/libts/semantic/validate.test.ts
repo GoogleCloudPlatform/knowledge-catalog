@@ -12,17 +12,17 @@ import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
 const BQ_TARGET =
-    '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+    'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
 
 // A parsed Spanner Graph deployment target the strict matcher accepts.
 const SPANNER_TARGET =
-    '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+    'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
 
 // A parsed AlloyDB deployment target. Not a graph target: it names a database
 // to run against, which is the whole reason a push has to say something other
 // than "typo" about it.
 const ALLOYDB_TARGET =
-    '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
 
 function googleExt(targets: string[]): CustomExtension {
   return {
@@ -134,11 +134,11 @@ describe('validatePushRequirements', () => {
     // A single, otherwise well-formed URI that is neither a BigQuery nor a
     // Spanner Graph target fails because it does not parse as either.
     const m = model(
-        {}, [googleExt(['//dataplex.googleapis.com/projects/p/locations/us'])]);
+        {}, [googleExt(['dataplex.googleapis.com/projects/p/locations/us'])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain(
-        "target '//dataplex.googleapis.com/projects/p/locations/us' is not " +
+        "target 'dataplex.googleapis.com/projects/p/locations/us' is not " +
         'a valid BigQuery Graph or Spanner Graph URI');
     expect(errs[0]).not.toContain('deploymentTarget');
   });
@@ -185,7 +185,7 @@ describe('validatePushRequirements', () => {
 
   test('more than one deployment target is rejected', () => {
     const other =
-        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const m = model({}, [googleExt([BQ_TARGET, other])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.length).toBe(1);
@@ -196,7 +196,7 @@ describe('validatePushRequirements', () => {
 
   test('more than one target in a vanilla model ends with the version hint', () => {
     const other =
-        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const m = model({version: '0.2.0.dev0'}, [googleExt([BQ_TARGET, other])]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs).toHaveLength(1);
@@ -243,14 +243,14 @@ describe('validatePushRequirements', () => {
   // repeat, and a single resource name is a valid target.
   test('a resource name and its URI are the same target', () => {
     const both = model({version: '0.2.0.dev0'},
-                       [googleExt([BQ_TARGET, BQ_TARGET.slice(2)])]);
+                       [googleExt([`//${BQ_TARGET}`, BQ_TARGET])]);
     expect(validatePushRequirements([loaded(both)], {targetOptional: true}))
         .toEqual([
           `model 'm' (doc) declares duplicate deployment target '${
-              BQ_TARGET.slice(2)}'; each deployment must target a distinct ` +
+              BQ_TARGET}'; each deployment must target a distinct ` +
               `resource.`,
         ]);
-    const name = model({}, [googleExt([BQ_TARGET.slice(2)])]);
+    const name = model({}, [googleExt([BQ_TARGET])]);
     expect(validatePushRequirements([loaded(name)])).toEqual([]);
   });
 
@@ -293,7 +293,7 @@ describe('validatePushRequirements', () => {
       expect(errs.some(e => e.includes(`duplicate deployment target '${BQ_TARGET}'`))).toBe(true);
     }
     const other =
-        '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
+        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
     const many = model({}, [googleExt([BQ_TARGET, other])]);
     expect(validatePushRequirements([loaded(many)], {targetOptional: true}))
         .toEqual([]);
@@ -921,7 +921,7 @@ semantic_model:
   - name: sales
     entities:
       - name: customer
-        source: p.d.customer
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer
         fields:
           - { name: id, expression: c_custkey }
           - { name: name, expression: c_name }
@@ -974,7 +974,7 @@ semantic_model:
                .join('\n')).toContain('cannot declare a primary key or unique keys');
     expect(check({entities: [ent('party', {...base, fields: [{name: 'id', expression: 'id'}]})]})
                .join('\n')).toContain("its field 'id' cannot carry an expression");
-    expect(check({entities: [ent('party', {...base, authoredSource: 'bigquery:p.d.party'})]})
+    expect(check({entities: [ent('party', {...base, authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/party'})]})
                .join('\n')).toContain('cannot declare a source');
   });
 
@@ -1408,7 +1408,7 @@ semantic_model:
   - name: sales
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: ["LOWER(o_id)"]
         fields:
           - { name: o_id, expression: o_id }
@@ -1893,7 +1893,7 @@ semantic_model:
         data: '${JSON.stringify({deploymentTargets: [BQ_TARGET]})}'
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - name: id
@@ -1933,7 +1933,7 @@ semantic_model:
         data: '${JSON.stringify({deployments: [{name: 'g', target: BQ_TARGET}]})}'
     datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - name: id
@@ -2076,7 +2076,7 @@ ${sourceLine}        primary_key: [id]
       - { name: months, expression: "COUNT(DISTINCT DATE_TRUNC(orders.order_date, MONTH))" }
 ${extraMetric}`;
       const bqLoaded = loadModels(yamlFor(
-          '        source: bigquery:p.d.orders\n',
+          '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders\n',
           '      - { name: done_rev, expression: \'SUM(IF(orders.status = "done", orders.net_amount, 0))\' }\n' +
           '      - { name: recent_cnt, expression: \'COUNTIF(orders.order_date >= DATE "2024-01-01")\' }\n'));
       const bqWarnings: string[] = [];
@@ -2089,7 +2089,7 @@ ${extraMetric}`;
       // Reading `ANSI_SQL` in the BigQuery source dialect catches a bad field inside BigQuery-only syntax
       // (`DATE "2024-01-01"` does not parse in generic ANSI_SQL).
       const bqBadLoaded = loadModels(yamlFor(
-          '        source: bigquery:p.d.orders\n',
+          '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders\n',
           '      - { name: bad_recent, expression: \'COUNTIF(orders.missing_date >= DATE "2024-01-01")\' }\n'));
       expect(validatePushRequirements(
                  bqBadLoaded.models.map(m => loaded(m, 'sales.yaml')),

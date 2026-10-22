@@ -194,7 +194,7 @@ rejects that — so the whole of what is deployment-specific is in this one file
 
 ```yaml
 - name: Order
-  source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Orders
+  source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Orders
   fields:
     - {name: orderId, expression: order_id}
     - {name: total, expression: total}
@@ -290,7 +290,7 @@ store. Run this from this directory, the one holding `catalog.yaml`:
 $ kcmd profiles
 Model 'commerce' (commerce_demo):
   spanner  (default)
-    target: spanner:my-project/my-instance/semantic_skill_demo
+    target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/propertyGraphs/commerce
     entities: Customer, Order, LineItem
     actions: IssueCredit (sql)
 ```
@@ -813,7 +813,11 @@ carried at the time put them to a judge — see the note in
 
 `commerce.profiles/alloydb.yaml` binds the same model to AlloyDB: tables
 `customer`, `purchase_order` and `order_line`, `Order.total` bound to
-`order_total`, and PostgreSQL statements. Generate under it:
+`order_total`, and PostgreSQL statements. The `alloydb` profile names its
+database by cluster, so `kcmd skills-generate --profile alloydb` looks up the
+cluster's primary instance through the AlloyDB API. Point `alloydb.yaml` at a
+cluster you can read before you run it. The output below shows the placeholder
+names, with `my-instance` as the primary instance. Generate under it:
 
 ```bash
 kcmd skills-generate --profile spanner --out /tmp/spanner-skills --force

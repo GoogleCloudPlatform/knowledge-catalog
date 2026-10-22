@@ -15,7 +15,7 @@ semantic_model:
     deployment_target: projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph
     entities:
       - name: orders
-        source: demo.sales.orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         unique_keys:
           - [o_orderkey]

@@ -441,7 +441,7 @@ semantic_model:
   - name: m
     entities:
       - name: person
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/person
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/person
         primary_key: [id]
         fields:
           - {name: id, expression: id}
@@ -451,7 +451,7 @@ semantic_model:
               dialects: [{dialect: POSTGRES, expression: "flags # 1"}]
       - name: customer
         extends: [person]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer
         primary_key: [id]
 `);
     const byEntity = (runtime: SemanticRuntime) => Object.fromEntries(
@@ -482,7 +482,7 @@ semantic_model:
   - name: m
     entities:
       - name: person
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/person
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/person
         primary_key: [id]
         fields:
           - {name: id, expression: id}
@@ -498,7 +498,7 @@ semantic_model:
                 - {dialect: ANSI_SQL, expression: "status # open or closed"}
       - name: customer
         extends: [person]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer
         primary_key: [id]
 `);
     const runtime = rt(resolveInheritance(models[0]).model);

@@ -44,9 +44,9 @@ import {profiles, push, skillsGenerate} from '../../src/tool/commands';
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
 const SPANNER_DB =
-    '//spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
+    'spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
 const BQ = (dataset: string) =>
-    `//bigquery.googleapis.com/projects/acme/datasets/${dataset}`;
+    `bigquery.googleapis.com/projects/acme/datasets/${dataset}`;
 
 let dir = '';
 let cwd = '';
@@ -204,7 +204,7 @@ semantic_model:
        async () => {
          writeScope({
            'commerce.yaml': bigQueryModel(
-               '//biglake.googleapis.com/projects/acme/catalogs/lake/' +
+               'biglake.googleapis.com/projects/acme/catalogs/lake/' +
                'namespaces/sales/tables/orders'),
          });
          const r = await runAll();
@@ -407,8 +407,8 @@ semantic_model:
   // once each way is a repeat too.
   test('once as its URI and once as its resource name, every command refuses',
        async () => {
-         const graph = `${BQ('graphs')}/propertyGraphs/commerce`;
-         const name = graph.slice(2);
+         const name = `${BQ('graphs')}/propertyGraphs/commerce`;
+         const graph = `//${name}`;
          writeScope({'commerce.yaml': `version: "0.2.0.dev0"
 semantic_model:
   - name: commerce
@@ -1106,7 +1106,7 @@ describe('--print-store and skills-generate --name over several models', () => {
     const list = spyOn(AlloyDbClient.prototype, 'listInstances')
                      .mockResolvedValue({status: 200, result: []});
     const cluster =
-        '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main';
+        'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/main';
     const alloy = (name: string) => `version: "0.2.0.dev0/google"
 semantic_model:
   - name: ${name}

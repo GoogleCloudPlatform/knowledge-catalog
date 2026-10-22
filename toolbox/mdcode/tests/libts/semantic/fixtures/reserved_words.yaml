@@ -12,7 +12,7 @@ semantic_model:
     datasets:
       # `Order` and `Group` are reserved -> quoted node labels + REFERENCES.
       - name: Order
-        source: proj.ds.orders
+        source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/orders
         primary_key: [id]
         fields:
           - name: id
@@ -26,7 +26,7 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: order }, { dialect: ANSI_SQL, expression: order }]
       - name: Group
-        source: proj.ds.groups
+        source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/groups
         primary_key: [id]
         fields:
           - name: id

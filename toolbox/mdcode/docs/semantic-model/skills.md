@@ -370,6 +370,12 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
      /tmp/alloydb-skills/commerce/references/issue-credit.md
 ```
 
+The `alloydb` profile names its database by cluster, so `kcmd skills-generate
+--profile alloydb` looks up the cluster's primary instance through the AlloyDB
+API. Point `alloydb.yaml` at a cluster you can read before you run it. The
+output below shows the placeholder names, with `my-instance` as the primary
+instance.
+
 `diff` exits with `0` and no output. Only `SKILL.md` changes, in
 `Finding a record` and `Running an action`:
 

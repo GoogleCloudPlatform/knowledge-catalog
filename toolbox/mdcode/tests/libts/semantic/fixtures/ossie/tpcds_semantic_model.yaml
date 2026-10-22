@@ -15,6 +15,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
+# Changed for kcmd: each dataset source is written as a BigQuery resource name.
 
 # TPC-DS Semantic Model Example
 # This example demonstrates the Ossie Core Metadata Spec using the TPC-DS benchmark schema
@@ -31,7 +32,7 @@ semantic_model:
     datasets:
       # Fact table: Store sales transactions
       - name: store_sales
-        source: tpcds.public.store_sales
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales
         primary_key: [ss_item_sk, ss_ticket_number]  # Composite primary key
         unique_keys:
           - [ss_item_sk, ss_ticket_number]  # Composite key: item + ticket number uniquely identifies a line item
@@ -150,7 +151,7 @@ semantic_model:
 
       # Dimension table: Date
       - name: date_dim
-        source: tpcds.public.date_dim
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/date_dim
         primary_key: [d_date_sk]  # Simple primary key
         unique_keys:
           - [d_date_sk]  # Simple key: single column
@@ -229,7 +230,7 @@ semantic_model:
 
       # Dimension table: Customer
       - name: customer
-        source: tpcds.public.customer
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer
         primary_key: [c_customer_sk]  # Simple primary key
         unique_keys:
           - [c_customer_sk]  # Simple key: single column
@@ -315,7 +316,7 @@ semantic_model:
 
       # Dimension table: Item (Product)
       - name: item
-        source: tpcds.public.item
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item
         primary_key: [i_item_sk]  # Simple primary key
         unique_keys:
           - [i_item_sk]  # Simple key: single column
@@ -410,7 +411,7 @@ semantic_model:
 
       # Dimension table: Store
       - name: store
-        source: tpcds.public.store
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store
         primary_key: [s_store_sk]  # Simple primary key
         unique_keys:
           - [s_store_id]  # Simple key: single column

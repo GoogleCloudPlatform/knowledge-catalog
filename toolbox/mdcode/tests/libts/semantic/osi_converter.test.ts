@@ -76,10 +76,10 @@ describe('serialized document structure', () => {
     expect(sm.name).toBe(model.name);
   });
 
-  test('a dataset source is the opaque dataSource string, verbatim', () => {
+  test('a dataset source is the source as written, verbatim', () => {
     const orders = sm.entities.find((d: any) => d.name === 'orders');
     const entity = model.entities.find(e => e.name === 'orders')!;
-    expect(orders.source).toBe(entity.dataSource);
+    expect(orders.source).toBe(entity.authoredSource);
     expect(typeof orders.source).toBe('string');
   });
 
@@ -111,14 +111,14 @@ describe('serialized document structure', () => {
   });
 
   const bqTarget =
-      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
   const spTarget =
-      '//spanner.googleapis.com/projects/p/instances/i/databases/db' +
+      'spanner.googleapis.com/projects/p/instances/i/databases/db' +
       '/propertyGraphs/g';
   const ordersEntity: Entity = {
     name: 'orders',
     dataSource: 'p.d.orders',
-    authoredSource: 'bigquery:p.d.orders',
+    authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
     keys: ['id'],
     fields: [{name: 'id', expression: 'id'}],
   };
@@ -133,7 +133,7 @@ describe('serialized document structure', () => {
       `        data: '${JSON.stringify({deploymentTargets: targets})}'`,
       '    datasets:',
       '      - name: orders',
-      '        source: bigquery:p.d.orders',
+      '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
       '        primary_key: [id]',
       '        fields:',
       '          - name: id',
@@ -991,7 +991,7 @@ describe('dual-version model serialization', () => {
       'omits Google-only keys under 0.2.0.dev0 and warns on missing source',
       () => {
         const target =
-            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const model: SemanticModel = {
           ...emptyModel,
           version: '0.2.0.dev0',
@@ -1078,7 +1078,7 @@ describe('dual-version model serialization', () => {
             entities: [
               {
                 ...baseOrders,
-                authoredSource: 'bigquery:p.d.orders',
+                authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
                 customExtensions: ext,
                 fields: [{...typedId, customExtensions: ext}],
               },
@@ -1086,7 +1086,7 @@ describe('dual-version model serialization', () => {
                 ...baseOrders,
                 name: 'customers',
                 dataSource: 'p.d.customers',
-                authoredSource: 'bigquery:p.d.customers',
+                authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customers',
                 fields: [typedId],
               },
             ],
@@ -1120,7 +1120,7 @@ describe('dual-version model serialization', () => {
     const model: SemanticModel = {
       ...emptyModel,
       version: '0.2.0.dev0',
-      deployments: [{name: 'prod', target: 'bigquery:p.d'}],
+      deployments: [{name: 'prod', target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'}],
       profiles: [{name: 'prod', entities: [], relationships: []}],
       entities: [{...baseOrders, extends: ['base']}],
       relationships: [{
@@ -1166,7 +1166,7 @@ semantic_model:
     custom_extensions:
 ${blocks}    datasets:
       - name: orders
-        source: bigquery:p.d.orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - name: id
@@ -1365,7 +1365,7 @@ ${blocks}    datasets:
       version: '0.2.0.dev0',
       entities: [{
         ...baseOrders,
-        authoredSource: 'bigquery:p.d.orders',
+        authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
         fields: [{
           name: 'id',
           expression: 'id',
@@ -1418,7 +1418,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
   const vanillaOrders: Entity = {
     name: 'orders',
     dataSource: 'p.d.orders',
-    authoredSource: 'bigquery:p.d.orders',
+    authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
     keys: ['id'],
     fields: [{
       name: 'id',
@@ -1433,7 +1433,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
     entities: [
       {
         name: 'orders',
-        source: 'bigquery:prod.sales.orders',
+        source: 'bigquery.googleapis.com/projects/prod/datasets/sales/tables/orders',
         primaryKey: ['order_id'],
         uniqueKeys: [['order_code', 'region']],
         fields: [
@@ -1463,7 +1463,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
         ],
         fieldsExclude: ['internal_note'],
       },
-      {name: 'bare', source: 'bigquery:prod.sales.bare'},
+      {name: 'bare', source: 'bigquery.googleapis.com/projects/prod/datasets/sales/tables/bare'},
     ],
     relationships: [
       {
@@ -1588,10 +1588,10 @@ describe('serializeModelFiles and profile sidecar files', () => {
           '      - vendor_name: ACME',
           '        data: \'{"model_meta":true}\'',
           '      - vendor_name: GOOGLE',
-          '        data: \'{"deployments":[{"name":"prod_bq","target":"//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g","profile":"prod"}],"profiles":[{"name":"prod","entities":[{"name":"orders","source":"bigquery:p.d.orders_prod","fields":[{"name":"id","expression":"order_id"}]}]}]}\'',
+          '        data: \'{"deployments":[{"name":"prod_bq","target":"bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g","profile":"prod"}],"profiles":[{"name":"prod","entities":[{"name":"orders","source":"bigquery.googleapis.com/projects/p/datasets/d/tables/orders_prod","fields":[{"name":"id","expression":"order_id"}]}]}]}\'',
           '    datasets:',
           '      - name: orders',
-          '        source: bigquery:p.d.orders',
+          '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
           '        primary_key: [id]',
           '        fields:',
           '          - name: id',
@@ -1600,7 +1600,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
           '                - dialect: ANSI_SQL',
           '                  expression: id',
           '      - name: vip_orders',
-          '        source: bigquery:p.d.vip_orders',
+          '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/vip_orders',
           '        primary_key: [id]',
           '        custom_extensions:',
           '          - vendor_name: GOOGLE',
@@ -1656,13 +1656,13 @@ describe('serializeModelFiles and profile sidecar files', () => {
         const profiles =
             [prodProfile, stagingProfile, minimalProfile, noneExcludedProfile];
         const bqTarget =
-            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const spTarget =
-            '//spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/g';
+            'spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/g';
         const vipOrders: Entity = {
           name: 'vip_orders',
           dataSource: 'p.d.vip_orders',
-          authoredSource: 'bigquery:p.d.vip_orders',
+          authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/vip_orders',
           extends: ['orders'],
           keys: ['id'],
           fields: [{
@@ -1764,17 +1764,17 @@ describe('serializeModelFiles and profile sidecar files', () => {
                                 '  - name: retail',
                                 '    deployments:',
                                 '      - name: prod_bq',
-                                '        target: bigquery:p.d.g',
+                                '        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
                                 '        profile: prod',
                                 '    entities:',
                                 '      - name: base_orders',
-                                '        source: bigquery:p.d.base_orders',
+                                '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/base_orders',
                                 '        primary_key: [id]',
                                 '        fields:',
                                 '          - name: id',
                                 '            expression: id',
                                 '      - name: orders',
-                                '        source: bigquery:p.d.orders',
+                                '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
                                 '        extends: [base_orders]',
                                 '        primary_key: [id]',
                                 '        fields: []',
@@ -1823,7 +1823,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
          `        data: '${JSON.stringify(data)}'`,
          '    datasets:',
          '      - name: orders',
-         '        source: bigquery:p.d.orders',
+         '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
          '        primary_key: [id]',
          '        fields:',
          '          - name: id',
@@ -1837,7 +1837,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
                    deploymentTargets: [],
                    profiles: [{
                      entities: [{
-                       source: 'bigquery:x.y.z',
+                       source: 'bigquery.googleapis.com/projects/x/datasets/y/tables/z',
                        name: 'orders',
                        fields: [{name: 'id', expression: 'oid'}]
                      }],
@@ -1867,13 +1867,13 @@ describe('serializeModelFiles and profile sidecar files', () => {
           deployments: [{
             name: 'prod_bq',
             target:
-                '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+                'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
           }],
           customExtensions: [
             {
               vendorName: 'GOOGLE',
               data:
-                  '{"deployments":[{"name":"prod_bq","target":"//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}]}',
+                  '{"deployments":[{"name":"prod_bq","target":"bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}]}',
             },
             {
               vendorName: 'GOOGLE',
@@ -1886,7 +1886,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
               ...vanillaOrders,
               name: 'vip_orders',
               dataSource: 'p.d.vip_orders',
-              authoredSource: 'bigquery:p.d.vip_orders',
+              authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/vip_orders',
               extends: ['orders'],
               customExtensions:
                   [{vendorName: 'GOOGLE', data: '{"extends":["orders"]}'}],
@@ -1942,12 +1942,12 @@ describe('serializeModelFiles and profile sidecar files', () => {
       profiles: [
         {
           name: 'prod',
-          entities: [{name: 'orders', source: 'bigquery:prod.sales.orders'}],
+          entities: [{name: 'orders', source: 'bigquery.googleapis.com/projects/prod/datasets/sales/tables/orders'}],
           relationships: [],
         },
         {
           name: 'Prod',
-          entities: [{name: 'orders', source: 'bigquery:stale.sales.orders'}],
+          entities: [{name: 'orders', source: 'bigquery.googleapis.com/projects/stale/datasets/sales/tables/orders'}],
           relationships: [],
         },
         {name: 'Default', entities: [], relationships: []},
@@ -1961,7 +1961,7 @@ describe('serializeModelFiles and profile sidecar files', () => {
       'retail.yaml',
       'retail.profile.prod.yaml',
     ]);
-    expect(files[1].content).toContain('bigquery:prod.sales.orders');
+    expect(files[1].content).toContain('bigquery.googleapis.com/projects/prod/datasets/sales/tables/orders');
     expect(warnings).toEqual([
       `model 'retail': profiles 'prod' and 'Prod' name the same profile (profile names are unique ignoring case); only 'prod' is serialized`,
       `model 'retail': profile 'Default' uses the name reserved for the model's inline bindings and is not serialized`,

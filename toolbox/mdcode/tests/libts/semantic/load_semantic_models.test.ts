@@ -13,7 +13,7 @@ import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 // A minimal loader-valid document: one model, one dataset (with a primary key
 // so it does not warn), no metrics.
-function doc(modelName: string, source = 'proj.ds.tbl'): string {
+function doc(modelName: string, source = 'bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl'): string {
   return `version: 0.2.0.dev0
 semantic_model:
   - name: ${modelName}
@@ -53,7 +53,7 @@ semantic_model:
   - name: sales
     datasets:
       - name: orders
-        source: proj.ds.tbl
+        source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl
 `;
     const res = loadSemanticModels(
         [{name: 'sales.yaml', text: noKey}], {allowLegacyBareSource: true});

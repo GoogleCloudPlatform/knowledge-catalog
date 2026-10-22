@@ -15,19 +15,19 @@ semantic_model:
   - name: sales_graph
     datasets:
       - name: customers
-        source: customers
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/customers
         primary_key: [customer_id]
         fields:
           - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.customer_id }, { dialect: ANSI_SQL, expression: customers.customer_id }] } }
           - { name: region, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.region }, { dialect: ANSI_SQL, expression: customers.region }] } }
       - name: orders
-        source: orders
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/orders
         primary_key: [order_id]
         fields:
           - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.order_id }, { dialect: ANSI_SQL, expression: orders.order_id }] } }
           - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.customer_id }, { dialect: ANSI_SQL, expression: orders.customer_id }] } }
       - name: order_items
-        source: order_items
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/order_items
         primary_key: [order_item_id]
         fields:
           - { name: order_item_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_item_id }, { dialect: ANSI_SQL, expression: order_items.order_item_id }] } }

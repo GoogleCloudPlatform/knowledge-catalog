@@ -48,7 +48,7 @@ function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
           datasets: [
             {
               name: 'orders',
-              source: 'p.d.o',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/o',
               primary_key: ['id'],
               fields: [
                 {
@@ -65,7 +65,7 @@ function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
             },
             {
               name: 'customer',
-              source: 'p.d.c',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
               primary_key: ['cid'],
               fields: [{
                 name: 'cid',
@@ -240,7 +240,7 @@ describe('validatePushRequirements checks every affected concept', () => {
     vendorName: 'GOOGLE',
     data: JSON.stringify({
       deploymentTargets:
-          ['//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
+          ['bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
     }),
   };
 

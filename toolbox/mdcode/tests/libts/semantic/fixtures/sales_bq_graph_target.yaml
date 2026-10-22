@@ -1,7 +1,7 @@
 # Test fixture -- AI-first semantics format (v0.2.0.dev0).
 #
 # A minimal, loader-valid model that declares a GOOGLE BigQuery Graph
-# deployment target (a `//bigquery.googleapis.com/.../propertyGraphs/...` URI).
+# deployment target (a `bigquery.googleapis.com/.../propertyGraphs/...` resource name).
 # This is the happy-path document for the deploy leg: loader -> IR -> generator
 # -> BigQuery Graph. The target resolves to `demo.sales.sales_graph`.
 
@@ -9,10 +9,10 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
+    deployment_target: bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
     entities:
       - name: orders
-        source: demo.sales.orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey

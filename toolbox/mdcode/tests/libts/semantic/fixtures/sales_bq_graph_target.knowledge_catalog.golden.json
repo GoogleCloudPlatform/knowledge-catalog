@@ -11,7 +11,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
           "data": {
             "deploymentTargets": [
-              "//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph"
+              "bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph"
             ]
           }
         }
@@ -30,7 +30,7 @@
           "data": {
             "source": {
               "resources": [
-                "//bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders"
+                "bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders"
               ]
             }
           }

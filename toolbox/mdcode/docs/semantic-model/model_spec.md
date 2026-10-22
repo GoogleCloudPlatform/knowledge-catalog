@@ -670,33 +670,32 @@ a relationship's join columns cover a key of its target.
 
 ### 7.1. Table sources
 
-`source` is a resource URI naming the backing table:
+`source` is the GCP resource name of the backing table, with no leading `//`:
 
 ```
-//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<table>
-//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<table>
+bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<table>
+spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<table>
 ```
 
-For BigQuery a dotted shorthand is also accepted: `dataset.table` (qualified with
-the scope's project) or `project.dataset.table`; a name with more than three parts
-points at a table in a federated REST catalog. Ossie requires `source` on every
+[profiles.md](profiles.md#sources) lists every accepted store. Ossie requires `source` on every
 dataset; `kcmd` relaxes it to optional ([§4.2](#42-relaxations-looser-than-ossie))
 so a purely logical model loads, but a non-abstract dataset in a model bound for a
 graph MUST have one.
 
 ### 7.2. Deployment target
 
-`deployment_target` is a single resource URI whose host selects the store:
+`deployment_target` is a single GCP resource name, with no leading `//`, whose
+host selects the store:
 
 ```
 # BigQuery Graph — analytical
-//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
+bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 
 # Spanner Graph — operational
-//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
+spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
 ```
 
-The URI MUST match one of these two shapes. A model bound for a graph MUST declare
+The name MUST match one of these two shapes. A model bound for a graph MUST declare
 exactly one ([§4](#4-narrowings-and-relaxations)). The identifier segments are
 restricted to `[A-Za-z0-9_-]`. The native `deployment_target:` key shown here is the
 extended-profile form; under vanilla Ossie the same target rides in a `GOOGLE`
@@ -799,15 +798,15 @@ semantic_model:
 version: "0.2.0.dev0/google"   # native deployment_target key -> extended profile
 semantic_model:
   - name: sales
-    deployment_target: "//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/sales"
+    deployment_target: "bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/sales"
     datasets:
       - name: orders
-        source: acme.raw.orders
+        source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders
         fields:
           - { name: order_id,   expression: o_id }
           - { name: net_amount, expression: o_net }
       - name: customer
-        source: acme.raw.customer
+        source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer
         fields:
           - { name: customer_id, expression: c_id }
           - { name: name,        expression: c_name }

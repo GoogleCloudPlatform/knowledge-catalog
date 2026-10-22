@@ -220,10 +220,10 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
         primary_key: [key]
         fields:
           - { name: key, expression: c_key }
@@ -231,7 +231,7 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
 `);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
@@ -253,10 +253,10 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
         primary_key: [key]
         fields:
           - { name: key, expression: c_key }
@@ -264,7 +264,7 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
 `);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'log').mockImplementation(() => {});
@@ -309,7 +309,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
         primary_key: [key]
         fields:
           - { name: key, expression: c_key }
@@ -322,11 +322,11 @@ semantic_model:
         source: ${source}
 `;
     fs.writeFileSync(path.join(eg, 'commerce.profiles', 'bq.yaml'), wrapper(
-        '//bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g',
-        '//bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer'));
+        'bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g',
+        'bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer'));
     fs.writeFileSync(path.join(eg, 'commerce.profiles', 'sp.yaml'), wrapper(
-        '//spanner.googleapis.com/projects/test-project/instances/i/databases/d/propertyGraphs/g',
-        '//spanner.googleapis.com/projects/test-project/instances/i/databases/d/tables/Customer'));
+        'spanner.googleapis.com/projects/test-project/instances/i/databases/d/propertyGraphs/g',
+        'spanner.googleapis.com/projects/test-project/instances/i/databases/d/tables/Customer'));
     const seen: Record<string, string[]> = {};
     const record = (name: string) => async (models: any[]) => {
       (seen[name] ??= []).push(...models.map(m => m.document));
@@ -370,11 +370,11 @@ ${entities}`);
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
 `);
   };
   const CUSTOMER = `      - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
         primary_key: [key]
         fields:
           - { name: key, expression: c_key }
@@ -385,7 +385,7 @@ entities:
   test('the deployment-profile check covers the model a profile file gives', async () => {
     setup(`    deployments:
       - name: g
-        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
         profile: prod
 `, CUSTOMER);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -429,7 +429,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
         fields:
           - { name: key, expression: c_key }
           - { name: credit, expression: c_credit }
@@ -437,7 +437,7 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
     primary_key: [cust_key]
     fields:
       - { name: key, expression: cust_key }
@@ -481,14 +481,14 @@ semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
         fields:
           - { name: key, expression: c_key }
 `);
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
 `);
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     spyOn(kc, 'deployKnowledgeCatalog');
@@ -510,7 +510,7 @@ describe('a push prints warnings in document order', () => {
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(path.join(eg, 'a.profiles'), {recursive: true});
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/test-project/datasets/raw/tables/${t}`;
+        `bigquery.googleapis.com/projects/test-project/datasets/raw/tables/${t}`;
     const keyless = (name: string) => `version: "0.2.0.dev0/google"
 semantic_model:
   - name: ${name}
@@ -557,12 +557,12 @@ semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
         primary_key: [c_key]
         fields:
           - { name: key, expression: c_key }
       - name: Order
-        source: //bigquery.googleapis.com/projects/test-project/datasets/raw/tables/orders
+        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/orders
         primary_key: [o_key]
         fields:
           - { name: key, expression: o_key }
@@ -581,7 +581,7 @@ semantic_model:
     writeModel(`name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
     primary_key: [cust_id]
 `);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -674,7 +674,7 @@ describe('a catalog-only push of a profile file loads the model file alone', () 
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/test-project/datasets/raw/tables/${t}`;
+        `bigquery.googleapis.com/projects/test-project/datasets/raw/tables/${t}`;
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -727,11 +727,11 @@ describe('a model with a Spanner graph target is pruned in the Spanner dialect',
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
     const table =
-        '//bigquery.googleapis.com/projects/test-project/datasets/ds/tables/orders';
+        'bigquery.googleapis.com/projects/test-project/datasets/ds/tables/orders';
     const spGraph =
-        '//spanner.googleapis.com/projects/test-project/instances/i/databases/db/propertyGraphs/g';
+        'spanner.googleapis.com/projects/test-project/instances/i/databases/db/propertyGraphs/g';
     const bqGraph =
-        '//bigquery.googleapis.com/projects/test-project/datasets/ds/propertyGraphs/g';
+        'bigquery.googleapis.com/projects/test-project/datasets/ds/propertyGraphs/g';
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -814,10 +814,10 @@ semantic_model:
   - name: a
     deployments:
       - name: g
-        target: //spanner.googleapis.com/${SPANNER}/propertyGraphs/g
+        target: spanner.googleapis.com/${SPANNER}/propertyGraphs/g
     entities:
       - name: X
-        source: //spanner.googleapis.com/${SPANNER}/tables/X
+        source: spanner.googleapis.com/${SPANNER}/tables/X
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -826,7 +826,7 @@ semantic_model:
   - name: a
     entities:
       - name: X
-        source: //spanner.googleapis.com/${SPANNER}/tables/X2
+        source: spanner.googleapis.com/${SPANNER}/tables/X2
 `);
     fs.writeFileSync(path.join(eg, 'b.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
@@ -870,17 +870,17 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
         primary_key: [id]
         fields:
           - { name: id, datatype: Integer, expression: id }
           - { name: name, datatype: String, expression: cust_name }
       - name: vip
         extends: [customer]
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/vip
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/vip
         primary_key: [id]
         fields:
           - { name: name, datatype: Integer, description: VIP name }
@@ -914,7 +914,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d2/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d2/tables/customer
 `);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'warn').mockImplementation(() => {});
@@ -938,10 +938,10 @@ semantic_model:
   - name: commerce
     deployments:
       - name: default
-        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
         primary_key: [id]
         fields:
           - { name: id, datatype: Integer, expression: id }
@@ -969,10 +969,10 @@ semantic_model:
 semantic_model:
   - name: commerce
     deployments:
-      - { name: default, target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g }
+      - { name: default, target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g }
     entities:
       - name: customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
         primary_key: [id]
         fields: [{ name: id, datatype: Integer, expression: id }]
     metrics:
@@ -1046,10 +1046,10 @@ semantic_model:
     name: commerce
     deployments:
       - name: prod
-        target: //bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
+        target: bigquery.googleapis.com/projects/test-project/datasets/d/propertyGraphs/g
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/customer
         primary_key: [key]
         fields:
           - { name: key, expression: c_key }   # flow style
@@ -1059,7 +1059,7 @@ const ROUND_TRIP_PROFILE = `# Production bindings.
 name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
 `;
 
 function entryGroupDir(): string {
@@ -1253,7 +1253,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+        source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
 `;
     writeRoundTripWorkspace();
     fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
@@ -2728,7 +2728,7 @@ entities:
 });
 
 describe('a vanilla model\'s profiles in its GOOGLE block', () => {
-  const BQ = '//bigquery.googleapis.com/projects/test-project/datasets';
+  const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
   const prod = (source: string) => JSON.stringify(
       {profiles: [{name: 'prod', entities: [{name: 'Customer', source}]}]});
   function writeModel(block: string, catalogExtra = ''): void {

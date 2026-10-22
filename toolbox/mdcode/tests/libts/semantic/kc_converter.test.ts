@@ -428,7 +428,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
   });
 
   test(
-      'a relationship between bigquery: and BigLake entities preserves direction without warnings',
+      'a relationship between BigQuery and BigLake entities preserves direction without warnings',
       () => {
         // `sales-customer` sorts before `sales-orders` in the link's
         // entryReferences, so `readRelationships` sees [customer, orders] and
@@ -440,7 +440,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
           entities: [
             {
               name: 'customer',
-              authoredSource: 'bigquery:p.d.customer',
+              authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customer',
               dataSource: 'p.d.customer',
               keys: ['c_custkey'],
               fields: [{name: 'c_custkey', expression: 'customer.c_custkey'}],
@@ -448,7 +448,7 @@ describe('relationship recovery (schema-join links -> IR)', () => {
             {
               name: 'orders',
               authoredSource:
-                  '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders',
+                  'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders',
               dataSource: 'p.c.n.orders',
               keys: ['o_orderkey'],
               fields: [{name: 'o_custkey', expression: 'orders.o_custkey'}],
@@ -477,7 +477,7 @@ describe(
     () => {
       test('the GOOGLE deployment targets ride back onto deployments and custom_extensions with a name warning', () => {
         const uri =
-            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const data = JSON.stringify({deploymentTargets: [uri]});
         const model: SemanticModel = {
           name: 'sales',
@@ -512,9 +512,9 @@ describe(
             expect(warnings).toEqual([]);
           });
 
-      test('skips repeated target URIs in the semantic-model aspect', () => {
+      test('skips repeated targets in the semantic-model aspect', () => {
         const uri =
-            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const model: SemanticModel = {
           name: 'sales',
           customExtensions: [{
@@ -536,7 +536,7 @@ describe(
           'trims stored targets and entity source resources, and drops empty targets',
           () => {
             const uri =
-                '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+                'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
             const model: SemanticModel = {
               name: 'sales',
               entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: []}],
@@ -553,7 +553,7 @@ describe(
                 entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
             entityEntry.aspects!['dataplex-types.global.semantic-entity'].data =
                 {
-                  source: {resources: ['  bigquery:p.d.t  ']},
+                  source: {resources: ['  bigquery.googleapis.com/projects/p/datasets/d/tables/t  ']},
                 };
             const {models} = modelsFromCatalogResources(entries, entryLinks);
             expect(models[0].deployments).toEqual([
@@ -566,7 +566,7 @@ describe(
               },
             ]);
             expect(models[0].entities[0].authoredSource)
-                .toBe('bigquery:p.d.t');
+                .toBe('bigquery.googleapis.com/projects/p/datasets/d/tables/t');
             expect(models[0].entities[0].dataSource).toBe('p.d.t');
           });
     });
@@ -924,7 +924,7 @@ describe('metric attach entity is re-derived from the expression', () => {
           entities: [
             {
               name: 'orders',
-              authoredSource: 'bigquery:p.d.orders',
+              authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
               dataSource: 'p.d.orders',
               keys: ['id'],
               fields: [
@@ -934,7 +934,7 @@ describe('metric attach entity is re-derived from the expression', () => {
             },
             {
               name: 'customer',
-              authoredSource: 'bigquery:p.d.customer',
+              authoredSource: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customer',
               dataSource: 'p.d.customer',
               keys: ['id'],
               fields: [
@@ -968,11 +968,11 @@ describe('metric attach entity is re-derived from the expression', () => {
           '  - name: m',
           '    entities:',
           '      - name: orders',
-          '        source: bigquery:p.d.orders',
+          '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
           '        primary_key: [amt]',
           '        fields: [{name: amt, expression: orders.amt}]',
           '      - name: customer',
-          '        source: bigquery:p.d.customer',
+          '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer',
           '        primary_key: [region]',
           '        fields: [{name: region, expression: customer.region}]',
           '    metrics:',

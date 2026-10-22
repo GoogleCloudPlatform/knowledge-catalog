@@ -256,7 +256,7 @@ entities:
   - name: Customer
     extends: [Party]           # the one keyword you add
     primary_key: [id]          # each subclass keeps its OWN key; keys do not inherit
-    source: proj.ds.customer
+    source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/customer
     fields:
       - { name: id,   expression: c_custkey }
       - { name: name, expression: c_name }                      # the inherited field, bound to this table's column
@@ -264,7 +264,7 @@ entities:
   - name: Supplier
     extends: [Party]
     primary_key: [id]
-    source: proj.ds.supplier
+    source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/supplier
     fields:
       - { name: id,     expression: s_suppkey }
       - { name: name,   expression: s_name }
@@ -387,7 +387,7 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the URI's `propertyGraphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`proj.ds.Orders` → `Orders`), a table in the target database |
+| Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`spanner.googleapis.com/…/tables/Orders` → `Orders`), a table in the target database |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
@@ -525,8 +525,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **A graph push declares exactly one deployment target per model, and it must
   be a valid BigQuery Graph or Spanner Graph URI.** A model with more than one is
   rejected, and so is a single target whose URI matches neither
-  `//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
-  `//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`,
+  `bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
+  `spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`,
   each with or without the leading `//`
   (for example a `propertyGraph`/`propertyGraphs` typo, or a
   `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
@@ -658,13 +658,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   means nothing. *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
-  exactly as the deploy will — a three-part `project.dataset.table`, a four-part
-  federated REST-catalog name (e.g. an Iceberg table via BigLake), or a quoted
-  identifier all work. A table that does not exist or that you cannot access fails
-  the push, naming the table and the entity; a `source` that is a query (not a
-  table) is skipped. A **Spanner-targeting** model's sources live in Spanner
-  (a different system) and are **not** probed here. The `source` construct and its
-  URI/dotted forms are defined in [model spec §7.1](model_spec.md#71-table-sources).
+  exactly as the deploy will — a BigQuery table or a BigLake table (e.g. an
+  Iceberg table in a federated REST catalog). A table that does not exist or that
+  you cannot access fails the push, naming the table and the entity. A
+  **Spanner-targeting** model's sources live in Spanner (a different system) and
+  are **not** probed here. The `source` construct and the resource names it takes
+  are defined in [model spec §7.1](model_spec.md#71-table-sources).
   *(live — needs BigQuery access)*
 * **Every `sql` executor statement is accepted by the store it will run
   against.** Each statement is sent to the bound store with the request that

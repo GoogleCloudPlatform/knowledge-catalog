@@ -40,7 +40,7 @@ function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [{
               name: 'balance',
@@ -79,7 +79,7 @@ function withGuards(
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [{
               name: 'balance',
@@ -133,7 +133,7 @@ describe('loader parses an action\'s guards', () => {
                     name: 'm',
                     datasets: [{
                       name: 'c',
-                      source: 'p.d.c',
+                      source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
                       primary_key: ['id'],
                       fields: [{
                         name: 'balance',
@@ -160,7 +160,7 @@ describe('validatePushRequirements resolves every guard', () => {
     vendorName: 'GOOGLE',
     data: JSON.stringify({
       deploymentTargets:
-          ['//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
+          ['bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g']
     }),
   };
 

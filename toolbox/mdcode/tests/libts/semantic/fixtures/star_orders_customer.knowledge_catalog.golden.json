@@ -12,7 +12,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
           "data": {
             "deploymentTargets": [
-              "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
+              "bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
             ]
           }
         },
@@ -39,7 +39,7 @@
           "data": {
             "source": {
               "resources": [
-                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders"
+                "bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders"
               ]
             }
           }
@@ -95,7 +95,7 @@
           "data": {
             "source": {
               "resources": [
-                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer"
+                "bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer"
               ]
             }
           }

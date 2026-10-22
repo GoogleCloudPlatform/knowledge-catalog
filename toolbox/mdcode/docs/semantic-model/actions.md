@@ -79,7 +79,7 @@ semantic_model:
       - name: Account
         description: A customer's money at this bank.
         primary_key: [accountId]
-        source: my-project.bank.account
+        source: bigquery.googleapis.com/projects/my-project/datasets/bank/tables/account
         fields:
           - { name: accountId,      datatype: Integer, expression: account_id }
           - { name: name,           datatype: String,  expression: name }
@@ -89,7 +89,7 @@ semantic_model:
       - name: Transfer
         description: One movement of money between two accounts.
         primary_key: [transferId]
-        source: my-project.bank.transfer
+        source: bigquery.googleapis.com/projects/my-project/datasets/bank/tables/transfer
         fields:
           - { name: transferId, datatype: String,  expression: transfer_id }
           - { name: amount,     datatype: Float,   expression: amount }
@@ -288,10 +288,10 @@ declared for `TransferFunds`:
 # payments.profiles/operational.yaml — this store owns the rows, so it writes them
 semantic_model:
   - name: payments
-    deployment_target: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
+    deployment_target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/propertyGraphs/payments
     entities:
       - name: Account
-        source: //spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
+        source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
         fields:
           - { name: accountId, expression: account_id }
           - { name: balance,   expression: balance }

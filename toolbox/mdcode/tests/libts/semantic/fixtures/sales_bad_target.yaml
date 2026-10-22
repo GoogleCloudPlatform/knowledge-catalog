@@ -9,10 +9,10 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraph/sales_graph
+    deployment_target: bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraph/sales_graph
     entities:
       - name: orders
-        source: demo.sales.orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey

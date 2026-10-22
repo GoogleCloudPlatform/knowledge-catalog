@@ -15,10 +15,10 @@ import {stubCloudSqlEntry} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SPANNER_DB =
-    '//spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
-const BQ = '//bigquery.googleapis.com/projects/acme';
+    'spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
+const BQ = 'bigquery.googleapis.com/projects/acme';
 const CLUSTER =
-    '//alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
+    'alloydb.googleapis.com/projects/acme-ops/locations/us-central1/clusters/main';
 
 let dir = '';
 let cwd = '';

@@ -7,10 +7,10 @@ semantic_model:
       instructions: Use this model for order analysis.
     deployments:
       - name: default
-        target: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
+        target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
     entities:
       - name: orders
-        source: //bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
         primary_key:
           - o_orderkey
         description: One row per order
@@ -22,7 +22,7 @@ semantic_model:
             label: Order Date
           - name: o_totalprice
       - name: customer
-        source: //bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
         primary_key:
           - c_custkey
         fields:

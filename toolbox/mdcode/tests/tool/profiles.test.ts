@@ -46,16 +46,16 @@ semantic_model:
 const ANALYTICAL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
+    deployment_target: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+        source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
         fields:
           - { name: key, expression: c_custkey }
           - { name: lifetimeValue, expression: c_ltv }
           - { name: availableCredit }
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         fields:
           - { name: key, expression: o_orderkey }
 `;
@@ -63,16 +63,16 @@ semantic_model:
 const OPERATIONAL = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
+    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer
+        source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer
         fields:
           - { name: key, expression: CustomerId }
           - { name: availableCredit, expression: AvailableCredit }
           - { name: lifetimeValue }
       - name: Order
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Orders
+        source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Orders
         fields:
           - { name: key, expression: OrderId }
 `;
@@ -156,7 +156,7 @@ semantic_model:
   - name: commerce
     datasets:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
         primary_key: [key]
         fields:
           - name: key
@@ -165,7 +165,7 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'commerce.profiles', 'prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer
+    source: bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer
 `);
     await expect(profiles()).rejects.toThrow(
         "Profile directory 'commerce.profiles/' sits beside 'commerce.yaml', " +
@@ -184,7 +184,7 @@ describe('kcmd profiles applies a profile file to the loaded model file', () => 
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), model);
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), profile);
   }
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/acme/datasets/sales/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/acme/datasets/sales/tables/${t}`;
 
   test('a model file that does not load alone is reported, though the profile completes it', async () => {
     writeModel(`version: "0.2.0.dev0/google"
@@ -333,9 +333,9 @@ relationships:
   - name: commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/customer
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
 `);
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     expect(await profiles()).toBe(0);
@@ -386,13 +386,13 @@ describe('a runtime over a sibling profile file', () => {
     fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
     fields:
       - { name: key, expression: c_custkey }
       - { name: lifetimeValue, expression: c_ltv }
     fields_exclude: [availableCredit]
   - name: Order
-    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
     fields:
       - { name: key, expression: o_orderkey }
 `);
@@ -419,13 +419,13 @@ entities:
     fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
     fields:
       - { name: key, expression: c_custkey }
       - { name: lifetimeValue, expression: c_ltv }
     fields_exclude: [availableCredit]
   - name: Order
-    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
     fields:
       - { name: key, expression: o_orderkey }
 metrics_exclude: [order_count]
@@ -447,7 +447,7 @@ describe('a runtime over a scope that mixes the two profile forms', () => {
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(path.join(eg, 'a.profiles'), {recursive: true});
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
+        `bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
     const keyless = (name: string) => `version: "0.2.0.dev0/google"
 semantic_model:
   - name: ${name}
@@ -487,13 +487,13 @@ describe('kcmd profiles', () => {
     fs.writeFileSync(path.join(eg, 'commerce.profile.analytical.yaml'), `name: analytical
 entities:
   - name: Customer
-    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
     fields:
       - { name: key, expression: c_custkey }
       - { name: lifetimeValue, expression: c_ltv }
     fields_exclude: [availableCredit]
   - name: Order
-    source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
     fields:
       - { name: key, expression: o_orderkey }
 `);
@@ -521,7 +521,7 @@ entities:
 
         // Resolved targets and normalized sources.
         expect(out).toContain(
-            'target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce');
+            'target: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce');
         expect(out).toContain('Customer -> acme-analytics.sales.customer');
         expect(out).toContain(
             'Customer -> //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer');
@@ -634,7 +634,7 @@ semantic_model:
   - name: orders_model
     entities:
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme/datasets/dev/tables/orders
+        source: bigquery.googleapis.com/projects/acme/datasets/dev/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: o_id }
@@ -644,7 +644,7 @@ semantic_model:
             `version: "0.2.0.dev0/google"
 semantic_model:
   - name: orders_model
-    deployment_target: //bigquery.googleapis.com/projects/acme/datasets/prod/propertyGraphs/orders_model
+    deployment_target: bigquery.googleapis.com/projects/acme/datasets/prod/propertyGraphs/orders_model
     entities:
       - name: Order
         source: acme.prod.orders
@@ -669,11 +669,11 @@ semantic_model:
 // an author can tell from its report alone whether push accepts a profile.
 describe('kcmd profiles reports what push rejects', () => {
   const BQ = (dataset: string, table: string) =>
-      `//bigquery.googleapis.com/projects/acme/datasets/${dataset}/tables/${table}`;
+      `bigquery.googleapis.com/projects/acme/datasets/${dataset}/tables/${table}`;
   const GRAPH =
-      '//bigquery.googleapis.com/projects/acme/datasets/prod/propertyGraphs/commerce';
+      'bigquery.googleapis.com/projects/acme/datasets/prod/propertyGraphs/commerce';
   const SPANNER_DB =
-      '//spanner.googleapis.com/projects/acme/instances/prod/databases/commerce';
+      'spanner.googleapis.com/projects/acme/instances/prod/databases/commerce';
   const INLINE = "  profile 'default': the model document's own inline " +
       'bindings, as authored -- nothing merged, nothing withheld.';
   const NO_PROFILES = "  no binding profiles; the model document is its own " +
@@ -1566,7 +1566,7 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     // `profile` with its prod tables on AlloyDB.
     const onAlloy = (profile: string) => profile.replaceAll(
         BQ('prod', ''),
-        '//alloydb.googleapis.com/projects/acme/locations/us/clusters/c/' +
+        'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/' +
             'databases/db/schemas/public/tables/');
     const STAGING = `name: staging\nentities:\n  - name: customer\n    source: ${
         BQ('staging', 'customer')}\n`;
@@ -2989,7 +2989,7 @@ semantic_model:
 
       // The model on one AlloyDB database, where metric m's BigQuery and
       // AlloyDB texts each count a field of purchase.
-      const db = '//alloydb.googleapis.com/projects/acme/locations/' +
+      const db = 'alloydb.googleapis.com/projects/acme/locations/' +
           'us-central1/clusters/c/databases/commerce';
       const alloyDb = (bigQueryField: string, alloyDbField: string) =>
           withMetric(
@@ -3221,10 +3221,10 @@ semantic_model:
   - name: commerce
     deployments:
       - name: prod
-        target: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
+        target: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer
+        source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer
         primary_key: [key]
         fields:
           - { name: key, expression: CustomerId }
@@ -3232,7 +3232,7 @@ semantic_model:
     fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
 entities:
   - name: Customer
-    source: //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customers
+    source: spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customers
 `);
     const code = await profiles({printStore: true, profile: 'prod'});
     expect(code).not.toBe(0);
@@ -3276,7 +3276,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
         primary_key: [key]
         fields:
           - { name: key, expression: o_key }
@@ -3353,7 +3353,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders
         primary_key: [key]
         fields:
           - { name: key, expression: o_key }

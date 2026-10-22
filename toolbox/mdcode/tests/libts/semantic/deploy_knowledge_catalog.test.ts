@@ -70,7 +70,7 @@ semantic_model:
   - name: sales
     datasets:
       - name: orders
-        source: demo.sales.orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey
@@ -3260,7 +3260,7 @@ semantic_model:
   - name: sales
     datasets:
       - name: orders
-        source: demo.sales.orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey
@@ -3273,14 +3273,14 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: o_suppkey }]
       - name: customer
-        source: demo.sales.customer
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/customer
         primary_key: [c_custkey]
         fields:
           - name: c_custkey
             expression:
               dialects: [{ dialect: BIGQUERY, expression: c_custkey }]
       - name: supplier
-        source: demo.sales.supplier
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/supplier
         primary_key: [s_suppkey]
         fields:
           - name: s_suppkey
@@ -3829,7 +3829,7 @@ semantic_model:
   - name: hr
     datasets:
       - name: employee
-        source: demo.hr.employee
+        source: bigquery.googleapis.com/projects/demo/datasets/hr/tables/employee
         primary_key: [employee_id]
         fields:
           - name: employee_id
@@ -3845,7 +3845,7 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: department_id }]
       - name: department
-        source: demo.hr.department
+        source: bigquery.googleapis.com/projects/demo/datasets/hr/tables/department
         primary_key: [department_id]
         fields:
           - name: department_id

@@ -29,9 +29,9 @@ function models(
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 const SPANNER_URI =
-    '//spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph';
+    'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph';
 const BQ_URI =
-    '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
+    'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
 
 const OSSIE = fs.readFileSync(
     path.join(FIXTURES, 'sales_spanner_graph_target.yaml'), 'utf8');
@@ -77,15 +77,15 @@ describe('spannerGraphTargets', () => {
   // it -- and it is not a typo, so it must not be reported as one either.
   test('an AlloyDB target is not a Spanner target, and not malformed', () => {
     const pg =
-        '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
+        'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [pg]})));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([]);
   });
 
-  test('an unsupported URI is collected as malformed', () => {
-    const bad = '//cloudsql.googleapis.com/projects/p/whatever';
+  test('an unsupported target is collected as malformed', () => {
+    const bad = 'cloudsql.googleapis.com/projects/p/whatever';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [bad]})));
     expect(targets).toEqual([]);
@@ -94,7 +94,7 @@ describe('spannerGraphTargets', () => {
 
   test('rejects a graph name with an injection character', () => {
     const evil =
-        '//spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/g`;DROP';
+        'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/g`;DROP';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
     expect(targets).toEqual([]);
@@ -116,7 +116,7 @@ describe('deploySpanner', () => {
 
       const ddl = res.ddl.join('\n');
       expect(ddl).toContain('CREATE OR REPLACE PROPERTY GRAPH sales_graph');
-      // Bare table name, not the three-part BigQuery source.
+      // The node table is the last segment of the source.
       expect(ddl).toContain('Orders AS orders');
       // The metric is dropped (Spanner has no MEASURE).
       expect(res.warnings.some(w => w.includes('total_revenue'))).toBe(true);

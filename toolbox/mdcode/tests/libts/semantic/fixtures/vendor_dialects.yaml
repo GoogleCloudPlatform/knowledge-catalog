@@ -18,7 +18,7 @@ semantic_model:
     description: Orders and customers with vendor-dialect expressions
     datasets:
       - name: orders
-        source: samples.tpch.orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
         primary_key: [o_orderkey]
         description: One row per order
         fields:
@@ -74,7 +74,7 @@ semantic_model:
                 - dialect: SNOWFLAKE
                   expression: "DATEDIFF(day, o_orderdate, o_shipdate)"
       - name: customer
-        source: samples.tpch.customer
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
         primary_key: [c_custkey]
         fields:
           - name: c_custkey

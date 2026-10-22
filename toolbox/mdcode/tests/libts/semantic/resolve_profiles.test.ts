@@ -95,9 +95,9 @@ const mergeProfileOntoDoc =
     };
 
 const GRAPH =
-    '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/commerce';
+    'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/commerce';
 const TBL = (t: string) =>
-    `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+    `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
 function logicalDoc(): any {
   return {
@@ -190,7 +190,7 @@ describe('mergeProfile overlays physical bindings by name', () => {
   test('drops model deployments when a legacy profile sets deployment_target, and keeps them when it does not', () => {
     const deployments = [{
       name: 'prod',
-      target: '//spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/commerce',
+      target: 'spanner.googleapis.com/projects/p/instances/i/databases/d/propertyGraphs/commerce',
     }];
     const logical = logicalDoc();
     modelOf(logical).deployments = deployments;
@@ -1108,7 +1108,7 @@ describe('loadProfileFile', () => {
   const TEXT = `name: prod
 entities:
   - name: orders
-    source: //bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders
+    source: bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders
     primary_key: [o_id]
     unique_keys: [[o_ref]]
     fields:
@@ -1134,7 +1134,7 @@ actions:
     expect(p.name).toBe('prod');
     const orders = p.entities[0];
     expect(orders.source).toBe(
-        '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders');
+        'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders');
     expect(orders.primaryKey).toEqual(['o_id']);
     expect(orders.uniqueKeys).toEqual([['o_ref']]);
     expect(orders.fields![0]).toEqual({
@@ -1183,7 +1183,7 @@ actions:
 
 describe('validateProfileCompleteness', () => {
   // A logical model whose Customer.lifetimeValue is unbound in the model file.
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   function profile(over: Partial<ProfileSpec> = {}): ProfileSpec {
     return {
       name: 'prod',
@@ -1242,13 +1242,13 @@ describe('validateProfileCompleteness', () => {
   test('BigQuery datasets are one database; two Spanner databases are not', () => {
     const twoDatasets = profile({
       entities: [
-        {...profile().entities[0], source: '//bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'},
-        {name: 'Order', source: 'bigquery:p.curated.orders'},
+        {...profile().entities[0], source: 'bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'},
+        {name: 'Order', source: 'bigquery.googleapis.com/projects/p/datasets/curated/tables/orders'},
       ],
     });
     expect(validateProfileCompleteness(irModel(), twoDatasets)).toEqual([]);
     const SP = (db: string, t: string) =>
-        `//spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
+        `spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
     const twoSpanner = profile({
       entities: [
         {...profile().entities[0], source: SP('a', 'Customer')},
@@ -1378,7 +1378,7 @@ describe('validateProfileCompleteness', () => {
 
   test('with sources in two databases, the dependency rules read every text', () => {
     const SPANNER = (t: string) =>
-        `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+        `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
     const named = (orders: string) => profile({
       entities: [
         {
@@ -1477,7 +1477,7 @@ describe('validateProfileCompleteness', () => {
   test('with ownSqlOnly, warns about the model file SQL the caller does not read as this profile does', () => {
     // BigQuery reads a hex literal and PostgreSQL does not.
     const AL = (t: string) =>
-        `//alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
+        `alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
     const m = irModel();
     m.entities[0].fields.push({name: 'code', expression: 'Customer.name + 0x1F'});
     const pg = profile({
@@ -1561,7 +1561,7 @@ describe('validateProfileConsistency', () => {
 
 
 describe('profile completeness: sources, keys, relationships and inheritance', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const base = (over: Partial<ProfileSpec> = {}): ProfileSpec => ({
     name: 'prod',
     entities: [
@@ -1787,16 +1787,16 @@ entities:
 
 
 describe('profile overlay edges', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const logical = () => ({
     semantic_model: [{
       name: 'm',
       entities: [
-        {name: 'customer', source: 'p.d.customer', primary_key: ['id'],
+        {name: 'customer', source: BQ('customer'), primary_key: ['id'],
          fields: [{name: 'id', expression: 'id'}, {name: 'email', expression: 'email'}]},
-        {name: 'vip', extends: ['customer'], source: 'p.d.vip', primary_key: ['id'],
+        {name: 'vip', extends: ['customer'], source: BQ('vip'), primary_key: ['id'],
          fields: [{name: 'perk', expression: 'perk'}]},
-        {name: 'orders', source: 'p.d.orders', primary_key: ['o_id'],
+        {name: 'orders', source: BQ('orders'), primary_key: ['o_id'],
          fields: [{name: 'o_id', expression: 'o_id'}]},
       ],
       relationships: [{name: 'placed_by', from: 'orders', to: 'vip',
@@ -1808,7 +1808,7 @@ describe('profile overlay edges', () => {
     const {doc, error} = mergeProfile(logical(), {
       semantic_model: [{
         name: 'm', version: '0.2.0.dev0/google', deployment_target: 'x',
-        entities: [{name: 'orders', source: 'p.d.orders2', primary_key: ['oid'],
+        entities: [{name: 'orders', source: BQ('orders2'), primary_key: ['oid'],
                     unique_keys: [['ref']]}],
         relationships: [{name: 'placed_by', from_columns: ['c'], to_columns: ['vid']}],
       }],
@@ -1916,10 +1916,10 @@ describe('profile merge: exclusions, duplicates and catalog names', () => {
     semantic_model: [{
       name: 'm',
       entities: [
-        {name: 'customer', source: 'p.d.customer', primary_key: ['id'],
+        {name: 'customer', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/customer', primary_key: ['id'],
          fields: [{name: 'id', expression: 'id'},
                   emailInline ? {name: 'email', expression: 'email'} : {name: 'email'}]},
-        {name: 'vip', extends: ['customer'], source: 'p.d.vip', primary_key: ['id'], fields: []},
+        {name: 'vip', extends: ['customer'], source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/vip', primary_key: ['id'], fields: []},
       ],
     }],
   });
@@ -1986,7 +1986,7 @@ describe('profile merge: exclusions, duplicates and catalog names', () => {
 
 
 describe('completeness sees the model as the profile does', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   // vip extends customer; both have their own table.
   const model = (emailInline: boolean): SemanticModel => ({
     name: 'm',
@@ -2040,7 +2040,7 @@ describe('completeness sees the model as the profile does', () => {
     for (const bad of [
            'not_a_table', 'acme.raw.customer', 'custom:foo.bar', 'trino:c.s.t',
            'oracle:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
-           '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
+           'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
            'bigquery:graph:p.d.g', 'bigquery:propertygraph:p.d.g',
            'spanner:graph:p.c.i.db.g',
          ]) {
@@ -2190,7 +2190,7 @@ describe('completeness sees the model as the profile does', () => {
   test('a BigLake table shares BigQuery\'s database', () => {
     expect(validateProfileCompleteness(model(true), spec([
       {name: 'customer',
-       source: '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t'},
+       source: 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t'},
       {name: 'vip', source: BQ('v')},
     ]))).toEqual([]);
   });
@@ -2198,7 +2198,7 @@ describe('completeness sees the model as the profile does', () => {
 
 
 describe('profile rules', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
   test('cardinality: bindings may join on different keys', () => {
     // The model file joins on customer's primary key; prod restates both keys
@@ -2301,18 +2301,18 @@ semantic_model:
   - name: shop
     entities:
       - name: base
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/base
         primary_key: [id]
         fields:
           - {name: id, expression: id}
           - {name: notes, expression: notes}
       - name: orders
         extends: [base]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
     deployments:
       - name: default
-        target: //bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
+        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/shop
 `);
     const profile = (expression: string) =>
         `name: prod\nentities:\n  - name: base\n    fields:\n      - {name: notes, expression: ${expression}}\n`;
@@ -2331,24 +2331,24 @@ semantic_model:
   - name: shop
     entities:
       - name: base
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/base
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/base
         primary_key: [id]
         fields:
           - {name: id, expression: id}
           - {name: notes, expression: notes}
       - name: orders
         extends: [base]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
 `);
     const profile = (expression: string) => loadProfileFile(`name: prod
 entities:
   - name: base
-    source: //bigquery.googleapis.com/projects/p/datasets/prod/tables/base
+    source: bigquery.googleapis.com/projects/p/datasets/prod/tables/base
     fields:
       - {name: notes, expression: ${expression}}
   - name: orders
-    source: //bigquery.googleapis.com/projects/p/datasets/prod/tables/orders
+    source: bigquery.googleapis.com/projects/p/datasets/prod/tables/orders
 `, 'prod');
     expect(validateProfileCompleteness(models[0], profile('"base.orders."')))
         .toEqual([
@@ -2368,8 +2368,8 @@ entities:
         name: 'prod',
         relationships: [],
         entities: [
-          {name: 'base', source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/base', fields: [notes]},
-          {name: 'orders', source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders'},
+          {name: 'base', source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/base', fields: [notes]},
+          {name: 'orders', source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders'},
         ],
       })).toEqual([expect.stringMatching(
           /^profile 'prod': entity 'base': field 'notes': .* is only a comment; write the field's SQL$/)]);
@@ -2380,7 +2380,7 @@ entities:
   // inherited check reads only the fields the entity takes from an ancestor.
   test('the inherited check of the profile checks reads only what an entity inherits, and completeness lists every field', () => {
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     // A model built in memory skips the loader, so `own` holds no SQL.
     const base: SemanticModel = {
       name: 'shop',
@@ -2534,7 +2534,7 @@ entities:
       dialects: [{dialect: 'SPANNER' as const, expression: 'base.orders.'}],
     };
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile: ProfileSpec = {
       name: 'prod',
       relationships: [],
@@ -2629,7 +2629,7 @@ semantic_model:
   - name: shop
     entities:
       - name: orders
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - {name: id, expression: id}
@@ -2644,7 +2644,7 @@ semantic_model:
                  relationships: [],
                  entities: [{
                    name: 'orders',
-                   source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
+                   source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
                    fields: [
                      {name: 'notes', expression: '-- todo'},
                      {name: 'memo', expression: 'orders.'},
@@ -2694,7 +2694,7 @@ semantic_model:
           relationships: [],
           entities: [{
             name: 'orders',
-            source: '//bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
+            source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders',
             fieldsExclude: ['u'],
           }],
         },
@@ -3048,7 +3048,7 @@ relationships: []
 
 
 describe('profile completeness: dialects and struct paths', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const SP = (t: string) =>
       `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
   const shop = (amount: object): SemanticModel => ({
@@ -3231,7 +3231,7 @@ semantic_model:
     ]} as any)).toBe('SPANNER');
     expect(validateProfileCompleteness(bqOnly(), atSource(name(SP('Orders')))).join('\n'))
         .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
-    expect(validateProfileCompleteness(bqOnly(), atSource(name(BQ('orders_prod')))))
+    expect(validateProfileCompleteness(bqOnly(), atSource(BQ('orders_prod'))))
         .toEqual([]);
 
     const model: SemanticModel = {
@@ -3252,7 +3252,7 @@ semantic_model:
     expect(validateProfileCompleteness(model, spec(name(SP('Orders')), SP('Items'))).join('\n'))
         .not.toContain('more than one database');
     expect(validateProfileCompleteness(
-               model, spec(name(SP('Orders')), name(BQ('items')))).join('\n'))
+               model, spec(name(SP('Orders')), BQ('items'))).join('\n'))
         .toContain('more than one database');
   });
 
@@ -3269,7 +3269,7 @@ semantic_model:
         fields:
           - {name: id, expression: id}
 `};
-    for (const uri of [SP('Orders'), BQ('orders')]) {
+    for (const uri of [SP('Orders'), `//${BQ('orders')}`]) {
       const name = uri.slice(2);
       const rebound = (source: string) => {
         const res = profileForDocument(
@@ -3286,11 +3286,11 @@ semantic_model:
   // Two databases of one system imply that system's dialect.
   test('sources in two Spanner databases read the SPANNER text', () => {
     const SP2 = (db: string, t: string) =>
-        `//spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
+        `spanner.googleapis.com/projects/p/instances/i/databases/${db}/tables/${t}`;
     const model: SemanticModel = {
       name: 'shop',
       entities: [
-        {name: 'orders', dataSource: SP2('db1', 'Orders'),
+        {name: 'orders', dataSource: `//${SP2('db1', 'Orders')}`,
          authoredSource: SP2('db1', 'Orders'), keys: ['id'],
          fields: [
            {name: 'id', expression: 'id'},
@@ -3300,7 +3300,7 @@ semantic_model:
             dialects: [{dialect: 'SPANNER', expression: 'orders.gross'},
                        {dialect: 'POSTGRES', expression: 'orders.gross - orders.tax'}]},
          ]},
-        {name: 'items', dataSource: SP2('db2', 'Items'),
+        {name: 'items', dataSource: `//${SP2('db2', 'Items')}`,
          authoredSource: SP2('db2', 'Items'), keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
       ],
@@ -3606,9 +3606,9 @@ describe('excluding a field a subtype redeclares', () => {
       semantic_model: [{
         name: 'm',
         entities: [
-          {name: 'customer', source: 'p.d.c', primary_key: ['id'],
+          {name: 'customer', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c', primary_key: ['id'],
            fields: [{name: 'id', expression: 'id'}, {name: 'name', expression: 'cust_name'}]},
-          {name: 'vip', extends: ['customer'], source: 'p.d.v', primary_key: ['id'],
+          {name: 'vip', extends: ['customer'], source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/v', primary_key: ['id'],
            fields: [{name: 'name', expression: 'vip_name'}]},
         ],
       }],
@@ -3626,7 +3626,7 @@ describe('excluding a field a subtype redeclares', () => {
 // A relationship's to_columns must cover a key of its target in every binding,
 // and a superset counts.
 describe('a relationship joins on a key of its target', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const model = (customer: object, to: string[]) => ({
     name: 'm',
     entities: [
@@ -3671,7 +3671,7 @@ describe('a relationship joins on a key of its target', () => {
 // A key or join column may name a field or its column, and both name the same
 // column, as the graph generators read them.
 describe('keys and join columns compare as the columns they name', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   test('a key named by field covers a join named by column, in every binding', () => {
     const model = {
       name: 'm',
@@ -3716,7 +3716,7 @@ describe('keys and join columns compare as the columns they name', () => {
 
 
 describe('a profile applied to a model document', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
   const DOC = {name: 'sales', text: `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -3836,7 +3836,7 @@ entities:
 // what the callers report to the author. Anything else is a bug and surfaces
 // as itself.
 describe('a document mistake versus a bug', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const model = (): SemanticModel => ({
     name: 'shop',
     entities: [{name: 'orders', dataSource: BQ('orders'), keys: ['id'],
@@ -3914,13 +3914,13 @@ semantic_model:
 
 describe('what applying a profile keeps and replaces', () => {
   const SP = (t: string) =>
-      `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+      `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
   const model = (): SemanticModel => ({
     name: 'shop',
     entities: [
       {name: 'party', abstract: true, dataSource: '', keys: [],
        fields: [{name: 'pid'}]},
-      {name: 'orders', dataSource: SP('Orders'), authoredSource: SP('Orders'),
+      {name: 'orders', dataSource: `//${SP('Orders')}`, authoredSource: SP('Orders'),
        keys: ['id'],
        fields: [
          {name: 'id', expression: 'id'},
@@ -3932,7 +3932,7 @@ describe('what applying a profile keeps and replaces', () => {
           dialects: [{dialect: 'BIGQUERY', expression: 'orders.tax'},
                      {dialect: 'SPANNER', expression: 'orders.id'}]},
        ]},
-      {name: 'customer', dataSource: SP('Customer'), authoredSource: SP('Customer'),
+      {name: 'customer', dataSource: `//${SP('Customer')}`, authoredSource: SP('Customer'),
        keys: ['id'], fields: [{name: 'id', expression: 'id'}]},
     ],
     relationships: [{name: 'placed_by',
@@ -3984,8 +3984,8 @@ describe('what applying a profile keeps and replaces', () => {
 // the dialect a profile's texts are picked for.
 describe('applyProfile options', () => {
   const SP = (t: string) =>
-      `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+      `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const base = (): SemanticModel => ({
     name: 'shop',
     entities: [{name: 'orders', dataSource: BQ('orders'), authoredSource: BQ('orders'),
@@ -4037,7 +4037,7 @@ describe('applyProfile options', () => {
   // A BigLake source is part of BigQuery, which only its authored form says.
   test('a BigLake source gives the BigQuery dialect', () => {
     const lake =
-        '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders';
+        'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders';
     const model = base();
     model.entities[0].authoredSource = lake;
     model.entities[0].dataSource = 'p.c.n.orders';
@@ -4063,7 +4063,7 @@ semantic_model:
           - {name: party_name, datatype: String}
       - name: customer
         extends: [party]
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/customer"
         primary_key: [c_id]
         unique_keys: [[c_email]]
         fields:
@@ -4071,7 +4071,7 @@ semantic_model:
           - {name: email, expression: c_email}
           - {name: party_name, expression: c_name}
       - name: account
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/account"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/account"
         primary_key: [a_id]
         fields:
           - {name: a_id, expression: a_id}
@@ -4079,7 +4079,7 @@ semantic_model:
           - {name: note}
       - name: premium
         extends: [account]
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/premium"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/premium"
         primary_key: [p_id]
         fields:
           - {name: tier, expression: p_tier}
@@ -4149,11 +4149,11 @@ entities:
     same(`name: prod
 entities:
   - name: customer
-    source: "//bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer"
+    source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer"
     primary_key: [cust_id]
     unique_keys: [[cust_email], [cust_phone]]
   - name: account
-    source: "//bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
+    source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
     unique_keys: []
 `);
   });
@@ -4210,7 +4210,7 @@ metrics_exclude: [customers]
         '    relationships:',
         `      - name: loop
         extends: [loop]
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/loop"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/loop"
         primary_key: [l_id]
         fields:
           - {name: f, expression: c_f}
@@ -4235,7 +4235,7 @@ actions:
   test('the same errors, with the same messages', () => {
     const profiles = [
       'name: prod\nentities: [{name: nope}]\n',
-      'name: prod\nentities: [{name: party, source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/party"}]\n',
+      'name: prod\nentities: [{name: party, source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/party"}]\n',
       'name: prod\nentities: [{name: account, fields: [{name: nope, expression: x}]}]\n',
       'name: prod\nentities: [{name: account, fields_exclude: [nope]}]\n',
       'name: prod\nrelationships: [{name: nope, from_columns: [a], to_columns: [b]}]\n',
@@ -4262,7 +4262,7 @@ semantic_model:
   - name: sales
     entities:
       - name: orders
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
         primary_key: [order_id]
         fields:
           - {name: order_id, expression: o_id}
@@ -4273,7 +4273,7 @@ semantic_model:
           - {name: flag}
 `;
     const SPANNER = (t: string) =>
-        `//spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/${t}`;
+        `spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/${t}`;
     const profileOf = (source: string, net: string, rest = '') => `name: prod
 entities:
   - name: orders
@@ -4294,7 +4294,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
 
     test('a BigQuery profile reads the BIGQUERY text', () => {
       const {errors, applied} = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: BIGQUERY, expression: "orders.gross"}\n' +
           '            - {dialect: ANSI_SQL, expression: "orders.gross - orders.tax"}\n'));
       expect(errors).toEqual([]);
@@ -4330,7 +4330,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
       expect(pruneUnavailable(applied, 'prod').report.droppedFields).toEqual([]);
       // No graph emits a field's vendor text, so pruning does not read it.
       const vendor = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: SNOWFLAKE, expression: "orders.gross - orders.tax"}\n'));
       expect(pruneUnavailable(vendor.applied, 'prod').report.droppedFields)
           .toEqual([]);
@@ -4338,12 +4338,12 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
 
     test('with sources in two databases, every text counts', () => {
       const {applied} = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: BIGQUERY, expression: "orders.gross"}\n' +
           '            - {dialect: ANSI_SQL, expression: "orders.gross - orders.tax"}\n'));
       const twoDatabases = structuredClone(applied);
       twoDatabases.entities.push({
-        name: 'customers', dataSource: SPANNER('customers'), keys: ['id'],
+        name: 'customers', dataSource: `//${SPANNER('customers')}`, keys: ['id'],
         fields: [{name: 'id', expression: 'id'}],
       });
       const {report} = pruneUnavailable(twoDatabases, 'prod');
@@ -4353,7 +4353,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
     test("an ANSI_SQL text is read as the profile's own SQL", () => {
       // The generic parser cannot read a hex literal; the BigQuery one can.
       const {applied} = check(profileOf(
-          '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
+          'bigquery.googleapis.com/projects/acme/datasets/prod/tables/orders',
           '            - {dialect: ANSI_SQL, expression: "orders.gross"}\n',
           `      - name: flag
         expression:
@@ -4372,7 +4372,7 @@ ${net}${rest}    fields_exclude: [tax, code, flag]
     const fromFile = applyProfileFile(base, `name: prod
 entities:
   - name: account
-    source: "//bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
+    source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
     fields:
       - {name: note, expression: a_note}
     fields_exclude: [balance]
@@ -4382,7 +4382,7 @@ entities:
       name: 'prod',
       entities: [{
         name: 'account',
-        source: '//bigquery.googleapis.com/projects/acme/datasets/prod/tables/account',
+        source: 'bigquery.googleapis.com/projects/acme/datasets/prod/tables/account',
         fields: [{
           name: 'note',
           expression: 'a_note',
@@ -4571,7 +4571,7 @@ entities:
       ],
     });
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = (note: Partial<Field>): ProfileSpec => ({
       name: 'prod',
       relationships: [],
@@ -4630,7 +4630,7 @@ entities:
       ],
     };
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = loadProfileFile(`name: prod
 entities:
   - name: base
@@ -4673,7 +4673,7 @@ entities:
       ],
     });
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = (note: Partial<Field>): ProfileSpec => ({
       name: 'prod',
       relationships: [],
@@ -4736,7 +4736,7 @@ entities:
       ],
     };
     const BQ = (t: string) =>
-        `//bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+        `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
     const profile = (note: Partial<Field>): ProfileSpec => ({
       name: 'prod',
       relationships: [],
@@ -4908,7 +4908,7 @@ semantic_model:
   - name: sales
     entities:
       - name: orders
-        source: "//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
+        source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders"
         fields:
           - name: o_id
             expression:
@@ -5023,7 +5023,7 @@ entities:
 
 
 describe('profile application: errors, warnings and order', () => {
-  const BQ = (t: string) => `//bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
+  const BQ = (t: string) => `bigquery.googleapis.com/projects/acme/datasets/raw/tables/${t}`;
   const HIERARCHY = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -5115,7 +5115,7 @@ semantic_model:
   // load's dialect, which picked the text the model holds: under a Spanner
   // profile, a SPANNER-only metric warns as the model file's load does.
   test('the callers judge warnings in the load dialect', () => {
-    const SP = (t: string) => `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+    const SP = (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
     const res = profileForDocument(DOC, [{name: 'sp', text: `name: sp
 entities:
   - name: customer

@@ -39,7 +39,7 @@ function withConstraints(constraints: any[], over: any = {}) {
           name: 'm',
           datasets: [{
             name: 'customer',
-            source: 'p.d.c',
+            source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
             primary_key: ['id'],
             fields: [{
               name: 'balance',
@@ -82,7 +82,7 @@ describe('loader parses constraints', () => {
             name: 'm',
             datasets: [{
               name: 'customer',
-              source: 'p.d.c',
+              source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c',
               primary_key: ['id'],
               fields: [],
             }],
@@ -192,7 +192,7 @@ describe('loader parses constraints', () => {
 
 describe('validatePushRequirements gates constraints', () => {
   const target =
-      '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+      'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
   const googleExt = {
     vendorName: 'GOOGLE',
     data: JSON.stringify({deploymentTargets: [target]})

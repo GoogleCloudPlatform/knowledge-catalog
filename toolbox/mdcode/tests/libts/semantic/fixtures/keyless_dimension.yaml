@@ -11,7 +11,7 @@ semantic_model:
   - name: mixed_keys
     datasets:
       - name: facts
-        source: facts
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/facts
         primary_key: [id]
         fields:
           - name: id
@@ -21,7 +21,7 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: facts.nokey_id }]
       - name: nokey
-        source: nokey
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/nokey
         # no primary_key: this dataset cannot become a graph node.
         fields:
           - name: nokey_id

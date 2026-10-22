@@ -20,10 +20,10 @@ version: "0.2.0.dev0/google"
 semantic_model:
   - name: people
     description: People and organizations, as a class hierarchy
-    deployment_target: //bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people
+    deployment_target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people
     entities:
       - name: Person
-        source: sqlgen-testing.demo.person
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/person
         primary_key: [id]
         description: A human being
         fields:
@@ -44,7 +44,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: email
       - name: Customer
-        source: sqlgen-testing.demo.customer
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/customer
         primary_key: [id]
         extends: [Person]
         fields:
@@ -59,7 +59,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: loyalty_tier
       - name: Employee
-        source: sqlgen-testing.demo.employee
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/employee
         primary_key: [id]
         extends: [Person]
         fields:
@@ -74,7 +74,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: department
       - name: Manager
-        source: sqlgen-testing.demo.manager
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/manager
         primary_key: [id]
         extends: [Employee]
         fields:
@@ -89,7 +89,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: team_size
       - name: City
-        source: sqlgen-testing.demo.city
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/city
         primary_key: [id]
         fields:
           - name: id

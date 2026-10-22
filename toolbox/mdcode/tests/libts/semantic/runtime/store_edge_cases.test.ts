@@ -12,10 +12,10 @@ import {loadModels} from '../../../../src/libts/semantic/loader';
 import {undeclaredProfileError} from '../../../../src/libts/semantic/runtime/runtime';
 import {AlloyDbDatabase, resolveStore, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
-const DB = '//spanner.googleapis.com/projects/p/instances/i/databases/d';
+const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
 const SPANNER_GRAPH = `${DB}/propertyGraphs/g`;
 const CLUSTER =
-    '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
+    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
 
 function model(body: string): SemanticModel {
   return loadModels(
@@ -132,7 +132,7 @@ describe('targets', () => {
   test('a target a GOOGLE block lists twice fails the store under every profile',
        () => {
          const graph =
-             '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+             'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
          const m = vanilla(
              JSON.stringify({deploymentTargets: [SPANNER_GRAPH, graph, graph]}));
          for (const profile of ['default', 'prod']) {

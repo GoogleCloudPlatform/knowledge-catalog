@@ -8,16 +8,16 @@
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/acme-ops/datasets/ops/propertyGraphs/commerce
+    deployment_target: bigquery.googleapis.com/projects/acme-ops/datasets/ops/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/dim_customer
+        source: bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/dim_customer
         fields:
           - { name: id, expression: cust_key }
           - { name: name, expression: cust_name }
           - { name: segment, expression: cust_segment }
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/fct_order
+        source: bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/fct_order
         fields:
           - { name: id, expression: order_key }
           - { name: customerId, expression: cust_key }

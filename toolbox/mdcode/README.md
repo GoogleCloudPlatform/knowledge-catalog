@@ -174,15 +174,14 @@ kcmd push
 For the semantic-model scope, `kcmd push` deploys the model as a property graph
 (`CREATE OR REPLACE PROPERTY GRAPH`) to the backend named by the model's GOOGLE
 deployment target — **BigQuery Graph** or **Spanner Graph**; the same authored
-model deploys to either, and swapping the target URI switches backends. Pass
+model deploys to either, and swapping the target switches backends. Pass
 `--validate-only` to print the generated DDL without executing it. For a BigQuery
 target this path additionally reads the target dataset's metadata
 (`bigquery.datasets.get`) to pin the query job's processing location; the call
 degrades gracefully when the permission is absent, so a narrower service account
-still works but falls back to BigQuery's own location inference. A dataset
-`source` that omits its project is qualified with the scope's declared project
-(the `<projectId>` in the init scope), not the ambient `gcloud` project; write a
-fully-qualified `project.dataset.table` source when the tables live elsewhere.
+still works but falls back to BigQuery's own location inference. Each dataset
+`source` is the table's GCP resource name, such as
+`bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`.
 (A Spanner target names its tables inside one database, so a `source` is reduced
 to its final segment, and Spanner Graph has no `MEASURE`, so metrics are dropped
 with a warning.)

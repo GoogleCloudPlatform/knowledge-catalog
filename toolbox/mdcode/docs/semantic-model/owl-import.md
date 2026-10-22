@@ -404,16 +404,16 @@ and they belong in different places:
    version: 0.2.0.dev0/google
    semantic_model:
      - name: sales
-       deployment_target: //bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
+       deployment_target: bigquery.googleapis.com/projects/myproj/datasets/sales/propertyGraphs/sales
        datasets:
          - name: Customer
-           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
+           source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/customers
            fields:
              - { name: customerId, expression: c_custkey }
              - { name: email,      expression: c_email }
              # ... the remaining Customer fields ...
          - name: Order
-           source: //bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
+           source: bigquery.googleapis.com/projects/myproj/datasets/sales/tables/orders
            fields:
              - { name: orderId, expression: o_orderkey }
              # ... the remaining Order fields ...

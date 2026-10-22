@@ -71,14 +71,13 @@ and physical is visible on disk.
 ## Sources
 
 Each entity names where its data lives with `source`. A Google Cloud table is
-written as its [AIP-122](https://google.aip.dev/122) full resource name, such as
-`//bigquery.googleapis.com/…`, `//biglake.googleapis.com/…`,
-`//spanner.googleapis.com/…`, `//alloydb.googleapis.com/…` or
-`//cloudsql.googleapis.com/…`, with or without the leading `//`, and is read
-with ambient IAM. A BigQuery, Spanner or AlloyDB table may also be written as
-its Knowledge Catalog name, under `bigquery:`, `spanner:` or `alloydb:`, and a
-Cloud SQL for MySQL or PostgreSQL table under `cloudsql_mysql:` or
-`cloudsql_postgresql:`. The preview
+written as its GCP resource name, with no leading `//`, such as
+`bigquery.googleapis.com/…`, `biglake.googleapis.com/…`,
+`spanner.googleapis.com/…`, `alloydb.googleapis.com/…` or
+`cloudsql.googleapis.com/…`, and is read with ambient IAM. A BigQuery, Spanner
+or AlloyDB table may also be written as its Knowledge Catalog name, under
+`bigquery:`, `spanner:` or `alloydb:`, and a Cloud SQL for MySQL or PostgreSQL
+table under `cloudsql_mysql:` or `cloudsql_postgresql:`. The preview
 supports Google Cloud tables only, so a third-party table is rejected in every
 form: a Knowledge Catalog entry name, or a name under a prefix such as
 `snowflake:`, `databricks:table:`, `mysql:` or `postgresql:`. A Bigtable or
@@ -320,10 +319,10 @@ that does.
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
+    deployment_target: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+        source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
         primary_key: [c_custkey]
         fields:
           - { name: key,             expression: c_custkey }
@@ -331,7 +330,7 @@ semantic_model:
           - { name: lifetimeValue,   expression: c_ltv }
         fields_exclude: [availableCredit]    # the warehouse holds no live credit
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
         primary_key: [o_orderkey]
         fields:
           - { name: key,         expression: o_orderkey }
@@ -353,10 +352,10 @@ calling out:
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
-    deployment_target: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/propertyGraphs/commerce
+    deployment_target: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/propertyGraphs/commerce
     entities:
       - name: Customer
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
+        source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Customer
         primary_key: [CustomerId]
         fields:
           - { name: key,             expression: CustomerId }
@@ -364,7 +363,7 @@ semantic_model:
           - { name: availableCredit, expression: AvailableCredit }
         fields_exclude: [lifetimeValue]      # the live store holds no modeled value
       - name: Order
-        source: //spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
+        source: spanner.googleapis.com/projects/acme-ops/instances/prod-us/databases/commerce/tables/Orders
         primary_key: [OrderId]
         fields:
           - { name: key,         expression: OrderId }

@@ -15,7 +15,7 @@ semantic_model:
   - name: skips
     datasets:
       - name: orders
-        source: orders
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey
@@ -28,7 +28,7 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: orders.status }]
       - name: customers
-        source: customers
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/customers
         primary_key: [c_custkey]
         fields:
           - name: c_custkey

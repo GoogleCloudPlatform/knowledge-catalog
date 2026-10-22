@@ -10,16 +10,16 @@
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/propertyGraphs/sales
+    deployment_target: bigquery.googleapis.com/projects/acme-dev/datasets/sales/propertyGraphs/sales
     entities:
       - name: Customer
-        source: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/customers
+        source: bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/customers
         primary_key: [id]
         fields:
           - { name: id, label: Customer ID, expression: customer_id }
           - { name: name, expression: customer_name }
       - name: Order
-        source: //bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: order_id }

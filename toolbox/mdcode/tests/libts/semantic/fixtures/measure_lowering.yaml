@@ -23,7 +23,7 @@ semantic_model:
   - name: lowering
     datasets:
       - name: orders
-        source: orders
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/orders
         primary_key: [o_orderkey]
         fields:
           - name: o_orderkey

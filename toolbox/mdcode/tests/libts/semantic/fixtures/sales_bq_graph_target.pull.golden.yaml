@@ -4,10 +4,10 @@ semantic_model:
   - name: sales
     deployments:
       - name: default
-        target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
+        target: bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
     entities:
       - name: orders
-        source: //bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders
         primary_key:
           - o_orderkey
         fields:

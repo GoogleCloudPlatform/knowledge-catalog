@@ -418,13 +418,13 @@ describe('model-level structure', () => {
       });
 
   test(
-      'a Spanner-targeted model records its Spanner URI in the semantic-model aspect',
+      'a Spanner-targeted model records its Spanner target in the semantic-model aspect',
       () => {
         // A model bound to Spanner Graph must not lose its deployment target in
         // Knowledge Catalog (the aspect used to read only BigQuery targets, so a
         // Spanner-only model round-tripped as UNBOUND).
         const spannerUri =
-            '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+            'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
         const model: SemanticModel = {
           name: 'm',
           relationships: [],
@@ -442,14 +442,14 @@ describe('model-level structure', () => {
       });
 
   test(
-      'a model targeting Spanner, BigQuery, and AlloyDB records all three URIs in declaration order',
+      'a model targeting Spanner, BigQuery, and AlloyDB records all three targets in declaration order',
       () => {
         const bqUri =
-            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+            'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const spannerUri =
-            '//spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
+            'spanner.googleapis.com/projects/p/instances/i/databases/db/propertyGraphs/g';
         const alloyUri =
-            '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+            'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
         const model: SemanticModel = {
           name: 'm',
           relationships: [],
@@ -470,11 +470,11 @@ describe('model-level structure', () => {
       'a model preserves every declared target in order even when deployment_target.ts does not recognize it',
       () => {
         const clusterAlloyUri =
-            '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
+            'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
         const alloyCatalogName = 'alloydb:p.us-central1.c.db';
         const bqUri =
-            '//bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-        const customTarget = 'bigquery:p.d.graph_name';
+            'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
+        const customTarget = 'bigquery.googleapis.com/projects/p/datasets/d/tables/graph_name';
         const targets =
             [clusterAlloyUri, bqUri, alloyCatalogName, customTarget];
         const model: SemanticModel = {
@@ -1070,7 +1070,7 @@ semantic_model:
   - name: shop
     entities:
       - name: orders
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
           - { name: id, expression: id }
@@ -1081,7 +1081,7 @@ semantic_model:
 `, `name: ops
 entities:
   - name: orders
-    source: //bigquery.googleapis.com/projects/p/datasets/d/tables/orders_ops
+    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders_ops
     fields_exclude: [secret]
 metrics_exclude: "*"
 `, 'ops');
@@ -1315,7 +1315,7 @@ semantic_model:
           - { name: id, datatype: Integer, description: The party id, label: Party ID }
       - name: Customer
         extends: [Party]
-        source: //bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer
         primary_key: [id]
         fields:
 ${customerFields}`;

@@ -383,7 +383,7 @@ column each field maps to, and the BigQuery graph to deploy to. The
 ```bash
 # BigQuery deployment target, named by the profile's deployment_target key.
 BQ_DS=projects/$PROJECT/datasets/$DATASET
-TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
+TARGET=bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
@@ -393,20 +393,20 @@ semantic_model:
     deployment_target: $TARGET
     entities:
       - name: orders
-        source: $PROJECT.$DATASET.orders
+        source: bigquery.googleapis.com/$BQ_DS/tables/orders
         primary_key: [o_orderkey]
         fields:
           - { name: order_id,    expression: o_orderkey }
           - { name: customer_id, expression: o_custkey }
           - { name: net_amount,  expression: net_amount }
       - name: customer
-        source: $PROJECT.$DATASET.customer
+        source: bigquery.googleapis.com/$BQ_DS/tables/customer
         primary_key: [c_custkey]
         fields:
           - { name: customer_id, expression: c_custkey }
           - { name: name,        expression: c_name }
       - name: lineitem
-        source: $PROJECT.$DATASET.lineitem
+        source: bigquery.googleapis.com/$BQ_DS/tables/lineitem
         primary_key: [l_linekey]
         fields:
           - { name: line_id,  expression: l_linekey }
@@ -436,10 +436,10 @@ echo 'default_profile: analytical' >> catalog.yaml
 > ```yaml
 > semantic_model:
 >   - name: sales
->     deployment_target: //bigquery.googleapis.com/.../propertyGraphs/sales
+>     deployment_target: bigquery.googleapis.com/.../propertyGraphs/sales
 >     entities:
 >       - name: orders
->         source: $PROJECT.$DATASET.orders
+>         source: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
 >         primary_key: [order_id]
 >         fields:
 >           - { name: order_id, datatype: Integer, expression: o_orderkey }
@@ -462,7 +462,7 @@ kcmd profiles
 ```
 Model 'sales' ($DATASET):
   profile 'analytical' (default)
-    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    target: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
     sources:
       orders -> $PROJECT.$DATASET.orders
       customer -> $PROJECT.$DATASET.customer
@@ -529,7 +529,7 @@ fully qualified names):
 ```sql
 Pushing semantic model (BigQuery Graph)...
 -- BigQuery Graph --
--- //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
+-- bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
 CREATE OR REPLACE PROPERTY GRAPH `$PROJECT.$DATASET.$GRAPH`
 NODE TABLES (
   `$PROJECT.$DATASET.orders` AS orders
@@ -697,7 +697,8 @@ into the same `sales.profiles/` directory:
 ```bash
 export SPANNER_INSTANCE="${SPANNER_INSTANCE:-<your-spanner-instance>}"   # a Spanner ENTERPRISE-edition instance
 export SPANNER_DB="${SPANNER_DB:-<your-googlesql-database>}"
-SPANNER_TARGET=//spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/$GRAPH
+SPANNER_DB_NAME=projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB
+SPANNER_TARGET=spanner.googleapis.com/$SPANNER_DB_NAME/propertyGraphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/operational.yaml <<YAML
@@ -707,20 +708,20 @@ semantic_model:
     deployment_target: $SPANNER_TARGET
     entities:
       - name: orders
-        source: Orders                       # a bare table in the Spanner database
+        source: spanner.googleapis.com/$SPANNER_DB_NAME/tables/Orders
         primary_key: [OrderId]
         fields:
           - { name: order_id,    expression: OrderId }
           - { name: customer_id, expression: CustomerId }
         fields_exclude: [net_amount]         # the operational store has no settled total
       - name: customer
-        source: Customers
+        source: spanner.googleapis.com/$SPANNER_DB_NAME/tables/Customers
         primary_key: [CustomerId]
         fields:
           - { name: customer_id, expression: CustomerId }
           - { name: name,        expression: FullName }
       - name: lineitem
-        source: LineItems
+        source: spanner.googleapis.com/$SPANNER_DB_NAME/tables/LineItems
         primary_key: [LineId]
         fields:
           - { name: line_id,  expression: LineId }
@@ -750,18 +751,18 @@ kcmd profiles
 ```
 Model 'sales' ($DATASET):
   profile 'analytical' (default)
-    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    target: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
     sources:
       orders -> $PROJECT.$DATASET.orders
       customer -> $PROJECT.$DATASET.customer
       lineitem -> $PROJECT.$DATASET.lineitem
     cannot answer: nothing withheld.
   profile 'operational'
-    target: //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
+    target: spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
     sources:
-      orders -> $PROJECT.Orders
-      customer -> $PROJECT.Customers
-      lineitem -> $PROJECT.LineItems
+      orders -> //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Orders
+      customer -> //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Customers
+      lineitem -> //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/LineItems
     cannot answer:
       field orders.net_amount (excluded)
       metric revenue (excluded)
@@ -769,9 +770,9 @@ Model 'sales' ($DATASET):
 
 Both profiles now show side by side: `analytical` binds every field, so it
 withholds nothing; `operational` excludes `net_amount`, and every metric. (`kcmd profiles`
-resolves each source against your project for display — the `analytical` sources
-are fully qualified, and each `operational` bare table such as `Orders` is shown
-project-prefixed; the Spanner graph itself references the bare `Orders`.)
+shows each BigQuery source as `project.dataset.table` and each Spanner source as
+its resource name with a leading `//`; the Spanner graph itself references the
+bare `Orders`.)
 
 `revenue` is `SUM(orders.net_amount)`. The operational profile excludes
 `net_amount`, and a metric that reaches an excluded field has to be excluded
@@ -821,7 +822,7 @@ kcmd push --profile operational --no-kc --print
 Note: profile 'operational' leaves 1 field(s) unbound; 1 metric(s) and 0 action(s) unavailable.
 Pushing semantic model (Spanner Graph)...
 -- Spanner Graph --
--- //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
+-- spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
 CREATE OR REPLACE PROPERTY GRAPH sales
 NODE TABLES (
   Orders AS orders
@@ -865,8 +866,8 @@ table's real column rather than the property alias. Three things also differ fro
 BigQuery DDL in step 3:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
-  one database, so there is no backticked `project.dataset.` qualifier — each
-  `source` is a bare table (`Orders`) in the target database.
+  one database, so there is no backticked `project.dataset.` qualifier — the DDL
+  names each table by the last part of its `source` (`Orders`).
 - **No `MEASURE`.** Spanner Graph has no measures, so a profile that deploys to
   Spanner excludes every metric, as `operational` does with
   `metrics_exclude: "*"`. Author metrics as usual; a BigQuery target still emits
@@ -1016,26 +1017,26 @@ semantic_model:
     deployment_target: $TARGET
     entities:
       - name: orders
-        source: $PROJECT.$DATASET.orders
+        source: bigquery.googleapis.com/$BQ_DS/tables/orders
         primary_key: [o_orderkey]
         fields:
           - { name: order_id,    expression: o_orderkey }
           - { name: customer_id, expression: o_custkey }
           - { name: net_amount,  expression: net_amount }
       - name: customer
-        source: $PROJECT.$DATASET.customer
+        source: bigquery.googleapis.com/$BQ_DS/tables/customer
         primary_key: [c_custkey]
         fields:
           - { name: customer_id, expression: c_custkey }
           - { name: name,        expression: c_name }
       - name: supplier
-        source: $PROJECT.$DATASET.supplier
+        source: bigquery.googleapis.com/$BQ_DS/tables/supplier
         primary_key: [s_suppkey]
         fields:
           - { name: supplier_id, expression: s_suppkey }
           - { name: name,        expression: s_name }
       - name: lineitem
-        source: $PROJECT.$DATASET.lineitem
+        source: bigquery.googleapis.com/$BQ_DS/tables/lineitem
         primary_key: [l_linekey]
         fields:
           - { name: line_id,  expression: l_linekey }
@@ -1073,7 +1074,7 @@ kcmd push --no-kc --print
 ```sql
 Pushing semantic model (BigQuery Graph)...
 -- BigQuery Graph --
--- //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
+-- bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
 CREATE OR REPLACE PROPERTY GRAPH `$PROJECT.$DATASET.$GRAPH`
 NODE TABLES (
   ...
