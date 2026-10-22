@@ -8,6 +8,7 @@ import * as crm from './crm';
 
 export interface EntryGroup {
   name: string;
+  type?: string;
   [key: string]: any;
 }
 
@@ -260,7 +261,7 @@ export class CatalogClient extends api.ApiClient {
   }
 
   async createEntryGroup(project: string, location: string, 
-                         entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
+                         entryGroupId: string, entryGroup?: Omit<EntryGroup, 'name'>): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);
     const resourceName = `${parent}/entryGroups`;
 
