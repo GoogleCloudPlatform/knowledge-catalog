@@ -516,13 +516,14 @@ writes nothing.
 - **Unrestated column** — the push fails when a named profile neither restates
   nor excludes a field whose expression reads a column. The error names the
   field, the profile and the column.
-- **Deployments and field dialects** — every push checks the model file's own
-  bindings against the rules of each deployment's engine, whichever binding the
-  push deploys. Each field they bind also needs a text its entity's database
-  runs. See [Validation](reference.md#validation).
+- **Deployments and field dialects** — every push checks each deployment
+  against the rules of its engine, under the model file's own bindings or the
+  profile it names, whether or not the push deploys it. Each field the model
+  file binds also needs a text its entity's database runs. See
+  [Validation](reference.md#validation).
 - **Unbound inline bindings** — when the model file's own bindings leave an
-  entity without a source or a relationship without join columns, and the
-  model declares no deployment, push warns and still pushes. The warning says
+  entity without a source or a relationship without join columns, and no
+  deployment uses them, push warns and still pushes. The warning says
   the model is non-executable when it declares no named profile, and that
   `default` is unbound when it declares one. `kcmd profiles` prints it under
   the `default` binding.

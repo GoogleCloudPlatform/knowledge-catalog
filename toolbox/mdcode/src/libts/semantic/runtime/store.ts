@@ -195,7 +195,7 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  * Neither is set when the profile names no store, unless a target is in no
  * accepted form or listed twice, or a GOOGLE block is not valid JSON. Neither
  * is set either when a BigQuery model binds a table outside the graph's
- * dataset, which push accepts.
+ * dataset.
  */
 export interface StoreError {
   error: string;
@@ -233,7 +233,7 @@ export interface StoreError {
  * 6. There is no target, so there is nothing to run against.
  * 7. The model binds a table outside the store. For a Spanner or AlloyDB
  *    store, a write would land in the wrong place, and the error is named. A
- *    BigQuery graph may read tables in any dataset, and push accepts that, so
+ *    BigQuery graph may read tables in any dataset, so
  *    for a BigQuery store the error is not named.
  */
 export function resolveStore(
@@ -347,7 +347,7 @@ export function resolveStore(
           `target store's table of that name rather than in the bound one. ` +
           `Bind both to the same store.`,
       // A BigQuery graph may read tables in any dataset, BigLake included,
-      // and push accepts that. The model then has no store, and a caller
+      // so the model then has no store, and a caller
       // does not fail.
       ...(store.kind === 'bigquery' ? {} : {named: true}),
     };

@@ -171,8 +171,11 @@ declared profile, as push does, but also one that names a legacy
 `semantic_model:` profile, which push refuses. It accepts a Spanner deployment
 that names no profile in a model with metrics, which push refuses. It fails on
 two BigQuery deployments that use one profile, since they leave no single
-store, while push deploys both. It also accepts a profile file that no
-deployment uses, as push does, and writes a skill whose store line says there
+store, while push deploys both. It accepts a model that binds a table outside
+the database a deployment deploys to, which push refuses, unless the model has
+actions and that database is the Spanner or AlloyDB store of the selected
+profile. It also accepts a profile file that no deployment uses, as push does,
+and writes a skill whose store line says there
 is none. A vanilla model lists its deployments or targets in a `GOOGLE` block.
 The command fails the same way when a target there is in no accepted form or
 listed twice, or when the block's data is not valid JSON. Like push, it reads
@@ -636,7 +639,7 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   metrics by design and imposes no such requirement. Defined in
   [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie). *(static)*
 * **Each deployment meets the rules of its engine.** Every push checks each
-  deployment the model declares, whichever binding the push deploys. A
+  deployment the model declares, whether or not the push deploys it. A
   deployment that names no profile uses the model file's own bindings. They
   must give every concrete entity a source and every relationship both join
   column lists. They must also bind every field that each deployed metric
@@ -646,6 +649,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   measure, so each metric must be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over
   one operand, and the entity it belongs to needs a primary key or a unique
   key. The measure rule skips a metric that has only a vendor text.
+  A deployment that names a profile is held to the measure rule under that
+  profile, with the keys it states, except for the metrics it leaves
+  unavailable. On Spanner, that profile must leave every metric unavailable.
   *(static)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
@@ -751,11 +757,22 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `escalate` / `warn` and `critical` / `high` / `medium` / `low` — so an
   unrecognized word is a hard load error rather than a value that publishes and
   means nothing. *(static)*
+* **Each deployment's tables are in the database it deploys to.** A Spanner or
+  AlloyDB deployment reads only tables in its target database. A BigQuery
+  deployment reads only BigQuery or BigLake tables, in any dataset of any
+  project. A Cloud SQL table fails every deployment. A push in two phases checks
+  every deployment this way, whether or not `--deployment` names it, and under
+  `--no-deployment` too. It reads each entity's `source` from the profile the
+  deployment names, or from the model file when it names none. *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a BigQuery table or a BigLake table (e.g. an
   Iceberg table in a federated REST catalog). A table that does not exist or that
-  you cannot access fails the push, naming the table and the entity. A
+  you cannot access fails the push, naming the table and the entity. On a push
+  that uses deployments, push probes the tables of the deployments it would
+  deploy, each in the location of the graph's dataset when push can read it. A
+  table in another location fails the push, and the error names the table's
+  location when BigQuery reports it. A
   **Spanner-targeting** model's sources live in Spanner (a different system) and
   are **not** probed here. The `source` construct and the resource names it takes
   are defined in [model spec §7.1](model_spec.md#71-table-sources).

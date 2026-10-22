@@ -3024,9 +3024,9 @@ semantic_model:
     });
 
     // Push warns and still pushes when the model file's own bindings are
-    // incomplete and the model declares no deployment. `kcmd profiles` prints
-    // the warning under the default binding, unless it reports another profile.
-    test('warns about incomplete inline bindings when the model declares no deployment, on push and in the report', async () => {
+    // incomplete and no deployment uses them. `kcmd profiles` prints the
+    // warning under the default binding, unless it reports another profile.
+    test('warns about incomplete inline bindings that no deployment uses, on push and in the report', async () => {
       const warned: string[] = [];
       spyOn(console, 'warn').mockImplementation((m: any) => {
         warned.push(String(m));
@@ -3063,15 +3063,15 @@ semantic_model:
       expect(await profiles({profile: 'prod'})).toBe(0);
       expect(newWarnings()).toEqual([]);
 
-      // A deployment that names a profile gets no warning, in push or in the
-      // report.
+      // Push and the report still warn when every deployment names a profile.
       writeScope({
         'commerce.yaml': customerUnbound(commerce({targets: 1}))
             .replace(/(target: \S+)\n/, '$1\n        profile: prod\n'),
       });
       expect(await pushResult()).toEqual({code: 0, errors: []});
+      expect(newWarnings()).toEqual([`Warning: ${NO_DEFAULT}`]);
       expect(await profiles()).toBe(0);
-      expect(newWarnings()).toEqual([]);
+      expect(newWarnings()).toEqual(reported(NO_DEFAULT));
     });
 
     // A named profile that keeps the field unchanged gets no error of its
@@ -3333,8 +3333,7 @@ semantic_model:
   });
 
   // A model file whose own source is a Cloud SQL table is read in that table's
-  // dialect too: its ANSI_SQL metric is parsed as T-SQL, so its bracketed
-  // names resolve the metric's entity, which a BigQuery graph push needs.
+  // dialect too, so a field with only a BigQuery text fails the report.
   test('the inline bindings are read in the dialect its catalog entry gives', async () => {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
@@ -3350,16 +3349,12 @@ semantic_model:
         primary_key: [key]
         fields:
           - { name: key, expression: o_key }
-          - { name: amount, expression: {dialects: [{dialect: ANSI_SQL, expression: o_amount}]} }
-    metrics:
-      - name: revenue
-        expression:
-          dialects:
-            - { dialect: ANSI_SQL, expression: "SUM([Order].[amount])" }
+          - { name: amount, expression: {dialects: [{dialect: BIGQUERY, expression: o_amount}]} }
 `);
     stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
-    await profiles({});
-    expect(logs.join('\n')).not.toContain("metric 'revenue'");
+    expect(await profiles({})).toBe(1);
+    expect(logs.join('\n')).toContain(
+        "the model file binds entity 'Order' to a SQLSERVER source");
   });
 
   test('stops kcmd profiles and push when its entry cannot be read', async () => {

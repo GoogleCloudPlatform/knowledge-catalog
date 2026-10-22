@@ -1492,6 +1492,8 @@ describe('validateProfileCompleteness', () => {
         `alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/${t}`;
     const m = irModel();
     m.entities[0].fields.push({name: 'code', expression: 'Customer.name + 0x1F'});
+    // Neither dialect reads this text, so the caller warns about it itself.
+    m.entities[0].fields.push({name: 'broken', expression: 'LOWER(Customer.name'});
     const pg = profile({
       name: 'pg',
       entities: [
@@ -2784,12 +2786,12 @@ relationships: []
       "profile 'prod': kcmd could not read the SQL of field 'F.f', so the " +
           'fields it reads were not checked',
     ]);
-    // A --deployment push warns about the model file's SQL when it loads the
-    // model file, so this check leaves that warning out.
-    const deferred: string[] = [];
-    validateProfileCompleteness(model, spec, deferred,
-                                {sqlWarned: true, ownSqlOnly: {dialect: 'BIGQUERY'}});
-    expect(deferred).toEqual([]);
+    // Push warns about the model file's SQL in its own check of the model
+    // file, so this check leaves that warning out.
+    const leftOut: string[] = [];
+    validateProfileCompleteness(
+        model, spec, leftOut, {ownSqlOnly: {dialect: 'BIGQUERY'}});
+    expect(leftOut).toEqual([]);
   });
 
   // Push's own check of what a field reads stands down on a broken hierarchy
