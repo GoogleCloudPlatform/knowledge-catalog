@@ -16,6 +16,17 @@ export function stubCloudSqlEntry(status: number, type?: string) {
            {status, message: 'Permission denied (or it may not exist).'}) as any);
 }
 
+// Makes push find each graph's dataset or database, and pass each BigQuery dry
+// run.
+export function passGraphChecks(): void {
+  const ok = (result: object) => ({status: 200, result}) as any;
+  spyOn(bigquery.BigQueryClient.prototype, 'getDataset')
+      .mockResolvedValue(ok({location: 'US'}));
+  spyOn(bigquery.BigQueryClient.prototype, 'query').mockResolvedValue(ok({}));
+  spyOn(spanner.SpannerClient.prototype, 'getDatabase')
+      .mockResolvedValue(ok({}));
+}
+
 
 export class CatalogClientMock extends gcp.CatalogClient {
   public mockEntries: gcp.Entry[] = [];

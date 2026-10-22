@@ -133,8 +133,8 @@ export function validatePushRequirements(
             `model runs against rather than deploys to; AlloyDB has no ` +
             `property graph for a push to publish. Declare a BigQuery or ` +
             `Spanner Graph target (${
-                where ?? DEPLOYMENTS_VERSION_HINT}; push uses exactly one ` +
-            `deployment for now), or run 'kcmd push --no-profile' to publish ` +
+                where ?? DEPLOYMENTS_VERSION_HINT}), or ` +
+            `run 'kcmd push --no-profile' to publish ` +
             `to Knowledge Catalog only.`);
       }
     }
@@ -482,7 +482,7 @@ function metricFieldCollisionError(
 // entry that names nothing real leaves a reader believing the blast radius is
 // described when it is not, and a consumer routing on it would route on a
 // concept that does not exist.
-function validateActions(
+export function validateActions(
     model: SemanticModel, document: string, fieldsPruned: boolean,
     checkDescriptions: boolean): string[] {
   const errors: string[] = [];
