@@ -17,10 +17,11 @@
 import {describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
-import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
+import {generateCatalogResources, KcGenerateOptions} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import * as resolveInheritanceModule from '../../../src/libts/semantic/resolve_inheritance';
-import {applyProfileFile, mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile, loadProfileFile, mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 
 const OPTS = {
   project: 'dest-proj',
@@ -34,6 +35,53 @@ const OPTS_EXPR = {
   emitExpressions: true
 };
 
+const V2 = {...OPTS, v2Aspects: true};
+const V2_EXPR = {...V2, emitExpressions: true};
+const KEY = (type: string) => `dataplex-types.global.${type}`;
+const DATAPLEX = 'projects/dataplex-types/locations/global';
+const TABLE = (t: string) =>
+    `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+const GRAPH = (g: string) =>
+    `bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/${g}`;
+// The entry whose name ends in /entries/<suffix>, emitted under V2 unless
+// `opts` says otherwise, and the data of one of its aspects.
+function entry(
+    model: SemanticModel, suffix: string, opts: KcGenerateOptions = V2) {
+  return generateCatalogResources(model, opts)
+      .entries.find(e => e.name.endsWith(`/entries/${suffix}`))!;
+}
+function data(model: SemanticModel, suffix: string, type: string,
+              opts: KcGenerateOptions = V2): any {
+  return entry(model, suffix, opts).aspects![KEY(type)]?.data;
+}
+const load = (text: string): SemanticModel =>
+    loadModels(text, {bindingOptional: true}).models[0];
+// Loads the profile `name` whose other keys are the YAML `body`.
+const PROFILE = (name: string, body: string) =>
+    loadProfileFile(`name: ${name}\n${body}`, name);
+// The data of a guidelines aspect.
+const GUIDE = (instructions: string) => ({instructions, userManaged: true});
+// A YAML entity over table p.d.<name> with an `id` field and the given key.
+const ENTITY_YAML = (name: string, key = '[id]') => `      - name: ${name}
+        source: ${TABLE(name)}
+        primary_key: ${key}
+        fields:
+          - { name: id, expression: id }`;
+// A vanilla model `shop` over table p.d.orders, with the given data in its
+// GOOGLE block and the given YAML lines at the end of the model.
+const vanilla = (block: object, more = '') => load(`version: "0.2.0.dev0"
+semantic_model:
+  - name: shop
+    custom_extensions:
+      - {vendor_name: GOOGLE, data: '${JSON.stringify(block)}'}
+    datasets:
+      - name: orders
+        source: ${TABLE('orders')}
+        primary_key: [id]
+        fields:
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
+${more}`);
 // A one-entity model whose single field carries the given IR type + dimension,
 // so a test can read back the emitted schema aspect for that field.
 function modelWithField(
@@ -889,54 +937,6 @@ describe('relationships map to schema-join entry links', () => {
               'does not support a relationship from an entity to itself.',
         ]);
       });
-
-  test(
-      'under v2Aspects, two relationships between the same pair of ' +
-          'entities both emit a link, and Dataplex refuses the second',
-      () => {
-        // The emitter writes `schema-join` links under both layouts, and
-        // Dataplex allows one link of a type between two entries. This pins
-        // today's output until the V2 design settles this case.
-        const model = directFkModel();
-        model.relationships = [
-          {
-            name: 'billing',
-            source: {entity: 'orders', columns: ['billing_custkey']},
-            destination: {entity: 'customer', columns: ['c_key']},
-          },
-          {
-            name: 'shipping',
-            source: {entity: 'orders', columns: ['shipping_custkey']},
-            destination: {entity: 'customer', columns: ['c_key']},
-          },
-        ];
-
-        const {entryLinks, warnings} =
-            generateCatalogResources(model, {...OPTS, v2Aspects: true});
-
-        expect(entryLinks.length).toBe(2);
-        expect(warnings).toEqual([]);
-      });
-
-  test(
-      'under v2Aspects, a relationship from an entity to itself still ' +
-          'emits a link',
-      () => {
-        // Only the flag-off path skips it. Dataplex refuses this
-        // `schema-join` link too, and the V2 design decides this case.
-        const model = directFkModel();
-        model.relationships = [{
-          name: 'referrer',
-          source: {entity: 'customer', columns: ['referred_by']},
-          destination: {entity: 'customer', columns: ['c_key']},
-        }];
-
-        const {entryLinks, warnings} =
-            generateCatalogResources(model, {...OPTS, v2Aspects: true});
-
-        expect(entryLinks.length).toBe(1);
-        expect(warnings).toEqual([]);
-      });
 });
 
 
@@ -1386,4 +1386,373 @@ entities:
     if ('error' in applied) throw new Error(applied.error);
     expect(customerField(applied.model, 'id')).toEqual(ANCESTOR);
   });
+});
+
+
+describe('with KC_V2_ASPECTS on, the model and its metrics', () => {
+  const MODEL_FILE = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    ai_context:
+      instructions: Sales data.
+      synonyms: [revenue_model]
+      custom:
+        owner: analytics
+        tier: 1.5
+        tags: {pii: false, area: [emea, apac]}
+    custom_extensions:
+      - {vendor_name: DBT, data: '{"materialized": "table"}'}
+      - {vendor_name: LOOKER, data: 'not json at all'}
+      - {vendor_name: DBT, data: '{"materialized": "table"}'}
+    deployments:
+      - {name: main, target: ${GRAPH('g')}}
+      - {name: ana, target: ${GRAPH('h')}, profile: analytical}
+      - {name: plain, target: ${GRAPH('i')}, profile: default}
+    entities:
+${ENTITY_YAML('orders')}
+          - { name: amount, expression: amount }
+    metrics:
+      - name: revenue
+        expression: SUM(orders.amount)
+        datatype: Decimal
+        ai_context: {synonyms: [sales, turnover], custom: {unit: USD, scale: ~}}
+      - name: order_count
+        entity: orders
+        expression:
+          dialects:
+            - { dialect: BIGQUERY, expression: COUNT(*) }
+            - { dialect: ANSI_SQL, expression: COUNT(1) }
+      - name: opaque_metric
+        expression: MAX(orders.amount)
+        datatype: Opaque
+`;
+  const loaded = () => load(MODEL_FILE);
+  const metric = (model: SemanticModel, name: string,
+                  type = 'semantic-metric', opts = V2) =>
+      data(model, `${model.name}/metrics/${name}`, type, opts);
+  const excluded = (model: SemanticModel, name: string) =>
+      metric(model, name).excludedInProfiles;
+
+  test('semantic-extensions holds every third-party block in order, ' +
+           'duplicates included, on its own entry, and is left out when the ' +
+           'only block is GOOGLE\'s',
+       () => {
+         const model = loaded();
+         // The loader folds the deployments into a GOOGLE block.
+         expect(model.customExtensions!.some(x => x.vendorName === 'GOOGLE'))
+             .toBe(true);
+         const DBT = {vendorName: 'DBT', data: '{"materialized": "table"}'};
+         expect(data(model, 'sales', 'semantic-extensions')).toEqual({
+           customExtensions:
+               [DBT, {vendorName: 'LOOKER', data: 'not json at all'}, DBT],
+         });
+         model.metrics[0].customExtensions =
+             [{vendorName: 'Google', data: '{}'}];
+         expect(metric(model, 'revenue', 'semantic-extensions'))
+             .toEqual({customExtensions: [{vendorName: 'Google', data: '{}'}]});
+         model.customExtensions =
+             model.customExtensions!.filter(x => x.vendorName === 'GOOGLE');
+         model.metrics[0].customExtensions =
+             [{vendorName: 'GOOGLE', data: '{"entity": "orders"}'}];
+         expect(data(model, 'sales', 'semantic-extensions')).toBeUndefined();
+         expect(metric(model, 'revenue', 'semantic-extensions'))
+             .toBeUndefined();
+       });
+
+  test('the model aspect holds the version, synonyms, named profiles and ' +
+           'deployments, no deploymentTargets list or extension blocks, ' +
+           'leaves out what would be empty, and defaults the version',
+       () => {
+         const model = loaded();
+         model.profiles =
+             ['analytical', 'ops'].map(n => PROFILE(n, 'metrics_exclude: []'));
+         expect(data(model, 'sales', 'semantic-model')).toEqual({
+           specVersion: '0.2.0.dev0/google',
+           synonyms: ['revenue_model'],
+           profiles: [{name: 'analytical'}, {name: 'ops'}],
+           deployments: [
+             {name: 'main', target: GRAPH('g')},
+             {name: 'ana', target: GRAPH('h'), profile: 'analytical'},
+             {name: 'plain', target: GRAPH('i')},
+           ],
+         });
+         const bare: SemanticModel = {
+           name: 'bare',
+           entities: [],
+           relationships: [],
+           metrics: [],
+           profiles: [{name: 'default', entities: [], relationships: []}],
+           deployments: [],
+           aiContext: {synonyms: []},
+         };
+         expect(data(bare, 'bare', 'semantic-model'))
+             .toEqual({specVersion: '0.2.0.dev0/google'});
+         bare.version = '0.2.0.dev0';
+         expect(data(bare, 'bare', 'semantic-model'))
+             .toEqual({specVersion: '0.2.0.dev0'});
+       });
+
+  test('a vanilla model\'s deploymentTargets become deployments named ' +
+           'default or deployment_<n>',
+       () => {
+         const targets = (...graphs: string[]) => data(
+             vanilla({deploymentTargets: graphs.map(GRAPH)}), 'shop',
+             'semantic-model');
+         expect(targets('g')).toEqual({
+           specVersion: '0.2.0.dev0',
+           deployments: [{name: 'default', target: GRAPH('g')}],
+         });
+         expect(targets('g', 'h')).toEqual({
+           specVersion: '0.2.0.dev0',
+           deployments: [
+             {name: 'deployment_1', target: GRAPH('g')},
+             {name: 'deployment_2', target: GRAPH('h')},
+           ],
+         });
+       });
+
+  test('a metric records its canonical data type with the metadataType it ' +
+           'maps to, its synonyms and only an authored entity',
+       () => {
+         const model = loaded();
+         // The loader infers `orders` for revenue; only order_count wrote it.
+         expect(model.metrics[0].entity).toBe('orders');
+         expect(metric(model, 'revenue')).toEqual({
+           dataType: 'Decimal',
+           metadataType: 'NUMBER',
+           synonyms: ['sales', 'turnover'],
+         });
+         expect(metric(model, 'order_count')).toEqual({
+           entity: 'orders',
+           dataType: 'Opaque',
+           metadataType: 'OTHER',
+         });
+         expect(metric(model, 'opaque_metric'))
+             .toEqual({dataType: 'Opaque', metadataType: 'OTHER'});
+       });
+
+  test('a profile excluding every metric is on every metric entry, and one ' +
+           'with a list is on the metrics it names, sorted by name',
+       () => {
+         const model = loaded();
+         model.profiles = [
+           PROFILE('zeta', 'metrics_exclude: [revenue]'),
+           PROFILE('all', 'metrics_exclude: "*"'),
+           PROFILE('Beta', 'metrics_exclude: [revenue, order_count]'),
+           PROFILE('none', 'metrics_exclude: []'),
+         ];
+         expect(excluded(model, 'revenue')).toEqual(['Beta', 'all', 'zeta']);
+         expect(excluded(model, 'order_count')).toEqual(['Beta', 'all']);
+         expect(excluded(model, 'opaque_metric')).toEqual(['all']);
+       });
+
+  test('a short-form expression is written with no dialect, name or ' +
+           'qualifier, a dialect list one record per entry, and ' +
+           'semantic-metric carries no expression, even under emitExpressions',
+       () => {
+         const model = loaded();
+         expect(metric(model, 'revenue', 'sql-expressions'))
+             .toEqual({expressions: [{sql: 'SUM(orders.amount)'}]});
+         expect(metric(model, 'revenue', 'semantic-metric', V2_EXPR).expression)
+             .toBeUndefined();
+         expect(metric(model, 'order_count', 'sql-expressions')).toEqual({
+           expressions: [
+             {dialect: 'BIGQUERY', sql: 'COUNT(*)'},
+             {dialect: 'ANSI_SQL', sql: 'COUNT(1)'},
+           ],
+         });
+       });
+
+  test('guidelines holds the instructions and, in data, the custom ' +
+           'ai_context members as loaded, and is left out when an object ' +
+           'has neither',
+       () => {
+         const model = loaded();
+         expect(data(model, 'sales', 'guidelines')).toEqual({
+           ...GUIDE('Sales data.'),
+           data: {owner: 'analytics', tier: 1.5,
+                  tags: {pii: false, area: ['emea', 'apac']}},
+         });
+         expect(data(model, 'sales', 'guidelines', OPTS))
+             .toEqual(GUIDE('Sales data.'));
+         expect(metric(model, 'revenue', 'guidelines'))
+             .toEqual({data: {unit: 'USD', scale: null}, userManaged: true});
+         expect(metric(model, 'order_count', 'guidelines')).toBeUndefined();
+         model.metrics[1].aiContext = {instructions: 'Count them.'};
+         expect(metric(model, 'order_count', 'guidelines'))
+             .toEqual(GUIDE('Count them.'));
+       });
+
+  test('a custom member whose value holds .inf, -.inf, .nan or an integer ' +
+           'past 2^53, at any depth, is left out of data with a warning',
+       () => {
+         for (const [value, holds] of [
+                ['.inf', '.inf'], ['-.inf', '-.inf'], ['[1, {n: .nan}]', '.nan'],
+                ['9007199254740993', 'an integer past 2^53'],
+              ]) {
+           const model = load(MODEL_FILE.replace('tier: 1.5', `tier: ${value}`));
+           expect(data(model, 'sales', 'guidelines').data).toEqual(
+               {owner: 'analytics', tags: {pii: false, area: ['emea', 'apac']}});
+           expect(generateCatalogResources(model, V2).warnings).toContain(
+               `model 'sales': ai_context member 'tier' is not pushed: its ` +
+               `value holds ${holds}, which Knowledge Catalog cannot store ` +
+               `as written`);
+           expect(generateCatalogResources(model, OPTS).warnings).toEqual([]);
+         }
+       });
+});
+
+
+describe('with KC_V2_ASPECTS on, relationships', () => {
+  const EG = 'projects/dest-proj/locations/us/entryGroups/eg';
+  const ENTRY = (id: string) => `${EG}/entries/${id}`;
+  const MODEL_FILE = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+${ENTITY_YAML('orders')}
+${ENTITY_YAML('customers', '[tenant, id]')}
+${ENTITY_YAML('addresses')}
+    relationships:
+      - name: orders_to_customers
+        from: orders
+        to: customers
+        from_columns: [tenant, cust_id]
+        to_columns: [tenant, id]
+        description: Each order belongs to one customer.
+        ai_context:
+          instructions: Join through this edge to reach customer attributes.
+          synonyms: [placed_by]
+        custom_extensions:
+          - {vendor_name: DBT, data: '{"relationship": true}'}
+      - { name: Order_Billing, from: orders, to: customers,
+          from_columns: ['\`bill cust\`'], to_columns: [id] }
+      - { name: customer_orders, from: customers, to: orders }
+      - { name: orders_to_ship_address, from: orders, to: addresses,
+          from_columns: [ship_addr_id], to_columns: [id] }
+      - { name: referred_by, from: customers, to: customers,
+          from_columns: [referrer], to_columns: [id] }
+`;
+  const loaded = () => load(MODEL_FILE);
+  const rel = (model: SemanticModel, name: string) =>
+      data(model, `sales/relationships/${name}`, 'semantic-relationship');
+
+  test('a relationship entry sits under the model and holds its ' +
+           'endpoints, any join columns as written, synonyms, instructions ' +
+           'and third-party blocks, and no schema or sql-expressions',
+       () => {
+         const model = loaded();
+         const {entryType, parentEntry, entrySource, aspects} =
+             entry(model, 'sales/relationships/orders_to_customers');
+         expect(entryType).toBe(`${DATAPLEX}/entryTypes/semantic-relationship`);
+         expect(parentEntry).toBe(ENTRY('sales'));
+         expect(entrySource).toEqual({
+           displayName: 'orders_to_customers',
+           description: 'Each order belongs to one customer.',
+         });
+         expect(aspects![KEY('semantic-relationship')].data).toEqual({
+           source: {name: 'orders', fields: ['tenant', 'cust_id']},
+           target: {name: 'customers', fields: ['tenant', 'id']},
+           synonyms: ['placed_by'],
+         });
+         expect(aspects![KEY('guidelines')].data).toEqual(
+             GUIDE('Join through this edge to reach customer attributes.'));
+         expect(aspects![KEY('semantic-extensions')].data).toEqual({
+           customExtensions:
+               [{vendorName: 'DBT', data: '{"relationship": true}'}],
+         });
+         expect(aspects![KEY('schema')]).toBeUndefined();
+         expect(aspects![KEY('sql-expressions')]).toBeUndefined();
+         expect(rel(model, 'customer_orders')).toEqual({
+           source: {name: 'customers'},
+           target: {name: 'orders'},
+         });
+         expect(rel(model, 'Order_Billing').source)
+             .toEqual({name: 'orders', fields: ['`bill cust`']});
+       });
+
+  test('profiles holds the join columns of each named profile that binds ' +
+           'the relationship, in declaration order, and is absent when the ' +
+           'model has no named profile',
+       () => {
+         const model = loaded();
+         model.profiles = [
+           PROFILE('operational', `relationships:
+  - name: Order_Billing
+    from_columns: [bill_id]
+    to_columns: [cid]
+`),
+           PROFILE('analytical', `relationships:
+  - name: orders_to_customers
+    from_columns: [tenant_id, customer_key]
+    to_columns: [tenant_id, ck]
+  - name: Order_Billing
+    from_columns: [billing_key]
+`),
+         ];
+         expect(rel(model, 'orders_to_customers').profiles).toEqual([{
+           name: 'analytical',
+           sourceFields: ['tenant_id', 'customer_key'],
+           targetFields: ['tenant_id', 'ck'],
+         }]);
+         expect(rel(model, 'Order_Billing').profiles).toEqual([
+           {name: 'operational', sourceFields: ['bill_id'],
+            targetFields: ['cid']},
+           {name: 'analytical', sourceFields: ['billing_key']},
+         ]);
+         expect(rel(model, 'customer_orders').profiles).toBeUndefined();
+         model.profiles = [{name: 'default', entities: [], relationships: [
+           {name: 'orders_to_customers', fromColumns: ['a'], toColumns: ['b']},
+         ]}];
+         expect(rel(model, 'orders_to_customers').profiles).toBeUndefined();
+       });
+
+  test('relationship entries keep their names and follow the entities in ' +
+           'declaration order, each ordered pair of different entities gets ' +
+           'one semantic-link listing its relationships, and an association ' +
+           'gets a warning and no entry or link',
+       () => {
+         const model = loaded();
+         model.relationships.unshift({
+           ...model.relationships[0],
+           name: 'm2m',
+           association: {dataSource: 'p.d.order_customer', keys: ['id'],
+                         sourceColumns: ['o_key'], destinationColumns: ['c_key']},
+         });
+         const {entries, entryLinks, warnings} =
+             generateCatalogResources(model, V2);
+         expect(entries.map(e => e.name)).toEqual([
+           'sales',
+           'sales/entities/orders',
+           'sales/entities/customers',
+           'sales/entities/addresses',
+           'sales/relationships/orders_to_customers',
+           'sales/relationships/Order_Billing',
+           'sales/relationships/customer_orders',
+           'sales/relationships/orders_to_ship_address',
+           'sales/relationships/referred_by',
+         ].map(ENTRY));
+         expect(warnings).toEqual([expect.stringMatching(
+             /^relationship 'm2m': many-to-many \(association\) edges/)]);
+         const link = (from: string, to: string, relationships: string[]) => ({
+           name: `${EG}/entryLinks/${semanticLinkId('sales', from, to)}`,
+           entryLinkType: `${DATAPLEX}/entryLinkTypes/semantic-link`,
+           entryReferences: [
+             {name: ENTRY(`sales/entities/${from}`), type: 'SOURCE' as const},
+             {name: ENTRY(`sales/entities/${to}`), type: 'TARGET' as const},
+           ],
+           aspects: {
+             [KEY('semantic-link')]: {
+               aspectType: `${DATAPLEX}/aspectTypes/semantic-link`,
+               data: {relationships},
+             },
+           },
+         });
+         expect(entryLinks).toEqual([
+           link('orders', 'customers',
+                ['orders_to_customers', 'Order_Billing']),
+           link('customers', 'orders', ['customer_orders']),
+           link('orders', 'addresses', ['orders_to_ship_address']),
+         ]);
+       });
 });

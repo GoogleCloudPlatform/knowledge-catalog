@@ -1377,6 +1377,38 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     });
   }
 
+  test('prints push\'s warning for a custom ai_context member push leaves ' +
+           'out with KC_V2_ASPECTS on',
+       async () => {
+         process.env.KC_V2_ASPECTS = '1';
+         const warned: string[] = [];
+         spyOn(console, 'warn').mockImplementation((m: any) => {
+           warned.push(String(m));
+         });
+         const model = commerce().replace(
+             '  - name: commerce\n',
+             '  - name: commerce\n    ai_context: {custom: {cap: .inf}}\n');
+         // With the flag on, link IDs are hashes, so push takes `placed__by`
+         // beside `placed_by`.
+         writeScope({
+           'commerce.yaml': `${model}      - {name: placed__by, from: ` +
+               'purchase, to: customer, from_columns: [p_customer], ' +
+               'to_columns: [c_id]}\n',
+         });
+         const warning = '[commerce] model \'commerce\': ai_context member ' +
+             '\'cap\' is not pushed: its value holds .inf, which Knowledge ' +
+             'Catalog cannot store as written';
+         expect(await pushResult()).toEqual({code: 0, errors: []});
+         expect(warned.splice(0)).toContain(`Warning: ${warning}`);
+         expect(await profiles()).toBe(0);
+         expect(warned.splice(0))
+             .toEqual([`  profile 'default': warning: ${warning}`]);
+         delete process.env.KC_V2_ASPECTS;
+         writeScope({'commerce.yaml': model});
+         expect(await profiles()).toBe(0);
+         expect(warned).toEqual([]);
+       });
+
   test('reads each profile file once', async () => {
     writeScope({
       'commerce.yaml': commerce(),

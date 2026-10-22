@@ -17,6 +17,7 @@ import {ApiContext} from '../../../src/libts/gcp/context';
 import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -34,6 +35,8 @@ const DOCS = [{name: 'sales.yaml', text: OSSIE}];
 const STAR =
     fs.readFileSync(path.join(FIXTURES, 'star_orders_customer.yaml'), 'utf8');
 const STAR_DOCS = [{name: 'star.yaml', text: STAR}];
+
+const STAR_SEMANTIC_LINK = semanticLinkId('sales', 'orders', 'customer');
 
 // A model declaring actions, used to exercise custom-type preflight checks.
 const ACTIONS_DOC =
@@ -92,6 +95,7 @@ const OPTS = {
   entryGroup: 'eg',
   entryCreateTries: 1
 };
+const V2_OPTS = {...OPTS, v2Aspects: true};
 
 // bun's spyOn accumulates calls across tests; restore originals after each so
 // per-test call counts and ordering assertions are isolated.
@@ -105,6 +109,7 @@ function ok<T>(result?: T): ApiResult<T> {
 function err(status: number, message: string): ApiResult<any> {
   return {status, message};
 }
+const EXISTS = () => err(409, 'already exists');
 
 // Stubs CatalogClient entry, entry-link, and custom-type operations, returning
 // the spies so a test can assert call counts and ordering.
@@ -1451,6 +1456,10 @@ const ENTITY_TYPE =
     'projects/dataplex-types/locations/global/entryTypes/semantic-entity';
 const METRIC_TYPE =
     'projects/dataplex-types/locations/global/entryTypes/semantic-metric';
+const RELATIONSHIP_TYPE =
+    'projects/dataplex-types/locations/global/entryTypes/semantic-relationship';
+const SEMANTIC_LINK_TYPE =
+    'projects/dataplex-types/locations/global/entryLinkTypes/semantic-link';
 const FILE_TYPE =
     'projects/dest/locations/global/entryTypes/semantic-model-file';
 
@@ -2702,6 +2711,7 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
         expect(modelUpdateCall![2]).toEqual([
           'dataplex-types.global.semantic-model',
           'dataplex-types.global.guidelines',
+          'dataplex-types.global.semantic-extensions',
         ]);
         expect(modelUpdateCall![3]).toBe(true);
 
@@ -2709,6 +2719,7 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
           'dataplex-types.global.semantic-entity',
           'dataplex-types.global.schema',
           'dataplex-types.global.guidelines',
+          'dataplex-types.global.semantic-extensions',
           'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines@*',
         ]);
@@ -2716,8 +2727,9 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
 
         expect(metricUpdateCall![2]).toEqual([
           'dataplex-types.global.semantic-metric',
-          'dataplex-types.global.guidelines',
           'dataplex-types.global.sql-expressions',
+          'dataplex-types.global.guidelines',
+          'dataplex-types.global.semantic-extensions',
         ]);
         expect(metricUpdateCall![3]).toBe(true);
 
@@ -2853,17 +2865,15 @@ describe(
           'deletes and recreates an existing link when its link type ' +
               'changed even if endpoint references match',
           async () => {
-            // Stage an existing `semantic-relationship` link whose
-            // `entryReferences` already match the V1 `schema-join` link emitted
-            // by `STAR_DOCS`. Because `entryLinkType` is immutable in Dataplex,
-            // the link must still be deleted and recreated.
+            // Stage an existing `semantic-link` link whose `entryReferences`
+            // already match the V1 `schema-join` link emitted by `STAR_DOCS`.
+            // Because `entryLinkType` is immutable in Dataplex, the link must
+            // still be deleted and recreated.
             const sameRefsWrongType = {
               ...linkEntry(
                   'sales-orders-to-customer',
                   ['sales.entities.orders', 'sales.entities.customer']),
-              entryLinkType:
-                  'projects/dataplex-types/locations/global/entryLinkTypes/' +
-                  'semantic-relationship',
+              entryLinkType: SEMANTIC_LINK_TYPE,
             };
             const {createLink, updateLink, delLink} = stubClient({
               existing: [
@@ -3077,7 +3087,7 @@ describe(
           'returns an error when deleting a link with changed references fails',
           async () => {
             const staleDottedLink = linkEntry(
-                'sales-orders-to-customer',
+                STAR_SEMANTIC_LINK,
                 ['sales.entities.orders', 'sales.entities.customer']);
             const {createLink} = stubClient({
               existing: [
@@ -3096,7 +3106,7 @@ describe(
             expect(result.details)
                 .toBe(
                     'Deleting stale entry link ' +
-                    '\'sales-orders-to-customer\' from model \'sales\' ' +
+                    `'${STAR_SEMANTIC_LINK}' from model 'sales' ` +
                     'failed: delete failed');
             expect(createLink).not.toHaveBeenCalled();
           });
@@ -3183,7 +3193,7 @@ describe(
           'returns an error when recreating a link after deletion fails',
           async () => {
             const staleDottedLink = linkEntry(
-                'sales-orders-to-customer',
+                STAR_SEMANTIC_LINK,
                 ['sales.entities.orders', 'sales.entities.customer']);
             stubClient({
               existing: [
@@ -3203,7 +3213,7 @@ describe(
             expect(result.details)
                 .toBe(
                     'Model \'sales\': entry link ' +
-                    '\'sales-orders-to-customer\': recreate failed ' +
+                    `'${STAR_SEMANTIC_LINK}': recreate failed ` +
                     '(push again to restore the link)');
           });
 
@@ -3351,25 +3361,21 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
     {id: 'sales.entities.orders', type: ENTITY_TYPE},
     {id: 'sales.entities.customer', type: ENTITY_TYPE},
   ];
-  const SEMANTIC_REL_LINK_TYPE =
-      'projects/dataplex-types/locations/global/entryLinkTypes/' +
-      'semantic-relationship';
 
   test(
       'lookupEntryLinks omits entryLinkTypes and filters to schema-join and ' +
-          'semantic-relationship links',
+          'semantic-link links',
       async () => {
-        // Stage one orphaned `schema-join` link, one orphaned
-        // `semantic-relationship` link, and one non-relationship `synonym`
-        // link on the model's entities.
+        // Stage orphaned `schema-join` and `semantic-link` links and a
+        // non-relationship `synonym` link on the model's entities.
         const orphanSchemaJoin = linkEntry(
             'sales-old-join',
             ['sales.entities.orders', 'sales.entities.customer']);
-        const orphanSemanticRel = {
+        const orphanSemanticLink = {
           ...linkEntry(
               'sales-old-rel',
               ['sales.entities.orders', 'sales.entities.customer']),
-          entryLinkType: SEMANTIC_REL_LINK_TYPE,
+          entryLinkType: SEMANTIC_LINK_TYPE,
         };
         const unrelatedLink = {
           ...linkEntry(
@@ -3385,7 +3391,7 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
             {id: 'sales.entities.customer', type: ENTITY_TYPE},
           ],
           links: (entry: string) => entry.endsWith('sales.entities.orders') ?
-              ok([orphanSchemaJoin, orphanSemanticRel, unrelatedLink]) :
+              ok([orphanSchemaJoin, orphanSemanticLink, unrelatedLink]) :
               ok([]),
         });
 
@@ -3948,18 +3954,12 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
           'and schema-join links creates V2 entries and links and deletes ' +
           'old V1 entries and links',
       async () => {
-        // The entry group holds V1 dotted entries (`sales`,
-        // `sales.entities.orders`, `sales.entities.customer`,
-        // `sales.metrics.total_revenue`, `sales.metrics.order_count`), a
-        // `schema-join` link whose ID collides with the V2 relationship link
-        // (`sales-orders-to-customer`), and an orphaned `schema-join` link
-        // whose ID is no longer emitted (`sales-orders-to-supplier`).
-        const collidingV1Link = linkEntry(
-            'sales-orders-to-customer',
-            ['sales.entities.orders', 'sales.entities.customer']);
-        const orphanV1Link = linkEntry(
-            'sales-orders-to-supplier',
-            ['sales.entities.orders', 'sales.entities.customer']);
+        // The entry group holds the five V1 dotted entries and two V1
+        // `schema-join` links.
+        const v1Links =
+            ['sales-orders-to-customer', 'sales-orders-to-supplier'].map(
+                id => linkEntry(
+                    id, ['sales.entities.orders', 'sales.entities.customer']));
         const {create, update, del, createLink, delLink} = stubClient({
           existing: [
             {id: 'sales', type: MODEL_TYPE},
@@ -3970,7 +3970,7 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
           ],
           create: (id) => id === 'sales' ? err(409, 'already exists') : ok({}),
           links: (entry: string) => entry.endsWith('sales.entities.orders') ?
-              ok([collidingV1Link, orphanV1Link]) :
+              ok(v1Links) :
               ok([]),
           createLink: () => ok({}),
         });
@@ -3980,19 +3980,21 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
 
         expect(result.success).toBe(true);
         expect(result.updated).toBe(1);  // anchor 'sales'
-        expect(result.created).toBe(4);  // 2 slash entities + 2 slash metrics
-        expect(result.linked)
-            .toBe(1);  // relationship link recreated with V2 slash endpoints
+        // 2 slash entities, 2 slash metrics and the relationship entry.
+        expect(result.created).toBe(5);
+        expect(result.linked).toBe(1);  // the pair's semantic-link
         expect(result.deleted).toBe(4);   // 4 old dotted entries deleted
-        expect(result.unlinked).toBe(1);  // orphan V1 schema-join link deleted
+        expect(result.unlinked).toBe(2);  // both V1 schema-join links deleted
         expect(update).toHaveBeenCalledTimes(1);
-        expect(createLink).toHaveBeenCalledTimes(1);
+        expect(createLink.mock.calls.map(c => c[3]))
+            .toEqual([STAR_SEMANTIC_LINK]);
         expect(create.mock.calls.map(c => c[3]).sort()).toEqual([
           'sales',
           'sales/entities/customer',
           'sales/entities/orders',
           'sales/metrics/order_count',
           'sales/metrics/total_revenue',
+          'sales/relationships/orders_to_customer',
         ]);
         expect(del.mock.calls.map(c => c[3]).sort()).toEqual([
           'sales.entities.customer',
@@ -4005,4 +4007,120 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
           'sales-orders-to-supplier',
         ]);
       });
+});
+
+
+type Stubs = NonNullable<Parameters<typeof stubClient>[0]>;
+// Pushes `docs` with KC_V2_ASPECTS on over a catalog that lists `existing`
+// and answers each create with 409. `stubs` overrides any stub.
+async function pushAgain(
+    docs: {name: string; text: string}[], existing: Stubs['existing'],
+    stubs: Stubs = {}) {
+  const spies = stubClient(
+      {create: EXISTS, ...stubs, existing: stubs.existing ?? existing});
+  const result = await deployKnowledgeCatalog(models(docs), CTX, V2_OPTS);
+  return {...spies, result};
+}
+
+
+describe('deployKnowledgeCatalog: V2 relationship entries and links', () => {
+  const V2_ENTRIES = [
+    {id: 'sales', type: MODEL_TYPE},
+    {id: 'sales/entities/orders', type: ENTITY_TYPE},
+    {id: 'sales/entities/customer', type: ENTITY_TYPE},
+    {id: 'sales/metrics/total_revenue', type: METRIC_TYPE},
+    {id: 'sales/metrics/order_count', type: METRIC_TYPE},
+    {id: 'sales/relationships/orders_to_customer', type: RELATIONSHIP_TYPE},
+  ];
+  // A semantic-link from entity `from` to entity `to`, as lookupEntryLinks
+  // returns it with the project number.
+  function semanticLink(id: string, from: string, to: string) {
+    const ref = (entity: string, type: string) =>
+        ({name: entryName(`sales/entities/${entity}`, '123456789'), type});
+    return {
+      ...linkEntry(id, [], '123456789'),
+      entryLinkType: SEMANTIC_LINK_TYPE,
+      entryReferences: [ref(from, 'SOURCE'), ref(to, 'TARGET')],
+    };
+  }
+  // STAR's link from orders to customer, and a link from customer to orders.
+  const STAR_LINK = semanticLink(STAR_SEMANTIC_LINK, 'orders', 'customer');
+  const BACK_ID = semanticLinkId('sales', 'customer', 'orders');
+  const BACK_LINK = semanticLink(BACK_ID, 'customer', 'orders');
+  // Pushes `docs` again over STAR's entries, whose entry and link creates
+  // return 409.
+  const rePush = (stubs: Stubs, docs = STAR_DOCS) =>
+      pushAgain(docs, V2_ENTRIES, {createLink: EXISTS, ...stubs});
+
+  test('a relationship dropped from the model has its entry deleted, and ' +
+           'its link when it was the last on its pair',
+       async () => {
+         const {del, delLink, updateLink, result} = await rePush({
+           existing: [
+             ...V2_ENTRIES,
+             {id: 'sales/relationships/customer_orders',
+              type: RELATIONSHIP_TYPE},
+           ],
+           links: () => ok([STAR_LINK, BACK_LINK]),
+         });
+
+         expect(result.success).toBe(true);
+         expect(result.deleted).toBe(1);
+         expect(result.unlinked).toBe(1);
+         expect(del.mock.calls.map(c => c[3]))
+             .toEqual(['sales/relationships/customer_orders']);
+         expect(delLink.mock.calls.map(c => c[3])).toEqual([BACK_ID]);
+         expect(updateLink).toHaveBeenCalledTimes(1);
+       });
+
+  // STAR with its relationship turned to run from customer to orders.
+  const FLIPPED = STAR.replace(
+      'from: orders\n        to: customer\n' +
+          '        from_columns: [o_custkey]\n' +
+          '        to_columns: [c_custkey]',
+      'from: customer\n        to: orders\n' +
+          '        from_columns: [c_custkey]\n' +
+          '        to_columns: [o_custkey]');
+  const SUPPLIER_ID = semanticLinkId('sales', 'orders', 'supplier');
+  // Each case pushes `docs` again with `stubs`, tries to delete the links
+  // `deleted` and fails with `details`.
+  for (const [name, stubs, docs, deleted, details] of [
+    ['a failed update of a kept link gives no push-again hint when only ' +
+         'the link in the other direction was deleted',
+     {
+       links: () => ok([STAR_LINK, BACK_LINK]),
+       updateLink: err(500, 'backend unavailable'),
+     },
+     STAR_DOCS, [BACK_ID],
+     `Model 'sales': entry link '${STAR_SEMANTIC_LINK}': backend unavailable`],
+    ['a relationship that changes direction, whose new link fails to ' +
+         'write, says to push again',
+     {
+       links: () => ok([STAR_LINK]),
+       createLink: () => err(500, 'backend unavailable'),
+     },
+     [{name: 'star.yaml', text: FLIPPED}], [STAR_SEMANTIC_LINK],
+     `Model 'sales': entry link '${BACK_ID}': backend unavailable ` +
+         `(push again to restore the link)`],
+    ['a failed orphan delete gives no push-again hint when the read ' +
+         'before the deletes found the kept link unchanged',
+     {
+       links: () => ok(
+           [BACK_LINK, semanticLink(SUPPLIER_ID, 'orders', 'supplier')]),
+       // getEntryLink returns the kept link unchanged.
+       getLink:
+           ok({...STAR_LINK, name: linkEntry(STAR_SEMANTIC_LINK, []).name}),
+       delLink: (id: string) =>
+           id === SUPPLIER_ID ? err(500, 'delete failed') : ok({}),
+     },
+     STAR_DOCS, [BACK_ID, SUPPLIER_ID],
+     `Deleting orphaned entry link '${SUPPLIER_ID}' from model 'sales' ` +
+         `failed: delete failed`],
+  ] as [string, Stubs, typeof STAR_DOCS, string[], string][]) {
+    test(name, async () => {
+      const {delLink, result} = await rePush(stubs, docs);
+      expect(delLink.mock.calls.map(c => c[3])).toEqual(deleted);
+      expect(result).toMatchObject({success: false, details});
+    });
+  }
 });

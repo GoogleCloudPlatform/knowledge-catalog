@@ -121,6 +121,15 @@ export function isMetricEntry(entry: Entry): boolean {
 }
 
 /**
+ * Returns true when `entry` is the entry of a model, entity, metric or
+ * relationship.
+ */
+export function isSemanticObjectEntry(entry: Entry): boolean {
+  return isModelEntry(entry) || isEntityEntry(entry) || isMetricEntry(entry) ||
+      entryTypeId(entry) === 'semantic-relationship';
+}
+
+/**
  * Returns true when `entry` is a `semantic-explore` entry.
  */
 export function isExploreEntry(entry: Entry): boolean {
@@ -140,16 +149,16 @@ export function isDependentEntry(entry: Entry): boolean {
 
 /**
  * Returns true when `link` is a model relationship entry link (`schema-join`
- * in V1 or `semantic-relationship` in V2).
+ * in V1 or `semantic-link` in V2).
  *
- * Includes both V1 (`schema-join`) and V2 (`semantic-relationship`) regardless
- * of `v2Aspects`, so a model pushed with V1 and then V2 still discovers and
- * cleans up its old `schema-join` links without passing `semantic-relationship`
- * in a server-side `lookupEntryLinks` filter.
+ * Includes both V1 (`schema-join`) and V2 (`semantic-link`) regardless of
+ * `v2Aspects`, so a model pushed with V1 and then V2 still discovers and cleans
+ * up its old `schema-join` links without passing `semantic-link` in a
+ * server-side `lookupEntryLinks` filter.
  */
 export function isRelationshipLink(link: EntryLink): boolean {
   const type = linkTypeId(link);
-  return type === 'schema-join' || type === 'semantic-relationship';
+  return type === 'schema-join' || type === 'semantic-link';
 }
 
 // ---------------------------------------------------------------------------
@@ -249,8 +258,11 @@ function systemTypeProjectAndLocation(
 /**
  * Returns the set of aspect keys to include when updating `entry`.
  *
- * Always includes every aspect key present on `entry.aspects` plus the
- * optional `<proj>.<loc>.guidelines` aspect. When `opts?.v2Aspects` is true:
+ * Includes every aspect key present on `entry.aspects` plus the optional
+ * `<proj>.<loc>.guidelines` aspect. When `opts?.v2Aspects` is true:
+ *   * Adds `<proj>.<loc>.semantic-extensions` on model, entity, metric and
+ *     relationship entries, so Dataplex removes the aspect when the object no
+ *     longer has a third-party extension block.
  *   * Adds `<proj>.<loc>.sql-expressions` on entity and metric entries.
  *   * Adds `<proj>.<loc>.guidelines@*` on entity entries so Dataplex clears
  *     field-level `guidelines` aspects for columns whose instructions or
@@ -265,6 +277,9 @@ export function entryAspectKeys(
   ]);
   if (!opts?.v2Aspects) return keys;
 
+  if (isSemanticObjectEntry(entry)) {
+    keys.add(`${proj}.${loc}.semantic-extensions`);
+  }
   if (isEntityEntry(entry) || isMetricEntry(entry)) {
     keys.add(`${proj}.${loc}.sql-expressions`);
   }

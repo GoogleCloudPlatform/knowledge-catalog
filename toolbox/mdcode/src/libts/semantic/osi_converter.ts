@@ -1015,6 +1015,6 @@ function compact<T extends Record<string, any>>(obj: T): T {
 
 // Returns the array, or undefined when empty/absent, so an empty list is
 // omitted rather than rendered as `[]`.
-function nonEmpty<T>(items: T[]|undefined): T[]|undefined {
+export function nonEmpty<T>(items: T[]|undefined): T[]|undefined {
   return items && items.length ? items : undefined;
 }

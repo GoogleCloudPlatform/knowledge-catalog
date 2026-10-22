@@ -16,9 +16,10 @@
 // It is deliberately a GAP-FILLER, not a rewriter: a node that already has an
 // `expression` (target or portable canonical) is untouched, so a model authored
 // in GoogleSQL/ANSI is unaffected and its goldens are stable. The BigQuery
-// generator and the Knowledge Catalog emitter both read `expression`, so
-// filling it makes each emit the transpiled GoogleSQL. Neither emits the raw
-// vendor SQL.
+// generator reads `expression`, so filling it gives the graph the transpiled
+// GoogleSQL. The Knowledge Catalog emitter reads it too, except that with
+// KC_V2_ASPECTS on it stores each metric's dialect texts as written and
+// leaves out the translation.
 //
 // Design:
 //   - Target-agnostic and non-mutating: `transpileModel(model, {target,

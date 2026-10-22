@@ -3,7 +3,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Entity, Metric, Relationship, SemanticModel} from '../../../src/libts/semantic/ir';
-import {entryIdOf, linkSlug, Namer, NamerOptions, ownedEntryIdPrefixes, relationshipLinkId, slug} from '../../../src/libts/semantic/kc_ids';
+import {entryIdOf, linkSlug, Namer, NamerOptions, ownedEntryIdPrefixes, relationshipLinkId, semanticLinkId, slug} from '../../../src/libts/semantic/kc_ids';
 
 const BASE_OPTS: NamerOptions = {
   project: 'p',
@@ -56,7 +56,8 @@ describe('Namer entry and link IDs under v2Aspects flag states', () => {
   });
 
   test(
-      'flag on (v2Aspects: true) emits slash-separated entry IDs and same linkId',
+      'flag on (v2Aspects: true) emits slash-separated entry IDs, keeping a ' +
+          'relationship\'s authored name, and same linkId',
       () => {
         const names = new Namer({...BASE_OPTS, v2Aspects: true});
         expect(names.modelId(MODEL)).toBe('retail_sales');
@@ -64,6 +65,10 @@ describe('Namer entry and link IDs under v2Aspects flag states', () => {
             .toBe('retail_sales/entities/store_orders');
         expect(names.metricId(MODEL, METRIC))
             .toBe('retail_sales/metrics/total_revenue');
+        expect(names.relationshipId(MODEL, REL))
+            .toBe('retail_sales/relationships/order_customer');
+        expect(names.relationshipId(MODEL, {...REL, name: 'Order_Customer'}))
+            .toBe('retail_sales/relationships/Order_Customer');
         expect(names.linkId(MODEL, REL)).toBe('retail-sales-order-customer');
         expect(names.entry(names.entityId(MODEL, ENTITY)))
             .toBe(
@@ -74,6 +79,15 @@ describe('Namer entry and link IDs under v2Aspects flag states', () => {
                 'projects/p/locations/us/entryGroups/default/entryLinks/' +
                 'retail-sales-order-customer');
       });
+});
+
+describe('semanticLinkId', () => {
+  test('is semantic-link- and the first 32 hex characters of the SHA-256 of ' +
+           '<model>/<from>/<to>',
+       () => {
+         expect(semanticLinkId('sales', 'orders', 'customers'))
+             .toBe('semantic-link-e6b1c3bb1665161a428c2cd13a1cb443');
+       });
 });
 
 describe('Namer.typeName and Namer.aspectRef', () => {
@@ -123,7 +137,8 @@ describe('Namer.fileEntryId', () => {
 
 describe('ownedEntryIdPrefixes', () => {
   test(
-      'returns seven prefixes with no slash form for actions, constraints or files',
+      'returns eight prefixes with no slash form for actions, constraints or ' +
+          'files, and no dotted form for relationships',
       () => {
         const prefixes = ownedEntryIdPrefixes('retail_sales');
         expect(prefixes).toEqual([
@@ -134,6 +149,7 @@ describe('ownedEntryIdPrefixes', () => {
           'retail_sales.files.',
           'retail_sales/entities/',
           'retail_sales/metrics/',
+          'retail_sales/relationships/',
         ]);
       });
 });

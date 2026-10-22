@@ -51,6 +51,13 @@
 // system-type templates yet, so they are gated behind
 // KcGenerateOptions.emitExpressions (off by default) and omitted above.
 //
+// With the second-generation types (v2Aspects on), the model entry carries
+// semantic-model and each metric entry carries semantic-metric and
+// sql-expressions. Model, metric and relationship entries also carry
+// guidelines and semantic-extensions when the object has content for them.
+// `guidelines` holds the object's instructions and, in `data`, its custom
+// `ai_context` members.
+//
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
 // whose required `schema-join` aspect carries the join detail (the paired join
@@ -61,17 +68,24 @@
 // source/target pair does not model; the emitter warns and skips them (the edge
 // still lives in the BigQuery property graph, see graph_ddl.ts).
 //
+// With the second-generation types, each relationship is instead an entry,
+// `<model>/relationships/<name>`, that carries semantic-relationship. A
+// `semantic-link` entry link joins each ordered pair of related entities and
+// lists their relationships in declaration order.
+//
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 
-import {googleDeploymentTargets} from './deployment_target';
-import {AiContext, DataType, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {googleDeploymentTargets, unnamedDeployments} from './deployment_target';
+import {AiContext, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
 import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {linkSlug, Namer, ownedEntryIdPrefixes} from './kc_ids';
-import {asResourceUri, isAcceptedSource} from './loader';
+import {linkSlug, Namer, ownedEntryIdPrefixes, semanticLinkId} from './kc_ids';
+import {asResourceUri, GOOGLE_VERSION, isAcceptedSource} from './loader';
+import {nonEmpty} from './osi_converter';
 import {InheritanceError, resolveInheritance} from './resolve_inheritance';
+import {DEFAULT_PROFILE} from './resolve_profiles';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -84,7 +98,8 @@ export interface KcGenerateOptions {
   // role) and `semantic-metric.expression`. Off by default so a push matches
   // the live types; flip on once the templates gain these fields. Enabling it
   // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
-  // the unknown property.
+  // the unknown property. With v2Aspects on, `semantic-metric` carries no
+  // expression.
   emitExpressions?: boolean;
   // Emit the second-generation built-in aspect fields and entry-id layout
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false), which
@@ -116,8 +131,8 @@ export interface KcResources {
 /**
  * Generates the Knowledge Catalog resources for a semantic model.
  *
- * Returns the entries (model anchor first, then entities and metrics), the
- * schema-join entry links for the model's relationships, and any warnings
+ * Returns the entries (model anchor first, then entities, metrics and, with
+ * v2Aspects, relationships), the relationships' entry links, and any warnings
  * collected while mapping the IR (missing keys, un-typed metrics, skipped M:N
  * relationships). The resources reference the built-in system types; they do not
  * create them.
@@ -127,7 +142,6 @@ export function generateCatalogResources(
   const warnings: string[] = [];
   const entities = model.entities ?? [];
   const metrics = model.metrics ?? [];
-  const relationships = model.relationships ?? [];
 
   if (!entities.length) {
     warnings.push(
@@ -137,6 +151,8 @@ export function generateCatalogResources(
   const names = new Namer(opts);
   const emitExpr = opts.emitExpressions ?? false;
   const v2 = opts.v2Aspects ?? false;
+
+  if (v2) warnings.push(...unstorableMemberWarnings(model));
 
   // The first-generation aspects have no field for a vendor's extension
   // blocks, and the stored copy of the model file keeps them.
@@ -168,8 +184,14 @@ export function generateCatalogResources(
     name: modelEntryName,
     entryType: names.typeName('entry', 'semantic-model'),
     entrySource: source(model.name, model.description),
-    aspects: aspectsFor(
-        names, {'semantic-model': modelAspectData(model)}, model.aiContext),
+    aspects: v2 ?
+        aspectMap(names, {
+          'semantic-model': modelAspectDataV2(model),
+          ...objectAspectsV2(model),
+        }) :
+        aspectsFor(
+            names, {'semantic-model': modelAspectData(model)},
+            model.aiContext),
   }];
 
   // Maps an entity's model name to its published entry name, so a relationship
@@ -225,11 +247,19 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-metric'),
       parentEntry: modelEntryName,
       entrySource: source(metric.name, metric.description),
-      aspects: aspectsFor(
-          names, {'semantic-metric': metricAspectData(metric, emitExpr)},
-          metric.aiContext),
+      aspects: v2 ? aspectMap(names, metricAspectsV2(model, metric)) :
+                    aspectsFor(
+                        names,
+                        {'semantic-metric': metricAspectData(metric, emitExpr)},
+                        metric.aiContext),
     });
   }
+
+  const v2Relationships = v2 ?
+      relationshipResourcesV2(
+          names, model, modelEntryName, entityEntryName, warnings) :
+      undefined;
+  if (v2Relationships) entries.push(...v2Relationships.entries);
 
   // One entry per action, alongside the entities and metrics. Actions have no
   // built-in system type, so they reference the custom pair declared in
@@ -291,37 +321,48 @@ export function generateCatalogResources(
     }
   }
 
-  // Relationships map to schema-join entry links between their endpoint entries.
+  const entryLinks = v2Relationships?.links ??
+      schemaJoinLinks(names, model, entityEntryName, warnings);
+
+  return {
+    entries,
+    entryLinks,
+    warnings: [...new Set(warnings)],
+    ownedPrefixes: ownedEntryIdPrefixes(model.name),
+  };
+}
+
+// The schema-join links of the first-generation types, one per relationship
+// that `unpublishedReason` accepts and per pair of entities.
+function schemaJoinLinks(
+    names: Namer, model: SemanticModel,
+    entityEntryName: ReadonlyMap<string, string>,
+    warnings: string[]): EntryLink[] {
   const entryLinks: EntryLink[] = [];
   const seenLinks = new Set<string>();
   const seenPairs = new Map<string, string>();
-  for (const rel of relationships) {
+  for (const rel of model.relationships ?? []) {
     // A relationship that cannot be published gets the warning that says why,
     // whatever its place in the model, so this check runs before the pair
     // check below. A second relationship from an entity to itself gets only
     // the self warning.
-    const reason = unpublishedReason(rel, entityEntryName, !!opts.v2Aspects);
+    const reason = unpublishedReason(rel, entityEntryName);
     if (reason) {
       warnings.push(`relationship '${rel.name}': ${reason}`);
       continue;
     }
-    // Dataplex allows one link of a type between two entries. The flag-off
-    // path links the first relationship on a pair and warns about the rest.
-    // Under v2Aspects every relationship still gets a link, so Dataplex
-    // refuses the second link on a pair. The V2 design for that case is not
-    // settled.
+    // Dataplex allows one link of a type between two entries, so the first
+    // relationship on a pair gets the link and the rest get a warning.
     const pairKey =
         [rel.source.entity, rel.destination.entity].sort().join('|');
-    if (!opts.v2Aspects) {
-      const firstRel = seenPairs.get(pairKey);
-      if (firstRel !== undefined) {
-        warnings.push(
-            `relationship '${rel.name}': shares entities '${
-                rel.source.entity}' and '${
-                rel.destination.entity}' with relationship '${firstRel}'; ` +
-            `skipped because the catalog shows one join for those entities.`);
-        continue;
-      }
+    const firstRel = seenPairs.get(pairKey);
+    if (firstRel !== undefined) {
+      warnings.push(
+          `relationship '${rel.name}': shares entities '${
+              rel.source.entity}' and '${
+              rel.destination.entity}' with relationship '${firstRel}'; ` +
+          `skipped because the catalog shows one join for those entities.`);
+      continue;
     }
     // `unpublishedReason` has checked that both endpoint entities have an
     // entry.
@@ -336,13 +377,7 @@ export function generateCatalogResources(
       entryLinks.push(link);
     }
   }
-
-  return {
-    entries,
-    entryLinks,
-    warnings: [...new Set(warnings)],
-    ownedPrefixes: ownedEntryIdPrefixes(model.name),
-  };
+  return entryLinks;
 }
 
 
@@ -350,18 +385,14 @@ export function generateCatalogResources(
 // undefined when it can. The reasons, in the order checked: a many-to-many
 // (association) edge, since a junction is two joins, which the single
 // source/target schema-join does not model; an edge whose endpoint entity was
-// not emitted, for example one skipped for a duplicate id; with v2Aspects off,
-// an edge from an entity to itself; and a column-less (purely logical) edge,
-// whose join columns must be added to the model before it can publish. The
-// BigQuery property graph still carries the association and, once bound,
-// direct edges.
+// not emitted, for example one skipped for a duplicate id; an edge from an
+// entity to itself; and a column-less (purely logical) edge, whose join
+// columns must be added to the model before it can publish. The BigQuery
+// property graph still carries the association and, once bound, direct edges.
 function unpublishedReason(
-    rel: Relationship, entityEntryName: ReadonlyMap<string, string>,
-    v2Aspects: boolean): string|undefined {
-  if (rel.association) {
-    return `many-to-many (association) edges are not published to ` +
-        `Knowledge Catalog yet; the edge lives in the BigQuery property graph.`;
-  }
+    rel: Relationship,
+    entityEntryName: ReadonlyMap<string, string>): string|undefined {
+  if (rel.association) return ASSOCIATION_REASON;
   const missing = [rel.source.entity, rel.destination.entity].find(
       entity => !entityEntryName.get(entity));
   if (missing !== undefined) {
@@ -371,10 +402,8 @@ function unpublishedReason(
   // Dataplex refuses a link whose two references name the same entry, so the
   // flag-off path skips a relationship from an entity to itself. This check
   // runs before the join-column check, because adding join columns does not
-  // publish such a relationship. The V2 design gives such a relationship its
-  // own entry and no link. Until V2 emission does that, v2Aspects still emits
-  // the link here, and Dataplex refuses it.
-  if (!v2Aspects && rel.source.entity === rel.destination.entity) {
+  // publish such a relationship.
+  if (rel.source.entity === rel.destination.entity) {
     return `skipped because Knowledge Catalog does not support a ` +
         `relationship from an entity to itself.`;
   }
@@ -390,6 +419,79 @@ function unpublishedReason(
         `model to publish the link.`;
   }
   return undefined;
+}
+
+// Why an association relationship is not published.
+const ASSOCIATION_REASON =
+    `many-to-many (association) edges are not published to ` +
+    `Knowledge Catalog yet; the edge lives in the BigQuery property graph.`;
+
+// The relationship entries and semantic-link links of the second-generation
+// types: an entry per relationship except an association, and a link per
+// ordered pair of different entities, listing its relationships in order.
+function relationshipResourcesV2(
+    names: Namer, model: SemanticModel, modelEntryName: string,
+    entityEntryName: ReadonlyMap<string, string>,
+    warnings: string[]): {entries: Entry[]; links: EntryLink[]} {
+  const entries: Entry[] = [];
+  // The relationships of each ordered entity pair, by link ID.
+  const pairs =
+      new Map<string, {from: string; to: string; relationships: string[]}>();
+  for (const rel of model.relationships ?? []) {
+    if (rel.association) {
+      warnings.push(`relationship '${rel.name}': ${ASSOCIATION_REASON}`);
+      continue;
+    }
+    entries.push({
+      name: names.entry(names.relationshipId(model, rel)),
+      entryType: names.typeName('entry', 'semantic-relationship'),
+      parentEntry: modelEntryName,
+      entrySource: source(rel.name, rel.description),
+      aspects: aspectMap(names, {
+        'semantic-relationship': relationshipAspectData(model, rel),
+        ...objectAspectsV2(rel),
+      }),
+    });
+    const from = rel.source.entity;
+    const to = rel.destination.entity;
+    if (from === to) continue;
+    const linkId = semanticLinkId(model.name, from, to);
+    const pair = pairs.get(linkId) ?? {from, to, relationships: []};
+    pair.relationships.push(rel.name);
+    pairs.set(linkId, pair);
+  }
+  const links = [...pairs].map(([linkId, {from, to, relationships}]) => ({
+    name: names.entryLink(linkId),
+    entryLinkType: names.typeName('entryLink', 'semantic-link'),
+    entryReferences: [
+      {name: entityEntryName.get(from)!, type: 'SOURCE' as const},
+      {name: entityEntryName.get(to)!, type: 'TARGET' as const},
+    ],
+    aspects: aspectMap(names, {'semantic-link': {relationships}}),
+  }));
+  return {entries, links};
+}
+
+// The semantic-relationship aspect, with join columns as written.
+function relationshipAspectData(
+    model: SemanticModel, rel: Relationship): Record<string, any> {
+  const endpoint = (end: Relationship['source']) =>
+      compact({name: end.entity, fields: nonEmpty(end.columns)});
+  const profiles = namedProfiles(model).flatMap(p => {
+    const bound = p.relationships?.find(r => r.name === rel.name);
+    if (!bound) return [];
+    return [compact({
+      name: p.name,
+      sourceFields: nonEmpty(bound.fromColumns),
+      targetFields: nonEmpty(bound.toColumns),
+    })];
+  });
+  return compact({
+    source: endpoint(rel.source),
+    target: endpoint(rel.destination),
+    profiles: nonEmpty(profiles),
+    synonyms: nonEmpty(rel.aiContext?.synonyms),
+  });
 }
 
 // Builds the schema-join entry link for a relationship that
@@ -516,6 +618,47 @@ function hasThirdPartyExtensions(model: SemanticModel): boolean {
       (model.relationships ?? []).some(thirdParty) ||
       (model.metrics ?? []).some(thirdParty) ||
       (model.actions ?? []).some(thirdParty);
+}
+
+// One warning for each custom `ai_context` member that `guidelines` leaves
+// out, on the model, a metric or a relationship.
+export function unstorableMemberWarnings(model: SemanticModel): string[] {
+  const warnings: string[] = [];
+  const check = (object: string, ai: AiContext|undefined) => {
+    for (const [member, value] of Object.entries(
+             ai?.additionalProperties ?? {})) {
+      const holds = unstorableValue(value);
+      if (holds) {
+        warnings.push(
+            `${object}: ai_context member '${member}' is not pushed: its ` +
+            `value holds ${holds}, which Knowledge Catalog cannot store as ` +
+            `written`);
+      }
+    }
+  };
+  check(`model '${model.name}'`, model.aiContext);
+  for (const metric of model.metrics ?? []) {
+    check(`metric '${metric.name}'`, metric.aiContext);
+  }
+  for (const rel of model.relationships ?? []) {
+    check(`relationship '${rel.name}'`, rel.aiContext);
+  }
+  return warnings;
+}
+
+// Names the first number in `value` that JSON cannot hold as the document
+// wrote it: .inf, -.inf, .nan, or an integer past 2^53, which loses digits
+// when the model loads. Undefined when there is none.
+function unstorableValue(value: unknown): string|undefined {
+  if (typeof value === 'number') {
+    if (Number.isNaN(value)) return '.nan';
+    if (!Number.isFinite(value)) return value > 0 ? '.inf' : '-.inf';
+    return Number.isInteger(value) && !Number.isSafeInteger(value) ?
+        'an integer past 2^53' :
+        undefined;
+  }
+  if (value === null || typeof value !== 'object') return undefined;
+  return Object.values(value).map(unstorableValue).find(Boolean);
 }
 
 // Each entity's fields with inheritance resolved, by entity and field name, or
@@ -687,6 +830,100 @@ function metricAspectData(
     // gated off by default (see KcGenerateOptions.emitExpressions).
     expression: emitExpressions ? metric.expression : undefined,
   });
+}
+
+// The guidelines and semantic-extensions aspects of an object's entry, each
+// left out when the object has nothing for it.
+function objectAspectsV2(
+    object: {aiContext?: AiContext; customExtensions?: CustomExtension[]}):
+    Record<string, any> {
+  return compact({
+    guidelines: guidelinesAspectDataV2(object.aiContext),
+    'semantic-extensions': extensionsAspectData(object.customExtensions),
+  });
+}
+
+// The guidelines aspect under the second-generation types: the object's
+// instructions, and in `data` its custom ai_context members by name, leaving
+// out those `unstorableValue` names. Undefined when the object has neither.
+function guidelinesAspectDataV2(ai: AiContext|undefined): Record<string, any>|
+    undefined {
+  const members = Object.entries(ai?.additionalProperties ?? {})
+                      .filter(([, value]) => !unstorableValue(value));
+  const data = members.length ? Object.fromEntries(members) : undefined;
+  const instructions = ai?.instructions || undefined;
+  if (!instructions && !data) return undefined;
+  return compact({instructions, data, userManaged: true});
+}
+
+// semantic-extensions: every extension block from a vendor other than GOOGLE,
+// as written and in order. Undefined when there is none.
+function extensionsAspectData(extensions: CustomExtension[]|undefined):
+    Record<string, any>|undefined {
+  const blocks = (extensions ?? []).filter(x => x.vendorName !== 'GOOGLE');
+  return blocks.length ? {customExtensions: blocks} : undefined;
+}
+
+// The semantic-model aspect of the second-generation types. A vanilla
+// model's GOOGLE-block `deploymentTargets` become deployments named as a pull
+// names them.
+function modelAspectDataV2(model: SemanticModel): Record<string, any> {
+  const declared: DeploymentSpec[] = model.deployments ??
+      unnamedDeployments(googleDeploymentTargets(model).uris);
+  const deployments = declared.map(d => compact({
+    name: d.name,
+    target: d.target,
+    profile: d.profile === DEFAULT_PROFILE ? undefined : d.profile,
+  }));
+  return compact({
+    specVersion: model.version ?? GOOGLE_VERSION,
+    synonyms: nonEmpty(model.aiContext?.synonyms),
+    profiles: nonEmpty(namedProfiles(model).map(p => ({name: p.name}))),
+    deployments: nonEmpty(deployments),
+  });
+}
+
+// The aspects of a metric entry under the second-generation types.
+function metricAspectsV2(
+    model: SemanticModel, metric: Metric): Record<string, any> {
+  const expressions = expressionRecords(metric);
+  return compact({
+    'semantic-metric': metricAspectDataV2(model, metric),
+    ...objectAspectsV2(metric),
+    'sql-expressions': expressions.length ? {expressions} : undefined,
+  });
+}
+
+// The semantic-metric aspect of the second-generation types.
+function metricAspectDataV2(
+    model: SemanticModel, metric: Metric): Record<string, any> {
+  const type = metric.type ?? 'Opaque';
+  const excludedIn = namedProfiles(model)
+                         .filter(p => p.metricsExclude === '*' ||
+                                     p.metricsExclude?.includes(metric.name))
+                         .map(p => p.name);
+  return compact({
+    entity: metric.authoredEntity,
+    dataType: type,
+    metadataType: columnMetadataType(type),
+    synonyms: nonEmpty(metric.aiContext?.synonyms),
+    excludedInProfiles: nonEmpty(excludedIn.sort()),
+  });
+}
+
+// The records of one expression, in the order written. A plain string gives
+// one record with no `dialect`, so a pull can tell it from a dialect list.
+function expressionRecords({dialects = [], stringForm}: Pick<
+    Field, 'dialects'|'stringForm'>): Array<{dialect?: string; sql: string}> {
+  return stringForm ?
+      [{sql: dialects[0].expression}] :
+      dialects.map(d => ({dialect: d.dialect, sql: d.expression}));
+}
+
+// The model's named profiles, in declaration order. The default profile has no
+// record of its own.
+function namedProfiles(model: SemanticModel): ProfileSpec[] {
+  return (model.profiles ?? []).filter(p => p.name !== DEFAULT_PROFILE);
 }
 
 

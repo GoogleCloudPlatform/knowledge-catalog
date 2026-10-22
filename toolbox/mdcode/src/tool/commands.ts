@@ -20,6 +20,7 @@ import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {unstorableMemberWarnings} from '../libts/semantic/knowledge_catalog';
 import {deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
@@ -951,6 +952,7 @@ async function prepareModels(
       fieldsPruned: prune,
       warnings: pushWarnings,
       liftedExclusions,
+      v2Aspects: kcV2Aspects(),
     }),
   ])];
   for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
@@ -989,11 +991,14 @@ function warnModelFileNames(
 // any check runs. Push's checks on the copies it stores of the model and
 // profile files run once for the scope, in profiles(). Its lookup of their type
 // is left out. `profileDocs` reads the model's profile files, and `declared`
-// its declared profiles, like the readers push builds.
+// its declared profiles, like the readers push builds. `onlyModelDoc` says
+// whether `doc` is the scope's only model document. `warn` receives push's
+// warnings about the custom ai_context members it leaves out.
 async function pushErrors(
     doc: ProfiledDoc, profileName: string, defaultProject: string,
     ctx: context.ApiContext, profileDocs: ProfileDocs,
-    declared: DeclaredProfiles, load: CloudSqlLoad): Promise<string[]> {
+    declared: DeclaredProfiles, load: CloudSqlLoad, onlyModelDoc: boolean,
+    warn: (warning: string) => void): Promise<string[]> {
   const graph = declaresGraphTarget(doc.text);
   const refused = graph ? profileFileGraphError([doc], profileName) : undefined;
   if (refused) return [refused];
@@ -1006,7 +1011,18 @@ async function pushErrors(
         note: () => {},
         error: e => errors.push(e),
       });
-  if (!prepared || !graph) return errors;
+  if (!prepared) return errors;
+  // With KC_V2_ASPECTS on, push warns about each custom ai_context member it
+  // leaves out. A scope with more than one model fails the one-model check
+  // first.
+  if (kcV2Aspects() && onlyModelDoc) {
+    for (const {model} of prepared.models) {
+      for (const w of unstorableMemberWarnings(model)) {
+        warn(`[${model.name}] ${w}`);
+      }
+    }
+  }
+  if (!graph) return errors;
   // Push then generates each graph's DDL. Under --validate-only,
   // deployBigQuery and deploySpanner only generate the DDL and call no service.
   const legs = [
@@ -1892,8 +1908,10 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // Knowledge Catalog entry, looked up once, as push does.
   const load = await cloudSqlLoad(ctx, docs, profileDocs);
   if (!load) return 1;
-  const errorsFor = (doc: ProfiledDoc, name: string) =>
-      pushErrors(doc, name, defaultProject, ctx, profileDocs, declaredBy, load);
+  const errorsFor = (doc: ProfiledDoc, name: string) => pushErrors(
+      doc, name, defaultProject, ctx, profileDocs, declaredBy, load,
+      docs.length === 1,
+      w => console.warn(`  profile '${name}': warning: ${w}`));
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
   // bindings, which every model has.
@@ -2211,9 +2229,12 @@ function reportCatalogResult(
   const removed = result.deleted ? `; removed ${result.deleted} orphaned entr${
                                        result.deleted === 1 ? 'y' : 'ies'}` :
                                    '';
-  const linked = result.linked ? `; linked ${result.linked} relationship${
-                                     result.linked === 1 ? '' : 's'}` :
-                                 '';
+  // With KC_V2_ASPECTS on, the relationships of an ordered entity pair share
+  // one link, so the count is of links.
+  const plural = result.linked === 1 ? '' : 's';
+  const linked = !result.linked ? '' :
+      kcV2Aspects() ? `; wrote ${result.linked} entry link${plural}` :
+                      `; linked ${result.linked} relationship${plural}`;
   const unlinked = result.unlinked ?
       `; unlinked ${result.unlinked} orphaned link${
           result.unlinked === 1 ? '' : 's'}` :

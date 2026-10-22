@@ -27,10 +27,10 @@
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
 //     `semantic-explore`).
-//   * Relationship edges are published as `schema-join` entry links between
-//     the two entity entries, under both layouts, after that model's entries
-//     exist. Reconciliation also recognizes `semantic-relationship` links. A
-//     re-push first deletes any orphaned relationship links (no longer
+//   * Relationship edges are published as entry links between two entity
+//     entries after that model's entries exist: a `schema-join` link per
+//     relationship, or with v2Aspects a `semantic-link` per ordered entity
+//     pair. A re-push first deletes any orphaned relationship links (no longer
 //     emitted) and stale links (whose type or endpoint references changed),
 //     then creates new or recreated links and updates unchanged links' aspects
 //     in place. The caller additionally needs
@@ -126,7 +126,7 @@ export interface KcDeployResult {
   // Entries deleted: those orphaned by removed entities/metrics, plus every
   // entry of a --force-remove'd model (0 for validateOnly).
   deleted: number;
-  // Relationship (schema-join or semantic-relationship) entry links written --
+  // Relationship (schema-join or semantic-link) entry links written --
   // created, updated, or recreated (0 for validateOnly).
   linked: number;
   // Orphaned relationship links deleted -- from relationships dropped or
@@ -712,6 +712,7 @@ async function writeEmittedModels(
     // Before a link is deleted, read each emitted ID the lookup did not
     // return. A link under one of them that push may not change would fail
     // its write after the delete and leave the relationship with no link.
+    const foundUnchanged = new Set<string>();
     if (orphanedLinks.length || staleLinks.links.length) {
       for (const link of resources.entryLinks) {
         if (existingLinks.has(linkId(link))) continue;
@@ -722,13 +723,17 @@ async function writeEmittedModels(
                              String(err?.message || err).trim()}`,
                        }));
         if (read.error) return {error: `Model '${model}': ${read.error}`};
+        if (read.existing && !isStaleLink(read.existing, link)) {
+          foundUnchanged.add(linkId(link));
+        }
       }
     }
     // `deletedLinks` collects the links deleted so far. An error after a
     // delete gets the push-again hint when a link is missing because of it.
     const deletedLinks: EntryLink[] = [];
-    const hint = (written: ReadonlySet<string> = new Set()) =>
-        restoreHint(deletedLinks, resources.entryLinks, written);
+    const hint = (written: ReadonlySet<string> = new Set()) => restoreHint(
+        deletedLinks, resources.entryLinks,
+        new Set([...staleLinks.current, ...foundUnchanged, ...written]));
     const orphanedLinkDeletions =
         await deleteEntryLinks(cat, opts, orphanedLinks);
     counts.unlinked += orphanedLinkDeletions.deleted.length;
@@ -779,19 +784,17 @@ async function writeEmittedModels(
 /**
  * Returns the push-again hint for an error, or '' when no link is missing.
  *
- * A link is missing when this push deleted a link and did not write the
- * emitted link that takes its place. An emitted link takes the place of a
- * deleted link when it has the same ID or joins the same two entries. A link
- * deleted because its relationship was dropped has no such emitted link, and
- * pushing again does not bring it back.
+ * An emitted link is missing when this push deleted a link with its ID or its
+ * two entries, and `presentIds` does not hold it. `presentIds` holds the IDs
+ * of the links written or found unchanged.
  */
 function restoreHint(
     deletedLinks: readonly EntryLink[], emittedLinks: readonly EntryLink[],
-    writtenIds: ReadonlySet<string>): string {
+    presentIds: ReadonlySet<string>): string {
   const ends = (link: EntryLink) =>
       link.entryReferences.map(r => entryId(r)).sort().join('|');
   const missing = emittedLinks.some(
-      link => !writtenIds.has(linkId(link)) &&
+      link => !presentIds.has(linkId(link)) &&
           deletedLinks.some(
               d => linkId(d) === linkId(link) || ends(d) === ends(link)));
   return missing ? ' (push again to restore the link)' : '';
@@ -1205,8 +1208,8 @@ interface EntriesOutcome {
  * The method writes entries in three stages:
  *   1. Writes the model anchor (`entries[0]`) first, since it is the parent of
  *      every child entry.
- *   2. Writes independent child entries (such as entities, actions, and
- *      constraints) concurrently.
+ *   2. Writes independent child entries (such as entities, relationships,
+ *      actions, and constraints) concurrently.
  *   3. Writes dependent child entries (`semantic-metric` via
  *      `semantic-metric.entity` and, for LookML, `semantic-explore` via
  *      `semantic-explore.baseEntity` / `joins[].fromEntity`, which reference
@@ -1265,15 +1268,15 @@ interface LinksOutcome {
  *
  * Both endpoint entries already exist because `writeEntries` runs first, and
  * any orphaned or stale links the lookup found have already been deleted. On
- * the flag-off path the emitter gives each pair of entries at most one link.
- * A stale link the lookup missed is replaced during these writes, so a link
- * that needs the pair it frees can fail with the duplicate-endpoints error.
- * That error gets the push-again hint, and the next push writes the link. Uses
- * `Promise.allSettled` so a thrown network error on one link waits for any
- * in-flight link writes to finish and reports the link ID in the returned
- * error. `current` holds the emitted IDs whose looked-up link is the model's
- * own with the same type and endpoints. `isScopeProject` tells whether a
- * project part names the destination project.
+ * the flag-off path the emitter gives each pair of entries at most one link,
+ * and with the flag on, each ordered pair. A stale link the lookup missed is
+ * replaced during these writes, so a link that needs the pair it frees can fail
+ * with the duplicate-endpoints error. That error gets the push-again hint, and
+ * the next push writes the link. Uses `Promise.allSettled` so a thrown network
+ * error on one link waits for any in-flight link writes to finish and reports
+ * the link ID in the returned error. `current` holds the emitted IDs whose
+ * looked-up link is the model's own with the same type and endpoints.
+ * `isScopeProject` tells whether a project part names the destination project.
  */
 async function writeEntryLinks(
     cat: CatalogClient, opts: KcDeployOptions, resources: kcEmit.KcResources,
@@ -1533,14 +1536,12 @@ const KEPT_SOURCE_FIELDS =
  * name. Passing `entryAspectKeys(entry, opts)` with `deleteMissingAspects:
  * true` makes a re-push converge: a still-present optional aspect is refreshed,
  * and a removed one (such as `guidelines` when `ai_context.instructions` is
- * deleted, `sql-expressions`, or field-level `guidelines@Schema.<field>`
- * matched by `<project>.<location>.guidelines@*` under `v2Aspects`) is deleted
- * so a later `pull` does not bring it back. Push owns `guidelines` on its own
- * entries -- and, under `v2Aspects`, field-level `guidelines@Schema.<field>` on
- * its entity entries and `sql-expressions` on its entity and metric entries --
- * so it removes any that the model does not declare even if someone added them
- * in the console. Every other aspect another tool attached is left alone,
- * since `aspectKeys` names only the types kcmd writes.
+ * deleted, `sql-expressions`, or a field's `guidelines`, matched by its `@*`
+ * key under `v2Aspects`) is deleted so a later `pull` does not bring it back.
+ * Push owns the optional aspects `entryAspectKeys` lists, so it removes any
+ * that the model does not declare even if someone added them in the console.
+ * Every other aspect another tool attached is left alone, since `aspectKeys`
+ * names only the types kcmd writes.
  *
  * The update mask replaces the whole entrySource, so the update carries over
  * fields from `source`, the entrySource the entry had before this push. Of

@@ -1129,6 +1129,8 @@ function fakeCatalog(opts: {missingType?: string} = {}) {
       });
   spyOn(P, 'lookupEntryLinks')
       .mockImplementation(async () => ({status: 200, result: []}));
+  spyOn(P, 'createEntryLink')
+      .mockResolvedValue({status: 200, result: {}} as any);
   return {entries, create, list, entryType, aspectType};
 }
 
@@ -3312,6 +3314,53 @@ semantic_model:
           'so there is no store to run against. In a GOOGLE custom_extensions ' +
           "block on the model, declare a deployment in 'deployments' whose " +
           'target names a database.');
+    });
+  }
+});
+
+describe('the push summary of relationship links', () => {
+  const TWO_ON_ONE_PAIR = `${MODEL_YAML}      - name: Order
+        primary_key: [id]
+        fields:
+          - { name: id }
+          - { name: buyer }
+          - { name: payer }
+    relationships:
+      - { name: bought_by, from: Order, to: Customer,
+          from_columns: [buyer], to_columns: [key] }
+      - { name: paid_by, from: Order, to: Customer,
+          from_columns: [payer], to_columns: [key] }
+`;
+  const PAID_BY = /\n      - \{ name: paid_by[^}]*\}\n/;
+  const cases: [string, boolean, string, string][] = [
+    ['with KC_V2_ASPECTS on, counts entry links, since the relationships on ' +
+         'one pair share a link',
+     true, TWO_ON_ONE_PAIR,
+     'Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 1 entry ' +
+         'link.'],
+    ['with KC_V2_ASPECTS on, two directions on one pair are two links', true,
+     TWO_ON_ONE_PAIR.replace(
+         PAID_BY,
+         '\n      - { name: first_order_of, from: Customer, to: Order, ' +
+             'from_columns: [key], to_columns: [buyer] }\n'),
+     'Wrote 5 new and 0 updated Knowledge Catalog entries; wrote 2 entry ' +
+         'links.'],
+    ['with KC_V2_ASPECTS off, counts linked relationships', false,
+     TWO_ON_ONE_PAIR.replace(PAID_BY, '\n'),
+     'Wrote 4 new and 0 updated Knowledge Catalog entries; linked 1 ' +
+         'relationship.'],
+  ];
+  for (const [title, v2, model, summary] of cases) {
+    test(title, async () => {
+      writeWorkspace();
+      fs.writeFileSync(path.join(entryGroupDir(), 'commerce.yaml'), model);
+      if (v2) process.env.KC_V2_ASPECTS = '1';
+      fakeCatalog();
+
+      expect(await push({profile: false})).toBe(0);
+
+      const lines = messages(console.log).split('\n');
+      expect(lines.find(l => l.startsWith('Wrote '))).toBe(summary);
     });
   }
 });
