@@ -29,7 +29,7 @@ import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -668,8 +668,7 @@ interface LocalCheckError {
 // `pushedProfile`, so this check leaves it out. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
-    pushChecks: (doc: ProfiledDoc, profile: string) =>
-        {applied?: boolean; sqlWarned?: boolean},
+    pushChecks: (doc: ProfiledDoc, profile: string) => {applied?: boolean},
     profileDocs: ProfileDocs, declared: DeclaredProfiles, warnings: string[],
     transpile: boolean, pushedProfile: string,
     load: CloudSqlLoad): LocalCheckError[] {
@@ -768,9 +767,9 @@ function namedProfileErrors(
   return errors;
 }
 
-// The errors validateInlineDialects, validateInheritedColumns and
-// validateDeployments give for each model file in `docs`, whichever binding
-// push deploys. The warnings from inlineBindingWarnings go to `warnings`.
+// The errors validateInlineDialects and validateInheritedColumns give for
+// each model file in `docs`, whichever binding push deploys. The warnings from
+// inlineBindingWarnings go to `warnings`.
 function modelFileBindingErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     declared: DeclaredProfiles, warnings: string[],
@@ -791,13 +790,6 @@ function modelFileBindingErrors(
     if (named !== undefined) {
       warnings.push(...inlineBindingWarnings(base, d.name, named));
     }
-    // A legacy wrapper push deploys the wrapper's bindings, not these.
-    if (d.excluded) continue;
-    // Push reports missing join columns itself for a model with a graph target.
-    const loaded = {document: d.name, model: base};
-    const joinsChecked = !d.applied &&
-        (hasTargetType(loaded, 'bigquery') || hasTargetType(loaded, 'spanner'));
-    errors.push(...validateDeployments(base, d.name, {joinsChecked}));
   }
   return errors;
 }
@@ -1875,6 +1867,7 @@ async function checkBeforeWrites(
   // Every deployment's target must be in an accepted form, and its profile one
   // the model declares, whether or not this push selects the deployment.
   const selectedByDoc = new Map<string, ResolvedDeployment[]>();
+  const everyByDoc = new Map<string, ResolvedDeployment[]>();
   for (const {document, model} of models) {
     const every = resolveModelDeployments(model);
     if ('error' in every) return stop(ofModel(document, every.error));
@@ -1884,6 +1877,7 @@ async function checkBeforeWrites(
     const undeclared = undeclaredProfileError(
         document, model, declaredNames(document));
     if (undeclared) return stop(ofModel(document, undeclared));
+    everyByDoc.set(document, every.deployments);
     selectedByDoc.set(document, resolved.deployments);
   }
   const byDefault = defaultProfileCheck(
@@ -1896,23 +1890,27 @@ async function checkBeforeWrites(
   // are the model file's own bindings and each deployment. The catalog's model
   // is checked as a model that deploys nowhere, though one with no deployments
   // list keeps its GOOGLE block targets. A selected deployment's own checks
-  // run only after these pass, so these give every error. They leave to those
-  // checks only the warning about its profile's SQL that kcmd cannot read.
+  // run only after these pass, so these give every error and every warning
+  // about SQL kcmd cannot read.
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
-      docs, new Map(loaded.models.map(m => [m.document, m.model])),
-      (d, name) => ({
-        sqlWarned: !!selectedByDoc.get(d.name)?.some(s => s.profile === name),
-      }),
+      docs, new Map(loaded.models.map(m => [m.document, m.model])), () => ({}),
       profileDocs, declaredBy, profileWarnings, !!options.transpile,
       DEFAULT_PROFILE, load);
   for (const {document, model} of models) {
-    profileErrors.push(...ofProfile(
-        document, DEFAULT_PROFILE,
-        ...validateInlineDialects(
-            model, document, {transpiled: !!options.transpile}),
-        ...validateInheritedColumns(model, document),
-        ...validateDeployments(model, document)));
+    profileErrors.push(
+        ...ofProfile(
+            document, DEFAULT_PROFILE,
+            ...validateInlineDialects(
+                model, document, {transpiled: !!options.transpile}),
+            ...validateInheritedColumns(model, document)),
+        // One call per profile, so each error carries its deployments' profile.
+        ...[...new Set(everyByDoc.get(document)!.map(d => d.profile))].flatMap(
+            profile => ofProfile(document, profile, ...validateDeployments({
+              ...model,
+              deployments: model.deployments!.filter(
+                  d => (d.profile ?? DEFAULT_PROFILE) === profile),
+            }, document))));
     const named =
         declaredNames(document).some(n => n.toLowerCase() !== DEFAULT_PROFILE);
     profileWarnings.push(...inlineBindingWarnings(model, document, named));
@@ -1938,6 +1936,14 @@ async function checkBeforeWrites(
   if (profileErrors.length || kcErrors.length) {
     return stop([...profileErrors, ...kcErrors]);
   }
+  // Each deployment's tables must be in the database it deploys to, whether
+  // or not this push selects the deployment.
+  const tableErrors = models.flatMap(
+      ({document, model}) => (everyByDoc.get(document) ?? [])
+          .flatMap(d => ofProfile(
+              document, d.profile,
+              ...deploymentTableErrors(document, model, d))));
+  if (tableErrors.length) return stop(tableErrors);
 
   const plans: DeploymentPlan[] = [];
   const notes: string[] = [];
@@ -2099,10 +2105,10 @@ async function deploymentPlan(
     for (const w of transpiled.warnings) warnDeployment(w);
   }
   // Pruning can remove the field these rules are about, so they run first.
-  const unprunedWarnings: string[] = [];
+  // checkBeforeWrites has already warned about the SQL they cannot read.
   const unprunedErrors = [
     ...validateInheritance([checked]),
-    ...validateExpressionReferences([checked], false, unprunedWarnings),
+    ...validateExpressionReferences([checked]),
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
@@ -2126,7 +2132,6 @@ async function deploymentPlan(
       v2Aspects: kcV2Aspects(),
     }),
   ];
-  for (const w of unprunedWarnings) warnDeployment(w);
   if (errors.length) return {errors};
   if (deployment.engine === 'alloydb') {
     return {deployment, at, model: narrowed};
@@ -2140,8 +2145,8 @@ async function deploymentPlan(
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
-// the dataset or database, probe each BigQuery source, dry-run the BigQuery DDL
-// in the dataset's location and check each action's DML. A dataset whose
+// the dataset or database, probe each BigQuery source and dry-run the BigQuery
+// DDL in the dataset's location, and check each action's DML. A dataset whose
 // location cannot be read adds a warning to `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
@@ -2161,7 +2166,7 @@ async function liveErrors(
   }
   if (deployment.engine !== 'bigquery') return [];
   const bq = new BigQueryClient(ctx);
-  const {project} = deployment.coordinates;
+  const {project, dataset} = deployment.coordinates;
   let location: string|undefined;
   try {
     location =
@@ -2169,8 +2174,10 @@ async function liveErrors(
   } catch (err: any) {
     return [`${at}: ${err.message}`];
   }
+  const graph =
+      location ? {at, dataset: `${project}.${dataset}`, location} : undefined;
   const accessErrors =
-      await validateBigQueryDataSources([model], bq, defaultProject);
+      await validateBigQueryDataSources([model], bq, defaultProject, graph);
   if (accessErrors.length) return accessErrors;
   for (const ddl of plan.generated?.ddl ?? []) {
     const res = await bq.query(project, ddl, location, true);

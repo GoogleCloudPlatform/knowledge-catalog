@@ -8,10 +8,11 @@
 // deployment that names no profile in a model with metrics, which the runtime
 // accepts. The `kcmd profiles` report gives the errors a plain push gives, so
 // it accepts `--profile` on a model that lists deployments, which push
-// refuses. Push also accepts a Spanner model that binds a table outside its
-// database today. The runtime refuses it on purpose: a write would land in
-// the target database's table of that name, so --print-store gives no store
-// and skills-generate fails for a model with actions.
+// refuses. Push refuses a deployment that binds a table outside the database
+// it deploys to. The runtime checks the tables against the one store it
+// picks, so it accepts a model whose other deployment binds such a table.
+// skills-generate also accepts a model whose picked deployment binds one,
+// unless the model has actions and that deployment is Spanner or AlloyDB.
 //
 // Of push's checks on the model itself, the runtime runs only the one on
 // inheritance. A model that push refuses for an entity with no source, a
@@ -595,7 +596,7 @@ semantic_model:
          expect(r.report.out).toContain(msg.spannerMetrics('prod'));
        });
 
-  test('Spanner beside BigQuery: push\'s local checks pass, the runtime takes Spanner',
+  test('Spanner beside BigQuery: push refuses BigQuery over a Spanner table, the runtime takes Spanner',
        async () => {
          writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
 semantic_model:
@@ -613,7 +614,10 @@ semantic_model:
           - { name: key, expression: OrderId }
 `});
          const r = await runAll();
-         expect(codes(r)).toEqual({push: 0, report: 0, printStore: 0, skills: 0});
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.push.out).toContain(
+             "deployment 'bq' targets a BigQuery graph, but the model file " +
+             "binds entity 'Order'");
          expect(r.printStore.out).toBe('acme-ops/prod/commerce');
        });
 
@@ -1152,6 +1156,9 @@ semantic_model:
 describe('a vanilla model with GOOGLE blocks agrees with the Google flavor', () => {
   type Deployment = {name: string; target: string; profile?: string};
 
+  // Profile prod, bound to the database deployment prod deploys to.
+  const prodProfile = PROD_PROFILE.replace(SPANNER_DB, `${SPANNER_DB}2`);
+
   function googleScope(deployments: Deployment[], extendsList?: string[]):
       Record<string, string> {
     const lines = deployments.map(
@@ -1170,7 +1177,7 @@ ${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
         fields:
           - { name: key, expression: OrderId }
 `,
-      'commerce.profile.prod.yaml': PROD_PROFILE,
+      'commerce.profile.prod.yaml': prodProfile,
     };
   }
 
@@ -1178,7 +1185,7 @@ ${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
   function vanillaScope(deployments: Deployment[], extendsList?: string[]):
       Record<string, string> {
     const model = JSON.stringify({
-      profiles: [yaml.parse(PROD_PROFILE)],
+      profiles: [yaml.parse(prodProfile)],
       deployments,
     });
     const dataset = extendsList ?
@@ -1239,14 +1246,14 @@ ${dataset}        fields:
   test('a deployment for a declared profile, under it: push takes no --profile, the runtime uses it',
        async () => {
          const {google, vanilla} = await bothFlavors(
-             [prod(`${SPANNER_DB}/graphs/commerce`)], 'prod');
+             [prod(`${SPANNER_DB}2/graphs/commerce`)], 'prod');
          expect(codes(google))
              .toEqual({push: 1, report: 0, printStore: 0, skills: 0});
          expect(google.push.out).toContain(msg.flag.profile);
-         expect(google.printStore.out).toBe('acme-ops/prod/commerce');
+         expect(google.printStore.out).toBe('acme-ops/prod/commerce2');
          expect(codes(vanilla)).toEqual(codes(google));
          expect(vanilla.printStore.out.split('\n').pop())
-             .toBe('acme-ops/prod/commerce');
+             .toBe('acme-ops/prod/commerce2');
        });
 
   test('a deployment for an undeclared profile: every runtime command refuses',

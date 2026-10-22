@@ -154,6 +154,12 @@ scenarios('kcmd profiles reports what push rejects', [
     ['a repeated metrics_exclude name the model lacks',
      {profiles: {prod: {...PROD, metrics_exclude: ['nope', 'nope']}}},
      "metric 'nope' in 'metrics_exclude'", {prod: [pushed()]}],
+    ['a metric a Spanner deployment\'s profile leaves available', {
+      deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'prod'},
+                    graph('qa')],
+      metrics: [{name: 'n', expression: 'COUNT(customer.c_id)'}],
+      profiles: {prod: PROD},
+    }, "leaves metric(s) 'n' available", {prod: [pushed()]}],
   ] as Array<[string, Scope, string, ReportStep['rejects']]>).map(
       ([label, scope, part, rejects]): Case => ({
         name: `prints ${label} once`,
