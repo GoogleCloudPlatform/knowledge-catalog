@@ -791,11 +791,9 @@ const customExtensionsKey = {custom_extensions: z.array(customExtensionSchema).o
 // silently dropped. Two axes shape it:
 //   - `extended` selects the version's extension surface: under the extended
 //     profile the native keys (`extends`, `abstract`, `deployments`,
-//     metric `entity`) are accepted; under vanilla Ossie they are not
-//     (`extends`, `abstract`, and metric `entity` are declared on their schemas
-//     only so refinements can reject them with actionable messages instead of a
-//     bare "unrecognized key", while `entities`, `deployments`, and `profiles`
-//     are handled before validation in normalizeDocumentSugars).
+//     metric `entity`) are accepted; under vanilla Ossie they are not.
+//     (`entities` is folded to `datasets` before validation, so it is never a
+//     schema key -- see normalizeDocumentSugars.)
 //   - `bindingOptional` relaxes the source rule: when false (any push with a
 //     graph leg) each concrete dataset must name a `source`; when true (a
 //     Knowledge-Catalog-only push) it is optional, so a purely logical model

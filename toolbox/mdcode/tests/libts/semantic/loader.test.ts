@@ -2068,36 +2068,23 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       "needs a 'source'. A model that needs an abstract entity uses " +
       "'0.2.0.dev0/google'.");
 
-    for (const flag of [true, false]) {
+    // Beside a source, any value gets this error and not the Google flavor's.
+    // An extends on the same dataset does not hide it.
+    for (const patch of [{ abstract: false }, { abstract: true, extends: ['Party'] }]) {
       let thrown = '';
       try {
-        load(VANILLA, fullModel('dataset', { abstract: flag }));
+        load(VANILLA, fullModel('dataset', patch));
       } catch (err: any) {
-        thrown = err?.message ?? String(err);
+        thrown = err.message;
       }
       expect(thrown).toContain(
         "dataset 'orders': 'abstract' is a '0.2.0.dev0/google' extension.");
       expect(thrown).not.toContain("remove 'source'");
     }
 
-    let bothThrown = '';
-    try {
-      load(VANILLA, fullModel('dataset', { extends: ['Party'], abstract: true }));
-    } catch (err: any) {
-      bothThrown = err?.message ?? String(err);
-    }
-    expect(bothThrown).toContain(
-      "dataset 'orders': 'extends' is a '0.2.0.dev0/google' extension.");
-    expect(bothThrown).toContain(
-      "dataset 'orders': 'abstract' is a '0.2.0.dev0/google' extension.");
-
-    // Google-flavor regression checks:
+    // In the Google flavor, extends is still a list.
     expect(() => load(GOOGLE, fullModel('dataset', { extends: 'Party' as any }))).toThrow(
       'expected array, received string');
-    expect(() => load(GOOGLE, fullModel('dataset', { abstract: true }))).toThrow(
-      "dataset 'orders': an abstract dataset has no table; remove 'source'");
-    expect(load(GOOGLE, m).models[0].entities.find((e: any) => e.name === 'Party')?.abstract)
-      .toBe(true);
   });
 
   test("a 'Google' block is a third-party block: neither read nor removed", () => {
@@ -3769,16 +3756,6 @@ ${extra}    ${key}:
     ['inline profiles in the open format',
      doc('0.2.0.dev0', `    profiles:\n      - name: prod\n`, 'datasets'),
      "'profiles' is not in the open format ('0.2.0.dev0')"],
-    ['native extends in the open format',
-     doc('0.2.0.dev0', '', 'datasets').replace(
-         '        primary_key: [id]\n',
-         '        primary_key: [id]\n        extends: [Party]\n'),
-     "dataset 'orders': 'extends' is a '0.2.0.dev0/google' extension."],
-    ['native abstract in the open format',
-     doc('0.2.0.dev0', '', 'datasets').replace(
-         '        primary_key: [id]\n',
-         '        primary_key: [id]\n        abstract: true\n'),
-     "dataset 'orders': 'abstract' is a '0.2.0.dev0/google' extension."],
     ['two deployments with one target', doc(GOOGLE, `    deployments:\n      - { name: a, target: "${G}" }\n      - { name: b, target: "${G}" }\n`),
      'target the same resource'],
   ];
