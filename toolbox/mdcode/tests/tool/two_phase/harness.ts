@@ -9,6 +9,7 @@ import * as YAML from 'yaml';
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
+import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import * as bqLeg from '../../../src/libts/semantic/deploy_bigquery';
 import * as kc from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import * as spannerLeg from '../../../src/libts/semantic/deploy_spanner';
@@ -19,10 +20,17 @@ import * as commands from '../../../src/tool/commands';
 
 export const CTX = new ApiContext('test-project', 'us', 'test-token');
 const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
+export const SPANNER =
+    'spanner.googleapis.com/projects/test-project/instances/i/databases/db';
+export const SPANNER_CUSTOMER = `${SPANNER}/tables/Customer`;
+export const ALLOYDB = 'alloydb.googleapis.com/projects/test-project/' +
+    'locations/us-central1/clusters/c/databases/db';
 export const bqGraph = (name: string, dataset = 'd') =>
     `${BQ}/${dataset}/propertyGraphs/${name}`;
 export const bqTable = (name: string, dataset = 'd') =>
     `${BQ}/${dataset}/tables/${name}`;
+export const spannerGraph = (name: string) =>
+    `${SPANNER}/graphs/${name}`;
 
 // Entity Customer of the default scope, bound to table customer in dataset d.
 export const CUSTOMER = {
@@ -44,9 +52,12 @@ export const SNOWFLAKE_METRIC = {
 export const TRANSPILE_WARNING =
     "Warning: [commerce] metric 'positive_keys': transpiled 'SNOWFLAKE' -> " +
     "'BIGQUERY'";
-export const boundTo = (dataset: string) => ({
-  entities: {Customer: {...CUSTOMER, source: bqTable('customer', dataset)}},
-});
+// A profile that binds Customer to `source`, or to table customer in
+// `dataset`.
+export const boundAt = (source: string) =>
+    ({entities: {Customer: {...CUSTOMER, source}}});
+export const boundTo = (dataset: string) =>
+    boundAt(bqTable('customer', dataset));
 // Customer bound to table customer in dataset prod, keyed by an expression.
 export const EXPRESSION_KEY = {
   ...CUSTOMER, source: bqTable('customer', 'prod'), primary_key: ['UPPER(c_key)'],
@@ -66,6 +77,7 @@ export interface Scope {
   entities?: object[];
   relationships?: object[];
   metrics?: object[];
+  actions?: object[];
   // A vanilla model file's GOOGLE block data. The keys above are then ignored.
   google?: object;
   // Profile files commerce.profile.<name>.yaml, by name.
@@ -75,6 +87,7 @@ export interface Scope {
   defaultProfile?: string;
   // Other files of the entry group by path, such as a second model file.
   files?: Record<string, string>;
+  noModel?: boolean;
 }
 
 export function modelFile(s: Scope = {}): string {
@@ -92,6 +105,7 @@ export function modelFile(s: Scope = {}): string {
     entities: s.entities ?? [CUSTOMER],
     relationships: s.relationships,
     metrics: s.metrics,
+    actions: s.actions,
   };
   return YAML.stringify({
     version: s.google ? '0.2.0.dev0' : '0.2.0.dev0/google',
@@ -117,7 +131,7 @@ export function writeScope(dir: string, s: Scope): void {
   fs.rmSync(eg, {recursive: true, force: true});
   fs.mkdirSync(eg, {recursive: true});
   const files = {
-    'commerce.yaml': modelFile(s),
+    ...(s.noModel ? {} : {'commerce.yaml': modelFile(s)}),
     ...Object.fromEntries(Object.entries(s.profiles ?? {}).map(
         ([n, p]) => [`commerce.profile.${n}.yaml`, profileFile(n, p)])),
     ...Object.fromEntries(Object.entries(s.legacy ?? {}).map(
@@ -160,6 +174,8 @@ const SERVICES = {
   bqDml: [validateMod, 'validateBigQueryActionStatements', none],
   spannerDml: [validateMod, 'validateSpannerActionStatements', none],
   query: [BigQueryClient.prototype, 'query', ok({jobComplete: true})],
+  getDataset: [BigQueryClient.prototype, 'getDataset', ok({location: 'US'})],
+  getDatabase: [SpannerClient.prototype, 'getDatabase', ok({})],
   getEntryType: [CatalogClient.prototype, 'getEntryType', ok({})],
   getAspectType: [CatalogClient.prototype, 'getAspectType', ok({})],
   fetch: [globalThis, 'fetch', () => {
@@ -168,7 +184,7 @@ const SERVICES = {
 } satisfies Record<string, [object, string, Fallback]>;
 type Service = keyof typeof SERVICES;
 // Read before any spy replaces them.
-const REAL = Object.fromEntries(Object.entries(SERVICES).map(
+export const REAL = Object.fromEntries(Object.entries(SERVICES).map(
     ([name, [owner, method]]) => [name, (owner as any)[method] as Function]));
 
 // A call's log entry, such as `apply`, `sources g1` or `deploy g1`.
@@ -177,6 +193,10 @@ const entry = (service: Service, a: Call) =>
     `${a[2]?.validateOnly ? 'generate' : 'deploy'} ${deploymentNames(a[0])}` :
     /^(sources|bqDml|spannerDml)$/.test(service) ?
     `${service} ${deploymentNames(a[0])}` : service;
+
+// Answers the calls `applies` holds for. Other calls get the default answer.
+export const when = (applies: (...a: any[]) => unknown, answer: unknown) =>
+    (...a: any[]) => applies(...a) ? answer : undefined;
 
 // A case's answers by service: a value, or a function of the call's arguments.
 export type Services = Partial<Record<Service, unknown>>;
@@ -207,6 +227,8 @@ export type PushRun = Awaited<ReturnType<typeof runPush>>;
 // outcomes it sets.
 interface PushStep extends Scope {
   flags?: commands.PushOptions;
+  // Sets KC_V2_ASPECTS=1 for this push.
+  v2Aspects?: boolean;
   services?: Services;
   code?: number;
   // Every line push prints with console.error, exactly.
@@ -215,6 +237,8 @@ interface PushStep extends Scope {
   log?: unknown[];
   // The catalog preflight, the catalog write and each graph deploy, in order.
   events?: string[];
+  // The fake's calls of the kinds listed (an entry's first word), in order.
+  calls?: string[];
   called?: Partial<Record<Service, number>>;
   nothingWritten?: boolean;
   noNetwork?: boolean;
@@ -260,8 +284,14 @@ async function runPush(services: Services, flags: commands.PushOptions) {
     log: texts(out, 'log'),
     errors: texts(out, 'error'),
     warnings: texts(out, 'warn'),
+    printed: texts(out, 'log', 'warn'),
     fake,
     published: fake.preflight.mock.calls.at(-1)?.[0][0].model as SemanticModel,
+    deployed: (deployment: string, service: 'bq'|'spanner') =>
+        fake[service].mock.calls
+            .filter(c => !c[2]?.validateOnly)
+            .flatMap(c => c[0] as LoadedModel[])
+            .find(m => deploymentNames([m]) === deployment)?.model,
   };
 }
 
@@ -278,6 +308,8 @@ async function checkPush(r: PushRun, step: PushStep) {
   same(r.warnings, step.warnings);
   same(r.log, step.log);
   same(r.fake.calls.filter(c => EVENTS.has(kindOf(c))), step.events);
+  const kinds = new Set(step.calls?.map(kindOf));
+  same(r.fake.calls.filter(c => kinds.has(kindOf(c))), step.calls);
   for (const [service, times] of Object.entries(step.called ?? {})) {
     expect(r.fake[service as Service]).toHaveBeenCalledTimes(times);
   }
@@ -292,18 +324,30 @@ async function checkPush(r: PushRun, step: PushStep) {
   await step.check?.(r);
 }
 
+// Selects every deployment of a Google-flavor scope when `flags.deployment`
+// is unset, until push takes two phases for a model that lists deployments.
+const everyDeployment = (s: Scope, flags: commands.PushOptions) =>
+    flags.deployment !== undefined || s.google || !s.deployments?.length ?
+    flags :
+    {
+      ...flags,
+      deployment: s.deployments.map(d => typeof d === 'string' ? d : d.name),
+    };
+
 async function runCase(c: Case): Promise<void> {
   const cwd = process.cwd();
   const saved = process.env.KC_V2_ASPECTS;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-two-phase-'));
   process.chdir(dir);
-  delete process.env.KC_V2_ASPECTS;
   try {
     for (const step of [c, ...c.then ?? []]) {
       const own = step === c ? {} : step;
       writeScope(dir, {...c, ...own});
+      if (step.v2Aspects) process.env.KC_V2_ASPECTS = '1';
+      else delete process.env.KC_V2_ASPECTS;
       const services = {...c.services, ...own.services};
-      await checkPush(await runPush(services, step.flags ?? {}), step);
+      const flags = everyDeployment({...c, ...own}, step.flags ?? {});
+      await checkPush(await runPush(services, flags), step);
     }
   } finally {
     mock.restore();
@@ -333,6 +377,7 @@ export function scenarios(
 }
 
 // The two-phase push's messages, without the `Error: ` prefix.
+export const at = (d: string) => `[commerce] deployment '${d}'`;
 const ownProfile = 'does not apply to a push that uses deployments, since ' +
     'each deployment names its own profile.';
 export const msg = {
@@ -341,11 +386,16 @@ export const msg = {
   flag: {
     noKc: "'--no-kc' is not supported; every push publishes the model to " +
         'Knowledge Catalog.',
-    profile: `'--profile' ${ownProfile}`,
-    allProfiles: `'--all-profiles' ${ownProfile}`,
+    both: 'Cannot combine --no-deployment with --deployment.',
+    profile: `'--profile' ${ownProfile} Use '--deployment <name>' to deploy ` +
+        'only some deployments.',
+    allProfiles: `'--all-profiles' ${ownProfile} A push deploys every ` +
+        "deployment unless '--deployment' names some.",
     noProfile: "'--no-profile' does not apply to a push that uses " +
         "deployments. Use '--no-deployment' to publish to Knowledge Catalog " +
         'only.',
+    bare: '--deployment names no deployment; give one or more deployment ' +
+        'names, comma-separated.',
   },
   // A deployment that names a profile the model does not declare.
   unknownProfile: (d: string, profile: string, defined: string[] = []) =>
@@ -353,4 +403,7 @@ export const msg = {
       `profile '${profile}'; ` +
       (defined.length ? `defined profiles: ${defined.join(', ')}.` :
                         'no profiles are defined for this model.'),
+  spannerMetrics: (d: string) => `${at(d)} targets a Spanner graph and uses ` +
+      "the model file's own bindings, but the model declares metrics, which " +
+      'a Spanner graph cannot hold; name a profile with metrics_exclude: "*".',
 };

@@ -1952,7 +1952,7 @@ function firstLine(message: string): string {
 // as `Unexpected \"$1\"`, where the detail says `Unexpected "$1"`. BigQuery
 // sends no such detail, so the fallback is the normal path there, not an
 // unusual one.
-function storeMessage(body: string|undefined, status: number): string {
+export function storeMessage(body: string|undefined, status: number): string {
   const raw = (body ?? '').trim();
   if (!raw) return `HTTP ${status}.`;
   try {

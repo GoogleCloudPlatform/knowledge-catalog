@@ -151,7 +151,7 @@ async function awaitQueryDone(
 // location, but record a warning so the degraded path is visible -- otherwise a
 // silent fallback can route a non-US CREATE to the wrong region and fail later
 // with an opaque location error.
-async function datasetLocation(
+export async function datasetLocation(
     bigQuery: BigQueryClient, target: BigQueryGraphTarget,
     warnings: string[]): Promise<string|undefined> {
   const res = await bigQuery.getDataset(target.project, target.dataset);

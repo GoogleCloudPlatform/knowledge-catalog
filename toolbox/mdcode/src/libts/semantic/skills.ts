@@ -86,7 +86,7 @@ export interface GenerateSkillOptions {
  * The skill for one model, as files a caller writes out.
  *
  * Returns an error for a name the Agent Skills spec would reject. It also
- * returns the store error when push rejects the model's deployments, and
+ * returns the store error when the model's deployments are rejected, and
  * when the profile names a store that cannot be resolved for a model with
  * actions, whose skill names the store. A model with no actions is not an
  * error -- it is a skill that says the model declares nothing to act on, which
@@ -106,7 +106,7 @@ export function generateSkill(opts: GenerateSkillOptions): SkillPackage|{
   const {actions, instruction} = modelTools({runtime});
   // The skill names the store only in what it says about actions. So a store
   // the profile names and that cannot be resolved stops only a skill with
-  // actions. Deployments push rejects stop any skill.
+  // actions. Deployments the runtime marks rejected stop any skill.
   if (runtime.deploymentsRejected || (runtime.storeFailed && actions.length)) {
     return {error: runtimeStoreError(runtime) ?? ''};
   }

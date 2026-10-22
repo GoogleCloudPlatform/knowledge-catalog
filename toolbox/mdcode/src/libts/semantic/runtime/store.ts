@@ -186,12 +186,11 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  *
  * `named` is set when the model's deployments name a target and still no
  * store results, so a caller that runs against the store fails. `rejected` is
- * set with it when push rejects those deployments too, so the model is wrong
- * whatever it is used for. Push rejects a target in no accepted form in any
- * deployment, whichever profile the deployment is for, and a target listed
- * twice. It also rejects a GOOGLE block whose data is not valid JSON, and
- * several targets for the profile that leave the store ambiguous. `named`
- * alone means the model binds a table outside its Spanner or AlloyDB store.
+ * set with it when the deployments give no store whatever the model is used
+ * for: a target in no accepted form in any deployment, a target listed twice,
+ * a GOOGLE block whose data is not valid JSON, or several targets for the
+ * profile. `named` alone means the model binds a table outside its Spanner or
+ * AlloyDB store.
  *
  * Neither is set when the profile names no store, unless a target is in no
  * accepted form or listed twice, or a GOOGLE block is not valid JSON. Neither

@@ -57,8 +57,8 @@ export interface SemanticRuntime {
    */
   storeFailed?: boolean;
   /**
-   * Set with `storeFailed` when push rejects the model's deployments too, so
-   * the model is wrong whatever it is used for. One such case is a target in
+   * Set with `storeFailed` when the model's deployments give no store
+   * whatever the model is used for. One such case is a target in
    * no accepted form in any deployment. Another is a GOOGLE block that is not
    * valid JSON. A third is several targets for the profile with no single
    * store. A table bound outside the store and a failed AlloyDB lookup are

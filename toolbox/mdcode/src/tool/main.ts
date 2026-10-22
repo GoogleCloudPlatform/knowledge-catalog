@@ -77,16 +77,20 @@ cli.command('push', 'Push catalog entries')
         'Rewrite vendor-dialect (e.g. Snowflake/Databricks) expressions to GoogleSQL before deploying, filling target expressions the loader left unset; semantic-model push only')
     .option(
         '--profile [name]',
-        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml; a sibling <model>.profile.<name>.yaml, or a profile in a 0.2.0.dev0 model\'s GOOGLE block, cannot be deployed as a graph yet); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
+        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml; a sibling <model>.profile.<name>.yaml, or a profile in a 0.2.0.dev0 model\'s GOOGLE block, deploys only through a deployment that names it); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings; mutually exclusive with --all-profiles and --no-profile; semantic-model push only')
     .option(
         '--all-profiles',
         'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
+    // The value is optional because --no-deployment defaults this option to
+    // true, which cac reports as a missing value when the value is required.
+    .option('--deployment [names...]', 'Deploy only these deployments, by name')
     .option(
         '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
     .action(async (options) => {
       let exitCode = 1;
       try {
-        exitCode = await commands.push(options);
+        const deployment = commands.typedDeployment(process.argv.slice(2));
+        exitCode = await commands.push({...options, deployment});
       } catch (err: any) {
         console.error('Error:', err.message || err);
         exitCode = 1;

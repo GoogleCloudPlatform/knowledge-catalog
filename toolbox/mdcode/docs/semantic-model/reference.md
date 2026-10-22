@@ -40,15 +40,21 @@ whether the catalog leg runs.
 | `--all-profiles` | Deploy the graph for every defined binding profile (plus the inline bindings when the document itself declares a target), instead of a single one. The Knowledge Catalog leg still records one canonical view — the default binding. Mutually exclusive with `--profile` and `--no-profile`. |
 | `--no-profile` | Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched. |
 | `--no-kc` | Skip the Knowledge Catalog metadata push and deploy only the graph the selected profile targets. Knowledge Catalog is pushed by default. A push that deploys no graph (a logical model, or `--no-profile`) can only reach Knowledge Catalog, so `--no-kc` on it is an error, as is `--no-profile --no-kc` (nothing left to deploy). |
-| `--no-deployment` | Publish the model to Knowledge Catalog and deploy nothing, after every check of the two-phase path below. It publishes the model file as written, whereas `--no-profile` publishes the binding `default_profile` names. |
+| `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still publishes the model to Knowledge Catalog first. |
+| `--no-deployment` | Publish the model to Knowledge Catalog and deploy nothing, after every check of the two-phase path below. It publishes the model file as written, whereas `--no-profile` publishes the binding `default_profile` names. Push refuses it with `--deployment`, in either order. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 | `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
 
-A push with `--no-deployment` runs in two phases. The first runs every check
-for Knowledge Catalog and writes nothing. The second publishes the model to
-Knowledge Catalog. On this path `--no-kc`, `--profile`,
+A push with `--deployment` or `--no-deployment` runs in two phases. The first
+runs every check, for Knowledge Catalog and for each deployment, and writes
+nothing. The second publishes the model to Knowledge Catalog, then deploys each
+deployment in order with the profile it names. An AlloyDB deployment deploys no
+graph. The first phase dry-runs each BigQuery graph's DDL. Spanner cannot check
+a graph's DDL without running it, so a Spanner deployment whose DDL Spanner
+rejects, for example one that reads a missing column, fails in the second phase,
+after Knowledge Catalog is written. On this path `--no-kc`, `--profile`,
 `--all-profiles` and `--no-profile` are errors, and catalog.yaml's
 `default_profile` chooses no binding: Knowledge Catalog receives the model file
 as written.
@@ -407,9 +413,11 @@ differs from BigQuery Graph in five ways:
 - **Bare table and graph names.** A Spanner property graph lives inside one
   database and names tables in that same database, so the generator emits bare
   names — no `project.dataset.` qualifier on either the tables or the graph.
-- **No `MEASURE`.** Metrics are dropped (warned per metric), never errored. The
+- **No `MEASURE`.** Metrics are dropped (warned per metric). The
   BigQuery-only rule that a metric must resolve to a single entity therefore does
-  not apply to a Spanner target (see [Validation](#validation)).
+  not apply to a Spanner target (see [Validation](#validation)). Push refuses a
+  Spanner deployment that names no profile in a model with metrics; name a
+  profile with `metrics_exclude: "*"`. This holds for a push with `--deployment`.
 - **No per-element `OPTIONS`.** `description` / `synonyms` are not emitted into
   the Spanner DDL; they ride into Knowledge Catalog instead — mirroring how
   BigQuery's graph-level `OPTIONS` is dropped. See

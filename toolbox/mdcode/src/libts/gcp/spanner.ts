@@ -1,6 +1,7 @@
 // API client for Cloud Spanner, covering two surfaces the semantic-model push
-// leg needs: Database Admin (updateDatabaseDdl and getOperation) to deploy
-// Spanner Graph DDL, and the data plane (sessions and executeSql) to PLAN an
+// leg needs: Database Admin (updateDatabaseDdl, getDatabase and getOperation)
+// to check the database and deploy Spanner Graph DDL, and the data plane
+// (sessions and executeSql) to PLAN an
 // action's DML against the live database before publishing it.
 
 import * as api from './api';
@@ -60,6 +61,13 @@ export class SpannerClient extends api.ApiClient {
     const name =
         `projects/${project}/instances/${instance}/databases/${database}/ddl`;
     return await this._patch<Operation>(name, {statements});
+  }
+
+  // Fetches a database's metadata.
+  async getDatabase(project: string, instance: string, database: string):
+      Promise<api.ApiResult<{name?: string; [key: string]: any}>> {
+    return await this._get(
+        `projects/${project}/instances/${instance}/databases/${database}`);
   }
 
   // Fetches a long-running operation by its resource name (as returned in

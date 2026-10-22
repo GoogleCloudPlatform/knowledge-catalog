@@ -307,10 +307,10 @@ export function targetError(at: string, target: string): string {
 /**
  * The deployment names a `--deployment` flag selects, or undefined when the
  * flag is absent or negated. The flag is repeated or comma-separated. It
- * arrives as a string, as an array when it is repeated, or as a boolean when
+ * arrives as a string, as an array of them, or as a boolean when
  * it is absent or negated. Pieces are trimmed, empty ones dropped, and a
  * repeated name kept once, at its first position. Throws when any occurrence
- * of the flag names no deployment. A bare occurrence among repeated ones
+ * of the flag names no deployment. A bare occurrence in an array
  * arrives as `true` and names none.
  */
 export function parseDeploymentSelection(

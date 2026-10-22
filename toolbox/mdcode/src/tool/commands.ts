@@ -17,19 +17,19 @@ import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
-import {googleBlockTargets, googleDeploymentTargets, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
+import {googleBlockTargets, googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {deploymentProfileError, isGoogleVendor, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
+import {applyProfile, applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {inlineBindingWarnings, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -117,9 +117,10 @@ export interface PushOptions {
   // Mutually exclusive with profile and with --no-profile. Semantic-model push
   // only.
   allProfiles?: boolean;
-  // False for `--no-deployment`, or true when it is absent. Semantic-model
-  // push only.
-  deployment?: boolean;
+  // The `--deployment` values as typed, true for a bare `--deployment` and
+  // false for `--no-deployment`, in order. Outside a list, false is
+  // `--no-deployment` alone and true is neither flag. Semantic-model push only.
+  deployment?: string|boolean|Array<string|boolean>;
 }
 
 
@@ -448,7 +449,7 @@ function fieldExclusionsOf(model: SemanticModel): ProfileExclusion[] {
 // Why a graph push of `profileName` cannot go ahead because the profile is a
 // named profile, or undefined when it can. A named profile is a profile file
 // or a profile in a vanilla model's GOOGLE block. It names no deployment
-// target, and a deployment cannot name a profile yet, so a graph push of one
+// target, so a graph push of one
 // would deploy into the model file's own target, whatever system the profile
 // binds.
 export function profileFileGraphError(
@@ -456,8 +457,8 @@ export function profileFileGraphError(
   const fileForm = docs.find(d => d.applied);
   if (!fileForm) return undefined;
   return `[${fileForm.name}] binding profile '${profileName}' is a named ` +
-      `profile, which names no deployment target, and a deployment cannot ` +
-      `name a profile yet; a graph push would deploy it into the model ` +
+      `profile, which names no deployment target; a graph push would deploy ` +
+      `it into the model ` +
       `file's own target. Run 'kcmd push --profile default' to deploy the ` +
       `model file's own bindings, or 'kcmd push --no-profile' to publish to ` +
       `Knowledge Catalog without deploying a graph. Both need the model file's ` +
@@ -634,19 +635,21 @@ const PUSH_REPORT: PrepareReport = {
 // on its own for completeness. An error about a profile file names that file,
 // and one about a block profile names the model document.
 // A model's profiles are checked against its model file as loaded, whichever
-// binding `profileName` selects. `checkedByDoc`
+// binding push selects. `checkedByDoc`
 // holds each document as push checks it: with the profile applied, or loaded
-// with no profile applied. Push's own checks cover part of this for the
-// binding it selects, so those rules leave that binding out. A
+// with no profile applied. Push's own checks cover part of this for each
+// profile `applied` says push applies, so those rules leave that profile out. A
 // legacy `semantic_model:` wrapper, and a file under the reserved name
 // 'default', which no push deploys, are not read here. With `transpile`, push
 // fills in BigQuery SQL for a text written only in a vendor dialect its
 // translator reads. Push also checks the keys and join columns of the model
-// file and of each named profile. The warnings go to `warnings`.
+// file and of each named profile. Push's own key check covers the join of
+// `pushedProfile`, so this check leaves it out. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
-    profileName: string, profileDocs: ProfileDocs, declared: DeclaredProfiles,
-    warnings: string[], transpile: boolean, load: CloudSqlLoad): string[] {
+    applied: (doc: ProfiledDoc, profile: string) => boolean,
+    profileDocs: ProfileDocs, declared: DeclaredProfiles, warnings: string[],
+    transpile: boolean, pushedProfile: string, load: CloudSqlLoad): string[] {
   const errors: string[] = [];
   for (const d of docs) {
     // Each named profile, with the label its errors carry and a function that
@@ -727,14 +730,14 @@ function namedProfileErrors(
       const profileWarnings: string[] = [];
       errors.push(
           ...validateProfileCompleteness(logical, spec, profileWarnings, {
-            applied: !!d.applied && p.name === profileName,
+            applied: applied(d, p.name),
             ownSqlOnly,
             transpiled: transpile,
             ...load,
           }).map(at));
       warnings.push(...profileWarnings.map(at));
     }
-    errors.push(...validateProfileConsistency(logical, specs, profileName)
+    errors.push(...validateProfileConsistency(logical, specs, pushedProfile)
                     .map(e => `[${d.name}] ${e}`));
   }
   return errors;
@@ -870,8 +873,9 @@ async function prepareModels(
   const unprunedWarnings: string[] = [];
   const profileErrors = [
     ...namedProfileErrors(
-        docs, checkedByDoc, profileName, opts.profileDocs, opts.declared,
-        unprunedWarnings, !!opts.transpile, opts.load),
+        docs, checkedByDoc, (d, name) => !!d.applied && name === profileName,
+        opts.profileDocs, opts.declared, unprunedWarnings, !!opts.transpile,
+        profileName, opts.load),
     ...modelFileBindingErrors(
         docs, checkedByDoc, opts.declared, unprunedWarnings, !!opts.transpile),
   ];
@@ -905,25 +909,9 @@ async function prepareModels(
       availability.push(r);
       return {document, model: pruned};
     });
-    // Pruning never removes an entity or a relationship: their key and join
-    // columns are physical columns, not fields. So the note counts what
-    // pruning can make unavailable: fields, metrics and actions.
     for (const r of availability) {
-      const dropped = r.droppedMetrics.length + r.droppedActions.length;
-      if (r.unboundFields.length || r.droppedFields.length || dropped) {
-        report.note(
-            `profile '${r.profile}' leaves ${
-                r.unboundFields.length} field(s) unbound` +
-            (r.droppedFields.length ?
-                 `; ${r.droppedFields.length} field(s) that read them ` +
-                     `unavailable` :
-                 '') +
-            (dropped ?
-                 `; ${r.droppedMetrics.length} metric(s) and ${
-                     r.droppedActions.length} action(s) unavailable` :
-                 '') +
-            '.');
-      }
+      const note = pruningNote(r);
+      if (note) report.note(note);
     }
   }
   const pushWarnings: string[] = [];
@@ -957,6 +945,25 @@ async function prepareModels(
   const bqModels = models.filter(m => hasTargetType(m, 'bigquery'));
   const spannerModels = models.filter(m => hasTargetType(m, 'spanner'));
   return {models, bqModels, spannerModels};
+}
+
+// What a pruned profile leaves unavailable, or undefined when it leaves
+// nothing. It counts fields, metrics and actions, since pruning never removes
+// an entity or a relationship.
+function pruningNote(r: AvailabilityReport): string|undefined {
+  const dropped = r.droppedMetrics.length + r.droppedActions.length;
+  if (!r.unboundFields.length && !r.droppedFields.length && !dropped) {
+    return undefined;
+  }
+  return `profile '${r.profile}' leaves ${
+             r.unboundFields.length} field(s) unbound` +
+      (r.droppedFields.length ?
+           `; ${r.droppedFields.length} field(s) that read them unavailable` :
+           '') +
+      (dropped ? `; ${r.droppedMetrics.length} metric(s) and ${
+                     r.droppedActions.length} action(s) unavailable` :
+                 '') +
+      '.';
 }
 
 // Warns about each model whose model file is not named after it, when push
@@ -1026,14 +1033,8 @@ async function pushErrors(
   ] as const;
   for (const [models, deployLeg] of legs) {
     if (!models.length) continue;
-    try {
-      const result = await deployLeg(models, ctx, {validateOnly: true});
-      if (!result.success) {
-        errors.push(result.details ?? 'the graph could not be generated');
-      }
-    } catch (err: any) {
-      errors.push(err.message || String(err));
-    }
+    const result = await generateOffline(deployLeg, models, ctx);
+    if (typeof result === 'string') errors.push(result);
   }
   return errors;
 }
@@ -1054,9 +1055,24 @@ function catalogAspects(
   });
 }
 
+// Generates a graph leg's DDL without calling a service, or gives why it
+// cannot be generated.
+async function generateOffline(
+    deployLeg: typeof deploy.deployBigQuery, models: LoadedModel[],
+    ctx: context.ApiContext): Promise<deploy.DeployResult|string> {
+  try {
+    const result = await deployLeg(models, ctx, {validateOnly: true});
+    if (result.success) return result;
+    return result.details ?? 'the graph could not be generated';
+  } catch (err: any) {
+    return err.message || String(err);
+  }
+}
+
 export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const {named, negated} = deploymentFlags(options.deployment);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout
@@ -1068,7 +1084,7 @@ export async function push(options: PushOptions): Promise<number> {
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
-    if (options.deployment === false) {
+    if (named || negated) {
       return pushInTwoPhases(options, {
         ctx,
         layout,
@@ -1525,7 +1541,8 @@ export async function push(options: PushOptions): Promise<number> {
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],
     [!!options.forceRemove, '--force-remove'],
-    [options.deployment === false, '--no-deployment'],
+    [named, '--deployment'],
+    [negated, '--no-deployment'],
   ];
   for (const [set, flag] of semanticOnlyFlags) {
     if (set) {
@@ -1554,11 +1571,44 @@ export async function push(options: PushOptions): Promise<number> {
 }
 
 
+// Which of `--deployment` and `--no-deployment` the push options carry.
+function deploymentFlags(deployment: PushOptions['deployment']):
+    {named: boolean; negated: boolean} {
+  if (deployment === undefined || deployment === true) {
+    return {named: false, negated: false};
+  }
+  const given = [deployment].flat();
+  return {named: given.some(v => v !== false), negated: given.includes(false)};
+}
+
+// The `deployment` option as typed before `--` in `args`, since cac turns a
+// value that looks like a number into a number and drops `--deployment`
+// before `--no-deployment`. It is false for `--no-deployment` alone and true
+// for neither flag.
+export function typedDeployment(args: string[]): PushOptions['deployment'] {
+  const typed: Array<string|boolean> = [];
+  for (let i = 0; i < args.length && args[i] !== '--'; i++) {
+    // cac reads `-no-deployment` as `--no-deployment` too.
+    if (/^-+no-deployment$/.test(args[i])) typed.push(false);
+    if (args[i] === '--deployment') {
+      const next = args[i + 1] ?? '-';
+      typed.push(next.startsWith('-') ? true : next);
+    } else if (args[i].startsWith('--deployment=')) {
+      typed.push(args[i].slice('--deployment='.length));
+    }
+  }
+  return deploymentFlags(typed).named ? typed : !typed.length;
+}
+
 // The error for a flag the two-phase path does not take, or undefined.
 function twoPhaseFlagError(options: PushOptions): string|undefined {
   if (options.kc === false) {
     return `'--no-kc' is not supported; every push publishes the model to ` +
         `Knowledge Catalog.`;
+  }
+  const {named, negated} = deploymentFlags(options.deployment);
+  if (named && negated) {
+    return 'Cannot combine --no-deployment with --deployment.';
   }
   const ownProfile = `does not apply to a push that uses deployments, since ` +
       `each deployment names its own profile.`;
@@ -1566,10 +1616,12 @@ function twoPhaseFlagError(options: PushOptions): string|undefined {
   // counts.
   if (options.profile !== undefined && options.profile !== true &&
       options.profile !== false) {
-    return `'--profile' ${ownProfile}`;
+    return `'--profile' ${ownProfile} Use '--deployment <name>' to deploy ` +
+        `only some deployments.`;
   }
   if (options.allProfiles) {
-    return `'--all-profiles' ${ownProfile}`;
+    return `'--all-profiles' ${ownProfile} A push deploys every deployment ` +
+        `unless '--deployment' names some.`;
   }
   if (options.profile === false) {
     return `'--no-profile' does not apply to a push that uses deployments. ` +
@@ -1590,8 +1642,18 @@ interface TwoPhaseScope {
   load: CloudSqlLoad;
 }
 
+// One selected deployment, its message prefix and the model it deploys. A
+// BigQuery or Spanner deployment also holds its generated DDL and warnings.
+interface DeploymentPlan {
+  deployment: ResolvedDeployment;
+  at: string;
+  model: LoadedModel;
+  generated?: {ddl: string[]; warnings: string[]};
+}
+
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
-// Knowledge Catalog when every check passes. Returns a process exit code.
+// Knowledge Catalog and deploys each selected deployment in order with its
+// own model. Returns a process exit code.
 async function pushInTwoPhases(
     options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>): Promise<number> {
   const {ctx, source} = scope;
@@ -1605,7 +1667,7 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if (!checked) return 1;
-  const {kcModels, fileCopies, overviews} = checked;
+  const {plans, kcModels, fileCopies, notes, overviews} = checked;
   if (fileCopies.length) {
     const problem = await kc.checkCustomTypes(
         new dataplex.CatalogClient(ctx), source, [FILE_COPY_TYPE_ID]);
@@ -1622,35 +1684,92 @@ async function pushInTwoPhases(
   if (preflight.result && !preflight.result.success) {
     return reportCatalogResult(preflight.result, options);
   }
+  // The local checks and the catalog preflight have passed, so what pruning
+  // leaves out is worth reading now.
+  for (const n of new Set(notes)) console.warn(`Note: ${n}`);
+  const locationWarnings: string[] = [];
+  let errors: string[] = [];
+  for (const plan of plans) {
+    errors = await liveErrors(
+        plan, ctx, source.project ?? ctx.project, locationWarnings);
+    if (errors.length) break;
+  }
+  // A push that deploys reads each dataset's location again and prints the
+  // same warning with the graph.
+  if (errors.length || options.validateOnly) {
+    for (const w of new Set(locationWarnings)) console.warn(`Warning: ${w}`);
+  }
+  if (errors.length) return fail(...errors);
+  const header = (d: ResolvedDeployment) => {
+    if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
+  };
   if (options.validateOnly) {
+    for (const {deployment, generated} of plans) {
+      if (!generated) continue;
+      header(deployment);
+      printGraph(
+          deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
+          options);
+    }
     return reportCatalogResult(preflight.result!, options);
   }
   console.log('Pushing semantic model (Knowledge Catalog)...');
   const published =
       await kc.applyKnowledgeCatalog(preflight.prepared!, ctx, kcOptions);
-  return reportCatalogResult(published, options);
+  const publishedCode = reportCatalogResult(published, options);
+  if (publishedCode !== 0) return publishedCode;
+  for (const {deployment, model} of plans) {
+    header(deployment);
+    if (deployment.engine === 'alloydb') {
+      console.warn(
+          `Note: deployment '${deployment.name}' targets an AlloyDB ` +
+          `database, which has no property graph, so push deploys no graph ` +
+          `there. The model runs against that database as published to ` +
+          `Knowledge Catalog.`);
+      continue;
+    }
+    const code = deployment.engine === 'bigquery' ?
+        await pushBigQuery([model], ctx, options) :
+        await pushSpanner([model], ctx, options);
+    if (code !== 0) return code;
+  }
+  return 0;
 }
 
 // The local checks of a two-phase push, which call no service: it stops at
-// the first check that fails, and returns the models the catalog receives, the
-// file copies it stores and the overview sidecars it writes, or undefined
-// after printing why push stops.
-async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
-    Promise<{
-      kcModels: LoadedModel[]; fileCopies: FileCopy[];
-      overviews?: Map<string, OverviewSidecar>;
-    }|undefined> {
+// the first check that fails, and returns each selected deployment's plan, the
+// models the catalog receives, the file copies it stores, the overview sidecars
+// it writes and what pruning leaves out, or undefined after printing why push
+// stops.
+async function checkBeforeWrites(
+    options: PushOptions, scope: TwoPhaseScope): Promise<{
+  plans: DeploymentPlan[]; kcModels: LoadedModel[]; fileCopies: FileCopy[];
+  notes: string[];
+  overviews?: Map<string, OverviewSidecar>;
+}|undefined> {
   const {ctx, layout, source, docs, profileDocs, load} = scope;
   const fail = (...errors: string[]) => {
     for (const error of new Set(errors)) console.error(`Error: ${error}`);
     return undefined;
   };
-  // Prints a warning, except the loader's 'needs transpilation' warnings
-  // under --transpile.
-  const warn = (w: string) => {
+  // Prints each warning once, and none of the loader's 'needs
+  // transpilation' warnings under --transpile. A deployment's warning is
+  // skipped when the catalog's model printed it as `asCatalog`.
+  const printed = new Set<string>();
+  const warn = (w: string, asCatalog = w) => {
     if (options.transpile && w.includes('needs transpilation')) return;
+    if (printed.has(w) || printed.has(asCatalog)) return;
+    printed.add(w);
     console.warn(`Warning: ${w}`);
   };
+
+  let selected: string[]|undefined;
+  try {
+    selected = parseDeploymentSelection(options.deployment);
+  } catch (err: any) {
+    return fail(err.message || String(err));
+  }
+  const noDeployment = deploymentFlags(options.deployment).negated;
 
   const defaultProject = source.project ?? ctx.project;
   // A model file may leave every source to its profile files, so a source is
@@ -1659,6 +1778,11 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
       docs, {defaultProject, bindingOptional: true, ...load});
   if (loaded.error) return fail(loaded.error);
   for (const w of loaded.warnings) warn(w);
+  if (selected && !loaded.models.length) {
+    return fail(
+        `--deployment names ${selected.map(n => `'${n}'`).join(', ')}, but ` +
+        `the scope has no model.`);
+  }
   if (loaded.models.length > 1) {
     return fail(kc.oneModelPerEntryGroupMessage(
         source.entryGroup, loaded.models.length));
@@ -1691,13 +1815,18 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
   }
 
   // Every deployment's target must be in an accepted form, and its profile one
-  // the model declares.
+  // the model declares, whether or not this push selects the deployment.
+  const selectedByDoc = new Map<string, ResolvedDeployment[]>();
   for (const {document, model} of models) {
     const every = resolveModelDeployments(model);
     if ('error' in every) return fail(every.error);
+    const resolved = noDeployment ? {deployments: []} :
+                                    resolveModelDeployments(model, selected);
+    if ('error' in resolved) return fail(resolved.error);
     const undeclared = undeclaredProfileError(
         document, model, declaredNames(document));
     if (undeclared) return fail(undeclared);
+    selectedByDoc.set(document, resolved.deployments);
   }
   const byDefault = defaultProfileCheck(scope, models, declaredBy);
   if ('error' in byDefault) return fail(byDefault.error);
@@ -1709,8 +1838,9 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
       docs, new Map(loaded.models.map(m => [m.document, m.model])),
-      DEFAULT_PROFILE, profileDocs, declaredBy, profileWarnings,
-      !!options.transpile, load);
+      (d, name) => !!selectedByDoc.get(d.name)?.some(s => s.profile === name),
+      profileDocs, declaredBy, profileWarnings, !!options.transpile,
+      DEFAULT_PROFILE, load);
   for (const {document, model} of models) {
     profileErrors.push(
         ...validateInlineDialects(
@@ -1743,7 +1873,20 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
     return fail(...profileErrors, ...kcErrors);
   }
 
-  return {kcModels, fileCopies, overviews};
+  const plans: DeploymentPlan[] = [];
+  const notes: string[] = [];
+  for (const base of models) {
+    for (const deployment of selectedByDoc.get(base.document) ?? []) {
+      const plan = await deploymentPlan(
+          base, profileDocs(base.document), deployment, ctx, options, warn,
+          notes);
+      if ('errors' in plan) {
+        return fail(...plan.errors);
+      }
+      plans.push(plan);
+    }
+  }
+  return {plans, kcModels, fileCopies, notes, overviews};
 }
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
@@ -1792,6 +1935,145 @@ function defaultProfileCheck(
     }
   }
   return {};
+}
+
+// Builds and checks the model `deployment` deploys from `base`, reading its
+// profile file in `files` again with its actions, and generates its DDL
+// offline. Returns the plan, or the errors that stop the push.
+async function deploymentPlan(
+    base: LoadedModel, files: ReturnType<ProfileDocs>,
+    deployment: ResolvedDeployment, ctx: context.ApiContext,
+    options: PushOptions, warn: (w: string, asCatalog?: string) => void,
+    notes: string[]): Promise<DeploymentPlan|{errors: string[]}> {
+  const {document, model} = base;
+  const at = `[${document}] deployment '${deployment.name}'`;
+  const fail = (...errors: string[]) => ({errors});
+  if (deployment.engine === 'spanner' &&
+      deployment.profile === DEFAULT_PROFILE && model.metrics?.length) {
+    return fail(
+        `${at} targets a Spanner graph and uses the model file's own ` +
+        `bindings, but the model declares metrics, which a Spanner graph ` +
+        `cannot hold; name a profile with metrics_exclude: "*".`);
+  }
+  let applied = model;
+  if (deployment.profile !== DEFAULT_PROFILE) {
+    // A declared profile that `model.profiles` lacks is a legacy wrapper.
+    let spec = model.profiles?.find(p => p.name === deployment.profile);
+    if (!spec) {
+      return fail(
+          `${at} names profile '${deployment.profile}', which is in the ` +
+          `legacy 'semantic_model:' form; a deployment can use only a ` +
+          `profile file.`);
+    }
+    const file = files.find(p => p.name === deployment.profile);
+    const warnings: string[] = [];
+    try {
+      // A profile in a GOOGLE block has no file and applies as loaded.
+      if (file) spec = loadProfileFile(file.text, file.name);
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return fail(`[${file!.fileName}] ${err.message}`);
+    }
+    try {
+      applied = applyProfile(model, spec, {warnings});
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return fail(`${at}: ${err.message}`);
+    }
+    for (const w of warnings) warn(`[${document}] ${w}`);
+  }
+  // Messages name the deployment. A warning the catalog's model already gave
+  // under the document's own name is not repeated.
+  const label = `${document}, deployment '${deployment.name}'`;
+  const warnDeployment = (w: string) => warn(w, w.replaceAll(label, document));
+  let checked: LoadedModel = {document: label, model: applied};
+  if (options.transpile) {
+    const transpiled = await transpileModels([checked]);
+    checked = transpiled.models[0];
+    for (const w of transpiled.warnings) warnDeployment(w);
+  }
+  // Pruning can remove the field these rules are about, so they run first.
+  const unprunedWarnings: string[] = [];
+  const unprunedErrors = [
+    ...validateInheritance([checked]),
+    ...validateExpressionReferences([checked], false, unprunedWarnings),
+  ];
+  const {model: pruned, report} =
+      pruneUnavailable(checked.model, deployment.profile);
+  const note = pruningNote(report);
+  if (note) notes.push(note);
+  // Keeps only this deployment, so every reader sees its target alone.
+  const narrowed: LoadedModel = {
+    document: checked.document,
+    model: {
+      ...pruned,
+      deployments:
+          (model.deployments ?? []).filter(d => d.name === deployment.name),
+    },
+  };
+  // An AlloyDB database holds no graph.
+  const errors = [
+    ...unprunedErrors,
+    ...validatePushRequirements([narrowed], {
+      targetOptional: deployment.engine === 'alloydb',
+      fieldsPruned: true,
+      v2Aspects: kcV2Aspects(),
+    }),
+  ];
+  for (const w of unprunedWarnings) warnDeployment(w);
+  if (errors.length) return {errors};
+  if (deployment.engine === 'alloydb') {
+    return {deployment, at, model: narrowed};
+  }
+  const generated = await generateOffline(
+      deployment.engine === 'bigquery' ? deploy.deployBigQuery :
+                                         deploySpannerLeg.deploySpanner,
+      [narrowed], ctx);
+  if (typeof generated === 'string') return fail(`${at}: ${generated}`);
+  return {deployment, at, model: narrowed, generated};
+}
+
+// The errors of one deployment's live checks, which change nothing. They read
+// the dataset or database, probe each BigQuery source, dry-run the BigQuery DDL
+// in the dataset's location and check each action's DML. A dataset whose
+// location cannot be read adds a warning to `warnings`.
+async function liveErrors(
+    plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
+    warnings: string[]): Promise<string[]> {
+  const {deployment, at, model} = plan;
+  if (deployment.engine === 'spanner') {
+    const spanner = new SpannerClient(ctx);
+    const {project, instance, database} = deployment.coordinates;
+    const found = await spanner.getDatabase(project, instance, database);
+    const name = `${project}/${instance}/${database}`;
+    if (found.status === 404) return [`${at}: database ${name} not found`];
+    if (found.status !== 200) {
+      return [`${at}: database ${name} could not be read: ${
+          storeMessage(found.message, found.status)}`];
+    }
+    return validateSpannerActionStatements([model], spanner);
+  }
+  if (deployment.engine !== 'bigquery') return [];
+  const bq = new BigQueryClient(ctx);
+  const {project} = deployment.coordinates;
+  let location: string|undefined;
+  try {
+    location =
+        await deploy.datasetLocation(bq, deployment.coordinates, warnings);
+  } catch (err: any) {
+    return [`${at}: ${err.message}`];
+  }
+  const accessErrors =
+      await validateBigQueryDataSources([model], bq, defaultProject);
+  if (accessErrors.length) return accessErrors;
+  for (const ddl of plan.generated?.ddl ?? []) {
+    const res = await bq.query(project, ddl, location, true);
+    if (res.status !== 200) {
+      return [`${at}: the graph's DDL fails a BigQuery dry run: ${
+          storeMessage(res.message, res.status)}`];
+    }
+  }
+  return validateBigQueryActionStatements([model], bq, defaultProject);
 }
 
 
@@ -2151,6 +2433,17 @@ async function sqlParserError(): Promise<string|undefined> {
 }
 
 
+// Prints a graph leg's warnings, and under --print its DDL.
+function printGraph(
+    engine: 'BigQuery'|'Spanner', result: {warnings: string[]; ddl: string[]},
+    options: PushOptions): void {
+  for (const w of result.warnings) console.warn(`Warning: ${w}`);
+  if (!options.print) return;
+  console.log(`-- ${engine} Graph --`);
+  for (const block of result.ddl) console.log(`${block}\n`);
+}
+
+
 // Deploys the semantic model's BigQuery Graph leg (over the pre-loaded models)
 // and prints the result. Returns a process exit code (0 on success).
 async function pushBigQuery(
@@ -2160,16 +2453,7 @@ async function pushBigQuery(
       options.validateOnly ? 'Validating semantic model for BigQuery Graph...' :
                              'Pushing semantic model (BigQuery Graph)...');
   const result = await deploy.deployBigQuery(models, ctx, options);
-
-  for (const w of result.warnings) {
-    console.warn(`Warning: ${w}`);
-  }
-  if (options.print) {
-    console.log('-- BigQuery Graph --');
-    for (const block of result.ddl) {
-      console.log(`${block}\n`);
-    }
-  }
+  printGraph('BigQuery', result, options);
 
   if (!result.success) {
     console.error('Error pushing semantic model to BigQuery:', result.details);
@@ -2192,16 +2476,7 @@ async function pushSpanner(
       options.validateOnly ? 'Validating semantic model for Spanner Graph...' :
                              'Pushing semantic model (Spanner Graph)...');
   const result = await deploySpannerLeg.deploySpanner(models, ctx, options);
-
-  for (const w of result.warnings) {
-    console.warn(`Warning: ${w}`);
-  }
-  if (options.print) {
-    console.log('-- Spanner Graph --');
-    for (const block of result.ddl) {
-      console.log(`${block}\n`);
-    }
-  }
+  printGraph('Spanner', result, options);
 
   if (!result.success) {
     console.error('Error pushing semantic model to Spanner:', result.details);
