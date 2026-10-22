@@ -18,7 +18,7 @@ import * as validateMod from '../../../src/libts/semantic/validate';
 import * as commands from '../../../src/tool/commands';
 
 export const CTX = new ApiContext('test-project', 'us', 'test-token');
-const BQ = '//bigquery.googleapis.com/projects/test-project/datasets';
+const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
 export const bqGraph = (name: string, dataset = 'd') =>
     `${BQ}/${dataset}/propertyGraphs/${name}`;
 export const bqTable = (name: string, dataset = 'd') =>
