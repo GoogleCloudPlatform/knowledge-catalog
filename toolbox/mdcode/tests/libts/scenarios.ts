@@ -163,6 +163,9 @@ function runScenario(scenario: any) {
       if (scenario.assert?.catalog?.entries) {
         expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
       }
+      if (scenario.assert?.catalog?.lookupAspectTypes) {
+        expect(catalog.lookupAspectTypes).toEqual(scenario.assert.catalog.lookupAspectTypes);
+      }
     });
   });
 }

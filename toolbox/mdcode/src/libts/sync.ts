@@ -30,15 +30,17 @@ export class CatalogSync {
   // Lists metadata in the Catalog service to create or update the local snapshot.
   async pull(): Promise<SyncResult> {
     try {
-      const entries = this._snapshot.manifest.source.entries(this._catalog.context);
-      const typesListed = !!this._snapshot.manifest.snapshotConfig?.entries?.length;
+      const listedTypes = this._snapshot.manifest.snapshotConfig?.entries ?? [];
       const unreadableTypes = new Set<string>();
+      const entries: gcp.Entry[] = [];
 
-      for await (const entry of entries) {
+      // Loads the type of every entry to pull before fetching any entry, so each
+      // entry is fetched with the same aspect types whatever the listing order.
+      for await (const entry of this._snapshot.manifest.source.entries(this._catalog.context)) {
         const typeRef = gcp._nameToTypeRef(entry.entryType);
         // Skips the entry Dataplex keeps for the entry group itself.
         if (entry.entryType.endsWith('/entryTypes/entrygroup') || unreadableTypes.has(typeRef) ||
-            (typesListed && !this._snapshot.entryTypes.has(entry.entryType))) {
+            (listedTypes.length && !listedTypes.includes(typeRef))) {
           continue;
         }
         try {
@@ -49,13 +51,17 @@ export class CatalogSync {
           console.warn(`Warning: ${e.message}. Entries of this type are not pulled.`);
           continue;
         }
+        entries.push(entry);
+      }
 
+      const aspectTypes = [...this._snapshot.aspectTypes.keys()];
+      for (const entry of entries) {
         // TODO: Handle local modification conflicts.
         // TODO: Handle config changes or service deletions that require removing local entries.
 
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
-                                                    [...this._snapshot.aspectTypes.keys()]);
+                                                    aspectTypes);
         // The server will respond with 403 permission denied for both resource not exist or 
         // insufficient permission. We cannot tell if a resource not exist or user does not 
         // have the access. Thus using 200 for an ensured result.
