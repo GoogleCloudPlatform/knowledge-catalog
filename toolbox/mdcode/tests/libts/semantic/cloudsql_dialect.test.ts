@@ -64,9 +64,9 @@ describe('cloudSqlDialects', () => {
     expect((await cloudSqlDialects([POSTGRES], catalog)).dialects.get(POSTGRES)).toBe('POSTGRES');
   });
 
-  test('each table is looked up once, in either spelling', async () => {
+  test('each table is looked up once', async () => {
     const {catalog, calls} = fakeCatalog({[entryName(MYSQL)]: typed('cloudsql-mysql-table')});
-    const {dialects} = await cloudSqlDialects([MYSQL, `//${MYSQL}`, MYSQL], catalog);
+    const {dialects} = await cloudSqlDialects([MYSQL, MYSQL], catalog);
     expect(calls).toHaveLength(1);
     expect(dialects).toEqual(new Map([[MYSQL, 'MYSQL']]));
   });
@@ -75,7 +75,6 @@ describe('cloudSqlDialects', () => {
     const {catalog, calls} = fakeCatalog({});
     const {dialects, errors} = await cloudSqlDialects([
       'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
-      'cloudsql_mysql:acme.us-central1.shop.sales.orders',
       'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t',
     ], catalog);
     expect(calls).toEqual([]);
@@ -153,10 +152,10 @@ semantic_model:
     const profile = `name: pg
 entities:
   - name: orders
-    source: "//${POSTGRES}"
+    source: "${POSTGRES}"
 `;
     expect(cloudSqlSourcesIn([model, vanilla, profile]).sort())
-        .toEqual([`//${POSTGRES}`, MYSQL, SQLSERVER].sort());
+        .toEqual([POSTGRES, MYSQL, SQLSERVER].sort());
     // A file that does not parse collects nothing, even a name it holds.
     expect(cloudSqlSourcesIn([`source: ${MYSQL}\nname: [unclosed`])).toEqual([]);
     // Nor does one whose values cannot be read, and that does not throw: an

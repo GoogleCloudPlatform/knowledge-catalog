@@ -538,7 +538,7 @@ semantic_model:
              path.join('skills', 'commerce', 'SKILL.md'), 'utf8');
          expect(skill).toContain(
              "- Store: none. Model 'commerce' binds 'Order' to " +
-             'acme-analytics.raw.orders');
+             'bigquery.googleapis.com/projects/acme-analytics/datasets/raw/tables/orders');
        });
 
   test('a skill generated from a profile file names that profile\'s store',

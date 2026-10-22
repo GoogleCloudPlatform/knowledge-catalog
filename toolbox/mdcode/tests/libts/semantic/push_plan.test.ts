@@ -555,40 +555,6 @@ semantic_model:
   });
 
   // A resource name and its URI name the same graph.
-  test('push refuses two model files that deploy one graph written two ways', async () => {
-    const eg = setupWorkspace();
-    spyOn(globalThis, 'fetch').mockImplementation((() => {
-      throw new Error('unexpected network call');
-    }) as any);
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    spyOn(console, 'warn').mockImplementation(() => {});
-    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
-    const graph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-    const modelFile = (name: string, target: string) => `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: ${name}
-    deployments:
-      - name: prod
-        target: ${target}
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        primary_key: [id]
-        fields:
-          - { name: id, expression: id }
-`;
-    fs.writeFileSync(path.join(eg, 'a.yaml'), modelFile('a', `//${graph}`));
-    fs.writeFileSync(path.join(eg, 'b.yaml'), modelFile('b', graph));
-
-    expect(await push({kc: false, validateOnly: true})).toBe(1);
-    expect(bqSpy).not.toHaveBeenCalled();
-    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
-        .toContain(
-            "model 'a' under binding profile 'default' and model 'b' under " +
-            "binding profile 'default' both deploy to the same graph " +
-            `'${graph}'`);
-  });
-
   test('push refuses a deployment naming a profile when it sits in the second of two model files', async () => {
     const eg = setupWorkspace();
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -665,7 +631,7 @@ semantic_model:
     expect(out).toContain('p.d.orders');
   });
 
-  test('pull reconstructs deployments in declaration order, warns that deployment names were not recovered, and round-trips every source form cleanly (one database per model)', async () => {
+  test('pull reconstructs deployments in declaration order, warns that deployment names were not recovered, and round-trips each store\'s source cleanly (one database per model)', async () => {
     const eg = setupWorkspace();
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -674,8 +640,8 @@ semantic_model:
     const alloyTarget = 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
 
     // Primary model pushed without `emitExpressions` (the default push) and
-    // pulled through the CLI: two BigQuery entities in the same dataset (short
-    // form and full URI) and two deployments in [Spanner, BigQuery] order.
+    // pulled through the CLI: a BigQuery entity and two deployments in
+    // [Spanner, BigQuery] order.
     const salesYaml = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -685,10 +651,6 @@ semantic_model:
       - name: bq_prod
         target: ${bqGraph}
     datasets:
-      - name: bq_short
-        source: bigquery:p.d.orders
-        primary_key: [id]
-        fields: [{ name: id, expression: id }]
       - name: bq_uri
         source: bigquery.googleapis.com/projects/p/datasets/d/tables/items
         primary_key: [id]
@@ -715,8 +677,8 @@ semantic_model:
 
     // The rebuilt file (whose fields came back unbound because the default push
     // omits `emitExpressions`) loads without allowLegacyBareSource and
-    // preserves deployment targets in declaration order and both BigQuery
-    // source forms.
+    // preserves deployment targets in declaration order and the source as
+    // written.
     const loaded = loadModels(written);
     expect(loaded.models).toHaveLength(1);
     const m = loaded.models[0];
@@ -725,9 +687,7 @@ semantic_model:
       {name: 'deployment_2', target: bqGraph},
     ]);
     const byName = new Map(m.entities.map(e => [e.name, e]));
-    expect(byName.get('bq_short')!.authoredSource).toBe('bigquery:p.d.orders');
-    expect(byName.get('bq_short')!.dataSource).toBe('p.d.orders');
-    expect(byName.get('bq_short')!.fields[0].expression).toBeUndefined();
+    expect(byName.get('bq_uri')!.fields[0].expression).toBeUndefined();
     expect(byName.get('bq_uri')!.authoredSource)
         .toBe('bigquery.googleapis.com/projects/p/datasets/d/tables/items');
     expect(byName.get('bq_uri')!.dataSource).toBe('p.d.items');
@@ -744,25 +704,25 @@ semantic_model:
       {
         name: 'spanner_sales',
         target: spGraph,
-        source: '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders',
+        source: 'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders',
         expectedDataSource: '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders',
       },
       {
         name: 'biglake_sales',
         target: bqGraph,
-        source: '//biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/events',
+        source: 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/events',
         expectedDataSource: 'p.c.n.events',
       },
       {
         name: 'alloy_sales',
         target: alloyTarget,
-        source: '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db/schemas/public/tables/users',
+        source: 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db/schemas/public/tables/users',
         expectedDataSource: '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db/schemas/public/tables/users',
       },
       {
         name: 'mysql_sales',
-        source: 'cloudsql_mysql:acme.us.inst.shop.payments',
-        expectedDataSource: 'cloudsql_mysql:acme.us.inst.shop.payments',
+        source: 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/shop/tables/payments',
+        expectedDataSource: '//cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/shop/tables/payments',
       },
     ];
 

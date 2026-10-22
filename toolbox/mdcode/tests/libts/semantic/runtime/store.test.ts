@@ -55,23 +55,6 @@ describe('where a model says it lives', () => {
     expect(store.name).toBe('projects/p/instances/i/databases/d');
   });
 
-  // A resource name is the URI without the leading `//`, so a model written
-  // either way, or mixing the two, runs against the same store, and its table
-  // is in that store rather than reported as bound elsewhere.
-  test('a target and a source written as resource names give the same store', () => {
-    const uri = `//${DB}`;
-    for (const [target, source] of [
-           [`${DB}/propertyGraphs/g`, `${DB}/tables/Customer`],
-           [`${uri}/propertyGraphs/g`, `${DB}/tables/Customer`],
-           [`${DB}/propertyGraphs/g`, `${uri}/tables/Customer`],
-         ]) {
-      const store = resolveStore(bound(target, source));
-      if ('error' in store) throw new Error(store.error);
-      expect(store.kind).toBe('spanner');
-      expect(store.name).toBe('projects/p/instances/i/databases/d');
-    }
-  });
-
   test('a BigQuery target is a store like any other', () => {
     const store = resolveStore(
         bound(`${DATASET}/propertyGraphs/g`, `${DATASET}/tables/Customer`));
@@ -104,7 +87,7 @@ describe('where a model says it lives', () => {
   test('one AlloyDB database named by both of its URIs is one store', () => {
     const byInstance = `      - {name: by_instance, target: "${PG}"}\n`;
     const byCluster =
-        `      - {name: by_cluster, target: "//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d"}\n`;
+        `      - {name: by_cluster, target: "alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d"}\n`;
     for (const listed of [byInstance + byCluster, byCluster + byInstance]) {
       const store = resolveStore(model(
           `    deployments:\n` + listed +
@@ -192,7 +175,7 @@ describe('a binding that disagrees with the target', () => {
              `${DB}/propertyGraphs/g`, `${DATASET}/tables/Customer`));
          expect('error' in store).toBe(true);
          if (!('error' in store)) return;
-         expect(store.error).toContain("'Customer' to p.s.Customer");
+         expect(store.error).toContain(`'Customer' to ${DATASET}/tables/Customer`);
          expect(store.error)
              .toContain('projects/p/instances/i/databases/d');
        });
@@ -219,7 +202,8 @@ describe('a binding that disagrees with the target', () => {
              `${DATASET}/propertyGraphs/g`,
              'bigquery.googleapis.com/projects/p/datasets/raw/tables/customer'));
          expect(store).toEqual({
-           error: expect.stringContaining("binds 'Customer' to p.raw.customer"),
+           error: expect.stringContaining(
+               "binds 'Customer' to bigquery.googleapis.com/projects/p/datasets/raw/tables/customer"),
          });
        });
 });
@@ -356,10 +340,10 @@ describe('a model that declares more than one deployment target', () => {
            error: `Model 'm': the GOOGLE custom_extension's ` +
                `'deploymentTargets' lists '${typo}', which is not a BigQuery ` +
                `graph, a Spanner graph or an AlloyDB database. Write a ` +
-               `resource URI: ` +
-               `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>', ` +
-               `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>' ` +
-               `or '//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.`,
+               `GCP resource name: ` +
+               `'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>', ` +
+               `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>' ` +
+               `or 'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.`,
            named: true,
            rejected: true,
          };
@@ -374,9 +358,9 @@ describe('a model that declares more than one deployment target', () => {
              .toEqual({
                error: `Model 'm': the GOOGLE custom_extension's ` +
                    `'deploymentTargets' lists 'spanner:graph:p.regional-us.i.d.g', ` +
-                   `which is a Knowledge Catalog name. Write the resource URI ` +
-                   `instead: ` +
-                   `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>'.`,
+                   `which is a Knowledge Catalog name. Write the GCP resource ` +
+                   `name instead: ` +
+                   `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>'.`,
                named: true,
                rejected: true,
              });
@@ -569,8 +553,8 @@ describe('the store a profile uses', () => {
         deployed(`      - {name: prod, target: "${target}"}\n`), 'default');
     expect(store).toEqual({
       error: `Model 'm': deployment 'prod' targets '${target}', which is a ` +
-          `Knowledge Catalog name. Write the resource URI instead: ` +
-          `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`,
+          `Knowledge Catalog name. Write the GCP resource name instead: ` +
+          `'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`,
       named: true,
       rejected: true,
     });
@@ -671,50 +655,9 @@ describe('the store a profile uses', () => {
 });
 
 
-// The loader keeps a Spanner or AlloyDB source written as a catalog name as
-// it was written, and the store reads it.
-describe('a catalog-name source', () => {
-  function sourced(target: string, source: string): SemanticModel {
-    return model(
-        `    deployments:\n` +
-        `      - {name: prod, target: "${target}"}\n` +
-        `    entities:\n` +
-        `      - name: Customer\n` +
-        `        primary_key: [id]\n` +
-        `        source: ${source}\n` +
-        `        fields:\n` +
-        `          - {name: id, datatype: Integer, expression: id}\n`);
-  }
-
-  const CLUSTER_DB =
-      'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
-
-  test('in Spanner matches a Spanner target', () => {
-    const store = resolveStore(sourced(
-        `${DB}/propertyGraphs/g`, 'spanner:p.regional-us-central1.i.d.Customer'));
-    if ('error' in store) throw new Error(store.error);
-    expect(store.name).toBe('projects/p/instances/i/databases/d');
-  });
-
-  test('in AlloyDB matches an AlloyDB target', () => {
-    const store = resolveStore(
-        sourced(CLUSTER_DB, 'alloydb:p.us-central1.c.d.public.customer'));
-    if ('error' in store) throw new Error(store.error);
-    expect(store.kind).toBe('alloydb');
-  });
-
-  test('in another database is refused', () => {
-    const store = resolveStore(sourced(
-        CLUSTER_DB, 'alloydb:p.us-central1.c.other.public.customer'));
-    expect('error' in store && store.error)
-        .toContain("'Customer' to alloydb:p.us-central1.c.other.public.customer");
-  });
-});
-
-
 describe('an AlloyDB source', () => {
   const CLUSTER =
-      '//alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
+      'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c';
 
   function alloyModel(target: string, source: string): SemanticModel {
     return model(
@@ -728,7 +671,7 @@ describe('an AlloyDB source', () => {
         `          - {name: id, datatype: Integer, expression: id}\n`);
   }
 
-  test('written as a table URI, matches a target with the same cluster and database',
+  test('written as a table resource name, matches a target with the same cluster and database',
        () => {
          const store = resolveStore(alloyModel(
              `${CLUSTER}/databases/d`,
@@ -747,7 +690,7 @@ describe('an AlloyDB source', () => {
 
   // The instance is compute. The database belongs to the cluster, so a legacy
   // source's instance takes no part in the match.
-  test('written as a legacy instance URI, matches on cluster and database', () => {
+  test('written as a legacy instance-based name, matches on cluster and database', () => {
     const store = resolveStore(alloyModel(
         `${CLUSTER}/databases/d`,
         `${CLUSTER}/instances/any/databases/d/tables/customer`));

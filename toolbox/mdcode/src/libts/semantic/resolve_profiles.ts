@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, isAcceptedSource, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, keyColumn} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1946,10 +1946,7 @@ export function sourcesDialect(
       (model.entities ?? [])
           .filter(e => !e.abstract)
           .map(e => ({
-                 source: e.authoredSource !== undefined &&
-                         isAcceptedSource(e.authoredSource.trim()) ?
-                     e.authoredSource :
-                     e.dataSource ?? '',
+                 source: writtenSource(e),
                  lookedUp: e.sourceDialect,
                })));
 }
@@ -2085,9 +2082,8 @@ export function validateProfileCompleteness(
       errors.push(`${at}: entity '${e.name}' has no source in this profile`);
       continue;
     }
-    // A source the loader's reader rejects, an empty one included, is already
-    // reported, and the reader accepts only a form databaseOf reads once
-    // trimmed. Such a source names no database, so its entity's fields are
+    // A source the loader's reader rejects is already reported. One that
+    // databaseOf cannot read names no database, so its entity's fields are
     // not held to the dialect the other sources imply.
     const db = databaseOf(pe.source.trim());
     if (!db) {

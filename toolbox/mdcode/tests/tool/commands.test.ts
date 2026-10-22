@@ -2437,10 +2437,10 @@ describe('push applies, loads and checks a profile', () => {
 semantic_model:
   - name: commerce
     deployments:
-${deployments.map(d => `      - { name: ${d}, target: "//${BQ}/propertyGraphs/${d}" }`).join('\n')}
+${deployments.map(d => `      - { name: ${d}, target: "${BQ}/propertyGraphs/${d}" }`).join('\n')}
     entities:
       - name: customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
         primary_key: [c_id]
         fields:
           - { name: c_id, expression: c_id }
@@ -2488,8 +2488,8 @@ ${rest}`;
             path.join(eg, 'commerce.profiles', 'staging.yaml'),
             `semantic_model:
   - name: commerce
-    deployment_target: //${BQ}/propertyGraphs/staging
-    entities: [{ name: customer, source: "//${BQ}/tables/customer_staging" }]
+    deployment_target: ${BQ}/propertyGraphs/staging
+    entities: [{ name: customer, source: "${BQ}/tables/customer_staging" }]
 `);
       }
       spyOn(validateMod, 'validateBigQueryDataSources')
@@ -2510,10 +2510,10 @@ ${rest}`;
 semantic_model:
   - name: commerce
     deployments:
-      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+      - { name: g, target: "${BQ}/propertyGraphs/g" }
     entities:
       - name: customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
         primary_key: [c_id]
         fields:
           - { name: c_id, expression: c_id }
@@ -2534,10 +2534,10 @@ semantic_model:
 semantic_model:
   - name: commerce
     deployments:
-      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+      - { name: g, target: "${BQ}/propertyGraphs/g" }
     entities:
       - name: customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
         primary_key: [c_id]
         fields:
           - { name: c_id, expression: c_id }
@@ -2558,10 +2558,10 @@ semantic_model:
 semantic_model:
   - name: commerce
     deployments:
-      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+      - { name: g, target: "${BQ}/propertyGraphs/g" }
     entities:
       - name: customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
         primary_key: [c_id]
         fields:
           - { name: c_id, expression: c_id }
@@ -2584,7 +2584,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: purchase
-        source: //${BQ}/tables/purchase
+        source: ${BQ}/tables/purchase
         primary_key: [p_id]
         fields:
           - { name: p_id, expression: p_id }
@@ -2617,11 +2617,11 @@ semantic_model:
 semantic_model:
   - name: commerce
     deployments:
-      - { name: a, target: "//${BQ}/propertyGraphs/a" }
-      - { name: b, target: "//${BQ}/propertyGraphs/b" }
+      - { name: a, target: "${BQ}/propertyGraphs/a" }
+      - { name: b, target: "${BQ}/propertyGraphs/b" }
     entities:
       - name: customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
         primary_key: [c_id]
         fields:
           - { name: c_id, expression: c_id }
@@ -2640,10 +2640,10 @@ semantic_model:
 semantic_model:
   - name: commerce
     deployments:
-      - { name: g, target: "//${BQ}/propertyGraphs/g" }
+      - { name: g, target: "${BQ}/propertyGraphs/g" }
     entities:
       - name: customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
         primary_key: [c_id]
         fields:
           - { name: c_id, expression: c_id }
@@ -2673,7 +2673,7 @@ semantic_model:
   - name: commerce
     entities:
       - name: Customer
-        source: //${BQ}/tables/customer
+        source: ${BQ}/tables/customer
 `);
     mockKc();
     expect(await push({validateOnly: true})).toBe(1);
@@ -2711,7 +2711,7 @@ semantic_model:
       fs.writeFileSync(profilePath, `name: prod
 entities:
   - name: Customer
-    source: //${BQ}/tables/customer
+    source: ${BQ}/tables/customer
     fields:
       - { name: key, expression: c_id }
 `);
@@ -2808,7 +2808,7 @@ semantic_model:
         "  profile 'prod'\n" +
         '    target: (none; no deployment names this profile)\n' +
         '    sources:\n' +
-        '      Customer -> test-project.prod.customer');
+        '      Customer -> bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer');
 
     // A source push rejects is reported under the profile, as for a file.
     writeModel(prod('not a source'));

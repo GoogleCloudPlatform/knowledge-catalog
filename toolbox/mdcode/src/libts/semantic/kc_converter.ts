@@ -58,8 +58,8 @@ import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
-import {unnamedDeployments} from './deployment_target';
-import {noSqlReason, sourceToDataSource} from './loader';
+import {targetProblem, unnamedDeployments} from './deployment_target';
+import {noSqlReason, oldSourceForm, sourceToDataSource} from './loader';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
@@ -208,11 +208,18 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
         name}': no semantic-entity aspect data (fetch with the aspect type)`);
   }
 
-  // A source written as a catalog name is stored in `importedResource`, with
-  // `resources` left empty.
+  // A source is stored in `resources`. A model pushed before resource names
+  // were required may hold a resource URI there, or a catalog name in
+  // `importedResource`; pull returns it as stored and warns, naming the
+  // resource name to write.
   const imported = semantic?.source?.importedResource;
   const rawResource = (semantic?.source?.resources?.[0] ?? '').trim() ||
       (typeof imported === 'string' ? imported.trim() : '');
+  const oldForm = oldSourceForm(rawResource);
+  if (oldForm !== undefined) {
+    warnings.push(
+        `entity '${name}': stored source '${rawResource}' is ${oldForm}.`);
+  }
   const dataSource = dataSourceFromResource(rawResource);
   if (!dataSource) {
     warnings.push(
@@ -404,8 +411,8 @@ function irDataType(dataType: string|undefined, metadataType: string|undefined):
 
 
 // The inverse of entityAspectData, through the loader's own conversion: a
-// BigQuery or BigLake resource URI or resource name, or a `bigquery:` catalog
-// name, becomes the dot-separated table string. A Spanner or AlloyDB resource
+// BigQuery or BigLake resource URI or resource name becomes the dot-separated
+// table string. A Spanner or AlloyDB resource
 // name becomes its resource URI. Anything else is returned trimmed. An absent
 // resource reads as ''.
 function dataSourceFromResource(resource: string|undefined): string {
@@ -462,6 +469,13 @@ function readDeploymentTargets(
       asArray(aspectData(anchor, 'semantic-model').deploymentTargets)
           .filter((t): t is string => typeof t === 'string'));
   if (!deployments.length) return undefined;
+  // A model pushed before resource names were required may hold a target in
+  // a form push now rejects; pull returns it as stored and warns.
+  for (const {target} of deployments) {
+    const problem = targetProblem(
+        `model '${modelName}': stored deployment target '${target}'`, target);
+    if (problem !== undefined) warnings.push(problem);
+  }
   const targets = deployments.map(d => d.target);
   warnings.push(
       `model '${modelName}': deployment names were not recovered (the ` +

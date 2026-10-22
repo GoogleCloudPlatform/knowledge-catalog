@@ -523,20 +523,19 @@ defined in [model spec §1](model_spec.md#1-status-and-baseline),
 and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 
 * **A graph push declares exactly one deployment target per model, and it must
-  be a valid BigQuery Graph or Spanner Graph URI.** A model with more than one is
-  rejected, and so is a single target whose URI matches neither
+  be a valid BigQuery Graph or Spanner Graph resource name.** A model with more
+  than one is rejected, and so is a single target that matches neither
   `bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>` nor
-  `spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`,
-  each with or without the leading `//`
-  (for example a `propertyGraph`/`propertyGraphs` typo, or a
+  `spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>`
+  (for example a `propertyGraph`/`propertyGraphs` typo, a leading `//`, or a
   `…/entryGroups/@bigquery/entries/…` entry form). The error names the offending
-  URI and the expected forms. A **logical model that declares no target** is
+  target and the expected forms. A **logical model that declares no target** is
   allowed: it deploys no graph and records to Knowledge Catalog only (so `--no-kc`
   on it is an error — it would have nowhere to go). This gate runs before any
   destination leg, so a malformed target writes **nothing** — not to the graph
   and **not to Knowledge Catalog**; the push aborts with a non-zero exit and no
   entries are created. Defined in [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie)
-  (one target) and [§7.2](model_spec.md#72-deployment-target) (the URI grammar).
+  (one target) and [§7.2](model_spec.md#72-deployment-target) (the grammar).
   *(static)*
 * **Every metric on a BigQuery Graph model resolves to exactly one entity** —
   otherwise it would be dropped from the BigQuery Graph. Set the metric's attach

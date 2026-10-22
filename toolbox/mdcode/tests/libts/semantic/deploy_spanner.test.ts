@@ -217,14 +217,23 @@ describe('deploySpanner', () => {
         }
       });
 
-  test('a model with no Spanner target fails clearly', async () => {
-    // A BigQuery-only model handed to the Spanner leg has nothing to deploy;
-    // commands.ts routes such models away, so this is the direct-call guard.
+  // A BigQuery-only model handed to the Spanner leg has nothing to deploy, and
+  // a target that does not parse is named with the form to write; commands.ts
+  // routes such models away, so this is the direct-call guard.
+  test('a model with no Spanner target, or one that does not parse, fails clearly', async () => {
     const bqDoc = fs.readFileSync(
         path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
-    const res = await deploySpanner(
-        models([{name: 'sales', text: bqDoc}]), CTX, {validateOnly: true});
-    expect(res.success).toBe(false);
-    expect(res.details).toContain('no Spanner Graph deploymentTarget');
+    const typo = 'spanner.googleapis.com/projects/demo/instance/i/databases/d/propertyGraphs/g';
+    for (const [text, details] of [
+      [bqDoc, 'no Spanner Graph deploymentTarget'],
+      [bqDoc.replace(/deployment_target: \S+/, `deployment_target: ${typo}`),
+       `could not be parsed: ${typo}. Expected spanner.googleapis.com/` +
+           `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`],
+    ]) {
+      const res = await deploySpanner(
+          models([{name: 'sales', text}]), CTX, {validateOnly: true});
+      expect(res.success).toBe(false);
+      expect(res.details).toContain(details);
+    }
   });
 });

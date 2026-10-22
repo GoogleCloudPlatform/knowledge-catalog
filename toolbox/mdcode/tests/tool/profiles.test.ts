@@ -502,7 +502,7 @@ entities:
     expect(out).toContain("profile 'analytical'");
     expect(out).toContain(
         'target: (none; no deployment names this profile)');
-    expect(out).toContain('Customer -> acme-analytics.sales.customer');
+    expect(out).toContain('Customer -> bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer');
     expect(out).toContain('field Customer.availableCredit (excluded)');
   });
 
@@ -522,9 +522,9 @@ entities:
         // Resolved targets and normalized sources.
         expect(out).toContain(
             'target: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/propertyGraphs/commerce');
-        expect(out).toContain('Customer -> acme-analytics.sales.customer');
+        expect(out).toContain('Customer -> bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer');
         expect(out).toContain(
-            'Customer -> //spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer');
+            'Customer -> spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce/tables/Customer');
 
         // Withheld coverage: availableCredit only under analytical,
         // lifetimeValue (and the metric on it) only under operational.
@@ -894,8 +894,8 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
       "  profile 'prod'",
       '    target: (none; no deployment names this profile)',
       '    sources:',
-      '      customer -> acme.prod.customer',
-      '      purchase -> acme.prod.purchase',
+      '      customer -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer',
+      '      purchase -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/purchase',
       '    cannot answer: nothing withheld.',
     ]);
   });
@@ -960,7 +960,7 @@ ${exclude ? '    fields_exclude: [notes]\n' : ''}`;
     });
     expect(await pushResult('prod')).toEqual({code: 0, errors: []});
     expect(await profiles()).toBe(0);
-    expect(profileSection('prod')).toContain('      customer -> acme.prod.customer');
+    expect(profileSection('prod')).toContain('      customer -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer');
     expect(errs).toEqual([]);
     writeScope({'commerce.profile.prod.yaml': partiesProfile(false)});
     const {code, errors} = await pushResult('prod');
@@ -989,7 +989,7 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       });
       expect(await pushResult('prod')).toEqual({code: 0, errors: []});
       expect(await profiles()).toBe(0);
-      expect(profileSection('prod')).toContain('      customer -> acme.prod.customer');
+      expect(profileSection('prod')).toContain('      customer -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer');
       expect(errs).toEqual([]);
       const runtimes = await createSemanticRuntimes(
           {path: dir, profile: 'prod', ctx: CTX, onWarning: () => {}});
@@ -1130,8 +1130,8 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       "  profile 'prod'",
       '    target: (none; no deployment names this profile)',
       '    sources:',
-      '      customer -> acme.prod.customer',
-      '      purchase -> acme.prod.purchase',
+      '      customer -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer',
+      '      purchase -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/purchase',
       '    cannot answer: nothing withheld.',
       '    push rejects:',
       `      ${pushed.errors[0]}`,
@@ -1161,8 +1161,8 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       "  profile 'logical'",
       '    target: (none)',
       '    sources:',
-      '      customer -> acme.prod.customer',
-      '      purchase -> acme.dev.purchase',
+      '      customer -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer',
+      '      purchase -> bigquery.googleapis.com/projects/acme/datasets/dev/tables/purchase',
       '    cannot answer: nothing withheld.',
     ]);
   });
@@ -1542,8 +1542,8 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       "  profile 'prod'",
       '    target: (none)',
       '    sources:',
-      '      customer -> acme.prod.customer',
-      '      purchase -> acme.dev.purchase',
+      '      customer -> bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer',
+      '      purchase -> bigquery.googleapis.com/projects/acme/datasets/dev/tables/purchase',
       '    cannot answer: nothing withheld.',
       '    push rejects:',
       `      ${prod.errors[0]}`,
@@ -2616,11 +2616,9 @@ ${partner ? `  - name: partner
       expect(rejects(section(INLINE))).toEqual(errors);
     });
 
-    // A GCP resource name is a resource URI without the leading `//`. A
-    // source written as one names the same table as that URI. The checks of
-    // a profile the push does not apply read it as that URI, for its
-    // database and for its dialect.
-    test('and reads a source written as a resource name as its URI', async () => {
+    // The checks of a profile the push does not apply read a source written
+    // as a GCP resource name for its database and for its dialect.
+    test('and reads a source written as a resource name for its database and dialect', async () => {
       const table = (db: string, name: string) =>
           `spanner.googleapis.com/projects/acme/instances/prod/databases/${
               db}/tables/${name}`;
@@ -2631,14 +2629,14 @@ ${partner ? `  - name: partner
       writeScope({
         'commerce.yaml': commerce(),
         'commerce.profile.ops.yaml': ops(
-            `//${table('commerce', 'Customer')}`, table('commerce', 'Purchase')),
+            table('commerce', 'Customer'), table('commerce', 'Purchase')),
       });
       expect(await pushResult()).toEqual({code: 0, errors: []});
 
       writeScope({
         'commerce.yaml': commerce(),
         'commerce.profile.ops.yaml': ops(
-            `//${table('commerce', 'Customer')}`, table('other', 'Purchase')),
+            table('commerce', 'Customer'), table('other', 'Purchase')),
       });
       expect(await pushResult()).toEqual({
         code: 1,

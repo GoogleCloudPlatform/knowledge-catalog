@@ -1594,30 +1594,30 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
         .toContain("source '//trino.example.com/x' is not a valid table reference");
   });
 
-  test('Spanner catalog names and AlloyDB sources classify by database', () => {
-    const one = base({entities: [
-      {...base().entities[0], source: 'spanner:p.regional-us.i.db.Customer'},
-      {name: 'Order', source: '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders'},
+  test('Spanner and AlloyDB sources classify by database', () => {
+    const sp = (project: string, db: string, t: string) =>
+        `spanner.googleapis.com/projects/${project}/instances/i/databases/${db}/tables/${t}`;
+    const alloy = (path: string) =>
+        `alloydb.googleapis.com/projects/p/locations/us/clusters/c/${path}`;
+    const bound = (customer: string, order: string) => base({entities: [
+      {...base().entities[0], source: customer}, {name: 'Order', source: order},
     ]});
-    expect(validateProfileCompleteness(irModel(), one)).toEqual([]);
-    const two = base({entities: [
-      {...base().entities[0], source: 'spanner:`google.com:p`.regional-us.i.db.Customer'},
-      {name: 'Order', source: 'spanner:`google.com:p`.regional-us.i.db2.Orders'},
-    ]});
-    expect(validateProfileCompleteness(irModel(), two).join('\n'))
+    expect(validateProfileCompleteness(
+               irModel(), bound(sp('p', 'db', 'Customer'), sp('p', 'db', 'Orders'))))
+        .toEqual([]);
+    expect(validateProfileCompleteness(
+               irModel(), bound(sp('google.com:p', 'db', 'Customer'),
+                                sp('google.com:p', 'db2', 'Orders'))).join('\n'))
         .toContain('more than one database');
-    const alloy = base({entities: [
-      {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
-      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/databases/db/schemas/public/tables/orders'},
-    ]});
-    expect(validateProfileCompleteness(irModel(), alloy)).toEqual([]);
-    // A database belongs to its cluster, so the instance-based URI names no
+    const customer = alloy('databases/db/schemas/public/tables/customer');
+    expect(validateProfileCompleteness(
+               irModel(), bound(customer, alloy('databases/db/schemas/public/tables/orders'))))
+        .toEqual([]);
+    // A database belongs to its cluster, so the instance-based name names no
     // real table.
-    const instanceUri = base({entities: [
-      {...base().entities[0], source: 'alloydb:p.us.c.db.public.customer'},
-      {name: 'Order', source: '//alloydb.googleapis.com/projects/p/locations/us/clusters/c/instances/i/databases/db/tables/orders'},
-    ]});
-    expect(validateProfileCompleteness(irModel(), instanceUri).join('\n'))
+    expect(validateProfileCompleteness(
+               irModel(), bound(customer, alloy('instances/i/databases/db/tables/orders')))
+               .join('\n'))
         .toContain('uses the legacy instance-based AlloyDB URI');
   });
 
@@ -1923,16 +1923,6 @@ describe('profile merge: exclusions, duplicates and catalog names', () => {
       ],
     }],
   });
-  const ir = (emailInline: boolean): SemanticModel => ({
-    name: 'm',
-    entities: [
-      {name: 'customer', dataSource: 'p.d.customer', keys: ['id'],
-       fields: [{name: 'id', expression: 'id'},
-                emailInline ? {name: 'email', expression: 'email'} : {name: 'email'}]},
-      {name: 'vip', extends: ['customer'], dataSource: 'p.d.vip', keys: ['id'], fields: []},
-    ],
-    relationships: [],
-  } as any);
 
   test('an exclusion applies to the entity that names it, whatever the entry order', () => {
     const both = [{name: 'customer', fields_exclude: ['email']},
@@ -1968,19 +1958,6 @@ describe('profile merge: exclusions, duplicates and catalog names', () => {
                'name: prod\nentities:\n  - name: o\n    fields:\n      - {expression: x}\n',
                'prod'))
         .toThrow("has no 'name'");
-  });
-
-  test('a backtick-quoted catalog name is the same database as its URI', () => {
-    const model = ir(true);
-    model.entities[1].extends = undefined;
-    const SP = '//spanner.googleapis.com/projects/google.com:p/instances/i/databases/db/tables/';
-    const errors = validateProfileCompleteness(model, {
-      name: 'prod',
-      entities: [{name: 'customer', source: 'spanner:`google.com:p`.regional-us.i.db.Customer'},
-                 {name: 'vip', source: `${SP}Vip`}],
-      relationships: [],
-    });
-    expect(errors.join('\n')).not.toContain('more than one database');
   });
 });
 
@@ -2047,28 +2024,15 @@ describe('completeness sees the model as the profile does', () => {
       // The loader's source reader judges a profile's sources too.
       expect(errorsFor(bad)).toMatch(/is not a valid (source|table reference)/);
     }
-    expect(errorsFor('bigquery:p.raw.customer')).toEqual('');
-  });
-
-  // A Cloud SQL catalog name gives its instance as project, location and
-  // instance.
-  test('Cloud SQL sources classify by instance and database', () => {
-    const errorsFor = (a: string, b: string) => validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source: a}, {name: 'vip', source: b},
-    ])).join('\n');
-    // One Cloud SQL for MySQL instance is one database, whatever its schemas.
-    expect(errorsFor('cloudsql_mysql:acme.us.inst.sales.c', 'cloudsql_mysql:acme.us.inst.crm.v'))
-        .toEqual('');
-    // One Cloud SQL for PostgreSQL database is one; two on one instance are two.
-    expect(errorsFor('cloudsql_postgresql:acme.us.inst.db1.public.c',
-                     'cloudsql_postgresql:acme.us.inst.db1.sales.v'))
-        .toEqual('');
-    expect(errorsFor('cloudsql_postgresql:acme.us.inst.db1.public.c',
-                     'cloudsql_postgresql:acme.us.inst.db2.public.v'))
-        .toContain('more than one database');
-    // A Cloud SQL for MySQL name has exactly five segments.
-    expect(errorsFor('cloudsql_mysql:acme.us.sales.c', 'cloudsql_mysql:acme.us.sales.v'))
-        .toContain("source 'cloudsql_mysql:acme.us.sales.c' is not a valid table reference");
+    expect(errorsFor(BQ('customer'))).toEqual('');
+    // A profile's rebinding is held to the old-form rules a model file's
+    // source is.
+    expect(errorsFor(`//${BQ('customer')}`)).toContain(
+        `source '//${BQ('customer')}' is a resource URI; write its GCP ` +
+        `resource name, without the leading '//': '${BQ('customer')}'.`);
+    expect(errorsFor('bigquery:p.d.customer')).toContain(
+        `source 'bigquery:p.d.customer' is a Knowledge Catalog name; write ` +
+        `the table's GCP resource name: '${BQ('customer')}'.`);
   });
 
   // A Cloud SQL table written as its resource name. A MySQL table has no
@@ -2081,11 +2045,8 @@ describe('completeness sees the model as the profile does', () => {
           {name: 'customer', source: a}, {name: 'vip', source: b},
         ]), [], {cloudSqlDialects}).join('\n');
     const inst = 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst';
-    // MySQL: one instance is one database, whatever its databases, in either
-    // spelling.
+    // MySQL: one instance is one database, whatever its databases.
     expect(errorsFor(`${inst}/databases/sales/tables/c`, `${inst}/databases/crm/tables/v`))
-        .toEqual('');
-    expect(errorsFor(`${inst}/databases/sales/tables/c`, 'cloudsql_mysql:acme.us.inst.crm.v'))
         .toEqual('');
     expect(errorsFor(`${inst}/databases/sales/tables/c`,
                      'cloudsql.googleapis.com/projects/acme/locations/us/instances/other/databases/sales/tables/v'))
@@ -2093,7 +2054,7 @@ describe('completeness sees the model as the profile does', () => {
     // With a schema: one database is one; two on one instance are two, unless
     // the lookup names SQL Server, whose instance one query reaches whole.
     expect(errorsFor(`${inst}/databases/db1/schemas/public/tables/c`,
-                     `//${inst}/databases/db1/schemas/sales/tables/v`))
+                     `${inst}/databases/db1/schemas/sales/tables/v`))
         .toEqual('');
     const twoDatabases = [
       `${inst}/databases/db1/schemas/public/tables/c`,
@@ -2130,7 +2091,6 @@ describe('completeness sees the model as the profile does', () => {
     expect(dialectOf(
         'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/schemas/s/tables/orders'))
         .toBeUndefined();
-    expect(dialectOf('cloudsql_mysql:acme.us.inst.db.orders')).toBe('MYSQL');
   });
 
   // A profile's rebinding is read as the model file's source is, so a
@@ -2138,7 +2098,7 @@ describe('completeness sees the model as the profile does', () => {
   test('a profile that binds a third-party source is rejected', () => {
     const errors = validateProfileCompleteness(model(true), spec([
       {name: 'customer', source: 'snowflake:acct.db.public.c'},
-      {name: 'vip', source: 'cloudsql_mysql:acme.us.inst.sales.v'},
+      {name: 'vip', source: BQ('vip')},
     ])).join('\n');
     expect(errors).toContain(
         "source 'snowflake:acct.db.public.c' is a third-party table; the " +
@@ -2159,10 +2119,14 @@ describe('completeness sees the model as the profile does', () => {
       importedDialect: 'SNOWFLAKE',
       dialects: [{dialect: 'SNOWFLAKE', expression: 'email'}],
     };
+    // Tables in one Cloud SQL for MySQL instance, as the lookup reads them.
+    const mysql = (t: string) =>
+        `cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/sales/tables/${t}`;
+    const cloudSqlDialects = new Map([mysql('c'), mysql('v')].map(t => [t, 'MYSQL']));
     const errorsFor = (customer: string) => validateProfileCompleteness(m, spec([
       {name: 'customer', source: customer},
-      {name: 'vip', source: 'cloudsql_mysql:acme.us.inst.sales.v'},
-    ])).join('\n');
+      {name: 'vip', source: mysql('v')},
+    ]), [], {cloudSqlDialects}).join('\n');
     for (const rejected of ['snowflake:acct.db.public.c', 'acme.sales.c', '']) {
       const errors = errorsFor(rejected);
       expect({rejected, errors})
@@ -2172,7 +2136,7 @@ describe('completeness sees the model as the profile does', () => {
           "field 'vip.email' has no expression for MYSQL or ANSI_SQL");
     }
     // A source in the same instance gives the profile its dialect.
-    expect(errorsFor('cloudsql_mysql:acme.us.inst.sales.c')).toContain(
+    expect(errorsFor(mysql('c'))).toContain(
         "field 'customer.email' has no expression for MYSQL or ANSI_SQL");
   });
 
@@ -2563,7 +2527,7 @@ entities:
   // text, which BigQuery would read as the qualifier `orders.` and a comment.
   test('the profile checks read an inherited field in its own dialects under any load dialect', () => {
     const PG = (t: string) =>
-        `cloudsql_postgresql:p.us-central1.inst.db.public.${t}`;
+        `cloudsql.googleapis.com/projects/p/locations/us-central1/instances/inst/databases/db/schemas/public/tables/${t}`;
     const pts = `
             expression:
               dialects:
@@ -3050,7 +3014,9 @@ relationships: []
 describe('profile completeness: dialects and struct paths', () => {
   const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const SP = (t: string) =>
-      `//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+      `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+  // The IR keeps a Spanner table as its resource URI.
+  const SP_DATA = (t: string) => `//${SP(t)}`;
   const shop = (amount: object): SemanticModel => ({
     name: 'shop',
     entities: [{
@@ -3074,11 +3040,9 @@ describe('profile completeness: dialects and struct paths', () => {
         'databases/shop/schemas/sales/tables/orders';
     const sqlServer = {cloudSqlDialects: new Map([[CS, 'SQLSERVER']])};
     expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual([]);
-    for (const written of [CS, `//${CS}`]) {
-      expect(validateProfileCompleteness(bqOnly(), atSource(written), [], {cloudSqlDialects: sqlServer.cloudSqlDialects})
-                 .join('\n'))
-          .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
-    }
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: sqlServer.cloudSqlDialects})
+               .join('\n'))
+        .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
     // The dialects are per table: another table's does not count.
     const other = {cloudSqlDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
     expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: other.cloudSqlDialects})).toEqual([]);
@@ -3098,12 +3062,6 @@ describe('profile completeness: dialects and struct paths', () => {
     const [model] = fromDocument(doc(CS), opts).models;
     expect(model.entities[0].sourceDialect).toBe('MYSQL');
     expect(sourcesDialect(model)).toBe('MYSQL');
-    // The same table in its catalog-name spelling implies the same dialect.
-    expect(sourcesDialect({entities: [
-      model.entities[0],
-      {...model.entities[0], name: 'items', authoredSource: 'cloudsql_mysql:p.l.my.shop.items',
-       dataSource: 'cloudsql_mysql:p.l.my.shop.items', sourceDialect: undefined},
-    ]})).toBe('MYSQL');
     // Without the lookup, nothing is recorded and no dialect is implied.
     const [unread] = fromDocument(doc(CS)).models;
     expect(unread.entities[0].sourceDialect).toBeUndefined();
@@ -3200,7 +3158,7 @@ semantic_model:
   test('a binding with no dialect list is judged by the text for its engine', () => {
     const model: SemanticModel = {
       name: 'shop',
-      entities: [{name: 'orders', dataSource: SP('Orders'), keys: ['id'],
+      entities: [{name: 'orders', dataSource: SP_DATA('Orders'), keys: ['id'],
                   fields: [{name: 'id', expression: 'id'},
                            {name: 'a', expression: 'a'},
                            {name: 'b', expression: 'b'},
@@ -3220,26 +3178,22 @@ semantic_model:
     expect(excluding('b')).not.toContain("field 'orders.x'");
   });
 
-  // A source written as a GCP resource name, the URI without the leading
-  // `//`, names the same database, so it implies the same dialect and counts
-  // as the same database for the one-database rule.
-  test('a source written as a resource name implies the same dialect and database', () => {
-    const name = (uri: string) => uri.slice(2);
+  // A source written as a GCP resource name implies its system's dialect and
+  // counts as its database for the one-database rule.
+  test('a source written as a resource name implies its dialect and database', () => {
     expect(sourcesDialect({entities: [
-      {name: 'orders', dataSource: SP('Orders'), authoredSource: name(SP('Orders')),
+      {name: 'orders', dataSource: SP_DATA('Orders'), authoredSource: SP('Orders'),
        keys: [], fields: []},
     ]} as any)).toBe('SPANNER');
-    expect(validateProfileCompleteness(bqOnly(), atSource(name(SP('Orders')))).join('\n'))
-        .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
     expect(validateProfileCompleteness(bqOnly(), atSource(BQ('orders_prod'))))
         .toEqual([]);
 
     const model: SemanticModel = {
       name: 'shop',
       entities: [
-        {name: 'orders', dataSource: SP('Orders'), keys: ['id'],
+        {name: 'orders', dataSource: SP_DATA('Orders'), keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
-        {name: 'items', dataSource: SP('Items'), keys: ['id'],
+        {name: 'items', dataSource: SP_DATA('Items'), keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
       ],
       relationships: [], metrics: [],
@@ -3249,16 +3203,16 @@ semantic_model:
       entities: [{name: 'orders', source: orders}, {name: 'items', source: items}],
       relationships: [],
     });
-    expect(validateProfileCompleteness(model, spec(name(SP('Orders')), SP('Items'))).join('\n'))
+    expect(validateProfileCompleteness(model, spec(SP('Orders'), SP('Items'))).join('\n'))
         .not.toContain('more than one database');
     expect(validateProfileCompleteness(
-               model, spec(name(SP('Orders')), BQ('items'))).join('\n'))
+               model, spec(SP('Orders'), BQ('items'))).join('\n'))
         .toContain('more than one database');
   });
 
   // A profile's rebinding is read as the model file's source is: a GCP
   // resource name keeps the form written in `authoredSource`, which push
-  // stores and pull returns, and gets the URI's `dataSource`.
+  // stores and pull returns, and gets the IR's `dataSource`.
   test('a profile rebinds a source written as a resource name', () => {
     const doc = {name: 'shop.yaml', text: `version: "0.2.0.dev0/google"
 semantic_model:
@@ -3269,8 +3223,8 @@ semantic_model:
         fields:
           - {name: id, expression: id}
 `};
-    for (const uri of [SP('Orders'), `//${BQ('orders')}`]) {
-      const name = uri.slice(2);
+    for (const [name, dataSource] of [
+           [SP('Orders'), SP_DATA('Orders')], [BQ('orders'), 'p.d.orders']]) {
       const rebound = (source: string) => {
         const res = profileForDocument(
             doc, [{name: 'p', text: `name: p\nentities:\n  - name: orders\n    source: "${source}"\n`}],
@@ -3279,7 +3233,7 @@ semantic_model:
         return res.model.entities![0];
       };
       expect(rebound(name).authoredSource).toBe(name);
-      expect(rebound(name).dataSource).toBe(rebound(uri).dataSource);
+      expect(rebound(name).dataSource).toBe(dataSource);
     }
   });
 
@@ -3455,7 +3409,7 @@ semantic_model:
     const model: SemanticModel = {
       name: 'shop',
       entities: [{
-        name: 'orders', dataSource: SP('Orders'), authoredSource: SP('Orders'),
+        name: 'orders', dataSource: SP_DATA('Orders'), authoredSource: SP('Orders'),
         keys: ['id'],
         fields: [
           {name: 'id', expression: 'id'},

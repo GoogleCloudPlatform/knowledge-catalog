@@ -4,15 +4,15 @@
 // entry has a name, a target and optionally the binding profile it uses. The
 // loader also folds every target into `deploymentTargets` in a GOOGLE
 // `custom_extensions` block, which is also where a vanilla document's GOOGLE
-// block carries them. Three destination types are recognized here, each an
-// AIP-122 full resource name, written with or without its leading `//`:
+// block carries them. Three destination types are recognized here, each a
+// GCP resource name, written with no leading `//`:
 //
 //   BigQuery Graph:
-//     //bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
+//     bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>
 //   Spanner Graph:
-//     //spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
+//     spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>
 //   AlloyDB database:
-//     //alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>
+//     alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>
 //
 // The first two name a GRAPH; the third names a DATABASE, and the difference is
 // not an oversight. AlloyDB has no property-graph DDL, so there is no graph to
@@ -34,7 +34,7 @@
 // validator and named in errors) rather than silently skipped.
 
 import {CustomExtension, DeploymentSpec, SemanticModel} from './ir';
-import {asResourceUri} from './loader';
+import {asResourceName, asResourceUri, resourceUriFix} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 
@@ -69,16 +69,16 @@ const ALLOYDB_TARGET =
 const LEGACY_ALLOYDB_TARGET =
     /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)$/;
 
-// The resource URI form of each destination type, for messages.
-const BQ_GRAPH_FORM =
-    '//bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>';
-const SPANNER_GRAPH_FORM =
-    '//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>';
+// The GCP resource name form of each destination type, for messages.
+export const BQ_GRAPH_FORM =
+    'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>';
+export const SPANNER_GRAPH_FORM =
+    'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>';
 const ALLOYDB_FORM =
-    '//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>';
+    'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>';
 
 // The Knowledge Catalog name prefixes of a graph or an AlloyDB database, each
-// with the resource URI form to write instead. kcmd accepts no catalog name as
+// with the resource name form to write instead. kcmd accepts no catalog name as
 // a target. `bigquery:propertygraph:` is a deprecated synonym for
 // `bigquery:graph:`.
 const CATALOG_PREFIXES: Array<[string, string]> = [
@@ -146,12 +146,13 @@ export type ResolvedDeployment = ParsedDeploymentTarget&{
 };
 
 
-// Parses a deployment target written as a resource URI or as a GCP resource
-// name, which is the URI without the leading `//`. Returns undefined for any
-// other form. `uri` in the result is the target as written. The legacy
-// instance-based AlloyDB URI parses only when `legacyAlloyDb` is set.
+// Parses a deployment target written as a GCP resource name. Returns undefined
+// for any other form, the resource URI with its leading `//` included. `uri`
+// in the result is the target as written. The legacy instance-based AlloyDB
+// name parses only when `legacyAlloyDb` is set.
 function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
     ParsedDeploymentTarget|undefined {
+  if (uri.startsWith('//')) return undefined;
   const resource = asResourceUri(uri);
   const bq = resource.match(BQ_GRAPH_TARGET);
   if (bq) {
@@ -250,22 +251,35 @@ export function deploymentTargetKeyError(
       `Model '${model.name}' sets 'deployment_target' to '${target}'`, target);
 }
 
-// Why `target` is not accepted. `at` says where it is written.
-function targetError(at: string, target: string): string {
+/**
+ * Why a push would reject `target`, or undefined when it accepts it. `at` says
+ * where it is written.
+ */
+export function targetProblem(at: string, target: string): string|undefined {
+  return parseTarget(target, {legacyAlloyDb: false}) ? undefined :
+                                                       targetError(at, target);
+}
+
+/** Why `target` is not accepted. `at` says where it is written. */
+export function targetError(at: string, target: string): string {
   const legacy = asResourceUri(target).match(LEGACY_ALLOYDB_TARGET);
   if (legacy) {
-    return `${at}, the instance-based AlloyDB URI, which names no real ` +
+    return `${at}, the instance-based AlloyDB name, which names no real ` +
         `resource. An AlloyDB database belongs to its cluster; write '${
-               clusterUri(legacy)}'.`;
+               asResourceName(clusterUri(legacy))}'.`;
+  }
+  const name = asResourceName(target);
+  if (name !== target && parseTarget(name, {legacyAlloyDb: false})) {
+    return `${at}, which is ${resourceUriFix(target)}.`;
   }
   const form =
       CATALOG_PREFIXES.find(([prefix]) => target.startsWith(prefix))?.[1];
   if (form) {
-    return `${at}, which is a Knowledge Catalog name. Write the resource URI ` +
-        `instead: '${form}'.`;
+    return `${at}, which is a Knowledge Catalog name. Write the GCP resource ` +
+        `name instead: '${form}'.`;
   }
   return `${at}, which is not a BigQuery graph, a Spanner graph or an ` +
-      `AlloyDB database. Write a resource URI: '${BQ_GRAPH_FORM}', '${
+      `AlloyDB database. Write a GCP resource name: '${BQ_GRAPH_FORM}', '${
              SPANNER_GRAPH_FORM}' or '${ALLOYDB_FORM}'.`;
 }
 
@@ -399,15 +413,13 @@ export function googleBlockTargets(
 // targets back from the catalog, and a vanilla model lists only targets in
 // its GOOGLE block. One target is `default`; several are `deployment_1`,
 // `deployment_2`, and so on. Targets are trimmed, and blank ones dropped. A
-// repeated target is dropped too, and a resource name repeats its URI, so the
-// list loads as a `deployments:` list.
+// repeated target is dropped too, so the list loads as a `deployments:` list.
 export function unnamedDeployments(targets: readonly string[]):
     Array<{name: string; target: string}> {
   const seen = new Set<string>();
   const kept = targets.map(t => t.trim()).filter(t => {
-    const key = asResourceUri(t);
-    if (t === '' || seen.has(key)) return false;
-    seen.add(key);
+    if (t === '' || seen.has(t)) return false;
+    seen.add(t);
     return true;
   });
   return kept.map((target, i) => ({

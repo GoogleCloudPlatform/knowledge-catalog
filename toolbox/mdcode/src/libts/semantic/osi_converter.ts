@@ -47,7 +47,7 @@ import * as yaml from 'yaml';
 
 import {googleBlockTargets, unnamedDeployments} from './deployment_target';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {FORMAT_VERSION_PLACEMENT, FormatVersion, GOOGLE_VERSION, isAcceptedSource, OSSIE_VERSION} from './loader';
+import {FORMAT_VERSION_PLACEMENT, FormatVersion, GOOGLE_VERSION, OSSIE_VERSION, writtenSource} from './loader';
 import {nameProblem} from './names';
 import {declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE} from './resolve_profiles';
@@ -464,13 +464,10 @@ function datasetDoc(
   return compact({
     name: entity.name,
     // An abstract entity has no physical table, so its source is empty; omit
-    // the key rather than emit `source: ""` (which the loader rejects). Prefer
-    // `authoredSource` when `isAcceptedSource` accepts it so resource URIs and
-    // catalog names survive serialization, and fall back to `dataSource` when
-    // `authoredSource` was a legacy bare name that the load qualified.
-    source: (isAcceptedSource(entity.authoredSource) ? entity.authoredSource :
-                                                       entity.dataSource) ||
-        undefined,
+    // the key rather than emit `source: ""` (which the loader rejects). The
+    // source as written survives serialization; a legacy bare name is written
+    // as the name the load qualified it to.
+    source: writtenSource(entity) || undefined,
     // Supertype entities (entity-level inheritance); native under
     // GOOGLE_VERSION, or in the dataset's GOOGLE block under OSSIE_VERSION.
     extends: nativeExtends,

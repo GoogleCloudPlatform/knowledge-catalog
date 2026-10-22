@@ -1204,7 +1204,7 @@ function normalizeModelSugars(
           `'deployments' if it is not there already.`);
     }
     const target = typeof m.deployment_target === 'string' ?
-        m.deployment_target :
+        asResourceName(m.deployment_target) :
         '<target>';
     throw new SemanticModelError(
         `Semantic model load error: ${label}: 'deployment_target' is no ` +
@@ -2205,17 +2205,16 @@ function convertModel(
   rejectDuplicateNames(
       deployments.map(d => d.name), 'deployment name', `model '${m.name}'`,
       true);
-  // A resource name and its URI name the same resource.
   const seenTargets = new Map<string, string>();
   for (const d of deployments) {
-    const first = seenTargets.get(asResourceUri(d.target));
+    const first = seenTargets.get(d.target);
     if (first !== undefined) {
       throw new SemanticModelError(
           `Semantic model load error: model '${m.name}': deployments '${
               first}' and '${d.name}' target the same resource '${
               d.target}'; each deployment must target a distinct resource`);
     }
-    seenTargets.set(asResourceUri(d.target), d.name);
+    seenTargets.set(d.target, d.name);
   }
   // A blank `deployment_target` names no target, as push reads it.
   if (!deployments.length && m.deployment_target?.trim()) {
@@ -3013,12 +3012,80 @@ export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
 const RESOURCE_NAME = /^[a-z][a-z0-9-]*\.googleapis\.com\//;
 
 // `value` as a resource URI: a GCP resource name gets the leading `//`, and
-// anything else is returned as it is. A resource name and its URI name the
-// same resource, so the loader and push check and compare a source or a
-// deployment target as its URI. The form the author wrote stays in
+// anything else is returned as it is. The IR and the checks read a source or a
+// target as its URI; the resource name the author wrote stays in
 // `authoredSource` for a source and in `uri` for a target.
 export function asResourceUri(value: string): string {
   return RESOURCE_NAME.test(value) ? `//${value}` : value;
+}
+
+// `value` as a GCP resource name: a resource URI loses its leading `//`, and
+// anything else is returned as it is. The inverse of `asResourceUri`, for
+// messages and output, which show the form an author writes.
+export function asResourceName(value: string): string {
+  const name = value.replace(/^\/\//, '');
+  return RESOURCE_NAME.test(name) ? name : value;
+}
+
+// What to do about a value written as a resource URI: write its GCP resource
+// name. The source and target messages share it, so they say it alike.
+export function resourceUriFix(uri: string): string {
+  return `a resource URI; write its GCP resource name, without the leading ` +
+      `'//': '${asResourceName(uri)}'`;
+}
+
+// The Knowledge Catalog name prefix of each first-party table, the number of
+// segments after it, and the GCP resource name those segments give. A
+// Spanner name's instance config has no place in the resource name.
+const CATALOG_NAME_FORMS: Array<[string, number, (s: string[]) => string]> = [
+  ['bigquery:', 3,
+   s => `bigquery.googleapis.com/projects/${s[0]}/datasets/${s[1]}/tables/${
+       s[2]}`],
+  ['biglake:table:', 4,
+   s => `biglake.googleapis.com/projects/${s[0]}/catalogs/${
+       s[1]}/namespaces/${s[2]}/tables/${s[3]}`],
+  ['spanner:', 5,
+   s => `spanner.googleapis.com/projects/${s[0]}/instances/${
+       s[2]}/databases/${s[3]}/tables/${s[4]}`],
+  ['alloydb:', 6,
+   s => `alloydb.googleapis.com/projects/${s[0]}/locations/${
+       s[1]}/clusters/${s[2]}/databases/${s[3]}/schemas/${s[4]}/tables/${
+       s[5]}`],
+  ['cloudsql_mysql:', 5,
+   s => `cloudsql.googleapis.com/projects/${s[0]}/locations/${
+       s[1]}/instances/${s[2]}/databases/${s[3]}/tables/${s[4]}`],
+  ['cloudsql_postgresql:', 6, cloudSqlSchemaTable],
+  ['cloudsql_sqlserver:', 6, cloudSqlSchemaTable],
+];
+
+function cloudSqlSchemaTable(s: string[]): string {
+  return `cloudsql.googleapis.com/projects/${s[0]}/locations/${
+      s[1]}/instances/${s[2]}/databases/${s[3]}/schemas/${s[4]}/tables/${s[5]}`;
+}
+
+// What a source written as a resource URI or a Knowledge Catalog name of a
+// table kcmd reads is, and the resource name to write instead; undefined for
+// any other source. The loader rejects such a source, and pull warns for one
+// an older push stored.
+export function oldSourceForm(source: string): string|undefined {
+  const name = asResourceName(source);
+  if (name !== source && isAcceptedSource(name)) return resourceUriFix(source);
+  const fromCatalog = catalogNameResourceName(source);
+  return fromCatalog === undefined ? undefined :
+      `a Knowledge Catalog name; write the table's GCP resource name: '${
+          fromCatalog}'`;
+}
+
+// The GCP resource name of the first-party table a Knowledge Catalog name
+// names, or undefined when `fqn` is not one in an accepted shape.
+function catalogNameResourceName(fqn: string): string|undefined {
+  const form = CATALOG_NAME_FORMS.find(([prefix]) => fqn.startsWith(prefix));
+  if (!form || fqn.length > MAX_CATALOG_NAME_LENGTH) return undefined;
+  const [prefix, count, resourceName] = form;
+  const segs = catalogNameSegments(fqn.slice(prefix.length));
+  if (segs.length !== count || segs.some(seg => seg === '')) return undefined;
+  const name = resourceName(segs);
+  return isAcceptedSource(name) ? name : undefined;
 }
 
 // A catalog name's dot-separated segments. A segment containing a reserved
@@ -3159,20 +3226,33 @@ export function databaseOf(written: string): string|undefined {
   }
 }
 
-// True when `source` is a GCP resource URI, a GCP resource name or a Knowledge
-// Catalog name that `databaseOf` accepts, as opposed to a legacy bare table
-// name. The loader, the Knowledge Catalog emitter and the serializer share it
-// so they agree on which sources are written back as authored.
+// True when `source` names a table in a form `databaseOf` reads, as opposed to
+// a legacy bare table name. An author writes only its GCP resource name
+// (`parseSource` rejects the other forms); the resource URI and catalog name
+// forms are read from an older push. The loader, the Knowledge Catalog emitter
+// and the serializer share it so they agree on which sources are written back
+// as authored.
 export function isAcceptedSource(source: string|undefined): boolean {
   return source !== undefined && databaseOf(source) !== undefined;
 }
 
+// The source an entity is written with: its `authoredSource` when that names a
+// table in a form `databaseOf` reads, and otherwise its `dataSource`, which is
+// how the load completes a legacy bare table name, shown as a resource name. A
+// model is serialized, shown and judged by it.
+export function writtenSource(
+    entity: {authoredSource?: string; dataSource?: string}): string {
+  const authored = entity.authoredSource?.trim();
+  return authored !== undefined && isAcceptedSource(authored) ?
+      authored :
+      asResourceName(entity.dataSource ?? '');
+}
+
 // Maps an accepted source string (or catalog resource path) to the IR's
 // canonical `dataSource`. A GCP resource name is read as its resource URI
-// first. A BigQuery or BigLake resource URI or a 3-segment `bigquery:` catalog
-// name becomes the dot-separated table string. A Spanner, AlloyDB or Cloud SQL
-// resource URI is returned as the URI, with the leading `//`. Anything else (other
-// catalog names, or an unrecognized string) is returned trimmed. Shared by the
+// first. A BigQuery or BigLake resource URI becomes the dot-separated table
+// string. A Spanner, AlloyDB or Cloud SQL resource URI is returned as the URI,
+// with the leading `//`. Anything else is returned trimmed. Shared by the
 // loader (`parseSource`) and the Knowledge Catalog reader
 // (`dataSourceFromResource`) so `readRelationships` matches `Entity.dataSource`
 // against the `schema-join` aspect's table names.
@@ -3184,12 +3264,6 @@ export function sourceToDataSource(source: string): string {
   if (biglakeUri) {
     const [, project, catalog, namespace, table] = biglakeUri;
     return `${project}.${catalog}.${namespace}.${table}`;
-  }
-  if (value.startsWith('bigquery:')) {
-    const segs = catalogNameSegments(value.slice('bigquery:'.length));
-    if (segs.length === 3 && segs.every(s => s.length > 0)) {
-      return segs.join('.');
-    }
   }
   return value;
 }
@@ -3273,12 +3347,18 @@ export function parseSource(
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source '${trimmed}' looks like a ` +
         `SQL query; a query-valued source is not supported yet. Bind 'source' ` +
-        `to a physical table using a GCP resource URI (e.g. ` +
-        `'//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>') or ` +
-        `a Knowledge Catalog name (e.g. 'bigquery:<p>.<d>.<t>').`);
+        `to a physical table using its GCP resource name (e.g. ` +
+        `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>').`);
   }
 
-  // Accepted forms: GCP resource URI or name, or Knowledge Catalog name.
+  const problem = oldSourceForm(trimmed);
+  if (problem !== undefined) {
+    throw new SemanticModelError(
+        `Semantic model load error: ${ctx}: source '${trimmed}' is ${problem}.`);
+  }
+  const name = asResourceName(trimmed);
+
+  // The accepted form: a GCP resource name.
   if (isAcceptedSource(trimmed)) {
     const cloudSql = cloudSqlTableOf(trimmed);
     const sourceDialect = cloudSql &&
@@ -3290,12 +3370,13 @@ export function parseSource(
     };
   }
 
-  // Legacy instance-based AlloyDB URI: accepted under opt-in, otherwise
-  // reported with a specific migration message.
+  // Legacy instance-based AlloyDB name: accepted under opt-in, written as a
+  // resource name; otherwise, and in any spelling, reported with the
+  // cluster-based name to write.
   const legacyAlloy =
       asResourceUri(trimmed).match(LEGACY_ALLOYDB_INSTANCE_URI);
   if (legacyAlloy) {
-    if (opts.allowLegacyBareSource) {
+    if (opts.allowLegacyBareSource && name === trimmed) {
       return {
         authoredSource: trimmed,
         dataSource: asResourceUri(trimmed),
@@ -3305,11 +3386,9 @@ export function parseSource(
         `Semantic model load error: ${ctx}: source '${trimmed}' uses the ` +
         `legacy instance-based AlloyDB URI. An AlloyDB database belongs to ` +
         `its cluster and a table to a schema in it; write ` +
-        `'//alloydb.googleapis.com/projects/${legacyAlloy[1]}/locations/${
+        `'alloydb.googleapis.com/projects/${legacyAlloy[1]}/locations/${
             legacyAlloy[2]}/clusters/${legacyAlloy[3]}/databases/${
-            legacyAlloy[4]}/schemas/<schema>/tables/${legacyAlloy[5]}' or ` +
-        `'alloydb:${legacyAlloy[1]}.${legacyAlloy[2]}.${legacyAlloy[3]}.${
-            legacyAlloy[4]}.<schema>.${legacyAlloy[5]}'.`);
+            legacyAlloy[4]}/schemas/<schema>/tables/${legacyAlloy[5]}'.`);
   }
 
   const unsupported = unsupportedServiceSourceError(trimmed, ctx) ??
@@ -3370,17 +3449,13 @@ export function parseSource(
 
   throw new SemanticModelError(
       `Semantic model load error: ${ctx}: source '${trimmed}' is not a valid ` +
-      `table reference. Expected a GCP resource URI ` +
-      `('//bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
-      `'//spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
-      `'//alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
-      `'//cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
-      `'//cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
-      `'//biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>') ` +
-      `or a Knowledge Catalog name ('bigquery:<p>.<d>.<t>', ` +
-      `'spanner:<p>.<config>.<i>.<db>.<t>', ` +
-      `'alloydb:<p>.<location>.<cluster>.<db>.<schema>.<table>', ` +
-      `'cloudsql_mysql:...' or 'cloudsql_postgresql:...'). The preview ` +
+      `table reference. Expected a GCP resource name ` +
+      `('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
+      `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
+      `'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
+      `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
+      `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
+      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'). The preview ` +
       `supports Google Cloud tables only: BigQuery, BigLake, Spanner, ` +
       `AlloyDB and Cloud SQL.`);
 }

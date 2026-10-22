@@ -20,7 +20,7 @@ import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {asResourceUri, deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice} from '../libts/semantic/loader';
+import {deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
@@ -1268,8 +1268,7 @@ export async function push(options: PushOptions): Promise<number> {
       noteCatalogOnly(prepared.models);
       for (const m of prepared.models) {
         for (const uri of deploy.deploymentTargetUris(m.model)) {
-          // A resource name and its URI name the same graph.
-          const first = claimedTargets.get(asResourceUri(uri));
+          const first = claimedTargets.get(uri);
           if (first !== undefined) {
             console.error(
                 `Error: model '${first.model}' under binding profile '${
@@ -1279,8 +1278,7 @@ export async function push(options: PushOptions): Promise<number> {
                 `deployment target (the second would overwrite the first).`);
             return 1;
           }
-          claimedTargets.set(
-              asResourceUri(uri), {profile: profileName, model: m.model.name});
+          claimedTargets.set(uri, {profile: profileName, model: m.model.name});
         }
       }
       graphPlans.push({profileName, prepared});
@@ -1551,7 +1549,7 @@ function printProfileReport(
   console.log(`    target: ${targets.length ? targets.join(', ') : none}`);
   console.log('    sources:');
   for (const e of model.entities ?? []) {
-    console.log(`      ${e.name} -> ${e.dataSource || '(unbound)'}`);
+    console.log(`      ${e.name} -> ${writtenSource(e) || '(unbound)'}`);
   }
 
   const withheld: string[] = [];

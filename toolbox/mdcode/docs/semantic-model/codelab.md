@@ -464,9 +464,9 @@ Model 'sales' ($DATASET):
   profile 'analytical' (default)
     target: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
     sources:
-      orders -> $PROJECT.$DATASET.orders
-      customer -> $PROJECT.$DATASET.customer
-      lineitem -> $PROJECT.$DATASET.lineitem
+      orders -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
+      customer -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/customer
+      lineitem -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/lineitem
     cannot answer: nothing withheld.
 ```
 
@@ -753,16 +753,16 @@ Model 'sales' ($DATASET):
   profile 'analytical' (default)
     target: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
     sources:
-      orders -> $PROJECT.$DATASET.orders
-      customer -> $PROJECT.$DATASET.customer
-      lineitem -> $PROJECT.$DATASET.lineitem
+      orders -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
+      customer -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/customer
+      lineitem -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/lineitem
     cannot answer: nothing withheld.
   profile 'operational'
     target: spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
     sources:
-      orders -> //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Orders
-      customer -> //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Customers
-      lineitem -> //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/LineItems
+      orders -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Orders
+      customer -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Customers
+      lineitem -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/LineItems
     cannot answer:
       field orders.net_amount (excluded)
       metric revenue (excluded)
@@ -770,8 +770,7 @@ Model 'sales' ($DATASET):
 
 Both profiles now show side by side: `analytical` binds every field, so it
 withholds nothing; `operational` excludes `net_amount`, and every metric. (`kcmd profiles`
-shows each BigQuery source as `project.dataset.table` and each Spanner source as
-its resource name with a leading `//`; the Spanner graph itself references the
+shows each source as its resource name; the Spanner graph itself references the
 bare `Orders`.)
 
 `revenue` is `SUM(orders.net_amount)`. The operational profile excludes

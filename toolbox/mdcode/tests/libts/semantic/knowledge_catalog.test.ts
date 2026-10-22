@@ -318,10 +318,10 @@ describe('entity dataSource maps to a resource path', () => {
   }
 
   test(
-      'a clean project.dataset.table becomes a BigQuery linked-resource URI',
+      'a clean project.dataset.table becomes the BigQuery table\'s resource name',
       () => {
         expect(resources('proj.ds.tbl')).toEqual([
-          '//bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl',
+          'bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl',
         ]);
       });
   test('a query-like source is kept verbatim', () => {
@@ -1205,21 +1205,10 @@ describe('an entity source is stored as written', () => {
         .data!.source;
   }
 
-  test('a catalog name goes to importedResource, leaving resources empty',
-       () => {
-         expect(sourceRecord('bigquery:proj.ds.tbl', 'proj.ds.tbl')).toEqual({
-           resources: [],
-           importedResource: 'bigquery:proj.ds.tbl',
-         });
-         const spanner = 'spanner:p.regional-us.i.db.Orders';
-         expect(sourceRecord(spanner, spanner))
-             .toEqual({resources: [], importedResource: spanner});
-       });
-
-  test('a resource URI stays in resources unchanged', () => {
-    const uri =
-        '//spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
-    expect(sourceRecord(uri, uri)).toEqual({resources: [uri]});
+  test('a resource name stays in resources unchanged', () => {
+    const name =
+        'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/Orders';
+    expect(sourceRecord(name, `//${name}`)).toEqual({resources: [name]});
   });
 });
 

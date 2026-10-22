@@ -74,10 +74,11 @@ Each entity names where its data lives with `source`. A Google Cloud table is
 written as its GCP resource name, with no leading `//`, such as
 `bigquery.googleapis.com/…`, `biglake.googleapis.com/…`,
 `spanner.googleapis.com/…`, `alloydb.googleapis.com/…` or
-`cloudsql.googleapis.com/…`, and is read with ambient IAM. A BigQuery, Spanner
-or AlloyDB table may also be written as its Knowledge Catalog name, under
-`bigquery:`, `spanner:` or `alloydb:`, and a Cloud SQL for MySQL or PostgreSQL
-table under `cloudsql_mysql:` or `cloudsql_postgresql:`. The preview
+`cloudsql.googleapis.com/…`, and is read with ambient IAM. A resource URI (the
+name with a leading `//`) or a Knowledge Catalog name such as
+`bigquery:<p>.<d>.<t>` is rejected, and the error names the resource name to
+write. `kcmd pull` returns a model an older push stored that way as stored,
+and warns for each such value. The preview
 supports Google Cloud tables only, so a third-party table is rejected in every
 form: a Knowledge Catalog entry name, or a name under a prefix such as
 `snowflake:`, `databricks:table:`, `mysql:` or `postgresql:`. A Bigtable or

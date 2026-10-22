@@ -850,7 +850,7 @@ export interface Constraint {
 
 export interface DeploymentSpec {
   name: string;      // unique among the model's deployments
-  // A resource URI or a Knowledge Catalog FQN, verbatim. Three kinds are
+  // A GCP resource name, as written. Three kinds are
   // valid: a BigQuery graph, a Spanner graph, an AlloyDB database.
   // `deployment_target.ts` already parses all three. Keep this opaque.
   target: string;

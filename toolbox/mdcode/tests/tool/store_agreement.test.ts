@@ -403,9 +403,9 @@ semantic_model:
              .toContain(`declares duplicate deployment target '${graph}'`);
        });
 
-  // A resource name and its URI name the same target, so listing the graph
-  // once each way is a repeat too.
-  test('once as its URI and once as its resource name, every command refuses',
+  // A target written as a resource URI is refused, beside its resource name
+  // too, and every command names the resource name to write.
+  test('a target written as a resource URI, every command refuses',
        async () => {
          const name = `${BQ('graphs')}/propertyGraphs/commerce`;
          const graph = `//${name}`;
@@ -425,10 +425,10 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.printStore.out)
-             .toContain(`declares duplicate deployment target '${name}'`);
-         expect(r.skills.out)
-             .toContain(`declares duplicate deployment target '${name}'`);
+         const fix = `lists '${graph}', which is a resource URI; write its ` +
+             `GCP resource name, without the leading '//': '${name}'.`;
+         expect(r.printStore.out).toContain(fix);
+         expect(r.skills.out).toContain(fix);
        });
 });
 

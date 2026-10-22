@@ -9,7 +9,7 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    deployment_target: //bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
+    deployment_target: bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph
     entities:
       - name: orders
         source: sales.orders

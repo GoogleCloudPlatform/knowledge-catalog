@@ -455,6 +455,8 @@ describe('deployBigQuery', () => {
         expect(res.success).toBe(false);
         expect(res.details).toContain('could not be parsed');
         expect(res.details).toContain('propertyGraph/sales_graph');
+        expect(res.details).toContain(
+            'Expected bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>.');
         expect(res.details).not.toContain('declares no BigQuery Graph');
       });
 

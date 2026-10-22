@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument } from '../../../src/libts/semantic/loader';
+import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument, writtenSource } from '../../../src/libts/semantic/loader';
 import { deploymentTargetUris } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
@@ -3044,7 +3044,7 @@ describe('strict entity sources', () => {
   // A string with a `/` is never a bare table name, so a resource name whose
   // host is misspelled or not lowercase is rejected as its URI is, even under
   // the legacy flag.
-  test('a resource name with a misspelled host is rejected as its URI is', () => {
+  test('a resource name with a misspelled host is rejected, as is its URI', () => {
     for (const name of [
       'bigquery.googelapis.com/projects/p/datasets/d/tables/t',
       'BigQuery.googleapis.com/projects/p/datasets/d/tables/t',
@@ -3058,76 +3058,25 @@ describe('strict entity sources', () => {
     }
   });
 
+  // Each store's table, written as its GCP resource name. A BigQuery or
+  // BigLake table reads as its dotted name; any other keeps its resource URI
+  // inside the IR.
+  const BQ = 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders';
+  const SPANNER = 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/orders';
+  const ALLOYDB = 'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders';
+  const MYSQL = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/tables/orders';
+  const POSTGRES = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/public/tables/orders';
   const cases: Array<[string, string, string]> = [
-    [
-      'BigQuery resource URI',
-      '//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders',
-      'acme.raw.orders',
-    ],
-    [
-      'BigQuery catalog name',
-      'bigquery:acme.raw.orders',
-      'acme.raw.orders',
-    ],
-    [
-      'BigQuery catalog name with backtick-quoted segment',
-      'bigquery:`acme-prod`.raw.`order-items`',
-      'acme-prod.raw.order-items',
-    ],
-    [
-      'Spanner resource URI',
-      '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/orders',
-      '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/orders',
-    ],
-    [
-      'Spanner catalog name (5 segments)',
-      'spanner:acme.regional-us-central1.inst.db.orders',
-      'spanner:acme.regional-us-central1.inst.db.orders',
-    ],
-    [
-      'AlloyDB resource URI (6 parts including schema)',
-      '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders',
-      '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders',
-    ],
-    [
-      'AlloyDB catalog name (6 segments including schema)',
-      'alloydb:acme.us-central1.cl.db.public.orders',
-      'alloydb:acme.us-central1.cl.db.public.orders',
-    ],
-    [
-      'BigLake resource URI',
-      '//biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders',
-      'acme.cat.ns.orders',
-    ],
-    [
-      'Cloud SQL MySQL catalog name',
-      'cloudsql_mysql:acme.us-central1.inst.db.orders',
-      'cloudsql_mysql:acme.us-central1.inst.db.orders',
-    ],
-    [
-      'Cloud SQL PostgreSQL catalog name',
-      'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
-      'cloudsql_postgresql:acme.us-central1.inst.db.public.orders',
-    ],
-    [
-      'Cloud SQL resource name, MySQL shape (no schema)',
-      'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/tables/orders',
-      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/tables/orders',
-    ],
-    [
-      'Cloud SQL resource name, PostgreSQL or SQL Server shape (with schema)',
-      'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
-      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
-    ],
-    [
-      'Cloud SQL resource URI',
-      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
-      '//cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/sales/tables/orders',
-    ],
+    ['BigQuery', BQ, 'acme.raw.orders'],
+    ['BigLake', 'biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders', 'acme.cat.ns.orders'],
+    ['Spanner', SPANNER, `//${SPANNER}`],
+    ['AlloyDB', ALLOYDB, `//${ALLOYDB}`],
+    ['Cloud SQL, MySQL shape (no schema)', MYSQL, `//${MYSQL}`],
+    ['Cloud SQL, PostgreSQL or SQL Server shape (with schema)', POSTGRES, `//${POSTGRES}`],
   ];
 
   for (const [label, authored, expectedDataSource] of cases) {
-    test(`${label} loads and populates authoredSource and dataSource`, () => {
+    test(`a ${label} resource name loads and populates authoredSource and dataSource`, () => {
       const { models } = load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: authored, primary_key: ['id'], fields: [] }],
@@ -3137,6 +3086,36 @@ describe('strict entity sources', () => {
       expect(entity.dataSource).toBe(expectedDataSource);
     });
   }
+
+  // A resource URI or a Knowledge Catalog name of a table kcmd reads is
+  // rejected, even under the legacy flag, and the message names the resource
+  // name to write.
+  test('a resource URI or a catalog name is rejected, naming the resource name to write', () => {
+    for (const [written, kind, name] of [
+      [`//${BQ}`, 'uri', BQ],
+      [`//${SPANNER}`, 'uri', SPANNER],
+      [`//${MYSQL}`, 'uri', MYSQL],
+      ['bigquery:acme.raw.orders', 'fqn', BQ],
+      ['bigquery:`acme-prod`.raw.orders', 'fqn', 'bigquery.googleapis.com/projects/acme-prod/datasets/raw/tables/orders'],
+      ['spanner:acme.regional-us-central1.inst.db.orders', 'fqn', SPANNER],
+      ['alloydb:acme.us-central1.cl.db.public.orders', 'fqn', ALLOYDB],
+      ['cloudsql_mysql:acme.us-central1.inst.db.orders', 'fqn', MYSQL],
+      ['cloudsql_postgresql:acme.us-central1.inst.db.public.orders', 'fqn', POSTGRES],
+      ['cloudsql_sqlserver:acme.us-central1.inst.db.public.orders', 'fqn', POSTGRES],
+      ['biglake:table:acme.cat.ns.orders', 'fqn',
+       'biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders'],
+    ]) {
+      const form = kind === 'uri' ?
+          "a resource URI; write its GCP resource name, without the leading '//'" :
+          "a Knowledge Catalog name; write the table's GCP resource name";
+      for (const opts of [{}, { allowLegacyBareSource: true }]) {
+        expect(() => load(GOOGLE, {
+          name: 'm',
+          datasets: [{ name: 'orders', source: written, primary_key: ['id'], fields: [] }],
+        }, opts)).toThrow(`dataset 'orders': source '${written}' is ${form}: '${name}'.`);
+      }
+    }
+  });
 
   // Knowledge Catalog keeps an entry for each Google Cloud table in a system
   // entry group, one whose id starts with `@`, and the entry id is the table's
@@ -3257,59 +3236,6 @@ describe('strict entity sources', () => {
     }
   });
 
-  test('both AlloyDB spellings load together in the same model and resolve to the same database', () => {
-    const uri =
-        'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders';
-    const fqn = 'alloydb:acme.us-central1.cl.db.public.customers';
-    expect(databaseOf(uri)).toBe('alloydb/acme/us-central1/cl/db');
-    expect(databaseOf(fqn)).toBe(databaseOf(uri));
-
-    const { models } = load(GOOGLE, {
-      name: 'm',
-      datasets: [
-        { name: 'orders', source: uri, primary_key: ['id'], fields: [] },
-        { name: 'customers', source: fqn, primary_key: ['id'], fields: [] },
-      ],
-    });
-    expect(models[0].entities).toHaveLength(2);
-  });
-
-  // A Google Cloud table may be written as its GCP resource name:
-  // the resource URI without the leading `//`. Both name the same table, so
-  // they give the same database and `dataSource`. `authoredSource` keeps the
-  // form the author wrote, so pull can return it.
-  const RESOURCE_URIS: [string, string][] = [
-    ['BigQuery', '//bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
-    ['BigLake', '//biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders'],
-    ['Spanner', '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
-    ['AlloyDB', '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders'],
-  ];
-  for (const [label, uri] of RESOURCE_URIS) {
-    test(`a ${label} source written as a resource name loads like its URI`, () => {
-      const name = uri.slice(2);
-      expect(databaseOf(name)).toBe(databaseOf(uri));
-      expect(databaseOf(name)).toBeDefined();
-      const loaded = (source: string) => load(GOOGLE, {
-        name: 'm',
-        datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
-      }).models[0].entities[0];
-      const fromName = loaded(name);
-      expect(fromName.authoredSource).toBe(name);
-      expect(fromName.dataSource).toBe(loaded(uri).dataSource);
-    });
-  }
-
-  test('a resource name and a URI of the same database load together in one model', () => {
-    const { models } = load(GOOGLE, {
-      name: 'm',
-      datasets: [
-        { name: 'orders', source: 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders', primary_key: ['id'], fields: [] },
-        { name: 'customers', source: '//spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Customers', primary_key: ['id'], fields: [] },
-      ],
-    });
-    expect(models[0].entities).toHaveLength(2);
-  });
-
   test('a malformed resource name is rejected as a URI with the same mistake is', () => {
     for (const bad of [
       'bigquery.googleapis.com/projects/p/datasets/d',
@@ -3336,32 +3262,32 @@ describe('strict entity sources', () => {
     })).toThrow(/is not a valid table reference/);
   });
 
-  test('the instance-based AlloyDB URI is rejected with a migration hint by default and loads when allowLegacyBareSource is set', () => {
-    const legacyUri =
-        '//alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/instances/inst/databases/db/tables/orders';
+  test('the instance-based AlloyDB name is rejected with a migration hint by default and loads when allowLegacyBareSource is set', () => {
+    const legacy =
+        'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/instances/inst/databases/db/tables/orders';
     const doc = {
       name: 'm',
-      datasets: [{ name: 'orders', source: legacyUri, primary_key: ['id'], fields: [] }],
+      datasets: [{ name: 'orders', source: legacy, primary_key: ['id'], fields: [] }],
     };
     expect(() => load(GOOGLE, doc)).toThrow(
-        /uses the legacy instance-based AlloyDB URI[\s\S]*\/\/alloydb\.googleapis\.com\/projects\/acme\/locations\/us-central1\/clusters\/cl\/databases\/db\/schemas\/<schema>\/tables\/orders/,
-    );
+        "uses the legacy instance-based AlloyDB URI. An AlloyDB database belongs to its " +
+        "cluster and a table to a schema in it; write 'alloydb.googleapis.com/projects/acme/" +
+        "locations/us-central1/clusters/cl/databases/db/schemas/<schema>/tables/orders'.");
 
+    // Under the flag it loads, with the `dataSource` the runtime reads as a URI.
     const { models } = load(GOOGLE, doc, { allowLegacyBareSource: true });
-    expect(models[0].entities[0].authoredSource).toBe(legacyUri);
-    expect(models[0].entities[0].dataSource).toBe(legacyUri);
+    expect(models[0].entities[0].authoredSource).toBe(legacy);
+    expect(models[0].entities[0].dataSource).toBe(`//${legacy}`);
+    expect(writtenSource(models[0].entities[0])).toBe(legacy);
 
-    // Written as a resource name, it gets the same message, and under the flag
-    // the same `dataSource`, which the runtime reads as a URI.
-    const legacyName = legacyUri.slice(2);
-    const nameDoc = {
+    // Written as a resource URI, it gets the same message, under the flag too.
+    const uriDoc = {
       name: 'm',
-      datasets: [{ name: 'orders', source: legacyName, primary_key: ['id'], fields: [] }],
+      datasets: [{ name: 'orders', source: `//${legacy}`, primary_key: ['id'], fields: [] }],
     };
-    expect(() => load(GOOGLE, nameDoc)).toThrow(/uses the legacy instance-based AlloyDB URI/);
-    const fromName = load(GOOGLE, nameDoc, { allowLegacyBareSource: true }).models[0].entities[0];
-    expect(fromName.authoredSource).toBe(legacyName);
-    expect(fromName.dataSource).toBe(legacyUri);
+    for (const opts of [{}, { allowLegacyBareSource: true }]) {
+      expect(() => load(GOOGLE, uriDoc, opts)).toThrow('uses the legacy instance-based AlloyDB URI');
+    }
   });
 
   test('rejects broken backtick quoting, unquoted colons, unquoted whitespace, and dots in BigQuery dataset/table segments', () => {
@@ -3573,7 +3499,7 @@ describe('deployments and inline profiles', () => {
   test('deployment_target and deployments are rejected in vanilla, and deployment_target in Google flavor quotes the target or <target>', () => {
     expect(() => load(GOOGLE, {
       name: 'sales',
-      deployment_target: BQ_TARGET,
+      deployment_target: `//${BQ_TARGET}`,
       datasets: [{ name: 'orders', source: 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
       `model 'sales': 'deployment_target' is no longer supported; migrate to the named 'deployments' list:\n` +

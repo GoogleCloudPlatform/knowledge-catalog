@@ -677,15 +677,18 @@ bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<table>
 spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<table>
 ```
 
-[profiles.md](profiles.md#sources) lists every accepted store. Ossie requires `source` on every
-dataset; `kcmd` relaxes it to optional ([§4.2](#42-relaxations-looser-than-ossie))
-so a purely logical model loads, but a non-abstract dataset in a model bound for a
-graph MUST have one.
+A resource URI, the same name with a leading `//`, and a Knowledge Catalog name
+such as `bigquery:<p>.<d>.<t>` are rejected, and the error names the resource
+name to write. [profiles.md](profiles.md#sources) lists every accepted store.
+Ossie requires `source` on every dataset; `kcmd` relaxes it to optional
+([§4.2](#42-relaxations-looser-than-ossie)) so a purely logical model loads, but
+a non-abstract dataset in a model bound for a graph MUST have one.
 
 ### 7.2. Deployment target
 
 `deployment_target` is a single GCP resource name, with no leading `//`, whose
-host selects the store:
+host selects the store. A resource URI or a Knowledge Catalog name is rejected,
+and the error names the form to write:
 
 ```
 # BigQuery Graph — analytical

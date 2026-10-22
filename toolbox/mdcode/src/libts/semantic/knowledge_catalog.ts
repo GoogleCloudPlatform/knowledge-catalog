@@ -546,11 +546,10 @@ function inheritedFields(model: SemanticModel):
 // ---------------------------------------------------------------------------
 
 // semantic-model: every deployment target this model declares, in declaration
-// order. Recording all declared targets (including URIs and catalog names that
-// deployment_target.ts does not parse as a graph/database target yet) keeps the
-// entry faithful so a later `kcmd pull` reconstructs `deployments` in the order
-// the author wrote them. Empty data is valid; the aspect is still attached to
-// satisfy required_aspects.
+// order. Recording all declared targets keeps the entry faithful so a later
+// `kcmd pull` reconstructs `deployments` in the order the author wrote them.
+// Empty data is valid; the aspect is still attached to satisfy
+// required_aspects.
 function modelAspectData(model: SemanticModel): Record<string, any> {
   const {uris} = googleDeploymentTargets(model);
   return compact({
@@ -558,10 +557,8 @@ function modelAspectData(model: SemanticModel): Record<string, any> {
   });
 }
 
-// semantic-entity: the base table backing the entity. A source written as a
-// resource URI or a GCP resource name is stored as written in `resources`. One
-// written as a catalog name, `<system>:...`, is stored whole in
-// `importedResource`; importedSystem is left unset.
+// semantic-entity: the base table backing the entity. A source is stored as
+// written, its GCP resource name, in `resources`.
 function entityAspectData(entity: Entity): Record<string, any> {
   // A logical-only entity has no physical table (empty dataSource). Still emit
   // the `source` block with an empty `resources` array rather than a bogus
@@ -571,13 +568,8 @@ function entityAspectData(entity: Entity): Record<string, any> {
   // (dataSource becomes '').
   const authored = entity.authoredSource?.trim();
   if (authored !== undefined && isAcceptedSource(authored)) {
-    // An accepted source is a resource URI, a GCP resource name or a catalog
-    // name. A resource URI or resource name is stored as written in
-    // `resources`, so pull returns it unchanged. A catalog name goes in
-    // `importedResource` and leaves `resources` empty.
-    return asResourceUri(authored).startsWith('//') ?
-        {source: {resources: [authored]}} :
-        {source: {resources: [], importedResource: authored}};
+    // Stored as written, so pull returns it unchanged.
+    return {source: {resources: [authored]}};
   }
   // A legacy instance-based AlloyDB URI is stored as written too.
   const legacy = authored !== undefined &&
@@ -753,9 +745,9 @@ function columnMetadataType(type: DataType|undefined): string {
 }
 
 // Maps the IR's opaque, canonical `dataSource` to a catalog resource string. A
-// clean three-part `project.dataset.table` becomes the BigQuery linked-resource
-// URI; anything else (a query, an under/over-qualified ref) is passed through
-// verbatim so nothing is lost.
+// clean three-part `project.dataset.table` becomes the BigQuery table's GCP
+// resource name, the form a source is written as; anything else (a query, an
+// under/over-qualified ref) is passed through verbatim so nothing is lost.
 // TODO: settle the linked-resource form for Iceberg / BigLake tables, which may
 // need a different URI shape than the BigQuery managed-table one below.
 function resourcePath(dataSource: string): string {
@@ -766,7 +758,7 @@ function resourcePath(dataSource: string): string {
   }
   const parts = trimmed.split('.').map(unquote);
   if (parts.length === 3 && parts.every(p => p.length)) {
-    return `//bigquery.googleapis.com/projects/${parts[0]}/datasets/${
+    return `bigquery.googleapis.com/projects/${parts[0]}/datasets/${
         parts[1]}/tables/${parts[2]}`;
   }
   return trimmed;

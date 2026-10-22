@@ -12,10 +12,10 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
 import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {asResourceUri, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -32,7 +32,7 @@ import {SqlColumn, withoutComments} from './sql_parser';
 // Knowledge-Catalog-only push, which governs the logical model and deploys no
 // graph. A graph leg never sets it, so a bq/spanner/all push still requires
 // exactly one target. A KC-only push skips the target count and kind checks,
-// while still rejecting a repeated target URI.
+// while still rejecting a repeated target and one in no accepted form.
 //
 // `fieldsPruned` says the caller has already dropped every field the selected
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
@@ -70,17 +70,24 @@ export function validatePushRequirements(
       continue;
     }
 
-    // A resource name and its URI name the same resource.
     const seenUris = new Set<string>();
     for (const uri of deployInfo.uris) {
-      if (seenUris.has(asResourceUri(uri))) {
+      if (seenUris.has(uri)) {
         errors.push(
             `model '${model.name}' (${document}) declares duplicate ` +
             `deployment target '${uri}'; each deployment must target a ` +
             `distinct resource.`);
         break;
       }
-      seenUris.add(asResourceUri(uri));
+      seenUris.add(uri);
+    }
+
+    // A target in no accepted form is named on every push, a KC-only one too.
+    const malformed = deployInfo.malformed[0];
+    if (malformed !== undefined) {
+      errors.push(targetError(
+          `model '${model.name}' (${document}) target '${malformed}'`,
+          malformed));
     }
 
     // A graph push must declare exactly one deployment target -- a single
@@ -96,23 +103,14 @@ export function validatePushRequirements(
     // were already rejected above). Such a push may carry no target (a logical
     // model), one, or even several backends (whose KC aspect records all of
     // them) -- none of that affects the Knowledge Catalog write.
-    if (!opts.targetOptional) {
+    if (!opts.targetOptional && malformed === undefined) {
       // Where the model lists its deployments. A vanilla model with no
       // `deployments` in its GOOGLE block is told how to declare them instead.
       const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
           model.deployments?.length ?
           `under 'deployments' in its GOOGLE custom_extensions block` :
           undefined;
-      if (deployInfo.malformed.length) {
-        // A target in no accepted form is named, alone or beside others, so
-        // the author knows which entry to fix.
-        errors.push(
-            `model '${model.name}' (${document}) target '${
-                deployInfo.malformed[0]}' is not a valid BigQuery Graph or ` +
-            `Spanner Graph URI; expected //bigquery.googleapis.com/projects/` +
-            `<p>/datasets/<d>/propertyGraphs/<g> or //spanner.googleapis.com/` +
-            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
-      } else if (deployInfo.uris.length !== 1) {
+      if (deployInfo.uris.length !== 1) {
         errors.push(
             `model '${model.name}' (${document}) declares ${
                 deployInfo.uris
