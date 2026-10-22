@@ -245,8 +245,9 @@ The `<name>` in the file name must match the `name:` inside the file, and
 `default` is reserved for the inline bindings. A profile file carries `name`,
 `entities`, `relationships`, `metrics_exclude` and `actions`, and names no
 deployment target. For now `kcmd push` refuses a deployment that names a
-profile, and refuses to deploy a graph for a profile file. It says so before it
-deploys anything. `kcmd profiles --print-store` and `kcmd skills-generate`
+profile, except under `--no-deployment`, and refuses to deploy a graph for a
+profile file. It says so before it deploys anything.
+`kcmd profiles --print-store` and `kcmd skills-generate`
 take a profile file's store from the deployments that name the profile in
 `profile`. When none does, they report that there is no database to run it
 against.

@@ -40,13 +40,22 @@ whether the catalog leg runs.
 | `--all-profiles` | Deploy the graph for every defined binding profile (plus the inline bindings when the document itself declares a target), instead of a single one. The Knowledge Catalog leg still records one canonical view — the default binding. Mutually exclusive with `--profile` and `--no-profile`. |
 | `--no-profile` | Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched. |
 | `--no-kc` | Skip the Knowledge Catalog metadata push and deploy only the graph the selected profile targets. Knowledge Catalog is pushed by default. A push that deploys no graph (a logical model, or `--no-profile`) can only reach Knowledge Catalog, so `--no-kc` on it is an error, as is `--no-profile --no-kc` (nothing left to deploy). |
+| `--no-deployment` | Publish the model to Knowledge Catalog and deploy nothing, after every check of the two-phase path below. It publishes the model file as written, whereas `--no-profile` publishes the binding `default_profile` names. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
 | `--emit-expressions` | Also write the SQL-expression fields (per-field `schema.semantics` and `semantic-metric.expression`) to Knowledge Catalog. Off by default: the published system-type templates do not carry them yet. Knowledge Catalog push only. |
 
-The graph leg deploys first and fails fast, so a rejected model never
-half-deploys.
+A push with `--no-deployment` runs in two phases. The first runs every check
+for Knowledge Catalog and writes nothing. The second publishes the model to
+Knowledge Catalog. On this path `--no-kc`, `--profile`,
+`--all-profiles` and `--no-profile` are errors, and catalog.yaml's
+`default_profile` chooses no binding: Knowledge Catalog receives the model file
+as written.
+
+Any other push prepares the catalog's model, checks that it publishes one
+model and checks the file copies before the first graph deploys. Its Knowledge
+Catalog leg runs its own checks only after the graphs deploy.
 
 ### pull
 
@@ -502,8 +511,9 @@ never stored, see
 
 ## Validation
 
-`push` and `--validate-only` run the same checks, **before either destination is
-touched**, so a model that cannot deploy fails fast instead of half-deploying.
+`push` and `--validate-only` run the same checks, apart from the Knowledge
+Catalog checks on the entry group, which only a push without `--validate-only`
+runs. [push](#push) says when each check runs.
 Each check enforces a rule the [model specification](model_spec.md) *defines*;
 this section is the operational side of it — what the tool does when the rule is
 broken — and links to the definition it enforces:
@@ -545,18 +555,18 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   metrics by design and imposes no such requirement. Defined in
   [model spec §4.1](model_spec.md#41-narrowings-stricter-than-ossie). *(static)*
 * **Each deployment meets the rules of its engine.** Every push checks each
-  deployment the model declares, whichever binding the push deploys. Each
-  deployment uses the model file's own bindings. They must give every concrete
-  entity a source and every relationship both join column lists. They must
-  also bind every field that each deployed metric reads, directly or through
-  another field. An AlloyDB deployment reads only the `ALLOYDB` or `ANSI_SQL`
-  text of each metric and field. A Spanner deployment deploys no metric. A
-  BigQuery deployment turns each metric into a measure, so each metric must be
-  `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over one operand, and the entity it
-  belongs to needs a primary key or a unique key. The measure rule skips a
-  metric that has only a vendor text. A push of a profile in the older
-  `<model>.profiles/` layout deploys that profile's bindings instead, so it
-  skips this check. *(static)*
+  deployment the model declares, whichever binding the push deploys. A
+  deployment that names no profile uses the model file's own bindings. They
+  must give every concrete entity a source and every relationship both join
+  column lists. They must also bind every field that each deployed metric
+  reads, directly or through another field. An AlloyDB deployment reads only
+  the `ALLOYDB` or `ANSI_SQL` text of each metric and field. A Spanner
+  deployment deploys no metric. A BigQuery deployment turns each metric into a
+  measure, so each metric must be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over
+  one operand, and the entity it belongs to needs a primary key or a unique
+  key. The measure rule skips a metric that has only a vendor text.
+  A push of a profile in the older `<model>.profiles/` layout deploys that
+  profile's bindings instead, so it skips this check. *(static)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span

@@ -129,7 +129,8 @@ agree on every structural row and differ only where a Spanner target has no
     rejected before anything deploys. Knowledge Catalog still records a single
     binding — the one named by `--profile`, else the default binding, which is
     what an `--all-profiles` run always records, the two flags being mutually
-    exclusive. See [Binding profiles](profiles.md).
+    exclusive. A [push in two phases](reference.md#push) records the model file
+    as written instead. See [Binding profiles](profiles.md).
 15. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
     link between two entries, so when several relationships join the same two
     entities, push links the first one it can publish and skips the rest with
@@ -151,7 +152,8 @@ provisions. A push references those types and never creates them (see
 What is recorded depends on the push. A catalog-only push (`--no-profile`), or a
 purely logical model with no bindings, records the whole model: every entity,
 metric, and relationship the document declares, apart from the relationships in
-footnote 15. A push that also deploys a graph
+footnote 15. A [push in two phases](reference.md#push) does too. Any other push
+that also deploys a graph
 first prunes the model to what that graph binds, so an unbound field — and any
 entity, metric, or relationship that depends on it — is left out of the catalog
 entries too. A pull still returns the authored model file from its stored copy.

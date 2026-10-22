@@ -254,7 +254,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   });
 
   // A deployment that names a profile the model does not declare would be
-  // used by no profile. Push refuses every deployment that names a profile.
+  // used by no profile. Push refuses it too.
   for (const {document, model} of models) {
     const declared = (profilesByDoc.get(document) ?? []).map(p => p.name);
     const error = undeclaredProfileError(document, model, declared);

@@ -227,10 +227,9 @@ deploys for: the default binding, `--no-profile` (none — catalog only), a sing
 `--profile`, or every one with `--all-profiles`. The **Knowledge Catalog axis** is
 `--no-kc` (skip the catalog leg). You never name the store on the command line; the
 model's deployment target — or the [profile](profiles.md) you merge — selects it.
-The store leg deploys first and fails fast, so a rejected model never
-half-deploys; the checks that gate it are in
+The checks that gate a push are in
 [Validation](reference.md#validation), and the full flag list is in
-[Reference → push](reference.md#push).
+[Reference → push](reference.md#push), with the order of push's checks and writes.
 
 ### Where a model deploys (the deployment target)
 

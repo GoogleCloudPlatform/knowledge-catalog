@@ -242,9 +242,9 @@ function nameAndDescriptionErrors(
 }
 
 // Checks the model file's own bindings against the engine of each deployment
-// of `model`, and returns one message per problem, naming every deployment it
-// applies to. With `opts.joinsChecked`, missing join columns are left to the
-// caller.
+// of `model` that names no profile, and returns one message per problem,
+// naming every deployment it applies to. With `opts.joinsChecked`, missing
+// join columns are left to the caller.
 export function validateDeployments(
     model: SemanticModel, document: string,
     opts: {joinsChecked?: boolean} = {}): string[] {
@@ -258,6 +258,7 @@ export function validateDeployments(
   // them.
   let referenced: Set<string>|undefined;
   for (const d of model.deployments ?? []) {
+    if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE) continue;
     const resolved = resolveModelDeployments(model, [d.name]);
     const engine =
         'error' in resolved ? undefined : resolved.deployments[0].engine;

@@ -1196,7 +1196,7 @@ describe('the file copy round trip', () => {
          const {create} = fakeCatalog({missingType: 'semantic-model-file'});
          const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-         expect(await push({profile: false})).toBe(1);
+         expect(await push({deployment: false})).toBe(1);
          expect(messages(errorSpy))
              .toContain(
                  'Custom type \'semantic-model-file\' not found in project ' +
@@ -1764,7 +1764,7 @@ describe('the file-copy type is checked before anything is written', () => {
          writeRoundTripWorkspace();
          const lookup = spyOn(CatalogClient.prototype, 'getEntryType');
 
-         expect(await push({validateOnly: true, profile: false})).toBe(0);
+         expect(await push({validateOnly: true, deployment: false})).toBe(0);
          expect(lookup).not.toHaveBeenCalled();
        });
 });
@@ -1797,7 +1797,7 @@ describe('push checks each file before anything is stored', () => {
          const {create} = fakeCatalog();
          const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-         expect(await push({profile: false})).toBe(1);
+         expect(await push({deployment: false})).toBe(1);
          expect(messages(errorSpy))
              .toContain(
                  'Error: File \'commerce.profile.prod.yaml\' is not valid ' +

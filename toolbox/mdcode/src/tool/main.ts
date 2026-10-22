@@ -81,6 +81,8 @@ cli.command('push', 'Push catalog entries')
     .option(
         '--all-profiles',
         'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; semantic-model push only')
+    .option(
+        '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
     .action(async (options) => {
       let exitCode = 1;
       try {

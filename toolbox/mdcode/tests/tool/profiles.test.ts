@@ -1265,6 +1265,7 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
            const pushed = await pushResult('default');
            expect(pushed).toEqual(
                {code: 1, errors: [own('commerce', 'c_email')]});
+           expect(await pushResult({deployment: false})).toEqual(pushed);
            expect(await profiles()).toBe(1);
            const marker = defaultProfile === 'prod' ? ' (default)' : '';
            expect(rejects(section(`  profile 'prod'${marker}`)))
@@ -2899,6 +2900,7 @@ semantic_model:
     const OWN = "model 'commerce' (commerce) deployment 'prod' uses the " +
         "model file's own bindings, ";
     const noProfile = {profile: false};
+    const noDeployment = {deployment: false};
     // `model`, a commerce() text, with `fields` added to purchase after p_id.
     const withFields = (model: string, ...fields: string[]) => model.replace(
         '{ name: p_id, expression: p_id }\n',
@@ -2920,8 +2922,9 @@ semantic_model:
         errors: [expect.stringContaining(
             "dataset 'customer': a non-abstract dataset requires a source")],
       });
-      expect(await pushResult(noProfile))
-          .toEqual({code: 1, errors: [unbound()]});
+      for (const opts of [noProfile, noDeployment]) {
+        expect(await pushResult(opts)).toEqual({code: 1, errors: [unbound()]});
+      }
       // A legacy wrapper push deploys the wrapper's bindings.
       writeScope({'commerce.profiles/legacy.yaml': legacyProfile(false)});
       expect(await pushResult('legacy')).toEqual({code: 0, errors: []});
@@ -2936,6 +2939,8 @@ semantic_model:
             'targets a graph but has no join columns')],
       });
       expect(await pushResult(noProfile)).toEqual(unjoined);
+      expect((await pushResult(noDeployment)).errors)
+          .toEqual([unbound("relationship 'placed_by' without join columns")]);
       expect(await profiles()).toBe(1);
       expect(rejects(section(NO_PROFILES))).toEqual(unjoined.errors);
 
@@ -3017,7 +3022,7 @@ semantic_model:
                      '[{ dialect: BIGQUERY, expression: p_id }] } }'),
       });
       const spanner = `${modelNoText('purchase.p_id', 'SPANNER')}.`;
-      for (const opts of [{}, noProfile]) {
+      for (const opts of [{}, noProfile, noDeployment]) {
         expect({opts, ...await pushResult(opts)})
             .toEqual({opts, code: 1, errors: [spanner]});
       }
@@ -3036,11 +3041,15 @@ semantic_model:
                 withFields(commerce({targets}), amount(dialect, text)),
           });
           const label = {targets, dialect, text};
-          expect({...label, ...await pushResult()})
-              .toEqual({...label, code: 1, errors});
-          expect({...label, ...await pushResult({...noProfile, transpile: true})})
-              .toEqual({...label, code: transpiledErrors.length ? 1 : 0,
-                        errors: transpiledErrors});
+          for (const opts of [{}, noDeployment]) {
+            expect({...label, ...await pushResult(opts)})
+                .toEqual({...label, code: 1, errors});
+          }
+          for (const opts of [noProfile, noDeployment]) {
+            expect({...label, ...await pushResult({...opts, transpile: true})})
+                .toEqual({...label, code: transpiledErrors.length ? 1 : 0,
+                          errors: transpiledErrors});
+          }
         }
       }
     });
@@ -3106,13 +3115,15 @@ semantic_model:
       expect(await profiles()).toBe(0);
       expect(newWarnings()).toEqual([]);
       writeScope({'commerce.yaml': customerUnbound(commerce())});
-      expect(await pushResult()).toEqual({code: 0, errors: []});
-      expect(newWarnings()).toEqual([`Warning: ${NON_EXECUTABLE}`]);
+      for (const opts of [{}, noDeployment]) {
+        expect(await pushResult(opts)).toEqual({code: 0, errors: []});
+        expect(newWarnings()).toEqual([`Warning: ${NON_EXECUTABLE}`]);
+      }
       expect(await profiles()).toBe(0);
       expect(newWarnings()).toEqual(reported(NON_EXECUTABLE));
       writeScope({'commerce.profile.prod.yaml': profileFile('prod')});
-      for (const profile of [undefined, 'prod']) {
-        expect(await pushResult(profile)).toEqual({code: 0, errors: []});
+      for (const opts of [undefined, 'prod', noDeployment]) {
+        expect(await pushResult(opts)).toEqual({code: 0, errors: []});
         expect(newWarnings()).toEqual([`Warning: ${NO_DEFAULT}`]);
       }
       for (const profile of [undefined, 'default']) {
@@ -3295,6 +3306,9 @@ semantic_model:
   test('is checked against the dialect its catalog entry gives', async () => {
     writeScope();
     const lookup = stubCloudSqlEntry(200, 'cloudsql-sqlserver-table');
+    // A push in two phases refuses --no-kc before it looks anything up.
+    expect(await push({deployment: false, kc: false})).toBe(1);
+    expect(lookup).not.toHaveBeenCalled();
     expect(await profiles({profile: 'prod'})).toBe(1);
     expect(lookup).toHaveBeenCalledTimes(1);
     expect(lookup.mock.calls[0]).toEqual([
@@ -3303,6 +3317,17 @@ semantic_model:
     ]);
     expect(logs.join('\n'))
         .toContain("field 'Order.amount' has no expression for SQLSERVER or ANSI_SQL");
+    // So does a push in two phases, for the profile and then the model file.
+    errs = [];
+    expect(await push({validateOnly: true, deployment: false})).toBe(1);
+    expect(errs.join('\n')).toContain("this profile's sources are SQLSERVER");
+    fs.writeFileSync(
+        path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml'),
+        MODEL.replace(/source: .*\n/, `source: ${TABLE}\n`));
+    errs = [];
+    expect(await push({validateOnly: true, deployment: false})).toBe(1);
+    expect(errs.join('\n')).toContain(
+        "the model file binds entity 'Order' to a SQLSERVER source");
     // Push applies the profile with the dialect too, so it reads a bracketed
     // T-SQL metric, whose names resolve the metric's entity.
     fs.writeFileSync(
