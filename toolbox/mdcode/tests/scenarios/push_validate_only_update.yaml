@@ -2,13 +2,18 @@ name: push_validate_only_update
 description: >
   A --validate-only push that would update an existing entry writes nothing to
   the catalog (regression for the ignored validateOnly flag on non-semantic
-  scopes).
+  scopes). The entry is created locally instead of pulled, so editing the
+  aspect its type requires must load the type.
 setup:
   catalog:
     entryGroups:
       - name: projects/p/locations/us/entryGroups/custom-group
     entryTypes:
       - name: projects/p/locations/global/entryTypes/custom-type
+        requiredAspects:
+          - type: projects/p/locations/global/aspectTypes/custom-aspect
+    aspectTypes:
+      - name: projects/p/locations/global/aspectTypes/custom-aspect
     entries:
       - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
         entryType: projects/p/locations/global/entryTypes/custom-type
@@ -18,20 +23,25 @@ setup:
   fileSystem:
     catalog.yaml: |
       scope: entryGroup.p.us.custom-group
-      snapshot:
-        entries:
-          - p.global.custom-type
 
 actions:
-  - action: pull
+  - action: createEntry
+    name: custom-entry
+    entry:
+      name: custom-entry
+      type: p.global.custom-type
   - action: updateEntry
     entry:
       name: custom-entry
       type: p.global.custom-type
       resource:
         description: New custom description
+      aspects:
+        p.global.custom-aspect:
+          note: edited
     fields:
       - resource
+      - p.global.custom-aspect
   - action: push
     options:
       validateOnly: true
@@ -42,6 +52,7 @@ assert:
     catalog/custom-entry.yaml:
       - contains: "name: custom-entry"
       - contains: "description: New custom description"
+      - contains: "note: edited"
   # ... but the catalog still shows the old description: nothing was modified.
   catalog:
     entries:

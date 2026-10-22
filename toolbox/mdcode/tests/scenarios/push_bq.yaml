@@ -1,5 +1,5 @@
 name: push_bq
-description: Push BigQuery dataset modifications
+description: Push BigQuery dataset modifications from a catalog.yaml that lists aspect types but no entry types
 setup:
   bigQuery:
     datasets:
@@ -27,8 +27,6 @@ setup:
     catalog.yaml: |
       scope: bq-dataset.p.d
       snapshot:
-        entries:
-          - dataplex-types.global.bigquery-dataset
         aspects:
           - dataplex-types.global.overview
 

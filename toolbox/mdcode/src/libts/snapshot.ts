@@ -20,10 +20,12 @@ export class CatalogSnapshot {
   private readonly _aspectTypes: Map<string, dataplex.AspectType> = new Map();
 
   private readonly _layout: CatalogLayout;
+  private readonly _catalog: dataplex.CatalogClient;
 
-  private constructor(basePath: string, manifest: CatalogManifest) {
+  private constructor(basePath: string, manifest: CatalogManifest, ctx: gcp.ApiContext) {
     this.basePath = basePath;
     this.manifest = manifest;
+    this._catalog = new dataplex.CatalogClient(ctx);
 
     const catalogPath = path.join(this.basePath, 'catalog');
     this._layout = createLayout(
@@ -37,9 +39,9 @@ export class CatalogSnapshot {
     }
 
     const manifest = await CatalogManifest.load(manifestPath, ctx);
-    const snapshot = new CatalogSnapshot(basePath, manifest);
+    const snapshot = new CatalogSnapshot(basePath, manifest, ctx);
 
-    await snapshot._buildTypes(manifest, ctx);
+    await snapshot._buildTypes(manifest);
     await snapshot._layout.init();
     return snapshot;
   }
@@ -84,6 +86,7 @@ export class CatalogSnapshot {
         existingEntry.resource.description = entry.resource.description;
       }
       else {
+        await this._loadEntryType(existingEntry.type);
         const aspectType = dataplex._typeRefToName(aspectTypeRefOf(f), 'aspect');
         if (!this._aspectTypes.has(aspectType)) {
           throw new Error(`The aspect '${f}' is not registered in the snapshot.`);
@@ -137,32 +140,11 @@ export class CatalogSnapshot {
     await this._layout.deleteEntry(name);
   }
 
-  // Build the map of types supported within the locally managed catalog snapshot
+  // Loads the entry and aspect types listed under snapshot in catalog.yaml.
   // Types are stored using two keys: the resource name and the 3-part type name.
-  private async _buildTypes(manifest: CatalogManifest, ctx: gcp.ApiContext): Promise<void> {
-    const catalog = new dataplex.CatalogClient(ctx);
-
+  private async _buildTypes(manifest: CatalogManifest): Promise<void> {
     for (const entryType of manifest.snapshotConfig?.entries || []) {
-      const parts = entryType.split('.');
-      const res = await catalog.getEntryType(parts[0], parts[1], parts[2]);
-      if (!res.result) {
-        throw new Error(`Unable to load type information for entry type ${entryType}`);
-      }
-
-      this._entryTypes.set(res.result.name, res.result);
-      this._entryTypes.set(entryType, res.result);
-
-      for (const requiredAspect of res.result.requiredAspects ?? []) {
-        if (!this._aspectTypes.has(requiredAspect.type)) {
-          const parts = requiredAspect.type.split('/');
-          const res = await catalog.getAspectType(parts[1], parts[3], parts[5]);
-          if (!res.result) {
-            throw new Error(`Unable to load type information for aspect type ${requiredAspect.type}`);
-          }
-          this._aspectTypes.set(res.result.name, res.result);
-          this._aspectTypes.set(`${parts[0]}.${parts[3]}.${parts[5]}`, res.result);
-        }
-      }
+      await this._loadEntryType(entryType);
     }
 
     for (const aspectType of manifest.snapshotConfig?.aspects || []) {
@@ -171,12 +153,40 @@ export class CatalogSnapshot {
       }
 
       const parts = aspectType.split('.');
-      const res = await catalog.getAspectType(parts[0], parts[1], parts[2]);
+      const res = await this._catalog.getAspectType(parts[0], parts[1], parts[2]);
       if (!res.result) {
         throw new Error(`Unable to load type information for aspect type ${aspectType}`);
       }
       this._aspectTypes.set(res.result.name, res.result);
       this._aspectTypes.set(aspectType, res.result);
+    }
+  }
+
+  // Loads an entry type, given as project.location.type, and the aspect types
+  // it requires. Does nothing when entryType is empty or already loaded.
+  async _loadEntryType(entryType: string): Promise<void> {
+    if (!entryType || this._entryTypes.has(entryType)) {
+      return;
+    }
+    const parts = entryType.split('.');
+    const res = await this._catalog.getEntryType(parts[0], parts[1], parts[2]);
+    if (!res.result) {
+      throw new Error(`Unable to load type information for entry type ${entryType}`);
+    }
+
+    this._entryTypes.set(res.result.name, res.result);
+    this._entryTypes.set(entryType, res.result);
+
+    for (const requiredAspect of res.result.requiredAspects ?? []) {
+      if (!this._aspectTypes.has(requiredAspect.type)) {
+        const parts = requiredAspect.type.split('/');
+        const res = await this._catalog.getAspectType(parts[1], parts[3], parts[5]);
+        if (!res.result) {
+          throw new Error(`Unable to load type information for aspect type ${requiredAspect.type}`);
+        }
+        this._aspectTypes.set(res.result.name, res.result);
+        this._aspectTypes.set(`${parts[1]}.${parts[3]}.${parts[5]}`, res.result);
+      }
     }
   }
 
@@ -210,6 +220,8 @@ export class CatalogSnapshot {
         !this.manifest.publishingConfig.entries.includes(entry.type)) {
       return undefined;
     }
+
+    await this._loadEntryType(entry.type);
 
     const serviceName = this.manifest.source.serviceName(name);
     if (entry.resource?.parent && !entry.resource.parent.startsWith('projects/')) {

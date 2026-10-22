@@ -1,11 +1,12 @@
 name: push_new_entry
-description: Push Custom entry modifications
+description: Push a new local entry whose type catalog.yaml does not list
 setup:
   catalog:
     entryGroups:
       - name: projects/p/locations/us/entryGroups/custom-group
     entryTypes:
       - name: projects/p/locations/global/entryTypes/custom-type
+      - name: projects/p/locations/global/entryTypes/other-type
     entries:
       - name: projects/p/locations/us/entryGroups/custom-group/entries/existing-entry
         entryType: projects/p/locations/global/entryTypes/custom-type
@@ -26,7 +27,7 @@ actions:
     name: custom-entry
     entry:
       name: custom-entry
-      type: p.global.custom-type
+      type: p.global.other-type
       resource:
         description: Hello world
   - action: push
@@ -43,7 +44,7 @@ assert:
         entrySource:
           description: Old custom description
       - name: projects/p/locations/us/entryGroups/custom-group/entries/custom-entry
-        entryType: projects/p/locations/global/entryTypes/custom-type
+        entryType: projects/p/locations/global/entryTypes/other-type
         entrySource:
           description: "Hello world"
         aspects: {}

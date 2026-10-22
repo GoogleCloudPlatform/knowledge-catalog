@@ -1,14 +1,17 @@
 name: pull_basic
-description: EntryGroup with single entry
+description: EntryGroup with single entry, beside the entry group's own entry, which is not pulled
 setup:
   catalog:
     entryGroups:
       - name: projects/test/locations/us/entryGroups/g1
     entryTypes:
       - name: projects/test/locations/global/entryTypes/et1
+      - name: projects/dataplex-types/locations/global/entryTypes/entrygroup
     entries:
       - name: projects/test/locations/us/entryGroups/g1/entries/e1
         entryType: projects/test/locations/global/entryTypes/et1
+      - name: projects/test/locations/us/entryGroups/g1/entries/g1_entry
+        entryType: projects/dataplex-types/locations/global/entryTypes/entrygroup
 
   fileSystem:
     catalog.yaml: |
@@ -22,3 +25,4 @@ assert:
     catalog/e1.yaml:
       - contains: "name: e1"
       - contains: "type: test.global.et1"
+    catalog/g1_entry.yaml: null

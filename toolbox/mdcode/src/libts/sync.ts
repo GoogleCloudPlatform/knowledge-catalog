@@ -31,13 +31,25 @@ export class CatalogSync {
   async pull(): Promise<SyncResult> {
     try {
       const entries = this._snapshot.manifest.source.entries(this._catalog.context);
-      
+      const typesListed = !!this._snapshot.manifest.snapshotConfig?.entries?.length;
+      const unreadableTypes = new Set<string>();
+
       for await (const entry of entries) {
-        if (this._snapshot.entryTypes.size && !this._snapshot.entryTypes.has(entry.entryType)) {
+        const typeRef = gcp._nameToTypeRef(entry.entryType);
+        // Skips the entry Dataplex keeps for the entry group itself.
+        if (entry.entryType.endsWith('/entryTypes/entrygroup') || unreadableTypes.has(typeRef) ||
+            (typesListed && !this._snapshot.entryTypes.has(entry.entryType))) {
+          continue;
+        }
+        try {
+          await this._snapshot._loadEntryType(typeRef);
+        }
+        catch (e: any) {
+          unreadableTypes.add(typeRef);
+          console.warn(`Warning: ${e.message}. Entries of this type are not pulled.`);
           continue;
         }
 
-        // TODO: Need to populate type info if its a type we haven't seen.
         // TODO: Handle local modification conflicts.
         // TODO: Handle config changes or service deletions that require removing local entries.
 
