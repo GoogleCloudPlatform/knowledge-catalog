@@ -348,7 +348,7 @@ describe('entryAspectKeys', () => {
 
   test(
       'with v2Aspects on, entryAspectKeys lists the V2 keys of each entry ' +
-          'kind',
+          'kind, with a field\'s keys as wildcards except its overview',
       () => {
         const entity = makeEntry('sales/entities/orders', ENTITY_TYPE, {
           'dataplex-types.global.semantic-entity': {data: {}},
@@ -364,6 +364,12 @@ describe('entryAspectKeys', () => {
             'sales/relationships/orders_to_customer', RELATIONSHIP_TYPE, {
               'dataplex-types.global.semantic-relationship': {data: {}},
             });
+        const withFields = makeEntry('sales/entities/orders', ENTITY_TYPE, {
+          ...entity.aspects,
+          ...Object.fromEntries(
+              ['guidelines', 'semantic-extensions', 'overview'].map(
+                  t => [`dataplex-types.global.${t}@Schema.id`, {data: {}}])),
+        });
 
         const entityKeys = entryAspectKeys(entity, {v2Aspects: true});
         const metricKeys = entryAspectKeys(metric, {v2Aspects: true});
@@ -376,6 +382,7 @@ describe('entryAspectKeys', () => {
           'dataplex-types.global.semantic-extensions',
           'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines@*',
+          'dataplex-types.global.semantic-extensions@*',
         ]));
         expect(metricKeys).toEqual(new Set([
           'dataplex-types.global.semantic-metric',
@@ -397,6 +404,8 @@ describe('entryAspectKeys', () => {
               'dataplex-types.global.semantic-extensions',
               'dataplex-types.global.overview',
             ]));
+        expect(entryAspectKeys(withFields, {v2Aspects: true})).toEqual(new Set(
+            [...entityKeys, 'dataplex-types.global.overview@Schema.id']));
       });
 
   test(
@@ -420,6 +429,7 @@ describe('entryAspectKeys', () => {
           'staging-types.us.semantic-extensions',
           'staging-types.us.sql-expressions',
           'staging-types.us.guidelines@*',
+          'staging-types.us.semantic-extensions@*',
         ]));
       });
 });

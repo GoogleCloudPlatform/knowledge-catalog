@@ -70,10 +70,26 @@ const load = (text: string): SemanticModel =>
 // Loads the profile `name` whose other keys are the YAML `body`.
 const PROFILE = (name: string, body: string) =>
     loadProfileFile(`name: ${name}\n${body}`, name);
+// Loads the profile `name`. Each binding is an entity name followed by the
+// other keys of its entry, in YAML flow style.
+const ENTITIES = (name: string, ...bindings: string[]) => PROFILE(
+    name, `entities: [${bindings.map(b => `{name: ${b}}`).join(', ')}]`);
 // The data of a guidelines aspect and of an overview aspect.
 const GUIDE = (instructions: string) => ({instructions, userManaged: true});
 const EXAMPLES = (...texts: string[]) =>
     ({examples: texts.map(content => ({content}))});
+// An actions block with an MCP action for each key, whose parameters are YAML
+// flow mappings.
+const ACTIONS = (actions: Record<string, string[]>) => '    actions:\n' +
+    Object.entries(actions)
+        .map(([name, params]) => `      - name: ${name}
+        executor:
+          mcp:
+            server: //agentregistry.googleapis.com/x/mcpServers/shop
+            tool: ${name.toLowerCase()}
+        parameters:
+${params.map(p => `          - ${p}\n`).join('')}`)
+        .join('');
 // A YAML entity over table p.d.<name> with an `id` field and the given key.
 const ENTITY_YAML = (name: string, key = '[id]') => `      - name: ${name}
         source: ${TABLE(name)}
@@ -977,10 +993,8 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
 
 
 describe('abstract entities are skipped for Knowledge Catalog', () => {
-  // The KC leg does not model inheritance (that is BigQuery-only today), and an
-  // abstract entity has no physical table, so it must not be published as an
-  // entry with an empty linked resource. It is skipped with a warning; its
-  // concrete subtype is published normally.
+  // With the first-generation types an abstract entity has no table to link, so
+  // it is skipped with a warning. Its concrete subtype is published normally.
   function withAbstract(): SemanticModel {
     return {
       name: 'm',
@@ -1288,9 +1302,8 @@ ${customerFields}`;
     annotations: {label: 'Party ID'},
   };
 
-  function customerField(
-      model: SemanticModel, name: string, v2Aspects = false): any {
-    const {entries} = generateCatalogResources(model, {...OPTS, v2Aspects});
+  function customerField(model: SemanticModel, name: string): any {
+    const {entries} = generateCatalogResources(model, OPTS);
     const customer = entries.find(e => e.entrySource?.displayName === 'Customer')!;
     return customer.aspects!['dataplex-types.global.schema'].data!.fields.find(
         (f: any) => f.name === name);
@@ -1302,8 +1315,6 @@ ${customerFields}`;
              MODEL_FILE('          - { name: id, expression: cust_id }\n'),
              {bindingOptional: true});
          expect(customerField(models[0], 'id')).toEqual(ANCESTOR);
-         // The second-generation layout lists inherited fields another way.
-         expect(customerField(models[0], 'id', true).dataType).toBe('STRING');
        });
 
   // Push rejects a subtype that sets a definition on an inherited field, so
@@ -1775,5 +1786,372 @@ ${ENTITY_YAML('addresses')}
              reference(rel, 'target', to),
            ]),
          ]);
+       });
+});
+
+
+describe('with KC_V2_ASPECTS on, entities and their fields', () => {
+  const AT = (type: string, field: string) => `${KEY(type)}@Schema.${field}`;
+  const MODEL_FILE = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: party
+        abstract: true
+        ai_context: {synonyms: [counterparty]}
+        fields:
+          - name: id
+            datatype: Integer
+            description: The party id
+            label: Party ID
+            ai_context:
+              instructions: Never show raw ids.
+              synonyms: [party_key]
+              examples: [Party 7]
+              custom: {pii: true}
+            custom_extensions:
+              - {vendor_name: DBT, data: '{"tests": ["not_null"]}'}
+          - { name: name, datatype: String }
+      - name: person
+        abstract: true
+        extends: [party]
+        fields: [{ name: birth_date, datatype: Date }]
+      - name: customers
+        extends: [person]
+        source: ${TABLE('customers')}
+        primary_key: [id]
+        unique_keys: [[tenant, email], ['\`legacy id\`']]
+        ai_context:
+          instructions: Use for customer analytics.
+          synonyms: [buyers, clients]
+          examples: [Who bought the most?]
+          custom: {tier: gold}
+        custom_extensions:
+          - {vendor_name: DBT, data: '{"materialized": "table"}'}
+        fields:
+          - { name: id, expression: cust_id }
+          - { name: signup, datatype: Date, expression: signup,
+              dimension: {is_time: true} }
+          - { name: region, expression: region, dimension: {} }
+          - { name: active, datatype: Boolean, expression: active,
+              dimension: {is_time: false} }
+          - { name: email, expression: email }
+      - name: orders
+        source: ${TABLE('orders')}
+        primary_key: [order_id]
+        fields: [{name: order_id, expression: order_id}]
+      - name: events
+        source: ${TABLE('events')}
+        fields: [{name: at, expression: at}]
+      - name: visits
+        source: ${TABLE('visits')}
+        unique_keys: [[visit_no]]
+        fields: [{name: visit_no, expression: visit_no}]
+`;
+  const NO_KEYS = (entity: string) =>
+      `entity '${entity}': no keys declared in the source model`;
+  const ID = {
+    name: 'id', description: 'The party id', dataType: 'Integer',
+    metadataType: 'NUMBER', synonyms: ['party_key'],
+    annotations: {label: 'Party ID'},
+  };
+  const NAME = {name: 'name', dataType: 'String', metadataType: 'STRING'};
+  const BIRTH =
+      {name: 'birth_date', dataType: 'Date', metadataType: 'DATETIME'};
+  const DBT = {vendorName: 'DBT', data: '{"tests": ["not_null"]}'};
+  const loaded = () => load(MODEL_FILE);
+  // The entry of entity `name`, and the data of its semantic-entity and schema
+  // aspects.
+  const entity = (model: SemanticModel, name: string) =>
+      entry(model, `sales/entities/${name}`);
+  const entityData = (model: SemanticModel, name: string) =>
+      data(model, `sales/entities/${name}`, 'semantic-entity');
+  const schema = (model: SemanticModel, name: string, opts = V2) =>
+      data(model, `sales/entities/${name}`, 'schema', opts);
+  const names = (aspect: any) => aspect.fields.map((f: any) => f.name);
+
+  test('a concrete entity\'s semantic-entity holds its source as written, ' +
+           'its keys, direct parents and synonyms',
+       () => {
+         const model = loaded();
+         expect(entityData(model, 'customers')).toEqual({
+           source: {resource: TABLE('customers')},
+           primaryKey: {fields: ['id']},
+           uniqueConstraints: [
+             {fields: ['tenant', 'email']},
+             {fields: ['`legacy id`']},
+           ],
+           extends: ['person'],
+           synonyms: ['buyers', 'clients'],
+         });
+         model.entities.find(e => e.name === 'customers')!.extends =
+             ['person', 'party'];
+         expect(entityData(model, 'customers').extends)
+             .toEqual(['person', 'party']);
+       });
+
+  test('an abstract entity gets an entry, with abstract set and no source ' +
+           'or missing-key warning',
+       () => {
+         const model = loaded();
+         const {warnings} = generateCatalogResources(model, V2);
+         expect(entityData(model, 'party'))
+             .toEqual({abstract: true, synonyms: ['counterparty']});
+         expect(entityData(model, 'person')).toEqual({
+           extends: ['party'],
+           abstract: true,
+         });
+         expect(warnings.filter(w => w.includes('abstract'))).toEqual([]);
+         expect(warnings.filter(w => w.includes('no keys')))
+             .toEqual([NO_KEYS('events')]);
+       });
+
+  test('the missing-key warning counts unique keys and keys in a named ' +
+           'profile, and with the flag off only a primary key',
+       () => {
+         const cases: [string, string, SemanticModel['profiles'], boolean][] = [
+           ['only unique keys', 'visits', undefined, false],
+           ['a primary key in a profile', 'events', [
+             ENTITIES('ops', 'orders'),
+             ENTITIES('prod', 'events, primary_key: [event_id]'),
+           ], false],
+           ['a unique key in a profile', 'events',
+            [ENTITIES('prod', 'events, unique_keys: [[at, kind]]')], false],
+           ['a profile with no key', 'events', [ENTITIES(
+                'prod', `events, source: ${TABLE('events_prod')}`,
+                'visits, primary_key: [visit_no]')], true],
+         ];
+         for (const [name, entityName, profiles, warns] of cases) {
+           const model = loaded();
+           model.profiles = profiles;
+           expect(generateCatalogResources(model, V2).warnings.filter(
+                      w => w === NO_KEYS(entityName)), name)
+               .toEqual(warns ? [NO_KEYS(entityName)] : []);
+         }
+         expect(generateCatalogResources(loaded(), OPTS).warnings)
+             .toContain(NO_KEYS('visits'));
+       });
+
+  test('a profile record holds what its profile states: the source as ' +
+           'written, excludedFields and keys, leaving out a unique key with ' +
+           'no column',
+       () => {
+         const model = loaded();
+         model.profiles = [
+           ENTITIES(
+               'prod',
+               `customers, source: ${TABLE('customers_prod')}, ` +
+                   'primary_key: [cust_key], fields_exclude: [email], ' +
+                   'unique_keys: [[tenant_id, mail]]'),
+           ENTITIES('ops', 'orders'),
+           ENTITIES('dev', `customers, source: ${TABLE('customers_dev')}`),
+         ];
+         expect(entityData(model, 'customers').profiles).toEqual([
+           {
+             name: 'prod',
+             source: {resource: TABLE('customers_prod')},
+             excludedFields: ['email'],
+             primaryKey: {fields: ['cust_key']},
+             uniqueConstraints: [{fields: ['tenant_id', 'mail']}],
+           },
+           {name: 'dev', source: {resource: TABLE('customers_dev')}},
+         ]);
+         expect(entityData(model, 'orders').profiles).toEqual([{name: 'ops'}]);
+         expect(entityData(model, 'events').profiles).toBeUndefined();
+         const uri = TABLE('orders_prod');
+         model.profiles = [ENTITIES(
+             'prod', `orders, source: ${uri}`,
+             'events, unique_keys: [[], [at]]')];
+         expect(entityData(model, 'orders').profiles)
+             .toEqual([{name: 'prod', source: {resource: uri}}]);
+         expect(entityData(model, 'events').profiles).toEqual([
+           {name: 'prod', uniqueConstraints: [{fields: ['at']}]},
+         ]);
+       });
+
+  test('a concrete entity lists its own fields, then the inherited ones ' +
+           'nearest ancestor first, each with its resolved definition and ' +
+           'no keys or semantics block, even under emitExpressions, and ' +
+           'an abstract entity lists its own fields only',
+       () => {
+         for (const opts of [V2, V2_EXPR]) {
+           const aspect = schema(loaded(), 'customers', opts);
+           expect(Object.keys(aspect)).toEqual(['fields']);
+           expect(aspect.fields).toEqual([
+             ID,
+             {name: 'signup', dataType: 'Date', metadataType: 'DATETIME',
+              semantic: 'DIMENSION', annotations: {is_time: 'true'}},
+             {name: 'region', dataType: 'Opaque', metadataType: 'OTHER',
+              semantic: 'DIMENSION'},
+             {name: 'active', dataType: 'Boolean', metadataType: 'BOOLEAN',
+              semantic: 'DIMENSION', annotations: {is_time: 'false'}},
+             {name: 'email', dataType: 'Opaque', metadataType: 'OTHER'},
+             BIRTH, NAME,
+           ]);
+         }
+         const model = loaded();
+         expect(schema(model, 'party').fields).toEqual([ID, NAME]);
+         expect(schema(model, 'person').fields).toEqual([BIRTH]);
+       });
+
+  test('a field a profile excludes, its own, inherited or on an entity ' +
+           'with no parent, is still listed, so an action projecting it ' +
+           'does not warn',
+       () => {
+         const applied = applyProfileFile(
+             load(MODEL_FILE + ACTIONS({
+               Notify: ['{name: who, concept: customers, field: name}'],
+             })),
+             'name: prod\nentities: [{name: customers, ' +
+                 'fields_exclude: [signup, name]}]',
+             'prod');
+         if ('error' in applied) throw new Error(applied.error);
+         const {model} = applied;
+         const customers = model.entities.find(e => e.name === 'customers')!;
+         expect(customers.excludedFields).toEqual(['signup', 'name']);
+         expect(names(schema(model, 'customers'))).toEqual([
+           'id', 'signup', 'region', 'active', 'email', 'birth_date', 'name',
+         ]);
+         const who = (opts: KcGenerateOptions) =>
+             generateCatalogResources(model, opts)
+                 .warnings.filter(w => w.includes('parameter \'who\''));
+         expect(who(V2)).toEqual([]);
+         // With the flag off the schema leaves the field out, so it warns.
+         expect(who(OPTS)).not.toEqual([]);
+         const flat = modelWithField(undefined);
+         flat.entities[0].fields.push({name: 'secret'});
+         flat.entities[0].excludedFields = ['secret'];
+         expect(names(data(flat, 'm/entities/e', 'schema')))
+             .toEqual(['f', 'secret']);
+       });
+
+  test('an entity carries its instructions, custom members, third-party ' +
+           'blocks and examples at entry level, and a field with them gets ' +
+           'the matching aspect at its path, apart from the entity\'s own',
+       () => {
+         const aspects = entity(loaded(), 'customers').aspects!;
+         const ID_ASPECTS: Record<string, any> = {
+           guidelines: {...GUIDE('Never show raw ids.'), data: {pii: true}},
+           'semantic-extensions': {customExtensions: [DBT]},
+           overview: EXAMPLES('Party 7'),
+         };
+         expect(aspects[KEY('guidelines')].data).toEqual(
+             {...GUIDE('Use for customer analytics.'), data: {tier: 'gold'}});
+         for (const [type, want] of Object.entries(ID_ASPECTS)) {
+           expect(aspects[AT(type, 'id')], type).toEqual(
+               {aspectType: `${DATAPLEX}/aspectTypes/${type}`, data: want});
+         }
+         const keys = (model: SemanticModel, name: string) =>
+             Object.keys(entity(model, name).aspects!);
+         const HEAD = [KEY('semantic-entity'), KEY('schema')];
+         const OWN = ['guidelines', 'semantic-extensions', 'overview'].map(KEY);
+         const FIELD = Object.keys(ID_ASPECTS).map(type => AT(type, 'id'));
+         const SQL = KEY('sql-expressions');
+         expect(Object.keys(aspects))
+             .toEqual([...HEAD, ...OWN, ...FIELD, SQL]);
+         expect(keys(loaded(), 'orders')).toEqual([...HEAD, SQL]);
+         // The abstract entity that declares the field carries them too.
+         expect(keys(loaded(), 'party')).toEqual([...HEAD, ...FIELD]);
+       });
+
+  test('an inherited field\'s unstorable member warns once, under the ' +
+           'entity that declares it',
+       () => {
+         const model = load(MODEL_FILE.replace('{pii: true}', '{pii: .inf}'));
+         expect(generateCatalogResources(model, V2).warnings.filter(
+                    w => w.includes('ai_context member')))
+             .toEqual([`field 'party.id': ai_context member 'pii' is not ` +
+                       `pushed: its value holds .inf, which Knowledge ` +
+                       `Catalog cannot store as written`]);
+       });
+});
+
+
+describe('with KC_V2_ASPECTS on, field expressions', () => {
+  // A sql-expressions record, and an aspect of such records. `qualifier` names
+  // the profile a record comes from and is unset for the entity's own expression.
+  const record = (qualifier?: string) =>
+      (name: string, sql: string, dialect?: string) =>
+          ({name, qualifier, dialect, sql});
+  const [own, dev, prod, qa] =
+      [record(), record('dev'), record('prod'), record('qa')];
+  const SQL_ASPECT = (...fieldExpressions: object[]) =>
+      ({aspectType: `${DATAPLEX}/aspectTypes/sql-expressions`,
+        data: {fieldExpressions}});
+  const MODEL_FILE = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    entities:
+      - name: customers
+        source: ${TABLE('customers')}
+        primary_key: [id]
+        fields:
+          - { name: id, expression: id }
+          - { name: email, expression: LOWER(email) }
+          - name: score
+            expression: {dialects: [
+                {dialect: BIGQUERY, expression: 'SAFE_DIVIDE(a, b)'},
+                {dialect: ANSI_SQL, expression: a / b}]}
+          - { name: note }
+      - name: vip_customers
+        extends: [customers]
+        source: ${TABLE('vip_customers')}
+        primary_key: [id]
+        fields: [{ name: id, expression: vip_id }]
+      - name: events
+        source: ${TABLE('events')}
+        primary_key: [at]
+        fields: [{ name: at }]
+`;
+  const CUSTOMERS = [
+    own('id', 'id'), own('email', 'LOWER(email)'),
+    own('score', 'SAFE_DIVIDE(a, b)', 'BIGQUERY'),
+    own('score', 'a / b', 'ANSI_SQL'),
+  ];
+
+  const loaded = () => load(MODEL_FILE);
+  // Each entity entry's sql-expressions aspect, or null, by entity name.
+  const sqlExpressions = (model: SemanticModel) =>
+      Object.fromEntries(generateCatalogResources(model, V2)
+          .entries.filter(e => e.entryType.endsWith('/semantic-entity'))
+          .map(e => [e.entrySource!.displayName,
+                     e.aspects![KEY('sql-expressions')] ?? null]));
+
+  test('an entity\'s own field expressions become records in field order, ' +
+           'then each named profile that binds a field adds records in ' +
+           'declaration order with its name in qualifier, and an entity with ' +
+           'none gets no sql-expressions aspect',
+       () => {
+         const model = loaded();
+         expect(sqlExpressions(model)).toEqual({
+           customers: SQL_ASPECT(...CUSTOMERS),
+           vip_customers: SQL_ASPECT(own('id', 'vip_id')),
+           events: null,
+         });
+         model.profiles = [
+           ENTITIES(
+               'prod',
+               'customers, fields: [{name: email, expression: mail}, ' +
+                   '{name: score, expression: {dialects: [' +
+                   '{dialect: SPANNER, expression: "a / NULLIF(b, 0)"}, ' +
+                   '{dialect: ANSI_SQL, expression: a / b}]}}]',
+               'vip_customers, fields: [{name: email, expression: vip_mail}]'),
+           ENTITIES('ops', `customers, source: ${TABLE('customers_ops')}`),
+           ENTITIES(
+               'dev',
+               'customers, fields: [{name: email, expression: mail}, ' +
+                   '{name: id, expression: dev_id}]'),
+           ENTITIES('qa', 'customers, fields: [{name: id, expression: qa_id}]'),
+         ];
+         expect(sqlExpressions(model)).toEqual({
+           customers: SQL_ASPECT(
+               ...CUSTOMERS, prod('email', 'mail'),
+               prod('score', 'a / NULLIF(b, 0)', 'SPANNER'),
+               prod('score', 'a / b', 'ANSI_SQL'), dev('email', 'mail'),
+               dev('id', 'dev_id'), qa('id', 'qa_id')),
+           vip_customers:
+               SQL_ASPECT(own('id', 'vip_id'), prod('email', 'vip_mail')),
+           events: null,
+         });
        });
 });

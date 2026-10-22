@@ -52,11 +52,14 @@
 // KcGenerateOptions.emitExpressions (off by default) and omitted above.
 //
 // With the second-generation types (v2Aspects on), the model entry carries
-// semantic-model and each metric entry carries semantic-metric and
-// sql-expressions. Model, metric and relationship entries also carry
-// guidelines, semantic-extensions and overview when the object has content
-// for them. `guidelines` holds the object's instructions and, in `data`, its
-// custom `ai_context` members.
+// semantic-model, each entity entry carries semantic-entity and schema, and
+// each metric entry carries semantic-metric and sql-expressions. An entity
+// entry has sql-expressions too when one of its fields has an expression.
+// Model, entity, metric and relationship entries also carry guidelines,
+// semantic-extensions and overview when the object has content for them. A
+// field has no entry, so its guidelines, semantic-extensions and overview go
+// on its entity's entry at the field's path. `guidelines` holds the object's
+// instructions and, in `data`, its custom `ai_context` members.
 //
 // Relationships become `schema-join` entry links between the two entity entries.
 // schema-join is a built-in, undirected entry link type in `dataplex-types/global`
@@ -86,8 +89,7 @@ import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TY
 import {linkSlug, Namer, ownedEntryIdPrefixes, semanticLinkId} from './kc_ids';
 import {asResourceUri, GOOGLE_VERSION, isAcceptedSource} from './loader';
 import {nonEmpty} from './osi_converter';
-import {InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {DEFAULT_PROFILE} from './resolve_profiles';
+import {DEFAULT_PROFILE, resolvedEntities, statesKey, withoutExclusions} from './resolve_profiles';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -100,8 +102,8 @@ export interface KcGenerateOptions {
   // role) and `semantic-metric.expression`. Off by default so a push matches
   // the live types; flip on once the templates gain these fields. Enabling it
   // against today's types fails the push with an ASPECT_*_PARSING_FAILURE on
-  // the unknown property. With v2Aspects on, `semantic-metric` carries no
-  // expression.
+  // the unknown property. With v2Aspects on it changes nothing: `schema` has
+  // no `semantics` block and `semantic-metric` carries no expression.
   emitExpressions?: boolean;
   // Emit the second-generation built-in aspect fields and entry-id layout
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false), which
@@ -168,9 +170,10 @@ export function generateCatalogResources(
         'preserves them');
   }
 
-  // With the first-generation aspects, a subtype field that only rebinds an
-  // inherited field is published with the definition it inherits.
-  const inherited = v2 ? undefined : inheritedFields(model);
+  // Each entity's fields with inheritance resolved: the second-generation
+  // schema lists them, and the first-generation one takes an inherited
+  // definition from them.
+  const resolved = resolvedFields(model);
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -204,14 +207,9 @@ export function generateCatalogResources(
   // actually emitted (not skipped for a duplicate id) are recorded.
   const entityEntryName = new Map<string, string>();
   for (const entity of entities) {
-    // An abstract entity is a conceptual (table-less) supertype: it has no
-    // physical resource to catalog. The Knowledge Catalog leg does not model
-    // inheritance (that is BigQuery-only today, via resolveInheritance), so
-    // rather than publish a malformed entry -- an empty linked resource and no
-    // key -- skip it with a warning. Its concrete subtypes are published
-    // normally, and any edge naming it as an endpoint is dropped downstream
-    // (its name never enters `entityEntryName`).
-    if (entity.abstract) {
+    // The first-generation types do not model inheritance, so an abstract
+    // entity is skipped with a warning and an edge naming it gets no link.
+    if (entity.abstract && !v2) {
       warnings.push(
           `entity '${entity.name}' is abstract (no physical table); skipped ` +
           `for Knowledge Catalog (KC does not yet model class hierarchies)`);
@@ -221,7 +219,8 @@ export function generateCatalogResources(
     if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
       continue;
     entityEntryName.set(entity.name, names.entry(entityId));
-    if (!entity.keys || !entity.keys.length) {
+    const fields = resolved.get(entity)!;
+    if (v2 ? lacksKeys(model, entity) : !entity.keys || !entity.keys.length) {
       warnings.push(
           `entity '${entity.name}': no keys declared in the source model`);
     }
@@ -230,16 +229,15 @@ export function generateCatalogResources(
       entryType: names.typeName('entry', 'semantic-entity'),
       parentEntry: modelEntryName,
       entrySource: source(entity.name, entity.description),
-      // required_aspects: semantic-entity AND the built-in schema; plus the
-      // built-in guidelines aspect when the entity carries ai_context
-      // instructions.
-      aspects: aspectsFor(
-          names, {
-            'semantic-entity': entityAspectData(entity),
-            'schema': schemaAspectData(
-                entity, emitExpr, inherited?.get(entity.name)),
-          },
-          entity.aiContext),
+      // semantic-entity and schema are required. The file header lists the
+      // optional aspects.
+      aspects: v2 ? aspectMap(names, entityAspectsV2(model, entity, fields)) :
+                    aspectsFor(
+                        names, {
+                          'semantic-entity': entityAspectData(entity),
+                          'schema': schemaAspectData(entity, emitExpr, fields),
+                        },
+                        entity.aiContext),
     });
   }
 
@@ -282,18 +280,21 @@ export function generateCatalogResources(
     }
   }
 
+  // The second-generation schema keeps a field a profile excludes, so
+  // actionEntries reads the model without exclusions.
+  const actionModel = v2 ? withoutExclusions(model) : model;
   // One entry per action, alongside the entities and metrics. Actions have no
   // built-in system type, so they reference the custom pair declared in
   // `kc_custom_types.ts`, and `kc_actions.ts` fills the aspect; it returns
   // nothing when the model declares no actions.
-  entries.push(...actionEntries(model, modelId, {
+  entries.push(...actionEntries(actionModel, modelId, {
     project: opts.project,
     entry: (id: string) => names.entry(id),
     anchor: modelEntryName,
     claim: (id: string, label: string) =>
         claim(seen, id, 'entry', label, warnings),
-    // Populated by the entity loop above, so it excludes the abstract and
-    // unavailable entities that loop skipped.
+    // The entities the loop above gave an entry. With the first-generation
+    // types an abstract entity has none.
     publishedEntities: new Set(entityEntryName.keys()),
   }, warnings));
 
@@ -651,7 +652,7 @@ function hasThirdPartyExtensions(model: SemanticModel): boolean {
 }
 
 // One warning for each custom `ai_context` member that `guidelines` leaves
-// out, on the model, a metric or a relationship.
+// out, on the model, an entity, a field, a metric or a relationship.
 function unstorableMemberWarnings(model: SemanticModel): string[] {
   const warnings: string[] = [];
   const check = (object: string, ai: AiContext|undefined) => {
@@ -667,6 +668,12 @@ function unstorableMemberWarnings(model: SemanticModel): string[] {
     }
   };
   check(`model '${model.name}'`, model.aiContext);
+  for (const entity of model.entities ?? []) {
+    check(`entity '${entity.name}'`, entity.aiContext);
+    for (const field of entity.fields ?? []) {
+      check(`field '${entity.name}.${field.name}'`, field.aiContext);
+    }
+  }
   for (const metric of model.metrics ?? []) {
     check(`metric '${metric.name}'`, metric.aiContext);
   }
@@ -691,24 +698,24 @@ function unstorableValue(value: unknown): string|undefined {
   return Object.values(value).map(unstorableValue).find(Boolean);
 }
 
-// Each entity's fields with inheritance resolved, by entity and field name, or
-// undefined when no entity extends another or inheritance cannot be resolved.
-// A resolved field keeps what the entity's own declaration sets and takes the
-// rest from the ancestor that defines it.
-function inheritedFields(model: SemanticModel):
-    Map<string, Map<string, Field>>|undefined {
-  if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
-  let resolved: SemanticModel;
-  try {
-    resolved = resolveInheritance(model).model;
-  } catch (err) {
-    // Push validation reports it. The schema aspect keeps what each entity
-    // declares.
-    if (err instanceof InheritanceError) return undefined;
-    throw err;
-  }
-  return new Map((resolved.entities ?? []).map(
-      e => [e.name, new Map((e.fields ?? []).map(f => [f.name, f]))]));
+// Each entity's fields with inheritance resolved and every profile exclusion
+// ignored. A concrete entity has its own fields, then the ones it inherits, and
+// an abstract entity has its own.
+function resolvedFields(model: SemanticModel): Map<Entity, Field[]> {
+  const entities = model.entities ?? [];
+  const resolved = resolvedEntities(withoutExclusions(model));
+  // resolvedEntities keeps the entities in order.
+  return new Map(
+      entities.map((e, i) => [e, e.abstract ? e.fields : resolved[i].fields]));
+}
+
+// True when `entity` is concrete and states no primary key and no unique key,
+// in its own bindings or in any named profile.
+function lacksKeys(model: SemanticModel, entity: Entity): boolean {
+  const bindings = namedProfiles(model).flatMap(
+      p => p.entities.filter(b => b.name === entity.name));
+  return !entity.abstract && !statesKey(entity.keys, entity.uniqueKeys) &&
+      !bindings.some(b => statesKey(b.primaryKey, b.uniqueKeys));
 }
 
 
@@ -762,7 +769,7 @@ function entityAspectData(entity: Entity): Record<string, any> {
 // it inherits from there.
 function schemaAspectData(
     entity: Entity, emitExpressions: boolean,
-    inherited?: Map<string, Field>): Record<string, any> {
+    inherited: Field[]): Record<string, any> {
   // Key column lists ride the schema aspect verbatim -- they need NOT be
   // declared fields (the closed template accepts and round-trips columns absent
   // from fields[], live-verified). Keep only non-empty strings, matching the
@@ -779,7 +786,7 @@ function schemaAspectData(
   // A subtype's redeclaration of an inherited field only rebinds it, so its
   // definition is the inherited one.
   const withDefinition = (f: Field): Field => {
-    const from = inherited?.get(f.name);
+    const from = inherited.find(g => g.name === f.name);
     return {
       ...f,
       type: f.type ?? from?.type,
@@ -863,15 +870,16 @@ function metricAspectData(
 }
 
 // The guidelines, semantic-extensions and overview aspects of an object's
-// entry, each left out when the object has nothing for it.
+// entry, each left out when the object has nothing for it. For a field's
+// aspects, `at` is `@Schema.<field>`, and each key ends in it.
 function objectAspectsV2(
-    object: {aiContext?: AiContext; customExtensions?: CustomExtension[]}):
-    Record<string, any> {
+    object: {aiContext?: AiContext; customExtensions?: CustomExtension[]},
+    at = ''): Record<string, any> {
   const examples = object.aiContext?.examples ?? [];
   return compact({
-    guidelines: guidelinesAspectDataV2(object.aiContext),
-    'semantic-extensions': extensionsAspectData(object.customExtensions),
-    overview: examples.length ?
+    [`guidelines${at}`]: guidelinesAspectDataV2(object.aiContext),
+    [`semantic-extensions${at}`]: extensionsAspectData(object.customExtensions),
+    [`overview${at}`]: examples.length ?
         {examples: examples.map(content => ({content}))} :
         undefined,
   });
@@ -915,6 +923,104 @@ function modelAspectDataV2(model: SemanticModel): Record<string, any> {
     profiles: nonEmpty(namedProfiles(model).map(p => ({name: p.name}))),
     deployments: nonEmpty(deployments),
   });
+}
+
+// The aspects of an entity entry under the second-generation types, with
+// `fields` the fields its schema lists, each with its own aspects at its path.
+function entityAspectsV2(
+    model: SemanticModel, entity: Entity,
+    fields: Field[]): Record<string, Record<string, any>> {
+  return compact({
+    'semantic-entity': entityAspectDataV2(model, entity),
+    'schema': schemaAspectDataV2(fields),
+    ...objectAspectsV2(entity),
+    ...Object.assign(
+        {}, ...fields.map(f => objectAspectsV2(f, `@Schema.${f.name}`))),
+    'sql-expressions': fieldExpressionsData(model, entity),
+  });
+}
+
+// The built-in schema aspect under the second-generation types, one record per
+// field. `is_time` is written only when the document declares it.
+function schemaAspectDataV2(fields: Field[]): Record<string, any> {
+  return {
+    fields: fields.map(f => {
+      const type = f.type ?? 'Opaque';
+      const annotations = compact({
+        label: f.label || undefined,
+        is_time: f.dimension?.isTime?.toString(),
+      });
+      return compact({
+        name: f.name,
+        description: f.description,
+        dataType: type,
+        metadataType: columnMetadataType(type),
+        semantic: f.dimension ? 'DIMENSION' : undefined,
+        synonyms: nonEmpty(f.aiContext?.synonyms),
+        annotations: Object.keys(annotations).length ? annotations : undefined,
+      });
+    }),
+  };
+}
+
+// semantic-entity under the second-generation types: the entity's source and
+// keys as written, its direct parents, whether it is abstract, its synonyms,
+// and one record per named profile that lists it, holding what that profile
+// states. Anything empty is left out.
+function entityAspectDataV2(
+    model: SemanticModel, entity: Entity): Record<string, any> {
+  const profiles = namedProfiles(model).flatMap(p => {
+    const bound = p.entities.find(b => b.name === entity.name);
+    if (!bound) return [];
+    return [compact({
+      name: p.name,
+      source: bound.source ? {resource: bound.source} : undefined,
+      excludedFields: nonEmpty(bound.fieldsExclude),
+      ...keysData(bound.primaryKey, bound.uniqueKeys),
+    })];
+  });
+  return compact({
+    source: entity.authoredSource ? {resource: entity.authoredSource} :
+                                    undefined,
+    ...keysData(entity.keys, entity.uniqueKeys),
+    profiles: nonEmpty(profiles),
+    extends: nonEmpty(entity.extends),
+    abstract: entity.abstract || undefined,
+    synonyms: nonEmpty(entity.aiContext?.synonyms),
+  });
+}
+
+// The `primaryKey` and `uniqueConstraints` of semantic-entity or a profile
+// record, each undefined when empty. A unique key with no column is left out.
+function keysData(
+    primaryKey: readonly string[]|undefined,
+    uniqueKeys: readonly string[][]|undefined): Record<string, any> {
+  return {
+    primaryKey: primaryKey?.length ? {fields: [...primaryKey]} : undefined,
+    uniqueConstraints: nonEmpty(
+        uniqueKeys?.filter(k => k.length).map(k => ({fields: [...k]}))),
+  };
+}
+
+// The sql-expressions aspect of an entity entry: the records of the entity's
+// own fields, then those of each named profile that lists it, with the
+// profile's name in `qualifier`. Returns undefined when there is no record.
+function fieldExpressionsData(
+    model: SemanticModel, entity: Entity): Record<string, any>|undefined {
+  const records =
+      (fields: ReadonlyArray<Pick<Field, 'name'|'dialects'|'stringForm'>>,
+       qualifier?: string) =>
+          fields.flatMap(
+              f => expressionRecords(f).map(
+                  r => compact({name: f.name, qualifier, ...r})));
+  const fieldExpressions = [
+    ...records(entity.fields),
+    ...namedProfiles(model).flatMap(
+        p => records(
+            p.entities.find(b => b.name === entity.name)?.fields ?? [],
+            p.name)),
+  ];
+  return fieldExpressions.length ? {fieldExpressions} : undefined;
 }
 
 // The aspects of a metric entry under the second-generation types.
@@ -1041,14 +1147,15 @@ function resourcePath(dataSource: string): string {
 // Naming and small helpers.
 // ---------------------------------------------------------------------------
 
-// Wraps aspect data (keyed by bare type id) as the client's aspect map: each
-// key is the `project.location.type` reference form, each value the
-// fully-qualified aspectType plus its data.
+// Wraps aspect data (keyed by bare type id, with an optional `@<path>`) as the
+// client's aspect map: each key is the `project.location.type` reference form
+// with the same path, each value the fully-qualified aspectType plus its data.
 function aspectMap(names: Namer, byType: Record<string, Record<string, any>>):
     Record<string, Aspect> {
   const out: Record<string, Aspect> = {};
-  for (const [type, data] of Object.entries(byType)) {
-    out[names.aspectRef(type)] = {
+  for (const [key, data] of Object.entries(byType)) {
+    const type = key.split('@')[0];
+    out[names.aspectRef(type) + key.slice(type.length)] = {
       aspectType: names.typeName('aspect', type),
       data
     };

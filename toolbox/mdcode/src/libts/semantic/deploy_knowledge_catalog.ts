@@ -23,7 +23,7 @@
 //     entry group to guard against foreign models (unless `--force-remove` is
 //     set), and checks that any required custom entry/aspect types exist in
 //     the target project. With the second-generation aspects, it also checks
-//     every aspect's size.
+//     every aspect's size and each entry's instance count per aspect type.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
@@ -196,7 +196,8 @@ function sleep(ms: number): Promise<void> {
  *      `opts.fileCopyTypeChecked` is set.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
- * With `opts.v2Aspects` set, step 2 also checks every aspect's size.
+ * With `opts.v2Aspects` set, step 2 also checks every aspect's size and each
+ * entry's instance count per aspect type.
  */
 export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
@@ -324,8 +325,8 @@ export async function deployEmittedModels(
  * The method performs the following checks:
  *   1. Validates locally that `emitted` contains a single model, that each
  *      file copy fits in one aspect and, with `opts.v2Aspects` set, that every
- *      aspect fits. Builds the dry-run plan and returns early when
- *      `opts.validateOnly` is set.
+ *      aspect size and instance count is within its limit. Builds the
+ *      dry-run plan and returns early when `opts.validateOnly` is set.
  *   2. Lists the destination entry group and validates that it contains no
  *      foreign models unless `--force-remove` is set.
  *   3. Validates that every custom type used by the model exists in the
@@ -516,8 +517,9 @@ function fileCopySizeError(data: Record<string, any>): string|undefined {
 
 /**
  * The emitter's warnings for `models` with v2Aspects on, and why push's
- * catalog leg cannot write them: an emit error or an aspect too large to
- * store. Calls no service.
+ * catalog leg cannot write them: an emit error, an aspect too large to
+ * store, or an entry with too many instances of one aspect type. Calls no
+ * service.
  */
 export function checkCatalogAspects(
     models: LoadedModel[],
@@ -531,12 +533,40 @@ export function checkCatalogAspects(
 // Why push cannot write what `model` emits, or undefined when it can.
 function emittedAspectsError(model: EmittedModel): string|undefined {
   for (const entry of model.resources.entries) {
-    const error = aspectDataError(entry.aspects, `entry '${entryId(entry)}'`);
+    const error = aspectDataError(entry.aspects, `entry '${entryId(entry)}'`) ??
+        instanceCountError(entry);
     if (error) return error;
   }
   for (const link of model.resources.entryLinks) {
     const error = aspectDataError(link.aspects, `entry link '${linkId(link)}'`);
     if (error) return error;
+  }
+  return undefined;
+}
+
+// Most aspects Dataplex returns for one entry in one read.
+const MAX_ASPECTS_PER_READ = 100;
+
+// The aspect types a field can carry at its path, each with what fills it.
+const FIELD_ASPECT_CONTENT: Record<string, string> = {
+  overview: 'examples',
+  guidelines: 'instructions or custom ai_context members',
+  'semantic-extensions': 'custom_extensions from vendors other than GOOGLE',
+};
+
+// Why kcmd could not read back every instance of one aspect type `entry`
+// carries, or undefined when it could.
+function instanceCountError(entry: Entry): string|undefined {
+  for (const [type, content] of Object.entries(FIELD_ASPECT_CONTENT)) {
+    const count = Object.keys(entry.aspects ?? {})
+                      .filter(key => aspectTypeIdOfKey(key) === type)
+                      .length;
+    if (count < MAX_ASPECTS_PER_READ) continue;
+    return `entry '${entryId(entry)}' would hold ${count} ${type} aspects, ` +
+        `and Knowledge Catalog returns at most ${MAX_ASPECTS_PER_READ} in ` +
+        `one read, so kcmd could not read them all back; give ${content} ` +
+        `to fewer than ${MAX_ASPECTS_PER_READ} of the entity and its ` +
+        `fields, inherited fields included.`;
   }
   return undefined;
 }
@@ -1607,12 +1637,12 @@ const KEPT_SOURCE_FIELDS =
  * name. Passing `entryAspectKeys(entry, opts)` with `deleteMissingAspects:
  * true` makes a re-push converge: a still-present optional aspect is refreshed,
  * and a removed one (such as `guidelines` when `ai_context.instructions` is
- * deleted, `sql-expressions`, or a field's `guidelines`, matched by its `@*`
- * key under `v2Aspects`) is deleted so a later `pull` does not bring it back.
- * Push owns the optional aspects `entryAspectKeys` lists, so it removes any
- * that the model does not declare even if someone added them in the console.
- * Every other aspect another tool attached is left alone, since `aspectKeys`
- * names only the types kcmd writes.
+ * deleted, `sql-expressions`, or a field's `guidelines` or
+ * `semantic-extensions`, matched by its `@*` key under `v2Aspects`) is deleted
+ * so a later `pull` does not bring it back. Push owns the optional aspects
+ * `entryAspectKeys` lists, so it removes any that the model does not declare
+ * even if someone added them in the console. Every other aspect another tool
+ * attached is left alone, since `aspectKeys` names only the types kcmd writes.
  *
  * The update mask replaces the whole entrySource, so the update carries over
  * fields from `source`, the entrySource the entry had before this push. Of
@@ -1641,11 +1671,11 @@ async function updateEntry(
   if (Object.keys(merged).length) entry = {...entry, entrySource: merged};
   // We cannot simply pass `Object.keys(entry.aspects ?? {})` here because
   // `entry.aspects` only contains the aspects emitted in *this* push. If an
-  // optional aspect (such as `guidelines`, `sql-expressions`, or a column's
+  // optional aspect (such as `guidelines`, `sql-expressions`, or a field's
   // `guidelines@Schema.<field>`) was present on a previous push and removed in
   // this push, it is absent from `entry.aspects` -- and Dataplex only deletes a
-  // removed aspect when its key (or `<project>.<location>.guidelines@*` for
-  // field-level `guidelines`) is still listed in `aspectKeys`.
+  // removed aspect when its key (or its `@*` key, for a field's instance) is
+  // still listed in `aspectKeys`.
   const aspectKeys = entryAspectKeys(entry, opts);
   const upd = await cat.updateEntry(
       entry, ['entry_source', 'aspects'], [...aspectKeys],

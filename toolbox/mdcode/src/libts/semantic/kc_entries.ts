@@ -269,9 +269,10 @@ function systemTypeProjectAndLocation(
  *     so Dataplex removes the aspect when the object no longer has content
  *     for it.
  *   * Adds `<proj>.<loc>.sql-expressions` on entity and metric entries.
- *   * Adds `<proj>.<loc>.guidelines@*` on entity entries so Dataplex clears
- *     field-level `guidelines` aspects for columns whose instructions or
- *     fields were removed.
+ *   * Adds `<proj>.<loc>.guidelines@*` and `<proj>.<loc>.semantic-extensions@*`
+ *     on entity entries, so Dataplex removes a field's instance the entry no
+ *     longer carries. These wildcards also write the field-path instances
+ *     `entry` carries, so those keys are left out.
  */
 export function entryAspectKeys(
     entry: Entry, opts?: SystemTypeOptions): Set<string> {
@@ -290,7 +291,13 @@ export function entryAspectKeys(
     keys.add(`${proj}.${loc}.sql-expressions`);
   }
   if (isEntityEntry(entry)) {
-    keys.add(`${proj}.${loc}.guidelines@*`);
+    for (const type of ['guidelines', 'semantic-extensions']) {
+      const prefix = `${proj}.${loc}.${type}@`;
+      for (const key of keys) {
+        if (key.startsWith(prefix)) keys.delete(key);
+      }
+      keys.add(`${prefix}*`);
+    }
   }
   return keys;
 }

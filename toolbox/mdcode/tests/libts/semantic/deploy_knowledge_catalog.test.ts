@@ -16,7 +16,7 @@ import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {applyKnowledgeCatalog, checkCatalogAspects, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
@@ -2709,11 +2709,6 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
         expect(metricUpdateCall).toBeDefined();
         expect(actionUpdateCall).toBeDefined();
 
-        expect(
-            entityUpdateCall![0]
-                .aspects?.['dataplex-types.global.sql-expressions'])
-            .toBeUndefined();
-
         expect(modelUpdateCall![2]).toEqual([
           'dataplex-types.global.semantic-model',
           'dataplex-types.global.guidelines',
@@ -2725,10 +2720,11 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
         expect(entityUpdateCall![2]).toEqual([
           'dataplex-types.global.semantic-entity',
           'dataplex-types.global.schema',
+          'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines',
           'dataplex-types.global.semantic-extensions',
-          'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines@*',
+          'dataplex-types.global.semantic-extensions@*',
         ]);
         expect(entityUpdateCall![3]).toBe(true);
 
@@ -4183,7 +4179,7 @@ describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
     ['a schema aspect over 120 KiB and under 2 MiB fits', ['x'], V2_OPTS,
      'd'.repeat(LIMIT)],
     ['a schema aspect over 2 MiB fails',
-     ['x', tooLarge('schema', 'entry \'sales/entities/orders\'', 2_097_352,
+     ['x', tooLarge('schema', 'entry \'sales/entities/orders\'', 2_097_313,
                     2 * 1024 * 1024)],
      {...V2_OPTS, validateOnly: true}, 'd'.repeat(2 * 1024 * 1024)],
     ['with the flag off, only file copies are checked', ['x'.repeat(LIMIT)],
@@ -4199,6 +4195,53 @@ describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
       }
     });
   }
+
+  // OSSIE with n more fields on orders, f0 to f<n-1>, each with the
+  // ai_context `member`.
+  const wide = (n: number, member = 'examples: [e]') =>
+      OSSIE.replace('- name: o_orderkey\n', Array.from(
+          {length: n}, (_, i) => `- { name: f${i}, expression: f${i}, ` +
+              `ai_context: {${member}} }\n          `).join('') +
+              '- name: o_orderkey\n');
+  // Expects a push of `text` to fail before any write, with the same error
+  // as the check kcmd profiles runs, and returns the error.
+  async function refusal(text: string) {
+    const {list, create} = stubClient();
+    const docs = models([{name: 'sales.yaml', text}]);
+    const result = await deployKnowledgeCatalog(docs, CTX, V2_OPTS);
+    expect(result.success).toBe(false);
+    expect(list).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(checkCatalogAspects(docs, V2_OPTS).error).toBe(result.details);
+    return result.details;
+  }
+
+  test('an entry that would hold 100 instances of one aspect type fails ' +
+           'before any write, in push and in the check kcmd profiles runs',
+       async () => {
+         expect(await refusal(wide(100)))
+             .toBe(
+                 'entry \'sales/entities/orders\' would hold 100 overview ' +
+                 'aspects, and Knowledge Catalog returns at most 100 in one ' +
+                 'read, so kcmd could not read them all back; give examples ' +
+                 'to fewer than 100 of the entity and its fields, inherited ' +
+                 'fields included.');
+         expect(checkCatalogAspects(models([{name: 's.yaml', text: wide(99)}]),
+                                    V2_OPTS).error)
+             .toBeUndefined();
+         // Orders has 99 fields with instructions, and big_orders inherits
+         // them and adds one.
+         expect(await refusal(wide(99, 'instructions: i')
+                                  .replace('    metrics:', `      - name: big_orders
+        extends: [orders]
+        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/big
+        primary_key: [o_orderkey]
+        fields: [{ name: g, expression: g, ai_context: {instructions: g} }]
+    metrics:`)))
+             .toStartWith(
+                 'entry \'sales/entities/big_orders\' would hold 100 ' +
+                 'guidelines aspects, ');
+       });
 
   test('a semantic-link aspect is checked too', async () => {
     stubClient();

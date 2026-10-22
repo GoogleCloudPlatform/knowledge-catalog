@@ -858,6 +858,14 @@ export function pruneUnavailable(
   return {model: clone, report};
 }
 
+// `model` without the exclusions a profile marked on it.
+export function withoutExclusions(model: SemanticModel): SemanticModel {
+  const out = structuredClone(model);
+  for (const e of out.entities ?? []) delete e.excludedFields;
+  delete out.excludedMetrics;
+  return out;
+}
+
 // Each entity resolved for inheritance, or as declared when the hierarchy is
 // broken, which push reports elsewhere. `extends` is expanded to every
 // ancestor.

@@ -940,13 +940,12 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
 
 describe('actions projecting concepts the push does not publish', () => {
   test(
-      'a parameter projected from an abstract entity publishes, and warns',
+      'a parameter projected from an abstract entity publishes, and warns ' +
+          'only with the first-generation types',
       () => {
-        // An abstract entity is a table-less supertype, so the Knowledge
-        // Catalog leg skips it. The parameter still publishes whole -- its type
-        // and wording were resolved at load and travel in the aspect -- but the
-        // catalog then names a concept it has no entry for, which is what the
-        // warning is about.
+        // With the first-generation types the Knowledge Catalog leg skips an
+        // abstract entity. The published parameter then names a concept with
+        // no entry, which draws the warning.
         const {models} = fromDocument(
             {
               version: '0.2.0.dev0/google',
@@ -985,6 +984,11 @@ describe('actions projecting concepts the push does not publish', () => {
                    w => w.includes('parameter \'who\'') &&
                        w.includes('does not publish')))
             .toBe(true);
+        // The second-generation types give the entity an entry, so the
+        // parameter draws no warning.
+        expect(generateCatalogResources(models[0], {...OPTS, v2Aspects: true})
+                   .warnings.filter(w => w.includes('does not publish')))
+            .toEqual([]);
       });
 });
 
