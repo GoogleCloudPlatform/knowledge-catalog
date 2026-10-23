@@ -36,6 +36,13 @@ semantic_model:
           - { name: key, label: Customer ID }
 `;
 
+// Profile prod, which binds Customer to the prod table.
+const PROD_PROFILE = `name: prod
+entities:
+  - name: Customer
+    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+`;
+
 let dir = '';
 let cwd = '';
 let savedEnv: string|undefined;
@@ -228,11 +235,7 @@ semantic_model:
         fields:
           - { name: key, expression: c_key }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), PROD_PROFILE);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
     const code = await push({validateOnly: true, kc: false, profile: 'prod'});
@@ -261,11 +264,7 @@ semantic_model:
         fields:
           - { name: key, expression: c_key }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), PROD_PROFILE);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'log').mockImplementation(() => {});
     spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
@@ -367,11 +366,7 @@ semantic_model:
   - name: commerce
 ${deployment}    entities:
 ${entities}`);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), PROD_PROFILE);
   };
   const CUSTOMER = `      - name: Customer
         source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
@@ -434,10 +429,7 @@ semantic_model:
           - { name: key, expression: c_key }
           - { name: credit, expression: c_credit }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `${PROD_PROFILE}\
     primary_key: [cust_key]
     fields:
       - { name: key, expression: cust_key }
@@ -485,11 +477,7 @@ semantic_model:
         fields:
           - { name: key, expression: c_key }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), PROD_PROFILE);
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     spyOn(kc, 'deployKnowledgeCatalog');
 
@@ -578,12 +566,7 @@ semantic_model:
 
   // The profile's key leaves the relationship's to_columns covering none.
   test('a key the profile sets', async () => {
-    writeModel(`name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-    primary_key: [cust_id]
-`);
+    writeModel(`${PROD_PROFILE}    primary_key: [cust_id]\n`);
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
     const code = await push({validateOnly: true, profile: 'prod'});
@@ -1055,12 +1038,7 @@ semantic_model:
           - { name: key, expression: c_key }   # flow style
 `;
 
-const ROUND_TRIP_PROFILE = `# Production bindings.
-name: prod
-entities:
-  - name: Customer
-    source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-`;
+const ROUND_TRIP_PROFILE = `# Production bindings.\n${PROD_PROFILE}`;
 
 function entryGroupDir(): string {
   return path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');

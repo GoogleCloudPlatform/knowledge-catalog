@@ -751,6 +751,14 @@ relationships:
 `;
   }
 
+  // A field that reads `expression`, by default the column `name`.
+  const col = (name: string, expression = name) =>
+      `{ name: ${name}, expression: ${expression} }`;
+  // A profile entity bound to its prod table, with `fields`.
+  const prodEntity = (name: string, ...fields: string[]) =>
+      `  - name: ${name}\n    source: ${BQ('prod', name)}\n` +
+      (fields.length ? `    fields: [${fields.join(', ')}]\n` : '');
+
   // A legacy profile that binds customer to the prod table, or purchase when
   // `entity` says so. With `target` it names a graph, so push deploys one for
   // it.
@@ -937,15 +945,9 @@ semantic_model:
         source: ${BQ('dev', 'customer')}
         primary_key: [id]
 `;
-  const partiesProfile = (exclude: boolean) => `name: prod
-entities:
-  - name: party
-    source: ${BQ('prod', 'party')}
-    fields:
-      - { name: notes, expression: "party.customer." }
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-${exclude ? '    fields_exclude: [notes]\n' : ''}`;
+  const partiesProfile = (exclude: boolean) => `name: prod\nentities:\n` +
+      prodEntity('party', col('notes', '"party.customer."')) +
+      prodEntity('customer') + (exclude ? '    fields_exclude: [notes]\n' : '');
   const NOTES_INHERITED = "entity 'customer' inherits field 'notes': read " +
       "on 'customer', 'expression' is only the qualifier 'customer.'; write " +
       "the field's SQL";
@@ -1872,16 +1874,9 @@ semantic_model:
         fields:
           - { name: l_id, expression: l_id }
 `,
-        'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: root
-    source: ${BQ('prod', 'root')}
-  - name: mid
-    source: ${BQ('prod', 'mid')}
-  - name: leaf
-    source: ${BQ('prod', 'leaf')}
-    fields_exclude: [a]
-`,
+        'commerce.profile.prod.yaml': `name: prod\nentities:\n` +
+            prodEntity('root') + prodEntity('mid') +
+            `${prodEntity('leaf')}    fields_exclude: [a]\n`,
       });
 
       test('when the kept binding reads the excluded field', async () => {
@@ -2122,17 +2117,9 @@ semantic_model:
           - { name: id, expression: c_id }
           - { name: code, expression: "LOWER(c_id" }
 `,
-        'commerce.profile.a.yaml': `name: a
-entities:
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-    fields_exclude: [code]
-`,
-        'commerce.profile.b.yaml': `name: b
-entities:
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-`,
+        'commerce.profile.a.yaml':
+            `name: a\nentities:\n${prodEntity('customer')}    fields_exclude: [code]\n`,
+        'commerce.profile.b.yaml': `name: b\nentities:\n${prodEntity('customer')}`,
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
       expect(await pushResult('a')).toEqual({code: 0, errors: []});
@@ -2267,11 +2254,10 @@ entities:
           incomplete('inventory.profile.staging.yaml').map(e => `Error: ${e}`)));
     });
 
-    // Push reports one broken hierarchy at a time. While the model file's
-    // does not resolve, push reports that alone. The break a profile file
-    // adds shows once the model file is fixed.
-    test('and reports a profile that breaks the hierarchy once the model file resolves', async () => {
-      const model = (shopExtends: string) => `version: "0.2.0.dev0/google"
+    // A model in which customer and supplier extend the abstract party, and
+    // supplier binds code. Unless `partner` is false, partner extends both.
+    // `more` is added at the end.
+    const parties = (more = '', partner = true) => `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     entities:
@@ -2292,31 +2278,28 @@ semantic_model:
         fields:
           - { name: s_id, expression: s_id }
           - { name: code, expression: s_code }
-      - name: partner
+${partner ? `      - name: partner
         extends: [customer, supplier]
         source: ${BQ('dev', 'partner')}
         primary_key: [p_id]
         fields:
           - { name: p_id, expression: p_id }
-      - name: shop
+` : ''}${more}`;
+    // Profile prod for parties: customer, which binds code itself, and supplier.
+    const PARTIES_PROD = `name: prod\nentities:\n` +
+        prodEntity('customer', col('code', 'c_code')) + prodEntity('supplier');
+
+    // Push reports one broken hierarchy at a time. While the model file's
+    // does not resolve, push reports that alone. The break a profile file
+    // adds shows once the model file is fixed.
+    test('and reports a profile that breaks the hierarchy once the model file resolves', async () => {
+      const model = (shopExtends: string) => parties(`      - name: shop
 ${shopExtends}        source: ${BQ('dev', 'shop')}
         primary_key: [sh_id]
         fields:
           - { name: sh_id, expression: sh_id }
-`;
-      const prod = `name: prod
-entities:
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-    fields:
-      - { name: code, expression: c_code }
-  - name: supplier
-    source: ${BQ('prod', 'supplier')}
-  - name: partner
-    source: ${BQ('prod', 'partner')}
-  - name: shop
-    source: ${BQ('prod', 'shop')}
-`;
+`);
+      const prod = PARTIES_PROD + prodEntity('partner') + prodEntity('shop');
       writeScope({
         'commerce.yaml': model('        extends: [ghost]\n'),
         'commerce.profile.prod.yaml': prod,
@@ -2396,45 +2379,7 @@ entities:
     // A profile that binds an inherited field on two unrelated branches
     // breaks the hierarchy. The rest of the profile is still checked.
     test('and checks the rest of a profile that breaks the hierarchy', async () => {
-      writeScope({
-        'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    entities:
-      - name: party
-        abstract: true
-        fields:
-          - { name: code, datatype: String }
-      - name: customer
-        extends: [party]
-        source: ${BQ('dev', 'customer')}
-        primary_key: [c_id]
-        fields:
-          - { name: c_id, expression: c_id }
-      - name: supplier
-        extends: [party]
-        source: ${BQ('dev', 'supplier')}
-        primary_key: [s_id]
-        fields:
-          - { name: s_id, expression: s_id }
-          - { name: code, expression: s_code }
-      - name: partner
-        extends: [customer, supplier]
-        source: ${BQ('dev', 'partner')}
-        primary_key: [p_id]
-        fields:
-          - { name: p_id, expression: p_id }
-`,
-        'commerce.profile.prod.yaml': `name: prod
-entities:
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-    fields:
-      - { name: code, expression: c_code }
-  - name: supplier
-    source: ${BQ('prod', 'supplier')}
-`,
-      });
+      writeScope({'commerce.yaml': parties(), 'commerce.profile.prod.yaml': PARTIES_PROD});
       const conflict = "entity 'partner' inherits field 'code' from " +
           "'customer' and from 'supplier'";
       const noSource = "[commerce.profile.prod.yaml] profile 'prod': entity " +
@@ -2467,53 +2412,14 @@ entities:
     // inherited field is reported once the hierarchy resolves, by a push of
     // the profile and by every other push alike, once each.
     test('and reports an inherited field with no SQL once, after the hierarchy resolves', async () => {
-      const model = (partner: boolean) => `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    entities:
-      - name: party
-        abstract: true
-        fields:
-          - { name: code, datatype: String }
-      - name: customer
-        extends: [party]
-        source: ${BQ('dev', 'customer')}
-        primary_key: [c_id]
-        fields:
-          - { name: c_id, expression: c_id }
-          - { name: memo }
-      - name: vip
-        extends: [customer]
-        source: ${BQ('dev', 'vip')}
-        primary_key: [c_id]
-      - name: supplier
-        extends: [party]
-        source: ${BQ('dev', 'supplier')}
-        primary_key: [s_id]
-        fields:
-          - { name: s_id, expression: s_id }
-          - { name: code, expression: s_code }
-${partner ? `      - name: partner
-        extends: [customer, supplier]
-        source: ${BQ('dev', 'partner')}
-        primary_key: [p_id]
-        fields:
-          - { name: p_id, expression: p_id }
-` : ''}`;
-      const prod = (partner: boolean) => `name: prod
-entities:
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-    fields:
-      - { name: code, expression: c_code }
-      - { name: memo, expression: "customer.vip." }
-  - name: vip
-    source: ${BQ('prod', 'vip')}
-  - name: supplier
-    source: ${BQ('prod', 'supplier')}
-${partner ? `  - name: partner
-    source: ${BQ('prod', 'partner')}
-` : ''}`;
+      // Customer gains memo, and vip, which extends customer, follows it.
+      const model = (partner: boolean) => parties('', partner).replace(
+          '{ name: c_id, expression: c_id }\n',
+          `$&          - { name: memo }\n      - name: vip\n        extends: [customer]\n` +
+              `        source: ${BQ('dev', 'vip')}\n        primary_key: [c_id]\n`);
+      const prod = (partner: boolean) => `name: prod\nentities:\n` +
+          prodEntity('customer', col('code', 'c_code'), col('memo', '"customer.vip."')) +
+          prodEntity('vip') + prodEntity('supplier') + (partner ? prodEntity('partner') : '');
       const inherited = "entity 'vip' inherits field 'memo': read on 'vip', " +
           "'expression' is only the qualifier 'vip.'; write the field's SQL";
       writeScope({'commerce.yaml': model(true), 'commerce.profile.prod.yaml': prod(true)});

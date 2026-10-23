@@ -33,6 +33,7 @@ import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:te
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import * as yaml from 'yaml';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
@@ -47,6 +48,12 @@ const SPANNER_DB =
     'spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
 const BQ = (dataset: string) =>
     `bigquery.googleapis.com/projects/acme/datasets/${dataset}`;
+// Profile prod, which binds Order to its Spanner table.
+const PROD_PROFILE = `name: prod
+entities:
+  - name: Order
+    source: ${SPANNER_DB}/tables/Orders
+`;
 
 let dir = '';
 let cwd = '';
@@ -991,9 +998,7 @@ semantic_model:
              Buffer.concat([
                Buffer.from('name: prod\n# '),
                Buffer.from([0xff]),
-               Buffer.from(
-                   `\nentities:\n  - name: Order\n    source: ${
-                       SPANNER_DB}/tables/Orders\n`),
+               Buffer.from(PROD_PROFILE.replace('name: prod', '')),
              ]));
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
@@ -1145,12 +1150,6 @@ semantic_model:
 describe('a vanilla model with GOOGLE blocks agrees with the Google flavor', () => {
   type Deployment = {name: string; target: string; profile?: string};
 
-  const prodProfile = `name: prod
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`;
-
   function googleScope(deployments: Deployment[], extendsList?: string[]):
       Record<string, string> {
     const lines = deployments.map(
@@ -1169,17 +1168,14 @@ ${extendsList ? `        extends: [${extendsList.join(', ')}]\n` : ''}\
         fields:
           - { name: key, expression: OrderId }
 `,
-      'commerce.profile.prod.yaml': prodProfile,
+      'commerce.profile.prod.yaml': PROD_PROFILE,
     };
   }
 
   function vanillaScope(deployments: Deployment[], extendsList?: string[]):
       Record<string, string> {
     const model = JSON.stringify({
-      profiles: [{
-        name: 'prod',
-        entities: [{name: 'Order', source: `${SPANNER_DB}/tables/Orders`}],
-      }],
+      profiles: [yaml.parse(PROD_PROFILE)],
       deployments,
     });
     const dataset = extendsList ?

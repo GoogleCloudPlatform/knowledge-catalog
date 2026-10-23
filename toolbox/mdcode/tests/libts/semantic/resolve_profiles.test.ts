@@ -473,6 +473,21 @@ function irModel(): SemanticModel {
   };
 }
 
+const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+// A named profile for irModel, whose Customer.lifetimeValue the model file
+// leaves unbound.
+function profile(over: Partial<ProfileSpec> = {}): ProfileSpec {
+  return {
+    name: 'prod',
+    entities: [
+      {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
+      {name: 'Order', source: BQ('orders')},
+    ],
+    relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
+    ...over,
+  };
+}
+
 const fieldNames = (m: SemanticModel, entity: string) =>
     m.entities.find(e => e.name === entity)!.fields.map(f => f.name);
 const metricNames = (m: SemanticModel) => (m.metrics ?? []).map(mt => mt.name);
@@ -1182,20 +1197,6 @@ actions:
 
 
 describe('validateProfileCompleteness', () => {
-  // A logical model whose Customer.lifetimeValue is unbound in the model file.
-  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  function profile(over: Partial<ProfileSpec> = {}): ProfileSpec {
-    return {
-      name: 'prod',
-      entities: [
-        {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
-        {name: 'Order', source: BQ('orders')},
-      ],
-      relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
-      ...over,
-    };
-  }
-
   test('a complete profile passes', () => {
     expect(validateProfileCompleteness(irModel(), profile())).toEqual([]);
   });
@@ -1561,16 +1562,7 @@ describe('validateProfileConsistency', () => {
 
 
 describe('profile completeness: sources, keys, relationships and inheritance', () => {
-  const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  const base = (over: Partial<ProfileSpec> = {}): ProfileSpec => ({
-    name: 'prod',
-    entities: [
-      {name: 'Customer', source: BQ('customer'), fields: [{name: 'lifetimeValue', expression: 'ltv'}]},
-      {name: 'Order', source: BQ('orders')},
-    ],
-    relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
-    ...over,
-  });
+  const base = profile;
 
   test('a field listed with no expression does not count as bound', () => {
     const errors = validateProfileCompleteness(irModel(), base({
