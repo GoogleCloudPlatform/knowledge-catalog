@@ -4,6 +4,7 @@
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import { Layouts } from '../layout';
+import * as md from '../metadata';
 import { CatalogSource } from '../source';
 
 
@@ -12,6 +13,7 @@ export class KnowledgeBaseSource implements CatalogSource {
   readonly name: string;
   readonly ingestedEntries = false;
   readonly layout = Layouts.DOCUMENTS;
+  readonly defaultAspects = [md.OVERVIEW_ASPECT];
 
   private readonly _name: string[];
   private readonly _entryGroup: dataplex.EntryGroup;

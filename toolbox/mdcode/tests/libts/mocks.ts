@@ -27,6 +27,10 @@ export class CatalogClientMock extends gcp.CatalogClient {
 
   constructor() {
     super(TEST_API_CONTEXT);
+    // A built-in aspect type every Dataplex project can read, and one of the
+    // aspects `kcmd init` lists by default.
+    this.addMockAspectType(
+        {name: 'projects/dataplex-types/locations/global/aspectTypes/overview'} as gcp.AspectType);
   }
 
   setMockEntries(entries: gcp.Entry[]) {

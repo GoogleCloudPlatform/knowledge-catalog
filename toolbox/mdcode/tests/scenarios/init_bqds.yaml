@@ -15,4 +15,5 @@ init:
 assert:
   fileSystem:
     catalog.yaml:
-      contains: "scope: bq-dataset.test-proj.test_dataset"
+      - contains: "scope: bq-dataset.test-proj.test_dataset"
+      - contains: "aspects:\n    - dataplex-types.global.overview"
