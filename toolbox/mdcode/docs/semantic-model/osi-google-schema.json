@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cloud.google.com/dataplex/schemas/osi-google-schema-0.2.0.dev0.json",
   "title": "Google-Extended Open Semantic Interchange (OSI) Specification Schema (0.2.0.dev0/google)",
-  "description": "JSON Schema (Draft 2020-12) for Google-flavor Open Semantic Interchange (OSI) documents, version '0.2.0.dev0/google'. The root validates a model document; #/$defs/ProfileDocument validates a profile file. Google extensions are native keys (entities, deployments, extends, abstract, a metric's entity, actions, constraints). Third-party custom_extensions, whose vendor_name is not 'GOOGLE', are carried verbatim.",
+  "description": "JSON Schema (Draft 2020-12) for Google-flavor Open Semantic Interchange (OSI) documents, version '0.2.0.dev0/google'. The root validates a model document; #/$defs/ProfileDocument validates a profile file. Google extensions are native keys (entities, deployments, extends, abstract, a metric's entity, a relationship's description, actions, constraints). Third-party custom_extensions, whose vendor_name is not 'GOOGLE', are carried verbatim.",
   "type": "object",
   "required": [
     "version",
@@ -53,6 +53,11 @@
       "type": "string",
       "minLength": 1,
       "description": "A non-empty string with no pattern and no length limit. Used for the names and descriptions of actions, action parameters and constraints."
+    },
+    "NonBlankText": {
+      "type": "string",
+      "pattern": "\\S",
+      "description": "A string holding at least one non-whitespace character."
     },
     "Dialect": {
       "type": "string",
@@ -370,6 +375,24 @@
         }
       ]
     },
+    "BoundEntity": {
+      "description": "An entity that names its source unless it is abstract.",
+      "if": {
+        "properties": {
+          "abstract": {
+            "const": true
+          }
+        },
+        "required": [
+          "abstract"
+        ]
+      },
+      "else": {
+        "required": [
+          "source"
+        ]
+      }
+    },
     "Relationship": {
       "type": "object",
       "required": [
@@ -477,7 +500,8 @@
     "ProfileEntity": {
       "type": "object",
       "required": [
-        "name"
+        "name",
+        "source"
       ],
       "additionalProperties": false,
       "properties": {
@@ -525,7 +549,9 @@
     "ProfileRelationship": {
       "type": "object",
       "required": [
-        "name"
+        "name",
+        "from_columns",
+        "to_columns"
       ],
       "additionalProperties": false,
       "properties": {
@@ -546,14 +572,6 @@
             "$ref": "#/$defs/ColumnName"
           }
         }
-      },
-      "dependentRequired": {
-        "from_columns": [
-          "to_columns"
-        ],
-        "to_columns": [
-          "from_columns"
-        ]
       }
     },
     "Deployment": {
@@ -760,7 +778,9 @@
     "Constraint": {
       "type": "object",
       "required": [
-        "name"
+        "name",
+        "judgment",
+        "on_violation"
       ],
       "additionalProperties": false,
       "properties": {
@@ -768,7 +788,7 @@
           "$ref": "#/$defs/NonEmptyText"
         },
         "judgment": {
-          "type": "string"
+          "$ref": "#/$defs/NonBlankText"
         },
         "description": {
           "$ref": "#/$defs/NonEmptyText"
@@ -873,6 +893,63 @@
           "required": [
             "datasets"
           ]
+        }
+      ],
+      "allOf": [
+        {
+          "description": "A deployment that names no profile, or the profile 'default', uses the model file's own bindings, so every concrete entity then names its source and every relationship its join columns.",
+          "if": {
+            "required": [
+              "deployments"
+            ],
+            "properties": {
+              "deployments": {
+                "contains": {
+                  "anyOf": [
+                    {
+                      "not": {
+                        "required": [
+                          "profile"
+                        ]
+                      }
+                    },
+                    {
+                      "required": [
+                        "profile"
+                      ],
+                      "properties": {
+                        "profile": {
+                          "const": "default"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "entities": {
+                "items": {
+                  "$ref": "#/$defs/BoundEntity"
+                }
+              },
+              "datasets": {
+                "items": {
+                  "$ref": "#/$defs/BoundEntity"
+                }
+              },
+              "relationships": {
+                "items": {
+                  "required": [
+                    "from_columns",
+                    "to_columns"
+                  ]
+                }
+              }
+            }
+          }
         }
       ]
     },

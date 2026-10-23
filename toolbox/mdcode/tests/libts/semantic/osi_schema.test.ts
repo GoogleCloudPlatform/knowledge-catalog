@@ -54,28 +54,44 @@ function yamlFixtures(dir: string): string[] {
   return out;
 }
 
-// Fixtures still written in a form the loader rejects: a `deployment_target:`
-// key, and in sales_unqualified_source.yaml a bare source too. b/568184815
-// migrates each one, and removes it from this list.
-const OLD_FORM = new Set([
-  'actions_place_order.yaml',
-  'hierarchy_graph.yaml',
-  'sales_bad_target.yaml',
-  'sales_bq_graph_target.yaml',
-  'sales_google_ext.yaml',
-  'sales_spanner_graph_target.yaml',
-  'sales_unqualified_source.yaml',
-  'star_orders_customer.yaml',
-]);
+// The fixtures the schema cannot pass yet, by why. Each may fail only for
+// that reason, so a new mistake in one of them is still caught.
+type SchemaError = NonNullable<ValidateFunction['errors']>[number];
+const EXCLUDED: Array<{ files: Set<string>; reason: (e: SchemaError) => boolean }> = [
+  // Fixtures still written in a form the loader rejects: a `deployment_target:`
+  // key, and in sales_unqualified_source.yaml a bare source too. b/568184815
+  // migrates each one, and removes it from this list.
+  {
+    files: new Set([
+      'actions_place_order.yaml',
+      'hierarchy_graph.yaml',
+      'sales_bad_target.yaml',
+      'sales_bq_graph_target.yaml',
+      'sales_google_ext.yaml',
+      'sales_spanner_graph_target.yaml',
+      'sales_unqualified_source.yaml',
+      'star_orders_customer.yaml',
+    ]),
+    reason: e => e.instancePath.endsWith('/source') ||
+      (e.keyword === 'additionalProperties' &&
+        e.params.additionalProperty === 'deployment_target'),
+  },
+  // Pull goldens that record the fallback output of pull rebuilding a model
+  // from first-generation aspects, which hold no metric expression. They are
+  // fallback output rather than authored documents, so they stay excluded.
+  {
+    files: new Set([
+      'actions_place_order.pull.golden.yaml',
+      'sales_bq_graph_target.pull.golden.yaml',
+      'star_orders_customer.pull.golden.yaml',
+    ]),
+    reason: e => e.keyword === 'required' && e.params.missingProperty === 'expression',
+  },
+];
 
-// Pull goldens that record the fallback output of pull rebuilding a model from
-// first-generation aspects, which hold no metric expression. They are fallback
-// output rather than authored documents, so they stay excluded.
-const PULL_FALLBACK = new Set([
-  'actions_place_order.pull.golden.yaml',
-  'sales_bq_graph_target.pull.golden.yaml',
-  'star_orders_customer.pull.golden.yaml',
-]);
+// The schema's errors, one per line.
+const describeErrors = (errors: SchemaError[]) =>
+  errors.map(e => `  ${e.instancePath || '(root)'} ${e.message}`).join('\n');
 
 describe('fixtures are valid for their declared OSI flavor', () => {
   const fixtures = yamlFixtures(fixturesDir);
@@ -86,19 +102,23 @@ describe('fixtures are valid for their declared OSI flavor', () => {
 
   for (const path of fixtures) {
     const rel = path.slice(fixturesDir.length + 1);
-    const excluded = OLD_FORM.has(rel) || PULL_FALLBACK.has(rel);
+    const excluded = EXCLUDED.find(x => x.files.has(rel));
     // An excluded fixture must still fail, so an entry is removed as soon as
-    // its fixture validates.
+    // its fixture validates, and fail only for the reason it is excluded.
     test(`${rel} ${excluded ? 'is still excluded' : 'validates'}`, () => {
       const doc = yaml.parse(readFileSync(path, 'utf8'));
       const validate = validators.get(doc?.version);
       if (!validate) throw new Error(`${rel}: unknown version '${doc?.version}'`);
+      const errors = validate(doc) ? [] : validate.errors ?? [];
       if (excluded) {
-        expect(validate(doc)).toBe(false);
-      } else if (!validate(doc)) {
-        const details = (validate.errors ?? [])
-          .map(e => `  ${e.instancePath || '(root)'} ${e.message}`).join('\n');
-        throw new Error(`Schema validation failed for ${rel}:\n${details}`);
+        expect(errors.length).toBeGreaterThan(0);
+        const other = errors.filter(e => !excluded.reason(e));
+        if (other.length) {
+          throw new Error(
+            `${rel} fails for more than the reason it is excluded:\n${describeErrors(other)}`);
+        }
+      } else if (errors.length) {
+        throw new Error(`Schema validation failed for ${rel}:\n${describeErrors(errors)}`);
       }
     });
   }
