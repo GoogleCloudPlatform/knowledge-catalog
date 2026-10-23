@@ -179,10 +179,11 @@ Some relationships get no link, and push warns about each one before it writes
 to Knowledge Catalog. `kcmd push --validate-only` gives the same warnings.
 Knowledge Catalog keeps one `schema-join` link between two entries, so when
 several relationships join the same two entities, only the first one that push
-can publish gets a link. Knowledge Catalog does not support a relationship from
-an entity to itself, so push skips it. Pull still returns a skipped
+can publish gets a link. Pull still returns a skipped
 relationship, because it writes back the stored copy of the model file. Only a
-model file that pull rebuilds from the catalog metadata leaves it out.
+model file that pull rebuilds from the catalog metadata leaves it out. Push
+rejects a relationship from an entity to itself, and relationships in both
+directions between two entities.
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that

@@ -145,15 +145,15 @@ export function relationshipLinkId(modelName: string, relName: string): string {
 }
 
 /**
- * ID of the `semantic-link` from entity `from` to entity `to`. It must stay
- * the same across releases, so that push finds the links it wrote.
+ * ID of a link push writes: `semantic-<kind>-` and the first 32 hex characters
+ * of the SHA-256 of `parts` joined by '/'. It must stay the same across
+ * releases, so that push finds the links it wrote.
  */
 export function semanticLinkId(
-    modelName: string, from: string, to: string): string {
-  const digest = createHash('sha256')
-                     .update(`${modelName}/${from}/${to}`, 'utf8')
-                     .digest('hex');
-  return `semantic-link-${digest.slice(0, 32)}`;
+    kind: 'link'|'relationship', ...parts: string[]): string {
+  const digest =
+      createHash('sha256').update(parts.join('/'), 'utf8').digest('hex');
+  return `semantic-${kind}-${digest.slice(0, 32)}`;
 }
 
 /**

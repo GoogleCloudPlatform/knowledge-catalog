@@ -1034,16 +1034,22 @@ semantic_model:
       expect(check({entities: [party, order], metrics: [metric({entity: 'party'})]})
                  .join('\n')).toContain("belongs to 'party', which is abstract");
     });
-    test('a relationship from an extended entity to itself is reported once', () => {
-      const errors = check({
+    // It is rejected as a relationship to itself, and once as a non-leaf.
+    test('a relationship from an extended entity to itself is reported once as a non-leaf', () => {
+      expect(check({
         entities: [person, employee],
         relationships: [{
           name: 'knows',
           source: {entity: 'person', columns: ['c']},
           destination: {entity: 'person', columns: ['person_id']},
         }],
-      });
-      expect(errors.filter(e => e.includes("relationship 'knows'")).length).toBe(1);
+      })).toEqual([
+        "relationship 'knows' in model 'm' (doc) connects 'person', which is " +
+            'extended by another entity; a relationship may connect only ' +
+            'concrete leaf entities.',
+        "relationship 'knows' in model 'm' (doc) runs from 'person' to " +
+            'itself; a relationship joins two different entities.',
+      ]);
     });
     test('the rules also run on a pruned model, as a graph push validates', () => {
       const errors = validatePushRequirements(
@@ -1514,7 +1520,7 @@ semantic_model:
     ]);
   });
 
-  test('rejects an undeclared from or to entity on a relationship', () => {
+  test('rejects an undeclared from or to entity on a relationship, and relationships both ways between two entities', () => {
     const badFrom = validatePushRequirements(
         [loaded(model({
           entities: [baseCustomers()],
@@ -1542,6 +1548,29 @@ semantic_model:
     expect(badTo.length).toBe(1);
     expect(badTo[0]).toContain("relationship 'placed_by'");
     expect(badTo[0]).toContain("'to' dataset 'ghost' is not defined in the model.");
+
+    const bothWays = validatePushRequirements(
+        [loaded(model({
+          entities: [baseOrders(), baseCustomers()],
+          relationships: [
+            {
+              name: 'placed_by',
+              source: {entity: 'orders', columns: ['c_id']},
+              destination: {entity: 'customers', columns: ['c_id']},
+            },
+            {
+              name: 'placed',
+              source: {entity: 'customers', columns: ['o_id']},
+              destination: {entity: 'orders', columns: ['o_id']},
+            },
+          ],
+        }))],
+        {targetOptional: true});
+    expect(bothWays).toEqual([
+      "relationship 'placed' in model 'm' (doc) runs from 'customers' to " +
+          "'orders', and relationship 'placed_by' runs the other way; keep " +
+          'the relationships between two entities in one direction.',
+    ]);
   });
 
   test('rejects mismatched from_columns and to_columns lengths on KC-only and graph pushes, calls one bound side a half-bound join, and accepts both empty on KC-only push', () => {
@@ -2662,11 +2691,13 @@ ${extraMetric}`;
 // reaches `model.profiles` without the loader, and is the only place the
 // description limit, link IDs and metric-field collisions are checked.
 describe('push checks names and description lengths', () => {
+  const customer: Entity =
+      {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []};
   const withNames = (over: Partial<SemanticModel> = {}) => model({
     entities: [{
       name: 'orders', dataSource: 'p.d.o', keys: ['id'],
       fields: [{name: 'id', expression: 'id'}],
-    }],
+    }, customer],
     ...over,
   });
   const errorsOf = (m: SemanticModel, v2Aspects?: boolean) =>
@@ -2682,11 +2713,11 @@ describe('push checks names and description lengths', () => {
       entities: [{
         name: 'my-entity', dataSource: 'p.d.o', keys: ['id'],
         fields: [{name: 'order date', expression: 'id'}],
-      }],
+      }, customer],
       metrics: [{name: '2024_orders', expression: 'COUNT(*)'} as Metric],
       relationships: [{
         name: 'placed-by', source: {entity: 'my-entity', columns: []},
-        destination: {entity: 'my-entity', columns: []},
+        destination: {entity: 'customer', columns: []},
       }],
       deployments: [{name: 'prod,us', target: BQ_TARGET}],
       profiles: [{name: 'eu west', entities: [], relationships: []}],
@@ -2725,14 +2756,14 @@ describe('push checks names and description lengths', () => {
         name: 'orders', dataSource: 'p.d.o', keys: ['id'],
         fields: [{name: 'id', expression: 'id', description: 'f'.repeat(length)}],
         description: 'e'.repeat(length),
-      }],
+      }, customer],
       metrics: [{
         name: 'order_count', expression: 'COUNT(orders.id)', entity: 'orders',
         description: 'x'.repeat(length),
       } as Metric],
       relationships: [{
-        name: 'self_ref', source: {entity: 'orders', columns: ['id']},
-        destination: {entity: 'orders', columns: ['id']},
+        name: 'placed_by', source: {entity: 'orders', columns: ['id']},
+        destination: {entity: 'customer', columns: ['id']},
         description: 'r'.repeat(length),
       }],
     });
@@ -2740,7 +2771,7 @@ describe('push checks names and description lengths', () => {
     const errors = errorsOf(described(2001));
     for (const what of [
            "model 'm'", "entity 'orders'", "metric 'order_count'",
-           "relationship 'self_ref'",
+           "relationship 'placed_by'",
          ]) {
       expect(errors).toContain(
           `model 'm' (doc): the description of ${what} is 2001 characters ` +
@@ -2795,7 +2826,7 @@ describe('push checks names and description lengths', () => {
     const rel = (name: string) => ({
       name,
       source: {entity: 'orders', columns: ['id']},
-      destination: {entity: 'orders', columns: ['id']},
+      destination: {entity: 'customer', columns: ['id']},
     });
     const longModel = `m_${'a'.repeat(50)}`;
     const cases: Array<[model: string, a: string, b: string, linkId: string,

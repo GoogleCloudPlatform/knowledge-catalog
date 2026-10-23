@@ -39,6 +39,16 @@ const V2 = {...OPTS, v2Aspects: true};
 const V2_EXPR = {...V2, emitExpressions: true};
 const KEY = (type: string) => `dataplex-types.global.${type}`;
 const DATAPLEX = 'projects/dataplex-types/locations/global';
+const EG = 'projects/dest-proj/locations/us/entryGroups/eg';
+// A link of type `type` with id `id` from entry `from` to entry `to`.
+const DIRECTED = (type: string, id: string, from: string, to: string) => ({
+  name: `${EG}/entryLinks/${id}`,
+  entryLinkType: `${DATAPLEX}/entryLinkTypes/${type}`,
+  entryReferences: [
+    {name: `${EG}/entries/${from}`, type: 'SOURCE' as const},
+    {name: `${EG}/entries/${to}`, type: 'TARGET' as const},
+  ],
+});
 const TABLE = (t: string) =>
     `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 const GRAPH = (g: string) =>
@@ -775,37 +785,6 @@ describe('relationships map to schema-join entry links', () => {
       });
 
   test(
-      'a relationship from an entity to itself, flag off, is skipped with ' +
-          'a warning, and a second one gets no shared-pair warning',
-      () => {
-        const model = directFkModel();
-        model.relationships.push(
-            {
-              name: 'referrer',
-              source: {entity: 'customer', columns: ['referred_by']},
-              destination: {entity: 'customer', columns: ['c_key']},
-            },
-            {
-              name: 'parent',
-              source: {entity: 'customer', columns: ['parent_key']},
-              destination: {entity: 'customer', columns: ['c_key']},
-            });
-
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
-
-        expect(entryLinks.map(l => l.name)).toEqual([
-          'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
-              'm-placed',
-        ]);
-        expect(warnings).toEqual([
-          'relationship \'referrer\': skipped because Knowledge Catalog ' +
-              'does not support a relationship from an entity to itself.',
-          'relationship \'parent\': skipped because Knowledge Catalog ' +
-              'does not support a relationship from an entity to itself.',
-        ]);
-      });
-
-  test(
       'an unpublishable relationship does not claim the entity pair ' +
           'ahead of a valid relationship',
       () => {
@@ -891,12 +870,9 @@ describe('relationships map to schema-join entry links', () => {
 
   test(
       'a column-less relationship after a valid one on the same pair warns ' +
-          'about its join columns, a self relationship on an unpublished ' +
-          'entity warns about that entity, and a column-less self ' +
-          'relationship gets the self warning',
+          'about its join columns, and one on an unpublished entity warns ' +
+          'about that entity',
       () => {
-        // Adding join columns does not publish a relationship from an entity
-        // to itself, so the self warning is the one that applies to it.
         const model = directFkModel();
         model.relationships = [
           {
@@ -910,14 +886,9 @@ describe('relationships map to schema-join entry links', () => {
             destination: {entity: 'customer', columns: []},
           },
           {
-            name: 'ghost_self',
-            source: {entity: 'ghost', columns: ['parent_key']},
-            destination: {entity: 'ghost', columns: ['g_key']},
-          },
-          {
-            name: 'logical_self',
-            source: {entity: 'customer', columns: []},
-            destination: {entity: 'customer', columns: []},
+            name: 'ghost_rel',
+            source: {entity: 'ghost', columns: ['c_key']},
+            destination: {entity: 'customer', columns: ['c_key']},
           },
         ];
 
@@ -931,10 +902,8 @@ describe('relationships map to schema-join entry links', () => {
           'relationship \'logical\': no join columns, so it is not published ' +
               'to Knowledge Catalog yet; add its from_columns and to_columns ' +
               'to the relationship in the model to publish the link.',
-          'relationship \'ghost_self\': endpoint entity \'ghost\' is not a ' +
+          'relationship \'ghost_rel\': endpoint entity \'ghost\' is not a ' +
               'published entity; the relationship link is skipped.',
-          'relationship \'logical_self\': skipped because Knowledge Catalog ' +
-              'does not support a relationship from an entity to itself.',
         ]);
       });
 });
@@ -1512,12 +1481,13 @@ ${ENTITY_YAML('orders')}
        });
 
   test('a metric records its canonical data type with the metadataType it ' +
-           'maps to, its synonyms and only an authored entity',
+           'maps to, its synonyms and its entity, declared or derived',
        () => {
          const model = loaded();
-         // The loader infers `orders` for revenue; only order_count wrote it.
-         expect(model.metrics[0].entity).toBe('orders');
+         // The loader derives `orders` for revenue; only order_count wrote it.
+         expect(model.metrics[0].authoredEntity).toBeUndefined();
          expect(metric(model, 'revenue')).toEqual({
+           entity: 'orders',
            dataType: 'Decimal',
            metadataType: 'NUMBER',
            synonyms: ['sales', 'turnover'],
@@ -1527,12 +1497,12 @@ ${ENTITY_YAML('orders')}
            dataType: 'Opaque',
            metadataType: 'OTHER',
          });
-         expect(metric(model, 'opaque_metric'))
-             .toEqual({dataType: 'Opaque', metadataType: 'OTHER'});
+         expect(metric(model, 'opaque_metric')).toEqual(
+             {entity: 'orders', dataType: 'Opaque', metadataType: 'OTHER'});
        });
 
   test('a profile excluding every metric is on every metric entry, and one ' +
-           'with a list is on the metrics it names, sorted by name',
+           'with a list is on the metrics it names, in profile order',
        () => {
          const model = loaded();
          model.profiles = [
@@ -1541,8 +1511,8 @@ ${ENTITY_YAML('orders')}
            PROFILE('Beta', 'metrics_exclude: [revenue, order_count]'),
            PROFILE('none', 'metrics_exclude: []'),
          ];
-         expect(excluded(model, 'revenue')).toEqual(['Beta', 'all', 'zeta']);
-         expect(excluded(model, 'order_count')).toEqual(['Beta', 'all']);
+         expect(excluded(model, 'revenue')).toEqual(['zeta', 'all', 'Beta']);
+         expect(excluded(model, 'order_count')).toEqual(['all', 'Beta']);
          expect(excluded(model, 'opaque_metric')).toEqual(['all']);
        });
 
@@ -1583,12 +1553,12 @@ ${ENTITY_YAML('orders')}
              .toEqual(GUIDE('Count them.'));
        });
 
-  test('a custom member whose value holds .inf, -.inf, .nan or an integer ' +
+  test('a custom member whose value holds .inf, -.inf, .nan or a number ' +
            'past 2^53, at any depth, is left out of data with a warning',
        () => {
          for (const [value, holds] of [
                 ['.inf', '.inf'], ['-.inf', '-.inf'], ['[1, {n: .nan}]', '.nan'],
-                ['9007199254740993', 'an integer past 2^53'],
+                ['9007199254740993', 'a number past 2^53'],
               ]) {
            const model = load(MODEL_FILE.replace('tier: 1.5', `tier: ${value}`));
            expect(data(model, 'sales', 'guidelines').data).toEqual(
@@ -1604,7 +1574,6 @@ ${ENTITY_YAML('orders')}
 
 
 describe('with KC_V2_ASPECTS on, relationships', () => {
-  const EG = 'projects/dest-proj/locations/us/entryGroups/eg';
   const ENTRY = (id: string) => `${EG}/entries/${id}`;
   const MODEL_FILE = `version: "0.2.0.dev0/google"
 semantic_model:
@@ -1627,11 +1596,9 @@ ${ENTITY_YAML('addresses')}
           - {vendor_name: DBT, data: '{"relationship": true}'}
       - { name: Order_Billing, from: orders, to: customers,
           from_columns: ['\`bill cust\`'], to_columns: [id] }
-      - { name: customer_orders, from: customers, to: orders }
+      - { name: customer_address, from: customers, to: addresses }
       - { name: orders_to_ship_address, from: orders, to: addresses,
           from_columns: [ship_addr_id], to_columns: [id] }
-      - { name: referred_by, from: customers, to: customers,
-          from_columns: [referrer], to_columns: [id] }
 `;
   const loaded = () => load(MODEL_FILE);
   const rel = (model: SemanticModel, name: string) =>
@@ -1663,9 +1630,9 @@ ${ENTITY_YAML('addresses')}
          });
          expect(aspects![KEY('schema')]).toBeUndefined();
          expect(aspects![KEY('sql-expressions')]).toBeUndefined();
-         expect(rel(model, 'customer_orders')).toEqual({
+         expect(rel(model, 'customer_address')).toEqual({
            source: {name: 'customers'},
-           target: {name: 'orders'},
+           target: {name: 'addresses'},
          });
          expect(rel(model, 'Order_Billing').source)
              .toEqual({name: 'orders', fields: ['`bill cust`']});
@@ -1700,7 +1667,7 @@ ${ENTITY_YAML('addresses')}
             targetFields: ['cid']},
            {name: 'analytical', sourceFields: ['billing_key']},
          ]);
-         expect(rel(model, 'customer_orders').profiles).toBeUndefined();
+         expect(rel(model, 'customer_address').profiles).toBeUndefined();
          model.profiles = [{name: 'default', entities: [], relationships: [
            {name: 'orders_to_customers', fromColumns: ['a'], toColumns: ['b']},
          ]}];
@@ -1708,8 +1675,9 @@ ${ENTITY_YAML('addresses')}
        });
 
   test('relationship entries keep their names and follow the entities in ' +
-           'declaration order, each ordered pair of different entities gets ' +
-           'one semantic-link listing its relationships, and an association ' +
+           'declaration order, each ordered pair of entities gets one ' +
+           'semantic-link listing its relationships, each relationship a ' +
+           'reference link to each entity, bound or not, and an association ' +
            'gets a warning and no entry or link',
        () => {
          const model = loaded();
@@ -1728,19 +1696,15 @@ ${ENTITY_YAML('addresses')}
            'sales/entities/addresses',
            'sales/relationships/orders_to_customers',
            'sales/relationships/Order_Billing',
-           'sales/relationships/customer_orders',
+           'sales/relationships/customer_address',
            'sales/relationships/orders_to_ship_address',
-           'sales/relationships/referred_by',
          ].map(ENTRY));
          expect(warnings).toEqual([expect.stringMatching(
              /^relationship 'm2m': many-to-many \(association\) edges/)]);
          const link = (from: string, to: string, relationships: string[]) => ({
-           name: `${EG}/entryLinks/${semanticLinkId('sales', from, to)}`,
-           entryLinkType: `${DATAPLEX}/entryLinkTypes/semantic-link`,
-           entryReferences: [
-             {name: ENTRY(`sales/entities/${from}`), type: 'SOURCE' as const},
-             {name: ENTRY(`sales/entities/${to}`), type: 'TARGET' as const},
-           ],
+           ...DIRECTED(
+               'semantic-link', semanticLinkId('link', 'sales', from, to),
+               `sales/entities/${from}`, `sales/entities/${to}`),
            aspects: {
              [KEY('semantic-link')]: {
                aspectType: `${DATAPLEX}/aspectTypes/semantic-link`,
@@ -1748,11 +1712,24 @@ ${ENTITY_YAML('addresses')}
              },
            },
          });
+         const reference = (rel: string, end: string, entity: string) =>
+             DIRECTED(
+                 'reference', semanticLinkId('relationship', 'sales', rel, end),
+                 `sales/relationships/${rel}`, `sales/entities/${entity}`);
          expect(entryLinks).toEqual([
            link('orders', 'customers',
                 ['orders_to_customers', 'Order_Billing']),
-           link('customers', 'orders', ['customer_orders']),
+           link('customers', 'addresses', ['customer_address']),
            link('orders', 'addresses', ['orders_to_ship_address']),
+           ...[
+             ['orders_to_customers', 'orders', 'customers'],
+             ['Order_Billing', 'orders', 'customers'],
+             ['customer_address', 'customers', 'addresses'],
+             ['orders_to_ship_address', 'orders', 'addresses'],
+           ].flatMap(([rel, from, to]) => [
+             reference(rel, 'source', from),
+             reference(rel, 'target', to),
+           ]),
          ]);
        });
 });

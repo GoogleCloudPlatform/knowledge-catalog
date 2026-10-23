@@ -1687,7 +1687,11 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
           [m.model.deployments === undefined ?
                m :
                {...m, model: {...m.model, deployments: []}}],
-          {targetOptional: true, warnings: kcWarnings}));
+          {
+            targetOptional: true,
+            warnings: kcWarnings,
+            v2Aspects: kcV2Aspects(),
+          }));
   for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
   if (profileErrors.length || kcErrors.length) {
     return fail(...profileErrors, ...kcErrors);

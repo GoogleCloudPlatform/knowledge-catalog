@@ -30,12 +30,14 @@
 //   * Relationship edges are published as entry links between two entity
 //     entries after that model's entries exist: a `schema-join` link per
 //     relationship, or with v2Aspects a `semantic-link` per ordered entity
-//     pair. A re-push first deletes any orphaned relationship links (no longer
-//     emitted) and stale links (whose type or endpoint references changed),
-//     then creates new or recreated links and updates unchanged links' aspects
-//     in place. The caller additionally needs
-//     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`
-//     on the destination entry group.
+//     pair and a `reference` link from each relationship entry to each of its
+//     entities. A re-push first deletes any orphaned links (no longer emitted)
+//     and stale links (whose type or endpoint references changed), then
+//     creates new or recreated links and updates unchanged links' aspects in
+//     place. The caller additionally needs
+//     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`,
+//     and with v2Aspects `useReferenceEntryLink`, on the destination entry
+//     group.
 //   * Reconcile deletions: after writing, delete any child entry this push owns
 //     (by `ownedPrefixes`) that is present in the pre-write listing but was not
 //     re-emitted.
@@ -50,7 +52,7 @@ import * as crm from '../gcp/crm';
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
 import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isRelationshipLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
+import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
 import {entryIdOf, slug} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
@@ -897,14 +899,14 @@ interface LinkLookupOutcome {
 }
 
 /**
- * Looks up all relationship entry links in the destination entry group
- * referencing any of `entityNames`.
+ * Looks up all model links in the destination entry group referencing any of
+ * `entityNames`.
  *
  * Links are looked up per referenced entry -- the only server-side access path
  * -- so a link between two of the entities is returned twice and deduplicated
  * here by bare link ID. Queries `lookupEntryLinks` and filters the results to
- * relationship links (`isRelationshipLink`) stored in the destination entry
- * group
+ * the kinds of link push writes (`isModelLink`) stored in the destination
+ * entry group
  * (`projects/<project>/locations/<location>/entryGroups/<entryGroup>/entryLinks/`).
  * `isScopeProject` tells whether a link's project part names the destination
  * project. A link whose project number push cannot resolve is kept.
@@ -930,7 +932,7 @@ async function lookupEntryLinks(
     for (const link of res.result ?? []) {
       const project = link.name?.match(groupRegExp)?.[1];
       if (!project || (await isScopeProject(project)) === false) continue;
-      if (!isRelationshipLink(link)) continue;
+      if (!isModelLink(link)) continue;
       const id = linkId(link);
       if (!links.has(id)) links.set(id, link);
     }
@@ -1366,7 +1368,7 @@ interface ReadLinkOutcome {
  * may change it.
  *
  * Returns the error when the read fails with anything but 404, when the link
- * is not a relationship link, when it references an entry outside the model,
+ * is not of a kind push writes, when it references an entry outside the model,
  * and when push cannot resolve the project number its references need.
  */
 async function readEmittedLink(
@@ -1388,8 +1390,8 @@ async function readEmittedLink(
           `resourcemanager.projects.get on the project`,
     };
   }
-  // Push manages relationship links only, as the lookup does.
-  if (!isRelationshipLink(existing)) {
+  // Push manages only the kinds of link it writes, as the lookup does.
+  if (!isModelLink(existing)) {
     return {
       error: `entry link '${id}' already exists with link type '${
                  linkTypeId(existing)}'; ` +
@@ -1471,13 +1473,15 @@ async function replaceEntryLink(
 }
 
 /**
- * Updates an existing relationship entry link's aspects in place.
+ * Updates an existing entry link's aspects in place. A link with no aspect,
+ * such as a reference link, has nothing to update.
  */
 async function updateEntryLink(
     cat: CatalogClient, link: EntryLink): Promise<ApiResult<EntryLink>> {
+  if (!link.aspects) return {status: 200};
   return cat.updateEntryLink(
       {name: link.name, aspects: link.aspects} as EntryLink,
-      Object.keys(link.aspects ?? {}));
+      Object.keys(link.aspects));
 }
 
 /**

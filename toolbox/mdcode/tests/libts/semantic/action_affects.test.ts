@@ -244,7 +244,7 @@ describe('validatePushRequirements checks every affected concept', () => {
     }),
   };
 
-  // One entity, one plain foreign-key edge, and one many-to-many edge with a
+  // Two entities, one plain foreign-key edge, and one many-to-many edge with a
   // property of its own -- the three things an entry can name.
   function loaded(affects: any[]): LoadedModel {
     const model: SemanticModel = {
@@ -254,17 +254,17 @@ describe('validatePushRequirements checks every affected concept', () => {
         dataSource: 'p.d.o',
         keys: ['id'],
         fields: [{name: 'id'}, {name: 'total'}],
-      }],
+      }, {name: 'customer', dataSource: 'p.d.c', keys: ['id'], fields: []}],
       relationships: [
         {
           name: 'orders_to_customer',
           source: {entity: 'orders', columns: ['id']},
-          destination: {entity: 'orders', columns: ['id']},
+          destination: {entity: 'customer', columns: ['id']},
         },
         {
           name: 'OrderedAs',
           source: {entity: 'orders', columns: ['id']},
-          destination: {entity: 'orders', columns: ['id']},
+          destination: {entity: 'customer', columns: ['id']},
           association: {
             dataSource: 'p.d.lineitem',
             keys: ['lid'],
@@ -382,7 +382,7 @@ describe('validatePushRequirements checks every affected concept', () => {
     model.relationships!.push({
       name: 'dual',
       source: {entity: 'orders', columns: ['id']},
-      destination: {entity: 'orders', columns: ['id']},
+      destination: {entity: 'dual', columns: ['id']},
     });
     expect(validatePushRequirements([{document, model}])).toEqual([]);
   });

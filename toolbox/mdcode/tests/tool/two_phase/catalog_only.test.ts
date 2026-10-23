@@ -50,10 +50,14 @@ scenarios('push --no-deployment', [
     warnings: ['Warning: w'],
     then: [{
       deployments: [{name: 'g1', profile: 'prod'}],
-      relationships: [{name: 'refers', from: 'Customer', to: 'Customer'}],
-      profiles: {prod: {...PROD, relationships: [
-        {name: 'refers', from_columns: ['key'], to_columns: ['key']},
-      ]}},
+      entities: [CUSTOMER, {...CUSTOMER, name: 'Order', source: bqTable('o')}],
+      relationships: [{name: 'refers', from: 'Order', to: 'Customer'}],
+      profiles: {prod: {
+        entities: {...PROD.entities, Order: bqTable('o', 'prod')},
+        relationships: [
+          {name: 'refers', from_columns: ['key'], to_columns: ['key']},
+        ],
+      }},
       code: 0,
     }],
   },

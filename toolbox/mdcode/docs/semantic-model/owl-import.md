@@ -358,8 +358,10 @@ Two boundaries to be clear about:
 The import gives you a **logical model**: what the domain means, with no physical
 binding. That is directly useful — `kcmd push` publishes it to
 Knowledge Catalog as-is, so the ontology becomes catalog metadata (entities,
-fields, and keys) with nothing more to fill in. The exception is a relationship
-on a class with subclasses, which push rejects as described above:
+fields, and keys) with nothing more to fill in. Push rejects a relationship on
+a class with subclasses, as described above. It also rejects an object property
+whose `rdfs:domain` and `rdfs:range` are one class, and two object properties
+that join the same two classes in opposite directions:
 
 ```console
 $ kcmd push                  # publishes the logical model to Knowledge Catalog

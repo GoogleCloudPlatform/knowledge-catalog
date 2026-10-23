@@ -302,10 +302,12 @@ describe('validatePushRequirements gates constraints', () => {
       judgment: 'Trace the balance through customer.OwnedBy before approving.',
       onViolation: 'warn',
     }]);
+    m.model.entities.push(
+        {name: 'owner', dataSource: 'p.d.w', keys: ['id'], fields: []});
     m.model.relationships = [{
       name: 'OwnedBy',
       source: {entity: 'customer', columns: ['id']},
-      destination: {entity: 'customer', columns: ['id']},
+      destination: {entity: 'owner', columns: ['id']},
     }];
     expect(validatePushRequirements([m])).toEqual([]);
   });
@@ -345,10 +347,12 @@ describe('validatePushRequirements gates constraints', () => {
       judgment: 'The customer.blance must stay positive.',
       onViolation: 'warn',
     }]);
+    m.model.entities.push(
+        {name: 'owner', dataSource: 'p.d.w', keys: ['id'], fields: []});
     m.model.relationships = [{
       name: 'OwnedBy',
       source: {entity: 'customer', columns: ['id']},
-      destination: {entity: 'customer', columns: ['id']},
+      destination: {entity: 'owner', columns: ['id']},
     }];
     m.model.metrics = [{
       name: 'total_owed',

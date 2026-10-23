@@ -221,7 +221,9 @@ name datasets declared in the same model. `to_columns` MUST contain every column
 of a primary or unique key of the `to` dataset; a superset of a key counts.
 An edge is N:1 or 1:1 only when its join columns cover a key, so join columns
 that cover no key are rejected on every push, a catalog-only push included.
-Each binding of the relationship may cover a different key.
+Each binding of the relationship may cover a different key. A relationship MUST
+join two different datasets, and two datasets MUST NOT have relationships in
+both directions.
 
 Ossie **requires** both join-column lists; allowing both to be omitted — a
 logical edge with no join keys — is a `kcmd` **relaxation** ([§4](#4-narrowings-and-relaxations))
@@ -385,6 +387,10 @@ Each rule and its reason:
 
 - **A metric belongs to a concrete leaf.** A metric whose entity is abstract, or
   extended by another entity, is rejected on every push.
+
+- **A relationship joins two different datasets in one direction.** A
+  relationship from a dataset to itself is rejected, and so are relationships
+  in both directions between two datasets ([§2.2](#22-relationship)).
 
 - **Only SQL dialects are accepted.** An expression entry whose `dialect` is
   `MDX`, `TABLEAU`, `MAQL` or `THOUGHTSPOT` is a hard load error

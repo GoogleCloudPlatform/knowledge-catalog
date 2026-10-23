@@ -148,17 +148,19 @@ export function isDependentEntry(entry: Entry): boolean {
 }
 
 /**
- * Returns true when `link` is a model relationship entry link (`schema-join`
- * in V1 or `semantic-link` in V2).
+ * Returns true when `link` is of a kind push writes for a model: `schema-join`
+ * in V1, and in V2 `semantic-link` or a `reference` link whose ID starts with
+ * `semantic-relationship-`.
  *
- * Includes both V1 (`schema-join`) and V2 (`semantic-link`) regardless of
- * `v2Aspects`, so a model pushed with V1 and then V2 still discovers and cleans
- * up its old `schema-join` links without passing `semantic-link` in a
- * server-side `lookupEntryLinks` filter.
+ * Includes both V1 and V2 regardless of `v2Aspects`, so a model pushed with V1
+ * and then V2 still discovers and cleans up its old `schema-join` links
+ * without passing a link type in a server-side `lookupEntryLinks` filter.
  */
-export function isRelationshipLink(link: EntryLink): boolean {
+export function isModelLink(link: EntryLink): boolean {
   const type = linkTypeId(link);
-  return type === 'schema-join' || type === 'semantic-link';
+  return type === 'schema-join' || type === 'semantic-link' ||
+      (type === 'reference' &&
+       /^semantic-relationship-/.test(linkId(link)));
 }
 
 // ---------------------------------------------------------------------------

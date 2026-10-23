@@ -509,6 +509,25 @@ the metadata stores, what is gated behind `--emit-expressions`, and what is
 never stored, see
 [What push and pull preserve](fidelity.md#to-knowledge-catalog).
 
+### With `KC_V2_ASPECTS=1`
+
+With `KC_V2_ASPECTS=1`, push writes a newer set of Knowledge Catalog
+types. Each relationship other than a many-to-many association has an entry of
+its own. Entry ids are `<model>`, `<model>/entities/<entity>`,
+`<model>/metrics/<metric>` and `<model>/relationships/<relationship>`.
+
+A `semantic-link` joins each ordered pair of related entities. Built-in
+`reference` links run from each relationship's entry to the entries of its
+source and target entities. An unbound relationship gets its `reference` links
+too. Their ids start with `semantic-relationship-`, followed by the first 32
+hex characters of a SHA-256 hash of `<model>/<relationship>/source` or
+`<model>/<relationship>/target`. Push owns only the `reference` links with that
+prefix. It deletes the ones the model no longer has and leaves every other
+`reference` link alone.
+
+`semantic-metric.entity` holds the metric's entity, declared or derived.
+`excludedInProfiles` follows the order of the model entry's `profiles` list.
+
 ## Validation
 
 `push` and `--validate-only` run the same checks, apart from the Knowledge
@@ -581,6 +600,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   reasons are in [Class hierarchies](#class-hierarchies-extends--labels).
   These checks run on every push, including a `--no-profile` push to
   Knowledge Catalog alone. *(static)*
+* **Relationships join two different entities in one direction.** Push rejects
+  a relationship from an entity to itself, and relationships in both directions
+  between two entities. *(static)*
 * **Every action is well-formed.** Each action parameter must settle on one
   scalar datatype: projected from a field it names with `concept` and `field`,
   or stated as its own `type`. Naming an entity as a `type`, or restating a
@@ -750,6 +772,8 @@ and each aspect type attached, so a push needs, on the destination entry group:
   metric carries `ai_context.instructions`
 * `dataplex.entryGroups.useSchemaJoinAspect` and
   `dataplex.entryGroups.useSchemaJoinEntryLink` — when the model has relationships
+* `dataplex.entryGroups.useReferenceEntryLink` — with `KC_V2_ASPECTS=1`, when
+  the model has relationships
 * the `use<AspectType>Aspect` permission for the `semantic-model`,
   `semantic-entity`, and `semantic-metric` aspect types the push attaches — i.e.
   `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and

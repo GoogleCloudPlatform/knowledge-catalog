@@ -71,7 +71,8 @@
 // With the second-generation types, each relationship is instead an entry,
 // `<model>/relationships/<name>`, that carries semantic-relationship. A
 // `semantic-link` entry link joins each ordered pair of related entities and
-// lists their relationships in declaration order.
+// lists their relationships in declaration order. A `reference` link runs
+// from each relationship entry to each of its two entities.
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
@@ -344,8 +345,7 @@ function schemaJoinLinks(
   for (const rel of model.relationships ?? []) {
     // A relationship that cannot be published gets the warning that says why,
     // whatever its place in the model, so this check runs before the pair
-    // check below. A second relationship from an entity to itself gets only
-    // the self warning.
+    // check below.
     const reason = unpublishedReason(rel, entityEntryName);
     if (reason) {
       warnings.push(`relationship '${rel.name}': ${reason}`);
@@ -385,10 +385,10 @@ function schemaJoinLinks(
 // undefined when it can. The reasons, in the order checked: a many-to-many
 // (association) edge, since a junction is two joins, which the single
 // source/target schema-join does not model; an edge whose endpoint entity was
-// not emitted, for example one skipped for a duplicate id; an edge from an
-// entity to itself; and a column-less (purely logical) edge, whose join
-// columns must be added to the model before it can publish. The BigQuery
-// property graph still carries the association and, once bound, direct edges.
+// not emitted, for example one skipped for a duplicate id; and a column-less
+// (purely logical) edge, whose join columns must be added to the model before
+// it can publish. The BigQuery property graph still carries the association
+// and, once bound, direct edges.
 function unpublishedReason(
     rel: Relationship,
     entityEntryName: ReadonlyMap<string, string>): string|undefined {
@@ -398,14 +398,6 @@ function unpublishedReason(
   if (missing !== undefined) {
     return `endpoint entity '${missing}' is not a published entity; the ` +
         `relationship link is skipped.`;
-  }
-  // Dataplex refuses a link whose two references name the same entry, so the
-  // flag-off path skips a relationship from an entity to itself. This check
-  // runs before the join-column check, because adding join columns does not
-  // publish such a relationship.
-  if (rel.source.entity === rel.destination.entity) {
-    return `skipped because Knowledge Catalog does not support a ` +
-        `relationship from an entity to itself.`;
   }
   // A purely logical edge (an OWL import) carries no join columns. schema-join
   // is a server-defined CLOSED metadataTemplate whose `fields` requirement we
@@ -426,24 +418,29 @@ const ASSOCIATION_REASON =
     `many-to-many (association) edges are not published to ` +
     `Knowledge Catalog yet; the edge lives in the BigQuery property graph.`;
 
-// The relationship entries and semantic-link links of the second-generation
-// types: an entry per relationship except an association, and a link per
-// ordered pair of different entities, listing its relationships in order.
+// The relationship entries and their links under the second-generation
+// types: an entry per relationship except an association, a semantic-link per
+// ordered entity pair listing its relationships in order, and a reference link
+// from each relationship entry to each of its two entities.
 function relationshipResourcesV2(
     names: Namer, model: SemanticModel, modelEntryName: string,
     entityEntryName: ReadonlyMap<string, string>,
     warnings: string[]): {entries: Entry[]; links: EntryLink[]} {
   const entries: Entry[] = [];
+  const references: EntryLink[] = [];
   // The relationships of each ordered entity pair, by link ID.
   const pairs =
       new Map<string, {from: string; to: string; relationships: string[]}>();
+  // Push never reaches a name with no entry: validation rejects an unknown
+  // entity, and a relationship on an entity that is not a concrete leaf.
   for (const rel of model.relationships ?? []) {
     if (rel.association) {
       warnings.push(`relationship '${rel.name}': ${ASSOCIATION_REASON}`);
       continue;
     }
+    const id = names.relationshipId(model, rel);
     entries.push({
-      name: names.entry(names.relationshipId(model, rel)),
+      name: names.entry(id),
       entryType: names.typeName('entry', 'semantic-relationship'),
       parentEntry: modelEntryName,
       entrySource: source(rel.name, rel.description),
@@ -454,22 +451,35 @@ function relationshipResourcesV2(
     });
     const from = rel.source.entity;
     const to = rel.destination.entity;
-    if (from === to) continue;
-    const linkId = semanticLinkId(model.name, from, to);
+    for (const [end, entity] of [['source', from], ['target', to]]) {
+      references.push(directedLink(
+          names, 'reference',
+          semanticLinkId('relationship', model.name, rel.name, end),
+          names.entry(id), entityEntryName.get(entity)!));
+    }
+    const linkId = semanticLinkId('link', model.name, from, to);
     const pair = pairs.get(linkId) ?? {from, to, relationships: []};
     pair.relationships.push(rel.name);
     pairs.set(linkId, pair);
   }
   const links = [...pairs].map(([linkId, {from, to, relationships}]) => ({
-    name: names.entryLink(linkId),
-    entryLinkType: names.typeName('entryLink', 'semantic-link'),
-    entryReferences: [
-      {name: entityEntryName.get(from)!, type: 'SOURCE' as const},
-      {name: entityEntryName.get(to)!, type: 'TARGET' as const},
-    ],
+    ...directedLink(
+        names, 'semantic-link', linkId, entityEntryName.get(from)!,
+        entityEntryName.get(to)!),
     aspects: aspectMap(names, {'semantic-link': {relationships}}),
   }));
-  return {entries, links};
+  return {entries, links: [...links, ...references]};
+}
+
+// A link of type `type` with ID `id` from the entry `from` to the entry `to`.
+function directedLink(
+    names: Namer, type: string, id: string, from: string,
+    to: string): EntryLink {
+  return {
+    name: names.entryLink(id),
+    entryLinkType: names.typeName('entryLink', type),
+    entryReferences: [{name: from, type: 'SOURCE'}, {name: to, type: 'TARGET'}],
+  };
 }
 
 // The semantic-relationship aspect, with join columns as written.
@@ -647,14 +657,14 @@ export function unstorableMemberWarnings(model: SemanticModel): string[] {
 }
 
 // Names the first number in `value` that JSON cannot hold as the document
-// wrote it: .inf, -.inf, .nan, or an integer past 2^53, which loses digits
-// when the model loads. Undefined when there is none.
+// wrote it: .inf, -.inf, .nan, or a number past 2^53, which loses digits when
+// the model loads. Undefined when there is none.
 function unstorableValue(value: unknown): string|undefined {
   if (typeof value === 'number') {
     if (Number.isNaN(value)) return '.nan';
     if (!Number.isFinite(value)) return value > 0 ? '.inf' : '-.inf';
     return Number.isInteger(value) && !Number.isSafeInteger(value) ?
-        'an integer past 2^53' :
+        'a number past 2^53' :
         undefined;
   }
   if (value === null || typeof value !== 'object') return undefined;
@@ -894,7 +904,8 @@ function metricAspectsV2(
   });
 }
 
-// The semantic-metric aspect of the second-generation types.
+// The semantic-metric aspect of the second-generation types. `entity` is the
+// metric's entity, declared or derived.
 function metricAspectDataV2(
     model: SemanticModel, metric: Metric): Record<string, any> {
   const type = metric.type ?? 'Opaque';
@@ -903,11 +914,11 @@ function metricAspectDataV2(
                                      p.metricsExclude?.includes(metric.name))
                          .map(p => p.name);
   return compact({
-    entity: metric.authoredEntity,
+    entity: metric.entity,
     dataType: type,
     metadataType: columnMetadataType(type),
     synonyms: nonEmpty(metric.aiContext?.synonyms),
-    excludedInProfiles: nonEmpty(excludedIn.sort()),
+    excludedInProfiles: nonEmpty(excludedIn),
   });
 }
 

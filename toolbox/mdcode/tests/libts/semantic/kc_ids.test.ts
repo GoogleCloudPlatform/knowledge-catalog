@@ -82,11 +82,16 @@ describe('Namer entry and link IDs under v2Aspects flag states', () => {
 });
 
 describe('semanticLinkId', () => {
-  test('is semantic-link- and the first 32 hex characters of the SHA-256 of ' +
-           '<model>/<from>/<to>',
+  test('is semantic-<kind>- and the first 32 hex characters of the SHA-256 ' +
+           'of the parts joined by /',
        () => {
-         expect(semanticLinkId('sales', 'orders', 'customers'))
-             .toBe('semantic-link-e6b1c3bb1665161a428c2cd13a1cb443');
+         expect([
+           semanticLinkId('link', 'sales', 'orders', 'customers'),
+           semanticLinkId('relationship', 'sales', 'placed_by', 'source'),
+         ]).toEqual([
+           'semantic-link-e6b1c3bb1665161a428c2cd13a1cb443',
+           'semantic-relationship-7d24245079e3654a7a01f88f89d599a9',
+         ]);
        });
 });
 

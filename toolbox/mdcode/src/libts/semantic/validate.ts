@@ -1182,7 +1182,9 @@ function invalidColumnNameError(
 // `from_columns` and `to_columns`. Also checks that every relationship's
 // endpoints name entities the model declares, and that its two join column
 // lists have equal length. The loader checks endpoints and lengths for a model
-// it reads, and this repeats them for a model built in memory. Push runs this
+// it reads, and this repeats them for a model built in memory. A relationship
+// from an entity to itself is rejected, and so are relationships in both
+// directions between two entities. Push runs this
 // on the model with its profile applied, so it also checks the key and join
 // columns a profile file supplies. An abstract entity's keys and an
 // association's direct join columns are not checked.
@@ -1190,6 +1192,8 @@ function validateColumnsAndRelationships(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
   const entityNames = new Set((model.entities ?? []).map(e => e.name));
+  // The first relationship from each entity to each other entity.
+  const firstFrom = new Map<string, string>();
 
   for (const entity of model.entities ?? []) {
     if (entity.abstract) continue;
@@ -1220,6 +1224,21 @@ function validateColumnsAndRelationships(
     if (!entityNames.has(rel.destination.entity)) {
       errors.push(
           `${at}: ${undefinedEndpointProblem('to', rel.destination.entity)}.`);
+    }
+    const [from, to] = [rel.source.entity, rel.destination.entity];
+    const back = firstFrom.get(`${to}\0${from}`);
+    if (from === to) {
+      errors.push(
+          `${at} runs from '${from}' to itself; a relationship joins two ` +
+          `different entities.`);
+    } else if (back !== undefined) {
+      errors.push(
+          `${at} runs from '${from}' to '${to}', and relationship '${back}' ` +
+          `runs the other way; keep the relationships between two entities ` +
+          `in one direction.`);
+    }
+    if (!firstFrom.has(`${from}\0${to}`)) {
+      firstFrom.set(`${from}\0${to}`, rel.name);
     }
     if (rel.association) continue;
     const fromCount = rel.source.columns.length;

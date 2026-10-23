@@ -24,7 +24,7 @@ import {
   isLinkOwner,
   isMetricEntry,
   isModelEntry,
-  isRelationshipLink,
+  isModelLink,
   isSemanticObjectEntry,
   KcAnchor,
   linkId,
@@ -53,10 +53,6 @@ const SCHEMA_JOIN_LINK_TYPE =
 const SEMANTIC_RELATIONSHIP_LINK_TYPE =
     'projects/dataplex-types/locations/global/entryLinkTypes/' +
     'semantic-relationship';
-const SEMANTIC_LINK_TYPE =
-    'projects/dataplex-types/locations/global/entryLinkTypes/semantic-link';
-const OTHER_LINK_TYPE =
-    'projects/dataplex-types/locations/global/entryLinkTypes/other-link';
 
 function makeEntry(
     id: string, entryType = ENTITY_TYPE,
@@ -159,24 +155,19 @@ describe('entry and link type predicates, anchorId, and custom types', () => {
         .toEqual([true, true, true, true, false, false, false]);
   });
 
-  test('identifies schema-join and semantic-link links only', () => {
-    const semanticLink = makeLink(
-        'sales-orders-to-customer', SEMANTIC_LINK_TYPE,
+  test('identifies the links push writes for a model', () => {
+    const link = (id: string, type: string) => makeLink(
+        id, `projects/dataplex-types/locations/global/entryLinkTypes/${type}`,
         ['sales/entities/orders', 'sales/entities/customer']);
-    const joinLink = makeLink(
-        'sales-orders-to-customer', SCHEMA_JOIN_LINK_TYPE,
-        ['sales.entities.orders', 'sales.entities.customer']);
-    const semanticRelationshipLink = makeLink(
-        'sales-orders-to-customer', SEMANTIC_RELATIONSHIP_LINK_TYPE,
-        ['sales/entities/orders', 'sales/entities/customer']);
-    const otherLink = makeLink(
-        'sales-orders-to-customer', OTHER_LINK_TYPE,
-        ['sales.entities.orders', 'sales.entities.customer']);
-
-    expect(isRelationshipLink(joinLink)).toBe(true);
-    expect(isRelationshipLink(semanticLink)).toBe(true);
-    expect(isRelationshipLink(semanticRelationshipLink)).toBe(false);
-    expect(isRelationshipLink(otherLink)).toBe(false);
+    expect([
+      link('sales-orders-to-customer', 'schema-join'),
+      link('sales-orders-to-customer', 'semantic-link'),
+      link('semantic-relationship-1', 'reference'),
+      link('semantic-link-1', 'reference'),
+      link('sales-orders-to-customer', 'semantic-relationship'),
+      link('sales-orders-to-customer', 'other-link'),
+    ].map(isModelLink))
+        .toEqual([true, true, true, false, false, false]);
   });
 
   test(

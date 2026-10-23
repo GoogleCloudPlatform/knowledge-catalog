@@ -36,7 +36,11 @@ const STAR =
     fs.readFileSync(path.join(FIXTURES, 'star_orders_customer.yaml'), 'utf8');
 const STAR_DOCS = [{name: 'star.yaml', text: STAR}];
 
-const STAR_SEMANTIC_LINK = semanticLinkId('sales', 'orders', 'customer');
+const STAR_SEMANTIC_LINK =
+    semanticLinkId('link', 'sales', 'orders', 'customer');
+// The reference links from the relationship entry to its two entities.
+const STAR_REFERENCES = ['source', 'target'].map(
+    end => semanticLinkId('relationship', 'sales', 'orders_to_customer', end));
 
 // A model declaring actions, used to exercise custom-type preflight checks.
 const ACTIONS_DOC =
@@ -3226,8 +3230,12 @@ describe(
             // exists.
             const linkA = linkEntry(
                 'sales-a', ['sales.entities.orders', 'sales.entities.customer']);
-            const linkB = linkEntry(
-                'sales-b', ['sales.entities.orders', 'sales.entities.supplier']);
+            const linkB = {
+              ...linkEntry(
+                  'sales-b',
+                  ['sales.entities.orders', 'sales.entities.supplier']),
+              aspects: {'dataplex-types.global.schema-join': {data: {}}},
+            };
             stubClient({
               existing: [
                 {id: 'sales', type: MODEL_TYPE},
@@ -3824,16 +3832,17 @@ describe('deployKnowledgeCatalog: both relationship link types', () => {
 });
 
 
-describe('deployKnowledgeCatalog: a relationship from an entity to itself', () => {
-  // `manager` and `mentor` join `employee` to itself. `assignment` joins
-  // `employee` to `department` and publishes the link `hr-assignment`.
-  const SELF_DOCS = [{
+describe('deployKnowledgeCatalog: a relationship with no join columns', () => {
+  // `previous_department` and `requested_department` have no join columns.
+  // `assignment` joins `employee` to `department` and publishes the link
+  // `hr-assignment`.
+  const HR_DOCS = [{
     name: 'hr.yaml',
     text: `
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: hr
-    datasets:
+    entities:
       - name: employee
         source: bigquery.googleapis.com/projects/demo/datasets/hr/tables/employee
         primary_key: [employee_id]
@@ -3841,12 +3850,6 @@ semantic_model:
           - name: employee_id
             expression:
               dialects: [{ dialect: BIGQUERY, expression: employee_id }]
-          - name: manager_id
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: manager_id }]
-          - name: mentor_id
-            expression:
-              dialects: [{ dialect: BIGQUERY, expression: mentor_id }]
           - name: department_id
             expression:
               dialects: [{ dialect: BIGQUERY, expression: department_id }]
@@ -3858,16 +3861,8 @@ semantic_model:
             expression:
               dialects: [{ dialect: BIGQUERY, expression: department_id }]
     relationships:
-      - name: manager
-        from: employee
-        to: employee
-        from_columns: [manager_id]
-        to_columns: [employee_id]
-      - name: mentor
-        from: employee
-        to: employee
-        from_columns: [mentor_id]
-        to_columns: [employee_id]
+      - {name: previous_department, from: employee, to: department}
+      - {name: requested_department, from: employee, to: department}
       - name: assignment
         from: employee
         to: department
@@ -3876,22 +3871,20 @@ semantic_model:
 `,
   }];
 
-  const SELF_WARNINGS = [
-    '[hr] relationship \'manager\': skipped because Knowledge Catalog does ' +
-        'not support a relationship from an entity to itself.',
-    '[hr] relationship \'mentor\': skipped because Knowledge Catalog does ' +
-        'not support a relationship from an entity to itself.',
-  ];
+  const HR_WARNINGS = ['previous_department', 'requested_department'].map(
+      name => `[hr] relationship '${name}': no join columns, so it is not ` +
+          'published to Knowledge Catalog yet; add its from_columns and ' +
+          'to_columns to the relationship in the model to publish the link.');
 
   test('validateOnly warns about each one and plans no link for it',
        async () => {
          const {list, create, createLink} = stubClient();
 
          const result = await deployKnowledgeCatalog(
-             models(SELF_DOCS), CTX, {...OPTS, validateOnly: true});
+             models(HR_DOCS), CTX, {...OPTS, validateOnly: true});
 
          expect(result.success).toBe(true);
-         expect(result.warnings).toEqual(SELF_WARNINGS);
+         expect(result.warnings).toEqual(HR_WARNINGS);
          expect(result.plan).toContain('  1 schema-join link:');
          expect(result.plan).toContain('    - hr-assignment');
          expect(list).not.toHaveBeenCalled();
@@ -3902,10 +3895,10 @@ semantic_model:
   test('a push skips it and writes every other link', async () => {
     const {createLink} = stubClient();
 
-    const result = await deployKnowledgeCatalog(models(SELF_DOCS), CTX, OPTS);
+    const result = await deployKnowledgeCatalog(models(HR_DOCS), CTX, OPTS);
 
     expect(result.success).toBe(true);
-    expect(result.warnings).toEqual(SELF_WARNINGS);
+    expect(result.warnings).toEqual(HR_WARNINGS);
     expect(result.linked).toBe(1);
     expect(createLink.mock.calls.map(c => c[3])).toEqual(['hr-assignment']);
   });
@@ -3920,13 +3913,13 @@ semantic_model:
            },
          });
 
-         const result = await deployKnowledgeCatalog(models(SELF_DOCS), CTX, {
+         const result = await deployKnowledgeCatalog(models(HR_DOCS), CTX, {
            ...OPTS,
            onWarnings: (warnings) => events.push(...warnings),
          });
 
          expect(result.success).toBe(true);
-         expect(events.slice(0, 3)).toEqual([...SELF_WARNINGS, 'create:hr']);
+         expect(events.slice(0, 3)).toEqual([...HR_WARNINGS, 'create:hr']);
        });
 
   test('deployEmittedModels also passes them before the first write',
@@ -3982,12 +3975,13 @@ describe('deployKnowledgeCatalog: cross-layout V1 -> V2 cleanup', () => {
         expect(result.updated).toBe(1);  // anchor 'sales'
         // 2 slash entities, 2 slash metrics and the relationship entry.
         expect(result.created).toBe(5);
-        expect(result.linked).toBe(1);  // the pair's semantic-link
+        // The pair's semantic-link and the relationship's reference links.
+        expect(result.linked).toBe(3);
         expect(result.deleted).toBe(4);   // 4 old dotted entries deleted
         expect(result.unlinked).toBe(2);  // both V1 schema-join links deleted
         expect(update).toHaveBeenCalledTimes(1);
         expect(createLink.mock.calls.map(c => c[3]))
-            .toEqual([STAR_SEMANTIC_LINK]);
+            .toEqual([STAR_SEMANTIC_LINK, ...STAR_REFERENCES]);
         expect(create.mock.calls.map(c => c[3]).sort()).toEqual([
           'sales',
           'sales/entities/customer',
@@ -4032,44 +4026,63 @@ describe('deployKnowledgeCatalog: V2 relationship entries and links', () => {
     {id: 'sales/metrics/order_count', type: METRIC_TYPE},
     {id: 'sales/relationships/orders_to_customer', type: RELATIONSHIP_TYPE},
   ];
-  // A semantic-link from entity `from` to entity `to`, as lookupEntryLinks
-  // returns it with the project number.
-  function semanticLink(id: string, from: string, to: string) {
-    const ref = (entity: string, type: string) =>
-        ({name: entryName(`sales/entities/${entity}`, '123456789'), type});
+  // A link of type `type` from entry `from` to entry `to`, as
+  // lookupEntryLinks returns it with the project number.
+  function directed(type: string, id: string, from: string, to: string) {
+    const ref = (entry: string, type: string) =>
+        ({name: entryName(entry, '123456789'), type});
     return {
       ...linkEntry(id, [], '123456789'),
-      entryLinkType: SEMANTIC_LINK_TYPE,
+      entryLinkType: `projects/dataplex-types/locations/global/entryLinkTypes/${
+          type}`,
       entryReferences: [ref(from, 'SOURCE'), ref(to, 'TARGET')],
     };
   }
+  // A semantic-link from entity `from` to entity `to`.
+  const semanticLink = (id: string, from: string, to: string) => directed(
+      'semantic-link', id, `sales/entities/${from}`, `sales/entities/${to}`);
+  // The reference links from relationship `rel` to entities `from` and `to`.
+  const references = (rel: string, from: string, to: string) =>
+      [['source', from], ['target', to]].map(
+          ([end, entity]) => directed(
+              'reference', semanticLinkId('relationship', 'sales', rel, end),
+              `sales/relationships/${rel}`, `sales/entities/${entity}`));
   // STAR's link from orders to customer, and a link from customer to orders.
   const STAR_LINK = semanticLink(STAR_SEMANTIC_LINK, 'orders', 'customer');
-  const BACK_ID = semanticLinkId('sales', 'customer', 'orders');
+  const BACK_ID = semanticLinkId('link', 'sales', 'customer', 'orders');
   const BACK_LINK = semanticLink(BACK_ID, 'customer', 'orders');
   // Pushes `docs` again over STAR's entries, whose entry and link creates
   // return 409.
   const rePush = (stubs: Stubs, docs = STAR_DOCS) =>
       pushAgain(docs, V2_ENTRIES, {createLink: EXISTS, ...stubs});
 
-  test('a relationship dropped from the model has its entry deleted, and ' +
-           'its link when it was the last on its pair',
+  test('a relationship dropped from the model has its entry deleted, its ' +
+           'reference links, and its semantic-link when it was the last on ' +
+           'its pair; a reference link push did not name is kept, and one ' +
+           'unchanged is not updated',
        async () => {
+         const dropped = references('customer_orders', 'customer', 'orders');
          const {del, delLink, updateLink, result} = await rePush({
            existing: [
              ...V2_ENTRIES,
              {id: 'sales/relationships/customer_orders',
               type: RELATIONSHIP_TYPE},
            ],
-           links: () => ok([STAR_LINK, BACK_LINK]),
+           links: () => ok([
+             STAR_LINK, BACK_LINK, ...dropped,
+             ...references('orders_to_customer', 'orders', 'customer'),
+             directed('reference', 'my-note', 'sales/entities/customer',
+                      'sales/entities/orders'),
+           ]),
          });
 
          expect(result.success).toBe(true);
          expect(result.deleted).toBe(1);
-         expect(result.unlinked).toBe(1);
+         expect(result.unlinked).toBe(3);
          expect(del.mock.calls.map(c => c[3]))
              .toEqual(['sales/relationships/customer_orders']);
-         expect(delLink.mock.calls.map(c => c[3])).toEqual([BACK_ID]);
+         expect(delLink.mock.calls.map(c => c[3]))
+             .toEqual([BACK_ID, ...dropped.map(l => l.name.split('/').pop())]);
          expect(updateLink).toHaveBeenCalledTimes(1);
        });
 
@@ -4081,7 +4094,7 @@ describe('deployKnowledgeCatalog: V2 relationship entries and links', () => {
       'from: customer\n        to: orders\n' +
           '        from_columns: [c_custkey]\n' +
           '        to_columns: [o_custkey]');
-  const SUPPLIER_ID = semanticLinkId('sales', 'orders', 'supplier');
+  const SUPPLIER_ID = semanticLinkId('link', 'sales', 'orders', 'supplier');
   // Each case pushes `docs` again with `stubs`, tries to delete the links
   // `deleted` and fails with `details`.
   for (const [name, stubs, docs, deleted, details] of [
