@@ -148,11 +148,15 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  // `aspects` names the aspect types to return, or is 'FULL' for every aspect
+  // on the entry. With neither, no aspect is returned.
   async lookupEntry(project: string, location: string, name: string,
-                    aspects?: string[]): Promise<api.ApiResult<Entry>> {
+                    aspects?: string[] | 'FULL'): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
     const params: Record<string, any> = { entry: name, view: 'BASIC' };
-    if (aspects && aspects.length) {
+    if (aspects === 'FULL') {
+      params.view = 'FULL';
+    } else if (aspects && aspects.length) {
       params.view = 'CUSTOM';
       params.aspectTypes = aspects;
     }

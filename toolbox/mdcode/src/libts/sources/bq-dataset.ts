@@ -14,6 +14,11 @@ export class BigQueryDatasetSource implements CatalogSource {
   readonly ingestedEntries = true;
   readonly layout = Layouts.STANDARD;
   readonly defaultAspects = [md.OVERVIEW_ASPECT];
+  // BigQuery writes these on a table besides the ones its type requires.
+  readonly systemAspects = [
+    'dataplex-types.global.bigquery-policy',
+    'dataplex-types.global.usage',
+  ];
 
   private readonly _datasets: Map<string, bq.Dataset>;
 

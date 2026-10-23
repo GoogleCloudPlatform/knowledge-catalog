@@ -14,6 +14,7 @@ export class KnowledgeBaseSource implements CatalogSource {
   readonly ingestedEntries = false;
   readonly layout = Layouts.DOCUMENTS;
   readonly defaultAspects = [md.OVERVIEW_ASPECT];
+  readonly systemAspects = [];
 
   private readonly _name: string[];
   private readonly _entryGroup: dataplex.EntryGroup;
