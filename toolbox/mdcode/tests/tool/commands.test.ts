@@ -1127,11 +1127,6 @@ function fakeCatalog(opts: {missingType?: string} = {}) {
                 .filter(([, a]) => (aspectTypes ?? []).includes(a.aspectType!)));
         return {status: 200, result: {...structuredClone(e), aspects}};
       });
-  // A get returns what a lookup of the same entry returns.
-  spyOn(P, 'getEntry').mockImplementation(
-      async (p, l, _eg, id, aspectTypes) => P.lookupEntry(p, l,
-          [...entries.keys()].find(n => n.endsWith(`/entries/${id}`)) ?? '',
-          aspectTypes));
   spyOn(P, 'lookupEntryLinks')
       .mockImplementation(async () => ({status: 200, result: []}));
   spyOn(P, 'createEntryLink')
@@ -1318,19 +1313,55 @@ semantic_model:
          expect(fs.readFileSync(rebuilt, 'utf8')).toContain('name: commerce');
        });
 
-  // Push still reads each profile file, to check it.
-  test('with KC_V2_ASPECTS on, push stores no copy', async () => {
-    process.env.KC_V2_ASPECTS = '1';
-    writeRoundTripWorkspace();
-    const {entries} = fakeCatalog();
-    expect(await push({profile: false})).toBe(0);
-    expect(storedCopies(entries)).toEqual({});
+  // Push still reads each profile file, to check it. Both push paths write
+  // each overview sidecar into its entry's overview aspect, and a malformed
+  // sidecar stops them before they read the catalog.
+  test('with KC_V2_ASPECTS on, push stores no copy and writes the overview ' +
+           'sidecars, with --no-deployment too; a malformed sidecar or ' +
+           'profile file fails it',
+       async () => {
+         process.env.KC_V2_ASPECTS = '1';
+         writeRoundTripWorkspace();
+         const write = (name: string, text: string) => {
+           fs.mkdirSync(path.dirname(path.join(entryGroupDir(), name)),
+                        {recursive: true});
+           fs.writeFileSync(path.join(entryGroupDir(), name), text);
+         };
+         write('commerce.overview.md',
+               '---\ncontentType: MARKDOWN\n---\n# Commerce\n');
+         const {entries, create, list} = fakeCatalog();
+         const pushes = [{profile: false}, {deployment: false}];
+         for (const options of pushes) {
+           expect(await push(options)).toBe(0);
+           expect(storedCopies(entries)).toEqual({});
+           expect(entries
+                      .get('projects/test-project/locations/us/entryGroups/' +
+                           'commerce_eg/entries/commerce')!
+                      .aspects!['dataplex-types.global.overview'].data)
+               .toEqual({content: '# Commerce\n', contentType: 'MARKDOWN'});
+         }
 
-    writeRoundTripWorkspace('name: [unterminated\n');
-    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-    expect(await push({profile: false})).toBe(1);
-    expect(messages(errorSpy)).toContain('commerce.profile.prod.yaml');
-  });
+         write('commerce/metrics/revenue.overview.md',
+               '---\ncontentType: TEXT\n---\nNet.\n');
+         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+         for (const options of pushes) {
+           list.mockClear();
+           create.mockClear();
+           errorSpy.mockClear();
+           expect(await push(options)).toBe(1);
+           expect(messages(errorSpy)).toBe(
+               'Error: Overview sidecar ' +
+               "'commerce/metrics/revenue.overview.md': contentType is " +
+               "MARKDOWN or HTML, not 'TEXT'.");
+           expect(list).not.toHaveBeenCalled();
+           expect(create).not.toHaveBeenCalled();
+         }
+
+         writeRoundTripWorkspace('name: [unterminated\n');
+         errorSpy.mockClear();
+         expect(await push({profile: false})).toBe(1);
+         expect(messages(errorSpy)).toContain('commerce.profile.prod.yaml');
+       });
 });
 
 

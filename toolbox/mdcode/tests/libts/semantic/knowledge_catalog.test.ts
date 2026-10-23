@@ -16,6 +16,7 @@
 
 import {describe, expect, mock, spyOn, test} from 'bun:test';
 
+import type {OverviewSidecar} from '../../../src/libts/layouts/semantic-model';
 import {DataType, Entity, SemanticModel} from '../../../src/libts/semantic/ir';
 import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
 import {generateCatalogResources, KcGenerateOptions} from '../../../src/libts/semantic/knowledge_catalog';
@@ -1536,11 +1537,11 @@ ${ENTITY_YAML('orders')}
        });
 
   test('examples land in overview as content records, in order, with no ' +
-           'title or content type, and nowhere with none or an empty list',
+           'title or content type, beside what the entry\'s sidecar holds, ' +
+           'and nowhere with neither',
        () => {
          const model = loaded();
          model.metrics[1].aiContext = {examples: []};
-         expect(data(model, 'sales', 'overview')).toBeUndefined();
          expect(metric(model, 'order_count', 'overview')).toBeUndefined();
          model.aiContext!.examples = ['Total sales last month?', 'By region'];
          model.metrics[1].aiContext = {examples: ['How many orders?']};
@@ -1548,6 +1549,25 @@ ${ENTITY_YAML('orders')}
              .toEqual(EXAMPLES('Total sales last month?', 'By region'));
          expect(metric(model, 'order_count', 'overview'))
              .toEqual(EXAMPLES('How many orders?'));
+         // A sidecar fills the rest of the instance, an empty one adds
+         // nothing, and one with no entry warns.
+         const sidecar = {content: '# Sales', contentType: 'MARKDOWN',
+                          links: [{url: 'https://wiki/sales', title: 'Wiki'}]};
+         const opts = {...V2, overviews: new Map<string, OverviewSidecar>([
+           ['sales', sidecar], ['sales/metrics/revenue', {content: 'Net.'}],
+           ['sales/metrics/opaque_metric', {}],
+           ['sales/metrics/gone', {content: 'Old.'}],
+         ])};
+         expect(data(model, 'sales', 'overview', opts)).toEqual({
+           ...sidecar, ...EXAMPLES('Total sales last month?', 'By region'),
+         });
+         expect(metric(model, 'revenue', 'overview', opts))
+             .toEqual({content: 'Net.'});
+         expect(metric(model, 'opaque_metric', 'overview', opts))
+             .toBeUndefined();
+         expect(generateCatalogResources(model, opts).warnings).toContain(
+             'sidecar \'sales/metrics/gone.overview.md\' names no entry of ' +
+             'this model; it is not pushed');
        });
 
   test('guidelines holds the instructions and, in data, the custom ' +
@@ -1646,8 +1666,12 @@ ${ENTITY_YAML('addresses')}
            customExtensions:
                [{vendorName: 'DBT', data: '{"relationship": true}'}],
          });
-         expect(aspects![KEY('overview')].data)
-             .toEqual(EXAMPLES('Which customer placed order 42?'));
+         const id = 'sales/relationships/orders_to_customers';
+         const opts = {...V2, overviews: new Map([[id, {content: 'Edge.'}]])};
+         expect(data(model, id, 'overview', opts)).toEqual({
+           content: 'Edge.', ...EXAMPLES('Which customer placed order 42?'),
+         });
+         expect(generateCatalogResources(model, opts).warnings).toEqual([]);
          expect(aspects![KEY('schema')]).toBeUndefined();
          expect(aspects![KEY('sql-expressions')]).toBeUndefined();
          expect(rel(model, 'customer_address')).toEqual({

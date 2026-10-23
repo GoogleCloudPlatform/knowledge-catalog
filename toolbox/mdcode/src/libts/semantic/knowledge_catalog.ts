@@ -76,6 +76,7 @@
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
+import type {OverviewSidecar} from '../layouts/semantic-model';
 
 import {googleDeploymentTargets, unnamedDeployments} from './deployment_target';
 import {AiContext, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
@@ -109,6 +110,9 @@ export interface KcGenerateOptions {
   // The file copies of the model file and its profile files, each stored in
   // an entry of its own when v2Aspects is off. Absent emits none.
   sourceFiles?: FileCopy[];
+  // The overview sidecar of each entry, by entry id, which fills its overview
+  // beside the examples when v2Aspects is on.
+  overviews?: ReadonlyMap<string, OverviewSidecar>;
 }
 
 export interface KcResources {
@@ -261,6 +265,22 @@ export function generateCatalogResources(
           names, model, modelEntryName, entityEntryName, warnings) :
       undefined;
   if (v2Relationships) entries.push(...v2Relationships.entries);
+  // Each entry's sidecar fills the rest of its overview, beside the examples.
+  for (const [id, sidecar] of v2 ? opts.overviews ?? [] : []) {
+    const entry = entries.find(e => e.name === names.entry(id));
+    if (!entry) {
+      warnings.push(
+          `sidecar '${id}.overview.md' names no entry of this model; it is ` +
+          `not pushed`);
+      continue;
+    }
+    const examples =
+        entry.aspects?.[names.aspectRef('overview')]?.data?.examples;
+    const overview = compact({...sidecar, examples});
+    if (Object.keys(overview).length) {
+      entry.aspects = {...entry.aspects, ...aspectMap(names, {overview})};
+    }
+  }
 
   // One entry per action, alongside the entities and metrics. Actions have no
   // built-in system type, so they reference the custom pair declared in
@@ -632,7 +652,7 @@ function hasThirdPartyExtensions(model: SemanticModel): boolean {
 
 // One warning for each custom `ai_context` member that `guidelines` leaves
 // out, on the model, a metric or a relationship.
-export function unstorableMemberWarnings(model: SemanticModel): string[] {
+function unstorableMemberWarnings(model: SemanticModel): string[] {
   const warnings: string[] = [];
   const check = (object: string, ai: AiContext|undefined) => {
     for (const [member, value] of Object.entries(

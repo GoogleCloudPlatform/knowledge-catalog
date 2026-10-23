@@ -182,19 +182,24 @@ function deriveParentLocalName(name: string): string | undefined {
   return [...parentDir, INDEX_NAME].join('/');
 }
 
-export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+// Splits markdown text into its YAML frontmatter, parsed, and its body.
+// `metadata` is undefined when the text does not open with a `---` block.
+export function splitFrontmatter(
+    content: string): {metadata?: any; body: string} {
   const lines = content.split(/\r?\n/);
-  if (lines[0] !== '---') {
-    return { entry: null, body: content };
-  }
-  const endIndex = lines.indexOf('---', 1);
-  if (endIndex === -1) {
-    return { entry: null, body: content };
-  }
+  const endIndex = lines[0] === '---' ? lines.indexOf('---', 1) : -1;
+  if (endIndex === -1) return {body: content};
+  return {
+    metadata: yaml.parse(lines.slice(1, endIndex).join('\n')),
+    body: lines.slice(endIndex + 1).join('\n'),
+  };
+}
 
-  const frontmatter = lines.slice(1, endIndex).join('\n');
-  const metadata = yaml.parse(frontmatter);
-  const body = lines.slice(endIndex + 1).join('\n');
+export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+  const {metadata, body} = splitFrontmatter(content);
+  if (metadata === undefined) {
+    return { entry: null, body };
+  }
 
   const entry = (metadata.catalogEntry ?? {}) as md.Entry;
   entry.type = (typeof metadata.type === 'string' && metadata.type.split('.').length === 3)

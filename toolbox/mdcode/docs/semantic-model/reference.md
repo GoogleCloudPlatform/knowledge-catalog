@@ -528,6 +528,18 @@ prefix. It deletes the ones the model no longer has and leaves every other
 `semantic-metric.entity` holds the metric's entity, declared or derived.
 `excludedInProfiles` follows the order of the model entry's `profiles` list.
 
+Push writes the whole `overview` aspect of the model's entry and of each metric
+and relationship entry from the workspace, and never reads it back. `examples`
+come from the model file's `ai_context.examples`. `content`, `contentType` and
+`links` come from the entry's sidecar, the file `<entry-id>.overview.md` in the
+directory that holds `<model>.yaml`. For example, the model's sidecar is
+`<model>.overview.md` and a metric's is `<model>/metrics/<metric>.overview.md`.
+The sidecar's frontmatter holds `contentType` and `links`, and its body is
+`content`. `contentType` is `MARKDOWN` or `HTML`. Each link has a `url` and an
+optional `title`. A malformed sidecar fails the push before anything is
+written. Push warns about a sidecar that names no entry of the model. An
+overview edited in the console does not survive a push.
+
 ## Validation
 
 `push` and `--validate-only` run the same checks, apart from the Knowledge

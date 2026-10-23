@@ -265,6 +265,9 @@ function systemTypeProjectAndLocation(
  *   * Adds `<proj>.<loc>.semantic-extensions` on model, entity, metric and
  *     relationship entries, so Dataplex removes the aspect when the object no
  *     longer has a third-party extension block.
+ *   * Adds `<proj>.<loc>.overview` on model, metric and relationship entries,
+ *     so Dataplex removes the aspect when the object no longer has content
+ *     for it.
  *   * Adds `<proj>.<loc>.sql-expressions` on entity and metric entries.
  *   * Adds `<proj>.<loc>.guidelines@*` on entity entries so Dataplex clears
  *     field-level `guidelines` aspects for columns whose instructions or
@@ -281,6 +284,7 @@ export function entryAspectKeys(
 
   if (isSemanticObjectEntry(entry)) {
     keys.add(`${proj}.${loc}.semantic-extensions`);
+    if (!isEntityEntry(entry)) keys.add(`${proj}.${loc}.overview`);
   }
   if (isEntityEntry(entry) || isMetricEntry(entry)) {
     keys.add(`${proj}.${loc}.sql-expressions`);

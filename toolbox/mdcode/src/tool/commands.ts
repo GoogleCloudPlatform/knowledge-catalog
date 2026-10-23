@@ -11,7 +11,7 @@ import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
-import {fileNameOf, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {fileNameOf, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
@@ -20,7 +20,6 @@ import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {unstorableMemberWarnings} from '../libts/semantic/knowledge_catalog';
 import {deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
@@ -993,13 +992,15 @@ function warnModelFileNames(
 // is left out. `profileDocs` reads the model's profile files, and `declared`
 // its declared profiles, like the readers push builds. `source` is the
 // catalog destination, and `onlyModelDoc` says whether `doc` is the scope's
-// only model document. `warn` receives push's warnings about the custom
-// ai_context members it leaves out.
+// only model document. `overviews` holds the overview sidecars, which
+// profiles() reads once for the scope. `warn` receives the emitter's warnings,
+// which push prints too.
 async function pushErrors(
     doc: ProfiledDoc, profileName: string, defaultProject: string,
     ctx: context.ApiContext, profileDocs: ProfileDocs,
     declared: DeclaredProfiles, load: CloudSqlLoad,
     source: SemanticModelSource, onlyModelDoc: boolean,
+    overviews: ReadonlyMap<string, OverviewSidecar>,
     warn: (warning: string) => void): Promise<string[]> {
   const graph = declaresGraphTarget(doc.text);
   const refused = graph ? profileFileGraphError([doc], profileName) : undefined;
@@ -1014,17 +1015,14 @@ async function pushErrors(
         error: e => errors.push(e),
       });
   if (!prepared) return errors;
-  // With KC_V2_ASPECTS on, push warns about each custom ai_context member it
-  // leaves out, and checks every aspect's size before it deploys or writes
-  // anything. A scope with more than one model fails the one-model check first.
+  // With KC_V2_ASPECTS on, push prints the emitter's warnings and checks every
+  // aspect's size before it deploys or writes anything. A scope with more than
+  // one model fails the one-model check first.
   if (kcV2Aspects() && onlyModelDoc) {
-    for (const {model} of prepared.models) {
-      for (const w of unstorableMemberWarnings(model)) {
-        warn(`[${model.name}] ${w}`);
-      }
-    }
-    const problem = catalogAspectsError(prepared.models, source);
-    if (problem) return [...errors, problem];
+    const {error, warnings} =
+        catalogAspects(prepared.models, source, overviews);
+    for (const w of warnings) warn(w);
+    if (error) return [...errors, error];
   }
   if (!graph) return errors;
   // Push then generates each graph's DDL. Under --validate-only,
@@ -1047,15 +1045,19 @@ async function pushErrors(
   return errors;
 }
 
-// What checkCatalogAspects reports for a flag-on push of `models` to `source`.
-function catalogAspectsError(
-    models: LoadedModel[], source: SemanticModelSource): string|undefined {
+// What checkCatalogAspects reports for a flag-on push of `models` to `source`
+// with the overview sidecars `overviews`.
+function catalogAspects(
+    models: LoadedModel[], source: SemanticModelSource,
+    overviews?: ReadonlyMap<string, OverviewSidecar>):
+    {error?: string; warnings: string[]} {
   return kc.checkCatalogAspects(models, {
     project: source.project,
     location: source.location,
     entryGroup: source.entryGroup,
     systemTypeProject: process.env.KC_TYPE_PROJECT,
     v2Aspects: true,
+    overviews,
   });
 }
 
@@ -1400,14 +1402,22 @@ export async function push(options: PushOptions): Promise<number> {
       }
       fileCopies = copies.files;
     }
-    // With KC_V2_ASPECTS on, a graph push runs checkCatalogAspects here, before
-    // any graph deploys. A scope with more than one model skips it, since the
-    // catalog leg's preflight refuses that scope first.
-    if (kcEnabled && kcV2Aspects() && graphPlans.length &&
-        layoutDocs.length === 1) {
+    // With KC_V2_ASPECTS on, push reads the overview sidecars, and a graph push
+    // runs checkCatalogAspects, before any graph deploys. With more than one
+    // model document, push has stopped above.
+    let overviews: Map<string, OverviewSidecar>|undefined;
+    if (kcEnabled && kcV2Aspects() && layoutDocs.length === 1) {
       const prepared = await prepareKc();
       if (!prepared) return 1;
-      const problem = catalogAspectsError(prepared.models, source);
+      let problem: string|undefined;
+      try {
+        overviews = layout.overviewSidecars();
+        if (graphPlans.length) {
+          problem = catalogAspects(prepared.models, source, overviews).error;
+        }
+      } catch (err: any) {
+        problem = err.message;
+      }
       if (problem) {
         console.error(`Error: ${problem}`);
         return 1;
@@ -1496,7 +1506,7 @@ export async function push(options: PushOptions): Promise<number> {
       if (!prepared) return 1;
       warnModelFileNames(prepared.models, fileCopies);
       const code = await pushKnowledgeCatalog(
-          prepared.models, ctx, options, source, fileCopies);
+          prepared.models, ctx, options, source, fileCopies, overviews);
       if (code !== 0) return code;
     } else if (deployedGraphs === 0) {
       // Graph-only push (--no-kc) whose selected profile(s) declare no target:
@@ -1602,14 +1612,15 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if (!checked) return 1;
-  const {kcModels, fileCopies} = checked;
+  const {kcModels, fileCopies, overviews} = checked;
   if (fileCopies.length) {
     const problem = await kc.checkCustomTypes(
         new dataplex.CatalogClient(ctx), source, [FILE_COPY_TYPE_ID]);
     if (problem) return fail(problem);
   }
   warnModelFileNames(kcModels, fileCopies);
-  const kcOptions = catalogDeployOptions(options, source, fileCopies);
+  const kcOptions =
+      catalogDeployOptions(options, source, fileCopies, overviews);
   const preflight =
       await kc.preflightKnowledgeCatalog(kcModels, ctx, kcOptions);
   const preflightWarnings =
@@ -1628,10 +1639,14 @@ async function pushInTwoPhases(
 }
 
 // The local checks of a two-phase push, which call no service: it stops at
-// the first check that fails, and returns the models the catalog receives and
-// the file copies it stores, or undefined after printing why push stops.
+// the first check that fails, and returns the models the catalog receives, the
+// file copies it stores and the overview sidecars it writes, or undefined
+// after printing why push stops.
 async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
-    Promise<{kcModels: LoadedModel[]; fileCopies: FileCopy[]}|undefined> {
+    Promise<{
+      kcModels: LoadedModel[]; fileCopies: FileCopy[];
+      overviews?: Map<string, OverviewSidecar>;
+    }|undefined> {
   const {ctx, layout, source, docs, profileDocs, load} = scope;
   const fail = (...errors: string[]) => {
     for (const error of new Set(errors)) console.error(`Error: ${error}`);
@@ -1666,12 +1681,20 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
   const declaredNames = (document: string) =>
       declaredBy(docs.find(d => d.name === document)!).map(p => p.name);
   // With KC_V2_ASPECTS off, the catalog stores each model file and profile
-  // file as read.
+  // file as read. With it on, it writes each overview sidecar.
   let fileCopies: FileCopy[] = [];
+  let overviews: Map<string, OverviewSidecar>|undefined;
   if (!kcV2Aspects() && docs.length === 1) {
     const copies = checkedFileCopies(layout, docs, profileDocs);
     if (copies.error) return fail(copies.error);
     fileCopies = copies.files;
+  }
+  if (kcV2Aspects() && docs.length === 1) {
+    try {
+      overviews = layout.overviewSidecars();
+    } catch (err: any) {
+      return fail(err.message);
+    }
   }
 
   // Every deployment's target must be in an accepted form, and its profile one
@@ -1726,7 +1749,7 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
     return fail(...profileErrors, ...kcErrors);
   }
 
-  return {kcModels, fileCopies};
+  return {kcModels, fileCopies, overviews};
 }
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
@@ -1943,7 +1966,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   if (!load) return 1;
   const errorsFor = (doc: ProfiledDoc, name: string) => pushErrors(
       doc, name, defaultProject, ctx, profileDocs, declaredBy, load, source,
-      docs.length === 1,
+      docs.length === 1, overviews,
       w => console.warn(`  profile '${name}': warning: ${w}`));
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline
@@ -1981,6 +2004,15 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   if (!kcV2Aspects() && docs.length === 1) {
     const {error} = checkedFileCopies(layout, docs, profileDocs);
     if (error) printRejects('', [error]);
+  }
+  // With it on, push reads the overview sidecars before any graph deploys.
+  let overviews: ReadonlyMap<string, OverviewSidecar> = new Map();
+  if (kcV2Aspects() && docs.length === 1) {
+    try {
+      overviews = layout.overviewSidecars();
+    } catch (err: any) {
+      printRejects('', [err.message]);
+    }
   }
 
   for (const doc of docs) {
@@ -2189,12 +2221,13 @@ async function pushSpanner(
 
 
 // Deploys the semantic model's Knowledge Catalog leg (over the pre-loaded
-// models) and prints the result. The destination coordinates come from the
-// scope (project.location.entryGroup). Returns a process exit code (0 on
-// success).
+// models, with their overview sidecars) and prints the result. The
+// destination coordinates come from the scope (project.location.entryGroup).
+// Returns a process exit code (0 on success).
 async function pushKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
-    source: SemanticModelSource, sourceFiles: FileCopy[]): Promise<number> {
+    source: SemanticModelSource, sourceFiles: FileCopy[],
+    overviews?: ReadonlyMap<string, OverviewSidecar>): Promise<number> {
   console.log(
       options.validateOnly ?
           'Validating semantic model for Knowledge Catalog...' :
@@ -2210,7 +2243,7 @@ async function pushKnowledgeCatalog(
     printed = warnings.length;
   };
   const result = await kc.deployKnowledgeCatalog(models, ctx, {
-    ...catalogDeployOptions(options, source, sourceFiles),
+    ...catalogDeployOptions(options, source, sourceFiles, overviews),
     onWarnings: printWarnings,
   });
 
@@ -2219,10 +2252,11 @@ async function pushKnowledgeCatalog(
 }
 
 // The options the Knowledge Catalog leg takes from the push `options`, the
-// scope `source` and the file copies push stores.
+// scope `source`, the file copies push stores and the overview sidecars it
+// writes.
 function catalogDeployOptions(
-    options: PushOptions, source: SemanticModelSource,
-    sourceFiles: FileCopy[]): kc.KcDeployOptions {
+    options: PushOptions, source: SemanticModelSource, sourceFiles: FileCopy[],
+    overviews?: ReadonlyMap<string, OverviewSidecar>): kc.KcDeployOptions {
   return {
     project: source.project,
     location: source.location,
@@ -2236,6 +2270,7 @@ function catalogDeployOptions(
     systemTypeProject: process.env.KC_TYPE_PROJECT,
     v2Aspects: kcV2Aspects(),
     sourceFiles,
+    overviews,
     // Push looks up the file-copy type before any graph deploys whenever it
     // has copies to store.
     fileCopyTypeChecked: sourceFiles.length > 0,

@@ -1,10 +1,11 @@
 // Implements the SemanticModel layout.
 //
 // The whole model definition is a single Apache Ossie document per model,
-// located at `catalog/EntryGroups/<entryGroupId>/<model>.yaml`. Optional
-// `.aspects.yaml` / `.overview.yaml` sidecars and nested entity/metric sidecars
-// are part of this layout's design but are a follow-on; this push-only
-// implementation discovers and reads the model documents and nothing else.
+// located at `catalog/EntryGroups/<entryGroupId>/<model>.yaml`, with its
+// profile files beside it. The model's Knowledge Catalog entry and each metric
+// and relationship entry may have an overview sidecar at its entry id under
+// the same directory: `<model>.overview.md` for the model and, for example,
+// `<model>/metrics/<metric>.overview.md` for a metric.
 //
 
 import * as glob from 'glob';
@@ -18,6 +19,8 @@ import {modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {YAML_OPTIONS} from '../semantic/yaml_options';
 
+import {splitFrontmatter} from './documents';
+
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
 
@@ -27,6 +30,17 @@ const PROFILE_FILE = /^(.+)\.profile\.([^.]+)\.yaml$/;
 // Any file shaped like a profile file, including a nameless one and one whose
 // profile name has a dot, which is never a model either.
 const ANY_PROFILE_FILE = /\.profile\.(.*\.)?yaml$/;
+
+// The suffix of an entry's overview sidecar.
+const OVERVIEW_SIDECAR = '.overview.md';
+
+// The overview fields an entry's sidecar holds: `contentType` and `links` in
+// its frontmatter, and `content` in its body.
+export interface OverviewSidecar {
+  content?: string;
+  contentType?: string;
+  links?: Array<{url: string; title?: string}>;
+}
 
 // The profile name reserved for the inline bindings in the model file.
 const DEFAULT_PROFILE_NAME = 'default';
@@ -148,6 +162,34 @@ export class SemanticModelLayout implements CatalogLayout {
           .map(p => ({path: p.path, profileName: p.name})),
       ...this._legacyProfilePaths(model).map(p => ({path: p.path})),
     ];
+  }
+
+  // The overview sidecar of each entry, by entry id. Throws naming a sidecar
+  // parseOverviewSidecar rejects.
+  overviewSidecars(): Map<string, OverviewSidecar> {
+    return new Map(this.overviewSidecarPaths().map(
+        ({entryId, path: p}) => [
+          entryId,
+          parseOverviewSidecar(
+              fs.readFileSync(p, 'utf8'), path.relative(this._groupDir(), p)),
+        ]));
+  }
+
+  // Each overview sidecar on disk at a model, metric or relationship path,
+  // with the entry id its path names, in path order.
+  overviewSidecarPaths(): {entryId: string; path: string}[] {
+    if (!this._entryGroup) return [];
+    const dir = this._groupDir();
+    const files = glob.globSync(
+        [
+          `*${OVERVIEW_SIDECAR}`,
+          `*/{metrics,relationships}/*${OVERVIEW_SIDECAR}`,
+        ],
+        {cwd: dir, nodir: true, posix: true});
+    return files.sort().map(f => ({
+                             entryId: f.slice(0, -OVERVIEW_SIDECAR.length),
+                             path: path.join(dir, f),
+                           }));
   }
 
   // The text and path of each profile file beside a model, by profile name.
@@ -472,6 +514,42 @@ export function fileNameOf(
   return path.relative(path.dirname(layout.modelPath(model)), localPath)
       .split(path.sep)
       .join('/');
+}
+
+// Reads the overview sidecar `text`. Throws naming `file` when its frontmatter
+// does not parse, holds a key other than contentType and links, gives a
+// contentType other than MARKDOWN or HTML, or a link with no url.
+export function parseOverviewSidecar(
+    text: string, file: string): OverviewSidecar {
+  const fail = (problem: string) =>
+      new Error(`Overview sidecar '${file}': ${problem}`);
+  let split: {metadata?: any; body: string};
+  try {
+    split = splitFrontmatter(text);
+  } catch (err: any) {
+    throw fail(`its frontmatter does not parse: ${err?.message ?? err}`);
+  }
+  const metadata = split.metadata ?? {};
+  const extra = typeof metadata === 'object' && !Array.isArray(metadata) ?
+      Object.keys(metadata).find(k => k !== 'contentType' && k !== 'links') :
+      '';
+  if (extra !== undefined) {
+    throw fail(
+        `its frontmatter holds only contentType and links` +
+        (extra ? `, not '${extra}'.` : '.'));
+  }
+  const {contentType, links} = metadata;
+  if (contentType !== undefined && contentType !== 'MARKDOWN' &&
+      contentType !== 'HTML') {
+    throw fail(`contentType is MARKDOWN or HTML, not '${contentType}'.`);
+  }
+  const isLink = (l: any) => typeof l?.url === 'string' &&
+      ['string', 'undefined'].includes(typeof l.title) &&
+      Object.keys(l).every(k => k === 'url' || k === 'title');
+  if (links !== undefined && !(Array.isArray(links) && links.every(isLink))) {
+    throw fail('links is a list of entries, each a url and an optional title.');
+  }
+  return {content: split.body || undefined, contentType, links};
 }
 
 // The `name` a profile file declares at its top level, or undefined when it

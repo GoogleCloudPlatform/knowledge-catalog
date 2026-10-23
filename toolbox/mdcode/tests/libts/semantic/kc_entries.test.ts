@@ -381,18 +381,21 @@ describe('entryAspectKeys', () => {
           'dataplex-types.global.semantic-metric',
           'dataplex-types.global.guidelines',
           'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
           'dataplex-types.global.sql-expressions',
         ]));
         expect(modelKeys).toEqual(new Set([
           'dataplex-types.global.semantic-model',
           'dataplex-types.global.guidelines',
           'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
         ]));
         expect(entryAspectKeys(relationship, {v2Aspects: true}))
             .toEqual(new Set([
               'dataplex-types.global.semantic-relationship',
               'dataplex-types.global.guidelines',
               'dataplex-types.global.semantic-extensions',
+              'dataplex-types.global.overview',
             ]));
       });
 

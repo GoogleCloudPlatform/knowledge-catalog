@@ -23,8 +23,7 @@
 //     entry group to guard against foreign models (unless `--force-remove` is
 //     set), and checks that any required custom entry/aspect types exist in
 //     the target project. With the second-generation aspects, it also checks
-//     every aspect's size and reads the overview instances of each listed
-//     entry.
+//     every aspect's size.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
@@ -52,10 +51,11 @@ import {ApiResult} from '../gcp/api';
 import * as context from '../gcp/context';
 import * as crm from '../gcp/crm';
 import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import type {OverviewSidecar} from '../layouts/semantic-model';
 
 import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntityEntry, isEntryOwner, isLinkOwner, isModelLink, isSemanticObjectEntry, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
-import {entryIdOf, Namer, slug} from './kc_ids';
+import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
+import {entryIdOf, slug} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -85,6 +85,9 @@ export interface KcDeployOptions {
   // The file copies of the model file and its profile files, which the
   // emitter stores when v2Aspects is off.
   sourceFiles?: FileCopy[];
+  // The overview sidecar of each entry, by entry id, which the emitter writes
+  // into the entry's overview when v2Aspects is on.
+  overviews?: ReadonlyMap<string, OverviewSidecar>;
   // Set when the caller has already checked that the file-copy type exists
   // in the destination project. The preflight then does not look that type
   // up again. It still looks up every other custom type the model uses.
@@ -165,8 +168,6 @@ export interface KcPreparedDeploy {
   existing: Entry[];
   warnings: string[];
   plan: string[];
-  // By entry id, the exact keys of the overview instances each update removes.
-  removedAspectKeys?: ReadonlyMap<string, readonly string[]>;
 }
 
 type ResultBuilder = (success: boolean, details?: string) => KcDeployResult;
@@ -195,8 +196,7 @@ function sleep(ms: number): Promise<void> {
  *      `opts.fileCopyTypeChecked` is set.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
- * With `opts.v2Aspects` set, step 2 also checks every aspect's size, and step
- * 5 first merges in the overview instances each listed entry holds.
+ * With `opts.v2Aspects` set, step 2 also checks every aspect's size.
  */
 export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
@@ -281,8 +281,7 @@ export async function applyKnowledgeCatalog(
   // leave out what the step that threw had already written.
   const written =
       await writeEmittedModels(
-          cat, opts, emitted, existing, counts, isScopeProject,
-          prepared.removedAspectKeys)
+          cat, opts, emitted, existing, counts, isScopeProject)
           .catch((err: any) => ({error: String(err?.message || err).trim()}));
   if (written.error) return failed(written.error);
 
@@ -332,9 +331,6 @@ export async function deployEmittedModels(
  *   3. Validates that every custom type used by the model exists in the
  *      target project. Skips the file-copy type when
  *      `opts.fileCopyTypeChecked` is set.
- *   4. With `opts.v2Aspects` set, merges in the overview instances of each
- *      listed model, metric and relationship entry, and checks the size of
- *      each merged aspect, as `keepOverviews` describes.
  */
 async function preflightEmittedModels(
     emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
@@ -382,13 +378,7 @@ async function preflightEmittedModels(
       await validateCustomTypes(cat, model, opts, result);
   if (!customTypesValidation.success) return {result: customTypesValidation};
 
-  if (!opts.v2Aspects) return {prepared: {emitted, existing, warnings, plan}};
-
-  // 4. Keep what other writers put in the overview instances.
-  const kept = await keepListedOverviews(cat, opts, model, existing);
-  if (kept.error) return {result: result(false, kept.error)};
-  const prepared = {emitted: [kept.model], existing, warnings, plan};
-  return {prepared: {...prepared, removedAspectKeys: kept.removed}};
+  return {prepared: {emitted, existing, warnings, plan}};
 }
 
 /**
@@ -525,18 +515,17 @@ function fileCopySizeError(data: Record<string, any>): string|undefined {
 }
 
 /**
- * Why push's catalog leg cannot write `models` with v2Aspects on: an emit
- * error or an aspect too large to store. Calls no service.
+ * The emitter's warnings for `models` with v2Aspects on, and why push's
+ * catalog leg cannot write them: an emit error or an aspect too large to
+ * store. Calls no service.
  */
 export function checkCatalogAspects(
-    models: LoadedModel[], opts: KcDeployOptions): string|undefined {
+    models: LoadedModel[],
+    opts: KcDeployOptions): {error?: string; warnings: string[]} {
   const emit = emitModels(models, opts);
-  if (emit.error) return emit.error;
-  for (const model of emit.emitted) {
-    const error = emittedAspectsError(model);
-    if (error) return error;
-  }
-  return undefined;
+  const error =
+      emit.error ?? emit.emitted.map(emittedAspectsError).find(e => e);
+  return {error, warnings: emit.warnings};
 }
 
 // Why push cannot write what `model` emits, or undefined when it can.
@@ -551,9 +540,6 @@ function emittedAspectsError(model: EmittedModel): string|undefined {
   }
   return undefined;
 }
-
-// Most aspects Dataplex returns for one entry in one read.
-const MAX_ASPECTS_PER_READ = 100;
 
 // Why Knowledge Catalog cannot store one of `aspects`, which `owner` carries,
 // or undefined when each fits.
@@ -587,108 +573,6 @@ function storedJsonBytes(data: unknown): number {
 // optional `@<path>`.
 function aspectTypeIdOfKey(key: string): string {
   return key.split('@')[0].split('.').pop() ?? '';
-}
-
-/**
- * Reads the overview instances of each listed model, metric and relationship
- * entry, and merges them in as `keepOverviews` does. Fails naming the first
- * entry whose read fails with anything but 404.
- */
-async function keepListedOverviews(
-    cat: CatalogClient, opts: KcDeployOptions, model: EmittedModel,
-    existing: readonly Entry[]): Promise<
-    {model: EmittedModel; removed: Map<string, string[]>; error?: string}> {
-  const listed = new Set(existing.map(entryId));
-  const reads = await Promise.all(model.resources.entries.map(async entry => {
-    const id = entryId(entry);
-    if (!listed.has(id) || !isSemanticObjectEntry(entry) ||
-        isEntityEntry(entry)) {
-      return {entry};
-    }
-    const read = await cat.getEntry(
-        opts.project, opts.location, opts.entryGroup, id,
-        [overviewTypeName(opts)]);
-    if (isNotFoundStatus(read)) return {entry};
-    if (!isOkStatus(read)) {
-      return {
-        entry,
-        error: `reading the overview aspects of entry '${id}' failed: ${
-            errText(read)}`,
-      };
-    }
-    return keepOverviews(entry, read.result, opts);
-  }));
-  const removed = new Map<string, string[]>();
-  for (const read of reads) {
-    if (read.error) return {model, removed, error: read.error};
-    if (read.removed?.length) removed.set(entryId(read.entry), read.removed);
-  }
-  const entries = reads.map(r => r.entry);
-  return {model: {...model, resources: {...model.resources, entries}}, removed};
-}
-
-function overviewTypeName(opts: KcDeployOptions): string {
-  return new Namer(opts).typeName('aspect', 'overview');
-}
-
-/**
- * Merges the overview instances of `stored` into `entry`, keeping every stored
- * field but `examples`, and lists the instances left empty in `removed`. Fails
- * when `stored` holds as many instances as one read returns, or when an aspect
- * of the merged entry is too large to store.
- */
-function keepOverviews(
-    entry: Entry, stored: Entry|undefined, opts: KcDeployOptions):
-    {entry: Entry; removed?: string[]; error?: string} {
-  const instances = overviewInstances(stored);
-  const id = entryId(entry);
-  if (instances.size >= MAX_ASPECTS_PER_READ) {
-    return {
-      entry,
-      error: `entry '${id}' holds ${MAX_ASPECTS_PER_READ} or more overview ` +
-          `aspects, and Knowledge Catalog returns at most ` +
-          `${MAX_ASPECTS_PER_READ} in one read, so push cannot keep the ones ` +
-          `it does not see; remove some of them, then push again.`,
-    };
-  }
-  const overviewKey = new Namer(opts).aspectRef('overview');
-  const instanceKey = (path: string) =>
-      path ? `${overviewKey}@${path}` : overviewKey;
-  const aspects: Record<string, Aspect> = {...entry.aspects};
-  const removed: string[] = [];
-  for (const [path, data] of instances) {
-    const key = instanceKey(path);
-    const written = aspects[key];
-    if (written) {
-      aspects[key] = {
-        ...written,
-        data: {...data, examples: written.data?.examples},
-      };
-      continue;
-    }
-    if (!Array.isArray(data.examples) || !data.examples.length) continue;
-    const {examples: _, ...rest} = data;
-    if (Object.keys(rest).length) {
-      aspects[key] = {aspectType: overviewTypeName(opts), data: rest};
-    } else {
-      removed.push(key);
-    }
-  }
-  const tooLarge = aspectDataError(aspects, `entry '${id}'`);
-  if (tooLarge) return {entry, error: tooLarge};
-  return {entry: {...entry, aspects}, removed};
-}
-
-// The overview instances of `entry` as data by path, '' for the entry-level
-// one. A key matches by its type id alone, whatever project it names.
-function overviewInstances(entry: Entry|undefined):
-    Map<string, Record<string, any>> {
-  const out = new Map<string, Record<string, any>>();
-  for (const [key, aspect] of Object.entries(entry?.aspects ?? {})) {
-    if (aspectTypeIdOfKey(key) !== 'overview') continue;
-    out.set(key.split('@').slice(1).join('@'), aspect.data ?? {});
-  }
-  return out;
 }
 
 /**
@@ -773,6 +657,7 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
         emitExpressions: opts.emitExpressions,
         v2Aspects: opts.v2Aspects,
         sourceFiles: opts.sourceFiles,
+        overviews: opts.overviews,
       });
     } catch (err: any) {
       return {
@@ -847,12 +732,11 @@ function planSummary(
  */
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
-    existing: Entry[], counts: Counts, isScopeProject: ProjectMatcher,
-    removedAspectKeys?: ReadonlyMap<string, readonly string[]>):
-    Promise<{error?: string}> {
+    existing: Entry[], counts: Counts,
+    isScopeProject: ProjectMatcher): Promise<{error?: string}> {
   for (const {model, resources} of emitted) {
-    const entries = await writeEntries(
-        cat, opts, resources.entries, existing, removedAspectKeys);
+    const entries =
+        await writeEntries(cat, opts, resources.entries, existing);
     counts.created += entries.created;
     counts.updated += entries.updated;
     if (entries.error) return {error: `Model '${model}': ${entries.error}`};
@@ -1401,19 +1285,15 @@ interface EntriesOutcome {
  *      entities by name) concurrently.
  *
  * An entry that already exists is updated in place (idempotent re-push).
- * Its update also removes the aspects `removedAspectKeys` lists for it.
  */
 async function writeEntries(
     cat: CatalogClient, opts: KcDeployOptions, entries: Entry[],
-    existing: Entry[] = [],
-    removedAspectKeys?: ReadonlyMap<string, readonly string[]>):
-    Promise<EntriesOutcome> {
+    existing: Entry[] = []): Promise<EntriesOutcome> {
   if (!entries.length) return {created: 0, updated: 0};
   // The entrySource each entry had before this push. An update keeps the
   // fields kcmd does not own.
   const sources = new Map(existing.map(e => [entryId(e), e.entrySource]));
-  const write = (e: Entry) =>
-      writeEntry(cat, opts, e, sources, removedAspectKeys?.get(entryId(e)));
+  const write = (e: Entry) => writeEntry(cat, opts, e, sources);
   const [anchor, ...children] = entries;
 
   const anchorRes = await write(anchor);
@@ -1692,36 +1572,23 @@ function duplicateEndpointsError(link: EntryLink, createError: string): string {
  * if it already exists (HTTP 409), delegates to `updateEntry` with the
  * entrySource `sources` lists for it. An entry `sources` does not hold is read
  * first. That happens after a listing the caller may not make, or when another
- * writer created the entry after the listing. With v2Aspects on, the read of
- * a model, metric or relationship entry also returns its overview instances
- * for `keepOverviews`.
+ * writer created the entry after the listing.
  */
 async function writeEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
-    sources: ReadonlyMap<string, Entry['entrySource']>,
-    removedKeys?: readonly string[]): Promise<WriteOutcome> {
+    sources: ReadonlyMap<string, Entry['entrySource']>): Promise<WriteOutcome> {
   const id = entryId(entry);
   const res = await createEntry(cat, opts, id, entry);
   if (isExistsStatus(res)) {
-    if (sources.has(id)) {
-      return updateEntry(cat, opts, entry, sources.get(id), removedKeys);
-    }
-    const readOverviews =
-        opts.v2Aspects && isSemanticObjectEntry(entry) && !isEntityEntry(entry);
+    if (sources.has(id)) return updateEntry(cat, opts, entry, sources.get(id));
     const read = await cat.getEntry(
-        opts.project, opts.location, opts.entryGroup, id,
-        readOverviews ? [overviewTypeName(opts)] : undefined,
+        opts.project, opts.location, opts.entryGroup, id, undefined,
         {keepSourceResource: true});
     if (!isOkStatus(read)) {
       return {error: `entry '${id}': reading it before the update: ${
                   errText(read)}`};
     }
-    const kept =
-        readOverviews ? keepOverviews(entry, read.result, opts) : undefined;
-    if (kept?.error) return {error: kept.error};
-    return updateEntry(
-        cat, opts, kept?.entry ?? entry, read.result?.entrySource,
-        kept?.removed);
+    return updateEntry(cat, opts, entry, read.result?.entrySource);
   }
   if (!isOkStatus(res)) return {error: `entry '${id}': ${errText(res)}`};
   return {};
@@ -1745,8 +1612,7 @@ const KEPT_SOURCE_FIELDS =
  * Push owns the optional aspects `entryAspectKeys` lists, so it removes any
  * that the model does not declare even if someone added them in the console.
  * Every other aspect another tool attached is left alone, since `aspectKeys`
- * names only the types kcmd writes. The update also removes the aspects
- * `removedKeys` names.
+ * names only the types kcmd writes.
  *
  * The update mask replaces the whole entrySource, so the update carries over
  * fields from `source`, the entrySource the entry had before this push. Of
@@ -1761,8 +1627,7 @@ const KEPT_SOURCE_FIELDS =
  */
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
-    source?: Entry['entrySource'],
-    removedKeys: readonly string[] = []): Promise<WriteOutcome> {
+    source?: Entry['entrySource']): Promise<WriteOutcome> {
   const {[PUSH_ID_LABEL]: _own, ...others} = source?.labels ?? {};
   const labels = {...others, ...entry.entrySource?.labels};
   const kept = Object.fromEntries(
@@ -1782,7 +1647,6 @@ async function updateEntry(
   // removed aspect when its key (or `<project>.<location>.guidelines@*` for
   // field-level `guidelines`) is still listed in `aspectKeys`.
   const aspectKeys = entryAspectKeys(entry, opts);
-  for (const key of removedKeys) aspectKeys.add(key);
   const upd = await cat.updateEntry(
       entry, ['entry_source', 'aspects'], [...aspectKeys],
       /* deleteMissingAspects= */ true);

@@ -1317,19 +1317,38 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     expect(errs).toEqual([]);
   });
 
-  test('prints push\'s error for a scope with two models once', async () => {
-    writeScope({
-      'commerce.yaml': commerce(),
-      'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
-    });
-    const pushed = await pushResult();
-    expect(pushed.errors).toEqual(
-        [expect.stringContaining('would receive 2 models')]);
-    expect(await profiles()).toBe(1);
-    expect(rejects(logs, '')).toEqual(pushed.errors);
-    expect(logs.filter(l => l.includes('would receive 2 models')))
-        .toHaveLength(1);
-  });
+  // `text` with a 130 KiB third-party block on the model, which only the
+  // second-generation aspects store.
+  const bigBlock = (text: string) => text.replace(
+      '  - name: commerce\n',
+      `  - name: commerce\n    custom_extensions:\n      - {vendor_name: DBT, ` +
+          `data: ${'x'.repeat(130 * 1024)}}\n`);
+  // Push gives a scope with two models its one-model error, once, and checks
+  // neither the copies nor the aspects.
+  for (const [label, model, v2] of [
+         ['', commerce(), false],
+         [' and a file over the size limit',
+          `# ${'x'.repeat(130 * 1024)}\n${commerce()}`, false],
+         [' and an aspect over the size limit with KC_V2_ASPECTS on',
+          bigBlock(commerce()), true],
+       ] as const) {
+    test(`prints only push's one-model error for two models${label}`,
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeScope({
+             'commerce.yaml': model,
+             'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
+           });
+           const pushed = await pushResult();
+           expect(pushed.errors).toEqual(
+               [expect.stringContaining('would receive 2 models')]);
+           expect(await profiles()).toBe(1);
+           expect(rejects(logs, '')).toEqual(pushed.errors);
+           expect(logs.filter(l => l.includes('would receive 2 models')))
+               .toHaveLength(1);
+           expect(logs.join('\n')).not.toContain('too large');
+         });
+  }
 
   // With KC_V2_ASPECTS off, push stores a copy of each model and profile file
   // and checks the copies before any graph deploys, so a copy that fails a
@@ -1377,64 +1396,37 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
     });
   }
 
-  // `text` with a 130 KiB third-party block on the model, which only the
-  // second-generation aspects store.
-  const bigBlock = (text: string) => text.replace(
-      '  - name: commerce\n',
-      `  - name: commerce\n    custom_extensions:\n      - {vendor_name: DBT, ` +
-          `data: ${'x'.repeat(130 * 1024)}}\n`);
-  // Push checks neither the copies nor the aspects when the scope holds more
-  // than one model document.
-  for (const [label, targets, v2, model] of [
-         ['a file over the size limit', 0, false,
-          `# ${'x'.repeat(130 * 1024)}\n${commerce()}`],
-         ['an aspect over the size limit with KC_V2_ASPECTS on for a graph ' +
-              'push',
-          1, true, bigBlock(commerce({targets: 1}))],
-       ] as const) {
-    test(`prints only the one-model error for two models and ${label}`,
-         async () => {
-           if (v2) process.env.KC_V2_ASPECTS = '1';
-           writeScope({
-             'commerce.yaml': model,
-             'shop.yaml': commerce({targets})
-                              .replace('name: commerce', 'name: shop')
-                              .replace(`${GRAPH}_prod`, `${GRAPH}_shop`),
-           });
-           const pushed = await pushResult();
-           expect(pushed.errors).toEqual(
-               [expect.stringContaining('would receive 2 models')]);
-           expect(await profiles()).toBe(1);
-           expect(rejects(logs, '')).toEqual(pushed.errors);
-           expect(logs.join('\n')).not.toContain('too large');
-         });
+  // With KC_V2_ASPECTS on, push reads the overview sidecars and checks every
+  // aspect the catalog leg writes, before any graph deploys. A malformed
+  // sidecar is reported once, for the scope.
+  for (const [label, files, error, profile, indent = '    '] of [
+         ['an aspect over the size limit in a graph push',
+          {'commerce.yaml': bigBlock(commerce({targets: 1}))},
+          'too large to store in Knowledge Catalog'],
+         ['an aspect over the size limit for a named profile', {
+           'commerce.yaml': bigBlock(commerce()),
+           'commerce.profile.prod.yaml': profileFile('prod'),
+         }, 'too large to store in Knowledge Catalog', 'prod'],
+         ['a malformed overview sidecar', {
+           'commerce.yaml': commerce(),
+           'commerce.overview.md':
+               '---\ncontentType: markdown\n---\nOrders and customers.\n',
+         }, "not 'markdown'", undefined, ''],
+       ] as [string, Record<string, string>, string, string?, string?][]) {
+    test(`prints push's error for ${label} with KC_V2_ASPECTS on`, async () => {
+      process.env.KC_V2_ASPECTS = '1';
+      writeScope(files);
+      const pushed = await pushResult(profile);
+      expect(pushed).toEqual(
+          {code: 1, errors: [expect.stringContaining(error)]});
+      expect(await profiles()).toBe(1);
+      expect(rejects(profile ? profileSection(profile) : logs, indent))
+          .toEqual(pushed.errors);
+    });
   }
 
-  // With KC_V2_ASPECTS on, push checks every aspect the catalog leg writes,
-  // before any graph deploys.
-  for (const [targets, profile] of
-           [[0], [1], [0, 'prod']] as [number, string?][]) {
-    test(`prints push's aspect size error with KC_V2_ASPECTS on${
-             profile ? ' for a named profile' :
-                       targets ? ' for a graph push' : ''}`,
-         async () => {
-           process.env.KC_V2_ASPECTS = '1';
-           writeScope({
-             'commerce.yaml': bigBlock(commerce({targets})),
-             ...profile &&
-                 {[`commerce.profile.${profile}.yaml`]: profileFile(profile)},
-           });
-           const pushed = await pushResult(profile);
-           expect(pushed).toEqual({code: 1, errors: [expect.stringContaining(
-               'too large to store in Knowledge Catalog')]});
-           expect(await profiles()).toBe(1);
-           expect(rejects(profile ? profileSection(profile) : logs))
-               .toEqual(pushed.errors);
-         });
-  }
-
-  test('prints push\'s warning for a custom ai_context member push leaves ' +
-           'out with KC_V2_ASPECTS on',
+  test('prints push\'s warnings for a custom ai_context member push leaves ' +
+           'out and a sidecar that names no entry, with KC_V2_ASPECTS on',
        async () => {
          process.env.KC_V2_ASPECTS = '1';
          const warned: string[] = [];
@@ -1450,15 +1442,20 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
            'commerce.yaml': `${model}      - {name: placed__by, from: ` +
                'purchase, to: customer, from_columns: [p_customer], ' +
                'to_columns: [c_id]}\n',
+           'commerce/metrics/gone.overview.md': 'Old.\n',
          });
          const warning = '[commerce] model \'commerce\': ai_context member ' +
              '\'cap\' is not pushed: its value holds .inf, which Knowledge ' +
              'Catalog cannot store as written';
+         const sidecar = '[commerce] sidecar ' +
+             '\'commerce/metrics/gone.overview.md\' names no entry of this ' +
+             'model; it is not pushed';
          expect(await pushResult()).toEqual({code: 0, errors: []});
-         expect(warned.splice(0)).toContain(`Warning: ${warning}`);
+         expect(warned.splice(0)).toEqual(expect.arrayContaining(
+             [`Warning: ${warning}`, `Warning: ${sidecar}`]));
          expect(await profiles()).toBe(0);
-         expect(warned.splice(0))
-             .toEqual([`  profile 'default': warning: ${warning}`]);
+         expect(warned.splice(0)).toEqual(
+             [warning, sidecar].map(w => `  profile 'default': warning: ${w}`));
          delete process.env.KC_V2_ASPECTS;
          writeScope({'commerce.yaml': model});
          expect(await profiles()).toBe(0);

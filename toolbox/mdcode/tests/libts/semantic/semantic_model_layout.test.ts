@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
+import {parseOverviewSidecar, SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
 
 let root: string;
 let catalogPath: string;
@@ -32,7 +32,7 @@ async function layout(entryGroup?: string): Promise<SemanticModelLayout> {
 // Writes `file` into entry group `eg` under the test catalog.
 function writeToGroup(file: string, text: string): void {
   const dir = path.join(catalogPath, 'EntryGroups', 'eg');
-  fs.mkdirSync(dir, {recursive: true});
+  fs.mkdirSync(path.dirname(path.join(dir, file)), {recursive: true});
   fs.writeFileSync(path.join(dir, file), text);
 }
 
@@ -479,4 +479,59 @@ describe('SemanticModelLayout profile name rules', () => {
     expect(() => l.profileDocuments('retail'))
         .toThrow("change the name in 'retail.profile.prod.yaml' to 'prod'");
   });
+});
+
+
+describe('SemanticModelLayout overview sidecars', () => {
+  test('parseOverviewSidecar reads the frontmatter and body, and rejects a ' +
+           'frontmatter it cannot hold, naming the file',
+       () => {
+         const file = 'm/metrics/x.overview.md';
+         const read = (text: string) => parseOverviewSidecar(text, file);
+         expect(read('---\ncontentType: HTML\nlinks:\n' +
+                     '  - url: https://x.test\n    title: Guide\n' +
+                     '  - url: https://y.test\n---\n<p>Hi</p>\n'))
+             .toEqual({
+               content: '<p>Hi</p>\n',
+               contentType: 'HTML',
+               links: [
+                 {url: 'https://x.test', title: 'Guide'},
+                 {url: 'https://y.test'},
+               ],
+             });
+         for (const [text, problem] of [
+                ['---\ntitle: x\n---\n',
+                 "its frontmatter holds only contentType and links, not 'title'."],
+                ['---\ncontentType: TEXT\n---\n',
+                 "contentType is MARKDOWN or HTML, not 'TEXT'."],
+                ['---\nlinks:\n  - title: Guide\n---\n',
+                 'links is a list of entries, each a url and an optional title.'],
+                ['---\ncontentType: "x\n---\n',
+                 'its frontmatter does not parse: Missing closing "quote at ' +
+                     'line 1, column 16:\n\ncontentType: "x\n' +
+                     '               ^\n'],
+              ]) {
+           expect(() => read(text))
+               .toThrow(new Error(`Overview sidecar '${file}': ${problem}`));
+         }
+       });
+
+  test('overviewSidecarPaths finds the sidecars of model, metric and ' +
+           'relationship entries, by entry id',
+       async () => {
+         const dir = path.join(catalogPath, 'EntryGroups', 'eg');
+         for (const id of ['retail', 'retail/metrics/m',
+                           'retail/relationships/r', 'retail/entities/x',
+                           'other']) {
+           writeToGroup(`${id}.overview.md`, 'X.\n');
+         }
+         const l = await layout('eg');
+         expect(l.overviewSidecarPaths())
+             .toEqual(['other', 'retail', 'retail/metrics/m',
+                       'retail/relationships/r']
+                          .map(entryId => ({
+                                 entryId,
+                                 path: path.join(dir, `${entryId}.overview.md`),
+                               })));
+       });
 });
