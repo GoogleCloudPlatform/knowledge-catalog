@@ -1682,7 +1682,8 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
 // their actions or a legacy `semantic_model:` wrapper. Returns the error of the
-// first profile file that breaks a file rule or does not load.
+// first profile file that breaks a file rule. A profile file that does not load
+// is left out, for namedProfileErrors to report.
 function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
     LoadedModel|{error: string} {
   const {document, model} = base;
@@ -1701,8 +1702,6 @@ function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
       profiles.push(loadProfileFile(p.text, p.name, {skipActions: true}));
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
-      const error = `[${p.fileName}] ${err.message}`;
-      return {error};
     }
   }
   return {document, model: profiles.length ? {...model, profiles} : model};

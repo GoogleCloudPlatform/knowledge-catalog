@@ -137,15 +137,23 @@ scenarios('push --no-deployment refuses a scope before any network call', [
     errors: [err(msg.unknownProfile('dev', 'prdo', ['alpha', 'zeta']))],
   }),
   sameAsRuntime({
-    name: 'the declared-profile check runs before the named profiles are checked',
+    name: 'the declared-profile check runs before the named profiles are checked, and every broken profile file is reported',
     deployments: [{name: 'g', profile: 'prd'}],
-    profiles: {prod: {entities: {Customer: EXPRESSION_KEY}}},
-    errors: [err(msg.unknownProfile('g', 'prd', ['prod']))],
+    profiles: {
+      dev: {version: '0.2.0.dev0/google'},
+      prod: {entities: {Customer: EXPRESSION_KEY}},
+    },
+    errors: [err(msg.unknownProfile('g', 'prd', ['dev', 'prod']))],
     then: [{
       deployments: [{name: 'g', profile: 'prod'}],
-      errors: [err("[commerce.profile.prod.yaml] profile 'prod': entity " +
-                   "'Customer' key column 'UPPER(c_key)' is not a physical " +
-                   'column name')],
+      errors: [
+        err("[commerce.profile.dev.yaml] profile 'dev' sets 'version'; a " +
+            'profile file takes its version from the model file beside it, ' +
+            'so remove the line'),
+        err("[commerce.profile.prod.yaml] profile 'prod': entity " +
+            "'Customer' key column 'UPPER(c_key)' is not a physical " +
+            'column name'),
+      ],
     }],
   }),
   {
