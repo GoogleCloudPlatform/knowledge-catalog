@@ -163,11 +163,12 @@ describe('entry and link type predicates, anchorId, and custom types', () => {
       link('sales-orders-to-customer', 'schema-join'),
       link('sales-orders-to-customer', 'semantic-link'),
       link('semantic-relationship-1', 'reference'),
+      link('semantic-extends-1', 'reference'),
       link('semantic-link-1', 'reference'),
       link('sales-orders-to-customer', 'semantic-relationship'),
       link('sales-orders-to-customer', 'other-link'),
     ].map(isModelLink))
-        .toEqual([true, true, true, false, false, false]);
+        .toEqual([true, true, true, true, false, false, false]);
   });
 
   test(
@@ -348,11 +349,14 @@ describe('entryAspectKeys', () => {
 
   test(
       'with v2Aspects on, entryAspectKeys lists the V2 keys of each entry ' +
-          'kind, with a field\'s keys as wildcards except its overview',
+          'kind, with a field\'s keys as wildcards',
       () => {
         const entity = makeEntry('sales/entities/orders', ENTITY_TYPE, {
           'dataplex-types.global.semantic-entity': {data: {}},
           'dataplex-types.global.schema': {data: {}},
+          'dataplex-types.global.guidelines@Schema.id': {data: {}},
+          'dataplex-types.global.semantic-extensions@Schema.id': {data: {}},
+          'dataplex-types.global.overview@Schema.id': {data: {}},
         });
         const metric = makeEntry('sales/metrics/revenue', METRIC_TYPE, {
           'dataplex-types.global.semantic-metric': {data: {}},
@@ -364,12 +368,6 @@ describe('entryAspectKeys', () => {
             'sales/relationships/orders_to_customer', RELATIONSHIP_TYPE, {
               'dataplex-types.global.semantic-relationship': {data: {}},
             });
-        const withFields = makeEntry('sales/entities/orders', ENTITY_TYPE, {
-          ...entity.aspects,
-          ...Object.fromEntries(
-              ['guidelines', 'semantic-extensions', 'overview'].map(
-                  t => [`dataplex-types.global.${t}@Schema.id`, {data: {}}])),
-        });
 
         const entityKeys = entryAspectKeys(entity, {v2Aspects: true});
         const metricKeys = entryAspectKeys(metric, {v2Aspects: true});
@@ -380,9 +378,11 @@ describe('entryAspectKeys', () => {
           'dataplex-types.global.schema',
           'dataplex-types.global.guidelines',
           'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
           'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines@*',
           'dataplex-types.global.semantic-extensions@*',
+          'dataplex-types.global.overview@*',
         ]));
         expect(metricKeys).toEqual(new Set([
           'dataplex-types.global.semantic-metric',
@@ -404,8 +404,6 @@ describe('entryAspectKeys', () => {
               'dataplex-types.global.semantic-extensions',
               'dataplex-types.global.overview',
             ]));
-        expect(entryAspectKeys(withFields, {v2Aspects: true})).toEqual(new Set(
-            [...entityKeys, 'dataplex-types.global.overview@Schema.id']));
       });
 
   test(
@@ -427,9 +425,11 @@ describe('entryAspectKeys', () => {
           'staging-types.us.semantic-entity',
           'staging-types.us.guidelines',
           'staging-types.us.semantic-extensions',
+          'staging-types.us.overview',
           'staging-types.us.sql-expressions',
           'staging-types.us.guidelines@*',
           'staging-types.us.semantic-extensions@*',
+          'staging-types.us.overview@*',
         ]));
       });
 });

@@ -150,7 +150,7 @@ export function isDependentEntry(entry: Entry): boolean {
 /**
  * Returns true when `link` is of a kind push writes for a model: `schema-join`
  * in V1, and in V2 `semantic-link` or a `reference` link whose ID starts with
- * `semantic-relationship-`.
+ * `semantic-relationship-` or `semantic-extends-`.
  *
  * Includes both V1 and V2 regardless of `v2Aspects`, so a model pushed with V1
  * and then V2 still discovers and cleans up its old `schema-join` links
@@ -160,7 +160,7 @@ export function isModelLink(link: EntryLink): boolean {
   const type = linkTypeId(link);
   return type === 'schema-join' || type === 'semantic-link' ||
       (type === 'reference' &&
-       /^semantic-relationship-/.test(linkId(link)));
+       /^semantic-(relationship|extends)-/.test(linkId(link)));
 }
 
 // ---------------------------------------------------------------------------
@@ -262,41 +262,33 @@ function systemTypeProjectAndLocation(
  *
  * Includes every aspect key present on `entry.aspects` plus the optional
  * `<proj>.<loc>.guidelines` aspect. When `opts?.v2Aspects` is true:
- *   * Adds `<proj>.<loc>.semantic-extensions` on model, entity, metric and
- *     relationship entries, so Dataplex removes the aspect when the object no
- *     longer has a third-party extension block.
- *   * Adds `<proj>.<loc>.overview` on model, metric and relationship entries,
- *     so Dataplex removes the aspect when the object no longer has content
- *     for it.
+ *   * Adds `<proj>.<loc>.semantic-extensions` and `<proj>.<loc>.overview` on
+ *     model, entity, metric and relationship entries, so Dataplex removes the
+ *     aspect when the object no longer has content for it.
  *   * Adds `<proj>.<loc>.sql-expressions` on entity and metric entries.
- *   * Adds `<proj>.<loc>.guidelines@*` and `<proj>.<loc>.semantic-extensions@*`
- *     on entity entries, so Dataplex removes a field's instance the entry no
- *     longer carries. These wildcards also write the field-path instances
- *     `entry` carries, so those keys are left out.
+ *   * Adds `<proj>.<loc>.<type>@*` for guidelines, semantic-extensions and
+ *     overview on entity entries, so Dataplex writes each field's instance
+ *     `entry` carries and removes the others. A field's own key is left out.
  */
 export function entryAspectKeys(
     entry: Entry, opts?: SystemTypeOptions): Set<string> {
   const {proj, loc} = systemTypeProjectAndLocation(opts);
   const keys = new Set([
-    ...Object.keys(entry.aspects ?? {}),
+    ...Object.keys(entry.aspects ?? {}).filter(key => !key.includes('@')),
     `${proj}.${loc}.guidelines`,
   ]);
   if (!opts?.v2Aspects) return keys;
 
   if (isSemanticObjectEntry(entry)) {
     keys.add(`${proj}.${loc}.semantic-extensions`);
-    if (!isEntityEntry(entry)) keys.add(`${proj}.${loc}.overview`);
+    keys.add(`${proj}.${loc}.overview`);
   }
   if (isEntityEntry(entry) || isMetricEntry(entry)) {
     keys.add(`${proj}.${loc}.sql-expressions`);
   }
   if (isEntityEntry(entry)) {
-    for (const type of ['guidelines', 'semantic-extensions']) {
-      const prefix = `${proj}.${loc}.${type}@`;
-      for (const key of keys) {
-        if (key.startsWith(prefix)) keys.delete(key);
-      }
-      keys.add(`${prefix}*`);
+    for (const type of ['guidelines', 'semantic-extensions', 'overview']) {
+      keys.add(`${proj}.${loc}.${type}@*`);
     }
   }
   return keys;

@@ -88,9 +88,11 @@ describe('semanticLinkId', () => {
          expect([
            semanticLinkId('link', 'sales', 'orders', 'customers'),
            semanticLinkId('relationship', 'sales', 'placed_by', 'source'),
+           semanticLinkId('extends', 'sales', 'vips', 'customers'),
          ]).toEqual([
            'semantic-link-e6b1c3bb1665161a428c2cd13a1cb443',
            'semantic-relationship-7d24245079e3654a7a01f88f89d599a9',
+           'semantic-extends-22fb71a480680b1a4d779ce39187b845',
          ]);
        });
 });

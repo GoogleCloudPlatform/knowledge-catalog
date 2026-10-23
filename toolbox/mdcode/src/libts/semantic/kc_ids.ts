@@ -150,7 +150,7 @@ export function relationshipLinkId(modelName: string, relName: string): string {
  * releases, so that push finds the links it wrote.
  */
 export function semanticLinkId(
-    kind: 'link'|'relationship', ...parts: string[]): string {
+    kind: 'link'|'relationship'|'extends', ...parts: string[]): string {
   const digest =
       createHash('sha256').update(parts.join('/'), 'utf8').digest('hex');
   return `semantic-${kind}-${digest.slice(0, 32)}`;

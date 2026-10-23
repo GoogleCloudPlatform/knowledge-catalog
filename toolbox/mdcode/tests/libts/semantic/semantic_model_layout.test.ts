@@ -518,8 +518,8 @@ describe('SemanticModelLayout overview sidecars', () => {
          }
        });
 
-  test('overviewSidecarPaths finds the sidecars of model, metric and ' +
-           'relationship entries, by entry id',
+  test('overviewSidecarPaths finds the sidecars of model, entity, metric ' +
+           'and relationship entries, by entry id',
        async () => {
          const dir = path.join(catalogPath, 'EntryGroups', 'eg');
          for (const id of ['retail', 'retail/metrics/m',
@@ -529,8 +529,8 @@ describe('SemanticModelLayout overview sidecars', () => {
          }
          const l = await layout('eg');
          expect(l.overviewSidecarPaths())
-             .toEqual(['other', 'retail', 'retail/metrics/m',
-                       'retail/relationships/r']
+             .toEqual(['other', 'retail', 'retail/entities/x',
+                       'retail/metrics/m', 'retail/relationships/r']
                           .map(entryId => ({
                                  entryId,
                                  path: path.join(dir, `${entryId}.overview.md`),

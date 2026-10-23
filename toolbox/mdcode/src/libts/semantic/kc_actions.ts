@@ -145,8 +145,8 @@ export function actionEntries(
   const relationshipNames =
       new Set((model.relationships ?? []).map(r => r.name));
 
-  // The fields this push actually writes into a `schema` aspect, which is
-  // what a later pull reads back. Asked of the loader's own resolver so the
+  // The fields of each concept with inheritance resolved, which a later pull
+  // rebuilds from the catalog. Asked of the loader's own resolver so the
   // answer accounts for `extends`; a model that will not resolve returns null
   // and the field half of the check is skipped, since an emitter is not the
   // place to discover that a model does not load.

@@ -883,7 +883,7 @@ export function resolvedEntities(model: SemanticModel): Entity[] {
 // The names of the fields `entityName` inherits from every ancestor its
 // `extends` reaches. A caller asking for many entities passes `byName`, the
 // model's entities by name, built once.
-function inheritedNamesOf(
+export function inheritedNamesOf(
     model: SemanticModel, entityName: string,
     byName = new Map((model.entities ?? []).map(e => [e.name, e]))):
     Set<string> {

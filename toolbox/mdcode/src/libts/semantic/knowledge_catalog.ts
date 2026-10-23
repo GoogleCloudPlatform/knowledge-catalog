@@ -75,7 +75,8 @@
 // `<model>/relationships/<name>`, that carries semantic-relationship. A
 // `semantic-link` entry link joins each ordered pair of related entities and
 // lists their relationships in declaration order. A `reference` link runs
-// from each relationship entry to each of its two entities.
+// from each relationship entry to each of its two entities, and from each
+// entity entry to the entry of each parent it extends.
 //
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
@@ -89,7 +90,8 @@ import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TY
 import {linkSlug, Namer, ownedEntryIdPrefixes, semanticLinkId} from './kc_ids';
 import {asResourceUri, GOOGLE_VERSION, isAcceptedSource} from './loader';
 import {nonEmpty} from './osi_converter';
-import {DEFAULT_PROFILE, resolvedEntities, statesKey, withoutExclusions} from './resolve_profiles';
+import {InheritanceError, resolveInheritance} from './resolve_inheritance';
+import {DEFAULT_PROFILE, inheritedNamesOf, statesKey, withoutExclusions} from './resolve_profiles';
 
 export interface KcGenerateOptions {
   project: string;     // project the entries are created in (destination)
@@ -139,10 +141,10 @@ export interface KcResources {
  * Generates the Knowledge Catalog resources for a semantic model.
  *
  * Returns the entries (model anchor first, then entities, metrics and, with
- * v2Aspects, relationships), the relationships' entry links, and any warnings
- * collected while mapping the IR (missing keys, un-typed metrics, skipped M:N
- * relationships). The resources reference the built-in system types; they do not
- * create them.
+ * v2Aspects, relationships), the entry links of the relationships and, with
+ * v2Aspects, of each entity's parents, and any warnings collected while
+ * mapping the IR (missing keys, un-typed metrics, skipped M:N relationships).
+ * The resources reference the built-in system types; they do not create them.
  */
 export function generateCatalogResources(
     model: SemanticModel, opts: KcGenerateOptions): KcResources {
@@ -170,10 +172,9 @@ export function generateCatalogResources(
         'preserves them');
   }
 
-  // Each entity's fields with inheritance resolved: the second-generation
-  // schema lists them, and the first-generation one takes an inherited
-  // definition from them.
-  const resolved = resolvedFields(model);
+  // With the first-generation aspects, a subtype field that only rebinds an
+  // inherited field is published with the definition it inherits.
+  const inherited = v2 ? undefined : inheritedFields(model);
 
   // Entry ids must be unique within the entry group. Two source names that
   // normalize to the same id (see slug), or exact duplicates the loader did not
@@ -219,7 +220,6 @@ export function generateCatalogResources(
     if (!claim(seen, entityId, 'entry', `entity '${entity.name}'`, warnings))
       continue;
     entityEntryName.set(entity.name, names.entry(entityId));
-    const fields = resolved.get(entity)!;
     if (v2 ? lacksKeys(model, entity) : !entity.keys || !entity.keys.length) {
       warnings.push(
           `entity '${entity.name}': no keys declared in the source model`);
@@ -231,11 +231,12 @@ export function generateCatalogResources(
       entrySource: source(entity.name, entity.description),
       // semantic-entity and schema are required. The file header lists the
       // optional aspects.
-      aspects: v2 ? aspectMap(names, entityAspectsV2(model, entity, fields)) :
+      aspects: v2 ? aspectMap(names, entityAspectsV2(model, entity)) :
                     aspectsFor(
                         names, {
                           'semantic-entity': entityAspectData(entity),
-                          'schema': schemaAspectData(entity, emitExpr, fields),
+                          'schema': schemaAspectData(
+                              entity, emitExpr, inherited?.get(entity.name)),
                         },
                         entity.aiContext),
     });
@@ -343,7 +344,11 @@ export function generateCatalogResources(
     }
   }
 
-  const entryLinks = v2Relationships?.links ??
+  const entryLinks = v2Relationships ?
+      [
+        ...v2Relationships.links,
+        ...extendsLinks(names, model, entityEntryName),
+      ] :
       schemaJoinLinks(names, model, entityEntryName, warnings);
 
   return {
@@ -453,7 +458,7 @@ function relationshipResourcesV2(
   const pairs =
       new Map<string, {from: string; to: string; relationships: string[]}>();
   // Push never reaches a name with no entry: validation rejects an unknown
-  // entity, and a relationship on an entity that is not a concrete leaf.
+  // entity, and every entity has an entry under these types.
   for (const rel of model.relationships ?? []) {
     if (rel.association) {
       warnings.push(`relationship '${rel.name}': ${ASSOCIATION_REASON}`);
@@ -490,6 +495,19 @@ function relationshipResourcesV2(
     aspects: aspectMap(names, {'semantic-link': {relationships}}),
   }));
   return {entries, links: [...links, ...references]};
+}
+
+// The reference link from each entity entry to the entry of each parent it
+// extends.
+function extendsLinks(
+    names: Namer, model: SemanticModel,
+    entityEntryName: ReadonlyMap<string, string>): EntryLink[] {
+  return (model.entities ?? []).flatMap(
+      e => (e.extends ?? []).map(
+          parent => directedLink(
+              names, 'reference',
+              semanticLinkId('extends', model.name, e.name, parent),
+              entityEntryName.get(e.name)!, entityEntryName.get(parent)!)));
 }
 
 // A link of type `type` with ID `id` from the entry `from` to the entry `to`.
@@ -698,15 +716,31 @@ function unstorableValue(value: unknown): string|undefined {
   return Object.values(value).map(unstorableValue).find(Boolean);
 }
 
-// Each entity's fields with inheritance resolved and every profile exclusion
-// ignored. A concrete entity has its own fields, then the ones it inherits, and
-// an abstract entity has its own.
-function resolvedFields(model: SemanticModel): Map<Entity, Field[]> {
-  const entities = model.entities ?? [];
-  const resolved = resolvedEntities(withoutExclusions(model));
-  // resolvedEntities keeps the entities in order.
-  return new Map(
-      entities.map((e, i) => [e, e.abstract ? e.fields : resolved[i].fields]));
+// Each entity's fields with inheritance resolved, by entity and field name, or
+// undefined when no entity extends another or inheritance cannot be resolved.
+// A resolved field keeps what the entity's own declaration sets and takes the
+// rest from the ancestor that defines it.
+function inheritedFields(model: SemanticModel):
+    Map<string, Map<string, Field>>|undefined {
+  if (!(model.entities ?? []).some(e => e.extends?.length)) return undefined;
+  let resolved: SemanticModel;
+  try {
+    resolved = resolveInheritance(model).model;
+  } catch (err) {
+    // Push validation reports it. The schema aspect keeps what each entity
+    // declares.
+    if (err instanceof InheritanceError) return undefined;
+    throw err;
+  }
+  return new Map((resolved.entities ?? []).map(
+      e => [e.name, new Map((e.fields ?? []).map(f => [f.name, f]))]));
+}
+
+// The fields `entity` declares, leaving out each line that only rebinds a
+// field it inherits.
+function declaredFields(model: SemanticModel, entity: Entity): Field[] {
+  const inherited = inheritedNamesOf(model, entity.name);
+  return entity.fields.filter(f => !inherited.has(f.name));
 }
 
 // True when `entity` is concrete and states no primary key and no unique key,
@@ -769,7 +803,7 @@ function entityAspectData(entity: Entity): Record<string, any> {
 // it inherits from there.
 function schemaAspectData(
     entity: Entity, emitExpressions: boolean,
-    inherited: Field[]): Record<string, any> {
+    inherited?: Map<string, Field>): Record<string, any> {
   // Key column lists ride the schema aspect verbatim -- they need NOT be
   // declared fields (the closed template accepts and round-trips columns absent
   // from fields[], live-verified). Keep only non-empty strings, matching the
@@ -786,7 +820,7 @@ function schemaAspectData(
   // A subtype's redeclaration of an inherited field only rebinds it, so its
   // definition is the inherited one.
   const withDefinition = (f: Field): Field => {
-    const from = inherited.find(g => g.name === f.name);
+    const from = inherited?.get(f.name);
     return {
       ...f,
       type: f.type ?? from?.type,
@@ -925,11 +959,11 @@ function modelAspectDataV2(model: SemanticModel): Record<string, any> {
   });
 }
 
-// The aspects of an entity entry under the second-generation types, with
-// `fields` the fields its schema lists, each with its own aspects at its path.
+// The aspects of an entity entry under the second-generation types. Its schema
+// lists the fields it declares, each with its own aspects at its path.
 function entityAspectsV2(
-    model: SemanticModel, entity: Entity,
-    fields: Field[]): Record<string, Record<string, any>> {
+    model: SemanticModel, entity: Entity): Record<string, Record<string, any>> {
+  const fields = declaredFields(model, entity);
   return compact({
     'semantic-entity': entityAspectDataV2(model, entity),
     'schema': schemaAspectDataV2(fields),

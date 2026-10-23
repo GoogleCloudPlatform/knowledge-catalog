@@ -2,10 +2,10 @@
 //
 // The whole model definition is a single Apache Ossie document per model,
 // located at `catalog/EntryGroups/<entryGroupId>/<model>.yaml`, with its
-// profile files beside it. The model's Knowledge Catalog entry and each metric
-// and relationship entry may have an overview sidecar at its entry id under
-// the same directory: `<model>.overview.md` for the model and, for example,
-// `<model>/metrics/<metric>.overview.md` for a metric.
+// profile files beside it. Each Knowledge Catalog entry of the model may have
+// an overview sidecar at its entry id under the same directory:
+// `<model>.overview.md` for the model and, for example,
+// `<model>/entities/<entity>.overview.md` for an entity.
 //
 
 import * as glob from 'glob';
@@ -175,15 +175,15 @@ export class SemanticModelLayout implements CatalogLayout {
         ]));
   }
 
-  // Each overview sidecar on disk at a model, metric or relationship path,
-  // with the entry id its path names, in path order.
+  // Each overview sidecar on disk at a model, entity, metric or relationship
+  // path, with the entry id its path names, in path order.
   overviewSidecarPaths(): {entryId: string; path: string}[] {
     if (!this._entryGroup) return [];
     const dir = this._groupDir();
     const files = glob.globSync(
         [
           `*${OVERVIEW_SIDECAR}`,
-          `*/{metrics,relationships}/*${OVERVIEW_SIDECAR}`,
+          `*/{entities,metrics,relationships}/*${OVERVIEW_SIDECAR}`,
         ],
         {cwd: dir, nodir: true, posix: true});
     return files.sort().map(f => ({

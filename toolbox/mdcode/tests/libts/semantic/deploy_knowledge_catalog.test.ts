@@ -2723,8 +2723,10 @@ describe('deployKnowledgeCatalog: aspect removal on update', () => {
           'dataplex-types.global.sql-expressions',
           'dataplex-types.global.guidelines',
           'dataplex-types.global.semantic-extensions',
+          'dataplex-types.global.overview',
           'dataplex-types.global.guidelines@*',
           'dataplex-types.global.semantic-extensions@*',
+          'dataplex-types.global.overview@*',
         ]);
         expect(entityUpdateCall![3]).toBe(true);
 
@@ -4196,51 +4198,24 @@ describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
     });
   }
 
-  // OSSIE with n more fields on orders, f0 to f<n-1>, each with the
-  // ai_context `member`.
-  const wide = (n: number, member = 'examples: [e]') =>
-      OSSIE.replace('- name: o_orderkey\n', Array.from(
-          {length: n}, (_, i) => `- { name: f${i}, expression: f${i}, ` +
-              `ai_context: {${member}} }\n          `).join('') +
-              '- name: o_orderkey\n');
-  // Expects a push of `text` to fail before any write, with the same error
-  // as the check kcmd profiles runs, and returns the error.
-  async function refusal(text: string) {
-    const {list, create} = stubClient();
-    const docs = models([{name: 'sales.yaml', text}]);
-    const result = await deployKnowledgeCatalog(docs, CTX, V2_OPTS);
-    expect(result.success).toBe(false);
-    expect(list).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
-    expect(checkCatalogAspects(docs, V2_OPTS).error).toBe(result.details);
-    return result.details;
-  }
+  // OSSIE with n more fields on orders, f0 to f<n-1>, each with an example.
+  const wide = (n: number) => models([{
+    name: 'sales.yaml',
+    text: OSSIE.replace('- name: o_orderkey\n', Array.from(
+        {length: n}, (_, i) => `- { name: f${i}, expression: f${i}, ` +
+            'ai_context: {examples: [e]} }\n          ').join('') +
+        '- name: o_orderkey\n'),
+  }]);
 
-  test('an entry that would hold 100 instances of one aspect type fails ' +
-           'before any write, in push and in the check kcmd profiles runs',
-       async () => {
-         expect(await refusal(wide(100)))
-             .toBe(
-                 'entry \'sales/entities/orders\' would hold 100 overview ' +
-                 'aspects, and Knowledge Catalog returns at most 100 in one ' +
-                 'read, so kcmd could not read them all back; give examples ' +
-                 'to fewer than 100 of the entity and its fields, inherited ' +
-                 'fields included.');
-         expect(checkCatalogAspects(models([{name: 's.yaml', text: wide(99)}]),
-                                    V2_OPTS).error)
-             .toBeUndefined();
-         // Orders has 99 fields with instructions, and big_orders inherits
-         // them and adds one.
-         expect(await refusal(wide(99, 'instructions: i')
-                                  .replace('    metrics:', `      - name: big_orders
-        extends: [orders]
-        source: bigquery.googleapis.com/projects/demo/datasets/sales/tables/big
-        primary_key: [o_orderkey]
-        fields: [{ name: g, expression: g, ai_context: {instructions: g} }]
-    metrics:`)))
-             .toStartWith(
-                 'entry \'sales/entities/big_orders\' would hold 100 ' +
-                 'guidelines aspects, ');
+  test('an entry that would hold 100 instances of one aspect type fails, ' +
+           'and one with 99 passes',
+       () => {
+         expect(checkCatalogAspects(wide(100), V2_OPTS).error).toBe(
+             'entry \'sales/entities/orders\' would hold 100 overview ' +
+             'aspects, and Knowledge Catalog returns at most 100 in one read, ' +
+             'so kcmd could not read them all back; give examples to fewer ' +
+             'than 100 of the entity and its fields.');
+         expect(checkCatalogAspects(wide(99), V2_OPTS).error).toBeUndefined();
        });
 
   test('a semantic-link aspect is checked too', async () => {

@@ -357,10 +357,10 @@ the shared label's signature is present on every subtype table. An abstract
 entity that no concrete entity extends has nothing to attach to and is dropped
 with a warning. `abstract` is an explicit marker: a non-abstract entity with no
 `source` is treated as a binding error and fails the push, never
-silently dropped as if it were table-less. The Knowledge Catalog leg does not
-model inheritance today, so an abstract entity has no physical resource to
-catalog and is skipped there (with a warning); its concrete subtypes are
-published normally.
+silently dropped as if it were table-less. With the first-generation types, the
+Knowledge Catalog leg skips an abstract entity with a warning and publishes its
+concrete subtypes. With `KC_V2_ASPECTS=1`, every entity gets an entry, and a
+`reference` link runs from each entity to each parent it extends.
 
 A supertype **may** instead be concrete — carry its own `source` and key. It then
 becomes both its own node table and a label on its subtypes. Every subtype table
@@ -518,27 +518,35 @@ its own. Entry ids are `<model>`, `<model>/entities/<entity>`,
 
 A `semantic-link` joins each ordered pair of related entities. Built-in
 `reference` links run from each relationship's entry to the entries of its
-source and target entities. An unbound relationship gets its `reference` links
-too. Their ids start with `semantic-relationship-`, followed by the first 32
-hex characters of a SHA-256 hash of `<model>/<relationship>/source` or
-`<model>/<relationship>/target`. Push owns only the `reference` links with that
-prefix. It deletes the ones the model no longer has and leaves every other
-`reference` link alone.
+source and target entities, and from each entity's entry to the entry of each
+parent in its `extends`. An unbound relationship gets its `reference` links
+too. Their ids start with `semantic-relationship-` or `semantic-extends-`,
+followed by the first 32 hex characters of a SHA-256 hash. The hash covers
+`<model>/<relationship>/source` or `<model>/<relationship>/target` for a
+relationship, and `<model>/<child>/<parent>` for a parent. Push owns only the
+`reference` links with those prefixes. It deletes the ones the model no longer
+has and leaves every other `reference` link alone.
+
+An entity's `schema` aspect lists only the fields it declares. A field it
+inherits and only rebinds is a `fieldExpressions[]` record in its
+`sql-expressions` aspect, with nothing in `schema`. A field's `guidelines`,
+`overview` and `semantic-extensions` aspects sit at `Schema.<field>` on the
+entity that declares the field.
 
 `semantic-metric.entity` holds the metric's entity, declared or derived.
 `excludedInProfiles` follows the order of the model entry's `profiles` list.
 
-Push writes the whole `overview` aspect of the model's entry and of each metric
-and relationship entry from the workspace, and never reads it back. `examples`
-come from the model file's `ai_context.examples`. `content`, `contentType` and
-`links` come from the entry's sidecar, the file `<entry-id>.overview.md` in the
-directory that holds `<model>.yaml`. For example, the model's sidecar is
-`<model>.overview.md` and a metric's is `<model>/metrics/<metric>.overview.md`.
-The sidecar's frontmatter holds `contentType` and `links`, and its body is
-`content`. `contentType` is `MARKDOWN` or `HTML`. Each link has a `url` and an
-optional `title`. A malformed sidecar fails the push before anything is
-written. Push warns about a sidecar that names no entry of the model. An
-overview edited in the console does not survive a push.
+Push writes each entry's whole `overview` aspect from the workspace and never
+reads it back. `examples` come from the model file's `ai_context.examples`.
+`content`, `contentType` and `links` come from the entry's sidecar. The
+sidecar is the file `<entry-id>.overview.md` in the directory that holds
+`<model>.yaml`, so the model's sidecar is `<model>.overview.md` and an
+entity's is `<model>/entities/<entity>.overview.md`. The sidecar's frontmatter holds
+`contentType` and `links`, and its body is `content`. `contentType` is
+`MARKDOWN` or `HTML`. Each link has a `url` and an optional `title`. A
+malformed sidecar fails the push before anything is written. Push warns about
+a sidecar that names no entry of the model. A field's overview holds its
+examples alone. An overview edited in the console does not survive a push.
 
 ## Validation
 
@@ -779,13 +787,14 @@ and each aspect type attached, so a push needs, on the destination entry group:
 * `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
   `schema-join` links, when the model has relationships
 * `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in
-  `schema` aspect (its fields, keys, unique keys, and labels)
+  `schema` aspect (its fields, keys, unique keys, and labels; with
+  `KC_V2_ASPECTS=1`, the fields it declares and no keys)
 * `dataplex.entryGroups.useGuidelinesAspect` — when the model, an entity, or a
   metric carries `ai_context.instructions`
 * `dataplex.entryGroups.useSchemaJoinAspect` and
   `dataplex.entryGroups.useSchemaJoinEntryLink` — when the model has relationships
 * `dataplex.entryGroups.useReferenceEntryLink` — with `KC_V2_ASPECTS=1`, when
-  the model has relationships
+  the model has relationships or an entity extends another
 * the `use<AspectType>Aspect` permission for the `semantic-model`,
   `semantic-entity`, and `semantic-metric` aspect types the push attaches — i.e.
   `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and

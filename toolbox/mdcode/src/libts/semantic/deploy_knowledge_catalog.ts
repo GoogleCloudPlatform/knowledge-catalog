@@ -31,11 +31,12 @@
 //   * Relationship edges are published as entry links between two entity
 //     entries after that model's entries exist: a `schema-join` link per
 //     relationship, or with v2Aspects a `semantic-link` per ordered entity
-//     pair and a `reference` link from each relationship entry to each of its
-//     entities. A re-push first deletes any orphaned links (no longer emitted)
-//     and stale links (whose type or endpoint references changed), then
-//     creates new or recreated links and updates unchanged links' aspects in
-//     place. The caller additionally needs
+//     pair, a `reference` link from each relationship entry to each of its
+//     entities, and one from each entity to each parent it extends. A re-push
+//     first deletes any orphaned links (no longer emitted) and stale links
+//     (whose type or endpoint references changed), then creates new or
+//     recreated links and updates unchanged links' aspects in place. The
+//     caller additionally needs
 //     `dataplex.entryGroups.useSchemaJoinEntryLink` and `useSchemaJoinAspect`,
 //     and with v2Aspects `useReferenceEntryLink`, on the destination entry
 //     group.
@@ -565,8 +566,7 @@ function instanceCountError(entry: Entry): string|undefined {
     return `entry '${entryId(entry)}' would hold ${count} ${type} aspects, ` +
         `and Knowledge Catalog returns at most ${MAX_ASPECTS_PER_READ} in ` +
         `one read, so kcmd could not read them all back; give ${content} ` +
-        `to fewer than ${MAX_ASPECTS_PER_READ} of the entity and its ` +
-        `fields, inherited fields included.`;
+        `to fewer than ${MAX_ASPECTS_PER_READ} of the entity and its fields.`;
   }
   return undefined;
 }
@@ -1637,12 +1637,12 @@ const KEPT_SOURCE_FIELDS =
  * name. Passing `entryAspectKeys(entry, opts)` with `deleteMissingAspects:
  * true` makes a re-push converge: a still-present optional aspect is refreshed,
  * and a removed one (such as `guidelines` when `ai_context.instructions` is
- * deleted, `sql-expressions`, or a field's `guidelines` or
- * `semantic-extensions`, matched by its `@*` key under `v2Aspects`) is deleted
- * so a later `pull` does not bring it back. Push owns the optional aspects
- * `entryAspectKeys` lists, so it removes any that the model does not declare
- * even if someone added them in the console. Every other aspect another tool
- * attached is left alone, since `aspectKeys` names only the types kcmd writes.
+ * deleted, `sql-expressions`, or a field's instance, matched by its `@*` key
+ * under `v2Aspects`) is deleted so a later `pull` does not bring it back. Push
+ * owns the optional aspects `entryAspectKeys` lists, so it removes any that the
+ * model does not declare even if someone added them in the console. Every other
+ * aspect another tool attached is left alone, since `aspectKeys` names only the
+ * types kcmd writes.
  *
  * The update mask replaces the whole entrySource, so the update carries over
  * fields from `source`, the entrySource the entry had before this push. Of
@@ -1669,13 +1669,6 @@ async function updateEntry(
     ...(Object.keys(labels).length ? {labels} : {}),
   };
   if (Object.keys(merged).length) entry = {...entry, entrySource: merged};
-  // We cannot simply pass `Object.keys(entry.aspects ?? {})` here because
-  // `entry.aspects` only contains the aspects emitted in *this* push. If an
-  // optional aspect (such as `guidelines`, `sql-expressions`, or a field's
-  // `guidelines@Schema.<field>`) was present on a previous push and removed in
-  // this push, it is absent from `entry.aspects` -- and Dataplex only deletes a
-  // removed aspect when its key (or its `@*` key, for a field's instance) is
-  // still listed in `aspectKeys`.
   const aspectKeys = entryAspectKeys(entry, opts);
   const upd = await cat.updateEntry(
       entry, ['entry_source', 'aspects'], [...aspectKeys],
