@@ -1,23 +1,37 @@
 // Guardrail: every YAML fixture under tests/libts/semantic/fixtures must be a
-// structurally valid Apache OSI document.
+// valid document of the flavor its `version:` declares.
 //
-// We validate against the vendored osi-schema.json (Draft 2020-12) with ajv —
-// the same JSON-Schema check the Apache validator (validation/validate.py) runs
-// as its first step, but in-process with no Python/PyPI dependency. This catches
-// fixtures drifting from the spec (e.g. a `dialect` value outside the OSI enum),
-// so the loader's own tests exercise only genuinely valid input. The schema and
-// its provenance live in fixtures/ossie/ (see that directory's README).
-//
+// A vanilla `0.2.0.dev0` document is validated against the vendored Apache
+// Ossie schema (fixtures/ossie/osi-schema.json; see that directory's README),
+// the same JSON Schema check the Apache validator runs as its first step. A
+// `0.2.0.dev0/google` document is validated against the published Google
+// flavor schema (docs/semantic-model/osi-google-schema.json). Both are Draft
+// 2020-12, checked in-process with ajv. This catches fixtures drifting from
+// the spec, so the loader's own tests exercise only valid input.
 
 import { describe, test, expect } from 'bun:test';
-import Ajv2020 from 'ajv/dist/2020';
+import Ajv2020, { type ValidateFunction } from 'ajv/dist/2020';
 import * as yaml from 'yaml';
 import { readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 
 const fixturesDir = join(__dirname, 'fixtures');
-const schema = JSON.parse(
-  readFileSync(join(fixturesDir, 'ossie', 'osi-schema.json'), 'utf8'));
+const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
+
+// strict:false: the vanilla schema is authored by a third party; we validate
+// documents against it, not the schema's own meta-style.
+const ajv = new Ajv2020({ allErrors: true, strict: false });
+
+// The validator for each flavor, keyed by the `version` const its schema pins.
+const validators = new Map<string, ValidateFunction>(
+  [
+    join(fixturesDir, 'ossie', 'osi-schema.json'),
+    join(__dirname, '..', '..', '..', 'docs', 'semantic-model',
+         'osi-google-schema.json'),
+  ].map(path => {
+    const schema = readJson(path);
+    return [schema.properties.version.const, ajv.compile(schema)];
+  }));
 
 // Recursively collect every *.yaml/*.yml fixture, so a newly added fixture is
 // schema-checked automatically without editing this file.
@@ -40,201 +54,52 @@ function yamlFixtures(dir: string): string[] {
   return out;
 }
 
-// strict:false: the schema is authored by a third party; we validate documents
-// against it, not the schema's own meta-style.
-const ajv = new Ajv2020({ allErrors: true, strict: false });
-const validate = ajv.compile(schema);
-const fixtures = yamlFixtures(fixturesDir);
+// Fixtures still written in a form the loader rejects: a `deployment_target:`
+// key, and in sales_unqualified_source.yaml a bare source too. b/568184815
+// migrates each one, and removes it from this list.
+const OLD_FORM = new Set([
+  'actions_place_order.yaml',
+  'hierarchy_graph.yaml',
+  'sales_bad_target.yaml',
+  'sales_bq_graph_target.yaml',
+  'sales_google_ext.yaml',
+  'sales_spanner_graph_target.yaml',
+  'sales_unqualified_source.yaml',
+  'star_orders_customer.yaml',
+]);
 
-// TODO(#290): a default (expression-free) KC push omits the OSI-required
-// `expression` on fields/metrics, so a .pull.golden.yaml produced by it fails
-// this guardrail *only* with "missing required property 'expression'" errors.
-// Rather than skip those fixtures by name -- which would also hide unrelated
-// drift and keep skipping them after #290 restores expressions -- we validate
-// them too and tolerate *only* missing-`expression` errors. Once PR #290 (the
-// sql-expressions companion aspect) regenerates these goldens with expressions
-// they pass with no special-casing, and any other schema drift still fails now.
-function onlyMissingExpression(errors: typeof validate.errors): boolean {
-  return !!errors && errors.length > 0 &&
-    errors.every(
-      e => e.keyword === 'required' &&
-        (e.params as {missingProperty?: string}).missingProperty ===
-          'expression');
-}
+// Pull goldens that record the fallback output of pull rebuilding a model from
+// first-generation aspects, which hold no metric expression. They are fallback
+// output rather than authored documents, so they stay excluded.
+const PULL_FALLBACK = new Set([
+  'actions_place_order.pull.golden.yaml',
+  'sales_bq_graph_target.pull.golden.yaml',
+  'star_orders_customer.pull.golden.yaml',
+]);
 
-// `extends` (entity-level inheritance, the target of OWL rdfs:subClassOf) is a
-// deliberate SUPERSET of released Apache OSI: the keyword is borrowed from
-// Ossie's draft ontology proposal (ontology/ontology.md) and the vendored
-// osi-schema.json -- pinned to released v0.2.0.dev0 -- does not yet know it, so a
-// dataset carrying `extends` trips `additionalProperties: false` on the Dataset
-// def. We tolerate EXACTLY that one extra property (an additionalProperties error
-// naming `extends` on a datasets path) and nothing else, so an OWL hierarchy
-// golden validates while every other drift from the spec still fails. When
-// upstream OSI adopts `extends`, re-vendoring the schema makes this pass with no
-// special-casing and this tolerance can be removed.
-function onlyExtendsExtension(errors: typeof validate.errors): boolean {
-  // `extends` and `abstract` are the two deliberate dataset-level supersets of
-  // released OSI (OWL rdfs:subClassOf -> inheritance, and the abstract marker);
-  // tolerate exactly those additional properties and nothing else.
-  const allowed = new Set(['extends', 'abstract']);
-  return !!errors && errors.length > 0 &&
-    errors.every(
-      e => e.keyword === 'additionalProperties' &&
-        allowed.has(
-          (e.params as {additionalProperty?: string}).additionalProperty ??
-          '') &&
-        /\/datasets\/\d+$/.test(e.instancePath));
-}
+describe('fixtures are valid for their declared OSI flavor', () => {
+  const fixtures = yamlFixtures(fixturesDir);
 
-// The OWL import goldens (.osi.golden.yaml) are purely LOGICAL models -- a
-// deliberate pre-OSI superset, the same shape the profiles/ subtree is exempted
-// for: an ontology has no physical tables, so they omit every binding facet the
-// released schema requires (dataset `source` and field `expression`, supplied
-// by a binding profile later; relationship `from_columns`/`to_columns`, added
-// to the model later) and also carry the `extends`/`abstract` dataset
-// supersets. Tolerate EXACTLY those
-// omissions and extra properties on these goldens and nothing else, so real
-// drift (a bad enum, a misspelled key, an unexpected shape) still fails.
-function onlyLogicalGoldenDeviations(errors: typeof validate.errors): boolean {
-  const missingOk = new Set(
-    ['source', 'expression', 'from_columns', 'to_columns']);
-  const extraOk = new Set(['extends', 'abstract']);
-  return !!errors && errors.length > 0 &&
-    errors.every(e => {
-      if (e.keyword === 'required') {
-        return missingOk.has(
-          (e.params as {missingProperty?: string}).missingProperty ?? '');
-      }
-      if (e.keyword === 'additionalProperties') {
-        return extraOk.has(
-          (e.params as {additionalProperty?: string}).additionalProperty ??
-          '') &&
-          /\/datasets\/\d+$/.test(e.instancePath);
-      }
-      return false;
-    });
-}
-
-// Released Apache OSI (osi-schema.json) is vanilla `0.2.0.dev0`: it pins the
-// `version` const, requires `datasets`, and knows no native `deployments` (or
-// legacy `deployment_target`) key. Many fixtures declare the extended
-// `0.2.0.dev0/google` profile, whose surface deltas -- the version suffix, the
-// `entities` alias for `datasets`, and the native `deployments` list -- are
-// deliberate supersets, not drift. Fold those back to the vanilla surface before
-// validating, so the released schema still checks the deep content (dialects,
-// datatypes, field/metric shapes); the remaining deep supersets
-// (`extends`/`abstract`) and the logical goldens' omitted bindings are tolerated
-// by the checks below, exactly as they were for vanilla fixtures.
-function toSchemaShape(doc: any): any {
-  if (!doc || typeof doc !== 'object') return doc;
-  const d = structuredClone(doc);
-  if (d.version === '0.2.0.dev0/google') d.version = '0.2.0.dev0';
-  for (const m of Array.isArray(d.semantic_model) ? d.semantic_model : []) {
-    if (!m || typeof m !== 'object') continue;
-    if (m.entities !== undefined && m.datasets === undefined) {
-      m.datasets = m.entities;
-      delete m.entities;
-    }
-    delete m.deployment_target;
-    delete m.deployments;
-  }
-  return d;
-}
-
-// `actions` (model-level write operations, the write-side counterpart to
-// metrics) are a deliberate SUPERSET of released Apache OSI: the Extended-spec
-// proposal adds them, but the vendored osi-schema.json -- pinned to released
-// v0.2.0.dev0 -- does not yet know the keyword, so a model carrying `actions`
-// trips `additionalProperties: false` on the semantic_model item. We tolerate
-// EXACTLY that one extra property (an additionalProperties error naming
-// `actions` on a /semantic_model/<n> path) and nothing else, so an actions
-// fixture validates while every other drift from the spec still fails. When
-// upstream OSI adopts actions, re-vendoring the schema makes this pass with no
-// special-casing and this tolerance can be removed.
-// The model-level write-side blocks that are a deliberate superset of released
-// OSI (the Extended-spec proposal): `actions` and the `constraints` that gate
-// them.
-const EXTENDED_MODEL_BLOCKS = new Set(['actions', 'constraints']);
-
-function onlyExtendedModelBlocks(errors: typeof validate.errors): boolean {
-  return !!errors && errors.length > 0 &&
-    errors.every(
-      e => e.keyword === 'additionalProperties' &&
-        EXTENDED_MODEL_BLOCKS.has(
-          (e.params as {additionalProperty?: string}).additionalProperty ?? '') &&
-        /\/semantic_model\/\d+$/.test(e.instancePath));
-}
-
-// A `.pull.golden.yaml` of a fixture that declares actions or constraints trips
-// two tolerated classes at once: the #290 missing-`expression` gap and the
-// extended model blocks. Each predicate above is all-or-nothing, so a document
-// hitting both passes neither. This one tolerates their union, and is applied
-// only to that combination, so neither predicate has to loosen for every other
-// fixture.
-function onlyExpressionGapAndExtendedBlocks(
-  errors: typeof validate.errors): boolean {
-  return !!errors && errors.length > 0 &&
-    errors.every(
-      e =>
-        (e.keyword === 'required' &&
-          (e.params as {missingProperty?: string}).missingProperty ===
-            'expression') ||
-        (e.keyword === 'additionalProperties' &&
-          EXTENDED_MODEL_BLOCKS.has(
-            (e.params as {additionalProperty?: string}).additionalProperty ??
-            '') &&
-          /\/semantic_model\/\d+$/.test(e.instancePath)));
-}
-
-describe('fixtures are valid Apache OSI (osi-schema.json, Draft 2020-12)', () => {
   test('at least one fixture is discovered', () => {
     expect(fixtures.length).toBeGreaterThan(0);
   });
 
   for (const path of fixtures) {
     const rel = path.slice(fixturesDir.length + 1);
-    test(`${rel} validates against the OSI schema`, () => {
-      const doc = toSchemaShape(yaml.parse(readFileSync(path, 'utf8')));
-      const ok = validate(doc);
-      if (!ok) {
-        // A .pull.golden.yaml from an expression-free push is a known #290 gap
-        // when its ONLY failures are missing `expression`; anything else is a
-        // real regression and still fails.
-        if (rel.endsWith('.pull.golden.yaml') &&
-            onlyMissingExpression(validate.errors)) {
-          return;
-        }
-        // The OWL import goldens are purely logical models (a pre-OSI superset,
-        // like profiles/): they omit source/expression/join-columns and carry
-        // the extends/abstract supersets. Tolerate exactly those deviations on
-        // them, so any other drift still fails.
-        if (rel.endsWith('.osi.golden.yaml') &&
-            onlyLogicalGoldenDeviations(validate.errors)) {
-          return;
-        }
-        // The hand-authored bound graph fixtures carry only the
-        // extends/abstract superset (their sources/expressions are present).
-        if ((rel === 'hierarchy_graph.yaml' ||
-             rel === 'reserved_words_inherit.yaml') &&
-            onlyExtendsExtension(validate.errors)) {
-          return;
-        }
-        // The model-level `actions` and `constraints` blocks are a superset
-        // of released OSI, proposed in the Extended spec. Tolerate those two
-        // extra properties and nothing else, and only on the fixtures that
-        // carry them, so a stray `actions` or `constraints` slipping into any
-        // other fixture still fails.
-        if (rel.startsWith('actions_') &&
-            (rel.endsWith('.pull.golden.yaml') ?
-                 onlyExpressionGapAndExtendedBlocks(validate.errors) :
-                 onlyExtendedModelBlocks(validate.errors))) {
-          return;
-        }
+    const excluded = OLD_FORM.has(rel) || PULL_FALLBACK.has(rel);
+    // An excluded fixture must still fail, so an entry is removed as soon as
+    // its fixture validates.
+    test(`${rel} ${excluded ? 'is still excluded' : 'validates'}`, () => {
+      const doc = yaml.parse(readFileSync(path, 'utf8'));
+      const validate = validators.get(doc?.version);
+      if (!validate) throw new Error(`${rel}: unknown version '${doc?.version}'`);
+      if (excluded) {
+        expect(validate(doc)).toBe(false);
+      } else if (!validate(doc)) {
         const details = (validate.errors ?? [])
           .map(e => `  ${e.instancePath || '(root)'} ${e.message}`).join('\n');
-        throw new Error(`OSI schema validation failed for ${rel}:\n${details}`);
+        throw new Error(`Schema validation failed for ${rel}:\n${details}`);
       }
-      expect(ok).toBe(true);
     });
   }
 });

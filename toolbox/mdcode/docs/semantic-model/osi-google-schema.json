@@ -1,0 +1,963 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cloud.google.com/dataplex/schemas/osi-google-schema-0.2.0.dev0.json",
+  "title": "Google-Extended Open Semantic Interchange (OSI) Specification Schema (0.2.0.dev0/google)",
+  "description": "JSON Schema (Draft 2020-12) for Google-flavor Open Semantic Interchange (OSI) documents, version '0.2.0.dev0/google'. The root validates a model document; #/$defs/ProfileDocument validates a profile file. Google extensions are native keys (entities, deployments, extends, abstract, a metric's entity, actions, constraints). Third-party custom_extensions, whose vendor_name is not 'GOOGLE', are carried verbatim.",
+  "type": "object",
+  "required": [
+    "version",
+    "semantic_model"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "0.2.0.dev0/google",
+      "description": "Google-extended OSI schema version identifier."
+    },
+    "semantic_model": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The semantic model. A document holds exactly one.",
+      "items": {
+        "$ref": "#/$defs/SemanticModel"
+      },
+      "maxItems": 1
+    }
+  },
+  "$defs": {
+    "Identifier": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*$",
+      "description": "An entity, metric or relationship name. A letter, then letters, digits or underscores, up to 500 characters.",
+      "maxLength": 500
+    },
+    "ModelName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]*$",
+      "maxLength": 500,
+      "description": "A model, profile or deployment name. A letter, then letters, digits, underscores or hyphens, up to 500 characters."
+    },
+    "Description": {
+      "type": "string",
+      "description": "Human-readable description."
+    },
+    "EntryDescription": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "The description of a model, entity, metric or relationship, stored as a Knowledge Catalog entry description: up to 2000 characters."
+    },
+    "NonEmptyText": {
+      "type": "string",
+      "minLength": 1,
+      "description": "A non-empty string with no pattern and no length limit. Used for the names and descriptions of actions, action parameters and constraints."
+    },
+    "Dialect": {
+      "type": "string",
+      "enum": [
+        "ANSI_SQL",
+        "BIGQUERY",
+        "SPANNER",
+        "MYSQL",
+        "POSTGRES",
+        "ALLOYDB",
+        "SNOWFLAKE",
+        "DATABRICKS",
+        "SQLSERVER"
+      ],
+      "description": "SQL dialect, matched exactly."
+    },
+    "DataType": {
+      "type": "string",
+      "pattern": "^([Ss][Tt][Rr][Ii][Nn][Gg]|[Ii][Nn][Tt][Ee][Gg][Ee][Rr]|[Dd][Ee][Cc][Ii][Mm][Aa][Ll]|[Ff][Ll][Oo][Aa][Tt]|[Bb][Oo][Oo][Ll][Ee][Aa][Nn]|[Dd][Aa][Tt][Ee]|[Tt][Ii][Mm][Ee]|[Dd][Aa][Tt][Ee][Tt][Ii][Mm][Ee]|[Dd][Aa][Tt][Ee][Tt][Ii][Mm][Ee][Tt][Zz]|[Oo][Pp][Aa][Qq][Uu][Ee])$",
+      "description": "Logical data type: String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz or Opaque, in any casing."
+    },
+    "NonEmptySql": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "Non-empty, non-whitespace SQL expression or bare column name."
+    },
+    "DialectExpression": {
+      "type": "object",
+      "required": [
+        "dialect",
+        "expression"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "dialect": {
+          "$ref": "#/$defs/Dialect"
+        },
+        "expression": {
+          "$ref": "#/$defs/NonEmptySql"
+        }
+      }
+    },
+    "Expression": {
+      "description": "SQL expression: either a plain string, shorthand for a single ANSI_SQL variant, or an object listing one variant per dialect.",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/NonEmptySql"
+        },
+        {
+          "type": "object",
+          "required": [
+            "dialects"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "dialects": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/DialectExpression"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "AiContext": {
+      "description": "AI context metadata: either an instructions string or an object with instructions, synonyms and examples. Custom members go inside custom, the one open key.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "instructions": {
+              "type": "string"
+            },
+            "synonyms": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "custom": {
+              "type": "object",
+              "description": "Custom ai_context members, carried verbatim and never interpreted. Any key and any value, except the three names this object defines and __proto__.",
+              "propertyNames": {
+                "not": {
+                  "enum": [
+                    "instructions",
+                    "synonyms",
+                    "examples",
+                    "__proto__"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "CustomExtension": {
+      "type": "object",
+      "required": [
+        "vendor_name",
+        "data"
+      ],
+      "additionalProperties": false,
+      "description": "Third-party vendor custom extension, carried verbatim. In '0.2.0.dev0/google', Google extensions are native properties, so vendor_name 'GOOGLE' is not permitted. The match is exact: any other spelling, for example 'Google', names a different vendor and is carried like LOOKER, SNOWFLAKE, DBT or DATABRICKS.",
+      "properties": {
+        "vendor_name": {
+          "type": "string",
+          "minLength": 1,
+          "not": {
+            "const": "GOOGLE"
+          }
+        },
+        "data": {
+          "type": "string"
+        }
+      }
+    },
+    "TableSource": {
+      "type": "string",
+      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table.",
+      "anyOf": [
+        {
+          "title": "BigQuery table",
+          "pattern": "^bigquery\\.googleapis\\.com/projects/[^/]+/datasets/[^/.]+/tables/[^/.]+$"
+        },
+        {
+          "title": "BigLake table",
+          "pattern": "^biglake\\.googleapis\\.com/projects/[^/]+/catalogs/[^/.]+/namespaces/[^/.]+/tables/[^/.]+$"
+        },
+        {
+          "title": "Spanner table",
+          "pattern": "^spanner\\.googleapis\\.com/projects/[^/]+/instances/[^/]+/databases/[^/]+/tables/[^/]+$"
+        },
+        {
+          "title": "AlloyDB table",
+          "pattern": "^alloydb\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/clusters/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+        },
+        {
+          "title": "Cloud SQL for MySQL table",
+          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/tables/[^/]+$"
+        },
+        {
+          "title": "Cloud SQL for PostgreSQL or SQL Server table",
+          "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+        }
+      ]
+    },
+    "DeploymentTarget": {
+      "type": "string",
+      "description": "The GCP resource name, with no leading //, of a BigQuery graph, a Spanner graph or an AlloyDB database.",
+      "anyOf": [
+        {
+          "title": "BigQuery graph",
+          "pattern": "^bigquery\\.googleapis\\.com/projects/[A-Za-z0-9_-]+/datasets/[A-Za-z0-9_-]+/propertyGraphs/[A-Za-z0-9_-]+$"
+        },
+        {
+          "title": "Spanner graph",
+          "pattern": "^spanner\\.googleapis\\.com/projects/[A-Za-z0-9_-]+/instances/[A-Za-z0-9_-]+/databases/[A-Za-z0-9_-]+/graphs/[A-Za-z0-9_-]+$"
+        },
+        {
+          "title": "AlloyDB database",
+          "pattern": "^alloydb\\.googleapis\\.com/projects/[A-Za-z0-9_-]+/locations/[A-Za-z0-9_-]+/clusters/[A-Za-z0-9_-]+/databases/[A-Za-z0-9_-]+$"
+        }
+      ]
+    },
+    "Dimension": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "is_time": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Field": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/FieldName"
+        },
+        "expression": {
+          "$ref": "#/$defs/Expression"
+        },
+        "datatype": {
+          "$ref": "#/$defs/DataType"
+        },
+        "label": {
+          "type": "string"
+        },
+        "description": {
+          "$ref": "#/$defs/Description"
+        },
+        "dimension": {
+          "$ref": "#/$defs/Dimension"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      }
+    },
+    "Entity": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "source": {
+          "$ref": "#/$defs/TableSource"
+        },
+        "abstract": {
+          "type": "boolean",
+          "default": false
+        },
+        "extends": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/Identifier"
+          }
+        },
+        "primary_key": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          }
+        },
+        "unique_keys": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/ColumnName"
+            }
+          }
+        },
+        "description": {
+          "$ref": "#/$defs/EntryDescription"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Field"
+          }
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "description": "An abstract entity has no table, so it declares no source, no key and no field expression.",
+          "if": {
+            "properties": {
+              "abstract": {
+                "const": true
+              }
+            },
+            "required": [
+              "abstract"
+            ]
+          },
+          "then": {
+            "properties": {
+              "source": false,
+              "primary_key": false,
+              "unique_keys": false,
+              "fields": {
+                "items": {
+                  "properties": {
+                    "expression": false
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Relationship": {
+      "type": "object",
+      "required": [
+        "name",
+        "from",
+        "to"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "from": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "to": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "from_columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          }
+        },
+        "to_columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          }
+        },
+        "description": {
+          "$ref": "#/$defs/EntryDescription"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "dependentRequired": {
+        "from_columns": [
+          "to_columns"
+        ],
+        "to_columns": [
+          "from_columns"
+        ]
+      }
+    },
+    "Metric": {
+      "type": "object",
+      "required": [
+        "name",
+        "expression"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "entity": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "expression": {
+          "$ref": "#/$defs/Expression"
+        },
+        "datatype": {
+          "$ref": "#/$defs/DataType"
+        },
+        "description": {
+          "$ref": "#/$defs/EntryDescription"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      }
+    },
+    "ProfileField": {
+      "type": "object",
+      "required": [
+        "name",
+        "expression"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/FieldName"
+        },
+        "expression": {
+          "$ref": "#/$defs/Expression"
+        }
+      }
+    },
+    "ProfileEntity": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "source": {
+          "$ref": "#/$defs/TableSource"
+        },
+        "primary_key": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          }
+        },
+        "unique_keys": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/ColumnName"
+            }
+          }
+        },
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileField"
+          }
+        },
+        "fields_exclude": {
+          "description": "Field names left unbound under this profile. Unlike metrics_exclude, '*' is not supported; list the field names explicitly.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/FieldName"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "ProfileRelationship": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/Identifier"
+        },
+        "from_columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          }
+        },
+        "to_columns": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ColumnName"
+          }
+        }
+      },
+      "dependentRequired": {
+        "from_columns": [
+          "to_columns"
+        ],
+        "to_columns": [
+          "from_columns"
+        ]
+      }
+    },
+    "Deployment": {
+      "type": "object",
+      "required": [
+        "name",
+        "target"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ModelName"
+        },
+        "target": {
+          "$ref": "#/$defs/DeploymentTarget"
+        },
+        "profile": {
+          "$ref": "#/$defs/ModelName"
+        }
+      }
+    },
+    "Executor": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "mcp": {
+          "type": "object",
+          "required": [
+            "server",
+            "tool"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "server": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            }
+          }
+        },
+        "rest": {
+          "type": "object",
+          "required": [
+            "endpoint",
+            "method"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "endpoint": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            }
+          }
+        },
+        "grpc": {
+          "type": "object",
+          "required": [
+            "service",
+            "method"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "service": {
+              "type": "string"
+            },
+            "method": {
+              "type": "string"
+            }
+          }
+        },
+        "sql": {
+          "type": "object",
+          "required": [
+            "statements"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "statements": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "minProperties": 1,
+      "maxProperties": 1,
+      "description": "How an action is performed: exactly one of mcp, rest, grpc or sql. null means nothing performs it."
+    },
+    "ActionParameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/NonEmptyText"
+        },
+        "type": {
+          "type": "string"
+        },
+        "datatype": {
+          "type": "string"
+        },
+        "concept": {
+          "type": "string"
+        },
+        "field": {
+          "type": "string"
+        },
+        "description": {
+          "$ref": "#/$defs/NonEmptyText"
+        },
+        "label": {
+          "type": "string"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": {}
+      }
+    },
+    "AffectedConcept": {
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "object",
+          "required": [
+            "concept"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "concept": {
+              "type": "string"
+            },
+            "operation": {
+              "type": "string",
+              "enum": [
+                "create",
+                "modify",
+                "delete"
+              ]
+            },
+            "fields": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "Action": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/NonEmptyText"
+        },
+        "description": {
+          "$ref": "#/$defs/NonEmptyText"
+        },
+        "executor": {
+          "$ref": "#/$defs/Executor"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionParameter"
+          }
+        },
+        "guards": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "affects": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/AffectedConcept"
+          }
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        }
+      }
+    },
+    "Constraint": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/NonEmptyText"
+        },
+        "judgment": {
+          "type": "string"
+        },
+        "description": {
+          "$ref": "#/$defs/NonEmptyText"
+        },
+        "on_violation": {
+          "type": "string",
+          "enum": [
+            "reject",
+            "escalate",
+            "warn"
+          ]
+        },
+        "severity": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ]
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        }
+      }
+    },
+    "SemanticModel": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/ModelName"
+        },
+        "description": {
+          "$ref": "#/$defs/EntryDescription"
+        },
+        "ai_context": {
+          "$ref": "#/$defs/AiContext"
+        },
+        "deployments": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Deployment"
+          }
+        },
+        "entities": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Entity"
+          }
+        },
+        "datasets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/Entity"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Relationship"
+          }
+        },
+        "metrics": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Metric"
+          }
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Action"
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Constraint"
+          }
+        },
+        "custom_extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CustomExtension"
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "entities"
+          ]
+        },
+        {
+          "required": [
+            "datasets"
+          ]
+        }
+      ]
+    },
+    "FieldName": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,299}$",
+      "description": "A field name. A BigQuery column name: a letter or underscore, then letters, digits or underscores, up to 300 characters."
+    },
+    "ProfileDocument": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/ModelName"
+            },
+            {
+              "not": {
+                "pattern": "^[Dd][Ee][Ff][Aa][Uu][Ll][Tt]$"
+              }
+            }
+          ],
+          "description": "A profile name. 'default', in any casing, is reserved."
+        },
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileEntity"
+          }
+        },
+        "relationships": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileRelationship"
+          }
+        },
+        "metrics_exclude": {
+          "description": "Metrics this profile does not make available. \"*\" covers every metric the model declares, including ones added later. A list names them explicitly, and may not contain \"*\".",
+          "oneOf": [
+            {
+              "const": "*"
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "not": {
+                  "const": "*"
+                }
+              }
+            }
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "description": "Per-profile executor bindings for actions the base model declares. An action's executor is a physical binding, like an entity's source, so a profile may set it; null means the action is performed by nothing under this profile. Nothing else about an action may be set here.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name"
+            ],
+            "properties": {
+              "name": {
+                "$ref": "#/$defs/NonEmptyText"
+              },
+              "executor": {
+                "$ref": "#/$defs/Executor"
+              }
+            }
+          }
+        }
+      },
+      "title": "Profile document",
+      "description": "The whole of a <model>.profile.<name>.yaml file. Validate a profile file against #/$defs/ProfileDocument and a model document against the root."
+    },
+    "ColumnName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(`[^`]+`|[^\\s().+\\-*/%=<>!|&^~,`]+)$",
+      "description": "A physical column name in a key or join-column slot, passed through as written. A backtick-quoted name passes whatever it contains. An unquoted name may not contain whitespace, parentheses, a dot, a comma, a backtick or a SQL operator, which is how kcmd tells a column from an expression."
+    }
+  }
+}
