@@ -17,8 +17,9 @@ import { join } from 'path';
 import { fromDocument, SemanticModelError } from '../../../src/libts/semantic/loader';
 import { resolveModelDeployments } from '../../../src/libts/semantic/deployment_target';
 import { nameProblem } from '../../../src/libts/semantic/names';
-import { loadProfileFile, reservedProfileNameError, validateProfileCompleteness } from '../../../src/libts/semantic/resolve_profiles';
-import { validateDeployments, validatePushRequirements } from '../../../src/libts/semantic/validate';
+import { applyProfile, loadProfileFile, reservedProfileNameError, validateProfileCompleteness } from '../../../src/libts/semantic/resolve_profiles';
+import { undeclaredProfileError } from '../../../src/libts/semantic/runtime/runtime';
+import { validateDeployments, validateInlineDialects, validatePushRequirements } from '../../../src/libts/semantic/validate';
 
 const fixturesDir = join(__dirname, 'fixtures');
 const readJson = (path: string) => JSON.parse(readFileSync(path, 'utf8'));
@@ -139,8 +140,9 @@ describe('fixtures are valid for their declared OSI flavor', () => {
 // Agreement: the published schema and kcmd accept the same model documents.
 // Each case is one document and whether it is valid. It is checked against the
 // schema root and against what a Knowledge Catalog push accepts: the loader
-// with bindingOptional, then resolveModelDeployments, validateDeployments and
-// validatePushRequirements with targetOptional, as the push command runs them.
+// with bindingOptional, then resolveModelDeployments, undeclaredProfileError,
+// validateInlineDialects, validateDeployments and validatePushRequirements with
+// targetOptional, as the push command runs them.
 // A case where the two disagree fails.
 // ---------------------------------------------------------------------------
 
@@ -154,9 +156,14 @@ function loaderErrors(doc: unknown): string|undefined {
     for (const model of models) {
       const resolved = resolveModelDeployments(model);
       if ('error' in resolved) return resolved.error;
+      // The scope has one profile file, 'prod', as in the profile cases.
+      const undeclared = undeclaredProfileError('doc', model, ['prod']);
+      if (undeclared) return undeclared;
     }
     const errors = [
-      ...models.flatMap(model => validateDeployments(model, 'doc')),
+      ...models.flatMap(model => [
+        ...validateInlineDialects(model, 'doc'),
+        ...validateDeployments(model, 'doc')]),
       // Push checks the catalog's model as one that deploys nowhere.
       ...validatePushRequirements(
         models.map(model => ({ document: 'doc',
@@ -183,8 +190,7 @@ const TARGET = {
   spanner: 'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g',
   alloydb: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db',
 };
-// A broken variant of each form, wrong in a way only that form's pattern
-// catches.
+// A broken variant of each form: a segment missing, added or malformed.
 const BAD_SOURCE: Record<keyof typeof SOURCE, string> = {
   bigquery: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders.v2',
   biglake: 'biglake.googleapis.com/projects/p/catalogs/c/tables/orders',
@@ -280,9 +286,9 @@ function rename(m: any, kind: Part|'deployment', name: string): void {
   if (kind === 'entity') m.relationships[0].to = name;
 }
 
-// `loaderBug` names the bug under which kcmd still disagrees with the schema on
-// this case. The test then expects the disagreement, so the entry is removed
-// as soon as the loader is fixed.
+// `loaderBug` says why kcmd disagrees with the schema on this case: a bug,
+// whose entry is removed once the loader is fixed, or a rule no JSON Schema
+// can state. The test then expects the disagreement.
 type Case = [label: string, doc: any, valid: boolean, loaderBug?: string];
 
 // The loader accepts an empty name or description here; the schema does not.
@@ -297,6 +303,21 @@ function sourceCases(withSource: (source: string) => any): Case[] {
     ]),
     ['a source with a leading //', withSource(`//${SOURCE.bigquery}`), false],
   ];
+}
+
+// The key and join column cases. `build` is base or profile; both put the
+// key on entity 0 and the join columns on relationship 0.
+function columnCases(build: (edit: (d: any) => void) => any): Case[] {
+  return ([
+    ['o_id', true], ['_id', true], ['`order id`', true],
+    ['LOWER(cust_id)', false], ['customers.id', false], ['a,b', false],
+    ['a`b', false],
+  ] as const).flatMap(([column, valid]): Case[] => [
+    [`primary_key column ${column}`,
+      build(d => { d.entities[0].primary_key = [column]; }), valid],
+    [`join column ${column}`,
+      build(d => { d.relationships[0].from_columns = [column]; }), valid],
+  ]);
 }
 
 // One test per case: the schema and kcmd each give the case's verdict.
@@ -393,17 +414,7 @@ const MODEL_CASES: Case[] = [
       `${kind} name of ${n} characters`,
       base(m => rename(m, kind, nameOf(n))), n === 500])),
 
-  // Key and join columns.
-  ...([
-    ['o_id', true], ['_id', true], ['`order id`', true],
-    ['LOWER(cust_id)', false], ['customers.id', false], ['a,b', false],
-    ['a`b', false],
-  ] as const).flatMap(([column, valid]): Case[] => [
-    [`primary_key column ${column}`,
-      base(m => { m.entities[0].primary_key = [column]; }), valid],
-    [`join column ${column}`,
-      base(m => { m.relationships[0].from_columns = [column]; }), valid],
-  ]),
+  ...columnCases(base),
 
   // Actions and their executors.
   ...([
@@ -418,11 +429,14 @@ const MODEL_CASES: Case[] = [
     ['an mcp executor with a blank server', { mcp: { server: ' ', tool: 't' } }, false],
     ['a rest executor with a blank method', { rest: { endpoint: 'https://x', method: '' } }, false],
     ['a grpc executor with a blank service', { grpc: { service: '', method: 'm' } }, false],
+    ['an mcp executor with a blank tool', { mcp: { server: 's', tool: ' ' } }, false],
+    ['a rest executor with a blank endpoint', { rest: { endpoint: ' ', method: 'GET' } }, false],
+    ['a grpc executor with a blank method', { grpc: { service: 's', method: ' ' } }, false],
     ['a sql executor with a blank statement',
       { sql: { statements: ['DELETE FROM orders WHERE id = @id', ' '] } }, false],
   ] as const).map(([label, executor, valid]): Case => [label, base(m => {
     m.actions = [{
-      name: 'cancel order', description: 'Cancels an order.', executor,
+      name: 'cancel_order', description: 'Cancels an order.', executor,
       ...(executor && 'sql' in executor ?
         { parameters: [{ name: 'id', type: 'Integer', required: true }] } : {}),
     }];
@@ -437,8 +451,7 @@ const MODEL_CASES: Case[] = [
     base(m => { m.constraints = [structuredClone(constraint)]; }), false]),
 
   // A deployment with no profile, or 'default', uses the model file's own
-  // bindings, so they must bind every concrete entity and relationship. Push
-  // also checks that a named profile's file exists, which no schema can see.
+  // bindings, so they must bind every concrete entity and relationship.
   ...([
     ['no deployment', undefined, true],
     ['a deployment naming a profile', 'prod', true],
@@ -460,6 +473,20 @@ const MODEL_CASES: Case[] = [
       }), valid],
     ];
   }),
+  ['a deployment profile with a space', base(m => {
+    m.deployments = [{ name: 'prod', target: TARGET.bigquery, profile: 'prod us' }];
+  }), false],
+  // Rules about what a metric's SQL reads, which no JSON Schema can see.
+  ['a metric reading a field with no expression', base(m => {
+    m.entities[0].fields.push({ name: 'amount' });
+    m.metrics.push({ name: 'revenue', expression: 'SUM(orders.amount)' });
+    m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
+  }), true, 'no JSON Schema can see which fields a metric reads'],
+  ['a ratio metric on a BigQuery deployment', base(m => {
+    m.metrics.push({ name: 'orders_per_customer',
+      expression: 'COUNT(orders.id) / COUNT(DISTINCT orders.customer_id)' });
+    m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
+  }), true, 'no JSON Schema can see whether a metric is one aggregate'],
 
   ['an action with custom_extensions', base(m => {
     m.actions = [{ name: 'cancel_order', custom_extensions: [{ vendor_name: 'DBT', data: '{}' }] }];
@@ -496,9 +523,10 @@ describeAgreement('the Google schema and the loader agree on model documents',
 
 // ---------------------------------------------------------------------------
 // Agreement on profile files. Each case is the whole of a profile file. It is
-// checked against #/$defs/ProfileDocument and against what push accepts of a
-// profile file beside profileModel: the layout's profile-name rules, then
-// loadProfileFile, then validateProfileCompleteness.
+// checked against #/$defs/ProfileDocument and against what push accepts when
+// it applies the profile file to profileModel: the layout's profile-name
+// rules, then loadProfileFile, validateProfileCompleteness, and
+// validatePushRequirements on the model with the profile applied.
 // ---------------------------------------------------------------------------
 
 const validateProfile = ajv.getSchema(
@@ -521,16 +549,22 @@ const profileModel = fromDocument({
   }],
 }, { bindingOptional: true }).models[0];
 
-// Why push rejects the profile file `doc` beside profileModel, or undefined.
-// The layout checks the profile name with nameProblem and reserves 'default'.
+// Why push rejects the profile file `doc` when applying it to profileModel, or
+// undefined. The layout checks the profile name with nameProblem and
+// reserves 'default'.
 function profileErrors(doc: any): string|undefined {
   const name = String(doc?.name);
   const nameError = nameProblem('profile', name) ??
     reservedProfileNameError('profile', [{ name }]);
   if (nameError) return nameError;
   try {
-    const errors = validateProfileCompleteness(
-      profileModel, loadProfileFile(yaml.stringify(doc), name));
+    const spec = loadProfileFile(yaml.stringify(doc), name);
+    const errors = validateProfileCompleteness(profileModel, spec);
+    if (!errors.length) {
+      errors.push(...validatePushRequirements(
+        [{ document: 'doc', model: applyProfile(profileModel, spec) }],
+        { targetOptional: true }));
+    }
     return errors.length ? errors.join('\n') : undefined;
   } catch (err) {
     if (err instanceof SemanticModelError) return err.message;
@@ -577,6 +611,9 @@ const PROFILE_CASES: Case[] = [
   ['an action bound to no executor', profile(p => {
     p.actions = [{ name: 'cancel_order', executor: null }];
   }), true],
+  ['an action executor with a blank server', profile(p => {
+    p.actions = [{ name: 'cancel_order', executor: { mcp: { server: ' ', tool: 't' } } }];
+  }), false],
   ['an action setting a description', profile(p => {
     p.actions = [{ name: 'cancel_order', description: 'Cancels an order.' }];
   }), false],
@@ -589,14 +626,11 @@ const PROFILE_CASES: Case[] = [
     profile(p => { p.metrics_exclude = exclude; }), valid]),
 
   // Fields.
-  ['an entity with no primary_key, using the model file\'s key',
-    profile(p => { delete p.entities[1].primary_key; }), true],
   ['fields_exclude naming a field', profile(p => {
     p.entities[0].fields.pop();
     p.entities[0].fields_exclude = ['amount'];
   }), true],
   ["fields_exclude '*'", profile(p => {
-    p.entities[0].fields.pop();
     p.entities[0].fields_exclude = ['*'];
   }), false],
   ['a field with no expression', profile(p => { p.entities[0].fields[2] = { name: 'amount' }; }), false],
@@ -608,17 +642,7 @@ const PROFILE_CASES: Case[] = [
     delete p.relationships[0].to_columns;
   }), false],
 
-  // Key and join columns.
-  ...([
-    ['o_id', true], ['_id', true], ['`order id`', true],
-    ['LOWER(cust_id)', false], ['customers.id', false], ['a,b', false],
-    ['a`b', false],
-  ] as const).flatMap(([column, valid]): Case[] => [
-    [`primary_key column ${column}`,
-      profile(p => { p.entities[0].primary_key = [column]; }), valid],
-    [`join column ${column}`,
-      profile(p => { p.relationships[0].from_columns = [column]; }), valid],
-  ]),
+  ...columnCases(profile),
 
   // A profile reads from one database, so both entities take the form.
   ...sourceCases(source => profile(p => {
@@ -629,6 +653,12 @@ const PROFILE_CASES: Case[] = [
 
 describeAgreement('the Google schema and the loader agree on profile files',
   validateProfile, profileErrors, PROFILE_CASES);
+
+// The schema cannot see the model file, so this case checks the schema alone.
+test('a profile entity with no primary_key passes the schema', () => {
+  expect(schemaErrors(validateProfile,
+    profile(p => { delete p.entities[1].primary_key; }))).toBeUndefined();
+});
 
 test('the Google flavor rejects a GOOGLE custom_extensions block in any letter case', () => {
   const { $id } = validators.get('0.2.0.dev0/google')!.schema as { $id: string };
