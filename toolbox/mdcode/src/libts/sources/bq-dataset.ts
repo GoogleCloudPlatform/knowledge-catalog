@@ -4,6 +4,7 @@
 import * as gcp from '../gcp';
 import * as bq from '../gcp/bigquery';
 import { Layouts } from '../layout';
+import * as md from '../metadata';
 import { CatalogSource } from '../source';
 
 
@@ -12,6 +13,7 @@ export class BigQueryDatasetSource implements CatalogSource {
   readonly name: string;
   readonly ingestedEntries = true;
   readonly layout = Layouts.STANDARD;
+  readonly defaultAspects = [md.OVERVIEW_ASPECT];
 
   private readonly _datasets: Map<string, bq.Dataset>;
 

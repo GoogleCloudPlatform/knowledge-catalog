@@ -8,7 +8,6 @@ import * as yaml from 'yaml';
 import * as md from '../metadata';
 import { CatalogLayout } from '../layout';
 
-const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
 const INDEX_NAME = 'index';
 
@@ -86,11 +85,11 @@ export class DocumentsLayout implements CatalogLayout {
 
     const bodyTrimmed = body.trim();
     if (bodyTrimmed) {
-      if (!entry.aspects[OVERVIEW_ASPECT_KEY]) {
-        entry.aspects[OVERVIEW_ASPECT_KEY] = {};
+      if (!entry.aspects[md.OVERVIEW_ASPECT]) {
+        entry.aspects[md.OVERVIEW_ASPECT] = {};
       }
-      entry.aspects[OVERVIEW_ASPECT_KEY].content = bodyTrimmed;
-      entry.aspects[OVERVIEW_ASPECT_KEY].contentType = 'MARKDOWN';
+      entry.aspects[md.OVERVIEW_ASPECT].content = bodyTrimmed;
+      entry.aspects[md.OVERVIEW_ASPECT].contentType = 'MARKDOWN';
     }
     return entry;
   }
@@ -103,8 +102,8 @@ export class DocumentsLayout implements CatalogLayout {
     const clonedEntry = JSON.parse(JSON.stringify(entry)) as md.Entry;
     let body = '';
 
-    if (clonedEntry.aspects?.[OVERVIEW_ASPECT_KEY]) {
-      const aspect = clonedEntry.aspects[OVERVIEW_ASPECT_KEY];
+    if (clonedEntry.aspects?.[md.OVERVIEW_ASPECT]) {
+      const aspect = clonedEntry.aspects[md.OVERVIEW_ASPECT];
       if (aspect.content !== undefined) {
         body = aspect.content;
         delete aspect.content;
