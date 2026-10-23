@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {parseOverviewSidecar, SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
+import {formatOverviewSidecar, parseOverviewSidecar, SemanticModelLayout} from '../../../src/libts/layouts/semantic-model';
 
 let root: string;
 let catalogPath: string;
@@ -484,13 +484,19 @@ describe('SemanticModelLayout profile name rules', () => {
 
 describe('SemanticModelLayout overview sidecars', () => {
   test('parseOverviewSidecar reads the frontmatter and trimmed body, and ' +
-           'rejects a frontmatter it cannot hold, naming the file',
+           'rejects a frontmatter it cannot hold, naming the file; ' +
+           'formatOverviewSidecar writes them back',
        () => {
          const file = 'm/metrics/x.overview.md';
          const read = (text: string) => parseOverviewSidecar(text, file);
-         expect(read('---\ncontentType: HTML\nlinks:\n' +
-                     '  - url: https://x.test\n    title: Guide\n' +
-                     '  - url: https://y.test\n---\n\n<p>Hi</p>\n'))
+         const text = '---\ncontentType: HTML\nlinks:\n' +
+             '  - url: https://x.test\n    title: Guide\n' +
+             '  - url: https://y.test\n---\n<p>Hi</p>\n';
+         expect(formatOverviewSidecar(read(text))).toBe(text);
+         // Content that opens with a `---` line gets an empty frontmatter.
+         const ruled = {content: '---\ntitle: Orders\n---\nOne row.'};
+         expect(read(formatOverviewSidecar(ruled))).toEqual(ruled);
+         expect(read(text.replace('\n<p>', '\n\n<p>')))
              .toEqual({
                content: '<p>Hi</p>',
                contentType: 'HTML',

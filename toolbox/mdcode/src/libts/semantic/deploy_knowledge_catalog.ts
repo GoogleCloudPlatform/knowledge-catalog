@@ -546,7 +546,7 @@ function emittedAspectsError(model: EmittedModel): string|undefined {
 }
 
 // Most aspects Dataplex returns for one entry in one read.
-const MAX_ASPECTS_PER_READ = 100;
+export const MAX_ASPECTS_PER_READ = 100;
 
 // The aspect types a field can carry at its path, each with what fills it.
 const FIELD_ASPECT_CONTENT: Record<string, string> = {
@@ -556,7 +556,8 @@ const FIELD_ASPECT_CONTENT: Record<string, string> = {
 };
 
 // Why kcmd could not read back every instance of one aspect type `entry`
-// carries, or undefined when it could.
+// carries, or undefined when it could. The limit holds per type because pull
+// reads an entry again once per aspect type when one read returns 100.
 function instanceCountError(entry: Entry): string|undefined {
   for (const [type, content] of Object.entries(FIELD_ASPECT_CONTENT)) {
     const count = Object.keys(entry.aspects ?? {})

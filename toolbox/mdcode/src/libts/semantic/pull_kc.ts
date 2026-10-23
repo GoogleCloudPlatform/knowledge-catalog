@@ -20,11 +20,12 @@
 
 import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
-import {SemanticModel} from './ir';
+import {MAX_ASPECTS_PER_READ} from './deploy_knowledge_catalog';
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
+import {linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
 import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
-import {idOf, linkDedupKey, modelsFromCatalogResources} from './kc_converter';
+import {entryIdOf, Namer} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
 
 export interface KcPullOptions {
@@ -37,28 +38,21 @@ export interface KcPullOptions {
   // Read the second-generation built-in aspect fields and entry-id layout
   // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
   v2Aspects?: boolean;
+  // The project of the schema-join entry link type, which only a pull with
+  // v2Aspects off reads. Defaults to `dataplex-types`.
+  systemTypeProject?: string;
 }
 
-export interface KcPullResult {
-  models: SemanticModel[];
+export interface KcPullResult extends ReadResult {
   // The file copies a push stored for the model, sorted by file name. Set
   // only with v2Aspects off. Empty when the catalog holds no copy of the
   // model file, `<model>.yaml`; the caller then writes the model rebuilt from
   // the aspects.
   rawFiles?: FileCopy[];
-  warnings: string[];
 }
 
 // Upper bound on in-flight aspect-hydration fetches during a pull.
 const HYDRATE_CONCURRENCY = 8;
-
-// The built-in schema-join entry link type. Relationships publish as links of
-// this type; it is a system type that is referenced (never created), so it
-// always lives in `dataplex-types/global` regardless of where the model's own
-// entries live (see knowledge_catalog.ts). Pull filters :lookupEntryLinks to
-// exactly it, so a group's other links are never fetched or considered.
-const SCHEMA_JOIN_LINK_TYPE =
-    'projects/dataplex-types/locations/global/entryLinkTypes/schema-join';
 
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
@@ -80,7 +74,7 @@ export async function pullKnowledgeCatalog(
       opts.project, opts.location, opts.entryGroup)) {
     // With v2Aspects on, a pull returns no file copies, so it fetches none.
     if (opts.v2Aspects && isFileCopyEntry(entry)) continue;
-    const aspectTypes = semanticAspectTypes(entry.entryType);
+    const aspectTypes = semanticAspectTypes(entry.entryType, opts.v2Aspects);
     if (aspectTypes) targets.push({entry, aspectTypes});
     // else: not part of a semantic model; ignore it.
   }
@@ -92,7 +86,7 @@ export async function pullKnowledgeCatalog(
   const anchors = targets.filter(
       t => t.entry.entryType?.endsWith('/entryTypes/semantic-model'));
   if (anchors.length > 1) {
-    const ids = anchors.map(a => idOf(a.entry.name)).sort();
+    const ids = anchors.map(a => entryIdOf(a.entry.name)).sort();
     throw new Error(
         `entry group ${destination} holds ${anchors.length} semantic models (${
             ids.join(
@@ -103,30 +97,24 @@ export async function pullKnowledgeCatalog(
   // Hydrate every semantic entry. A failed fetch means part of the model would
   // be silently missing, so abort rather than reconstruct an incomplete model.
   const hydrated = await mapConcurrent(
-      targets, HYDRATE_CONCURRENCY, async ({entry, aspectTypes}) => {
-        const res = await cat.lookupEntry(
-            opts.project, opts.location, entry.name, aspectTypes);
-        if (res.status !== 200 || !res.result) {
-          throw new Error(`failed to fetch entry '${entry.name}' (status ${
-              res.status}); pull aborted`);
-        }
-        return res.result;
-      });
+      targets, HYDRATE_CONCURRENCY,
+      async ({entry, aspectTypes}) => opts.v2Aspects ?
+          fetchEveryAspect(cat, opts, entry, aspectTypes) :
+          fetchEntry(cat, opts, entry, aspectTypes));
 
-  // Second fetch pass: relationships are schema-join entry links, which the
-  // entry list/lookup does not return. The catalog exposes links only per
-  // referenced entry (:lookupEntryLinks), so fan out over the entity entries
-  // and dedup (linkDedupKey) -- schema-join is undirected, so each link comes
-  // back once from each of its two endpoints. An entity with no relationships
-  // returns an empty list (expected, not warned); a non-200 is a real fetch
-  // error and aborts the pull.
-  const entityEntries = hydrated.filter(
+  // Second fetch pass: with the first-generation types, the schema-join links
+  // of the relationships, which listing entries does not return. Links are
+  // listed per entity entry and deduplicated, since each comes back from both
+  // endpoints, and a failed lookup aborts the pull. With v2Aspects on, pull
+  // reads no link.
+  const entityEntries = opts.v2Aspects ? [] : hydrated.filter(
       e => e.entryType?.endsWith('/entryTypes/semantic-entity'));
   const linkLists =
       await mapConcurrent(entityEntries, HYDRATE_CONCURRENCY, async entry => {
         const res = await cat.lookupEntryLinks(opts.project, opts.location, {
           entry: entry.name,
-          entryLinkTypes: [SCHEMA_JOIN_LINK_TYPE],
+          entryLinkTypes:
+              [new Namer(opts).typeName('entryLink', 'schema-join')],
         });
         if (res.status !== 200 || !res.result) {
           throw new Error(
@@ -147,10 +135,11 @@ export async function pullKnowledgeCatalog(
     }
   }
 
-  const read = modelsFromCatalogResources(hydrated, entryLinks);
+  const read = modelsFromCatalogResources(
+      hydrated, entryLinks, {v2Aspects: opts.v2Aspects});
   if (opts.v2Aspects) {
     warnings.push(...read.warnings);
-    return {models: read.models, warnings: [...new Set(warnings)]};
+    return {...read, warnings: [...new Set(warnings)]};
   }
   // A copy belongs to the group's one model, so with no model there are none.
   if (!read.models.length) {
@@ -166,10 +155,10 @@ export async function pullKnowledgeCatalog(
   const model = read.models[0].name;
   // The model's own copies sit under its anchor's `.files.` prefix. A copy
   // another model left behind is not one of them.
-  const own = `${idOf(anchors[0].entry.name)}.files.`;
+  const own = `${entryIdOf(anchors[0].entry.name)}.files.`;
   const before = warnings.length;
   const copies = readFileCopies(
-      hydrated.filter(e => idOf(e.name).startsWith(own)), warnings);
+      hydrated.filter(e => entryIdOf(e.name).startsWith(own)), warnings);
   const skipped = warnings.slice(before);
   // Every copy one push stores carries that push's id and how many copies it
   // stored. Copies whose ids differ, or of which only some carry one, or a
@@ -225,6 +214,44 @@ export async function pullKnowledgeCatalog(
 }
 
 
+// Fetches `entry` with the aspects of `aspectTypes`. Throws on a failed fetch.
+async function fetchEntry(
+    cat: CatalogClient, opts: KcPullOptions, entry: Entry,
+    aspectTypes: string[]): Promise<Entry> {
+  const res = await cat.lookupEntry(
+      opts.project, opts.location, entry.name, aspectTypes);
+  if (res.status !== 200 || !res.result) {
+    throw new Error(`failed to fetch entry '${entry.name}' (status ${
+        res.status}); pull aborted`);
+  }
+  return res.result;
+}
+
+// Fetches `entry` with every aspect of `aspectTypes`, reading once per type,
+// one read at a time, when one read returns MAX_ASPECTS_PER_READ. Throws naming
+// the entry when one type alone returns that many.
+async function fetchEveryAspect(
+    cat: CatalogClient, opts: KcPullOptions, entry: Entry,
+    aspectTypes: string[]): Promise<Entry> {
+  const count = (e: Entry) => Object.keys(e.aspects ?? {}).length;
+  const read = await fetchEntry(cat, opts, entry, aspectTypes);
+  if (count(read) < MAX_ASPECTS_PER_READ) return read;
+  const byType: Entry[] = [];
+  for (const t of aspectTypes) {
+    byType.push(await fetchEntry(cat, opts, entry, [t]));
+  }
+  const full = byType.findIndex(r => count(r) >= MAX_ASPECTS_PER_READ);
+  if (full >= 0) {
+    throw new Error(
+        `entry '${entryIdOf(entry.name)}' holds ${MAX_ASPECTS_PER_READ} or ` +
+        `more ${aspectTypes[full].split('/').pop()} aspects, and Knowledge ` +
+        `Catalog returns at most ${MAX_ASPECTS_PER_READ} in one read, so ` +
+        `pull cannot read them all; pull aborted`);
+  }
+  return {...read, aspects: Object.assign({}, ...byType.map(r => r.aspects))};
+}
+
+
 // True when an entry is a file copy, matched by its entry type's id suffix so
 // the project the custom type lives in need not be known.
 function isFileCopyEntry(entry: Entry): boolean {
@@ -245,7 +272,7 @@ function readFileCopies(entries: Entry[], warnings: string[]): FileCopy[] {
     if (typeof data?.fileName !== 'string' || data.fileName === '' ||
         typeof data.content !== 'string') {
       warnings.push(
-          `file copy '${idOf(entry.name)}' holds no file name or no ` +
+          `file copy '${entryIdOf(entry.name)}' holds no file name or no ` +
           `content; it is skipped`);
       continue;
     }
@@ -263,19 +290,33 @@ function readFileCopies(entries: Entry[], warnings: string[]): FileCopy[] {
 }
 
 
-// The aspect type resource names to hydrate for a semantic entry, derived from
-// its entryType (the aspect types are the parallel resources in the same
-// project/location). Every entry also carries the built-in `guidelines` aspect
-// (ai_context instructions); an entity additionally carries the built-in
-// `schema` aspect that holds its fields, keys, and unique constraints. Returns
-// undefined for entries that are not part of a semantic model.
-function semanticAspectTypes(entryType: string): string[]|undefined {
+// The aspect types each second-generation entry type is read with.
+const OBJECT_ASPECTS = ['guidelines', 'semantic-extensions', 'overview'];
+const V2_ASPECT_TYPES = new Map([
+  ['semantic-model', ['semantic-model', ...OBJECT_ASPECTS]],
+  [
+    'semantic-entity',
+    ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT_ASPECTS]
+  ],
+  [
+    'semantic-metric', ['semantic-metric', 'sql-expressions', ...OBJECT_ASPECTS]
+  ],
+  ['semantic-relationship', ['semantic-relationship', ...OBJECT_ASPECTS]],
+]);
+
+// The aspect types to read for a semantic entry, in its entry type's project
+// and location: V2_ASPECT_TYPES with `v2Aspects` on, the first-generation set
+// otherwise. Undefined for an entry outside a semantic model.
+function semanticAspectTypes(entryType: string, v2Aspects?: boolean): string[]|
+    undefined {
   const marker = '/entryTypes/';
   const idx = entryType?.indexOf(marker) ?? -1;
   if (idx < 0) return undefined;
   const typeBase = entryType.slice(0, idx);
   const t = entryType.slice(idx + marker.length);
   const aspectType = (name: string) => `${typeBase}/aspectTypes/${name}`;
+  const v2Types = v2Aspects ? V2_ASPECT_TYPES.get(t) : undefined;
+  if (v2Types) return v2Types.map(aspectType);
   switch (t) {
     case 'semantic-model':
       return [aspectType('semantic-model'), aspectType('guidelines')];

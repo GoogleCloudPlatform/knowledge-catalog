@@ -19,7 +19,7 @@ import {modelDocumentVersion} from '../semantic/loader';
 import {nameProblem} from '../semantic/names';
 import {YAML_OPTIONS} from '../semantic/yaml_options';
 
-import {splitFrontmatter} from './documents';
+import {joinFrontmatter, splitFrontmatter} from './documents';
 
 // Sidecar suffixes that are NOT model documents.
 const SIDECAR_SUFFIXES = ['.aspects.yaml', '.overview.yaml'];
@@ -550,6 +550,17 @@ export function parseOverviewSidecar(
     throw fail('links is a list of entries, each a url and an optional title.');
   }
   return {content: split.body.trim() || undefined, contentType, links};
+}
+
+// The text of the overview sidecar that holds `overview`.
+export function formatOverviewSidecar(
+    {content = '', ...rest}: OverviewSidecar): string {
+  // The body ends with a newline, which push trims.
+  const body = content && !content.endsWith('\n') ? `${content}\n` : content;
+  // Content whose first line is `---` would otherwise read back as frontmatter.
+  return Object.keys(rest).length || body.split(/\r?\n/, 1)[0] === '---' ?
+      joinFrontmatter(rest, body) :
+      body;
 }
 
 // The `name` a profile file declares at its top level, or undefined when it

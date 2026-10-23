@@ -11,7 +11,7 @@ import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
-import {fileNameOf, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {fileNameOf, formatOverviewSidecar, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
@@ -20,8 +20,8 @@ import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {deploymentProfileError, isGoogleVendor, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
-import {serializeModel} from '../libts/semantic/osi_converter';
+import {deploymentProfileError, isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
+import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
@@ -2319,8 +2319,10 @@ function reportCatalogResult(
 // local document is a conflict (pull would leave two models), so pull fails
 // unless --force-remove authorizes deleting the stale local model first. When
 // the catalog holds file copies of the model and profile files, pull writes
-// those instead of the model rebuilt from the aspects.
-// Returns a process exit code (0 on success).
+// those instead of the model rebuilt from the aspects. A model rebuilt from
+// the second-generation types is written the same way, as its model file,
+// profile files and overview sidecars. Returns a process exit code (0 on
+// success).
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
     options: PullOptions): Promise<number> {
@@ -2340,6 +2342,7 @@ async function pullSemanticModel(
     location: source.location,
     entryGroup: source.entryGroup,
     v2Aspects: kcV2Aspects(),
+    systemTypeProject: process.env.KC_TYPE_PROJECT,
   });
 
   for (const w of result.warnings) {
@@ -2393,7 +2396,29 @@ async function pullSemanticModel(
   // aspects. Writing both would leave whichever wrote `<model>.yaml` last.
   // The copies belong to the entry group's one model.
   if (rawFiles.length) {
-    return writeFileCopies(layout, result.models[0].name, rawFiles, options);
+    return writePulledFiles(layout, result.models[0].name, rawFiles, options);
+  }
+  if (result.secondGeneration) {
+    const pulled = result.models[0];
+    // The catalog stores no profile's actions, so a profile file keeps the
+    // actions it binds locally. A vanilla model declares no action.
+    const model = pulled.version === OSSIE_VERSION ? pulled : {
+      ...pulled,
+      profiles: pulled.profiles?.map(p => {
+        const actions = localProfileActions(layout, pulled.name, p.name);
+        return actions ? {...p, actions} : p;
+      }),
+    };
+    const {files, warnings} = serializeModelFiles(model, {logical: true});
+    for (const w of warnings) console.warn(`Warning: [${model.name}] ${w}`);
+    for (const [id, sidecar] of result.overviews ?? []) {
+      files.push({
+        fileName: `${id}.overview.md`,
+        content: formatOverviewSidecar(sidecar),
+      });
+    }
+    return writePulledFiles(
+        layout, model.name, files, options, {sidecars: true});
   }
 
   let created = 0;
@@ -2451,24 +2476,43 @@ async function pullSemanticModel(
 }
 
 
-// Writes the file copies a pull returned for `model` into the entry group
-// directory, each to the path its name maps to, and leaves a file whose
-// content is unchanged as it is. A name that is not one push stores is
-// skipped with a warning. Then each local profile file the catalog did not
-// return is named in a warning, or deleted under --force-remove. Returns a
-// process exit code.
-function writeFileCopies(
+// The actions the local profile file of `profile` binds, or undefined when it
+// binds none or does not load.
+function localProfileActions(
+    layout: SemanticModelLayout, model: string, profile: string) {
+  const file = layout.localProfileFiles(model).find(
+      f => (f.profileName ?? path.basename(f.path, '.yaml')) === profile);
+  if (!file) return undefined;
+  try {
+    return loadProfileFile(fs.readFileSync(file.path, 'utf8'), profile).actions;
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return undefined;
+  }
+}
+
+
+// Writes the files a pull returned or rebuilt for `model`, and skips a name
+// push does not store. Then it names each local profile file, and with
+// `sidecars` each overview sidecar, that the pull did not write, or deletes it
+// under --force-remove.
+function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: FileCopy[],
-    options: PullOptions): number {
+    options: PullOptions, {sidecars = false} = {}): number {
   const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0};
+  const forms = [
+    `'${model}.yaml'`, `'${model}.profile.<name>.yaml'`,
+    `'${model}.profiles/<name>.yaml'`
+  ];
+  if (sidecars) forms.push('overview sidecars');
   for (const {fileName, content} of files) {
-    const target = fileCopyTarget(layout, model, fileName);
+    const target = pulledFileTarget(layout, model, fileName, sidecars);
     if (!target) {
       console.warn(
           `Warning: skipped '${fileName}' from the catalog; pull writes only ` +
-          `'${model}.yaml', '${model}.profile.<name>.yaml' and ` +
-          `'${model}.profiles/<name>.yaml' inside the entry group directory.`);
+          `${forms.slice(0, -1).join(', ')} and ${forms.at(-1)} inside the ` +
+          `entry group directory.`);
       continue;
     }
     written.add(path.resolve(target.path));
@@ -2490,17 +2534,23 @@ function writeFileCopies(
   }
 
   // Pull writes each file back to the path it came from, so a local profile
-  // file the catalog does not have is stale.
-  for (const stale of layout.localProfileFiles(model)) {
+  // file or overview sidecar the catalog does not have is stale.
+  const local: Array<{path: string; profileName?: string; kind: string}> = [
+    ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
+    ...(sidecars ? layout.overviewSidecarPaths() : [])
+        .map(f => ({path: f.path, kind: 'overview sidecar'})),
+  ];
+  for (const stale of local) {
     if (written.has(path.resolve(stale.path))) continue;
     if (!options.forceRemove) {
       console.warn(
-          `Warning: local profile file ${stale.path} is not in the catalog; ` +
-          `delete it, or pull with --force-remove to delete it.`);
+          `Warning: local ${stale.kind} ${stale.path} is not in the ` +
+          `catalog; delete it, or pull with --force-remove to delete it.`);
     } else if (options.dryRun) {
       console.log(`  would remove ${stale.path}`);
     } else {
-      // The older `<model>.profiles/` directory has no layout method.
+      // The older `<model>.profiles/` directory and a sidecar have no layout
+      // method.
       if (stale.profileName !== undefined) {
         layout.removeProfileDocument(model, stale.profileName);
       } else {
@@ -2521,20 +2571,20 @@ function writeFileCopies(
 }
 
 
-// Where pull writes a file copy of `model`, and how, or undefined when its
-// name is not one push stores. The name comes from the catalog, so only
-// `<model>.yaml`, `<model>.profile.<profile name>.yaml` and
-// `<model>.profiles/<name>.yaml` are written, each relative, ending in
-// `.yaml`, with no `..` segment and no NUL byte. The model file and a sibling
-// profile file are written through the layout, which keeps both in the entry
-// group directory; the older `<model>.profiles/` directory has no layout
-// method.
-function fileCopyTarget(
-    layout: SemanticModelLayout, model: string, fileName: string):
-    {path: string; write: (text: string) => void}|undefined {
+// Where pull writes the catalog's file `fileName` of `model`, and how.
+// Undefined unless the name is relative, holds no `..` segment or NUL byte, and
+// names `<model>.yaml`, `<model>.profile.<name>.yaml`,
+// `<model>.profiles/<name>.yaml` or, with `sidecars`, an overview sidecar
+// that push reads: `<model>.overview.md` or
+// `<model>/{entities,metrics,relationships}/<name>.overview.md`.
+function pulledFileTarget(
+    layout: SemanticModelLayout, model: string, fileName: string,
+    sidecars: boolean): {path: string; write: (text: string) => void}|
+    undefined {
+  const sidecar = sidecars && fileName.endsWith('.overview.md');
   if (path.posix.isAbsolute(fileName) || path.win32.isAbsolute(fileName) ||
       fileName.includes('\0') || fileName.split(/[\\/]/).includes('..') ||
-      !fileName.endsWith('.yaml')) {
+      !(fileName.endsWith('.yaml') || sidecar)) {
     return undefined;
   }
   if (fileName === `${model}.yaml`) {
@@ -2544,10 +2594,22 @@ function fileCopyTarget(
     };
   }
   // A model name holding a path separator maps to a flat model file, and its
-  // profile files have no such mapping.
-  if (/[\\/]/.test(model) || !fileName.startsWith(`${model}.`)) {
-    return undefined;
+  // profile files and sidecars have no such mapping.
+  if (/[\\/]/.test(model)) return undefined;
+  const localPath = path.join(path.dirname(layout.modelPath(model)), fileName);
+  const writeFile = (text: string) => {
+    fs.mkdirSync(path.dirname(localPath), {recursive: true});
+    fs.writeFileSync(localPath, text);
+  };
+  if (sidecar) {
+    return fileName === `${model}.overview.md` ||
+            fileName.startsWith(`${model}/`) &&
+                /^(entities|metrics|relationships)\/[^/\\]+\.overview\.md$/
+                    .test(fileName.slice(model.length + 1)) ?
+        {path: localPath, write: writeFile} :
+        undefined;
   }
+  if (!fileName.startsWith(`${model}.`)) return undefined;
   const rest = fileName.slice(model.length + 1);
   const profileName = /^profile\.(.+)\.yaml$/.exec(rest)?.[1];
   if (profileName !== undefined) {
@@ -2564,14 +2626,7 @@ function fileCopyTarget(
     };
   }
   if (!/^profiles\/[^/\\]+$/.test(rest)) return undefined;
-  const localPath = path.join(path.dirname(layout.modelPath(model)), fileName);
-  return {
-    path: localPath,
-    write: text => {
-      fs.mkdirSync(path.dirname(localPath), {recursive: true});
-      fs.writeFileSync(localPath, text);
-    },
-  };
+  return {path: localPath, write: writeFile};
 }
 
 

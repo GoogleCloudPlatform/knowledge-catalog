@@ -195,6 +195,11 @@ export function splitFrontmatter(
   };
 }
 
+// Markdown text with `metadata` as its YAML frontmatter and `body` after it.
+export function joinFrontmatter(metadata: object, body: string): string {
+  return `---\n${yaml.stringify(metadata).trim()}\n---\n${body}`;
+}
+
 export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
   const {metadata, body} = splitFrontmatter(content);
   if (metadata === undefined) {
@@ -257,6 +262,5 @@ export function toMarkdown(entry: md.Entry, body: string): string {
     delete entryClone.resource.labels[tag];
   }
 
-  const frontmatter = yaml.stringify(metadata).trim();
-  return `---\n${frontmatter}\n---\n${body}`;
+  return joinFrontmatter(metadata, body);
 }

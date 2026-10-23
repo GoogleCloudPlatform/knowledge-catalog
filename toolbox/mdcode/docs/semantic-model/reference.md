@@ -73,7 +73,7 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. With `KC_V2_ASPECTS=1`, it also deletes a local profile file or overview sidecar the pull did not write. |
 
 ### profiles
 
@@ -514,7 +514,7 @@ never stored, see
 
 ### With `KC_V2_ASPECTS=1`
 
-With `KC_V2_ASPECTS=1`, push writes a newer set of Knowledge Catalog
+With `KC_V2_ASPECTS=1`, push and pull use a newer set of Knowledge Catalog
 types. Each relationship other than a many-to-many association has an entry of
 its own. Entry ids are `<model>`, `<model>/entities/<entity>`,
 `<model>/metrics/<metric>` and `<model>/relationships/<relationship>`.
@@ -528,7 +528,7 @@ followed by the first 32 hex characters of a SHA-256 hash. The hash covers
 `<model>/<relationship>/source` or `<model>/<relationship>/target` for a
 relationship, and `<model>/<child>/<parent>` for a parent. Push owns only the
 `reference` links with those prefixes. It deletes the ones the model no longer
-has and leaves every other `reference` link alone.
+has and leaves every other `reference` link alone. Pull reads no entry link.
 
 An entity's `schema` aspect lists only the fields it declares. A field it
 inherits and only rebinds is a `fieldExpressions[]` record in its
@@ -536,8 +536,9 @@ inherits and only rebinds is a `fieldExpressions[]` record in its
 `overview` and `semantic-extensions` aspects sit at `Schema.<field>` on the
 entity that declares the field.
 
-`semantic-metric.entity` holds the metric's entity, declared or derived.
-`excludedInProfiles` follows the order of the model entry's `profiles` list.
+`semantic-metric.entity` holds the metric's entity, declared or derived. Pull
+writes it back as `entity:`. `excludedInProfiles` follows the order of the
+model entry's `profiles` list.
 
 Push writes each entry's whole `overview` aspect from the workspace and never
 reads it back. `examples` come from the model file's `ai_context.examples`.
@@ -549,7 +550,15 @@ entity's is `<model>/entities/<entity>.overview.md`. The sidecar's frontmatter h
 `MARKDOWN` or `HTML`. Each link has a `url` and an optional `title`. A
 malformed sidecar fails the push before anything is written. Push warns about
 a sidecar that names no entry of the model. A field's overview holds its
-examples alone. An overview edited in the console does not survive a push.
+examples alone. An overview edited in the console survives a push only once
+`kcmd pull` writes the edit into the sidecar. Pull writes a sidecar for each
+entry whose overview has content, a content type or links. It warns about a
+local sidecar the catalog did not return, and `--force-remove` deletes it.
+
+Pull writes the model file, and one file per named profile of a Google-flavor
+model. A profile file keeps the actions it binds locally, since the catalog
+stores no profile's actions. A local profile file the pull did not write draws a
+warning, and `--force-remove` deletes it.
 
 ## Validation
 

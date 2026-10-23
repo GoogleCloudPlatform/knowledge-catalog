@@ -12,17 +12,15 @@
 // #278 merges, move `generateCatalogResources` (and the `KcResources` type
 // + emit helpers) out of `knowledge_catalog.ts` into this file, delete
 // `knowledge_catalog.ts`, and repoint its importers
-// (`deploy_knowledge_catalog.ts` and the emitter tests). `idOf` -- shared by
-// both directions and re-exported from here only for `pull_kc` today -- becomes
-// a plain local. Then this is the sole KC<->IR codec and the SCAFFOLD note
-// above comes out.
+// (`deploy_knowledge_catalog.ts` and the emitter tests). Then this is the sole
+// KC<->IR codec and the SCAFFOLD note above comes out.
 //
 // The reader is the inverse of `generateCatalogResources`: it reconstructs the
 // IR from the entries a pull hydrated (see `pull_kc.pullKnowledgeCatalog`).
-// `semantic-entity` / `semantic-metric` entries are grouped under their
-// `semantic-model` anchor via `parentEntry`; entries of other types are
-// ignored. Resources are matched by type-name SUFFIX, so a reader need not know
-// which system-type project/location the emitter used.
+// `semantic-entity`, `semantic-metric` and `semantic-relationship` entries are
+// grouped under their `semantic-model` anchor via `parentEntry`; entries of
+// other types are ignored. Resources are matched by type-name SUFFIX, so a
+// reader need not know which system-type project/location the emitter used.
 //
 // Fidelity is bounded by what the emitter persisted, so this read is the
 // inverse of the WRITE, not of the authored document. It recovers names,
@@ -52,19 +50,32 @@
 // field -- the reader leaves it un-typed rather than guess. Relationship NAMES
 // come back lowercased, since the emitter encodes the name only in the link id
 // (via `linkSlug`), not in the join aspect.
+//
+// A model pushed with the second-generation types is rebuilt from them when
+// the pull reads them (see readModelV2). Every value push stores there comes
+// back, each relationship is read from its own entry, and no entry link is
+// read.
 
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
+import type {OverviewSidecar} from '../layouts/semantic-model';
 
-import {Action, AiContext, Constraint, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, Relationship, SemanticModel} from './ir';
+import {targetProblem, unnamedDeployments} from './deployment_target';
+import {Action, AiContext, Constraint, CustomExtension, DATA_TYPES, DataType, DeploymentSpec, Entity, Field, FIELD_BINDING_KEYS, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
 import {isActionEntry, readAction} from './kc_actions';
 import {isConstraintEntry, readConstraint} from './kc_constraints';
-import {targetProblem, unnamedDeployments} from './deployment_target';
-import {noSqlReason, oldSourceForm, sourceToDataSource} from './loader';
+import {entryIdOf} from './kc_ids';
+import {DEFAULT_DIALECT, noSqlReason, oldSourceForm, readFieldExpression, sourceToDataSource} from './loader';
+import {compact, nonEmpty} from './osi_converter';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 
 export interface ReadResult {
   models: SemanticModel[];
   warnings: string[];
+  // True when a model was rebuilt from the second-generation types.
+  secondGeneration?: boolean;
+  // With the second-generation types, the overview sidecar of each entry
+  // whose overview holds content, contentType or links, by entry id.
+  overviews?: Map<string, OverviewSidecar>;
 }
 
 // A guard naming a constraint this pull did not recover -- because its entry was
@@ -100,9 +111,14 @@ function warnDanglingGuards(
  * `pull_kc`); each link between two of a model's entity entries is
  * reconstructed as a 1:1 / 1:N relationship. Pass `[]` (the default) to
  * reconstruct entities and metrics only.
+ *
+ * With `opts.v2Aspects` set, a model whose `semantic-model` aspect has
+ * `specVersion` is rebuilt from the second-generation types (see
+ * readModelV2), which reads no entry link.
  */
 export function modelsFromCatalogResources(
-    entries: Entry[], entryLinks: EntryLink[] = []): ReadResult {
+    entries: Entry[], entryLinks: EntryLink[] = [],
+    opts: {v2Aspects?: boolean} = {}): ReadResult {
   const warnings: string[] = [];
 
   const anchors = entries.filter(e => semanticType(e) === 'semantic-model');
@@ -110,6 +126,8 @@ export function modelsFromCatalogResources(
       entries.filter(e => semanticType(e) === 'semantic-entity');
   const metricEntries =
       entries.filter(e => semanticType(e) === 'semantic-metric');
+  const relationshipEntries =
+      entries.filter(e => semanticType(e) === 'semantic-relationship');
   // Actions have no built-in system type; `kc_actions.ts` owns the custom one
   // and recognizes an entry carrying it. Constraints are the same, through
   // `kc_constraints.ts`.
@@ -130,14 +148,31 @@ export function modelsFromCatalogResources(
       e => e.parentEntry === anchorName ||
           (soleAnchor === anchorName && !anchorNames.has(e.parentEntry ?? '')));
 
+  let secondGeneration = false;
+  const overviews = new Map<string, OverviewSidecar>();
   const models = anchors.map(anchor => {
     const name = anchor.entrySource?.displayName ?? idOf(anchor.name);
+    const children = (pool: Entry[]) => childrenOf(anchor.name, pool);
+    if (opts.v2Aspects &&
+        aspectData(anchor, 'semantic-model').specVersion !== undefined) {
+      secondGeneration = true;
+      const [entities, metrics, relationships] =
+          [entityEntries, metricEntries, relationshipEntries].map(children);
+      overviewSidecars([anchor, ...entities, ...metrics, ...relationships])
+          .forEach((sidecar, id) => overviews.set(id, sidecar));
+      const model =
+          readModelV2(anchor, name, entities, metrics, relationships);
+      readActionsAndConstraints(
+          model, children(actionEntries), children(constraintEntries),
+          warnings);
+      return model;
+    }
 
-    const entityEntriesForModel = childrenOf(anchor.name, entityEntries);
+    const entityEntriesForModel = children(entityEntries);
     const entities = entityEntriesForModel.map(e => readEntity(e, warnings));
     const entityNames = entities.map(e => e.name);
-    const metrics = childrenOf(anchor.name, metricEntries)
-                        .map(e => readMetric(e, entityNames, warnings));
+    const metrics =
+        children(metricEntries).map(e => readMetric(e, entityNames, warnings));
 
     // Index this model's entities by their entry id, so a schema-join link can
     // resolve its endpoints from the link's entryReferences. The id segment is
@@ -147,7 +182,7 @@ export function modelsFromCatalogResources(
     // live-fetched links resolvable.
     const entityByEntryId = new Map<string, Entity>();
     entityEntriesForModel.forEach(
-        (e, i) => entityByEntryId.set(idOf(e.name), entities[i]));
+        (e, i) => entityByEntryId.set(entryIdOf(e.name), entities[i]));
 
     // Relationships come from the schema-join entry links whose two endpoints
     // are both this model's entity entries (M:N edges were never published --
@@ -158,15 +193,8 @@ export function modelsFromCatalogResources(
     const model: SemanticModel = {name, entities, relationships, metrics};
     const description = anchor.entrySource?.description;
     if (description !== undefined) model.description = description;
-    const actions = childrenOf(anchor.name, actionEntries)
-                        .map(e => readAction(e, warnings))
-                        .filter((a): a is Action => a !== undefined);
-    if (actions.length) model.actions = actions;
-    const constraints = childrenOf(anchor.name, constraintEntries)
-                            .map(e => readConstraint(e, warnings))
-                            .filter((c): c is Constraint => c !== undefined);
-    if (constraints.length) model.constraints = constraints;
-    warnDanglingGuards(actions, constraints, name, warnings);
+    readActionsAndConstraints(
+        model, children(actionEntries), children(constraintEntries), warnings);
     // Deployment targets ride back in both the GOOGLE custom_extensions block
     // and as synthesized `deployments` entries (`default` when one,
     // `deployment_1`, `deployment_2`, ... when several).
@@ -192,7 +220,298 @@ export function modelsFromCatalogResources(
     }
   }
 
-  return {models, warnings: [...new Set(warnings)]};
+  return {
+    models,
+    warnings: [...new Set(warnings)],
+    ...(secondGeneration ? {secondGeneration, overviews} : {}),
+  };
+}
+
+
+// Reads a model's action and constraint entries onto `model`.
+function readActionsAndConstraints(
+    model: SemanticModel, actionEntries: Entry[], constraintEntries: Entry[],
+    warnings: string[]): void {
+  const actions = actionEntries.map(e => readAction(e, warnings))
+                      .filter((a): a is Action => a !== undefined);
+  if (actions.length) model.actions = actions;
+  const constraints = constraintEntries.map(e => readConstraint(e, warnings))
+                          .filter((c): c is Constraint => c !== undefined);
+  if (constraints.length) model.constraints = constraints;
+  warnDanglingGuards(actions, constraints, model.name, warnings);
+}
+
+
+// Rebuilds a model from the second-generation types: its model entry and the
+// entity, metric and relationship entries under it, each kind sorted by name.
+function readModelV2(
+    anchor: Entry, name: string, entityEntries: Entry[], metricEntries: Entry[],
+    relationshipEntries: Entry[]): SemanticModel {
+  const data = aspectData(anchor, 'semantic-model');
+  // The named profiles in stored order, which the readers below fill in.
+  const profiles = new Map<string, ProfileSpec>(
+      stringList(asArray(data.profiles).map(p => p?.name))
+          .map(p => [p, {name: p, entities: [], relationships: []}]));
+  const entities =
+      sortedByName(entityEntries).map(e => readEntityV2(e, profiles));
+  const relationships = sortedByName(relationshipEntries)
+                            .map(e => readRelationshipV2(e, profiles));
+  const sortedMetrics = sortedByName(metricEntries);
+  const metrics = sortedMetrics.map(readMetricV2);
+
+  // Each profile excludes '*' when it excludes every metric, and otherwise the
+  // metrics it excludes, in name order.
+  const excludedIn = sortedMetrics.map(
+      e => stringList(aspectData(e, 'semantic-metric').excludedInProfiles));
+  for (const profile of profiles.values()) {
+    const excluded =
+        metrics.filter((_, i) => excludedIn[i].includes(profile.name))
+            .map(m => m.name);
+    if (excluded.length) {
+      profile.metricsExclude =
+          excluded.length === metrics.length ? '*' : excluded;
+    }
+  }
+
+  return compact({
+    name,
+    version: data.specVersion,
+    entities,
+    relationships,
+    metrics,
+    ...objectPropertiesV2(
+        anchor, '', data.synonyms, anchor.entrySource?.description),
+    profiles: nonEmpty([...profiles.values()]),
+    deployments: nonEmpty(asArray(data.deployments).map(
+        d => compact({name: d?.name, target: d?.target, profile: d?.profile}))),
+  });
+}
+
+
+// Rebuilds an entity with every field its schema lists, and each field it
+// only rebinds, and adds each named profile's binding of it to `profiles`.
+function readEntityV2(
+    entry: Entry, profiles: Map<string, ProfileSpec>): Entity {
+  const name = idOf(entry.name);
+  const data = aspectData(entry, 'semantic-entity');
+  const records =
+      asArray(aspectData(entry, 'sql-expressions').fieldExpressions);
+  for (const p of asArray(data.profiles)) {
+    const bound = records.filter(r => r?.qualifier === p?.name);
+    profiles.get(p?.name)?.entities.push(compact({
+      name,
+      source: p.source?.resource,
+      primaryKey: nonEmpty(stringList(p.primaryKey?.fields)),
+      uniqueKeys: nonEmpty(uniqueKeysOf(p)),
+      fields: nonEmpty([...new Set(bound.map(r => r.name))].map(
+          f => ({
+            name: f,
+            ...expressionOf(
+                bound.filter(r => r.name === f),
+                `profile '${p.name}': entity '${name}': field '${f}'`),
+          }))),
+      fieldsExclude: nonEmpty(stringList(p.excludedFields)),
+    }));
+  }
+  const inline = records.filter(r => !r?.qualifier);
+  const source = data.source?.resource;
+  return compact({
+    name,
+    dataSource: typeof source === 'string' ? sourceToDataSource(source) : '',
+    authoredSource: source,
+    keys: stringList(data.primaryKey?.fields),
+    uniqueKeys: nonEmpty(uniqueKeysOf(data)),
+    extends: nonEmpty(stringList(data.extends)),
+    abstract: data.abstract === true || undefined,
+    fields: withRebindings(
+        asArray(aspectData(entry, 'schema').fields)
+            .filter(fd => typeof fd?.name === 'string')
+            .map(fd => readFieldV2(entry, name, fd, inline)),
+        inline, name),
+    ...objectPropertiesV2(
+        entry, '', data.synonyms, entry.entrySource?.description),
+  });
+}
+
+
+// `fields` plus a field for each name `records` hold that `fields` lack: an
+// inherited field the entity only rebinds. Each keeps the place its records
+// give it.
+function withRebindings(
+    fields: Field[], records: any[], entity: string): Field[] {
+  const position = (name: string) => records.findIndex(r => r?.name === name);
+  const out = [...fields];
+  for (const name of new Set(records.map(r => r?.name))) {
+    if (fields.some(f => f.name === name)) continue;
+    const at = out.findIndex(f => position(f.name) > position(name));
+    out.splice(at < 0 ? out.length : at, 0, {
+      name,
+      ...expressionOf(
+          records.filter(r => r?.name === name), `field '${entity}.${name}'`),
+    });
+  }
+  return out;
+}
+
+
+// Rebuilds a field from its schema record `fd`, the entity's sql-expressions
+// `records` that name no profile, and its aspects at its path.
+function readFieldV2(
+    entry: Entry, entity: string, fd: any, records: any[]): Field {
+  const isTime = fd.annotations?.is_time;
+  return compact({
+    name: fd.name,
+    ...expressionOf(
+        records.filter(r => r?.name === fd.name),
+        `field '${entity}.${fd.name}'`),
+    type: dataTypeOf(fd.dataType),
+    dimension: fd.semantic === 'DIMENSION' || isTime !== undefined ?
+        compact(
+            {isTime: isTime === undefined ? undefined : isTime === 'true'}) :
+        undefined,
+    label: fd.annotations?.label || undefined,
+    ...objectPropertiesV2(
+        entry, `Schema.${fd.name}`, fd.synonyms, fd.description),
+  });
+}
+
+
+// Rebuilds a metric. Its entity is the one push stored, declared or derived,
+// and pull writes it back as declared.
+function readMetricV2(entry: Entry): Metric {
+  const name = idOf(entry.name);
+  const data = aspectData(entry, 'semantic-metric');
+  const entity = typeof data.entity === 'string' ? data.entity : undefined;
+  return compact({
+    name,
+    ...expressionOf(
+        asArray(aspectData(entry, 'sql-expressions').expressions),
+        `metric '${name}'`),
+    type: dataTypeOf(data.dataType),
+    entity,
+    authoredEntity: entity,
+    ...objectPropertiesV2(
+        entry, '', data.synonyms, entry.entrySource?.description),
+  });
+}
+
+
+// Rebuilds a relationship, and adds each named profile's join columns to
+// `profiles`. A name holds no '/', so the last segment of the entry id, after
+// `<model>/relationships/`, is the name as written.
+function readRelationshipV2(
+    entry: Entry, profiles: Map<string, ProfileSpec>): Relationship {
+  const name = idOf(entry.name);
+  const data = aspectData(entry, 'semantic-relationship');
+  for (const p of asArray(data.profiles)) {
+    profiles.get(p?.name)?.relationships.push({
+      name,
+      fromColumns: stringList(p.sourceFields),
+      toColumns: stringList(p.targetFields),
+    });
+  }
+  return compact({
+    name,
+    source:
+        {entity: data.source?.name, columns: stringList(data.source?.fields)},
+    destination:
+        {entity: data.target?.name, columns: stringList(data.target?.fields)},
+    ...objectPropertiesV2(
+        entry, '', data.synonyms, entry.entrySource?.description),
+  });
+}
+
+
+// An object's `description`, ai_context and extension blocks, read from its
+// aspects on `entry` at `path`, which is `Schema.<field>` for a field and
+// empty otherwise. `synonyms` come from the object's own aspect. A part with
+// nothing in it is undefined, and custom members are sorted by name.
+function objectPropertiesV2(
+    entry: Entry, path: string, synonyms: unknown,
+    description: string|
+    undefined): Pick<Entity, 'description'|'aiContext'|'customExtensions'> {
+  const guidelines = aspectDataOf(entry.aspects, 'guidelines', path);
+  // Knowledge Catalog's own guidelines are not part of the model.
+  const authored = guidelines.userManaged !== false ? guidelines : {};
+  const members = Object.keys(authored.data ?? {}).sort();
+  const ai: AiContext = compact({
+    instructions: authored.instructions || undefined,
+    synonyms: nonEmpty(stringList(synonyms)),
+    examples: nonEmpty(stringList(
+        asArray(aspectDataOf(entry.aspects, 'overview', path).examples)
+            .map(x => x?.content))),
+    additionalProperties: members.length ?
+        Object.fromEntries(members.map(m => [m, authored.data[m]])) :
+        undefined,
+  });
+  return {
+    description,
+    aiContext: Object.keys(ai).length ? ai : undefined,
+    customExtensions: nonEmpty(
+        asArray(aspectDataOf(entry.aspects, 'semantic-extensions', path)
+                    .customExtensions)
+            .map(x => ({vendorName: x?.vendorName, data: x?.data}))),
+  };
+}
+
+
+// The expression `records` hold, read as the loader reads the form they
+// keep: a record with no dialect is the string form, and records with one are
+// a dialect list, in stored order. Empty when there is no record.
+function expressionOf(records: any[], where: string):
+    Partial<Pick<Field, (typeof FIELD_BINDING_KEYS)[number]>> {
+  if (!records.length) return {};
+  const short = records.find(r => !r.dialect);
+  const doc = short ? short.sql : {
+    dialects: records.map(r => ({dialect: r.dialect, expression: r.sql})),
+  };
+  return readFieldExpression(doc, where, DEFAULT_DIALECT, () => undefined);
+}
+
+
+// The overview sidecar each of `entries` holds in its overview, by entry id:
+// its content, contentType and links. An entry with none of the three has
+// none.
+function overviewSidecars(entries: Entry[]): Map<string, OverviewSidecar> {
+  const out = new Map<string, OverviewSidecar>();
+  for (const entry of entries) {
+    const {content, contentType, links} = aspectData(entry, 'overview');
+    const sidecar = compact({
+      content: content || undefined,
+      contentType,
+      links: nonEmpty(asArray(links)),
+    });
+    if (Object.keys(sidecar).length) out.set(entryIdOf(entry.name), sidecar);
+  }
+  return out;
+}
+
+
+// The unique keys of a semantic-entity aspect or one of its profile records.
+function uniqueKeysOf(data: any): string[][] {
+  return asArray(data?.uniqueConstraints)
+      .map(u => stringList(u?.fields))
+      .filter(k => k.length);
+}
+
+
+// The IR datatype a second-generation `dataType` names. Opaque, stored for an
+// object with no datatype, reads as none.
+function dataTypeOf(dataType: unknown): DataType|undefined {
+  return dataType !== 'Opaque' &&
+          (DATA_TYPES as readonly unknown[]).includes(dataType) ?
+      dataType as DataType :
+      undefined;
+}
+
+
+// `entries` sorted by the last segment of their entry ids, which is the name
+// of the object each holds.
+function sortedByName(entries: Entry[]): Entry[] {
+  return [...entries].sort((a, b) => {
+    const [x, y] = [idOf(a.name), idOf(b.name)];
+    return x < y ? -1 : x > y ? 1 : 0;
+  });
 }
 
 
@@ -239,9 +558,7 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
   };
   // Additional unique column sets, from the schema aspect's uniqueConstraints
   // (each constraint's `fields` is one set); dropped when empty.
-  const uniqueKeys = asArray(schema.uniqueConstraints)
-                         .map(uc => stringList(uc?.fields))
-                         .filter(fields => fields.length);
+  const uniqueKeys = uniqueKeysOf(schema);
   if (uniqueKeys.length) entity.uniqueKeys = uniqueKeys;
   const description = entry.entrySource?.description;
   if (description !== undefined) entity.description = description;
@@ -424,9 +741,10 @@ function dataSourceFromResource(resource: string|undefined): string {
 // system-type project/location need not be known. Returns undefined for entries
 // that are not part of a semantic model.
 function semanticType(entry: Entry): 'semantic-model'|'semantic-entity'|
-    'semantic-metric'|undefined {
-  for (const t of ['semantic-model', 'semantic-entity', 'semantic-metric'] as
-       const) {
+    'semantic-metric'|'semantic-relationship'|undefined {
+  for (const t
+           of ['semantic-model', 'semantic-entity', 'semantic-metric',
+               'semantic-relationship'] as const) {
     if (entry.entryType?.endsWith(`/entryTypes/${t}`)) return t;
   }
   return undefined;
@@ -443,12 +761,16 @@ function aspectData(entry: Entry, type: string): Record<string, any> {
 // The `data` payload of an aspect of the given bare type from an aspect map,
 // matched by the aspect key's `.<type>` suffix or the aspectType's
 // `/aspectTypes/<type>` suffix (robust to whichever system-type
-// project/location the emitter used). Returns an empty object when the aspect
-// is absent.
-function aspectDataOf(aspects: Record<string, Aspect>|undefined, type: string):
-    Record<string, any> {
+// project/location the emitter used). Only the aspect at `path` matches, which
+// is the entry itself when `path` is empty and a field for `Schema.<field>`.
+// Returns an empty object when the aspect is absent.
+function aspectDataOf(
+    aspects: Record<string, Aspect>|undefined, type: string,
+    path = ''): Record<string, any> {
   for (const [key, aspect] of Object.entries(aspects ?? {})) {
-    if (key.endsWith(`.${type}`) ||
+    const [ref, keyPath = ''] = key.split('@');
+    if ((aspect.path || keyPath) !== path) continue;
+    if (ref.endsWith(`.${type}`) ||
         aspect.aspectType?.endsWith(`/aspectTypes/${type}`)) {
       return aspect.data ?? {};
     }
@@ -518,8 +840,8 @@ function readRelationships(
     // Resolve both endpoints from the link's references. A reference that is
     // not one of this model's entities (another model, or a non-entity) means
     // the link does not belong here -- skip it quietly, as with M:N edges.
-    const endA = entityByEntryId.get(idOf(refs[0].name));
-    const endB = entityByEntryId.get(idOf(refs[1].name));
+    const endA = entityByEntryId.get(entryIdOf(refs[0].name));
+    const endB = entityByEntryId.get(entryIdOf(refs[1].name));
     if (!endA || !endB) continue;
 
     const key = linkDedupKey(link);
@@ -620,7 +942,7 @@ export function linkNamePrefix(modelName: string): string {
 
 
 // The id segment of a full entry resource name (after the last '/').
-export function idOf(name: string): string {
+function idOf(name: string): string {
   return name.split('/').pop() ?? name;
 }
 

@@ -314,6 +314,10 @@ model has no `kcmd-push-id` label and no stored copy, such as a model an older
 after the model. [Pull](README.md#pull) says when `pull` refuses the catalog
 instead.
 
+With `KC_V2_ASPECTS=1`, pull rebuilds the model file, profile files and overview
+sidecars from the metadata, and writes each metric's entity as `entity:`,
+declared or derived. See [Reference](reference.md#with-kc_v2_aspects1).
+
 `pull` returns what push wrote — the **Recovered by `pull`** column above is the
 summary. When the push deployed a graph, what push wrote was already pruned to
 the bound view (see [To Knowledge Catalog](#to-knowledge-catalog)), so pull

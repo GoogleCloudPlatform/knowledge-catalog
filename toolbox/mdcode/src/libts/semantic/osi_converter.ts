@@ -191,7 +191,8 @@ function profileDocuments(model: SemanticModel, warnings: string[]):
  * `logical` marks the model as a purely logical one (no physical binding).
  * Under GOOGLE_VERSION it suppresses the missing-source and missing-expression
  * warnings, which flag a lossy pull of a bound model. OSSIE_VERSION requires
- * both, so they are still given. An OWL import sets it; `pull` does not.
+ * both, so they are still given. An OWL import sets it, and so does a
+ * second-generation pull, which loses no binding.
  *
  * `compactFlow` renders leaf collections (scalar sequences, all-scalar maps) in
  * flow style so the output matches the compact convention the semantic-model
@@ -1005,7 +1006,7 @@ function blockTargets(ext: CustomExtension, modelName: string): string[] {
 
 // Drops undefined-valued keys so the emitted YAML only shows fields the model
 // actually set (matching the emitters' `compact` convention).
-function compact<T extends Record<string, any>>(obj: T): T {
+export function compact<T extends Record<string, any>>(obj: T): T {
   const out: Record<string, any> = {};
   for (const [k, v] of Object.entries(obj)) {
     if (v !== undefined) out[k] = v;

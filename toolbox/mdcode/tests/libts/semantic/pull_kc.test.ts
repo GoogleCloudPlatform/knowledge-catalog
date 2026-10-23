@@ -11,15 +11,23 @@
 // kc_converter.test.ts; the focus here is the fetch SEQUENCE: aspect hydration,
 // the relationship-link fetch (per-entry, deduped across endpoints), the
 // single-model-per-group invariant, aborting on any fetch failure, ignoring
-// foreign entries, and the stored file copies a pull returns.
+// foreign entries, and the stored file copies a pull returns. The
+// second-generation tests round-trip a whole model through push and pull.
 
-import {afterEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import {afterEach, beforeAll, describe, expect, mock, spyOn, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
-import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
+import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
+import {entryIdOf} from '../../../src/libts/semantic/kc_ids';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
+import {loadModels} from '../../../src/libts/semantic/loader';
+import {serializeModelFiles} from '../../../src/libts/semantic/osi_converter';
 import {pullKnowledgeCatalog} from '../../../src/libts/semantic/pull_kc';
+import {applyProfile, loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
+import {generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 const OPTS = {
   project: 'dest',
@@ -84,7 +92,9 @@ function err(status: number, message: string): ApiResult<any> {
 }
 
 // Stubs listEntries (yields `listed`) and lookupEntry (serves `served` by name,
-// or 404s an unknown name). `lookupFail` forces a failure for one entry name.
+// or 404s an unknown name). A lookup returns only the aspects of the types it
+// asks for, and at most 100 of them, as Dataplex does. `lookupFail` forces a
+// failure for one entry name.
 // `links` are served by lookupEntryLinks per referenced entry (so an undirected
 // link comes back once from each endpoint, exercising the puller's dedup);
 // `linkFail` forces a link-lookup failure for one entry name.
@@ -98,10 +108,15 @@ function stubClient(
                      for (const e of listed) yield e;
                    } as any);
   const lookup = spyOn(CatalogClient.prototype, 'lookupEntry')
-                     .mockImplementation(async (_p, _l, name) => {
+                     .mockImplementation(async (_p, _l, name, types = []) => {
                        if (name === lookupFail) return err(500, 'boom');
                        const e = byName.get(name);
-                       return e ? ok(e) : err(404, 'not found');
+                       if (!e) return err(404, 'not found');
+                       const aspects =
+                           Object.entries(e.aspects ?? {})
+                               .filter(([, a]) => types.includes(a.aspectType!))
+                               .slice(0, 100);
+                       return ok({...e, aspects: Object.fromEntries(aspects)});
                      });
   const lookupLinks =
       spyOn(CatalogClient.prototype, 'lookupEntryLinks')
@@ -724,4 +739,382 @@ describe('pullKnowledgeCatalog: file copies', () => {
           'or no content; it is skipped',
     ]);
   });
+});
+
+
+describe('pullKnowledgeCatalog: second-generation models', () => {
+  const V2 = {...OPTS, v2Aspects: true};
+  const TABLE = (t: string) =>
+      `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
+  const GRAPH = (g: string) =>
+      `bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/${g}`;
+  // A model with everything a flag-on push stores. Its entities, metrics and
+  // relationships are in name order, as a pull returns them, since
+  // relationship order reaches the links and the DDL.
+  const SHOP = `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: shop
+    description: The shop
+    ai_context:
+      instructions: Use for sales questions.
+      synonyms: [store]
+      examples: [Top customers?]
+      custom: {owner: crm, limit: .inf}
+    custom_extensions: [{vendor_name: DBT, data: '{"x": 1}'}]
+    deployments:
+      - {name: main, target: ${GRAPH('main')}}
+      - {name: analytics, target: ${GRAPH('analytics')}, profile: analytical}
+    entities:
+      - name: customers
+        extends: [party]
+        source: ${TABLE('customers')}
+        primary_key: [party_id]
+        unique_keys: [[email]]
+        description: People who buy
+        ai_context:
+          synonyms: [buyers]
+          examples: [Big spenders?]
+          custom: {tier: gold, region: west}
+        custom_extensions: [{vendor_name: DBT, data: '{"m": "t"}'}]
+        fields:
+          - {name: party_id, expression: cust_id}
+          - name: email
+            expression: LOWER(email)
+            dimension: {}
+            label: Email
+            ai_context:
+              instructions: Mask it.
+              synonyms: [mail]
+              examples: [Gmail users]
+              custom: {pii: true}
+            custom_extensions: [{vendor_name: DBT, data: '{"t": []}'}]
+          - name: signup_date
+            datatype: Date
+            expression: signup
+            dimension: {is_time: false}
+          - {name: birthday, datatype: Date, expression: bday}
+      - {name: employees, source: ${TABLE('employees')}, primary_key: [id],
+         fields: [{name: id, expression: id}]}
+      - name: orders
+        source: ${TABLE('orders')}
+        primary_key: [id]
+        fields:
+          - {name: id, expression: id}
+          - name: amount
+            datatype: Decimal
+            expression:
+              dialects:
+                - {dialect: BIGQUERY, expression: SAFE_CAST(amt AS NUMERIC)}
+                - {dialect: SNOWFLAKE, expression: TRY_CAST(amt AS NUMBER)}
+                - {dialect: ANSI_SQL, expression: CAST(amt AS DECIMAL)}
+          - {name: cust_id, expression: cust_id}
+      - name: party
+        abstract: true
+        fields:
+          - {name: party_id, datatype: Integer, ai_context: Never show ids.}
+          - {name: name, datatype: String}
+      - {name: vips, extends: [customers], source: ${TABLE('vips')},
+         primary_key: [party_id]}
+    relationships:
+      - name: customer_orders
+        from: orders
+        to: customers
+        from_columns: [cust_id]
+        to_columns: [party_id]
+        description: Each order has one customer
+        ai_context:
+          instructions: Join here.
+          synonyms: [placed_by]
+          examples: [Who ordered?]
+          custom: {weight: 2}
+        custom_extensions: [{vendor_name: DBT, data: '{"r": 1}'}]
+      - {name: order_recipient, from: orders, to: customers,
+         from_columns: [cust_id], to_columns: [party_id]}
+      - {name: orders_by_staff, from: orders, to: employees}
+    metrics:
+      - {name: avg_amount, expression: AVG(orders.amount)}
+      - {name: order_count, entity: orders, expression: COUNT(*)}
+      - name: revenue
+        datatype: Decimal
+        expression:
+          dialects:
+            - {dialect: BIGQUERY, expression: SUM(orders.amount)}
+            - {dialect: ANSI_SQL, expression: SUM(orders.amount)}
+        ai_context: {synonyms: [sales], examples: [Revenue in May?]}
+        custom_extensions: [{vendor_name: DBT, data: '{"k": 2}'}]
+`;
+  const PROFILES = {
+    analytical: `name: analytical
+entities:
+  - name: customers
+    source: ${TABLE('customers_a')}
+    primary_key: [cust_key]
+    unique_keys: [[mail]]
+    fields:
+      - {name: email, expression: mail}
+      - name: name
+        expression: {dialects: [{dialect: BIGQUERY, expression: full_name}]}
+  - {name: orders, source: ${TABLE('orders_a')}, fields_exclude: [cust_id]}
+relationships:
+  - {name: customer_orders, from_columns: [customer_key], to_columns: [cust_key]}
+metrics_exclude: [revenue, order_count, avg_amount]
+`,
+    ops: `name: ops
+entities:
+  - name: orders
+    source: ${TABLE('orders_ops')}
+    primary_key: [order_id]
+    fields: [{name: amount, expression: amt_ops}]
+metrics_exclude: [revenue, avg_amount]
+`,
+    qa: 'name: qa\nmetrics_exclude: "*"\n',
+  };
+  // A vanilla model with a different third-party block on every object that
+  // takes one, and every construct a vanilla model keeps in GOOGLE blocks.
+  const DBT = (n: number) => `{vendor_name: DBT, data: '{"n": ${n}}'}`;
+  const GOOGLE = (data: object) =>
+      `{vendor_name: GOOGLE, data: '${JSON.stringify(data)}'}`;
+  const ANSI = (sql: string) =>
+      `{dialects: [{dialect: ANSI_SQL, expression: ${sql}}]}`;
+  const VANILLA = `version: "0.2.0.dev0"
+semantic_model:
+  - name: store
+    custom_extensions:
+      - ${DBT(1)}
+      - ${GOOGLE({
+    profiles: [{
+      name: 'eu',
+      entities: [{
+        name: 'customers',
+        source: TABLE('customers_eu'),
+        primary_key: ['cust_key'],
+        fields: [{name: 'id', expression: 'cust_key'}],
+      }],
+      relationships: [{
+        name: 'customer_party', from_columns: ['cust_key'], to_columns: ['id'],
+      }],
+      metrics_exclude: '*',
+    }],
+    deployments: [
+      {name: 'main', target: GRAPH('main')},
+      {name: 'eu', target: GRAPH('eu'), profile: 'eu'},
+    ],
+  })}
+    datasets:
+      - name: customers
+        source: ${TABLE('customers')}
+        primary_key: [id]
+        custom_extensions: [${DBT(2)}, ${GOOGLE({extends: ['party']})}]
+        fields: [{name: id, expression: ${ANSI('cust_id')}}]
+      - name: party
+        source: ${TABLE('party')}
+        primary_key: [id]
+        custom_extensions: [${DBT(4)}]
+        fields:
+          - {name: id, expression: ${ANSI('id')}, custom_extensions: [${DBT(5)}]}
+    relationships:
+      - name: customer_party
+        from: customers
+        to: party
+        from_columns: [id]
+        to_columns: [id]
+        custom_extensions:
+          - ${DBT(6)}
+          - ${GOOGLE({description: 'Each customer is a party'})}
+    metrics:
+      - name: customer_count
+        expression: ${ANSI('COUNT(*)')}
+        custom_extensions: [${DBT(7)}, ${GOOGLE({entity: 'customers'})}]
+`;
+  // A model file and its profile files, as a flag-on push publishes them.
+  function loaded(
+      text = SHOP, profiles: Record<string, string> = PROFILES): SemanticModel {
+    const model = loadModels(text).models[0];
+    const named = Object.entries(profiles);
+    if (named.length) {
+      model.profiles = named.map(([name, t]) => loadProfileFile(t, name));
+    }
+    return model;
+  }
+  // What a flag-on push of `model` generates: its entries and links, and the
+  // BigQuery and Spanner DDL of the model under each of its bindings.
+  function pushed(model: SemanticModel, overviews?: Map<string, any>) {
+    const {entries, entryLinks} =
+        generateCatalogResources(model, {...V2, overviews});
+    const bindings =
+        [model, ...(model.profiles ?? []).map(p => applyProfile(model, p))];
+    const graphs = [generatePropertyGraph, generateSpannerPropertyGraph];
+    const ddl = bindings.flatMap(m => graphs.map(g => g(m).ddl));
+    return {entries, entryLinks, ddl};
+  }
+  const KEY = (type: string) => `dataplex-types.global.${type}`;
+  const cat = new CatalogClient({} as any);
+  beforeAll(loadSqlEngine);
+
+  // Pulls what a push of `text` and `profiles` stores, from entries listed in
+  // reverse so pull's order cannot come from the catalog's, writes the pulled
+  // model as files and pushes them again, which must give what the first push
+  // gave. Returns the first push's entries and the pull.
+  async function roundTrip(
+      text: string, profiles: Record<string, string>,
+      overviews?: Map<string, any>) {
+    const first = pushed(loaded(text, profiles), overviews);
+    stubClient([...first.entries].reverse(), first.entries);
+    const pulled = await pullKnowledgeCatalog(cat, V2);
+    // `<model>.profile.<name>.yaml` holds the profile <name>.
+    const [file, ...profileFiles] = serializeModelFiles(pulled.models[0]).files;
+    const again = loaded(
+        file.content,
+        Object.fromEntries(
+            profileFiles.map(f => [f.fileName.split('.')[2], f.content])));
+    expect(pushed(again, pulled.overviews)).toEqual(first);
+    return {entries: first.entries, pulled};
+  }
+
+  test(
+      'a Google model pulls back as pushed, with its sidecars, and pushed ' +
+          'again gives what its push gave',
+      async () => {
+        const overviews = new Map([
+          ['shop', {content: '# Shop', contentType: 'MARKDOWN'}],
+          ['shop/entities/orders', {links: [{url: 'https://wiki/orders'}]}],
+        ]);
+        const {entries, pulled} = await roundTrip(SHOP, PROFILES, overviews);
+
+        // Push folds no GOOGLE block and leaves out a member it cannot store.
+        // Each profile's metrics_exclude comes back as '*' or a sorted list,
+        // and each metric's entity as declared.
+        const expected = loaded();
+        expected.customExtensions =
+            expected.customExtensions!.filter(x => x.vendorName !== 'GOOGLE');
+        delete expected.aiContext!.additionalProperties!.limit;
+        expected.profiles![0].metricsExclude = '*';
+        expected.profiles![1].metricsExclude = ['avg_amount', 'revenue'];
+        for (const m of expected.metrics) m.authoredEntity = m.entity;
+        expect(pulled).toEqual({
+          models: [expected],
+          warnings: [],
+          secondGeneration: true,
+          overviews,
+        });
+        expect(Object.keys(
+                   pulled.models[0].entities[0].aiContext!.additionalProperties!))
+            .toEqual(['region', 'tier']);
+
+        // With no metric entry, no profile excludes a metric. Guidelines that
+        // Knowledge Catalog wrote are left out. is_time alone marks a
+        // dimension.
+        mock.restore();
+        const noMetrics = entries.filter(e => !e.name.includes('/metrics/'));
+        noMetrics[0].aspects![KEY('guidelines')].data!.userManaged = false;
+        const {fields} = noMetrics[1].aspects![KEY('schema')].data!;
+        delete fields.find((f: any) => f.name === 'signup_date').semantic;
+        stubClient(noMetrics, noMetrics);
+        const {models: [withoutMetrics]} = await pullKnowledgeCatalog(cat, V2);
+        expect(withoutMetrics.profiles!.map(p => p.metricsExclude)).toEqual([
+          undefined, undefined, undefined
+        ]);
+        expect(withoutMetrics.aiContext)
+            .toEqual({synonyms: ['store'], examples: ['Top customers?']});
+        expect(withoutMetrics.entities[0].fields[2].dimension).toEqual({
+          isTime: false
+        });
+
+        // A model entry with no specVersion is first-generation.
+        delete noMetrics[0].aspects![KEY('semantic-model')].data!.specVersion;
+        expect((await pullKnowledgeCatalog(cat, V2)).secondGeneration)
+            .toBeUndefined();
+      });
+
+  test('a vanilla model pulled and pushed again gives what its push gave',
+       () => roundTrip(VANILLA, {}));
+
+  test(
+      'each entry is read with the aspects of its type, and with the flag ' +
+          'off links with the link type of the type project',
+      async () => {
+        const opts = {...OPTS, systemTypeProject: 'types'};
+        const {entries} =
+            generateCatalogResources(loaded(), {...opts, v2Aspects: true});
+        const {lookup, lookupLinks} = stubClient(entries, entries);
+        const type = (kind: string, t: string) =>
+            `projects/types/locations/global/${kind}Types/${t}`;
+        // The aspect types read for the model, an entity, a metric and a
+        // relationship, each named by its id when it is in the type project.
+        const reads = async (v2Aspects: boolean) => {
+          lookup.mockClear();
+          await pullKnowledgeCatalog(cat, {...opts, v2Aspects});
+          const read = new Map<string, string[]>(
+              lookup.mock.calls.map((c: any[]) => [entryIdOf(c[2]), c[3]]));
+          return [
+            'shop', 'shop/entities/orders', 'shop/metrics/revenue',
+            'shop/relationships/customer_orders'
+          ].map(id => read.get(id)?.map(t => t.replace(type('aspect', ''), '')));
+        };
+        const OBJECT = ['guidelines', 'semantic-extensions', 'overview'];
+        expect(await reads(true)).toEqual([
+          ['semantic-model', ...OBJECT],
+          ['semantic-entity', 'schema', 'sql-expressions', ...OBJECT],
+          ['semantic-metric', 'sql-expressions', ...OBJECT],
+          ['semantic-relationship', ...OBJECT],
+        ]);
+        expect(lookupLinks).not.toHaveBeenCalled();
+        expect(await reads(false)).toEqual([
+          ['semantic-model', 'guidelines'],
+          ['semantic-entity', 'schema', 'guidelines'],
+          ['semantic-metric', 'guidelines'],
+          undefined,
+        ]);
+        expect(lookupLinks.mock.lastCall?.[2].entryLinkTypes).toEqual([
+          type('entryLink', 'schema-join')
+        ]);
+      });
+
+  test(
+      'an entity with more than 100 aspects is read whole, and one type ' +
+          'with 100 fails the pull',
+      async () => {
+        const wide = (n: number, field: Partial<Field>): SemanticModel => ({
+          name: 'wide',
+          version: '0.2.0.dev0/google',
+          entities: [{
+            name: 'events',
+            dataSource: '',
+            keys: [],
+            fields: Array.from({length: n}, (_, i) => ({name: `f${i}`, ...field})),
+          }],
+          relationships: [],
+          metrics: [],
+        });
+        // 120 aspects at its fields' paths, 40 of each type.
+        const model = wide(40, {
+          aiContext: {instructions: 'Say it.', examples: ['An example']},
+          customExtensions: [{vendorName: 'DBT', data: '{}'}],
+        });
+        let {entries} = generateCatalogResources(model, V2);
+        const {lookup} = stubClient(entries, entries);
+        // The per-type reads run one at a time.
+        const serve = lookup.getMockImplementation();
+        let inFlight = 0, peak = 0;
+        lookup.mockImplementation(async (...args: any[]) => {
+          const one = args[3].length === 1;
+          if (one) peak = Math.max(peak, ++inFlight);
+          const res = await serve(...args);
+          if (one) inFlight--;
+          return res;
+        });
+        expect((await pullKnowledgeCatalog(cat, V2)).models).toEqual([model]);
+        expect(peak).toBe(1);
+
+        mock.restore();
+        ({entries} = generateCatalogResources(
+             wide(100, {aiContext: {instructions: 'Say it.'}}), V2));
+        stubClient(entries, entries);
+        await expect(pullKnowledgeCatalog(cat, V2))
+            .rejects.toThrow(new Error(
+                'entry \'wide/entities/events\' holds 100 or more ' +
+                'guidelines aspects, and Knowledge Catalog returns at most ' +
+                '100 in one read, so pull cannot read them all; pull ' +
+                'aborted'));
+      });
 });
