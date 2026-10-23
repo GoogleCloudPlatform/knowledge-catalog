@@ -1338,7 +1338,7 @@ semantic_model:
                       .get('projects/test-project/locations/us/entryGroups/' +
                            'commerce_eg/entries/commerce')!
                       .aspects!['dataplex-types.global.overview'].data)
-               .toEqual({content: '# Commerce\n', contentType: 'MARKDOWN'});
+               .toEqual({content: '# Commerce', contentType: 'MARKDOWN'});
          }
 
          write('commerce/metrics/revenue.overview.md',

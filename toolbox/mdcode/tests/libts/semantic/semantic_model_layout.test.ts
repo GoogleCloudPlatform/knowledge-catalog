@@ -483,22 +483,24 @@ describe('SemanticModelLayout profile name rules', () => {
 
 
 describe('SemanticModelLayout overview sidecars', () => {
-  test('parseOverviewSidecar reads the frontmatter and body, and rejects a ' +
-           'frontmatter it cannot hold, naming the file',
+  test('parseOverviewSidecar reads the frontmatter and trimmed body, and ' +
+           'rejects a frontmatter it cannot hold, naming the file',
        () => {
          const file = 'm/metrics/x.overview.md';
          const read = (text: string) => parseOverviewSidecar(text, file);
          expect(read('---\ncontentType: HTML\nlinks:\n' +
                      '  - url: https://x.test\n    title: Guide\n' +
-                     '  - url: https://y.test\n---\n<p>Hi</p>\n'))
+                     '  - url: https://y.test\n---\n\n<p>Hi</p>\n'))
              .toEqual({
-               content: '<p>Hi</p>\n',
+               content: '<p>Hi</p>',
                contentType: 'HTML',
                links: [
                  {url: 'https://x.test', title: 'Guide'},
                  {url: 'https://y.test'},
                ],
              });
+         expect(read('---\ncontentType: HTML\n---\n\n'))
+             .toEqual({contentType: 'HTML'});
          for (const [text, problem] of [
                 ['---\ntitle: x\n---\n',
                  "its frontmatter holds only contentType and links, not 'title'."],

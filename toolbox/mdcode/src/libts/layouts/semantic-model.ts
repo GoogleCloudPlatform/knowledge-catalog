@@ -549,7 +549,7 @@ export function parseOverviewSidecar(
   if (links !== undefined && !(Array.isArray(links) && links.every(isLink))) {
     throw fail('links is a list of entries, each a url and an optional title.');
   }
-  return {content: split.body || undefined, contentType, links};
+  return {content: split.body.trim() || undefined, contentType, links};
 }
 
 // The `name` a profile file declares at its top level, or undefined when it
