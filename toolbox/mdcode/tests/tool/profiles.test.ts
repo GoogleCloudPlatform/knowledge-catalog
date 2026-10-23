@@ -2494,10 +2494,10 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       }
     });
 
-    // Push's translator does not read Spanner or AlloyDB SQL, so --transpile
-    // leaves such a text as written, and a BigQuery profile still cannot run
-    // it.
-    test('and under --transpile still rejects a metric whose only text the translator cannot read', async () => {
+    // Push's translator reads Spanner (as BigQuery) and AlloyDB (as
+    // PostgreSQL) SQL, so --transpile fills in a BigQuery entry for a BigQuery
+    // profile.
+    test('and under --transpile translates a metric written only in Spanner or AlloyDB SQL', async () => {
       for (const dialect of ['SPANNER', 'ALLOYDB']) {
         writeScope({
           'commerce.yaml': `${commerce()}    metrics:
@@ -2510,13 +2510,8 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
           'commerce.profile.prod.yaml': profileFile('prod'),
         });
         errs.length = 0;
-        expect(await push({validateOnly: true, transpile: true})).toBe(1);
-        expect(errs).toEqual([
-          "Error: [commerce.profile.prod.yaml] profile 'prod': metric " +
-              "'spend' has no expression for BIGQUERY or ANSI_SQL, and this " +
-              "profile's sources are BIGQUERY; give it one, or add it to " +
-              "'metrics_exclude'",
-        ]);
+        expect(await push({validateOnly: true, transpile: true})).toBe(0);
+        expect(errs).toEqual([]);
       }
     });
 
@@ -3019,7 +3014,7 @@ semantic_model:
         for (const [dialect, text, errors, transpiledErrors] of [
                ['SNOWFLAKE', 'amount', [missing + HINT], []],
                ['SNOWFLAKE', '"amount +"', [missing + HINT], []],
-               ['SPANNER', 'amount', [`${missing}.`], [`${missing}.`]],
+               ['SPANNER', 'amount', [missing + HINT], []],
              ] as Array<[string, string, string[], string[]]>) {
           writeScope({
             'commerce.yaml':

@@ -3210,21 +3210,30 @@ ${extra}`);
        [MISSING('e', 'BIGQUERY', HINT), MISSING('other', 'SPANNER')]],
       // The message reads "an" before a dialect that starts with a vowel.
       [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', '', 'an')]],
-      // With --transpile, push translates a Snowflake text into BigQuery SQL.
-      // It translates no Spanner or AlloyDB text.
+      // With --transpile, push translates a Snowflake, Spanner or AlloyDB
+      // text into BigQuery SQL. An unsupported dialect is not translated.
       [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [MISSING('e', 'BIGQUERY', HINT)]],
       [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [], true],
       [SPANNER_TABLE, dialects('SNOWFLAKE'), '', [MISSING('e', 'SPANNER')], true],
-      [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY')]],
-      [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY')], true],
-      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY')]],
-      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY')], true],
+      [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY', HINT)]],
+      [BQ_TABLE('t'), dialects('SPANNER'), '', [], true],
+      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY', HINT)]],
+      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [], true],
     ];
     for (const [source, expression, extra, errors, transpiled] of cases) {
       const actual = check(withField(source, expression, extra), transpiled);
       expect({source, expression, extra, transpiled, errors: actual})
           .toEqual({source, expression, extra, transpiled, errors});
     }
+    // An unsupported dialect on an in-memory model is not translated.
+    const unsupported = withField(BQ_TABLE('t'), dialects('SNOWFLAKE'));
+    unsupported.entities[0].fields[1] = {
+      name: 'f',
+      importedExpression: 'x',
+      importedDialect: 'TERADATA',
+    };
+    expect(check(unsupported)).toEqual([MISSING('e', 'BIGQUERY')]);
+    expect(check(unsupported, true)).toEqual([MISSING('e', 'BIGQUERY')]);
     // An unbound field and an entity with no source are skipped.
     const unbound = withField(SPANNER_TABLE, bigQueryText);
     unbound.entities[0].fields[1] = {name: 'f'};

@@ -2610,6 +2610,8 @@ semantic_model:
     writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
+    deployments:
+      - { name: g, target: "${BQ}/propertyGraphs/g" }
     entities:
       - name: purchase
         source: ${BQ}/tables/purchase
@@ -2624,19 +2626,37 @@ semantic_model:
             - { dialect: SNOWFLAKE, expression: "SUM(IFF(purchase.amount > 0, purchase.amount, 0))" }
 `);
     const kcSpy = mockKc();
+    spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
+    spyOn(validateMod, 'validateBigQueryActionStatements').mockResolvedValue([]);
+    spyOn(bqLeg, 'deployBigQuery').mockResolvedValue(
+        {success: true, deployed: 0, ddl: [], warnings: []} as any);
     const metric = () =>
         kcSpy.mock.calls.at(-1)![0][0].model.metrics![0];
-    expect(await push({validateOnly: true})).toBe(0);
+    expect(await push({validateOnly: true})).toBe(1);
     expect(prints(console.warn).join('\n')).toContain('needs transpilation');
-    expect(metric().expression).toBeUndefined();
+    expect(prints(console.error).join('\n'))
+        .toContain("targets a BigQuery graph with only a 'SNOWFLAKE' expression");
+    expect(kcSpy).not.toHaveBeenCalled();
 
     (console.warn as any).mockClear();
+    (console.error as any).mockClear();
     expect(await push({validateOnly: true, transpile: true})).toBe(0);
     expect(prints(console.warn).join('\n')).not.toContain('needs transpilation');
     expect(prints(console.warn)).toContain(
         "Warning: [commerce] metric 'positive_spend': transpiled " +
         "'SNOWFLAKE' -> 'BIGQUERY'");
-    expect(metric().expression).toBeDefined();
+    expect(metric().expression).toBeUndefined();
+    expect(metric().dialects).toEqual([
+      {
+        dialect: 'SNOWFLAKE',
+        expression: 'SUM(IFF(purchase.amount > 0, purchase.amount, 0))',
+      },
+      {
+        dialect: 'BIGQUERY',
+        expression: 'SUM(IF(purchase.amount > 0, purchase.amount, 0))',
+      },
+    ]);
+    expect(metric().stringForm).toBe(false);
   });
 
   // Two deployments stop the push after pruning, before any live check.

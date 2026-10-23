@@ -9,7 +9,7 @@
 
 import {describe, expect, spyOn, test} from 'bun:test';
 
-import {SemanticModel} from '../../../src/libts/semantic/ir';
+import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import * as sqlParser from '../../../src/libts/semantic/sql_parser';
 import {SqlTranspiler, transpileModel, transpileModels, TranspileRequest,} from '../../../src/libts/semantic/transpile';
 
@@ -44,6 +44,17 @@ function baseModel(): SemanticModel {
   };
 }
 
+// Builds a single-entity (`orders`) model with `fields` and no metrics.
+function modelWithFields(...fields: Field[]): SemanticModel {
+  return {
+    name: 'm',
+    entities:
+        [{name: 'orders', dataSource: 'p.d.orders', keys: ['id'], fields}],
+    relationships: [],
+    metrics: [],
+  };
+}
+
 // A fake transpiler that maps each request's expression through `map` (identity
 // by default) and records what it was asked to transpile.
 function fakeTranspiler(
@@ -66,7 +77,11 @@ describe('transpileModel', () => {
     expect(loadSpy).toHaveBeenCalledTimes(1);
     loadSpy.mockRestore();
     const label = model.entities[0].fields[1];
-    expect(label.expression).toBe('IF(orders.s = 1, 1, 0)');
+    expect(label.dialects).toEqual([
+      {dialect: 'BIGQUERY', expression: 'IF(orders.s = 1, 1, 0)'},
+    ]);
+    expect(label.stringForm).toBe(false);
+    expect(label.expression).toBeUndefined();
     // The imported form is retained (round-trip fidelity; the KC leg may emit
     // it).
     expect(label.importedExpression).toBe('IFF(orders.s=1,1,0)');
@@ -119,6 +134,7 @@ describe('transpileModel', () => {
 
         const label = model.entities[0].fields[1];
         expect(label.expression).toBeUndefined();
+        expect(label.dialects).toBeUndefined();
         expect(label.importedExpression)
             .toBe('IFF(orders.s=1,1,0)');  // still there for the emitter
         expect(warnings.some(
@@ -135,6 +151,7 @@ describe('transpileModel', () => {
         const {model, warnings} =
             await transpileModel(baseModel(), {transpiler});
         expect(model.entities[0].fields[1].expression).toBeUndefined();
+        expect(model.entities[0].fields[1].dialects).toBeUndefined();
         expect(warnings.some(w => w.includes('no result returned'))).toBe(true);
       });
 
@@ -150,6 +167,7 @@ describe('transpileModel', () => {
 
         const rev = model.metrics[0];
         expect(rev.expression).toBeUndefined();
+        expect(rev.dialects).toBeUndefined();
         expect(rev.importedExpression).toBe('SUM(orders.amt)');
         expect(warnings.some(
                    w => w.includes(`metric 'rev'`) &&
@@ -185,8 +203,10 @@ describe('transpileModel', () => {
         const {model: out, warnings} =
             await transpileModel(model, {transpiler});
 
-        expect(out.entities[0].fields[0].expression)
-            .toBe('COALESCE(orders.amt, 0)');
+        expect(out.entities[0].fields[0].dialects).toEqual([
+          {dialect: 'BIGQUERY', expression: 'COALESCE(orders.amt, 0)'},
+        ]);
+        expect(out.entities[0].fields[0].stringForm).toBe(false);
         expect(warnings.some(w => w.includes('transpiled'))).toBe(true);
         expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
       });
@@ -227,8 +247,11 @@ describe('transpileModel', () => {
     const {transpiler} = fakeTranspiler(() => 'IF(g > 0, g, 0)');
     const {model, warnings} = await transpileModel(withAssoc, {transpiler});
 
-    expect(model.relationships[0].association!.fields![0].expression)
-        .toBe('IF(g > 0, g, 0)');
+    expect(model.relationships[0].association!.fields![0].dialects).toEqual([
+      {dialect: 'BIGQUERY', expression: 'IF(g > 0, g, 0)'},
+    ]);
+    expect(model.relationships[0].association!.fields![0].stringForm)
+        .toBe(false);
     expect(warnings.some(
                w => w.includes(`relationship 'enrollment' field 'grade'`) &&
                    w.includes('transpiled')))
@@ -271,8 +294,9 @@ describe('transpileModel', () => {
 
         const req = seen.find(r => r.expression === 'IFF(orders.s=1,1,0)');
         expect(req?.dialect).toBe('ANSI_SQL');
-        expect(out.entities[0].fields[0].expression)
-            .toBe('IF(orders.s = 1, 1, 0)');
+        expect(out.entities[0].fields[0].dialects).toEqual([
+          {dialect: 'BIGQUERY', expression: 'IF(orders.s = 1, 1, 0)'},
+        ]);
         expect(warnings.some(w => w.includes(`field 'orders.label'`)))
             .toBe(true);
       });
@@ -305,8 +329,9 @@ describe('transpileModel', () => {
 
         const req = seen.find(r => r.expression === 'IFF(orders.s=1,1,0)');
         expect(req?.dialect).toBe('ANSI_SQL');
-        expect(out.entities[0].fields[0].expression)
-            .toBe('IF(orders.s = 1, 1, 0)');
+        expect(out.entities[0].fields[0].dialects).toEqual([
+          {dialect: 'BIGQUERY', expression: 'IF(orders.s = 1, 1, 0)'},
+        ]);
         expect(warnings.some(w => w.includes(`field 'orders.label'`)))
             .toBe(true);
       });
@@ -319,8 +344,8 @@ describe('transpileModel', () => {
           sawTarget = target;
           return reqs.map(r => ({id: r.id, sql: r.expression}));
         };
-        await transpileModel(baseModel(), {transpiler, target: 'SPARK'});
-        expect(sawTarget).toBe('SPARK');
+        await transpileModel(baseModel(), {transpiler, target: 'POSTGRES'});
+        expect(sawTarget).toBe('POSTGRES');
       });
 
   test(
@@ -354,7 +379,9 @@ describe('transpileModel', () => {
           transpiler: async reqs =>
               reqs.map(r => ({id: r.id, sql: 'COUNT(orders.Customer.id)'})),
         });
-        expect(out.metrics[0].expression).toBe('COUNT(orders.Customer.id)');
+        expect(out.metrics[0].dialects).toEqual([
+          {dialect: 'BIGQUERY', expression: 'COUNT(orders.Customer.id)'},
+        ]);
         expect(warnings.some(w => w.includes('re-cased'))).toBe(false);
       });
 
@@ -365,11 +392,109 @@ describe('transpileModel', () => {
           transpiler: async reqs =>
               reqs.map(r => ({id: r.id, sql: 'SUM(orders.amt'})),
         });
-        expect(out.metrics[0].expression).toBe('SUM(orders.amt');
+        expect(out.metrics[0].dialects).toEqual([
+          {dialect: 'BIGQUERY', expression: 'SUM(orders.amt'},
+        ]);
         expect(warnings.some(
                    w => w.includes(`metric 'rev'`) &&
                        w.includes('could not be parsed; qualifier check was skipped')))
             .toBe(true);
+      });
+
+  test(
+      'adds a BIGQUERY entry after existing dialect entries and clears stringForm',
+      async () => {
+        const model = modelWithFields(
+            {
+              name: 'label',
+              dialects: [
+                {dialect: 'SNOWFLAKE', expression: 'IFF(orders.s=1,1,0)'},
+              ],
+              stringForm: false,
+              importedExpression: 'IFF(orders.s=1,1,0)',
+              importedDialect: 'SNOWFLAKE',
+            },
+            {name: 'unbound'});
+        const {transpiler} = fakeTranspiler(() => 'IF(orders.s = 1, 1, 0)');
+        const {model: out} = await transpileModel(model, {transpiler});
+
+        const label = out.entities[0].fields[0];
+        expect(label.dialects).toEqual([
+          {dialect: 'SNOWFLAKE', expression: 'IFF(orders.s=1,1,0)'},
+          {dialect: 'BIGQUERY', expression: 'IF(orders.s = 1, 1, 0)'},
+        ]);
+        expect(label.stringForm).toBe(false);
+        expect(label.expression).toBeUndefined();
+      });
+
+  test(
+      'queues an ANSI_SQL entry only when it double-quotes a column name and has no BIGQUERY entry',
+      async () => {
+        for (const expr
+                 of ['"orders"."order_amount"',
+                     'orders."order_amount"',
+                     '"orders".order_amount',
+                     '"order_amount"',
+                     'SUM("orders"."order_amount")',
+                     'COALESCE("orders"."order_amount", 0)',
+                     'Time."hour"',
+        ]) {
+          const model = modelWithFields(
+              {
+                name: 'amt',
+                expression: expr,
+                dialects: [{dialect: 'ANSI_SQL', expression: expr}],
+                stringForm: true,
+              },
+              {name: 'bare_ir', expression: expr});
+          const {transpiler, seen} =
+              fakeTranspiler(() => '`orders`.`order_amount`');
+          const {model: out} = await transpileModel(model, {transpiler});
+          const amt = out.entities[0].fields[0];
+          expect(seen).toEqual([
+            {id: '0', dialect: 'ANSI_SQL', expression: expr},
+            {id: '1', dialect: 'ANSI_SQL', expression: expr},
+          ]);
+          expect(amt.dialects).toEqual([
+            {dialect: 'ANSI_SQL', expression: expr},
+            {dialect: 'BIGQUERY', expression: '`orders`.`order_amount`'},
+          ]);
+          expect(amt.stringForm).toBe(false);
+          expect(amt.expression).toBe(expr);
+        }
+
+        for (const expr
+                 of ['orders.order_amount',
+                     `'a "quoted" string'`,
+                     '`orders`.`order_amount`',
+                     '`orders`.note = \'a "quoted" string\'',
+                     '`orders`.`note` = \'a "quoted" ` string\'',
+                     'orders.order_amount -- "orders"."order_amount"',
+        ]) {
+          const model = modelWithFields(
+              {
+                name: 'plain',
+                expression: expr,
+                dialects: [{dialect: 'ANSI_SQL', expression: expr}],
+                stringForm: true,
+              },
+              {
+                name: 'already_bq',
+                expression: '`orders`.`order_amount`',
+                dialects: [
+                  {dialect: 'ANSI_SQL', expression: '"orders"."order_amount"'},
+                  {dialect: 'BIGQUERY', expression: '`orders`.`order_amount`'},
+                ],
+                stringForm: false,
+              });
+          const {transpiler, seen} = fakeTranspiler();
+          const {model: out} = await transpileModel(model, {transpiler});
+          expect(seen).toEqual([]);
+          expect(out.entities[0].fields[0].dialects).toEqual([
+            {dialect: 'ANSI_SQL', expression: expr}
+          ]);
+          expect(out.entities[0].fields[0].stringForm).toBe(true);
+        }
       });
 });
 
@@ -382,8 +507,9 @@ describe('transpileModels', () => {
             [{document: 'sales.yaml', model: baseModel()}], {transpiler});
 
         expect(models[0].document).toBe('sales.yaml');
-        expect(models[0].model.entities[0].fields[1].expression)
-            .toBe('IF(orders.s = 1, 1, 0)');
+        expect(models[0].model.entities[0].fields[1].dialects).toEqual([
+          {dialect: 'BIGQUERY', expression: 'IF(orders.s = 1, 1, 0)'},
+        ]);
         expect(
             warnings.some(
                 w => w.startsWith('[sales.yaml] ') && w.includes('transpiled')))

@@ -65,17 +65,22 @@ scenarios('push --no-deployment', [
     }],
   },
   {
-    name: '--transpile fills a vendor-only expression in the model Knowledge Catalog receives',
+    name: '--transpile adds a BIGQUERY dialect entry in the model Knowledge Catalog receives',
     metrics: [SNOWFLAKE_METRIC],
     flags: {validateOnly: true},
     code: 0,
     warnings: [has('needs transpilation')],
-    check: r => expect(r.published.metrics![0].expression).toBeUndefined(),
+    check: r => expect(r.published.metrics![0].dialects).toEqual([
+      {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
+    ]),
     then: [{
       flags: {validateOnly: true, transpile: true},
       code: 0,
       warnings: [TRANSPILE_WARNING],
-      check: r => expect(r.published.metrics![0].expression).toBeDefined(),
+      check: r => expect(r.published.metrics![0].dialects).toEqual([
+        {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
+        {dialect: 'BIGQUERY', expression: 'SUM(IF(Customer.key > 0, 1, 0))'},
+      ]),
     }],
   },
   {

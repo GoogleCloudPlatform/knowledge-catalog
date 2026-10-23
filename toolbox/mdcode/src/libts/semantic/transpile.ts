@@ -1,25 +1,20 @@
-// Fills a Semantic Model's missing target expressions by transpiling the vendor
-// SQL the loader kept verbatim.
+// Adds translated target-dialect SQL entries to a Semantic Model's expressions
+// by transpiling vendor SQL or ANSI_SQL that double-quotes column names.
 //
 // The loader (./loader) keeps every entry in `dialects` (and records
 // `stringForm`), while still picking a target/canonical `expression` valid
 // against the target (GoogleSQL/ANSI) and, when the source supplied a vendor
 // variant, the first vendor SQL in `importedExpression` (+ `importedDialect`).
-// When a node carries ONLY the imported form -- e.g. a Databricks or Snowflake
-// expression BigQuery does not accept verbatim -- `expression` is left unset
-// and the loader warns that it "needs transpilation" (see pickDialect). This
-// pass fills that gap: it rewrites each such imported expression to the target
-// dialect and sets `expression`, while leaving
-// `importedExpression`/`importedDialect` in place so nothing is lost and the
-// Knowledge Catalog leg can still emit the vendor form.
+// When a node carries ONLY vendor entries (with no target or `ANSI_SQL` entry)
+// or carries an `ANSI_SQL` entry that quotes column names with double quotes
+// (which BigQuery reads as string literals), this pass translates that source
+// SQL into the target dialect, appends `{dialect: target, expression: sql}` to
+// `dialects`, and sets `stringForm` to `false`.
 //
-// It is deliberately a GAP-FILLER, not a rewriter: a node that already has an
-// `expression` (target or portable canonical) is untouched, so a model authored
-// in GoogleSQL/ANSI is unaffected and its goldens are stable. The BigQuery
-// generator reads `expression`, so filling it gives the graph the transpiled
-// GoogleSQL. The Knowledge Catalog emitter reads it too, except that with
-// KC_V2_ASPECTS on it stores each field's and metric's dialect texts as
-// written and leaves out the translation.
+// It never overwrites an existing dialect entry or `expression`: a node that
+// already has a target-dialect entry, or an `ANSI_SQL` entry without
+// double-quoted column names, is untouched, so a model authored in
+// GoogleSQL/unquoted ANSI is unaffected and its goldens are stable.
 //
 // Design:
 //   - Target-agnostic and non-mutating: `transpileModel(model, {target,
@@ -29,16 +24,14 @@
 //     the tool -- there is no external runtime dependency to install.
 //   - Graceful degradation: if the engine fails to initialize, errors, or would
 //     alter which entities an expression references (the qualifier-preservation
-//     guard), the node is left with no target `expression` and a warning is
-//     emitted -- never a throw. The node then keeps only its imported form,
-//     exactly as it would have without this pass, and the BigQuery graph
-//     leaves it out.
+//     guard), the node is left as it is and a warning is emitted -- never a
+//     throw.
 //
 
-import {Field, Metric, SemanticModel} from './ir';
+import {Field, Metric, SemanticModel, SqlDialect} from './ir';
 import {LoadedModel} from './loader';
-import {loadSqlEngine, PolyglotEngine} from './sql_parser';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
+import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -85,24 +78,127 @@ interface Pending {
   accept: (sql: string) => void;  // writes the transpiled SQL into the clone
 }
 
-// True when a node needs transpilation: it has no target `expression`, but does
-// carry a non-empty imported vendor form to derive one from. A node that
-// already has an `expression` is left alone; one with neither (or only an empty
-// imported form) has nothing to transpile.
-function needsTranspile(node: Field|Metric): node is(Field | Metric)&{
-  importedExpression: string;
-}
-{
-  return node.expression === undefined && !!node.importedExpression;
+/**
+ * Returns true if `expression`, read as generic SQL (`ANSI_SQL`), quotes a
+ * column, table qualifier, or struct field with double quotes (`"..."`).
+ *
+ * The `ANSI_SQL` parser marks both `"..."` and `` `...` `` column identifiers
+ * with `quoted: true`, whereas `BIGQUERY` marks only `` `...` `` as `quoted:
+ * true` and treats `"..."` as a string literal (or fails to parse `."..."`).
+ * Comparing `quotedColumnCount` across the two ASTs yields three cases:
+ *   - `ANSI_SQL > BIGQUERY`: at least one column identifier is double-quoted
+ *     (e.g., `"orders"."amount"` or `"amount"`).
+ *   - `ANSI_SQL < BIGQUERY`: `expression` uses BigQuery-only syntax (such as a
+ *     `# "comment"` line comment in `` `orders`.`col` # "comment" ``) that
+ *     `BIGQUERY` parses while `ANSI_SQL` fails to parse (`count = 0`).
+ *   - `ANSI_SQL === BIGQUERY`: any `"` is inside a string literal or comment
+ *     (e.g., `` `orders`.`note` = 'a "quoted" ` string' ``), and any quoted
+ *     column identifiers use backticks in both dialects.
+ */
+function hasDoubleQuotedColumn(expression: string): boolean {
+  if (!expression.includes('"')) return false;
+  return quotedColumnCount(sqlExpressionTree(expression, 'ANSI_SQL')) >
+      quotedColumnCount(sqlExpressionTree(expression, 'BIGQUERY'));
 }
 
 /**
- * Fills every missing target `expression` in `model` by transpiling the node's
- * `importedExpression` to `opts.target`, returning a clone plus diagnostics.
- * The input model is never mutated. When no node needs transpilation, the clone
- * is returned unchanged and the transpiler is not invoked.
+ * Returns the number of quoted column, table qualifier, and struct field
+ * identifiers (`quoted: true`) in a `@polyglot-sql/sdk` AST `node`.
  *
- * The qualifier-preservation guard parses the transpiled output with
+ * `@polyglot-sql/sdk` represents simple or table-qualified column references as
+ * `{column: {name: {name, quoted}, table?: {name, quoted}}}` and chained
+ * struct field accesses (such as `orders.addr."city"`) as
+ * `{dot: {this: <base>, field: {name, quoted}}}`. When `sqlExpressionTree`
+ * cannot parse an expression in the requested dialect, it returns `undefined`,
+ * for which this function returns `0`.
+ */
+function quotedColumnCount(node: unknown): number {
+  // Base case: `undefined` (when `sqlExpressionTree` fails to parse), `null`,
+  // or primitive AST leaf values (`string`, `number`, `boolean`) have 0 quoted
+  // column identifiers.
+  if (!node || typeof node !== 'object') return 0;
+  const obj = node as Record<string, any>;
+  // A `{column: {name, table}}` node represents a bare (`"col"`) or
+  // table-qualified (`"orders"."col"`) column reference; count the column name
+  // and optional table qualifier separately whenever `quoted === true`.
+  if (obj.column) {
+    return (obj.column.name?.quoted === true ? 1 : 0) +
+        (obj.column.table?.quoted === true ? 1 : 0);
+  }
+  // A `{dot: {this, field}}` node represents a struct subfield access (e.g.
+  // `orders.addr."city"`); count `field` if `quoted === true` and recurse into
+  // `this` for the base column or outer struct path.
+  if (obj.dot) {
+    return (obj.dot.field?.quoted === true ? 1 : 0) +
+        quotedColumnCount(obj.dot.this);
+  }
+  // For any other AST container node (such as `sum`, `eq`, `case`) or array of
+  // child AST nodes, recursively sum the counts across all child values.
+  return Object.values(obj).reduce<number>(
+      (sum, val) => sum + quotedColumnCount(val), 0);
+}
+
+/**
+ * Returns the source `{dialect, expression}` to translate into `target` for
+ * `node`, or `undefined` when `node` should be left untouched.
+ *
+ * A field or metric is queued for translation in either of two cases:
+ *   1. Its only texts are in vendor dialects, with no `target` or `ANSI_SQL`
+ *      entry -> translate from the vendor dialect.
+ *   2. It has an `ANSI_SQL` text that double-quotes a column identifier and no
+ *      `target` entry -> translate from `ANSI_SQL`.
+ */
+function sourceToTranspile(node: Field|Metric, target: string):
+    {dialect: string; expression: string}|undefined {
+  // Parsed models store per-dialect SQL expressions in `node.dialects`.
+  if (node.dialects?.length) {
+    // Skip if `node` already has an explicit entry for the target dialect.
+    if (node.dialects.some(d => d.dialect === target)) return undefined;
+    // If `node` has a generic `ANSI_SQL` entry, `expressionForDialect` already
+    // falls back to it for `target` unless it double-quotes a column
+    // identifier (which `BIGQUERY` would read as a string literal). Only
+    // transpile `ANSI_SQL` when it uses double-quoted columns; otherwise skip
+    // transpilation even if vendor dialect entries are also present.
+    const ansi = node.dialects.find(d => d.dialect === 'ANSI_SQL');
+    if (ansi) {
+      return hasDoubleQuotedColumn(ansi.expression) ?
+          {dialect: 'ANSI_SQL', expression: ansi.expression} :
+          undefined;
+    }
+    // Otherwise `node.dialects` contains only non-target vendor entries (e.g.
+    // `SNOWFLAKE`), so transpile from the first vendor entry.
+    const first = node.dialects[0];
+    return {dialect: first.dialect, expression: first.expression};
+  }
+  // Hand-built in-memory IR may omit `node.dialects` and set a bare
+  // `node.expression` (implicitly `ANSI_SQL`); only transpile it when it
+  // double-quotes a column identifier.
+  if (node.expression !== undefined) {
+    return hasDoubleQuotedColumn(node.expression) ?
+        {dialect: 'ANSI_SQL', expression: node.expression} :
+        undefined;
+  }
+  // Hand-built in-memory IR may omit `node.dialects` and carry only a
+  // vendor-specific `importedExpression`; transpile it from `importedDialect`
+  // (falling back to `ANSI_SQL` if `importedDialect` was omitted).
+  if (node.importedExpression) {
+    return {
+      dialect: node.importedDialect || 'ANSI_SQL',
+      expression: node.importedExpression,
+    };
+  }
+  // The node has no SQL expression of any kind, so leave it untouched.
+  return undefined;
+}
+
+/**
+ * Adds a translated `opts.target` dialect entry to every field or metric in
+ * `model` whose only texts are in vendor dialects or whose `ANSI_SQL` text
+ * double-quotes a column name, returning a cloned model plus diagnostics.
+ *
+ * The input model is never mutated. When no node needs transpilation, the clone
+ * is returned unchanged and the transpiler is not invoked. The
+ * qualifier-preservation guard parses the transpiled output with
  * `columnReferences`, which requires the SQL parser to be loaded even when a
  * custom `opts.transpiler` is injected (`loadSqlEngine()` is awaited before
  * running the guard).
@@ -116,28 +212,21 @@ export async function transpileModel(
   const entityNames = clone.entities.map(e => e.name);
   const warnings: string[] = [];
 
+  await loadSqlEngine();
   const pending: Pending[] = [];
   const add = (node: Field|Metric, ctx: string) => {
-    if (!needsTranspile(node)) return;
+    const source = sourceToTranspile(node, target);
+    if (!source) return;
     const id = String(pending.length);
     pending.push({
-      request: {
-        id,
-        // A node can carry an imported expression without a declared dialect
-        // -- undefined (hand-built IR) or an empty string. Treat either as
-        // portable ANSI (a dialect-neutral parse) rather than passing a
-        // missing/empty token into the adapter, which would report it as an
-        // unsupported dialect.
-        dialect: node.importedDialect || 'ANSI_SQL',
-        expression: node.importedExpression,
-      },
+      request: {id, dialect: source.dialect, expression: source.expression},
       ctx,
       accept: (sql: string) => {
-        node.expression = sql;
-        // Keep `importedExpression`/`importedDialect`: the IR carries both
-        // forms on purpose (round-trip fidelity, and the KC leg may still emit
-        // the vendor form). We only fill the previously-missing target
-        // expression.
+        node.dialects = [
+          ...(node.dialects ?? []),
+          {dialect: target as SqlDialect, expression: sql},
+        ];
+        node.stringForm = false;
       },
     });
   };
@@ -157,7 +246,6 @@ export async function transpileModel(
 
   if (!pending.length) return {model: clone, warnings};
 
-  await loadSqlEngine();
   const responses = await transpiler(pending.map(p => p.request), target);
   const byId = new Map(responses.map(r => [r.id, r]));
 
@@ -207,17 +295,24 @@ export async function transpileModel(
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
+    if (request.dialect === 'SQLSERVER') {
+      warnings.push(
+          `${ctx}: SQL Server text is translated to BigQuery on a ` +
+          `best-effort basis, and the translator can get some T-SQL wrong; ` +
+          `check the ${target} entry.`);
+    }
   }
 
   return {model: clone, warnings};
 }
 
 /**
- * Convenience over {@link transpileModel} for the shared, document-tagged
- * models a push loads once (see loadSemanticModels). Transpiles each model's
- * missing target expressions, returning new `LoadedModel`s (originals
- * untouched) and all warnings, each prefixed with the originating document name
- * so they attribute back to the author's file like the loader's own warnings.
+ * Runs {@link transpileModel} across `models`, returning new `LoadedModel`s
+ * (originals untouched) and all warnings prefixed with `[<document>]`.
+ *
+ * Convenience wrapper for the shared, document-tagged models a push loads once
+ * (see `loadSemanticModels`), attributing each warning back to the originating
+ * document name like the loader's own warnings.
  */
 export async function transpileModels(
     models: LoadedModel[], opts: TranspileOptions = {}):
@@ -255,21 +350,15 @@ function fmtSet(names: string[]): string {
 // dialect-neutral 'generic' parser. An unknown token has no mapping and
 // degrades to a per-request error (the imported form + warning).
 const POLYGLOT_DIALECTS: Record<string, string> = {
-  BIGQUERY: 'bigquery',
   ANSI_SQL: 'generic',  // the engine's dialect-neutral parser
+  BIGQUERY: 'bigquery',
+  SPANNER: 'bigquery',
+  POSTGRES: 'postgresql',
+  ALLOYDB: 'postgresql',
+  MYSQL: 'mysql',
+  SQLSERVER: 'tsql',
   SNOWFLAKE: 'snowflake',
   DATABRICKS: 'databricks',
-  SPARK: 'spark',
-  POSTGRES: 'postgresql',
-  POSTGRESQL: 'postgresql',
-  TERADATA: 'teradata',
-  PRESTO: 'presto',
-  TRINO: 'trino',
-  DUCKDB: 'duckdb',
-  MYSQL: 'mysql',
-  REDSHIFT: 'redshift',
-  ORACLE: 'oracle',
-  TSQL: 'tsql',
 };
 
 function polyglotDialect(token: string): string|undefined {
@@ -278,9 +367,11 @@ function polyglotDialect(token: string): string|undefined {
 }
 
 /**
- * Whether the default translator reads SQL written in `dialect`, read as
- * `ANSI_SQL` when empty. transpileModel leaves a text in any other dialect as
- * written, with a warning.
+ * Returns true if the default translator reads SQL written in `dialect`
+ * (treating an empty string as `ANSI_SQL`).
+ *
+ * `transpileModel` leaves a text in any other dialect as written, with a
+ * warning.
  */
 export function transpilesFrom(dialect: string): boolean {
   return polyglotDialect(dialect || 'ANSI_SQL') !== undefined;

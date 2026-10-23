@@ -95,9 +95,10 @@ agree on every structural row and differ only where a Spanner target has no
 11. **Vendor-dialect fallback.** What you author is the `expression.dialects[]`
     list. `importedExpression` / `importedDialect` are not authored keys — the
     loader *derives* them from a non-canonical dialect entry (for example the
-    MAQL or Snowflake form a metric was imported from). A BigQuery graph reads
-    a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one, else the
-    SQL `push --transpile` translated from the vendor text. It never emits the
+    MAQL or Snowflake form a metric was imported from). `push --transpile`
+    adds a `BIGQUERY` dialect entry translated from a vendor-only expression
+    or from an `ANSI_SQL` expression that double-quotes column names. A BigQuery
+    graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with
     a warning, though push rejects such a field in the model file first. A
     metric with none, or one that aggregates such a field, is
@@ -266,9 +267,9 @@ drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
 not in the graph — the `description` and `ai_context.instructions` are carried
 into Knowledge Catalog instead. Unique keys beyond the primary key are also
 dropped (only the primary key is emitted). The imported vendor SQL is never
-emitted. The graph builds each field and metric from its `BIGQUERY` entry, else
-its `ANSI_SQL` one, else the SQL `push --transpile` translated from the vendor
-SQL. A field with none of these is left out of its node table with a warning,
+emitted. `push --transpile` adds a `BIGQUERY` entry for a vendor-only
+expression or an `ANSI_SQL` expression that double-quotes column names, and the
+graph builds each field and metric from its `BIGQUERY` entry, else its `ANSI_SQL` one. A field with none of these is left out of its node table with a warning,
 though push rejects such a field in the model file first. A
 metric with none, or one that aggregates such a field, is skipped with a
 warning.

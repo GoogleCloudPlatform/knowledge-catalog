@@ -329,8 +329,12 @@ function measureProblem(
   if (!columns) return undefined;
   const entities = model.entities ?? [];
   const names = entities.map(e => e.name);
-  const matched = referencedEntityNames(
-      withoutComments(metric.expression ?? '', 'BIGQUERY'), names);
+  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`) rather than
+  // `metric.expression`: `transpileModel` appends translated SQL to
+  // `metric.dialects` and leaves `metric.expression` unset on vendor-only
+  // metrics.
+  const matched =
+      referencedEntityNames(withoutComments(text, 'BIGQUERY'), names);
   if (matched.length > 1 || !matched.length && !metric.entity) return undefined;
   const reached = entitiesReached(columns, names);
   const name = reached.length > 1 ? undefined : reached[0] ?? metric.entity;
@@ -1646,17 +1650,23 @@ function validateBigQueryMetrics(
   for (const metric of model.metrics ?? []) {
     if (alreadyFlagged.has(metric.name)) continue;
     const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    if (metric.expression === undefined &&
-        metric.importedExpression !== undefined) {
+    // `transpileModel` appends translated SQL as a `BIGQUERY` entry in
+    // `metric.dialects` without setting `metric.expression`, so resolve the
+    // BigQuery text via `expressionForDialect` first (falling back to
+    // `metric.expression` for hand-built in-memory models without `dialects`).
+    const bqText =
+        expressionForDialect(metric, 'BIGQUERY') ?? metric.expression;
+    if (bqText === undefined && metric.importedExpression !== undefined) {
       errors.push(
           `${prefix} targets a BigQuery graph with only a '${
               metric.importedDialect ?? 'vendor'}' expression; supply a ` +
           `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
       continue;
     }
-    // The generator reads the expression with its comments removed.
-    const expr = withoutComments(
-        metric.expression ?? metric.importedExpression ?? '', 'BIGQUERY');
+    // The generator reads the resolved BigQuery expression (`bqText`) with its
+    // comments removed.
+    const expr =
+        withoutComments(bqText ?? metric.importedExpression ?? '', 'BIGQUERY');
     let referenced = referencedEntityNames(expr, entityNames);
     if (referenced.length === 0 && metric.entity) {
       referenced = [metric.entity];
