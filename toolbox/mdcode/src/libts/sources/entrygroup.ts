@@ -14,6 +14,7 @@ export class EntryGroupSource implements CatalogSource {
   readonly ingestedEntries: boolean;
   readonly layout = Layouts.STANDARD;
   readonly defaultAspects = [md.OVERVIEW_ASPECT];
+  readonly systemAspects = [];
 
   private readonly _name: string[];
   private readonly _entryGroup: dataplex.EntryGroup;

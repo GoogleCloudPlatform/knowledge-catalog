@@ -20,6 +20,7 @@ export class SemanticModelSource implements CatalogSource {
   readonly layout = Layouts.SEMANTIC_MODEL;
   // A semantic model is pulled by its own path, not by snapshot aspects.
   readonly defaultAspects = [];
+  readonly systemAspects = [];
 
   readonly project: string;
   readonly location: string;

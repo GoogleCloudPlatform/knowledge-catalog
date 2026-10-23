@@ -92,7 +92,10 @@ function runScenario(scenario: any) {
       const snapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT);
       const sync = new kcmac.CatalogSync(catalog, snapshot);
 
-      // Execute - Snapshot actions
+      // Execute - Snapshot actions, recording the warnings they print.
+      const warnings: string[] = [];
+      const warn = spyOn(console, 'warn').mockImplementation(
+        (...args: any[]) => { warnings.push(args.join(' ')); });
       const actions = scenario.actions ?? [];
       for (const actionStep of actions) {
         const { action, ...params } = actionStep;
@@ -118,6 +121,12 @@ function runScenario(scenario: any) {
           default:
             throw new Error(`Unknown action: ${action}`);
         }
+      }
+      warn.mockRestore();
+
+      // Assert expectations - Warnings
+      if (scenario.assert?.warnings) {
+        expect(warnings).toEqual(scenario.assert.warnings);
       }
 
       // Assert expectations - Filesystem
@@ -219,7 +228,7 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
-    async function(project: string, location: string, entry: string, aspects?: string[]) {
+    async function(project: string, location: string, entry: string, aspects?: string[] | 'FULL') {
       if (currentCatalogMock) {
         return await currentCatalogMock.lookupEntry(project, location, entry, aspects);
       }
