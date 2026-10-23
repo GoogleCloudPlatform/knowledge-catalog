@@ -1,0 +1,73 @@
+# Retrieval questions for models/clinical_encounters.yaml.
+# See questions/retail_sales.yaml for what the fields mean.
+
+model: clinical_encounters
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: What is our ALOS by hospital?
+    expect:
+      required: [metric:average_length_of_stay, entity:facility]
+      supporting: [entity:encounter]
+      confusable: [metric:inpatient_days, metric:bed_occupancy]
+    why: >-
+      ALOS is in synonyms only, and "hospital" has to reach an entity called
+      facility. inpatient_days is the numerator of the same ratio, so it
+      matches the underlying concept without answering the question.
+
+  - id: q2
+    difficulty: medium
+    question: How many people did we actually treat last year?
+    expect:
+      required: [metric:unique_patient_count, entity:patient]
+      supporting: [entity:encounter]
+      confusable: [metric:encounter_count, metric:claim_count]
+    why: >-
+      "People" means distinct patients, not visits. encounter_count is the
+      more common metric and matches "how many" equally well, but a patient
+      with six visits makes the two numbers differ by a lot.
+
+  - id: q3
+    difficulty: medium
+    question: What do we bill versus what we actually get paid?
+    expect:
+      required: [metric:total_charges, metric:total_paid, entity:claim_line]
+      supporting: [metric:total_allowed, metric:collection_ratio]
+      confusable: [metric:patient_responsibility_total, metric:revenue_per_encounter]
+    why: >-
+      Three money metrics that are easy to conflate -- charged, allowed and
+      paid are different numbers on the same row. The question asks for two
+      of them explicitly and the third is what connects them.
+
+  - id: q4
+    difficulty: hard
+    question: What does Medicare reimburse us for diabetic admissions?
+    expect:
+      required:
+        [
+          metric:total_paid,
+          entity:payer,
+          entity:diagnosis_code,
+          entity:encounter_diagnosis,
+        ]
+      supporting: [entity:claim, entity:claim_line, entity:encounter]
+      confusable: [metric:total_charges, entity:procedure_code]
+    why: >-
+      The widest recall test in the set: "Medicare" is a payer_type value,
+      "diabetic" is a diagnosis, "admissions" is an encounter, "reimburse" is
+      paid. Six or seven entries, and the diagnosis bridge is easy to miss
+      because the question never mentions coding.
+
+  - id: q5
+    difficulty: hard
+    question: What is our collection rate?
+    expect:
+      required: [metric:collection_ratio, entity:claim_line]
+      confusable: [saas_subscriptions.metric:collection_rate]
+    why: >-
+      The sharpest cross-model collision in the corpus. This model calls it
+      collection_ratio; saas_subscriptions has a metric literally named
+      collection_rate, which matches the question string exactly. Lexical
+      search will rank the wrong model first, and both are defensible answers
+      without knowing which domain the asker is in.

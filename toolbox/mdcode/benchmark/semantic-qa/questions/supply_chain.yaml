@@ -1,0 +1,67 @@
+# Retrieval questions for models/supply_chain.yaml.
+# See questions/retail_sales.yaml for what the fields mean.
+
+model: supply_chain
+
+questions:
+  - id: q1
+    difficulty: easy
+    question: What is our OTD by carrier?
+    expect:
+      required: [metric:on_time_delivery_rate, entity:carrier]
+      supporting: [entity:shipment]
+      confusable: [metric:late_shipment_count, metric:average_days_late]
+    why: >-
+      OTD lives in synonyms only. The two confusables measure the same
+      phenomenon from the other side, so they match the concept but not the
+      question.
+
+  - id: q2
+    difficulty: easy
+    question: How much stock are we sitting on?
+    expect:
+      required: [metric:inventory_value, entity:inventory_snapshot]
+      supporting: [metric:on_hand_units, entity:part, entity:warehouse]
+      confusable: [metric:available_units, metric:open_po_value]
+    why: >-
+      "How much" is money, so inventory_value over on_hand_units. open_po_value
+      is stock we have ordered rather than hold, which is a plausible and
+      wrong read of "sitting on".
+
+  - id: q3
+    difficulty: medium
+    question: Which vendors keep shipping us junk?
+    expect:
+      required: [metric:defect_rate, entity:supplier, entity:shipment_line]
+      supporting: [entity:shipment, entity:purchase_order]
+      confusable: [metric:on_time_delivery_rate, entity:part]
+    why: >-
+      Two vocabulary jumps in one short question: "vendors" is supplier and
+      "junk" is rejected_quantity, surfaced as defect_rate. Neither word
+      appears in the model outside synonyms.
+
+  - id: q4
+    difficulty: medium
+    question: How long before we run out?
+    expect:
+      required: [metric:days_of_supply, entity:inventory_snapshot]
+      supporting: [metric:on_hand_units, entity:part]
+      confusable: [metric:stockout_rate, metric:below_safety_stock_parts]
+    why: >-
+      A forward-looking question against a stock measure. stockout_rate is
+      backward-looking and matches "run out" better lexically than
+      days_of_supply does, which is exactly the trap.
+
+  - id: q5
+    difficulty: hard
+    question: If this supplier goes down, which finished products stop?
+    expect:
+      required:
+        [entity:supplier, entity:part, entity:bill_of_materials]
+      supporting: [metric:distinct_components, metric:max_bom_depth]
+      confusable: [entity:purchase_order_line, metric:open_po_value]
+    why: >-
+      The answer is a graph walk, not a metric, so retrieval has to return
+      the bill_of_materials entity and the part entity and leave the rest to
+      traversal. Tests whether search surfaces a structural concept when the
+      question has no measure in it at all.

@@ -1,0 +1,619 @@
+# Benchmark model: retail sales.
+#
+# A classic star schema -- sales lines hanging off orders, with customer,
+# product, store and calendar dimensions -- plus one bridge entity for the
+# many-to-many between a sales line and the promotions applied to it.
+#
+# What it is here to test:
+#   - additive measures at line grain (gross_revenue, units_sold)
+#   - a measure whose grain is the ORDER rather than the line (order_count,
+#     average_order_value); counting it off the line table fans out
+#   - ratios whose numerator and denominator sit on different entities
+#     (revenue_per_employee divides an order_line sum by a store attribute)
+#   - a many-to-many hop (order_line -> order_line_promotion -> promotion)
+#     that double-counts discount if the bridge is joined naively
+#
+# Questions: ../questions/retail_sales.yaml
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: retail_sales
+    description: >-
+      Store and online retail sales at line-item grain, with customer, product,
+      store, date and promotion dimensions.
+    ai_context:
+      instructions: >-
+        Revenue questions resolve against order_line unless the question is
+        about orders themselves (count, average value), which are at
+        sales_order grain. A line may carry more than one promotion; join
+        through order_line_promotion only when the question is about
+        promotions, and never sum revenue across that join without
+        de-duplicating by order_line_id.
+
+    entities:
+      - name: sales_order
+        source: retail.public.sales_order
+        primary_key: [order_id]
+        description: One row per customer order. Header grain.
+        ai_context:
+          synonyms: ["order", "orders", "purchase", "transaction header"]
+        fields:
+          - name: order_id
+            datatype: String
+            description: Order identifier.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_id}]
+          - name: customer_id
+            datatype: String
+            description: Customer who placed the order.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: customer_id}]
+          - name: store_id
+            datatype: String
+            description: Store that fulfilled the order.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: store_id}]
+          - name: order_date
+            datatype: Date
+            label: Order Date
+            description: Calendar date the order was placed.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_date}]
+            ai_context:
+              synonyms: ["order date", "purchase date", "when ordered"]
+          - name: channel
+            datatype: String
+            description: Sales channel, one of STORE, WEB, MOBILE, PHONE.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: channel}]
+            ai_context:
+              synonyms: ["channel", "sales channel", "online vs in-store"]
+          - name: order_status
+            datatype: String
+            description: Order lifecycle status, one of PLACED, SHIPPED, DELIVERED, CANCELLED, RETURNED.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_status}]
+          - name: shipping_amount
+            datatype: Decimal
+            description: Shipping charged on the order header.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: shipping_amount}]
+
+      - name: order_line
+        source: retail.public.order_line
+        primary_key: [order_line_id]
+        unique_keys:
+          - [order_id, line_number]
+        description: One row per product on an order. The revenue grain.
+        ai_context:
+          synonyms: ["line item", "order line", "sales line", "basket line"]
+        fields:
+          - name: order_line_id
+            datatype: String
+            description: Line identifier.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_line_id}]
+          - name: order_id
+            datatype: String
+            description: Order this line belongs to.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_id}]
+          - name: line_number
+            datatype: Integer
+            description: Position of the line within the order.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: line_number}]
+          - name: product_id
+            datatype: String
+            description: Product sold on this line.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: product_id}]
+          - name: quantity
+            datatype: Integer
+            description: Units sold on this line.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: quantity}]
+            ai_context:
+              synonyms: ["units", "quantity", "how many"]
+          - name: unit_price
+            datatype: Decimal
+            description: List price per unit before discount.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: unit_price}]
+          - name: discount_amount
+            datatype: Decimal
+            description: Total discount applied to this line.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: discount_amount}]
+            ai_context:
+              synonyms: ["discount", "markdown", "price reduction"]
+          - name: extended_amount
+            datatype: Decimal
+            description: Line revenue before discount (quantity * unit_price).
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: quantity * unit_price}]
+          - name: unit_cost
+            datatype: Decimal
+            description: Cost of goods per unit at time of sale.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: unit_cost}]
+          - name: returned_quantity
+            datatype: Integer
+            description: Units from this line later returned.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: returned_quantity}]
+
+      - name: customer
+        source: retail.public.customer
+        primary_key: [customer_id]
+        description: One row per customer.
+        ai_context:
+          synonyms: ["customer", "shopper", "buyer", "account holder"]
+        fields:
+          - name: customer_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: customer_id}]
+          - name: customer_name
+            datatype: String
+            description: Full name of the customer.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: first_name || ' ' || last_name}]
+          - name: loyalty_tier
+            datatype: String
+            description: Loyalty program tier, one of NONE, SILVER, GOLD, PLATINUM.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: loyalty_tier}]
+            ai_context:
+              synonyms: ["loyalty tier", "membership level", "status tier"]
+          - name: signup_date
+            datatype: Date
+            description: Date the customer account was created.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: signup_date}]
+          - name: home_state
+            datatype: String
+            description: State of the customer's billing address.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: home_state}]
+          - name: email_opt_in
+            datatype: Boolean
+            description: Whether the customer accepts marketing email.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: email_opt_in}]
+
+      - name: product
+        source: retail.public.product
+        primary_key: [product_id]
+        description: One row per sellable product.
+        ai_context:
+          synonyms: ["product", "item", "SKU", "merchandise"]
+        fields:
+          - name: product_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: product_id}]
+          - name: product_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: product_name}]
+          - name: category
+            datatype: String
+            description: Merchandising category, e.g. Electronics, Apparel, Grocery.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: category}]
+            ai_context:
+              synonyms: ["category", "department", "product line"]
+          - name: subcategory
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: subcategory}]
+          - name: brand
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: brand}]
+            ai_context:
+              synonyms: ["brand", "manufacturer", "label"]
+          - name: list_price
+            datatype: Decimal
+            description: Current list price, independent of any sale.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: list_price}]
+
+      - name: store
+        source: retail.public.store
+        primary_key: [store_id]
+        description: One row per physical store or fulfillment site.
+        ai_context:
+          synonyms: ["store", "location", "branch", "site"]
+        fields:
+          - name: store_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: store_id}]
+          - name: store_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: store_name}]
+          - name: region
+            datatype: String
+            description: Sales region, e.g. Northeast, Midwest, West.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: region}]
+            ai_context:
+              synonyms: ["region", "territory", "area"]
+          - name: state
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: state}]
+          - name: square_feet
+            datatype: Integer
+            description: Selling floor area.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: square_feet}]
+          - name: employee_count
+            datatype: Integer
+            description: Headcount assigned to the store.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employee_count}]
+          - name: opened_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: opened_date}]
+
+      - name: calendar_date
+        source: retail.public.calendar_date
+        primary_key: [date_value]
+        description: Conformed calendar with fiscal attributes.
+        ai_context:
+          synonyms: ["calendar", "date dimension", "time periods"]
+        fields:
+          - name: date_value
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: date_value}]
+          - name: fiscal_year
+            datatype: Integer
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: fiscal_year}]
+            ai_context:
+              synonyms: ["fiscal year", "FY"]
+          - name: fiscal_quarter
+            datatype: String
+            dimension:
+              is_time: true
+            description: Fiscal quarter label, e.g. FY2026-Q1.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: fiscal_quarter}]
+            ai_context:
+              synonyms: ["quarter", "fiscal quarter"]
+          - name: month_start
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: month_start}]
+            ai_context:
+              synonyms: ["month", "monthly"]
+          - name: day_of_week
+            datatype: String
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: day_of_week}]
+          - name: is_holiday
+            datatype: Boolean
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_holiday}]
+
+      - name: promotion
+        source: retail.public.promotion
+        primary_key: [promotion_id]
+        description: One row per marketing promotion.
+        ai_context:
+          synonyms: ["promotion", "promo", "campaign", "offer", "deal"]
+        fields:
+          - name: promotion_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: promotion_id}]
+          - name: promotion_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: promotion_name}]
+          - name: promotion_type
+            datatype: String
+            description: One of PERCENT_OFF, DOLLAR_OFF, BOGO, BUNDLE, LOYALTY_ONLY.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: promotion_type}]
+          - name: start_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: start_date}]
+          - name: end_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: end_date}]
+          - name: funding_source
+            datatype: String
+            description: Who pays for the markdown, VENDOR or RETAILER.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: funding_source}]
+
+      - name: order_line_promotion
+        source: retail.public.order_line_promotion
+        primary_key: [order_line_id, promotion_id]
+        description: >-
+          Bridge resolving the many-to-many between a sales line and the
+          promotions applied to it. One row per (line, promotion) pair.
+        ai_context:
+          synonyms: ["promotion application", "line promotion", "promo bridge"]
+        fields:
+          - name: order_line_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: order_line_id}]
+          - name: promotion_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: promotion_id}]
+          - name: allocated_discount
+            datatype: Decimal
+            description: >-
+              Portion of the line's discount attributed to this promotion.
+              Sums to order_line.discount_amount across the line's promotions,
+              so it is the safe measure to aggregate across the bridge.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: allocated_discount}]
+
+    relationships:
+      - name: order_line_to_sales_order
+        from: order_line
+        to: sales_order
+        from_columns: [order_id]
+        to_columns: [order_id]
+        ai_context:
+          instructions: >-
+            Each line belongs to exactly one order.
+          synonyms: ["line's order", "which order"]
+      - name: order_line_to_product
+        from: order_line
+        to: product
+        from_columns: [product_id]
+        to_columns: [product_id]
+        ai_context:
+          instructions: >-
+            Each line sells exactly one product.
+          synonyms: ["what was sold", "line's product"]
+      - name: sales_order_to_customer
+        from: sales_order
+        to: customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+        ai_context:
+          instructions: >-
+            Each order was placed by one customer.
+          synonyms: ["who bought", "order's customer"]
+      - name: sales_order_to_store
+        from: sales_order
+        to: store
+        from_columns: [store_id]
+        to_columns: [store_id]
+        ai_context:
+          instructions: >-
+            Each order was fulfilled by one store.
+          synonyms: ["where sold", "fulfilling store"]
+      - name: sales_order_to_calendar_date
+        from: sales_order
+        to: calendar_date
+        from_columns: [order_date]
+        to_columns: [date_value]
+        ai_context:
+          instructions: >-
+            Each order falls on one calendar date.
+          synonyms: ["when ordered", "order's date"]
+      - name: order_line_to_order_line_promotion
+        from: order_line
+        to: order_line_promotion
+        from_columns: [order_line_id]
+        to_columns: [order_line_id]
+        ai_context:
+          instructions: >-
+            A line may carry zero, one or many promotions. Fans out:
+            aggregating order_line measures across this edge double-counts.
+      - name: order_line_promotion_to_promotion
+        from: order_line_promotion
+        to: promotion
+        from_columns: [promotion_id]
+        to_columns: [promotion_id]
+        ai_context:
+          instructions: >-
+            Second leg of the line-to-promotion many-to-many.
+
+    metrics:
+      - name: gross_revenue
+        datatype: Decimal
+        description: Line revenue before discounts, summed over sales lines.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.extended_amount)
+        ai_context:
+          synonyms: ["gross sales", "gross revenue", "sales before discount"]
+      - name: net_revenue
+        datatype: Decimal
+        description: Line revenue after discounts. The default answer to "revenue".
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.extended_amount - order_line.discount_amount)
+        ai_context:
+          synonyms: ["revenue", "net sales", "sales", "top line"]
+      - name: units_sold
+        datatype: Integer
+        description: Total units sold across sales lines.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.quantity)
+        ai_context:
+          synonyms: ["units", "volume", "quantity sold"]
+      - name: total_discount
+        datatype: Decimal
+        description: Total discount given across sales lines.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.discount_amount)
+        ai_context:
+          synonyms: ["discount", "markdown dollars"]
+      - name: cost_of_goods_sold
+        datatype: Decimal
+        description: Cost of the units sold.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.quantity * order_line.unit_cost)
+        ai_context:
+          synonyms: ["COGS", "cost of goods", "product cost"]
+      - name: gross_margin
+        datatype: Decimal
+        description: Net revenue less cost of goods sold.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(order_line.extended_amount - order_line.discount_amount)
+                - SUM(order_line.quantity * order_line.unit_cost)
+        ai_context:
+          synonyms: ["margin", "gross profit", "profit"]
+      - name: gross_margin_rate
+        datatype: Float
+        description: Gross margin as a share of net revenue.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                (SUM(order_line.extended_amount - order_line.discount_amount)
+                 - SUM(order_line.quantity * order_line.unit_cost))
+                / NULLIF(SUM(order_line.extended_amount - order_line.discount_amount), 0)
+        ai_context:
+          synonyms: ["margin rate", "margin percent", "profitability"]
+      - name: discount_rate
+        datatype: Float
+        description: Discount as a share of gross revenue.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.discount_amount) / NULLIF(SUM(order_line.extended_amount), 0)
+        ai_context:
+          synonyms: ["discount rate", "markdown rate", "percent off"]
+      - name: order_count
+        datatype: Integer
+        description: >-
+          Number of distinct orders. Stated as a distinct count because the
+          model's revenue grain is the line, so a plain COUNT fans out.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT sales_order.order_id)
+        ai_context:
+          synonyms: ["orders", "number of orders", "transactions"]
+      - name: customer_count
+        datatype: Integer
+        description: Number of distinct customers who ordered.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT customer.customer_id)
+        ai_context:
+          synonyms: ["customers", "unique buyers", "distinct shoppers"]
+      - name: average_order_value
+        datatype: Decimal
+        description: Net revenue divided by distinct orders. An order-grain ratio.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(order_line.extended_amount - order_line.discount_amount)
+                / NULLIF(COUNT(DISTINCT sales_order.order_id), 0)
+        ai_context:
+          synonyms: ["AOV", "average basket", "average order size"]
+      - name: units_per_order
+        datatype: Float
+        description: Average units in an order.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.quantity) / NULLIF(COUNT(DISTINCT sales_order.order_id), 0)
+        ai_context:
+          synonyms: ["basket size", "items per order", "UPT"]
+      - name: revenue_per_employee
+        datatype: Decimal
+        description: >-
+          Net revenue over store headcount. Numerator is at line grain and
+          denominator at store grain, so the denominator must be collapsed to
+          one row per store before dividing.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(order_line.extended_amount - order_line.discount_amount)
+                / NULLIF(SUM(store.employee_count), 0)
+        ai_context:
+          synonyms: ["sales per employee", "labor productivity"]
+      - name: sales_per_square_foot
+        datatype: Decimal
+        description: Net revenue over selling area, a store-productivity ratio.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(order_line.extended_amount - order_line.discount_amount)
+                / NULLIF(SUM(store.square_feet), 0)
+        ai_context:
+          synonyms: ["sales per square foot", "space productivity"]
+      - name: return_rate
+        datatype: Float
+        description: Returned units as a share of units sold.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line.returned_quantity) / NULLIF(SUM(order_line.quantity), 0)
+        ai_context:
+          synonyms: ["return rate", "returns", "percent returned"]
+      - name: promotion_discount
+        datatype: Decimal
+        description: >-
+          Discount attributed to promotions, summed over the bridge. The only
+          measure in this model that is safe to aggregate per promotion.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(order_line_promotion.allocated_discount)
+        ai_context:
+          synonyms: ["promo discount", "promotional spend", "markdown by promotion"]
+      - name: promoted_line_count
+        datatype: Integer
+        description: Distinct sales lines that carried at least one promotion.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT order_line_promotion.order_line_id)
+        ai_context:
+          synonyms: ["promoted lines", "lines on promotion"]
