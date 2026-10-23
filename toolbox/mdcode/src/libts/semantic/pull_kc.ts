@@ -18,9 +18,8 @@
 // the orchestration layer reads as `push_kc` / `pull_kc`. Rename only -- no
 // logic moves.
 
-import {CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
+import {catalogContainer, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 
-import {MAX_ASPECTS_PER_READ} from './deploy_knowledge_catalog';
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
 import {linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
@@ -214,12 +213,13 @@ export async function pullKnowledgeCatalog(
 }
 
 
-// Fetches `entry` with the aspects of `aspectTypes`. Throws on a failed fetch.
+// Fetches `entry` with the aspects of `aspectTypes`, at `paths` when given.
+// Throws on a failed fetch.
 async function fetchEntry(
     cat: CatalogClient, opts: KcPullOptions, entry: Entry,
-    aspectTypes: string[]): Promise<Entry> {
+    aspectTypes: string[], paths?: string[]): Promise<Entry> {
   const res = await cat.lookupEntry(
-      opts.project, opts.location, entry.name, aspectTypes);
+      opts.project, opts.location, entry.name, aspectTypes, paths);
   if (res.status !== 200 || !res.result) {
     throw new Error(`failed to fetch entry '${entry.name}' (status ${
         res.status}); pull aborted`);
@@ -227,28 +227,71 @@ async function fetchEntry(
   return res.result;
 }
 
-// Fetches `entry` with every aspect of `aspectTypes`, reading once per type,
-// one read at a time, when one read returns MAX_ASPECTS_PER_READ. Throws naming
-// the entry when one type alone returns that many.
+// Most aspects Dataplex returns for one entry in one read.
+const MAX_ASPECTS_PER_READ = 100;
+// Most bytes of path and query Dataplex accepts in a GET.
+const MAX_URL_BYTES = 16_384;
+
+// Fetches `entry` with every aspect of `aspectTypes`, one read at a time. A
+// read that returns MAX_ASPECTS_PER_READ is repeated once per type, and a type
+// that returns that many is read again at the entry and at each field.
 async function fetchEveryAspect(
     cat: CatalogClient, opts: KcPullOptions, entry: Entry,
     aspectTypes: string[]): Promise<Entry> {
-  const count = (e: Entry) => Object.keys(e.aspects ?? {}).length;
+  const full = (e: Entry) =>
+      Object.keys(e.aspects ?? {}).length >= MAX_ASPECTS_PER_READ;
   const read = await fetchEntry(cat, opts, entry, aspectTypes);
-  if (count(read) < MAX_ASPECTS_PER_READ) return read;
+  if (!full(read)) return read;
   const byType: Entry[] = [];
   for (const t of aspectTypes) {
     byType.push(await fetchEntry(cat, opts, entry, [t]));
   }
-  const full = byType.findIndex(r => count(r) >= MAX_ASPECTS_PER_READ);
-  if (full >= 0) {
-    throw new Error(
-        `entry '${entryIdOf(entry.name)}' holds ${MAX_ASPECTS_PER_READ} or ` +
-        `more ${aspectTypes[full].split('/').pop()} aspects, and Knowledge ` +
-        `Catalog returns at most ${MAX_ASPECTS_PER_READ} in one read, so ` +
-        `pull cannot read them all; pull aborted`);
+  const schema =
+      byType[aspectTypes.findIndex(t => t.endsWith('/aspectTypes/schema'))];
+  const paths = [
+    '',
+    ...Object.values(schema?.aspects ?? {})
+        .flatMap(a => a.data?.fields ?? [])
+        .map(f => `Schema.${f.name}`)
+  ];
+  const byPath: Entry[] = [];
+  for (const t of aspectTypes.filter((_, i) => full(byType[i]))) {
+    for (const batch of pathBatches(opts, entry, t, paths)) {
+      byPath.push(await fetchEntry(cat, opts, entry, [t], batch));
+    }
   }
-  return {...read, aspects: Object.assign({}, ...byType.map(r => r.aspects))};
+  const reads = [...byType, ...byPath];
+  return {...read, aspects: Object.assign({}, ...reads.map(r => r.aspects))};
+}
+
+// Splits `paths` into batches for reads of `type` on `entry`, each within
+// MAX_URL_BYTES. A batch holds fewer than MAX_ASPECTS_PER_READ paths, and a
+// path holds at most one instance of a type, so no read comes back cut.
+function pathBatches(
+    opts: KcPullOptions, entry: Entry, type: string,
+    paths: string[]): string[][] {
+  // Bytes of `params` in the URL, with the '?' or '&' before them.
+  const bytes = (params: string[][]) =>
+      new URLSearchParams(params).toString().length + 1;
+  const base =
+      `/v1/${catalogContainer(opts.project, opts.location)}:lookupEntry`
+          .length +
+      bytes([['entry', entry.name], ['view', 'CUSTOM'], ['aspectTypes', type]]);
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let size = base;
+  for (const path of paths) {
+    const add = bytes([['paths', path]]);
+    if (batch.length === MAX_ASPECTS_PER_READ - 1 ||
+        size + add > MAX_URL_BYTES) {
+      batches.push(batch);
+      batch = [];
+      size = base;
+    }
+    batch.push(path);
+    size += add;
+  }
+  return [...batches, batch];
 }
 
 

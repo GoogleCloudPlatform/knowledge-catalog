@@ -16,7 +16,7 @@ import {ApiResult} from '../../../src/libts/gcp/api';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {fixProject, ResourceManagerClient} from '../../../src/libts/gcp/crm';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {applyKnowledgeCatalog, checkCatalogAspects, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
+import {applyKnowledgeCatalog, checkFileCopies, deployEmittedModels, deployKnowledgeCatalog, EmittedModel, MAX_ASPECT_DATA_BYTES, preflightKnowledgeCatalog,} from '../../../src/libts/semantic/deploy_knowledge_catalog';
 import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
@@ -4207,15 +4207,11 @@ describe('deployKnowledgeCatalog: the size of a V2 aspect', () => {
         '- name: o_orderkey\n'),
   }]);
 
-  test('an entry that would hold 100 instances of one aspect type fails, ' +
-           'and one with 99 passes',
-       () => {
-         expect(checkCatalogAspects(wide(100), V2_OPTS).error).toBe(
-             'entry \'sales/entities/orders\' would hold 100 overview ' +
-             'aspects, and Knowledge Catalog returns at most 100 in one read, ' +
-             'so kcmd could not read them all back; give examples to fewer ' +
-             'than 100 of the entity and its fields.');
-         expect(checkCatalogAspects(wide(99), V2_OPTS).error).toBeUndefined();
+  test('an entry with 100 or more instances of one aspect type is pushed',
+       async () => {
+         stubClient();
+         expect(await deployKnowledgeCatalog(wide(100), CTX, V2_OPTS))
+             .toMatchObject({success: true});
        });
 
   test('a semantic-link aspect is checked too', async () => {

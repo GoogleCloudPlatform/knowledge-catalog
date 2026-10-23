@@ -19,7 +19,7 @@ import {afterEach, beforeAll, describe, expect, mock, spyOn, test} from 'bun:tes
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient, Entry, EntryLink} from '../../../src/libts/gcp/dataplex';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
-import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
+import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {entryIdOf} from '../../../src/libts/semantic/kc_ids';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
@@ -91,10 +91,15 @@ function err(status: number, message: string): ApiResult<any> {
   return {status, message};
 }
 
+// The longest lookup URL the stub has seen.
+let maxUrl = 0;
+
 // Stubs listEntries (yields `listed`) and lookupEntry (serves `served` by name,
-// or 404s an unknown name). A lookup returns only the aspects of the types it
-// asks for, and at most 100 of them, as Dataplex does. `lookupFail` forces a
-// failure for one entry name.
+// or 404s an unknown name). As Dataplex does, a lookup returns only the aspects
+// of the types and paths it asks for, at most 100 of them, and fails when its
+// URL passes 16,384 bytes. Past 100 it returns the last 100, so a cut read
+// leaves out an entity's own aspects. `lookupFail` forces a failure for one
+// entry name.
 // `links` are served by lookupEntryLinks per referenced entry (so an undirected
 // link comes back once from each endpoint, exercising the puller's dedup);
 // `linkFail` forces a link-lookup failure for one entry name.
@@ -102,22 +107,35 @@ function stubClient(
     listed: Entry[], served: Entry[], lookupFail?: string,
     links: EntryLink[] = [],
     linkFail?: string): {list: any; lookup: any; lookupLinks: any} {
+  maxUrl = 0;
   const byName = new Map(served.map(e => [e.name, e]));
   const list = spyOn(CatalogClient.prototype, 'listEntries')
                    .mockImplementation(async function*() {
                      for (const e of listed) yield e;
                    } as any);
-  const lookup = spyOn(CatalogClient.prototype, 'lookupEntry')
-                     .mockImplementation(async (_p, _l, name, types = []) => {
-                       if (name === lookupFail) return err(500, 'boom');
-                       const e = byName.get(name);
-                       if (!e) return err(404, 'not found');
-                       const aspects =
-                           Object.entries(e.aspects ?? {})
-                               .filter(([, a]) => types.includes(a.aspectType!))
-                               .slice(0, 100);
-                       return ok({...e, aspects: Object.fromEntries(aspects)});
-                     });
+  const lookup =
+      spyOn(CatalogClient.prototype, 'lookupEntry')
+          .mockImplementation(async (p, l, name, types = [], paths) => {
+            if (name === lookupFail) return err(500, 'boom');
+            const e = byName.get(name);
+            if (!e) return err(404, 'not found');
+            const query = new URLSearchParams([
+              ['entry', name],
+              ['view', 'CUSTOM'],
+              ...types.map(t => ['aspectTypes', t]),
+              ...(paths ?? []).map(path => ['paths', path]),
+            ]);
+            const url = `/v1/projects/${p}/locations/${l}:lookupEntry?${query}`;
+            maxUrl = Math.max(maxUrl, url.length);
+            if (url.length > 16_384) return err(400, 'URL too long');
+            const aspects =
+                Object.entries(e.aspects ?? {})
+                    .filter(
+                        ([key, a]) => types.includes(a.aspectType!) &&
+                            (!paths || paths.includes(key.split('@')[1] ?? '')))
+                    .slice(-100);
+            return ok({...e, aspects: Object.fromEntries(aspects)});
+          });
   const lookupLinks =
       spyOn(CatalogClient.prototype, 'lookupEntryLinks')
           .mockImplementation(async (_p: any, _l: any, opts: any) => {
@@ -1071,27 +1089,37 @@ semantic_model:
       });
 
   test(
-      'an entity with more than 100 aspects is read whole, and one type ' +
-          'with 100 fails the pull',
+      'an entity with more than 100 aspects, and more than 100 of one type, ' +
+          'is read whole, one read at a time',
       async () => {
-        const wide = (n: number, field: Partial<Field>): SemanticModel => ({
+        // The entity and f0 to f159 carry instructions. Fields f0 to f39 also
+        // carry an example and a third-party block, so the entry holds 161
+        // guidelines aspects and 40 of each other type. The 300-character
+        // names of f100 to f150 make a read by path reach the URL limit
+        // before 99 paths, and f98's length makes that read exactly 16,384
+        // bytes.
+        const model: SemanticModel = {
           name: 'wide',
           version: '0.2.0.dev0/google',
           entities: [{
             name: 'events',
             dataSource: '',
             keys: [],
-            fields: Array.from({length: n}, (_, i) => ({name: `f${i}`, ...field})),
+            aiContext: {instructions: 'One row per event.'},
+            fields: Array.from({length: 160}, (_, i) => i < 40 ? {
+              name: `f${i}`,
+              aiContext: {instructions: 'Say it.', examples: ['An example']},
+              customExtensions: [{vendorName: 'DBT', data: '{}'}],
+            } : {
+              name: i === 98 ? 'f98'.padEnd(14, 'x') :
+                  i < 100 || i > 150 ? `f${i}` : `f${i}`.padEnd(300, 'x'),
+              aiContext: {instructions: 'Say it.'},
+            }),
           }],
           relationships: [],
           metrics: [],
-        });
-        // 120 aspects at its fields' paths, 40 of each type.
-        const model = wide(40, {
-          aiContext: {instructions: 'Say it.', examples: ['An example']},
-          customExtensions: [{vendorName: 'DBT', data: '{}'}],
-        });
-        let {entries} = generateCatalogResources(model, V2);
+        };
+        const {entries} = generateCatalogResources(model, V2);
         const {lookup} = stubClient(entries, entries);
         // The per-type reads run one at a time.
         const serve = lookup.getMockImplementation();
@@ -1105,16 +1133,6 @@ semantic_model:
         });
         expect((await pullKnowledgeCatalog(cat, V2)).models).toEqual([model]);
         expect(peak).toBe(1);
-
-        mock.restore();
-        ({entries} = generateCatalogResources(
-             wide(100, {aiContext: {instructions: 'Say it.'}}), V2));
-        stubClient(entries, entries);
-        await expect(pullKnowledgeCatalog(cat, V2))
-            .rejects.toThrow(new Error(
-                'entry \'wide/entities/events\' holds 100 or more ' +
-                'guidelines aspects, and Knowledge Catalog returns at most ' +
-                '100 in one read, so pull cannot read them all; pull ' +
-                'aborted'));
+        expect(maxUrl).toBe(16_384);
       });
 });

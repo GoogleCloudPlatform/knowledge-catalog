@@ -23,7 +23,7 @@
 //     entry group to guard against foreign models (unless `--force-remove` is
 //     set), and checks that any required custom entry/aspect types exist in
 //     the target project. With the second-generation aspects, it also checks
-//     every aspect's size and each entry's instance count per aspect type.
+//     every aspect's size.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
@@ -197,8 +197,7 @@ function sleep(ms: number): Promise<void> {
  *      `opts.fileCopyTypeChecked` is set.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
- * With `opts.v2Aspects` set, step 2 also checks every aspect's size and each
- * entry's instance count per aspect type.
+ * With `opts.v2Aspects` set, step 2 also checks every aspect's size.
  */
 export async function preflightKnowledgeCatalog(
     models: LoadedModel[], ctx: context.ApiContext, opts: KcDeployOptions):
@@ -518,9 +517,8 @@ function fileCopySizeError(data: Record<string, any>): string|undefined {
 
 /**
  * The emitter's warnings for `models` with v2Aspects on, and why push's
- * catalog leg cannot write them: an emit error, an aspect too large to
- * store, or an entry with too many instances of one aspect type. Calls no
- * service.
+ * catalog leg cannot write them: an emit error or an aspect too large to
+ * store. Calls no service.
  */
 export function checkCatalogAspects(
     models: LoadedModel[],
@@ -534,40 +532,12 @@ export function checkCatalogAspects(
 // Why push cannot write what `model` emits, or undefined when it can.
 function emittedAspectsError(model: EmittedModel): string|undefined {
   for (const entry of model.resources.entries) {
-    const error = aspectDataError(entry.aspects, `entry '${entryId(entry)}'`) ??
-        instanceCountError(entry);
+    const error = aspectDataError(entry.aspects, `entry '${entryId(entry)}'`);
     if (error) return error;
   }
   for (const link of model.resources.entryLinks) {
     const error = aspectDataError(link.aspects, `entry link '${linkId(link)}'`);
     if (error) return error;
-  }
-  return undefined;
-}
-
-// Most aspects Dataplex returns for one entry in one read.
-export const MAX_ASPECTS_PER_READ = 100;
-
-// The aspect types a field can carry at its path, each with what fills it.
-const FIELD_ASPECT_CONTENT: Record<string, string> = {
-  overview: 'examples',
-  guidelines: 'instructions or custom ai_context members',
-  'semantic-extensions': 'custom_extensions from vendors other than GOOGLE',
-};
-
-// Why kcmd could not read back every instance of one aspect type `entry`
-// carries, or undefined when it could. The limit holds per type because pull
-// reads an entry again once per aspect type when one read returns 100.
-function instanceCountError(entry: Entry): string|undefined {
-  for (const [type, content] of Object.entries(FIELD_ASPECT_CONTENT)) {
-    const count = Object.keys(entry.aspects ?? {})
-                      .filter(key => aspectTypeIdOfKey(key) === type)
-                      .length;
-    if (count < MAX_ASPECTS_PER_READ) continue;
-    return `entry '${entryId(entry)}' would hold ${count} ${type} aspects, ` +
-        `and Knowledge Catalog returns at most ${MAX_ASPECTS_PER_READ} in ` +
-        `one read, so kcmd could not read them all back; give ${content} ` +
-        `to fewer than ${MAX_ASPECTS_PER_READ} of the entity and its fields.`;
   }
   return undefined;
 }

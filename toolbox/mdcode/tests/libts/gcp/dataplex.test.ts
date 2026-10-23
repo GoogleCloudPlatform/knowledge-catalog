@@ -298,6 +298,23 @@ describe('CatalogClient.lookupEntryAspectTypes', () => {
   });
 });
 
+
+test('CatalogClient.lookupEntry sends each path as a paths parameter',
+     async () => {
+       const client = new CatalogClient(CTX);
+       const get = spyOn(client as any, '_get')
+                       .mockImplementation(async () => ({status: 404}));
+       await client.lookupEntry('proj', 'us', ENTRY, [GUIDELINES_TYPE],
+                                ['', 'Schema.a']);
+       expect(get.mock.calls[0][1]).toEqual({
+         entry: ENTRY,
+         view: 'CUSTOM',
+         aspectTypes: [GUIDELINES_TYPE],
+         paths: ['', 'Schema.a'],
+       });
+     });
+
+
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
 // unless deleteMissingAspects is set, so a caller that means to remove one has
 // to send it.

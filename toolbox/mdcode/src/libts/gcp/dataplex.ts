@@ -148,13 +148,17 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  // With `aspects`, `paths` keeps only the aspects at those paths. The path ''
+  // is the entry itself, and `Schema.<field>` is a field.
   async lookupEntry(project: string, location: string, name: string,
-                    aspects?: string[]): Promise<api.ApiResult<Entry>> {
+                    aspects?: string[],
+                    paths?: string[]): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
     const params: Record<string, any> = { entry: name, view: 'BASIC' };
     if (aspects && aspects.length) {
       params.view = 'CUSTOM';
       params.aspectTypes = aspects;
+      params.paths = paths;
     }
 
     const res = await this._get<Entry>(container, params);
