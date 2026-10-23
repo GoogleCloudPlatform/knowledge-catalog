@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cloud.google.com/dataplex/schemas/osi-google-schema-0.2.0.dev0.json",
   "title": "Google-Extended Open Semantic Interchange (OSI) Specification Schema (0.2.0.dev0/google)",
-  "description": "JSON Schema (Draft 2020-12) for Google-flavor Open Semantic Interchange (OSI) documents, version '0.2.0.dev0/google'. The root validates a model document; #/$defs/ProfileDocument validates a profile file. Google extensions are native keys (entities, deployments, extends, abstract, a metric's entity, a relationship's description, actions, constraints). Third-party custom_extensions, whose vendor_name is not 'GOOGLE', are carried verbatim.",
+  "description": "JSON Schema (Draft 2020-12) for Google-flavor Open Semantic Interchange (OSI) documents, version '0.2.0.dev0/google'. The root validates a model document; #/$defs/ProfileDocument validates a profile file. Google extensions are native keys (entities, deployments, extends, abstract, a metric's entity, a relationship's description, actions, constraints). Third-party custom_extensions, whose vendor_name is not 'GOOGLE', are carried verbatim. The vendor_name match ignores letter case, so 'google' and 'Google' are GOOGLE too.",
   "type": "object",
   "required": [
     "version",
@@ -175,13 +175,13 @@
         "data"
       ],
       "additionalProperties": false,
-      "description": "Third-party vendor custom extension, carried verbatim. In '0.2.0.dev0/google', Google extensions are native properties, so vendor_name 'GOOGLE' is not permitted. The match is exact: any other spelling, for example 'Google', names a different vendor and is carried like LOOKER, SNOWFLAKE, DBT or DATABRICKS.",
+      "description": "Third-party vendor custom extension, carried verbatim. In '0.2.0.dev0/google', Google extensions are native properties, so vendor_name 'GOOGLE' is not permitted. The match ignores letter case, so 'google' and 'Google' are not permitted either.",
       "properties": {
         "vendor_name": {
           "type": "string",
           "minLength": 1,
           "not": {
-            "const": "GOOGLE"
+            "pattern": "^[Gg][Oo][Oo][Gg][Ll][Ee]$"
           }
         },
         "data": {

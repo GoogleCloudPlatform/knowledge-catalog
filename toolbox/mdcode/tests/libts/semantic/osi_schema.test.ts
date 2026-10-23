@@ -123,3 +123,11 @@ describe('fixtures are valid for their declared OSI flavor', () => {
     });
   }
 });
+
+test('the Google flavor rejects a GOOGLE custom_extensions block in any letter case', () => {
+  const { $id } = validators.get('0.2.0.dev0/google')!.schema as { $id: string };
+  const validate = ajv.getSchema(`${$id}#/$defs/CustomExtension`)!;
+  const valid = (vendor_name: string) => validate({ vendor_name, data: '{}' });
+  expect(Object.fromEntries(['GOOGLE', 'google', 'Google', 'LOOKER'].map(v => [v, valid(v)])))
+    .toEqual({ GOOGLE: false, google: false, Google: false, LOOKER: true });
+});
