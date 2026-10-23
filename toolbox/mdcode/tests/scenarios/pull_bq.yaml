@@ -1,5 +1,5 @@
 name: pull_bq
-description: BigQuery dataset
+description: BigQuery dataset, whose system-written aspects are left out without a warning
 setup:
   bigQuery:
     datasets:
@@ -23,6 +23,16 @@ setup:
         entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
       - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d/tables/t1
         entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-table
+        # Aspects BigQuery writes besides the required ones: left out, with
+        # no warning.
+        aspects:
+          dataplex-types.global.usage:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/usage
+            data:
+              queryCount: 7
+          dataplex-types.global.bigquery-policy:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/bigquery-policy
+            data: {}
 
   fileSystem:
     catalog.yaml: |
@@ -39,3 +49,5 @@ assert:
     catalog/p.d/t1.yaml:
       - contains: "name: p.d/t1"
       - contains: "type: dataplex-types.global.bigquery-table"
+      - notContains: "queryCount"
+  warnings: []

@@ -249,6 +249,24 @@ describe('_fixEntry removed aspects', () => {
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
 // unless deleteMissingAspects is set, so a caller that means to remove one has
 // to send it.
+describe('CatalogClient.lookupEntry', () => {
+  test('picks the view from the aspects asked for', async () => {
+    const client = new CatalogClient(CTX);
+    const get = spyOn(client as any, '_get')
+                    .mockImplementation(async () => ({status: 404}));
+
+    await client.lookupEntry('proj', 'us', ENTRY);
+    await client.lookupEntry('proj', 'us', ENTRY, [GUIDELINES_TYPE]);
+    await client.lookupEntry('proj', 'us', ENTRY, 'FULL');
+
+    expect(get.mock.calls.map(c => c[1])).toEqual([
+      {entry: ENTRY, view: 'BASIC'},
+      {entry: ENTRY, view: 'CUSTOM', aspectTypes: [GUIDELINES_TYPE]},
+      {entry: ENTRY, view: 'FULL'},
+    ]);
+  });
+});
+
 describe('CatalogClient.updateEntry', () => {
   test('sends deleteMissingAspects only when asked to', async () => {
     const client = new CatalogClient(CTX);
