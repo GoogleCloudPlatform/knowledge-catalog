@@ -262,6 +262,7 @@ semantic_model:
 entities:
   - name: Customer
     source: ${BQ('customer_prod')}
+    fields: [{ name: key, expression: c_key }]
 `);
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     expect(await profiles()).toBe(0);
@@ -357,6 +358,7 @@ semantic_model:
 `, `name: prod
 entities:
   - name: Customer
+    primary_key: [cust_key]
     fields:
       - { name: key, expression: cust_key }
 `);
@@ -488,12 +490,14 @@ describe('kcmd profiles', () => {
 entities:
   - name: Customer
     source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/customer
+    primary_key: [c_custkey]
     fields:
       - { name: key, expression: c_custkey }
       - { name: lifetimeValue, expression: c_ltv }
     fields_exclude: [availableCredit]
   - name: Order
     source: bigquery.googleapis.com/projects/acme-analytics/datasets/sales/tables/orders
+    primary_key: [o_orderkey]
     fields:
       - { name: key, expression: o_orderkey }
 `);
@@ -734,16 +738,20 @@ ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : 
       "join on every column of one of its keys, and declare that key if " +
       "'customer' has none.";
 
-  // A profile file that binds both entities to the prod tables, customer with
-  // key `key`, and the join between them.
+  // A profile file that binds both entities to the prod tables and the join
+  // between them. It states each entity's key, customer's as `key`, and
+  // restates each field.
   function profileFile(name: string, key = 'c_id'): string {
     return `name: ${name}
 entities:
   - name: customer
     source: ${BQ('prod', 'customer')}
     primary_key: ["${key}"]
+    fields: [{ name: c_id, expression: c_id }]
   - name: purchase
     source: ${BQ('prod', 'purchase')}
+    primary_key: [p_id]
+    fields: [{ name: p_id, expression: p_id }]
 relationships:
   - name: placed_by
     from_columns: [p_customer]
@@ -754,9 +762,9 @@ relationships:
   // A field that reads `expression`, by default the column `name`.
   const col = (name: string, expression = name) =>
       `{ name: ${name}, expression: ${expression} }`;
-  // A profile entity bound to its prod table, with `fields`.
-  const prodEntity = (name: string, ...fields: string[]) =>
-      `  - name: ${name}\n    source: ${BQ('prod', name)}\n` +
+  // A profile entity bound to its prod table, with key `key` and `fields`.
+  const prodEntity = (name: string, key: string, ...fields: string[]) =>
+      `  - name: ${name}\n    source: ${BQ('prod', name)}\n    primary_key: [${key}]\n` +
       (fields.length ? `    fields: [${fields.join(', ')}]\n` : '');
 
   // A legacy profile that binds customer to the prod table, or purchase when
@@ -944,10 +952,11 @@ semantic_model:
         extends: [party]
         source: ${BQ('dev', 'customer')}
         primary_key: [id]
+        fields: [{ name: id, expression: id }]
 `;
   const partiesProfile = (exclude: boolean) => `name: prod\nentities:\n` +
-      prodEntity('party', col('notes', '"party.customer."')) +
-      prodEntity('customer') + (exclude ? '    fields_exclude: [notes]\n' : '');
+      prodEntity('party', 'id', col('id'), col('notes', '"party.customer."')) +
+      prodEntity('customer', 'id', col('id')) + (exclude ? '    fields_exclude: [notes]\n' : '');
   const NOTES_INHERITED = "entity 'customer' inherits field 'notes': read " +
       "on 'customer', 'expression' is only the qualifier 'customer.'; write " +
       "the field's SQL";
@@ -1643,7 +1652,8 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
         'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/' +
             'databases/db/schemas/public/tables/');
     const STAGING = `name: staging\nentities:\n  - name: customer\n    source: ${
-        BQ('staging', 'customer')}\n`;
+        BQ('staging', 'customer')}\n    primary_key: [c_id]\n` +
+        '    fields: [{ name: c_id, expression: c_id }]\n';
     const incomplete = (file: string) => [
       `[${file}] profile 'staging': entity 'purchase' has no source in this ` +
           'profile',
@@ -1651,15 +1661,6 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
           "columns in this profile; a named profile states both " +
           "'from_columns' and 'to_columns' itself",
     ];
-    // Expects one error from every binding.
-    const everyPush = (e: string) =>
-        expectPushes({default: [e], a: [e], b: [e]});
-    // The error when profiles a and b give keyless purchase primary keys of
-    // one and two columns.
-    const KEY_SHAPES = "[commerce] entity 'purchase' has no key in the model " +
-        'file, and its profiles disagree on one (a: primary key of 1, unique ' +
-        'keys []; b: primary key of 2, unique keys []); every profile states ' +
-        'keys of one shape, or none does';
 
     test('when the push deploys another binding', async () => {
       writeScope({
@@ -1690,20 +1691,45 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       expect(rejects(section(INLINE))).toEqual(errors);
     });
 
+    // The model file's customer restates each field it inherits whose
+    // expression reads a column. Push reports a broken hierarchy alone.
+    test('when the model file leaves a subtype reading its parent\'s column', async () => {
+      const unrestated = PARTIES.replace(/ {8}fields: .*\n$/, '');
+      writeScope({
+        'commerce.yaml': unrestated,
+        'commerce.profile.prod.yaml': partiesProfile(true),
+      });
+      const inherited = "entity 'customer' in model 'commerce' (commerce): " +
+          "field 'id' is inherited from 'party', whose expression reads " +
+          "column 'id' of that entity's table; restate it with an expression " +
+          "for this entity's table.";
+      await expectPushes({default: [inherited], prod: [inherited]});
+      expect(await pushResult({deployment: false})).toEqual({code: 1, errors: [inherited]});
+      writeScope({'commerce.yaml': unrestated.replace('[party]', '[party, ghost]')});
+      expect(await pushResult()).toEqual({code: 1, errors: [expect.stringContaining(
+          "entity 'customer' extends unknown entity 'ghost'")]});
+      // A customer the model file gives no table has nothing to restate there.
+      writeScope({'commerce.yaml': unrestated.replace(/ {8}source: .*\n(?=.*\n$)/, '')});
+      expect(await pushResult('prod')).toEqual({code: 0, errors: []});
+      // An expression on an abstract party gets only the abstract error.
+      writeScope({
+        'commerce.yaml': unrestated.replace(/ {8}source: .*\n.*\n/, '        abstract: true\n'),
+        'commerce.profile.prod.yaml':
+            `name: prod\nentities:\n${prodEntity('customer', 'id')}    fields_exclude: [notes]\n`,
+      });
+      expect(await pushResult()).toEqual({code: 1, errors: [
+        "entity 'party' in model 'commerce' (commerce) is abstract, so its field 'id' cannot " +
+            'carry an expression; bind it on each concrete subtype instead.']});
+    });
+
     // The model file's join columns do not stand in for a side a named
     // profile leaves out. A profile that states one side gets the
     // completeness error from a push of any binding, from `kcmd profiles`
     // under each binding, and from the runtime.
     test('when a profile states one side of a join', async () => {
-      const oneSide = (columns: string) => `name: staging
-entities:
-  - name: customer
-    source: ${BQ('prod', 'customer')}
-  - name: purchase
-    source: ${BQ('prod', 'purchase')}
-relationships:
-  - {name: placed_by, ${columns}}
-`;
+      const oneSide = (columns: string) => profileFile('staging').replace(
+          /relationships:[\s\S]*/,
+          `relationships:\n  - {name: placed_by, ${columns}}\n`);
       const error = incomplete('commerce.profile.staging.yaml')[1];
       // With the model file's to_columns, two from_columns would be uneven.
       // With no join columns in the model file, one side would be half a
@@ -1815,18 +1841,6 @@ relationships:
       });
     });
 
-    test('when the profiles disagree on a keyless entity\'s keys', async () => {
-      const table = BQ('prod', 'purchase');
-      const purchaseKey = (name: string, key: string) => profileFile(name)
-          .replace(table, `${table}\n    primary_key: [${key}]`);
-      writeScope({
-        'commerce.yaml': commerce().replace('        primary_key: [p_id]\n', ''),
-        'commerce.profile.a.yaml': purchaseKey('a', 'p_id'),
-        'commerce.profile.b.yaml': purchaseKey('b', 'p_id, p_line'),
-      });
-      await everyPush(KEY_SHAPES);
-    });
-
     // The rules push leaves out for the profile it applies still run on
     // every other profile.
     test('and checks every rule on a profile the push does not apply', async () => {
@@ -1857,7 +1871,6 @@ semantic_model:
         source: ${BQ('dev', 'root')}
         primary_key: [r_id]
         fields:
-          - { name: r_id, expression: r_id }
           - { name: a, expression: col_a }
           - { name: b, expression: "${rootB}" }
       - name: mid
@@ -1865,22 +1878,23 @@ semantic_model:
         source: ${BQ('dev', 'mid')}
         primary_key: [m_id]
         fields:
-          - { name: m_id, expression: m_id }
+          - { name: a, expression: mid_a }
           - { name: b, expression: "${midB}" }
       - name: leaf
         extends: [root, mid]
         source: ${BQ('dev', 'leaf')}
         primary_key: [l_id]
         fields:
-          - { name: l_id, expression: l_id }
+          - { name: a, expression: leaf_a }
 `,
         'commerce.profile.prod.yaml': `name: prod\nentities:\n` +
-            prodEntity('root') + prodEntity('mid') +
-            `${prodEntity('leaf')}    fields_exclude: [a]\n`,
+            prodEntity('root', 'r_id', col('a', 'col_a')) +
+            prodEntity('mid', 'm_id', col('a', 'mid_a')) +
+            `${prodEntity('leaf', 'l_id')}    fields_exclude: [a]\n`,
       });
 
       test('when the kept binding reads the excluded field', async () => {
-        writeScope(scope('col_b', 'mid.a + 1'));
+        writeScope(scope('1', 'mid.a + 1'));
         const errors = [
           "[commerce.profile.prod.yaml] profile 'prod': field 'leaf.b' " +
               "depends on 'leaf.a', which this profile excludes; exclude " +
@@ -1891,30 +1905,31 @@ semantic_model:
       });
 
       test('when only a nearer ancestor\'s binding reads it', async () => {
-        writeScope(scope('root.a + 1', 'col_b'));
+        writeScope(scope('root.a + 1', '1'));
         expect(await pushResult()).toEqual({code: 0, errors: []});
         expect(await pushResult('prod')).toEqual({code: 0, errors: []});
       });
     });
 
+    // Profile b states a key of two columns for purchase, whose key in the
+    // model file has one.
     test('and still pushes when they are complete', async () => {
       writeScope({
         'commerce.yaml': commerce({targets: 1}),
         'commerce.profile.a.yaml': profileFile('a'),
-        'commerce.profile.b.yaml': profileFile('b'),
+        'commerce.profile.b.yaml':
+            profileFile('b').replace('[p_id]', '[p_id, p_line]'),
       });
       expect(await pushResult()).toEqual({code: 0, errors: []});
     });
 
-    // An empty unique key counts as none, so purchase states no key in the
-    // model file and a profile may give it one.
+    // An empty unique key counts as none, so a profile need not state unique
+    // keys for purchase.
     test('and counts an empty unique key as none', async () => {
       writeScope({
         'commerce.yaml': commerce().replace(
             'primary_key: [p_id]', 'unique_keys: [[]]'),
-        'commerce.profile.a.yaml': profileFile('a').replace(
-            `    source: ${BQ('prod', 'purchase')}\n`,
-            `    source: ${BQ('prod', 'purchase')}\n    unique_keys: [[p_id]]\n`),
+        'commerce.profile.a.yaml': profileFile('a'),
       });
       for (const profile of [undefined, 'a']) {
         expect(await pushResult(profile)).toEqual({code: 0, errors: []});
@@ -1932,9 +1947,7 @@ semantic_model:
 `,
         'commerce.profile.a.yaml': profileFile('a'),
         'commerce.profile.b.yaml': profileFile('b').replace(
-            '    primary_key: ["c_id"]\n',
-            '    primary_key: ["c_id"]\n    fields:\n' +
-                '      - { name: c_id, expression: "LOWER(c_id" }\n'),
+            'expression: c_id }', 'expression: "LOWER(c_id" }'),
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
       expect(await pushResult()).toEqual({code: 0, errors: []});
@@ -1958,8 +1971,8 @@ semantic_model:
                 '          - name: c_name\n' +
                 '            expression:\n' +
                 '              dialects:\n' +
-                '                - { dialect: BIGQUERY, expression: c_name }\n' +
-                '                - { dialect: ALLOYDB, expression: "LOWER(c_name" }\n'),
+                '                - { dialect: BIGQUERY, expression: customer.c_id }\n' +
+                '                - { dialect: ALLOYDB, expression: "LOWER(customer.c_id" }\n'),
         'commerce.profile.alloy.yaml': onAlloy(profileFile('alloy')),
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
@@ -2037,9 +2050,9 @@ semantic_model:
               .replace('primary_key: [c_id]', 'primary_key: [c_key]')
               .replace('name: c_id,', 'name: c_key,'),
           'commerce.profile.x.yaml': onAlloy(profileFile('x', 'c_key')).replace(
-              '    primary_key', '    fields:\n      - { name: c_key, ' +
+              '{ name: c_id, expression: c_id }', '{ name: c_key, ' +
                   'expression: {dialects: [{dialect: ALLOYDB, expression: ' +
-                  '\'"c_id"\'}]} }\n    primary_key'),
+                  '\'"c_id"\'}]} }'),
         }, {x: [own("commerce, profile 'x'", 'c_id')], default: []}],
         ['customer extends an unknown entity, so no join is compared', {
           'commerce.yaml': commerce().replace(
@@ -2081,9 +2094,7 @@ semantic_model:
             '          - { name: c_id, expression: c_id }\n' +
                 '          - { name: c_code, expression: "LOWER(c_id" }\n'),
         'commerce.profile.a.yaml': profileFile('a').replace(
-            '    primary_key: ["c_id"]\n',
-            '    primary_key: ["c_id"]\n    fields:\n' +
-                '      - { name: c_code, expression: c_id }\n'),
+            'expression: c_id }', '$&, { name: c_code, expression: c_id }'),
         'commerce.profile.b.yaml': profileFile('b'),
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
@@ -2117,9 +2128,10 @@ semantic_model:
           - { name: id, expression: c_id }
           - { name: code, expression: "LOWER(c_id" }
 `,
-        'commerce.profile.a.yaml':
-            `name: a\nentities:\n${prodEntity('customer')}    fields_exclude: [code]\n`,
-        'commerce.profile.b.yaml': `name: b\nentities:\n${prodEntity('customer')}`,
+        'commerce.profile.a.yaml': `name: a\nentities:\n${
+            prodEntity('customer', 'c_id', col('id', 'c_id'))}    fields_exclude: [code]\n`,
+        'commerce.profile.b.yaml':
+            `name: b\nentities:\n${prodEntity('customer', 'c_id', col('id', 'c_id'))}`,
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
       expect(await pushResult('a')).toEqual({code: 0, errors: []});
@@ -2228,9 +2240,7 @@ semantic_model:
         'commerce.profiles/w1.yaml': wrapper('w1'),
         'commerce.profiles/w2.yaml': wrapper('w2'),
         'commerce.profiles/b.yaml': profileFile('b').replace(
-            '    primary_key: ["c_id"]\n',
-            '    primary_key: ["c_id"]\n    fields:\n' +
-                '      - { name: c_id, expression: "LOWER(c_id" }\n'),
+            'expression: c_id }', 'expression: "LOWER(c_id" }'),
       });
       const warn = spyOn(console, 'warn').mockImplementation(() => {});
       expect(await push({validateOnly: true, allProfiles: true})).toBe(0);
@@ -2277,17 +2287,21 @@ semantic_model:
         primary_key: [s_id]
         fields:
           - { name: s_id, expression: s_id }
-          - { name: code, expression: s_code }
+          - { name: code, expression: supplier.s_id }
 ${partner ? `      - name: partner
         extends: [customer, supplier]
         source: ${BQ('dev', 'partner')}
         primary_key: [p_id]
         fields:
           - { name: p_id, expression: p_id }
+          - { name: c_id, expression: c_id }
+          - { name: s_id, expression: s_id }
 ` : ''}${more}`;
     // Profile prod for parties: customer, which binds code itself, and supplier.
     const PARTIES_PROD = `name: prod\nentities:\n` +
-        prodEntity('customer', col('code', 'c_code')) + prodEntity('supplier');
+        prodEntity('customer', 'c_id', col('c_id'), col('code', 'c_code')) +
+        prodEntity('supplier', 's_id', col('s_id'));
+    const PARTNER_PROD = prodEntity('partner', 'p_id', col('p_id'), col('c_id'), col('s_id'));
 
     // Push reports one broken hierarchy at a time. While the model file's
     // does not resolve, push reports that alone. The break a profile file
@@ -2299,7 +2313,7 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
         fields:
           - { name: sh_id, expression: sh_id }
 `);
-      const prod = PARTIES_PROD + prodEntity('partner') + prodEntity('shop');
+      const prod = PARTIES_PROD + PARTNER_PROD + prodEntity('shop', 'sh_id', col('sh_id'));
       writeScope({
         'commerce.yaml': model('        extends: [ghost]\n'),
         'commerce.profile.prod.yaml': prod,
@@ -2416,10 +2430,13 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       const model = (partner: boolean) => parties('', partner).replace(
           '{ name: c_id, expression: c_id }\n',
           `$&          - { name: memo }\n      - name: vip\n        extends: [customer]\n` +
-              `        source: ${BQ('dev', 'vip')}\n        primary_key: [c_id]\n`);
+              `        source: ${BQ('dev', 'vip')}\n        primary_key: [c_id]\n` +
+              '        fields:\n          - { name: c_id, expression: c_id }\n');
       const prod = (partner: boolean) => `name: prod\nentities:\n` +
-          prodEntity('customer', col('code', 'c_code'), col('memo', '"customer.vip."')) +
-          prodEntity('vip') + prodEntity('supplier') + (partner ? prodEntity('partner') : '');
+          prodEntity('customer', 'c_id', col('c_id'), col('code', 'c_code'),
+                     col('memo', '"customer.vip."')) +
+          prodEntity('vip', 'c_id', col('c_id'), col('code', 'c_code')) +
+          prodEntity('supplier', 's_id', col('s_id')) + (partner ? PARTNER_PROD : '');
       const inherited = "entity 'vip' inherits field 'memo': read on 'vip', " +
           "'expression' is only the qualifier 'vip.'; write the field's SQL";
       writeScope({'commerce.yaml': model(true), 'commerce.profile.prod.yaml': prod(true)});
@@ -2454,9 +2471,7 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
         expression: "SUM(purchase.p_id"
 `,
         'commerce.profile.a.yaml': profileFile('a').replace(
-            '    primary_key: ["c_id"]\n',
-            '    primary_key: ["c_id"]\n    fields:\n' +
-                '      - { name: c_id, expression: purchase.p_id }\n'),
+            'expression: c_id }', 'expression: purchase.p_id }'),
       });
       const reads = "[commerce.profile.a.yaml] profile 'a': field " +
           "'customer.c_id' reads entity 'purchase'; a field expression reads " +
@@ -2626,12 +2641,11 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       });
 
       writeScope({
-        'commerce.yaml': commerce().replace(
-            '{ name: c_id, expression: c_id }',
-            '{ name: c_id, expression: ' +
-                '{ dialects: [{ dialect: BIGQUERY, expression: c_id }] } }'),
         'commerce.profile.ops.yaml':
-            ops(table('commerce', 'Customer'), table('commerce', 'Purchase')),
+            ops(table('commerce', 'Customer'), table('commerce', 'Purchase'))
+                .replace('{ name: c_id, expression: c_id }',
+                         '{ name: c_id, expression: { dialects: [{ dialect: ' +
+                             'BIGQUERY, expression: c_id }] } }'),
       });
       expect(await pushResult()).toEqual({
         code: 1,
@@ -2653,14 +2667,14 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
           `commerce/tables/${name}`;
       for (const rejected of ['snowflake:acct.db.public.customer', 'acme.prod.customer']) {
         writeScope({
-          'commerce.yaml': commerce().replace(
-              '{ name: c_id, expression: c_id }',
-              '{ name: c_id, expression: ' +
-                  '{ dialects: [{ dialect: BIGQUERY, expression: c_id }] } }'),
+          'commerce.yaml': commerce(),
           'commerce.profile.ops.yaml':
               profileFile('ops')
                   .replace(BQ('prod', 'customer'), rejected)
-                  .replace(BQ('prod', 'purchase'), spanner('Purchase')),
+                  .replace(BQ('prod', 'purchase'), spanner('Purchase'))
+                  .replace('{ name: c_id, expression: c_id }',
+                           '{ name: c_id, expression: { dialects: [{ dialect: ' +
+                               'BIGQUERY, expression: c_id }] } }'),
         });
         const {code, errors} = await pushResult();
         expect({rejected, code, errors}).toEqual({
@@ -2708,14 +2722,19 @@ semantic_model:
         to_columns: [c_id]
 `;
       }
+      // A block profile that binds entity `name` to its table in `dataset`,
+      // with the entity's key and key field.
+      const bound = (name: string, key: string, dataset = 'prod') => ({
+        name,
+        source: BQ(dataset, name),
+        primary_key: [key],
+        fields: [{name: key, expression: key}],
+      });
       // A block profile that binds both entities to the prod tables and the
       // join between them, as profileFile does.
       const complete = (name: string) => ({
         name,
-        entities: [
-          {name: 'customer', source: BQ('prod', 'customer')},
-          {name: 'purchase', source: BQ('prod', 'purchase')},
-        ],
+        entities: [bound('customer', 'c_id'), bound('purchase', 'p_id')],
         relationships: [
           {name: 'placed_by', from_columns: ['p_customer'], to_columns: ['c_id']},
         ],
@@ -2723,7 +2742,7 @@ semantic_model:
       // A block profile that binds customer alone, as STAGING does.
       const staging = {
         name: 'staging',
-        entities: [{name: 'customer', source: BQ('staging', 'customer')}],
+        entities: [bound('customer', 'c_id', 'staging')],
       };
 
       test('fails a push when one leaves an entity without a source', async () => {
@@ -2770,8 +2789,8 @@ semantic_model:
           'commerce.yaml': vanilla([{
             ...complete('prod'),
             entities: [
-              {name: 'customer', source: 'not a source'},
-              {name: 'purchase', source: BQ('prod', 'purchase')},
+              {...bound('customer', 'c_id'), source: 'not a source'},
+              bound('purchase', 'p_id'),
             ],
           }]),
         });
@@ -2832,17 +2851,6 @@ semantic_model:
         writeScope({'commerce.yaml': vanilla([complete('prod'), staging])});
         expect(await pushResult('prod'))
             .toEqual({code: 1, errors: incomplete('commerce')});
-      });
-
-      // Push compares the block profiles with each other, as it compares
-      // profile files.
-      test('compares them with each other', async () => {
-        const [a, b]: any[] = [complete('a'), complete('b')];
-        a.entities[1].primary_key = ['p_id'];
-        b.entities[1].primary_key = ['p_id', 'p_line'];
-        writeScope({'commerce.yaml': vanilla([a, b]).replace(
-            '        primary_key: [p_id]\n', '')});
-        await everyPush(KEY_SHAPES);
       });
 
       // Each model in a scope may declare its profiles in either form. A
@@ -3135,19 +3143,19 @@ semantic_model:
       const spannerProfile = profileFile('prod').replaceAll(
           BQ('prod', ''), `${SPANNER_DB}/tables/`);
       // Profile prod rebinds purchase's amount to another SNOWFLAKE text.
-      const rebound = profileFile('prod').replace(`${BQ('prod', 'purchase')}\n`,
-          `$&    fields:\n      - ${amount('SNOWFLAKE', '"amount -"')}\n`);
+      const rebound = profileFile('prod').replace(
+          '{ name: p_id, expression: p_id }', `$&, ${amount('SNOWFLAKE', '"amount -"')}`);
       // The profile rebinds the parent's amount, and purchase keeps its own.
       const child = commerce().replace(
           '      - name: purchase\n',
           `      - name: item\n        source: ${BQ('dev', 'item')}\n` +
               '        primary_key: [i_id]\n        fields:\n' +
-              '          - { name: i_id, expression: i_id }\n' +
               '          - { name: amount, expression: amount }\n' +
               '      - name: purchase\n        extends: [item]\n');
       const childProfile = profileFile('prod').replace(
           '  - name: purchase\n',
-          `  - name: item\n    source: ${BQ('prod', 'item')}\n    fields:\n` +
+          `  - name: item\n    source: ${BQ('prod', 'item')}\n` +
+              '    primary_key: [i_id]\n    fields:\n' +
               '      - { name: amount, expression: amount2 }\n' +
               '  - name: purchase\n');
       const cases: Array<[label: string, model: string, profile: string,
@@ -3271,13 +3279,18 @@ semantic_model:
               dialects:
                 - { dialect: BIGQUERY, expression: SAFE_CAST(o_amount AS NUMERIC) }
 `;
+  // Profile prod, which binds Order to TABLE. It states Order's key and
+  // restates field key and each of `fields`.
+  const profile = (...fields: string[]) =>
+      `name: prod\nentities:\n  - name: Order\n    source: ${TABLE}\n` +
+      `    primary_key: [o_key]\n    fields: [${
+          ['{ name: key, expression: o_key }', ...fields].join(', ')}]\n`;
   function writeScope(): void {
     fs.writeFileSync(path.join(dir, 'catalog.yaml'), catalogYaml(undefined));
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), MODEL);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
-                     `name: prod\nentities:\n  - name: Order\n    source: ${TABLE}\n`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), profile());
   }
 
   test('is checked against the dialect its catalog entry gives', async () => {
@@ -3307,8 +3320,9 @@ semantic_model:
         "the model file binds entity 'Order' to a SQLSERVER source");
     // Push applies the profile with the dialect too, so it reads a bracketed
     // T-SQL metric, whose names resolve the metric's entity.
+    const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.writeFileSync(
-        path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml'),
+        path.join(eg, 'commerce.yaml'),
         MODEL.replace('BIGQUERY, expression: SAFE_CAST(o_amount AS NUMERIC)',
                       'ANSI_SQL, expression: o_amount') +
             `    metrics:
@@ -3317,6 +3331,8 @@ semantic_model:
           dialects:
             - { dialect: ANSI_SQL, expression: "SUM([Order].[amount])" }
 `);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
+                     profile('{ name: amount, expression: o_amount }'));
     // Push checks that the file-copy type exists; that lookup passes.
     spyOn(CatalogClient.prototype, 'getEntryType')
         .mockResolvedValue({status: 200, result: {}} as any);

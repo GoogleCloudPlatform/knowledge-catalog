@@ -191,7 +191,11 @@ an error. A diamond flattens, with each ancestor contributing once. A field
 declared or rebound by two supertypes that do not extend each other is an error,
 because nothing says which one wins. A subtype MAY redeclare an inherited field
 only to bind it, with an `expression` and nothing else; the definition comes
-from the ancestor that declares it. A relationship endpoint and a metric's entity MUST be a concrete
+from the ancestor that declares it. A concrete subtype MUST rebind each
+inherited field whose ancestor's expression reads a column, because that column
+belongs to the ancestor's table. This holds in each named profile, and in the
+model file when it gives the subtype a source.
+A relationship endpoint and a metric's entity MUST be a concrete
 leaf: not abstract, and not extended by another dataset.
 How the hierarchy is *lowered* into each store (labels, field flattening) and the
 downstream limits (e.g. a supertype whose label is shared across subtype tables
@@ -612,7 +616,10 @@ custom_extensions:
 `custom_extensions` MAY appear on the model, a dataset, a field, a relationship,
 and a metric. `data` is opaque to Ossie. `kcmd` reads a `GOOGLE` block's payload
 into the model when it parses the document, and carries any other vendor's block
-verbatim. An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
+verbatim. `vendor_name` matches `GOOGLE` in any letter case, so `Google` and
+`google` name the same vendor. A model file that pull rebuilds from the catalog
+metadata writes the vendor name as `GOOGLE`.
+An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
 not recognize and passes it through unchanged — so a vanilla `kcmd` model is still
 a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
 model's deployments ride here as a `GOOGLE` block carrying
@@ -672,9 +679,9 @@ columns, a field's `expression`, a relationship's join columns, and an action's
 profile](#73-binding-profiles), so one logical model deploys to several stores,
 in each store's own table and column names, and performs its writes by whatever
 mechanism each store has. A named profile states every relationship's join
-columns itself ([§7.3](#73-binding-profiles)). What a profile cannot change is
-an entity's key shape, which is the same under every binding. In every binding,
-a relationship's join columns cover a key of its target.
+columns itself, and its own keys for each entity whose keys the model file
+states ([§7.3](#73-binding-profiles)). Key shapes may differ between profiles.
+In every binding, a relationship's join columns cover a key of its target.
 
 ### 7.1. Table sources
 
@@ -731,8 +738,12 @@ definition. A profile:
 - binds by `name` at each level, including a field the entity inherits. It is an
   overlay: a field the profile does not name keeps the model file's binding, and a
   field in `fields_exclude` is left **unbound** for that profile; there is no
-  `unbound` flag. An action the profile does not mention keeps the model's
-  executor, and `executor: null` withdraws it.
+  `unbound` flag. A field whose expression reads a column MUST be restated or
+  excluded, because that column belongs to the model file's table. A column is
+  a reference that no entity name qualifies. An action the profile does not
+  mention keeps the model's executor, and `executor: null` withdraws it.
+- MUST state `primary_key` for an entity whose primary key the model file
+  states, and `unique_keys` for one whose unique keys it states.
 - MAY give a field any expression the logical model could: a column, a
   computation, or the `dialects` form.
 

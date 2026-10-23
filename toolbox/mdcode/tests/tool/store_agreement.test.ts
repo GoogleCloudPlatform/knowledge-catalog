@@ -48,11 +48,13 @@ const SPANNER_DB =
     'spanner.googleapis.com/projects/acme-ops/instances/prod/databases/commerce';
 const BQ = (dataset: string) =>
     `bigquery.googleapis.com/projects/acme/datasets/${dataset}`;
-// Profile prod, which binds Order to its Spanner table.
+// Profile prod, which binds Order to its Spanner table with its own key.
 const PROD_PROFILE = `name: prod
 entities:
   - name: Order
     source: ${SPANNER_DB}/tables/Orders
+    primary_key: [OrderId]
+    fields: [{ name: key, expression: OrderId }]
 `;
 
 let dir = '';

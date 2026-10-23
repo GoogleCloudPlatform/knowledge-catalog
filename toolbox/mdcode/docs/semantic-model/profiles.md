@@ -123,7 +123,7 @@ leaves declaration alone.
 | an entity's `source` (its store URI) | which entities, fields, relationships, metrics, or actions exist, and what each means |
 | a field's column or computation (its `expression`), for a field the entity declares or inherits | a field's `label`, `description`, `dimension`, `datatype` |
 | whether a field is bound at all under this profile (`fields_exclude`) | the graph shape (`from`/`to`) and the cardinality a relationship's join columns imply |
-| an entity's key columns (`primary_key`, `unique_keys`): restated with the model file's shape where it states keys, and stated alike in every profile where it states none | an entity's key shape once the model file states a key: how many keys and how wide each is. An empty unique key counts as none. |
+| an entity's key columns (`primary_key`, `unique_keys`), which a named profile must state itself where the model file states them | |
 | a relationship's join columns (`from_columns`, `to_columns`), which every named profile must state itself | |
 | an action's `executor` (how the write is performed) | an action's `parameters`, `guards`, and `affects` — what it takes, what gates it, what it changes |
 | the deployment target, in the older `<model>.profiles/` layout only | any `metric` definition; any `ai_context` / synonyms; a relationship or its junction `source` |
@@ -155,13 +155,14 @@ its statements already sit beside the columns they name.
 **Bindings inherit.** A profile is an overlay: whatever it does not restate
 keeps what the model file says. A model may declare one default executor, and a
 profile overrides it only for the bindings that perform the write differently —
-an action the profile does not mention keeps the default. A field's column works
-the same way: a field the profile does not name keeps the model file's column,
-if the model binds one, and a field the profile lists in `fields_exclude` is
-unbound. That puts one duty on a profile for a store that names columns
-differently: restate every field it serves under another name, or exclude it,
-because a column inherited into a renamed schema binds to the wrong data and
-returns it silently. To withdraw an inherited executor — a read-only binding
+an action the profile does not mention keeps the default. A field's column is
+the exception, because it belongs to the table the model file's expression was
+written for. A named profile restates each field whose expression reads a
+column, or names it in `fields_exclude`. A column is any reference that no
+entity name qualifies. Push rejects a profile that does neither, naming the
+field, the profile and the column. A field whose expression reads only other
+fields, such as `Order.gross - Order.discount`, carries over. To withdraw an
+inherited executor — a read-only binding
 that performs no writes at all — a profile writes `executor: null`, which leaves
 the action declared and unavailable there.
 
@@ -186,8 +187,9 @@ bound there. When any input is unbound, the block is unbound too, and so is
 anything built on it.** Availability propagates up the dependency graph from the
 fields a profile binds. The chain runs as far as the model does:
 
-- a field is bound when the profile, or the model file it inherits from, gives
-  its column, and the profile does not exclude it;
+- a field is bound when the profile gives its column, or the model file gives
+  it an expression that reads only other fields, and the profile does not
+  exclude it;
 - an entity and a relationship are always available: their key and join columns
   are physical columns rather than fields, so unbinding a field never removes
   them;
@@ -213,8 +215,9 @@ returning a blank that reads like real data.
 **A profile restates what differs and excludes what its store lacks.** A field
 the profile gives an `expression` is bound to it, a field the profile names in
 `fields_exclude` is unbound, and every other field keeps what the model file
-says. A field the model file leaves unbound has to appear in one of the two
-lists: leaving it out of both is an error, not a quiet way to unbind it. The
+says. A field the model file leaves unbound, or binds with an expression that
+reads a column, has to appear in one of the two lists: leaving it out of both
+is an error, not a quiet way to unbind it. The
 logical model below binds nothing inline, so the operational profile binds
 `availableCredit` and excludes `lifetimeValue`, and the analytical profile does
 the reverse. A metric that reaches an excluded field has to be named in the
@@ -386,7 +389,7 @@ semantic_model:
 ```
 
 Each binding states the key columns and the `PlacedBy` join columns in its own
-store's column names. Neither changes the key shape, the labels or the metric definitions;
+store's column names. Neither changes the labels or the metric definitions;
 those live once in the logical model. `kcmd push
 --profile operational` merges the operational bindings and deploys to their
 Spanner backend, while `--profile analytical` deploys to BigQuery — each profile
@@ -418,17 +421,22 @@ picks its own backend. The two bindings answer different parts of the same model
 - A profile entity's `fields` may name a field the entity inherits as well as
   one it declares, and so may its `fields_exclude`. Each applies to this
   entity's table only, so an entity that extends it still has an excluded
-  field.
+  field. Where a profile binds a field on a concrete ancestor to a column, each
+  concrete descendant restates or excludes that field too.
 - Every named profile must state each relationship's join columns itself. The
   model file's join columns are the inline binding's, and do not stand in for a
   named profile's. In every binding, `to_columns` must contain every column of
   a primary or unique key of the target, a superset counting.
+- A named profile states its own `primary_key` for an entity whose primary key
+  the model file states, and its own `unique_keys` for one whose unique keys it
+  states. Key shapes may differ between profiles.
 - An entity or field named only in the logical model keeps its declaration and
   any inline column binding; a profile element whose `name` is not in the
   logical model is rejected.
 - Scalars — `source`, `expression`, and `deployment_target` in the older
   layout — **replace**.
-- A field the profile does not name **keeps** the model file's binding. A field
+- A field the profile does not name **keeps** the model file's binding, which
+  push accepts only when that binding reads no column. A field
   in `fields_exclude` is **unbound** under that profile. There is no `unbound`
   flag; `fields_exclude` is how a field is left unbound, and naming one field in
   both `fields` and `fields_exclude` is rejected.
@@ -440,8 +448,8 @@ picks its own backend. The two bindings answer different parts of the same model
   names, and belongs in the profile itself.
 - Profiles are **binding-only**: a profile sets physical facets, may leave a
   field unbound with `fields_exclude`, and may leave metrics out with
-  `metrics_exclude`. It cannot add entities, fields or metrics, change the key
-  shape or the graph shape, or change what anything means.
+  `metrics_exclude`. It cannot add entities, fields or metrics, change the
+  graph shape, or change what anything means.
 
 ## Command line
 
@@ -503,8 +511,12 @@ writes nothing.
 - **Keys and join columns** — every push checks the keys and join columns of
   the model file, each profile file and each `GOOGLE` block profile. The push
   fails when any binding of a relationship has `to_columns` that cover no key of
-  the target. Where the model file gives an entity no key, the push also fails
-  unless every profile gives it keys of one shape or none does.
+  the target. Where the model file states a primary key or unique keys for an
+  entity, the push also fails when a named profile does not state its own.
+  Profiles are not compared with each other.
+- **Unrestated column** — the push fails when a named profile neither restates
+  nor excludes a field whose expression reads a column. The error names the
+  field, the profile and the column.
 - **Deployments and field dialects** — every push checks the model file's own
   bindings against the rules of each deployment's engine, whichever binding the
   push deploys. Each field they bind also needs a text its entity's database

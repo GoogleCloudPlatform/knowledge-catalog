@@ -19,7 +19,7 @@ import {DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblem
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, evaluatedTexts, expressionSources, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfileExclusions, columnBinding, DEFAULT_PROFILE, evaluatedTexts, expressionSources, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -371,6 +371,30 @@ export function validateInlineDialects(
               document}) has no expression for ${dialect} or ANSI_SQL, and ` +
           `the model file binds entity '${e.name}' to ${
               /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${hint}.`);
+    }
+  }
+  return errors;
+}
+
+// One message for each field a concrete entity with a source inherits without
+// restating it, when the inherited expression reads a column. Empty when the
+// hierarchy does not resolve, which push reports elsewhere.
+export function validateInheritedColumns(
+    model: SemanticModel, document: string): string[] {
+  if (inheritanceErrorOf(model)) return [];
+  const entities = model.entities ?? [];
+  const dialect = sourcesDialect(model);
+  const errors: string[] = [];
+  for (const e of entities.filter(e => !e.abstract && e.dataSource)) {
+    for (const f of inheritedNamesOf(model, e.name)) {
+      const read = !e.fields.some(x => x.name === f) &&
+          columnBinding(model, e.name, f, dialect);
+      if (!read) continue;
+      errors.push(
+          `entity '${e.name}' in model '${model.name}' (${document}): field '${
+              f}' is inherited from '${read.owner}', whose expression reads ` +
+          `column '${read.column}' of that entity's table; restate it with ` +
+          `an expression for this entity's table.`);
     }
   }
   return errors;

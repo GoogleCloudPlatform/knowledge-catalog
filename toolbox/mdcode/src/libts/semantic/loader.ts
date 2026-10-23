@@ -1301,12 +1301,15 @@ function deploymentTargetsExtension(targets: string[]): CustomExtension {
 // The levels a `custom_extensions` block may sit on.
 type ExtensionLevel = 'model'|'dataset'|'field'|'relationship'|'metric';
 
-// True when a block list names the GOOGLE vendor. `vendor_name` is a free-form,
-// case-sensitive string (Mapping Addendum 3), so only an exact `GOOGLE`
-// matches: a `Google` block names some other vendor and is carried like any
-// third-party block.
+// True when `vendorName` names the GOOGLE vendor, in any letter case.
+export function isGoogleVendor(vendorName: unknown): boolean {
+  return typeof vendorName === 'string' &&
+      vendorName.toUpperCase() === GOOGLE_VENDOR;
+}
+
+// True when a block list names the GOOGLE vendor.
 function hasGoogleBlock(exts: CustomExtensionDoc[]|undefined): boolean {
-  return !!exts?.some(e => e.vendor_name === GOOGLE_VENDOR);
+  return !!exts?.some(e => isGoogleVendor(e.vendor_name));
 }
 
 // Rejects a GOOGLE `custom_extensions` block where the flavor gives it no
@@ -1388,9 +1391,8 @@ function readGoogleBlocks(
   const kept: CustomExtension[] = [];
   let hasTargets = false;
   for (const e of exts ?? []) {
-    const ext = {vendorName: e.vendor_name, data: e.data};
-    if (e.vendor_name !== GOOGLE_VENDOR) {
-      kept.push(ext);
+    if (!isGoogleVendor(e.vendor_name)) {
+      kept.push({vendorName: e.vendor_name, data: e.data});
       continue;
     }
     let data: unknown;
@@ -1451,7 +1453,7 @@ function readGoogleBlocks(
       }
       values[key] = parsed.data;
     }
-    if (keep) kept.push(ext);
+    if (keep) kept.push({vendorName: GOOGLE_VENDOR, data: e.data});
   }
   if (hasTargets && values.deployments !== undefined) {
     throw error(
@@ -1630,7 +1632,7 @@ function blockProfilesOf(
   // The load rejects a `custom_extensions` written as one mapping, and reports
   // it. The mapping is read as one block.
   for (const e of asList(m.custom_extensions)) {
-    if (!isRecord(e) || e.vendor_name !== GOOGLE_VENDOR) continue;
+    if (!isRecord(e) || !isGoogleVendor(e.vendor_name)) continue;
     const ext = customExtensionSchema.safeParse(e);
     const listed = listedProfiles(e);
     if (listed === 'unread' && unreadable) throw unreadable;
@@ -1770,7 +1772,7 @@ function blocksReadOneWay(
     if (!yaml.isScalar(vendor) || typeof vendor.value !== 'string') {
       return false;
     }
-    if (vendor.value !== GOOGLE_VENDOR) continue;
+    if (!isGoogleVendor(vendor.value)) continue;
     if (onlyValue(block, 'data') === null ||
         onlyValue(block, 'profiles') === null || holdsAlias(block)) {
       return false;

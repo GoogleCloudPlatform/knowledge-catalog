@@ -44,11 +44,13 @@ export const SNOWFLAKE_METRIC = {
 export const TRANSPILE_WARNING =
     "Warning: [commerce] metric 'positive_keys': transpiled 'SNOWFLAKE' -> " +
     "'BIGQUERY'";
-export const boundTo = (dataset: string) =>
-    ({entities: {Customer: bqTable('customer', dataset)}});
+export const boundTo = (dataset: string) => ({
+  entities: {Customer: {...CUSTOMER, source: bqTable('customer', dataset)}},
+});
 // Customer bound to table customer in dataset prod, keyed by an expression.
-export const EXPRESSION_KEY =
-    {source: bqTable('customer', 'prod'), primary_key: ['UPPER(c_key)']};
+export const EXPRESSION_KEY = {
+  ...CUSTOMER, source: bqTable('customer', 'prod'), primary_key: ['UPPER(c_key)'],
+};
 
 // A deployment, by default a BigQuery graph of its name in dataset d.
 export type Deployment =

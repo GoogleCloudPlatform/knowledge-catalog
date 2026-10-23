@@ -24,6 +24,7 @@ semantic_model:
               dialects: [{ dialect: BIGQUERY, expression: amount }, { dialect: ANSI_SQL, expression: amount }]
       # A concrete subclass -> its node table declares `LABEL `Order`` and
       # re-lists the ancestor's flattened properties under that quoted label.
+      # It restates `total` with a column of its own table.
       - name: Vip
         source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/vip_orders
         primary_key: [id]
@@ -35,3 +36,6 @@ semantic_model:
           - name: tier
             expression:
               dialects: [{ dialect: BIGQUERY, expression: vip_tier }, { dialect: ANSI_SQL, expression: vip_tier }]
+          - name: total
+            expression:
+              dialects: [{ dialect: BIGQUERY, expression: amount }, { dialect: ANSI_SQL, expression: amount }]

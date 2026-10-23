@@ -53,7 +53,10 @@ scenarios('push --no-deployment', [
       entities: [CUSTOMER, {...CUSTOMER, name: 'Order', source: bqTable('o')}],
       relationships: [{name: 'refers', from: 'Order', to: 'Customer'}],
       profiles: {prod: {
-        entities: {...PROD.entities, Order: bqTable('o', 'prod')},
+        entities: {
+          ...PROD.entities,
+          Order: {...CUSTOMER, name: 'Order', source: bqTable('o', 'prod')},
+        },
         relationships: [
           {name: 'refers', from_columns: ['key'], to_columns: ['key']},
         ],

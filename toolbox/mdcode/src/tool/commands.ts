@@ -20,7 +20,7 @@ import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {deploymentProfileError, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
+import {deploymentProfileError, isGoogleVendor, LoadedModel, loadSemanticModels, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
@@ -29,7 +29,7 @@ import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
-import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -186,7 +186,7 @@ export function declaresGraphTarget(text: string): boolean {
     }
     const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
     for (const ext of exts) {
-      if (ext?.vendor_name !== 'GOOGLE' || typeof ext?.data !== 'string') {
+      if (!isGoogleVendor(ext?.vendor_name) || typeof ext?.data !== 'string') {
         continue;
       }
       // The rule every other reader uses: a blank target names nothing, and
@@ -748,9 +748,9 @@ function namedProfileErrors(
   return errors;
 }
 
-// The errors validateInlineDialects and validateDeployments give for each
-// model file in `docs`, whichever binding push deploys. The warnings from
-// inlineBindingWarnings go to `warnings`.
+// The errors validateInlineDialects, validateInheritedColumns and
+// validateDeployments give for each model file in `docs`, whichever binding
+// push deploys. The warnings from inlineBindingWarnings go to `warnings`.
 function modelFileBindingErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     declared: DeclaredProfiles, warnings: string[],
@@ -760,7 +760,8 @@ function modelFileBindingErrors(
     const base = d.base ?? (d.excluded ? undefined : checkedByDoc.get(d.name));
     if (!base) continue;
     errors.push(
-        ...validateInlineDialects(base, d.name, {transpiled: transpile}));
+        ...validateInlineDialects(base, d.name, {transpiled: transpile}),
+        ...validateInheritedColumns(base, d.name));
     let named: boolean|undefined;
     try {
       named = declared(d).some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
@@ -1722,6 +1723,7 @@ async function checkBeforeWrites(options: PushOptions, scope: TwoPhaseScope):
     profileErrors.push(
         ...validateInlineDialects(
             model, document, {transpiled: !!options.transpile}),
+        ...validateInheritedColumns(model, document),
         ...validateDeployments(model, document));
     const named =
         declaredNames(document).some(n => n.toLowerCase() !== DEFAULT_PROFILE);

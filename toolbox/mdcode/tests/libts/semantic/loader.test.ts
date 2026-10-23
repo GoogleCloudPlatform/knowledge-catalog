@@ -1620,10 +1620,12 @@ describe('custom_extensions: where each vendor block is accepted', () => {
     }
   });
 
-  test('Google: a GOOGLE block is rejected at every level', () => {
+  test('Google: a GOOGLE block is rejected at every level, its vendor name in any case', () => {
     for (const level of LEVELS) {
-      expect(() => load(GOOGLE, fullModel(level, { custom_extensions: [block('GOOGLE')] })))
-        .toThrow(/'GOOGLE' custom_extensions block is not accepted/);
+      for (const vendor of ['GOOGLE', 'Google', 'google']) {
+        expect(() => load(GOOGLE, fullModel(level, { custom_extensions: [block(vendor)] })))
+          .toThrow(/'GOOGLE' custom_extensions block is not accepted/);
+      }
     }
   });
 
@@ -1641,15 +1643,6 @@ describe('custom_extensions: where each vendor block is accepted', () => {
         expect(run).toThrow(/cannot carry a 'GOOGLE' custom_extensions block on a field/);
       } else {
         expect(irAt(run().models[0], level).customExtensions).toBeUndefined();
-      }
-    }
-  });
-
-  test("vendor names are case-sensitive: a 'Google' block is third-party", () => {
-    for (const v of FLAVORS) {
-      for (const level of LEVELS) {
-        const m = load(v, fullModel(level, { custom_extensions: [block('Google')] })).models[0];
-        expect(irAt(m, level).customExtensions).toEqual([{ vendorName: 'Google', data: '{}' }]);
       }
     }
   });
@@ -2087,12 +2080,14 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       'expected array, received string');
   });
 
-  test("a 'Google' block is a third-party block: neither read nor removed", () => {
-    const block = { vendor_name: 'Google', data: '{"entity": "nope", "abstract": true}' };
-    for (const level of ['dataset', 'metric'] as const) {
-      const m = load(VANILLA, atLevel(level, block)).models[0];
-      expect(irAt(m, level).customExtensions).toEqual([{ vendorName: 'Google', data: block.data }]);
-      expect(m.metrics[0].authoredEntity).toBeUndefined();
+  test("a 'Google' or 'google' block is read as a GOOGLE block, and kept as 'GOOGLE'", () => {
+    for (const vendor_name of ['Google', 'google']) {
+      const metric = load(VANILLA, atLevel('metric', { ...google({ entity: 'orders' }), vendor_name })).models[0];
+      expect(metric.metrics[0].authoredEntity).toBe('orders');
+      expect(metric.metrics[0].customExtensions).toBeUndefined();
+      const targets = { ...google({ deploymentTargets: [G] }), vendor_name };
+      expect(load(VANILLA, atLevel('model', targets)).models[0].customExtensions)
+        .toEqual([{ vendorName: 'GOOGLE', data: targets.data }]);
     }
   });
 
@@ -2128,8 +2123,9 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
   test('profiles from the block get the checks profile files get', () => {
     const join = { name: 'orders_to_customers', from_columns: ['customer_id'], to_columns: ['id'] };
     const prod = { name: 'prod', relationships: [join], entities: [
-      { name: 'orders', source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders' },
-      { name: 'customers', source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/customers' }] };
+      { name: 'orders', source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/orders', primary_key: ['id'],
+        fields: [{ name: 'id', expression: 'id' }, { name: 'customer_id', expression: 'customer_id' }] },
+      { name: 'customers', source: 'bigquery.googleapis.com/projects/p/datasets/prod/tables/customers', primary_key: ['id'] }] };
     const dev = { name: 'dev', relationships: [{ ...join, to_columns: undefined }] };
     const vanilla = load(VANILLA, atLevel('model', google({ profiles: [prod, dev] }))).models[0];
     const google_ = load(GOOGLE, fullModel()).models[0];
@@ -2144,7 +2140,8 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
 
   test('googleBlockProfiles reads the profiles without loading the rest of the model', () => {
     const doc = (version: string, model: object) => JSON.stringify({ version, semantic_model: [model] });
-    const unloadable = doc(VANILLA, { name: 'm', custom_extensions: [google({ profiles: [PROD] })], datasets: [] });
+    const unloadable = doc(VANILLA, {
+      name: 'm', custom_extensions: [{ ...google({ profiles: [PROD] }), vendor_name: 'google' }], datasets: [] });
     expect(() => loadModels(unloadable)).toThrow();
     expect(googleBlockProfiles(unloadable)).toEqual([loadProfileFile(JSON.stringify(PROD), 'prod')]);
     expect(googleBlockProfiles(doc(GOOGLE, fullModel()))).toEqual([]);

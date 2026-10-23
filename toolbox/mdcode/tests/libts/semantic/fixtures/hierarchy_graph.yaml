@@ -12,8 +12,9 @@
 # starts at Customer, a leaf: a relationship may attach only to a concrete
 # leaf entity, since an edge on Person would join Person's own rows and miss
 # its subtypes'. Customer/Employee/Manager gain the Person LABEL and its
-# fields. `extends` is a deliberate superset of released OSI (see
-# osi_schema.test.ts).
+# fields. Each of them restates the fields it inherits with a column of its own
+# table, since a parent's expressions read the parent's table. `extends` is a
+# deliberate superset of released OSI (see osi_schema.test.ts).
 
 version: "0.2.0.dev0/google"
 
@@ -58,6 +59,8 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: loyalty_tier
+          - { name: full_name, expression: { dialects: [{ dialect: ANSI_SQL, expression: full_name }] } }
+          - { name: email, expression: { dialects: [{ dialect: ANSI_SQL, expression: email }] } }
       - name: Employee
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/employee
         primary_key: [id]
@@ -73,6 +76,8 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: department
+          - { name: full_name, expression: { dialects: [{ dialect: ANSI_SQL, expression: full_name }] } }
+          - { name: email, expression: { dialects: [{ dialect: ANSI_SQL, expression: email }] } }
       - name: Manager
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/manager
         primary_key: [id]
@@ -88,6 +93,9 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: team_size
+          - { name: department, expression: { dialects: [{ dialect: ANSI_SQL, expression: department }] } }
+          - { name: full_name, expression: { dialects: [{ dialect: ANSI_SQL, expression: full_name }] } }
+          - { name: email, expression: { dialects: [{ dialect: ANSI_SQL, expression: email }] } }
       - name: City
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/city
         primary_key: [id]

@@ -107,7 +107,7 @@ version: 0.2.0.dev0
 semantic_model:
   - name: sales
     custom_extensions:
-      - vendor_name: GOOGLE
+      - vendor_name: google
         data: '{"deploymentTargets":["spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g"]}'
 `;
   const logicalOnly = `

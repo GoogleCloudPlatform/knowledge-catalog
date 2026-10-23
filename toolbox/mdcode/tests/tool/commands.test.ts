@@ -36,11 +36,13 @@ semantic_model:
           - { name: key, label: Customer ID }
 `;
 
-// Profile prod, which binds Customer to the prod table.
+// Profile prod, which binds Customer to the prod table with its own key.
 const PROD_PROFILE = `name: prod
 entities:
   - name: Customer
     source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
+    primary_key: [cust_key]
+    fields: [{ name: key, expression: cust_key }]
 `;
 
 let dir = '';
@@ -429,12 +431,8 @@ semantic_model:
           - { name: key, expression: c_key }
           - { name: credit, expression: c_credit }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `${PROD_PROFILE}\
-    primary_key: [cust_key]
-    fields:
-      - { name: key, expression: cust_key }
-    fields_exclude: [credit]
-`);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
+                     `${PROD_PROFILE}    fields_exclude: [credit]\n`);
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     const deploySpy = spyOn(kc, 'deployKnowledgeCatalog');
 
@@ -477,7 +475,8 @@ semantic_model:
         fields:
           - { name: key, expression: c_key }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), PROD_PROFILE);
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
+                     PROD_PROFILE.replace('    primary_key: [cust_key]\n', ''));
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     spyOn(kc, 'deployKnowledgeCatalog');
 
@@ -517,7 +516,8 @@ semantic_model:
         source: ${BQ('a2')}
 `);
     fs.writeFileSync(path.join(eg, 'b.profile.prod.yaml'),
-                     `name: prod\nentities:\n  - name: X\n    source: ${BQ('b2')}\n`);
+                     `name: prod\nentities:\n  - name: X\n    source: ${BQ('b2')}\n` +
+                         '    fields:\n      - { name: id, expression: id }\n');
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     spyOn(console, 'error').mockImplementation(() => {});
     spyOn(kc, 'deployKnowledgeCatalog');
@@ -566,7 +566,7 @@ semantic_model:
 
   // The profile's key leaves the relationship's to_columns covering none.
   test('a key the profile sets', async () => {
-    writeModel(`${PROD_PROFILE}    primary_key: [cust_id]\n`);
+    writeModel(PROD_PROFILE.replaceAll('cust_key', 'cust_id'));
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
     const code = await push({validateOnly: true, profile: 'prod'});
@@ -866,6 +866,7 @@ semantic_model:
         source: bigquery.googleapis.com/projects/test-project/datasets/d/tables/vip
         primary_key: [id]
         fields:
+          - { name: id, expression: id }
           - { name: name, datatype: Integer, description: VIP name }
 `;
 
@@ -2739,6 +2740,7 @@ semantic_model:
 entities:
   - name: Customer
     source: ${BQ}/tables/customer
+    primary_key: [c_id]
     fields:
       - { name: key, expression: c_id }
 `);
@@ -2756,8 +2758,13 @@ entities:
 
 describe('a vanilla model\'s profiles in its GOOGLE block', () => {
   const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
-  const prod = (source: string) => JSON.stringify(
-      {profiles: [{name: 'prod', entities: [{name: 'Customer', source}]}]});
+  // A profile that binds Customer to `source`, with its own key and column.
+  const binding = (name: string, source: string) => ({name, entities: [{
+    name: 'Customer', source, primary_key: ['cust_key'],
+    fields: [{name: 'key', expression: 'cust_key'}],
+  }]});
+  const prod = (source: string) =>
+      JSON.stringify({profiles: [binding('prod', source)]});
   function writeModel(block: string, catalogExtra = ''): void {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
@@ -2792,10 +2799,7 @@ semantic_model:
   // Reading a block profile checks each field binding for SQL, which needs the
   // SQL parser. Each command loads the parser before it reads a block profile.
   test('each command loads the SQL parser before it reads a block profile', async () => {
-    writeModel(JSON.stringify({profiles: [{name: 'prod', entities: [
-      {name: 'Customer', source: `${BQ}/prod/tables/customer`,
-       fields: [{name: 'key', expression: 'c_key'}]},
-    ]}]}));
+    writeModel(prod(`${BQ}/prod/tables/customer`));
     // As in a new process, the parser reads nothing until a command loads it.
     let loaded = false;
     const load = sqlParser.loadSqlEngine;
@@ -3224,9 +3228,8 @@ semantic_model:
   });
 
   test('they are listed by name, as profile files are', async () => {
-    const bind = (name: string) =>
-        ({name, entities: [{name: 'Customer', source: PROD_SOURCE}]});
-    writeModel(JSON.stringify({profiles: [bind('prod'), bind('dev')]}));
+    writeModel(JSON.stringify(
+        {profiles: [binding('prod', PROD_SOURCE), binding('dev', PROD_SOURCE)]}));
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const logSpy = spyOn(console, 'log').mockImplementation(() => {});
     const defined = 'defined profiles: dev, prod.';

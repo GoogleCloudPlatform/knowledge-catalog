@@ -349,6 +349,10 @@ fails. Push also rejects a model that breaks any of these rules:
 
 - A subtype redeclares an inherited field only to bind it to a column. A
   redeclaration with nothing but the name is rejected.
+- A concrete entity restates each field it inherits whose ancestor's
+  expression reads a column. This holds in each named profile, and in the
+  model file when it gives the entity a source. A field whose ancestor's
+  expression reads only other fields carries over.
 - An abstract entity declares no `source`, no keys and no field expressions.
 - Relationships and metrics attach only to concrete leaf entities.
 - No field is declared or rebound by two supertypes that do not extend each
