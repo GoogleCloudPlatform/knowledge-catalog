@@ -609,10 +609,10 @@
           "additionalProperties": false,
           "properties": {
             "server": {
-              "type": "string"
+              "$ref": "#/$defs/NonBlankText"
             },
             "tool": {
-              "type": "string"
+              "$ref": "#/$defs/NonBlankText"
             }
           }
         },
@@ -625,10 +625,10 @@
           "additionalProperties": false,
           "properties": {
             "endpoint": {
-              "type": "string"
+              "$ref": "#/$defs/NonBlankText"
             },
             "method": {
-              "type": "string"
+              "$ref": "#/$defs/NonBlankText"
             }
           }
         },
@@ -641,10 +641,10 @@
           "additionalProperties": false,
           "properties": {
             "service": {
-              "type": "string"
+              "$ref": "#/$defs/NonBlankText"
             },
             "method": {
-              "type": "string"
+              "$ref": "#/$defs/NonBlankText"
             }
           }
         },
@@ -659,7 +659,7 @@
               "type": "array",
               "minItems": 1,
               "items": {
-                "type": "string"
+                "$ref": "#/$defs/NonBlankText"
               }
             }
           }
