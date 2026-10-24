@@ -233,6 +233,8 @@ interface PushStep extends Scope {
   code?: number;
   // Every line push prints with console.error, exactly.
   errors?: unknown[];
+  // The `Error: ` lines without that prefix, as the report prints them.
+  rejects?: unknown[];
   warnings?: unknown[];
   log?: unknown[];
   // The catalog preflight, the catalog write and each graph deploy, in order.
@@ -249,11 +251,31 @@ interface PushStep extends Scope {
 export const refused = (flags: commands.PushOptions, error: unknown) =>
     ({flags, code: 1, errors: [error], noNetwork: true});
 
-// A push, then each push in `then` with what it changes.
+// A `kcmd profiles` run and its outcome. A section's key is its profile's name,
+// with ' (default)' for default_profile's, or 'default' for the inline
+// bindings, 'no profiles', 'model' above a model's profiles or '' above the
+// first model, and a second model's keys start with its name and a colon.
+export interface ReportStep {
+  flags?: commands.ProfilesOptions;
+  code: number;
+  // Each printed section's rejects. 'model' and '' appear only with errors.
+  rejects?: Record<string, unknown[]>;
+  // Gets the log and error lines in order, and the error lines alone.
+  check?: (lines: string[], errors: string[]) => void;
+}
+
+// A push, then each push in `then` with what it changes, then the report.
 export interface Case extends PushStep {
   name: string;
   then?: PushStep[];
+  report?: ReportStep;
 }
+
+// Stands for the errors push `i` of a case rejects, in a list of rejects.
+const PUSHED = Symbol('pushed');
+export const pushed = (i = 0) => ({[PUSHED]: i});
+const expand = (list: unknown[], runs: PushRun[]) => list.flatMap(
+    (e: any) => e?.[PUSHED] !== undefined ? runs[e[PUSHED]].rejects : [e]);
 
 export const has = (text: string) => expect.stringContaining(text);
 export const err = (message: string) => `Error: ${message}`;
@@ -285,8 +307,11 @@ async function runPush(services: Services, flags: commands.PushOptions) {
     errors: texts(out, 'error'),
     warnings: texts(out, 'warn'),
     printed: texts(out, 'log', 'warn'),
+    rejects: texts(out, 'error')
+                 .filter(l => l.startsWith('Error: '))
+                 .map(l => l.slice(7)),
     fake,
-    published: fake.preflight.mock.calls.at(-1)?.[0][0].model as SemanticModel,
+    published: fake.preflight.mock.calls.at(-1)?.[0][0]?.model as SemanticModel,
     deployed: (deployment: string, service: 'bq'|'spanner') =>
         fake[service].mock.calls
             .filter(c => !c[2]?.validateOnly)
@@ -299,12 +324,13 @@ const kindOf = (call: string) => call.split(' ')[0];
 // The kinds of call the `events` outcome lists.
 const EVENTS = new Set(['preflight', 'apply', 'deployKc', 'deploy']);
 
-async function checkPush(r: PushRun, step: PushStep) {
+async function checkPush(r: PushRun, step: PushStep, runs: PushRun[]) {
   const same = (actual: unknown, expected?: unknown[]) => {
-    if (expected) expect(actual).toEqual(expected);
+    if (expected) expect(actual).toEqual(expand(expected, runs));
   };
   if (step.code !== undefined) expect(r.code).toBe(step.code);
   same(r.errors, step.errors);
+  same(r.rejects, step.rejects);
   same(r.warnings, step.warnings);
   same(r.log, step.log);
   same(r.fake.calls.filter(c => EVENTS.has(kindOf(c))), step.events);
@@ -324,15 +350,53 @@ async function checkPush(r: PushRun, step: PushStep) {
   await step.check?.(r);
 }
 
-// Selects every deployment of a Google-flavor scope when `flags.deployment`
-// is unset, until push takes two phases for a model that lists deployments.
-const everyDeployment = (s: Scope, flags: commands.PushOptions) =>
-    flags.deployment !== undefined || s.google || !s.deployments?.length ?
-    flags :
-    {
-      ...flags,
-      deployment: s.deployments.map(d => typeof d === 'string' ? d : d.name),
-    };
+// The key of a report line that starts a profile section, or undefined.
+function sectionKey(line: string): string|undefined {
+  if (line === '  no binding profiles; the model document is its own ' +
+          "inline 'default' binding.") {
+    return 'no profiles';
+  }
+  const m = /^  profile '([^']+)'( \(default\))?(:.*)?$/.exec(line);
+  return m ? m[1] + (m[2] ?? '') : undefined;
+}
+
+// Checks a report against what `step` expects. `out` is what it printed.
+function checkReport(out: Line[], step: ReportStep, runs: PushRun[]): void {
+  const lines = texts(out, 'log', 'error');
+  // Each section's errors, rebuilt from each first line and its indented lines.
+  const rejects: Record<string, string[]> = {};
+  let key = '', indent = '', prefix = '', models = 0;
+  let found: string[]|undefined;
+  for (const {stream, text} of out.filter(l => l.stream !== 'warn')) {
+    const model = /^Model '([^']+)'/.exec(text)?.[1];
+    if (model && models++) prefix = `${model}: `;
+    const section = model ? 'model' : sectionKey(text);
+    if (section !== undefined) {
+      key = prefix + section;
+      indent = model ? '  ' : '    ';
+      found = undefined;
+      if (!model) rejects[key] = [];
+    } else if (text === `${indent}push rejects:`) {
+      expect(stream).toBe('error');
+      found = rejects[key] = [];
+    } else if (found && text.startsWith(`${indent}  `)) {
+      expect(stream).toBe('error');
+      const error = text.slice(indent.length + 2);
+      if (!error.startsWith('  ')) found.push(error);
+      else found[found.length - 1] += `\n${error.slice(2)}`;
+    } else {
+      found = undefined;
+    }
+  }
+  if (step.rejects) {
+    expect<unknown>(rejects).toEqual(Object.fromEntries(
+        Object.entries(step.rejects).map(([k, v]) => [k, expand(v, runs)])));
+  }
+  expect(lines.filter(l => l.trim() === 'push rejects:'))
+      .toHaveLength(Object.values(rejects).filter(r => r.length).length);
+  expect(texts(out, 'warn').filter(w => w.startsWith('Warning: '))).toEqual([]);
+  step.check?.(lines, texts(out, 'error'));
+}
 
 async function runCase(c: Case): Promise<void> {
   const cwd = process.cwd();
@@ -340,14 +404,21 @@ async function runCase(c: Case): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-two-phase-'));
   process.chdir(dir);
   try {
+    const runs: PushRun[] = [];
     for (const step of [c, ...c.then ?? []]) {
       const own = step === c ? {} : step;
       writeScope(dir, {...c, ...own});
       if (step.v2Aspects) process.env.KC_V2_ASPECTS = '1';
       else delete process.env.KC_V2_ASPECTS;
       const services = {...c.services, ...own.services};
-      const flags = everyDeployment({...c, ...own}, step.flags ?? {});
-      await checkPush(await runPush(services, flags), step);
+      runs.push(await runPush(services, step.flags ?? {}));
+      await checkPush(runs.at(-1)!, step, runs);
+    }
+    if (c.report) {
+      writeScope(dir, c);
+      const {out} = installRun(c.services ?? {});
+      expect(await commands.profiles(c.report.flags)).toBe(c.report.code);
+      checkReport(out, c.report, runs);
     }
   } finally {
     mock.restore();

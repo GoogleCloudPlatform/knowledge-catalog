@@ -100,8 +100,7 @@ describe('validatePushRequirements', () => {
     });
     expect(validatePushRequirements([loaded(alloy)])[0]).toContain(
         "Declare a BigQuery or Spanner Graph target (under 'deployments' in " +
-        'its GOOGLE custom_extensions block; push uses exactly one ' +
-        'deployment for now)');
+        'its GOOGLE custom_extensions block), or run');
   });
 
   test(
@@ -154,9 +153,8 @@ describe('validatePushRequirements', () => {
     expect(errs[0]).toContain(`target '${ALLOYDB_TARGET}' is an AlloyDB database`);
     expect(errs[0]).toContain('runs against rather than deploys to');
     expect(errs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (under 'deployments'; " +
-        "push uses exactly one deployment for now), or run 'kcmd push " +
-        "--no-profile' to publish to Knowledge Catalog only.");
+        "Declare a BigQuery or Spanner Graph target (under 'deployments'), " +
+        "or run 'kcmd push --no-profile' to publish to Knowledge Catalog only.");
     expect(errs[0]).not.toContain('deploymentTarget');
     expect(errs[0]).not.toContain('is not a valid');
 
@@ -169,9 +167,8 @@ describe('validatePushRequirements', () => {
     expect(vanillaErrs[0]).toContain(
         "Declare a BigQuery or Spanner Graph target (list 'deployments' in " +
         "a GOOGLE custom_extensions block on the model, or set version: " +
-        "'0.2.0.dev0/google' and use 'deployments:'; push uses exactly one " +
-        "deployment for now), or run 'kcmd push --no-profile' to publish to " +
-        "Knowledge Catalog only.");
+        "'0.2.0.dev0/google' and use 'deployments:'), or run 'kcmd push " +
+        "--no-profile' to publish to Knowledge Catalog only.");
     expect(vanillaErrs[0]).not.toContain("under 'deployments'");
   });
 

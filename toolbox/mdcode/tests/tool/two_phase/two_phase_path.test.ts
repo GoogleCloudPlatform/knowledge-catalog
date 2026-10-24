@@ -1,14 +1,44 @@
 // Tests of which pushes take two phases, the push flags a push in two phases
-// refuses, the deployments `--deployment` selects and checks, and the Spanner
-// metrics rule (src/tool/commands.ts, src/libts/semantic/deployment_target.ts).
+// refuses, the deployments `--deployment` selects and checks, the
+// default_profile warning and the Spanner metrics rule (src/tool/commands.ts,
+// src/libts/semantic/deployment_target.ts).
 
 import {expect, test} from 'bun:test';
 
 import {loadSemanticModels} from '../../../src/libts/semantic/loader';
-import {typedDeployment} from '../../../src/tool/commands';
+import {PushOptions, typedDeployment} from '../../../src/tool/commands';
 
-import {boundAt, boundTo, CUSTOMER, err, EXPRESSION_KEY, has, modelFile, msg, PushRun, refused, scenarios, SPANNER_CUSTOMER, spannerGraph} from './harness';
+import {boundAt, boundTo, Case, CUSTOMER, Deployment, err, EXPRESSION_KEY, has, modelFile, msg, PushRun, refused, scenarios, SPANNER_CUSTOMER, spannerGraph} from './harness';
 
+const ownBinding = (r: PushRun, model = r.published) =>
+    expect(model.entities[0].dataSource).toBe('test-project.d.customer');
+
+const CHOOSES_NO_BINDING = "Warning: catalog.yaml sets default_profile " +
+    "'prod', which chooses no binding on this push: Knowledge Catalog " +
+    'receives the model file as written, and each deployment uses the ' +
+    'profile it names.';
+
+// A push of a model with sibling profile file prod, under default_profile
+// prod, that prints `warnings` and publishes the model file's own binding.
+const underDefault =
+    (name: string, deployments: Deployment[], flags: PushOptions,
+     warnings: string[]): Case => ({
+      name: `default_profile ${name}`,
+      deployments,
+      defaultProfile: 'prod',
+      profiles: {prod: boundTo('prod')},
+      flags,
+      warnings,
+      check: ownBinding,
+    });
+
+const PUBLISHED = {
+  events: ['preflight', 'apply'],
+  check: (r: PushRun) => {
+    ownBinding(r);
+    expect(r.published.profiles!.map(p => p.name)).toEqual(['prod']);
+  },
+};
 const ONE_PHASE = {
   called: {preflight: 0, apply: 0, deployKc: 1},
   check: (r: PushRun) => {
@@ -25,15 +55,14 @@ const ONE_PHASE = {
 
 scenarios('the two-phase push path', [
   {
-    name: '--no-kc, --profile, --all-profiles and --no-profile each fail before any network call with --no-deployment, as do --no-deployment with --deployment in either order, a bare or empty --deployment and a deployment name the model lacks',
+    name: '--no-kc, --profile, --all-profiles and --no-profile each fail before any network call, as do --no-deployment with --deployment in either order, a bare or empty --deployment and a deployment name the model lacks',
     deployments: ['g1', 'g2'],
     profiles: {x: boundTo('x')},
-    ...refused({kc: false, deployment: false}, err(msg.flag.noKc)),
+    ...refused({kc: false}, err(msg.flag.noKc)),
     then: [
-      refused({profile: 'x', deployment: false}, err(msg.flag.profile)),
-      refused({allProfiles: true, deployment: false},
-              err(msg.flag.allProfiles)),
-      refused({profile: false, deployment: false}, err(msg.flag.noProfile)),
+      refused({profile: 'x'}, err(msg.flag.profile)),
+      refused({allProfiles: true}, err(msg.flag.allProfiles)),
+      refused({profile: false}, err(msg.flag.noProfile)),
       refused({deployment: [false, 'g1']}, err(msg.flag.both)),
       refused({deployment: ['g1', false]}, err(msg.flag.both)),
       refused({deployment: [true]}, err(msg.flag.bare)),
@@ -81,6 +110,47 @@ scenarios('the two-phase push path', [
     noModel: true,
     ...refused({deployment: ['nope']},
                err("--deployment names 'nope', but the scope has no model.")),
+  },
+  {
+    ...underDefault(
+        'does not choose the profile of a deployment', ['g'], {},
+        [`${CHOOSES_NO_BINDING} Deployment 'g' uses the model file's own ` +
+         'bindings.']),
+    events: ['preflight', 'apply', 'deploy g'],
+    check: r => {
+      ownBinding(r);
+      ownBinding(r, r.deployed('g', 'bq')!);
+    },
+  },
+  underDefault(
+      'needs no warning when every selected deployment names a profile and one uses it',
+      [{name: 'g', profile: 'prod'}], {validateOnly: true}, []),
+  underDefault(
+      'names each deployment that names no profile when another deployment uses it',
+      [{name: 'a', profile: 'prod'}, 'b', 'c'], {validateOnly: true},
+      [`${CHOOSES_NO_BINDING} Deployments 'b', 'c' use the model file's ` +
+       'own bindings.']),
+  underDefault(
+      'names no deployment under --no-deployment, which selects none', ['g'],
+      {deployment: false}, [CHOOSES_NO_BINDING]),
+  {
+    ...underDefault(
+        'does not choose the bindings Knowledge Catalog receives, and gives ' +
+            'no warning in a scope with no model',
+        [], {}, [CHOOSES_NO_BINDING]),
+    then: [{noModel: true, flags: {deployment: false}, code: 0, warnings: []}],
+  },
+  {
+    name: 'a model with a sibling profile file and no deployments list publishes the model file as written, with every profile, and deploys nothing, with no flags or profile: true; it refuses --no-kc, and under --no-profile or with only a legacy profile file publishes in one step',
+    profiles: {prod: boundTo('prod')},
+    ...PUBLISHED,
+    then: [
+      {flags: {profile: true}, code: 0, ...PUBLISHED},
+      refused({kc: false}, err(msg.flag.noKc)),
+      {flags: {profile: false}, code: 0, called: ONE_PHASE.called},
+      {profiles: {}, legacy: {old: 'semantic_model:\n  - name: commerce\n'},
+       code: 0, called: ONE_PHASE.called},
+    ],
   },
   {
     // cac gives `true` for an absent flag that has a negated form.

@@ -216,7 +216,7 @@ const ALLOYDB_NOTE = "Note: deployment 'ad' targets an AlloyDB database, " +
 
 scenarios('how push deploys each deployment in order, and what it prints', [
   {
-    name: 'deploys each deployment after the catalog write, in declared order or the order --deployment gives, with only its own deployment entry, its own profile and a header when there are several',
+    name: 'deploys each deployment after the catalog write, also under a bare --profile, in declared order or the order --deployment gives, with only its own deployment entry, its own profile and a header when there are several',
     ...THREE,
     events: IN_ORDER,
     called: {preflight: 1, bqDml: 2, spannerDml: 1},
@@ -250,6 +250,8 @@ scenarios('how push deploys each deployment in order, and what it prints', [
           });
     },
     then: [
+      // cac gives `true` for a bare --profile and for no --profile alike.
+      {flags: {profile: true}, code: 0, events: IN_ORDER},
       {
         flags: {deployment: ['b,a']},
         code: 0,

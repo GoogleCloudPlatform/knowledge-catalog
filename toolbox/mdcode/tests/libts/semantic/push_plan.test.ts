@@ -303,6 +303,9 @@ describe('push, legacy profiles, and pull fallback (b/567743508)', () => {
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'sales_eg');
     fs.mkdirSync(eg, {recursive: true});
     spyOn(ApiContext, 'default').mockReturnValue(CTX);
+    spyOn(globalThis, 'fetch').mockImplementation((() => {
+      throw new Error('unexpected network call');
+    }) as any);
     spyOn(console, 'log').mockImplementation(() => {});
     return eg;
   }
@@ -313,42 +316,6 @@ describe('push, legacy profiles, and pull fallback (b/567743508)', () => {
     dir = '';
     cwd = '';
     mock.restore();
-  });
-
-  // A legacy wrapper is merged into the model file's text and may set its own
-  // target, so a deployment-profile error is reported under each wrapper, and
-  // under the inline bindings.
-  test('kcmd profiles reports a deployment-profile error under each legacy wrapper', async () => {
-    const eg = setupWorkspace();
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    fs.writeFileSync(path.join(eg, 'sales.yaml'), `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    deployments:
-      - name: g
-        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
-        profile: prod
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        primary_key: [id]
-        fields:
-          - { name: id, expression: id }
-`);
-    fs.mkdirSync(path.join(eg, 'sales.profiles'));
-    for (const name of ['prod', 'qa']) {
-      fs.writeFileSync(
-          path.join(eg, 'sales.profiles', `${name}.yaml`),
-          `semantic_model:\n  - name: sales\n    datasets:\n      - name: orders\n        source: bigquery.googleapis.com/projects/p/datasets/d/tables/${name}_orders\n`);
-    }
-
-    expect(await profiles()).toBe(1);
-    const errors = errSpy.mock.calls.map(c => c.join(' '));
-    expect(errors.filter(
-               l => l === "      [sales] model 'sales': deployment 'g' names " +
-                   "profile 'prod'; remove 'profile' from the deployment " +
-                   "entry so it uses the model file's own bindings."))
-        .toHaveLength(3);
   });
 
   test('a model file the loader rejects is reported, not thrown', async () => {
@@ -393,7 +360,8 @@ semantic_model:
           "'deployment_target' is no longer supported"),
     });
 
-    // `kcmd profiles` reports the bad file and still lists the good one.
+    // `kcmd profiles` reports the bad file as push does, and still lists the
+    // good one.
     errSpy.mockClear();
     logSpy.mockClear();
     expect(await profiles()).toBe(1);
@@ -402,98 +370,20 @@ semantic_model:
             "'deployment_target' is no longer supported; migrate to the named " +
             "'deployments' list");
     expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
-        .toContain(
-            "(under profile 'x', the model file must load on its own before " +
-            'the profile applies)');
+        .not.toContain('the model file must load on its own');
     expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n'))
         .toContain("Model 'b'");
-  });
-
-  test('a push with a deployment naming a profile fails before anything is written', async () => {
-    const eg = setupWorkspace();
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
-    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
-    const kcSpy = spyOn(kcDeploy, 'deployKnowledgeCatalog');
-
-    const modelYaml = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    deployments:
-      - name: staging
-        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
-        profile: spanner_binding
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        primary_key: [id]
-        fields:
-          - { name: id, expression: id }
-`;
-    fs.writeFileSync(path.join(eg, 'sales.yaml'), modelYaml);
-    fs.writeFileSync(
-        path.join(eg, 'sales.profile.spanner_binding.yaml'),
-        'name: spanner_binding\nentities:\n  - name: orders\n    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders\n');
-    fs.writeFileSync(
-        path.join(eg, 'sales.profile.other.yaml'),
-        'name: other\nentities:\n  - name: orders\n    source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders2\n');
-
-    const code = await push({});
-    expect(code).toBe(1);
-    expect(bqSpy).not.toHaveBeenCalled();
-    expect(kcSpy).not.toHaveBeenCalled();
-    const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(errors).toContain("deployment 'staging' names profile 'spanner_binding'");
-    expect(errors).toContain("remove 'profile' from the deployment entry so it uses the model file's own bindings");
-    expect(errors).not.toContain('--deployment');
-
-    // The runtime takes the store of the deployment that uses the profile,
-    // so the default profile has none.
-    const rt = await createSemanticRuntimes({ctx: CTX});
-    if ('error' in rt) throw new Error(rt.error);
-    expect(rt[0].store).toBeUndefined();
-    expect(rt[0].storeError).toContain(
-        "declares no deployment without a 'profile' in 'deployments'");
-
-    // The runtime applies the profile file to the model file, and the applied
-    // model keeps the model file's deployments, so it has the store.
-    const rtProfile =
-        await createSemanticRuntimes({ctx: CTX, profile: 'spanner_binding'});
-    if ('error' in rtProfile) throw new Error(rtProfile.error);
-    expect(rtProfile[0].store?.name).toBe('projects/p/datasets/d');
-
-    // And `kcmd profiles` reports what push reports, and exits non-zero. A
-    // push of the inline bindings gives the deployment's error. A push of
-    // either profile file refuses it, since the model file names a graph.
-    errSpy.mockClear();
-    logSpy.mockClear();
-    expect(await profiles()).toBe(1);
-    const profErrors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(profErrors).toContain(
-        "  [sales] model 'sales': deployment 'staging' names profile 'spanner_binding'");
-    expect(profErrors.split('names profile').length - 1).toBe(1);
-    for (const name of ['other', 'spanner_binding']) {
-      expect(profErrors).toContain(
-          `[sales] binding profile '${name}' is a named profile, which names ` +
-          'no deployment target');
-    }
   });
 
   // The error names the model and the profile on each side.
   test('push --all-profiles refuses two profiles that deploy one graph', async () => {
     const eg = setupWorkspace();
-    spyOn(globalThis, 'fetch').mockImplementation((() => {
-      throw new Error('unexpected network call');
-    }) as any);
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'warn').mockImplementation(() => {});
     const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
     fs.writeFileSync(path.join(eg, 'sales.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
-    deployments:
-      - name: prod
-        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
     datasets:
       - name: orders
         source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
@@ -509,39 +399,44 @@ semantic_model:
       - name: orders
         source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders_staging
 `);
+    fs.copyFileSync(path.join(eg, 'sales.profiles', 'staging.yaml'),
+                    path.join(eg, 'sales.profiles', 'qa.yaml'));
 
     expect(await push({allProfiles: true, kc: false, validateOnly: true}))
         .toBe(1);
     expect(bqSpy).not.toHaveBeenCalled();
     expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
         .toContain(
-            "model 'sales' under binding profile 'staging' and model 'sales' " +
-            "under binding profile 'default' both deploy to the same graph " +
+            "model 'sales' under binding profile 'qa' and model 'sales' " +
+            "under binding profile 'staging' both deploy to the same graph " +
             "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
-  // Both models are under one profile, so only their names tell them apart.
-  test('push refuses two model files that deploy one graph', async () => {
-    const eg = setupWorkspace();
-    spyOn(globalThis, 'fetch').mockImplementation((() => {
-      throw new Error('unexpected network call');
-    }) as any);
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    spyOn(console, 'warn').mockImplementation(() => {});
-    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
-    const modelFile = (name: string) => `version: "0.2.0.dev0/google"
+  // A vanilla model file for model `name`, whose GOOGLE block lists `target`.
+  const modelFile = (
+      name: string,
+      target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g') =>
+      `version: "0.2.0.dev0"
 semantic_model:
   - name: ${name}
-    deployments:
-      - name: prod
-        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{"deploymentTargets": ["${target}"]}'
     datasets:
       - name: orders
         source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
         primary_key: [id]
         fields:
-          - { name: id, expression: id }
+          - name: id
+            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
 `;
+
+  // Both models are under one profile, so only their names tell them apart.
+  test('push refuses two model files that deploy one graph', async () => {
+    const eg = setupWorkspace();
+    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
+    spyOn(console, 'warn').mockImplementation(() => {});
+    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
     fs.writeFileSync(path.join(eg, 'a.yaml'), modelFile('a'));
     fs.writeFileSync(path.join(eg, 'b.yaml'), modelFile('b'));
 
@@ -554,8 +449,7 @@ semantic_model:
             "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
-  // A resource name and its URI name the same graph.
-  test('push refuses a deployment naming a profile when it sits in the second of two model files', async () => {
+  test('push refuses two model files that list deployments before it checks a deployment\'s profile', async () => {
     const eg = setupWorkspace();
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
     spyOn(console, 'log').mockImplementation(() => {});
@@ -596,7 +490,9 @@ semantic_model:
     expect(kcSpy).not.toHaveBeenCalled();
     const errors = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
     expect(errors).toContain(
-        "model 'second_model': deployment 'staging' names profile 'spanner_binding'");
+        "entry group 'sales_eg' would receive 2 models, but only one model " +
+        'per entry group is supported');
+    expect(errors).not.toContain('spanner_binding');
   });
 
   test('a legacy profile file carrying deployment_target and a bare source still merges and loads', async () => {

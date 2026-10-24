@@ -247,11 +247,8 @@ catalog/EntryGroups/commerce_eg/
 The `<name>` in the file name must match the `name:` inside the file, and
 `default` is reserved for the inline bindings. A profile file carries `name`,
 `entities`, `relationships`, `metrics_exclude` and `actions`, and names no
-deployment target. `kcmd push --deployment` deploys each deployment it names
-with the profile that deployment names. A push without `--deployment` or
-`--no-deployment` refuses a deployment that names a profile, and refuses to
-deploy a graph for a profile file. It says so before it deploys anything.
-`kcmd profiles --print-store` and `kcmd skills-generate`
+deployment target. `kcmd push` deploys each deployment with the profile it
+names. `kcmd profiles --print-store` and `kcmd skills-generate`
 take a profile file's store from the deployments that name the profile in
 `profile`. When none does, they report that there is no database to run it
 against.
@@ -477,7 +474,8 @@ once for every defined profile — for example the analytical (BigQuery) and
 operational (Spanner) graphs in a single run. Knowledge Catalog still records one
 canonical view of the logical model — the default binding — so a bare `kcmd push`
 and a `kcmd push --all-profiles` write the same catalog entries and differ only in
-how many graphs deploy.
+how many graphs deploy. A [push in two phases](reference.md#push) records the
+model file as written, whatever `default_profile` names.
 
 There is always a **default binding profile**: whatever `default_profile` names,
 or — if it is unset — the model's inline bindings (the implicit `default`
