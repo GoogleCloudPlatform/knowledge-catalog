@@ -46,7 +46,8 @@ scenarios('the two-phase push path', [
   {
     name: '--deployment g1 fails before any network call when the unselected ' +
         'g2 has a target in no accepted form, names a profile the model does ' +
-        'not declare, or names a profile whose key column is an expression',
+        'not declare, or names a profile whose key column is an expression, ' +
+        "and with g2 selected that error prints beside another profile's error",
     deployments: ['g1', {name: 'g2', target: 'not-a-target'}],
     profiles: {prod: boundTo('prod')},
     ...refused({deployment: ['g1']}, has(
@@ -60,6 +61,19 @@ scenarios('the two-phase push path', [
       profiles: {prod: {entities: {Customer: EXPRESSION_KEY}}},
       ...refused({deployment: ['g1']}, has(
           "key column 'UPPER(c_key)' is not a physical column name")),
+    }, {
+      deployments: [{name: 'g1', profile: 'p1'}, {name: 'g2', profile: 'prod'}],
+      profiles: {
+        p1: {entities: {Customer: {...CUSTOMER, primary_key: undefined}}},
+        prod: {entities: {Customer: EXPRESSION_KEY}},
+      },
+      flags: {deployment: ['g1', 'g2']},
+      code: 1,
+      errors: [
+        has("profile 'p1': entity 'Customer' has no primary_key"),
+        has("profile 'prod': entity 'Customer' key column 'UPPER(c_key)'"),
+      ],
+      noNetwork: true,
     }],
   },
   {

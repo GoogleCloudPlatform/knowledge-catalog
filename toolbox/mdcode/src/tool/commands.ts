@@ -637,8 +637,8 @@ const PUSH_REPORT: PrepareReport = {
 // A model's profiles are checked against its model file as loaded, whichever
 // binding push selects. `checkedByDoc`
 // holds each document as push checks it: with the profile applied, or loaded
-// with no profile applied. Push's own checks cover part of this for each
-// profile `applied` says push applies, so those rules leave that profile out. A
+// with no profile applied. `pushChecks` says what push's own checks cover for
+// each profile, so these checks leave that out. A
 // legacy `semantic_model:` wrapper, and a file under the reserved name
 // 'default', which no push deploys, are not read here. With `transpile`, push
 // fills in BigQuery SQL for a text written only in a vendor dialect its
@@ -647,7 +647,8 @@ const PUSH_REPORT: PrepareReport = {
 // `pushedProfile`, so this check leaves it out. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
-    applied: (doc: ProfiledDoc, profile: string) => boolean,
+    pushChecks: (doc: ProfiledDoc, profile: string) =>
+        {applied?: boolean; sqlWarned?: boolean},
     profileDocs: ProfileDocs, declared: DeclaredProfiles, warnings: string[],
     transpile: boolean, pushedProfile: string, load: CloudSqlLoad): string[] {
   const errors: string[] = [];
@@ -730,7 +731,7 @@ function namedProfileErrors(
       const profileWarnings: string[] = [];
       errors.push(
           ...validateProfileCompleteness(logical, spec, profileWarnings, {
-            applied: applied(d, p.name),
+            ...pushChecks(d, p.name),
             ownSqlOnly,
             transpiled: transpile,
             ...load,
@@ -873,7 +874,8 @@ async function prepareModels(
   const unprunedWarnings: string[] = [];
   const profileErrors = [
     ...namedProfileErrors(
-        docs, checkedByDoc, (d, name) => !!d.applied && name === profileName,
+        docs, checkedByDoc,
+        (d, name) => ({applied: !!d.applied && name === profileName}),
         opts.profileDocs, opts.declared, unprunedWarnings, !!opts.transpile,
         profileName, opts.load),
     ...modelFileBindingErrors(
@@ -1834,11 +1836,15 @@ async function checkBeforeWrites(
   // Every named profile is checked on its own against the model file, and so
   // are the model file's own bindings and each deployment. The catalog's model
   // is checked as a model that deploys nowhere, though one with no deployments
-  // list keeps its GOOGLE block targets.
+  // list keeps its GOOGLE block targets. A selected deployment's own checks
+  // run only after these pass, so these give every error. They leave to those
+  // checks only the warning about its profile's SQL that kcmd cannot read.
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
       docs, new Map(loaded.models.map(m => [m.document, m.model])),
-      (d, name) => !!selectedByDoc.get(d.name)?.some(s => s.profile === name),
+      (d, name) => ({
+        sqlWarned: !!selectedByDoc.get(d.name)?.some(s => s.profile === name),
+      }),
       profileDocs, declaredBy, profileWarnings, !!options.transpile,
       DEFAULT_PROFILE, load);
   for (const {document, model} of models) {

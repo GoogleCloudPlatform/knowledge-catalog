@@ -2784,6 +2784,12 @@ relationships: []
       "profile 'prod': kcmd could not read the SQL of field 'F.f', so the " +
           'fields it reads were not checked',
     ]);
+    // A --deployment push warns about the model file's SQL when it loads the
+    // model file, so this check leaves that warning out.
+    const deferred: string[] = [];
+    validateProfileCompleteness(model, spec, deferred,
+                                {sqlWarned: true, ownSqlOnly: {dialect: 'BIGQUERY'}});
+    expect(deferred).toEqual([]);
   });
 
   // Push's own check of what a field reads stands down on a broken hierarchy

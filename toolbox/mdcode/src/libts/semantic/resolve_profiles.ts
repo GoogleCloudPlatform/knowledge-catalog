@@ -1993,6 +1993,10 @@ export interface CompletenessOptions extends CloudSqlLoad {
   // applied, the caller stops reading what the SQL reads. This check then
   // reads what the profile's field expressions read, and gives the warning.
   applied?: boolean;
+  // The caller warns about the profile's SQL that the parser cannot read. This
+  // check then gives that warning only when the hierarchy does not resolve
+  // with the profile applied.
+  sqlWarned?: boolean;
   // The caller warns about the model file's SQL that it reads, which it does
   // only when the hierarchy of the model it checks resolves. It reads an
   // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
@@ -2392,7 +2396,9 @@ export function validateProfileCompleteness(
         return what === fieldLabel(f.slice(0, dot), f.slice(dot + 1));
       });
   for (const what of unreadable) {
-    if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
+    if (applied ? !profiledError :
+                  opts.sqlWarned && !profiledError ||
+                      !own.has(what) && callerWarns(what)) {
       continue;
     }
     warnings.push(
