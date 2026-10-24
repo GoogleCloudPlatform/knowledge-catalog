@@ -37,9 +37,9 @@ const IN_SQL: NameRule = {
   max: 500,
 };
 const FIELD: NameRule = {
-  pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
-  shown: '^[A-Za-z_][A-Za-z0-9_]{0,299}$',
-  says: 'a letter or underscore, then letters, digits or underscores',
+  pattern: /^(`[^`]+`|[\p{L}\p{N}\p{Pc}\p{Pd}\p{M}\s&%=>+:'<#|]+)$/u,
+  shown: "^(`[^`]+`|[\\p{L}\\p{N}\\p{Pc}\\p{Pd}\\p{M}\\s&%=>+:'<#|]+)$",
+  says: 'a BigQuery flexible column name',
   max: 300,
 };
 
