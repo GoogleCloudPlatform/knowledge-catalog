@@ -89,13 +89,14 @@ function runScenario(scenario: any) {
       if (!fs.existsSync('/catalog.yaml')) {
         throw new Error('Scenario did not include or initialize a manifest');
       }
-      const snapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT);
-      const sync = new kcmac.CatalogSync(catalog, snapshot);
-
-      // Execute - Snapshot actions, recording the warnings they print.
+      // Record the warnings that loading the snapshot and the actions print.
       const warnings: string[] = [];
       const warn = spyOn(console, 'warn').mockImplementation(
         (...args: any[]) => { warnings.push(args.join(' ')); });
+      const snapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT);
+      const sync = new kcmac.CatalogSync(catalog, snapshot);
+
+      // Execute - Snapshot actions
       const actions = scenario.actions ?? [];
       for (const actionStep of actions) {
         const { action, ...params } = actionStep;

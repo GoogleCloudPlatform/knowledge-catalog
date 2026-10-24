@@ -81,6 +81,10 @@ export class CatalogClientMock extends gcp.CatalogClient {
   async getAspectType(project: string, location: string, id: string): Promise<gcp.ApiResult<gcp.AspectType>> {
     const name = `projects/${project}/locations/${location}/aspectTypes/${id}`;
     const res = this.mockAspectTypes.get(name);
+    // A type marked `refused` answers 403, as Dataplex does for a type whose definition the caller may not read.
+    if (res?.refused) {
+      return { status: 403, message: 'Permission denied' };
+    }
     if (res) {
       return { status: 200, result: res };
     }

@@ -154,11 +154,19 @@ export class CatalogSnapshot {
 
       const parts = aspectType.split('.');
       const res = await this._catalog.getAspectType(parts[0], parts[1], parts[2]);
-      if (!res.result) {
+      let type = res.result;
+      // Dataplex refuses the definition of some types whose aspects callers can
+      // still read and write. A refused type is registered by its name.
+      if (res.status == 403) {
+        type = { name: dataplex._typeRefToName(aspectType, 'aspect') };
+        console.warn(`Warning: Permission denied reading the definition of aspect type ${aspectType}. ` +
+                     `Its aspects are still pulled and pushed. If none are pulled, check the type name.`);
+      }
+      if (!type) {
         throw new Error(`Unable to load type information for aspect type ${aspectType}`);
       }
-      this._aspectTypes.set(res.result.name, res.result);
-      this._aspectTypes.set(aspectType, res.result);
+      this._aspectTypes.set(type.name, type);
+      this._aspectTypes.set(aspectType, type);
     }
   }
 
