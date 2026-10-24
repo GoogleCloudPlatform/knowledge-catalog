@@ -3,7 +3,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {Action, CustomExtension, Entity, Field, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Action, CustomExtension, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import {listed, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
 import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
@@ -415,6 +415,35 @@ describe('validateBigQueryDataSources', () => {
         expect(errs).toEqual([]);
         expect(calls).toBe(1);
       });
+
+  test('in the graph dataset\'s location, gives the probe\'s own error unless the retry finds another location', async () => {
+    // Probes table p.x.t with a BigQuery that answers `located` to a probe
+    // that names a location and `anywhere` to one that names none, and gives
+    // each probe's location, or null for none.
+    async function probe(located: unknown, anywhere: unknown) {
+      const bq = new BigQueryClientMock();
+      const locations: unknown[] = [];
+      bq.query = (async (_p: string, _sql: string, location?: string) => {
+                   locations.push(location ?? null);
+                   return location ? located : anywhere;
+                 }) as any;
+      const errors = await validateBigQueryDataSources(
+          [loaded(model({entities: [entity('o', 'p.x.t')]}))], bq, 'p',
+          {at: "[doc] deployment 'g'", dataset: 'p.d',
+           location: 'us-central1'});
+      return {errors, locations};
+    }
+    const missing = {status: 404, message: 'Not found: Table'};
+    expect(await probe(missing, missing)).toEqual({
+      errors: [expect.stringContaining(
+          "BigQuery table 'p.x.t', which does not exist")],
+      locations: ['us-central1', null],
+    });
+    const there = await probe({status: 503, message: 'Backend error'},
+        {status: 200, result: {jobReference: {location: 'us-central1'}}});
+    expect(there.errors).toEqual([expect.stringContaining(
+        'which could not be verified (Backend error)')]);
+  });
 });
 
 describe('action parameters', () => {
@@ -2859,8 +2888,8 @@ const TARGET = {
       'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db',
 };
 
-// Every deployment is held to the rules of its engine on the model file's own
-// bindings, whatever profile it names.
+// Every deployment is held to the rules of its engine, under the profile it
+// names or the model file's own bindings.
 describe('validateDeployments', () => {
   type Engine = keyof typeof TARGET;
   // A deployment entry named after its engine.
@@ -2891,9 +2920,7 @@ ${customer ? `        source: ${BQ_TABLE('customer')}\n` : ''}\
       - { name: placed_by, from: purchase, to: customer${
           join ? ', from_columns: [p_customer], to_columns: [c_id]' : ''} }
 ${metric && `    metrics:\n      - ${metric}\n`}`);
-  const check = (m: SemanticModel,
-                 opts: Parameters<typeof validateDeployments>[2] = {}) =>
-      validateDeployments(m, 'commerce', opts);
+  const check = (m: SemanticModel) => validateDeployments(m, 'commerce');
   // The start of the error saying deployment `engine` uses the model file's
   // own bindings. A list of engines gives the plural form that names each.
   const OWN = (engine: Engine|Engine[]) => typeof engine === 'string' ?
@@ -2985,7 +3012,7 @@ ${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id]
             [READS(['alloydb', 'bigquery'], 'm', 'customer.label', false)]);
   });
 
-  test('names every concrete entity and relationship left unbound, and leaves out the relationships under joinsChecked', () => {
+  test('names every concrete entity and relationship left unbound', () => {
     const m = commerce(
         {customer: false, join: false, deployments: deployment('alloydb')});
     m.entities[1].dataSource = '';
@@ -2994,12 +3021,6 @@ ${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id]
         'alloydb',
         "entities 'customer' and 'purchase' without a source and " +
             "relationships 'placed_by' and 'billed_to' without join columns")]);
-    // The caller reports a relationship with no join columns itself.
-    const noJoin = (customer: boolean) => check(
-        commerce({customer, join: false, deployments: BQ}),
-        {joinsChecked: true});
-    expect(noJoin(true)).toEqual([]);
-    expect(noJoin(false)).toEqual([UNBOUND('bigquery')]);
     // An abstract entity has no table, so it needs no source.
     const exempt = commerce({deployments: BQ});
     exempt.entities.push(
@@ -3024,7 +3045,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     expect(check(hierarchy(true))).toEqual([]);
   });
 
-  test('incomplete inline bindings give one warning when the model declares no deployment', () => {
+  test('incomplete inline bindings give one warning when no deployment uses them', () => {
     const warned = (m: SemanticModel, named = false) =>
         inlineBindingWarnings(m, 'commerce', named);
     const NON_EXECUTABLE = (left: string) =>
@@ -3152,6 +3173,62 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       extended.entities.push(
           {...extended.entities[0], name: 'vip', extends: ['customer']});
       expect(check(extended)).toEqual([]);
+    });
+  });
+
+  // A deployment that names a profile reads it from `model.profiles`: its
+  // metrics_exclude, the metrics it prunes and the keys it states.
+  describe('under a named profile', () => {
+    // The errors for metric `metric` on deployment `engine`, which names
+    // profile ops, with ops set to `ops` and purchase keyed by `keys`.
+    const underOps = (engine: Engine, metric: string,
+                      ops: Partial<ProfileSpec> = {}, keys = ['p_id']) => {
+      const m = commerce({deployments: deployment(engine, 'ops'), metric});
+      m.entities[1].keys = keys;
+      m.profiles = [{name: 'ops', entities: [], relationships: [], ...ops}];
+      return check(m);
+    };
+    const SUM =
+        '{ name: m, entity: purchase, expression: "SUM(purchase.amount)" }';
+
+    test('a Spanner deployment fails while its profile leaves a metric available', () => {
+      expect(underOps('spanner', SUM, {metricsExclude: '*'})).toEqual([]);
+      // The completeness check reports a profile that does not apply.
+      expect(underOps('spanner', SUM, {metricsExclude: ['m', 'other']}))
+          .toEqual([]);
+      expect(underOps('spanner', SUM)).toEqual([
+        "model 'commerce' (commerce) deployment 'spanner' targets Spanner, " +
+            "which has no measures, and profile 'ops' leaves metric(s) 'm' " +
+            "available; name them in its 'metrics_exclude', or set it to \"*\".",
+      ]);
+    });
+
+    test('a BigQuery deployment holds each metric its profile leaves to the measure rules, with the keys the profile states', () => {
+      const ratio = '{ name: m, entity: purchase, ' +
+          'expression: "SUM(purchase.amount) / 2" }';
+      // A metric the profile excludes, or prunes for a field it excludes, is
+      // held to none of this.
+      expect(underOps('bigquery', ratio, {metricsExclude: ['m']})).toEqual([]);
+      const noAmount =
+          {entities: [{name: 'purchase', fieldsExclude: ['amount']}]};
+      expect(underOps('bigquery', ratio, noAmount)).toEqual([]);
+      expect(underOps('bigquery', ratio)).toEqual([
+        "model 'commerce' (commerce) deployment 'bigquery' targets BigQuery, " +
+            "where metric 'm' cannot be a measure: it is not SUM, AVG, COUNT, " +
+            'MIN or MAX over one operand.',
+      ]);
+      // Purchase has no key in the model file, and profile ops states one.
+      const keyed = {entities: [{name: 'purchase', primaryKey: ['p_id']}]};
+      expect(underOps('bigquery', SUM, keyed, [])).toEqual([]);
+      expect(underOps('bigquery', SUM, {}, [])).toEqual([
+        expect.stringContaining("which has no primary key or unique key"),
+      ]);
+    });
+
+    test('a deployment whose profile is a legacy wrapper is left out', () => {
+      const m = commerce(
+          {customer: false, deployments: deployment('bigquery', 'old')});
+      expect(check(m)).toEqual([]);
     });
   });
 });

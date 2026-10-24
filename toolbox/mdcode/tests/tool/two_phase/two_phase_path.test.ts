@@ -162,7 +162,7 @@ scenarios('the two-phase push path', [
     ],
   },
   {
-    name: 'a Spanner deployment that names no profile is refused when the model has metrics and deploys when it has none, and one under a profile whose metrics_exclude is "*" deploys',
+    name: 'a Spanner deployment that names no profile is refused when the model has metrics, after the table check, and deploys when it has none, and one under a profile whose metrics_exclude is "*" deploys',
     deployments: [{name: 'sp', target: spannerGraph('g')}],
     entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
     metrics: [{
@@ -175,6 +175,11 @@ scenarios('the two-phase push path', [
     called: {preflight: 0},
     nothingWritten: true,
     then: [{
+      entities: [CUSTOMER, {...CUSTOMER, name: 'Orders'}],
+      code: 1,
+      errors: ['Customer', 'Orders'].map(
+          e => has(`but the model file binds entity '${e}'`)),
+    }, {
       metrics: undefined,
       code: 0,
       events: ['preflight', 'apply', 'deploy sp'],

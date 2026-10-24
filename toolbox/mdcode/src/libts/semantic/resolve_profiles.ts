@@ -1993,10 +1993,6 @@ export interface CompletenessOptions extends CloudSqlLoad {
   // applied, the caller stops reading what the SQL reads. This check then
   // reads what the profile's field expressions read, and gives the warning.
   applied?: boolean;
-  // The caller warns about the profile's SQL that the parser cannot read. This
-  // check then gives that warning only when the hierarchy does not resolve
-  // with the profile applied.
-  sqlWarned?: boolean;
   // The caller warns about the model file's SQL that it reads, which it does
   // only when the hierarchy of the model it checks resolves. It reads an
   // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
@@ -2004,9 +2000,9 @@ export interface CompletenessOptions extends CloudSqlLoad {
   // text of a field in `rebound`, written as 'Entity.field', because the
   // profile it applies rebinds or excludes that field. A warning about the
   // model file's SQL is left out when the field is not in `rebound` and the
-  // caller reads each text this check cannot read the same way: an entry in a
+  // caller also warns about each text this check cannot read: an entry in a
   // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
-  // dialect is `dialect`.
+  // dialect is `dialect` or the caller cannot read it either.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
   // The caller transpiles a field or metric whose only text is in a vendor
   // dialect its translator reads into BigQuery SQL, so a BigQuery profile can
@@ -2285,7 +2281,10 @@ export function validateProfileCompleteness(
         const asWritten = text.dialect !== 'ANSI_SQL' &&
             (owner.dialects ?? []).some(
                 d => d.dialect === text.dialect && d.expression === text.text);
-        if (!asWritten) readOtherwise.add(what);
+        // The caller warns about an ANSI_SQL text it cannot read either.
+        const callerFails = !!opts.ownSqlOnly &&
+            !columnsForSource(text.text, 'ANSI_SQL', opts.ownSqlOnly.dialect);
+        if (!asWritten && !callerFails) readOtherwise.add(what);
       };
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
@@ -2396,9 +2395,7 @@ export function validateProfileCompleteness(
         return what === fieldLabel(f.slice(0, dot), f.slice(dot + 1));
       });
   for (const what of unreadable) {
-    if (applied ? !profiledError :
-                  opts.sqlWarned && !profiledError ||
-                      !own.has(what) && callerWarns(what)) {
+    if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
       continue;
     }
     warnings.push(

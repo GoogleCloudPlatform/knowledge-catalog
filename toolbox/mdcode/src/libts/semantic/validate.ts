@@ -12,14 +12,14 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
+import {Action, ActionParameter, Constraint, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, undefinedEndpointProblem} from './loader';
+import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfileExclusions, columnBinding, DEFAULT_PROFILE, evaluatedTexts, expressionSources, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, evaluatedTexts, expressionSources, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -247,29 +247,45 @@ function nameAndDescriptionErrors(
   return errors;
 }
 
-// Checks the model file's own bindings against the engine of each deployment
-// of `model` that names no profile, and returns one message per problem,
-// naming every deployment it applies to. With `opts.joinsChecked`, missing
-// join columns are left to the caller.
+// Checks each deployment of `model` against the rules of its engine, under the
+// profile it names in `model.profiles` or the model file's own bindings, and
+// returns one message per problem, naming every deployment it applies to.
 export function validateDeployments(
-    model: SemanticModel, document: string,
-    opts: {joinsChecked?: boolean} = {}): string[] {
+    model: SemanticModel, document: string): string[] {
   // The deployments each problem applies to, keyed by the text that follows
   // their names in the message.
   const problems = new Map<string, string[]>();
   const add = (deployment: string, problem: string) =>
       problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
-  const unbound = unboundInline(model, !opts.joinsChecked);
+  const unbound = unboundInline(model);
   // The metrics the reference rules report, which the BigQuery rule leaves to
   // them.
   let referenced: Set<string>|undefined;
   for (const d of model.deployments ?? []) {
-    if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE) continue;
+    // A legacy wrapper is not in `model.profiles`, and is left out.
+    const named = model.profiles?.find(p => p.name === d.profile);
+    if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE && !named) continue;
     const resolved = resolveModelDeployments(model, [d.name]);
     const engine =
         'error' in resolved ? undefined : resolved.deployments[0].engine;
     const alloyDb = engine === 'alloydb';
-    if (unbound) {
+    // The model the deployment's bindings give, less what they leave
+    // unavailable. The completeness check reports a named profile that does
+    // not apply, and the fields its metrics read.
+    const bound = named ? profiled(model, named) : pruneUnavailable(
+        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model),
+        {noGraph: alloyDb});
+    if (!bound) continue;
+    const available = bound.model.metrics ?? [];
+    if (named) {
+      if (engine === 'spanner' && available.length) {
+        add(d.name,
+            `targets Spanner, which has no measures, and profile '${
+                named.name}' leaves metric(s) ${
+                listed(available.map(m => `'${m.name}'`))} available; name ` +
+                `them in its 'metrics_exclude', or set it to "*".`);
+      }
+    } else if (unbound) {
       add(d.name,
           `uses the model file's own bindings, which leave ${
               unbound}; a deployment needs every entity and relationship ` +
@@ -277,15 +293,12 @@ export function validateDeployments(
     }
     // A Spanner deployment deploys no metric.
     if (engine === 'spanner') continue;
-    const {report} = pruneUnavailable(
-        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model),
-        {noGraph: alloyDb});
-    for (const {name, field} of report.droppedMetrics) {
+    for (const {name, field} of named ? [] : bound.report.droppedMetrics) {
       if (field === undefined) continue;
       add(d.name,
           `uses the model file's own bindings, under which metric '${
               name}' reads field '${field}', which ${
-              report.unboundFields.includes(field) ?
+              bound.report.unboundFields.includes(field) ?
                   'has no expression' :
                   'reads a field with no expression, directly or through ' +
                       'other fields'}; a deployment needs every field its ` +
@@ -296,11 +309,9 @@ export function validateDeployments(
       referenced = new Set();
       validateExpressionReferences([{document, model}], false, [], referenced);
     }
-    for (const m of model.metrics ?? []) {
-      // The loop above reports a metric that pruning drops.
-      const problem = !referenced.has(m.name) &&
-          !report.droppedMetrics.some(x => x.name === m.name) &&
-          measureProblem(model, m);
+    for (const m of available) {
+      const problem =
+          !referenced.has(m.name) && measureProblem(bound.model, m);
       if (problem) {
         add(d.name,
             `targets BigQuery, where metric '${m.name}' cannot be a measure: ${
@@ -315,6 +326,18 @@ export function validateDeployments(
         listed(names.map(n => `'${n}'`))} ${
         many ? problem.replace(/^(use|target)s /, '$1 ') : problem}`;
   });
+}
+
+// `model` with `profile` applied and what it leaves unavailable pruned, or
+// undefined when the profile does not apply.
+function profiled(model: SemanticModel, profile: ProfileSpec):
+    ReturnType<typeof pruneUnavailable>|undefined {
+  try {
+    return pruneUnavailable(applyProfile(model, profile), profile.name);
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return undefined;
+  }
 }
 
 // Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves
@@ -404,13 +427,15 @@ export function validateInheritedColumns(
   return errors;
 }
 
-// The warning for a model file whose own bindings are incomplete and that
-// declares no deployment. With `namedProfiles`, it says 'default' is unbound,
-// and otherwise that the model cannot be queried at all.
+// The warning for a model file whose own bindings are incomplete and that no
+// deployment uses. With `namedProfiles`, it says 'default' is unbound, and
+// otherwise that the model cannot be queried at all.
 export function inlineBindingWarnings(
     model: SemanticModel, document: string, namedProfiles: boolean): string[] {
-  const unbound = unboundInline(model, true);
-  if (!unbound || model.deployments?.length) return [];
+  const unbound = unboundInline(model);
+  const used = (model.deployments ?? []).some(
+      d => (d.profile ?? DEFAULT_PROFILE) === DEFAULT_PROFILE);
+  if (!unbound || used) return [];
   const where = `model '${model.name}' (${document})`;
   return [
     namedProfiles ?
@@ -423,13 +448,12 @@ export function inlineBindingWarnings(
 }
 
 // What the model file's own bindings leave unbound, such as "entity 'a'
-// without a source", or '' when nothing is. Relationships count only with
-// `joins`.
-function unboundInline(model: SemanticModel, joins: boolean): string {
+// without a source", or '' when nothing is.
+function unboundInline(model: SemanticModel): string {
   const sourceless = (model.entities ?? [])
                          .filter(e => !e.abstract && !e.dataSource)
                          .map(e => e.name);
-  const unjoined = !joins ? [] :
+  const unjoined =
       (model.relationships ?? [])
           .filter(r => !r.association &&
                       !(r.source.columns.length && r.destination.columns.length))
@@ -1734,6 +1758,48 @@ function missingExecutorFields(ex: Executor): string[] {
 }
 
 
+// One error for each entity that `deployment` binds to a table outside the
+// database it deploys to. Sources come from the deployment's profile in
+// `model.profiles`, or from the model file for `default`.
+export function deploymentTableErrors(
+    document: string, model: SemanticModel,
+    deployment: ResolvedDeployment): string[] {
+  let sourceOf = (e: Entity): string|undefined => e.authoredSource;
+  let bindings = 'the model file';
+  if (deployment.profile !== DEFAULT_PROFILE) {
+    const profile = model.profiles?.find(p => p.name === deployment.profile);
+    // `model.profiles` lacks a legacy wrapper, so it is not checked.
+    if (!profile) return [];
+    const bound = new Map(profile.entities.map(pe => [pe.name, pe.source]));
+    sourceOf = e => bound.get(e.name);
+    bindings = `profile '${profile.name}'`;
+  }
+  // The database the tables must be in, as databaseOf gives it, and how an
+  // error names the target and a table outside it.
+  const {engine, coordinates: c} = deployment;
+  let database = 'bigquery';
+  let target = 'a BigQuery graph';
+  let outside = 'which is not a BigQuery or BigLake table';
+  if (engine !== 'bigquery') {
+    const [system, name] = engine === 'spanner' ?
+        ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
+        ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
+    database = `${engine}/${name}`;
+    target = `${system} database '${name}'`;
+    outside = 'which is not a table in that database';
+  }
+  const errors: string[] = [];
+  for (const e of model.entities ?? []) {
+    const source = sourceOf(e)?.trim();
+    if (!source || databaseOf(source) === database) continue;
+    errors.push(
+        `[${document}] deployment '${deployment.name}' targets ${target}, ` +
+        `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
+  }
+  return errors;
+}
+
+
 // Live pre-flight over the BigQuery-targeting models: confirms every entity's
 // BigQuery source table is reachable BEFORE any destination leg runs, so a push
 // fails fast when the model could not deploy, rather than surfacing a missing
@@ -1754,9 +1820,15 @@ function missingExecutorFields(ex: Executor): string[] {
 // the deploy runs against), falling back to `defaultProject`. Each distinct
 // (billing project, reference) pair is probed once. Returns one message per
 // unreachable table (empty when all pass).
+//
+// With `graph`, each probe runs in `graph.location`, the location of dataset
+// `graph.dataset`, and a probe that fails there runs again with no location.
+// When that run finds the table in another location, the error says so,
+// starting with `graph.at`, which names the deployment.
 export async function validateBigQueryDataSources(
-    models: LoadedModel[], bq: BigQueryClient,
-    defaultProject: string): Promise<string[]> {
+    models: LoadedModel[], bq: BigQueryClient, defaultProject: string,
+    graph?: {at: string; dataset: string; location: string}):
+    Promise<string[]> {
   // Dedup by billing project + reference so a table shared across
   // entities/models is probed once; keep the first reference for a locatable
   // error message.
@@ -1788,9 +1860,22 @@ export async function validateBigQueryDataSources(
 
   const errors: string[] = [];
   for (const {project, ref, document, model, entity} of refs.values()) {
-    const res = await bq.query(
-        project, `SELECT 1 FROM \`${ref}\` WHERE FALSE`, undefined, true);
+    const sql = `SELECT 1 FROM \`${ref}\` WHERE FALSE`;
+    const res = await bq.query(project, sql, graph?.location, true);
     if (res.status === 200) continue;
+    if (graph) {
+      const anywhere = await bq.query(project, sql, undefined, true);
+      const found = anywhere.result?.jobReference?.location;
+      if (found && found !== graph.location) {
+        errors.push(
+            `${graph.at} targets a BigQuery graph in dataset ` +
+            `'${graph.dataset}', which is in location '${graph.location}', ` +
+            `but entity '${entity}' reads table '${ref}', which is in ` +
+            `location '${found}'. A property graph can use only tables in ` +
+            `its dataset's location.`);
+        continue;
+      }
+    }
     const msg = res.message?.trim() || `HTTP ${res.status}`;
     const why = /not found/i.test(msg) ?
         'does not exist' :

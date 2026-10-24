@@ -5,7 +5,7 @@
 
 import {expect} from 'bun:test';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CUSTOMER, deploymentNames, err, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, TRANSPILE_WARNING, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, TRANSPILE_WARNING, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -175,6 +175,11 @@ const WITH_SCORE = {
   ...CUSTOMER,
   fields: [...CUSTOMER.fields, {name: 'score', expression: 'score'}],
 };
+// The warning about the SQL profile `p` writes for field score.
+const unreadScore = (p: string) =>
+    `Warning: [commerce.profile.${p}.yaml] profile '${p}': kcmd could not ` +
+    "read the SQL of field 'Customer.score', so the fields it reads were not " +
+    'checked';
 // Binds field score to `expression`, written in `dialect`.
 const scoreSql = (name: string, dialect: string, expression: string) => ({
   entities: {
@@ -382,12 +387,13 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     },
     code: 1,
     errors: [has("action 'refund'")],
-    warnings: [],
+    warnings: [has("unbound 'default' profile")],
     nothingWritten: true,
     then: [{
       flags: {deployment: ['g1']},
       code: 0,
-      warnings: ["Note: profile 'prod' leaves 1 field(s) unbound."],
+      warnings: [has("unbound 'default' profile"),
+                 "Note: profile 'prod' leaves 1 field(s) unbound."],
     }],
   },
   {
@@ -412,7 +418,8 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     },
   },
   {
-    name: 'each deployment prints its own warning about the SQL its profile sets',
+    name: 'each profile prints its own warning about the SQL it sets, also ' +
+        'when --deployment stops at another profile',
     deployments: [
       {name: 'a', target: bqGraph('ga'), profile: 'pa'},
       {name: 'b', target: bqGraph('gb'), profile: 'pb'},
@@ -424,11 +431,17 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     },
     flags: {validateOnly: true},
     warnings: [
+      ...['pa', 'pb'].map(unreadScore),
       has("Warning: [commerce] note: no 'BIGQUERY' dialect"),
-      ...['a', 'b'].map(
-          d => "Warning: field 'Customer.score' in model 'commerce' " +
-              `(commerce, deployment '${d}'): kcmd could not read its SQL, ` +
-              'so the fields it reads were not checked.'),
     ],
+    then: [{
+      profiles: {
+        pa: scoreSql('pa', 'ANSI_SQL', '((pa'),
+        pb: {entities: {Customer: EXPRESSION_KEY}},
+      },
+      flags: {deployment: ['a']},
+      code: 1,
+      warnings: [unreadScore('pa')],
+    }],
   },
 ], {deployments: ['g1', 'g2'], code: 0});
