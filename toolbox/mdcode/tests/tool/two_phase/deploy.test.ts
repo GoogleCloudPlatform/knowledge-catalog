@@ -404,7 +404,8 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     check: r => {
       for (const models of [...r.fake.bq.mock.calls.map(c => c[0]),
                             r.fake.preflight.mock.calls[0][0]]) {
-        expect(models[0].model.metrics?.[0]?.expression).toBeDefined();
+        expect(models[0].model.metrics![0].dialects)
+            .toContainEqual(expect.objectContaining({dialect: 'BIGQUERY'}));
       }
     },
   },
