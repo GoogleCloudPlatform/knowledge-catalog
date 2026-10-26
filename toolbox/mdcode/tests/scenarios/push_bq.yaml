@@ -11,8 +11,6 @@ setup:
   catalog:
     entryTypes:
       - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
-    aspectTypes:
-      - name: projects/dataplex-types/locations/global/aspectTypes/overview
     entries:
       - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
         entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset

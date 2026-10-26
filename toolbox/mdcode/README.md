@@ -157,6 +157,8 @@ kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
 # Pull fetches the aspects each entry's type requires. To pull only some entry
 # types, or other aspects, list them as project.location.type under
 # snapshot.entries and snapshot.aspects in catalog.yaml.
+# kcmd init lists dataplex-types.global.overview under snapshot.aspects for
+# knowledge base, entry group and BigQuery dataset scopes.
 kcmd pull
 
 # Check for local modifications

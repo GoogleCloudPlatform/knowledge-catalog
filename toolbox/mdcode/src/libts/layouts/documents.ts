@@ -89,7 +89,7 @@ export class DocumentsLayout implements CatalogLayout {
         entry.aspects[md.OVERVIEW_ASPECT] = {};
       }
       entry.aspects[md.OVERVIEW_ASPECT].content = bodyTrimmed;
-      entry.aspects[md.OVERVIEW_ASPECT].contentType = 'MARKDOWN';
+      entry.aspects[md.OVERVIEW_ASPECT].contentType ??= 'MARKDOWN';
     }
     return entry;
   }
@@ -107,7 +107,9 @@ export class DocumentsLayout implements CatalogLayout {
       if (aspect.content !== undefined) {
         body = aspect.content;
         delete aspect.content;
-        delete aspect.contentType;
+        // Any other content type stays in the front matter, so a push
+        // keeps it.
+        if (aspect.contentType === 'MARKDOWN') delete aspect.contentType;
       }
     }
 

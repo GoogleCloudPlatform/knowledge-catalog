@@ -1,5 +1,5 @@
 name: init_kb_pull_overview
-description: A knowledge base pulled right after init holds each document's overview text as its body, since init lists the overview aspect.
+description: A knowledge base pulled right after init holds each document's overview text as its body, since init lists the overview aspect, and a push with no edit keeps its content type.
 setup:
   catalog:
     entryGroups:
@@ -14,15 +14,18 @@ setup:
             aspectType: projects/dataplex-types/locations/global/aspectTypes/overview
             data:
               content: The text an author wrote in Knowledge Catalog.
-              contentType: MARKDOWN
+              contentType: HTML
 
 init:
   kb: t.u.g
 
 actions:
   - action: pull
+  - action: push
+  - action: pull
 
 assert:
   fileSystem:
     catalog/doc.md:
-      contains: The text an author wrote in Knowledge Catalog.
+      - contains: "---\nThe text an author wrote in Knowledge Catalog."
+      - contains: "contentType: HTML"
