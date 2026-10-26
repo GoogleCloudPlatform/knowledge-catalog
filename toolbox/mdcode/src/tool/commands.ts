@@ -2372,8 +2372,8 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     }
   };
 
-  // The errors of a plain push's checks, when a plain push runs in two
-  // phases. They replace the checks below.
+  // The errors of a plain push's checks, when it runs in two phases. They
+  // replace the checks below.
   let twoPhase: LocalCheckError[]|undefined;
   if (takesTwoPhasePath({}, layout, docs)) {
     const checked = await checkBeforeWrites(
@@ -2506,9 +2506,9 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       const res = profileForDocument(doc, available, name, load);
       // Narrows the type; `name` comes from `available`, so it is found.
       if (res.kind === 'missing') continue;
-      // Push applies the profile to every model in the scope, so a model that
-      // does not declare it fails the push.
-      // A two-phase push applies it only for the deployments that use it.
+      // `kcmd push --profile <name>` applies the profile to every model in
+      // the scope, so a model that does not declare it fails the push. A
+      // two-phase push applies it only for the deployments that use it.
       const errors = docs.filter(d => d.name !== doc.name).flatMap(d => {
         const names = declaredBy(d).map(p => p.name);
         return twoPhase || names.includes(name) ?

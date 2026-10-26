@@ -118,10 +118,10 @@ BigQuery dataset or Spanner database exists and, on a push without
 `--validate-only`, the Knowledge Catalog
 checks on the entry group. Push's lookup of the file-copy type also runs only
 at push time, because it calls a service. It exits non-zero when push would
-reject a binding. When a plain `kcmd push` of the scope does not run in two
-phases, the report checks each profile as `kcmd push --profile <name>` does.
-When it does, the report gives the errors of that push and stops where that
-push stops. Under each profile it prints the errors of that profile's own
+reject a binding. The report checks each profile as
+`kcmd push --profile <name>` does, unless a plain `kcmd push` of the scope
+runs in two phases. In that case it gives the errors of that push and stops
+where that push stops. Under each profile it prints the errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
 profiles' errors print above the profiles too, since any of them stops the

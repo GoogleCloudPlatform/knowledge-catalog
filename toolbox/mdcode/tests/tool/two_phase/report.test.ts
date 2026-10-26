@@ -1,4 +1,4 @@
-// Tests of what `kcmd profiles` prints for a scope that a plain push pushes in
+// Tests of what `kcmd profiles` prints for a scope whose plain push runs in
 // two phases (src/tool/commands.ts, profiles). Each case runs
 // `kcmd push --validate-only` and then the report.
 
