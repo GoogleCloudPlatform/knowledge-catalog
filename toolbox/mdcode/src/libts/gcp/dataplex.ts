@@ -176,9 +176,13 @@ export class CatalogClient extends api.ApiClient {
     if (res.status != 200 || !res.result) {
       return { status: res.status, message: res.message };
     }
+    // Each type is resolved once: crm caches only the projects it can read,
+    // so several field-path keys of one unreadable type would each look it up.
+    const typeRefs = new Set(Object.keys(res.result.aspects ?? {})
+                                 .map(key => key.split('@')[0]));
     const types = new Set<string>();
-    for (const key of Object.keys(res.result.aspects ?? {})) {
-      const { aspectType } = await _aspectTypeOfKey(key, this.context);
+    for (const typeRef of typeRefs) {
+      const { aspectType } = await _aspectTypeOfKey(typeRef, this.context);
       types.add(_nameToTypeRef(aspectType));
     }
     return { status: 200, result: [...types] };

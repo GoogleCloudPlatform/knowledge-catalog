@@ -272,6 +272,30 @@ describe('CatalogClient.lookupEntryAspectTypes', () => {
            result: ['dataplex-types.global.overview', 'dataplex-types.global.guidelines'],
          });
        });
+
+  test('looks up an unreadable project once per aspect type', async () => {
+    const client = new CatalogClient(CTX);
+    spyOn(client as any, '_get').mockImplementation(async () => ({
+      status: 200,
+      result: {
+        name: ENTRY,
+        aspects: {
+          '111.global.guidelines@Schema.order_id': {},
+          '111.global.guidelines@Schema.customer_id': {},
+        },
+      },
+    }));
+    // Resource Manager cannot read the project, and crm caches only the
+    // projects it can read.
+    const lookup = spyOn(ResourceManagerClient.prototype, 'getProject')
+                       .mockResolvedValue({status: 403} as any);
+
+    const res = await client.lookupEntryAspectTypes('proj', 'us', ENTRY);
+
+    expect(res.result).toEqual(['111.global.guidelines']);
+    expect(lookup).toHaveBeenCalledTimes(1);
+    lookup.mockRestore();
+  });
 });
 
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
