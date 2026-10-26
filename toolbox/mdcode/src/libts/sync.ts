@@ -54,10 +54,11 @@ export class CatalogSync {
         entries.push(entry);
       }
 
-      // Each entry is fetched with every aspect, so pull can name the aspect
-      // types it leaves out: those catalog.yaml does not list and the entry's
-      // type does not require, apart from the scope's system aspects.
+      // Pull fetches the aspect types it knows: those catalog.yaml lists and
+      // each entry's type requires. It warns about each other aspect type an
+      // entry carries, apart from the scope's system aspects.
       const aspectTypes = this._snapshot.aspectTypes;
+      const requested = [...aspectTypes.keys()];
       const system = new Set(this._snapshot.manifest.source.systemAspects);
       const leftOut = new Map<string, number>();
       for (const entry of entries) {
@@ -66,7 +67,7 @@ export class CatalogSync {
 
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
-                                                    'FULL');
+                                                    requested);
         // The server will respond with 403 permission denied for both resource not exist or 
         // insufficient permission. We cannot tell if a resource not exist or user does not 
         // have the access. Thus using 200 for an ensured result.
@@ -74,21 +75,18 @@ export class CatalogSync {
           continue;
         }
 
-        const kept: Record<string, gcp.Aspect> = {};
-        const missing = new Set<string>();
-        for (const [key, aspect] of Object.entries(res.result.aspects ?? {})) {
-          // lookupEntry sets every returned aspect's type.
-          const type = aspect.aspectType!;
-          if (aspectTypes.has(type)) {
-            kept[key] = aspect;
-          } else {
-            missing.add(gcp._nameToTypeRef(type));
+        // lookupEntry sets every returned aspect's type.
+        const stored = new Set(Object.values(res.result.aspects ?? {})
+                                   .map(a => gcp._nameToTypeRef(a.aspectType!)));
+        await this._snapshot._storeEntry(res.result);
+
+        const onEntry = await this._catalog.lookupEntryAspectTypes(
+            nameParts[1], nameParts[3], entry.name);
+        for (const type of onEntry.result ?? []) {
+          if (!stored.has(type) && !aspectTypes.has(type) && !system.has(type)) {
+            leftOut.set(type, (leftOut.get(type) ?? 0) + 1);
           }
         }
-        for (const type of missing) {
-          if (!system.has(type)) leftOut.set(type, (leftOut.get(type) ?? 0) + 1);
-        }
-        await this._snapshot._storeEntry({ ...res.result, aspects: kept });
       }
       for (const [type, count] of leftOut) {
         console.warn(

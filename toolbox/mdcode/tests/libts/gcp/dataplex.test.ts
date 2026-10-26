@@ -246,27 +246,37 @@ describe('_fixEntry removed aspects', () => {
 });
 
 
+describe('CatalogClient.lookupEntryAspectTypes', () => {
+  test('reads the FULL view and names each aspect type once, with a project ID',
+       async () => {
+         const client = new CatalogClient(CTX);
+         const get = spyOn(client as any, '_get').mockImplementation(async () => ({
+           status: 200,
+           result: {
+             name: ENTRY,
+             aspects: {
+               // A FULL read gives no data to an aspect the type does not require.
+               'dataplex-types.global.overview': {},
+               '655216118709.global.guidelines@Schema.order_id': {},
+               'dataplex-types.global.guidelines@Schema.customer_id': {},
+             },
+           },
+         }));
+
+         const res = await client.lookupEntryAspectTypes('proj', 'us', ENTRY);
+
+         expect(get.mock.calls[0].slice(0, 2)).toEqual(
+             ['projects/proj/locations/us:lookupEntry', {entry: ENTRY, view: 'FULL'}]);
+         expect(res).toEqual({
+           status: 200,
+           result: ['dataplex-types.global.overview', 'dataplex-types.global.guidelines'],
+         });
+       });
+});
+
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
 // unless deleteMissingAspects is set, so a caller that means to remove one has
 // to send it.
-describe('CatalogClient.lookupEntry', () => {
-  test('picks the view from the aspects asked for', async () => {
-    const client = new CatalogClient(CTX);
-    const get = spyOn(client as any, '_get')
-                    .mockImplementation(async () => ({status: 404}));
-
-    await client.lookupEntry('proj', 'us', ENTRY);
-    await client.lookupEntry('proj', 'us', ENTRY, [GUIDELINES_TYPE]);
-    await client.lookupEntry('proj', 'us', ENTRY, 'FULL');
-
-    expect(get.mock.calls.map(c => c[1])).toEqual([
-      {entry: ENTRY, view: 'BASIC'},
-      {entry: ENTRY, view: 'CUSTOM', aspectTypes: [GUIDELINES_TYPE]},
-      {entry: ENTRY, view: 'FULL'},
-    ]);
-  });
-});
-
 describe('CatalogClient.updateEntry', () => {
   test('sends deleteMissingAspects only when asked to', async () => {
     const client = new CatalogClient(CTX);

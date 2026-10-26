@@ -228,9 +228,18 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
-    async function(project: string, location: string, entry: string, aspects?: string[] | 'FULL') {
+    async function(project: string, location: string, entry: string, aspects?: string[]) {
       if (currentCatalogMock) {
         return await currentCatalogMock.lookupEntry(project, location, entry, aspects);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'lookupEntryAspectTypes').mockImplementation(
+    async function(project: string, location: string, entry: string) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.lookupEntryAspectTypes(project, location, entry);
       }
       return { status: 404, message: 'Not found' };
     }

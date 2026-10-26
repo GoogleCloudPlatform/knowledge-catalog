@@ -49,4 +49,6 @@ assert:
       - contains: "note: on e3"
     catalog/g1_entry.yaml: null
   catalog:
-    lookupAspectTypes: FULL
+    lookupAspectTypes:
+      - projects/test/locations/global/aspectTypes/a1
+      - test.global.a1
