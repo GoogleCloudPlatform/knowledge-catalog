@@ -1,6 +1,6 @@
-// Tests of what `kcmd profiles` prints for a model that lists deployments
-// (src/tool/commands.ts, profiles). Each case runs `kcmd push --validate-only`
-// and then the report.
+// Tests of what `kcmd profiles` prints for a scope that a plain push pushes in
+// two phases (src/tool/commands.ts, profiles). Each case runs
+// `kcmd push --validate-only` and then the report.
 
 import {expect} from 'bun:test';
 
@@ -54,6 +54,10 @@ scenarios('kcmd profiles reports what push rejects', [
   ...([
     ['a profile file overrides an action the model lacks',
      {profiles: {prod: {...PROD, actions: UNKNOWN_ACTION}}},
+     ["[commerce.profile.prod.yaml] profile 'prod': action 'nothing' is not " +
+      'in the logical model']],
+    ['the model lists no deployments and a profile file overrides an action',
+     {deployments: [], profiles: {prod: {...PROD, actions: UNKNOWN_ACTION}}},
      ["[commerce.profile.prod.yaml] profile 'prod': action 'nothing' is not " +
       'in the logical model']],
     ['a legacy wrapper gives a model that does not load',

@@ -2295,8 +2295,8 @@ function printProfileReport(
 // it applies and prunes each profile and runs push's local checks the way push
 // does, but deploys nothing, so a user can see coverage and whether push
 // accepts a profile before choosing one. Its one service call is push's Cloud
-// SQL dialect lookup. When a model in the scope lists deployments, it gives the
-// errors of a plain push instead. Returns a process exit code (0 on success).
+// SQL dialect lookup. When a plain push of the scope runs in two phases, it
+// gives that push's errors instead. Returns a process exit code (0 on success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   if (options.printStore) return await printStore(options);
 
@@ -2374,10 +2374,10 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   for (const doc of docs) {
     if (!readDeclaredProfiles(declaredBy, doc)) return 1;
   }
-  // The errors of a plain push's checks, when a model lists deployments so
-  // that push runs in two phases. They replace the checks below.
+  // The errors of a plain push's checks, when a plain push runs in two
+  // phases. They replace the checks below.
   let twoPhase: LocalCheckError[]|undefined;
-  if (docs.some(d => listsDeployments(d.text))) {
+  if (takesTwoPhasePath({}, layout, docs)) {
     const checked = await checkBeforeWrites(
         {}, {ctx, layout, source, docs, profileDocs, defaultProfile, load},
         true);
