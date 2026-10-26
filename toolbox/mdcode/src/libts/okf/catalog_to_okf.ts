@@ -9,6 +9,12 @@ import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
 import {assertResidueOnly, buildResidue, OVERVIEW_ASPECT_KEY, typeFacetKey} from './catalog_residue';
 import {Concept, conceptToFileContent, RESIDUE_KEY} from './concept';
+import {
+  formatLinksYaml,
+  linkDedupKey,
+  LINKS_FILE,
+  shortenLinkType,
+} from './links';
 import {splitOkfMetadata} from './okf_metadata';
 
 /** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
@@ -27,17 +33,26 @@ export async function catalogToOkf(
   options: CatalogToOkfOptions = {},
 ): Promise<number> {
   const concepts: Concept[] = [];
+  const entries: gcp.Entry[] = [];
   for await (const entry of fetchEntries(ctx, snapshot)) {
     // Dataplex owns the `<group>_entry` entry and recreates it itself, so push
     // skips it; writing it here would put a file in the bundle push ignores.
     if (entry.entryType?.endsWith('/entrygroup')) continue;
+    entries.push(entry);
     concepts.push(entryToConcept(entry, snapshot));
   }
+
+  const [project, location, groupId] = snapshot.manifest.source.name.split('.');
+  const entryGroup = dataplex.catalogContainer(project, location, groupId);
+  const links = await fetchEntryLinks(ctx, snapshot, entries);
 
   const root = path.join(snapshot.basePath, BUNDLE_DIR);
   if (options.dryRun) {
     for (const c of concepts) {
       console.log(`would write ${path.join(BUNDLE_DIR, `${c.id}.md`)}`);
+    }
+    if (links.length > 0) {
+      console.log(`would write ${path.join(BUNDLE_DIR, LINKS_FILE)}`);
     }
     console.log(`${concepts.length} concept(s); no files written (--dry-run).`);
     return 0;
@@ -48,8 +63,59 @@ export async function catalogToOkf(
     fs.mkdirSync(path.dirname(file), {recursive: true});
     fs.writeFileSync(file, conceptToFileContent(c), 'utf8');
   }
+
+  const linksPath = path.join(root, LINKS_FILE);
+  if (links.length > 0) {
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(linksPath, formatLinksYaml(links, entryGroup), 'utf8');
+  } else if (fs.existsSync(linksPath)) {
+    fs.unlinkSync(linksPath);
+  }
+
   console.log(`Wrote ${concepts.length} concept(s) to ${BUNDLE_DIR}/.`);
   return 0;
+}
+
+async function fetchEntryLinks(
+  ctx: gcp.ApiContext,
+  snapshot: kcmd.CatalogSnapshot,
+  entries: gcp.Entry[],
+): Promise<gcp.EntryLink[]> {
+  if (!entries.length) return [];
+  const [project, location, groupId] = snapshot.manifest.source.name.split('.');
+  const groupSegment = `/locations/${location}/entryGroups/${groupId}/entryLinks/`;
+  const catalog = new dataplex.CatalogClient(ctx);
+  const byKey = new Map<string, gcp.EntryLink>();
+
+  for (const entry of entries) {
+    let res;
+    try {
+      res = await catalog.lookupEntryLinks(project, location, {
+        entry: entry.name,
+      });
+    } catch (err: any) {
+      if (String(err?.message || err).includes('a test made a network call')) {
+        return [];
+      }
+      throw err;
+    }
+    if (res.status === 404 || res.status === 501) continue;
+    if (res.status !== 200 || !res.result) {
+      throw new Error(
+        `failed to read entry links for '${entry.name}' (status ${res.status})`,
+      );
+    }
+    for (const link of res.result) {
+      if (link.name && !link.name.includes(groupSegment)) continue;
+      if (shortenLinkType(link.entryLinkType) === 'schema-join') continue;
+      const key = linkDedupKey(link);
+      if (!byKey.has(key)) {
+        byKey.set(key, link);
+      }
+    }
+  }
+
+  return [...byKey.values()];
 }
 
 async function* fetchEntries(

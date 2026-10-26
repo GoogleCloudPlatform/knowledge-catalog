@@ -45,6 +45,18 @@ export interface MetadataChange {
     aspectKeys: string[];
     deleteMissingAspects: boolean;
   };
+  deleteEntryRequest?: { name: string; };
+  createEntryLinkRequest?: {
+    parent: string;
+    entryLinkId: string;
+    entryLink: EntryLink;
+  };
+  updateEntryLinkRequest?: {
+    entryLink: EntryLink;
+    allowMissing?: boolean;
+    aspectKeys?: string[];
+  };
+  deleteEntryLinkRequest?: { name: string; };
 }
 
 // Renders a finished operation's failure as a message, or returns undefined

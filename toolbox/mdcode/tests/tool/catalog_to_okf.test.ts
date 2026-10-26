@@ -12,7 +12,8 @@ import * as path from 'node:path';
 
 import {ApiResult} from '../../src/libts/gcp/api';
 import {ApiContext} from '../../src/libts/gcp/context';
-import {CatalogClient, Entry} from '../../src/libts/gcp/dataplex';
+import {CatalogClient, Entry, EntryLink} from '../../src/libts/gcp/dataplex';
+import {readBundleLinks} from '../../src/libts/okf/links';
 import {pull} from '../../src/tool/commands';
 
 const CTX = new ApiContext('p', 'us', 'token');
@@ -43,7 +44,7 @@ let dir = '';
 let cwd = '';
 
 /** Makes the scope resolve and `listEntries` yield the given entries. */
-function stubCatalog(entries: Entry[]): void {
+function stubCatalog(entries: Entry[], links: EntryLink[] = []): void {
   spyOn(CatalogClient.prototype, 'getEntryGroup')
       .mockImplementation(async () => ok({name: GROUP}));
   spyOn(CatalogClient.prototype, 'listEntries')
@@ -53,6 +54,10 @@ function stubCatalog(entries: Entry[]): void {
   spyOn(CatalogClient.prototype, 'lookupEntry')
       .mockImplementation(async (_p: string, _l: string, name: string) =>
           ok(entries.find(e => e.name === name)));
+  spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+      .mockImplementation(async (_p: string, _l: string, opts: {entry: string}) =>
+          ok(links.filter(l =>
+              (l.entryReferences ?? []).some(r => r.name === opts.entry))));
 }
 
 beforeEach(() => {
@@ -174,5 +179,86 @@ describe('catalogToOkf', () => {
     expect(text).toContain('fields');
     // The overview is the body, so it must not also sit in the residue.
     expect(text.split('---')[1]).not.toContain('content: body');
+  });
+
+  test('writes bundle/_links.yaml when entry links exist and deduplicates across endpoints', async () => {
+    const entries = [
+      withOverview('glossary/revenue', '# Revenue\n'),
+      withOverview('queries/monthly_rev', '# Monthly Revenue\n'),
+    ];
+    const links: EntryLink[] = [
+      {
+        name: `${GROUP}/entryLinks/link-rel-1`,
+        entryLinkType:
+          'projects/dataplex-types/locations/global/entryLinkTypes/related',
+        entryReferences: [
+          {name: `${GROUP}/entries/glossary/revenue`, type: 'UNSPECIFIED'},
+          {name: `${GROUP}/entries/queries/monthly_rev`, type: 'UNSPECIFIED'},
+        ],
+      },
+      {
+        name: `${GROUP}/entryLinks/link-def-1`,
+        entryLinkType:
+          'projects/dataplex-types/locations/global/entryLinkTypes/definition',
+        entryReferences: [
+          {name: `${GROUP}/entries/glossary/revenue`, type: 'SOURCE'},
+          {
+            name: 'projects/p/locations/us/entryGroups/@bigquery/entries/bq.p.d.orders',
+            path: 'Schema.amount',
+            type: 'TARGET',
+          },
+        ],
+      },
+    ];
+    stubCatalog(entries, links);
+
+    expect(await pull()).toBe(0);
+
+    const linksYaml = read('_links.yaml');
+    expect(linksYaml).toContain('type: related');
+    expect(linksYaml).toContain('- glossary/revenue');
+    expect(linksYaml).toContain('- queries/monthly_rev');
+    expect(linksYaml).toContain('type: definition');
+    expect(linksYaml).toContain('name: glossary/revenue');
+    expect(linksYaml).toContain('type: SOURCE');
+    expect(linksYaml).toContain(
+      'name: projects/p/locations/us/entryGroups/@bigquery/entries/bq.p.d.orders',
+    );
+    expect(linksYaml).toContain('path: Schema.amount');
+    expect(linksYaml).toContain('type: TARGET');
+  });
+
+  test('a pulled link round-trips: system type under a project number, and its id', async () => {
+    // Knowledge Catalog returns system link types under the project number of
+    // dataplex-types and entry names under the project number.
+    const numbered = 'projects/123456/locations/us/entryGroups/kb';
+    stubCatalog([withOverview('a', 'x'), withOverview('b', 'y')]);
+    const live: EntryLink[] = [{
+          name: `${numbered}/entryLinks/made-elsewhere`,
+          entryLinkType: 'projects/655216118709/locations/global/entryLinkTypes/related',
+          // As returned live: no reference type on an undirected link.
+          entryReferences: [
+            {name: `${numbered}/entries/a`},
+            {name: `${numbered}/entries/b`},
+          ] as EntryLink['entryReferences'],
+        }];
+    spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+        .mockImplementation(async () => ok(live));
+
+    expect(await pull()).toBe(0);
+
+    const linksYaml = read('_links.yaml');
+    expect(linksYaml).toContain('id: made-elsewhere');
+    expect(linksYaml).toContain('type: related');
+    expect(linksYaml).not.toContain('655216118709');
+    const {links} = readBundleLinks(path.join(dir, 'bundle'), GROUP);
+    expect(links).toEqual([{
+      name: `${GROUP}/entryLinks/made-elsewhere`,
+      entryLinkType: 'projects/dataplex-types/locations/global/entryLinkTypes/related',
+      entryReferences: [
+        {name: `${GROUP}/entries/a`, type: 'UNSPECIFIED'},
+        {name: `${GROUP}/entries/b`, type: 'UNSPECIFIED'},
+      ],
+    }]);
   });
 });

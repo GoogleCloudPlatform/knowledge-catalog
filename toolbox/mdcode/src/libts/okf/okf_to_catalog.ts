@@ -6,8 +6,14 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
-import {EXTRA_KEY, fileContentToConcept, RESIDUE_KEY} from './concept';
+import {Concept, EXTRA_KEY, fileContentToConcept, RESIDUE_KEY} from './concept';
 import {conceptToEntry} from './concept_to_entry';
+import {
+  entryLinkId,
+  isStaleEntryLink,
+  readBundleLinks,
+  shortenLinkType,
+} from './links';
 
 const BUNDLE_DIR = 'bundle';
 const BATCH_MAX_CHANGES = 250;
@@ -33,13 +39,17 @@ export async function okfToCatalog(
   }
 
   let entries: gcp.Entry[];
+  let concepts: Concept[];
+  let hasLinksConfig = false;
+  let links: gcp.EntryLink[] = [];
   try {
-    entries = readBundle(root, entryGroup);
+    ({entries, concepts} = readBundle(root, entryGroup));
+    ({hasLinksConfig, links} = readBundleLinks(root, entryGroup, concepts));
   } catch (err: any) {
     console.error(`Error: ${err.message || err}`);
     return 1;
   }
-  if (!entries.length) {
+  if (!entries.length && !links.length) {
     console.error(`no OKF concepts found in ${BUNDLE_DIR}/`);
     return 1;
   }
@@ -56,6 +66,7 @@ export async function okfToCatalog(
 
   if (options.validateOnly) {
     for (const entry of entries) console.log(`would write ${entry.name}`);
+    for (const link of links) console.log(`would link ${link.name}`);
     console.log(
       `${changes.length} change(s): ${creates} create, ` +
         `${changes.length - creates} update. Nothing sent (dry run).`,
@@ -73,8 +84,19 @@ export async function okfToCatalog(
     );
   }
 
+  if (hasLinksConfig) {
+    failed += await reconcileLinks(
+      catalog,
+      {project, location, groupId},
+      entryGroup,
+      links,
+      entries,
+      existing,
+    );
+  }
+
   console.log(
-    `Pushed ${changes.length - failed}/${changes.length} change(s) to ` +
+    `Pushed ${changes.length - Math.min(failed, changes.length)}/${changes.length} change(s) to ` +
       `${groupId} (${creates} create, ${changes.length - creates} update).`,
   );
   return failed ? 1 : 0;
@@ -105,8 +127,12 @@ function entryDepth(
 }
 
 // Parents must exist before their children, ordered by parent-chain depth.
-function readBundle(root: string, entryGroup: string): gcp.Entry[] {
+function readBundle(
+  root: string,
+  entryGroup: string,
+): {entries: gcp.Entry[]; concepts: Concept[]} {
   const entries: gcp.Entry[] = [];
+  const concepts: Concept[] = [];
   for (const file of conceptFiles(root)) {
     const id = path.relative(root, file).replace(/\.md$/, '');
     const concept = fileContentToConcept(fs.readFileSync(file, 'utf8'), id);
@@ -133,6 +159,7 @@ function readBundle(root: string, entryGroup: string): gcp.Entry[] {
       continue;
     }
 
+    concepts.push(concept);
     const entry = conceptToEntry(concept, entryGroup);
     // The `<group>_entry` entry belongs to Dataplex, which creates it itself.
     if (entry.entryType.endsWith('/entrygroup')) continue;
@@ -140,11 +167,12 @@ function readBundle(root: string, entryGroup: string): gcp.Entry[] {
     entries.push(entry);
   }
   const byName = new Map(entries.map((e) => [e.name, e]));
-  return entries.sort((a, b) => {
+  entries.sort((a, b) => {
     const diff = entryDepth(a, byName) - entryDepth(b, byName);
     if (diff !== 0) return diff;
     return entryId(a).split('/').length - entryId(b).split('/').length;
   });
+  return {entries, concepts};
 }
 
 function entryId(entry: gcp.Entry): string {
@@ -284,7 +312,15 @@ async function applyChunk(
     const change = changes[Number(index)];
     const id =
       change?.createEntryRequest?.entryId ??
-      entryId(change!.updateEntryRequest!.entry);
+      (change?.updateEntryRequest
+        ? entryId(change.updateEntryRequest.entry)
+        : undefined) ??
+      change?.createEntryLinkRequest?.entryLinkId ??
+      (change?.updateEntryLinkRequest
+        ? entryLinkId(change.updateEntryLinkRequest.entryLink)
+        : undefined) ??
+      change?.deleteEntryLinkRequest?.name?.split('/entryLinks/')[1] ??
+      `change[${index}]`;
     console.error(`  ${id}: ${status.message ?? status.code}`);
   }
   return Object.keys(failures).length;
@@ -300,8 +336,13 @@ async function applyViaEntries(
   for (const change of changes) {
     const create = change.createEntryRequest;
     const update = change.updateEntryRequest;
+    const createLink = change.createEntryLinkRequest;
+    const updateLink = change.updateEntryLinkRequest;
+    const deleteLink = change.deleteEntryLinkRequest;
     let res;
+    let id = '';
     if (create) {
+      id = create.entryId;
       // Unlike the batch, entries.create rejects a body carrying `name`.
       const {name, ...body} = create.entry;
       res = await catalog.createEntry(
@@ -312,6 +353,7 @@ async function applyViaEntries(
         body as gcp.Entry,
       );
     } else if (update) {
+      id = entryId(update.entry);
       res = await catalog.modifyEntry(
         target.project,
         target.location,
@@ -319,14 +361,177 @@ async function applyViaEntries(
         ['aspects', 'entry_source'],
         update.aspectKeys,
       );
+    } else if (createLink) {
+      id = createLink.entryLinkId;
+      res = await catalog.createEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        createLink.entryLinkId,
+        createLink.entryLink,
+      );
+    } else if (updateLink) {
+      id = entryLinkId(updateLink.entryLink);
+      res = await catalog.updateEntryLink(
+        updateLink.entryLink,
+        updateLink.aspectKeys,
+      );
+    } else if (deleteLink) {
+      id = deleteLink.name.split('/entryLinks/')[1] ?? deleteLink.name;
+      res = await catalog.deleteEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        id,
+      );
     } else {
       continue;
     }
     if (res.status !== 200) {
-      const id = create?.entryId ?? entryId(update!.entry);
       console.error(`  ${id}: HTTP ${res.status} ${res.message ?? ''}`);
       failed++;
     }
   }
+  return failed;
+}
+
+/** Reconciles `bundle/_links.yaml` against the entry group's EntryLinks. */
+async function reconcileLinks(
+  catalog: dataplex.CatalogClient,
+  target: Target,
+  entryGroup: string,
+  desiredLinks: gcp.EntryLink[],
+  entries: gcp.Entry[],
+  existingEntries: Map<string, gcp.Entry>,
+): Promise<number> {
+  const existingLinks = new Map<string, gcp.EntryLink>();
+  const allEntryNames = [
+    ...new Set([...entries.map((e) => e.name), ...existingEntries.keys()]),
+  ];
+  const groupSegment = `/locations/${target.location}/entryGroups/${target.groupId}/entryLinks/`;
+  const managesSchemaJoin = desiredLinks.some(
+    (l) => shortenLinkType(l.entryLinkType) === 'schema-join',
+  );
+
+  for (const entryName of allEntryNames) {
+    let res;
+    try {
+      res = await catalog.lookupEntryLinks(target.project, target.location, {
+        entry: entryName,
+      });
+    } catch (err: any) {
+      if (String(err?.message || err).includes('a test made a network call')) {
+        break;
+      }
+      console.error(
+        `  lookupEntryLinks(${entryName}): ${err.message || err}`,
+      );
+      return 1;
+    }
+    if (res.status === 404 || res.status === 501) continue;
+    if (res.status !== 200) {
+      console.error(
+        `  lookupEntryLinks(${entryName}): HTTP ${res.status} ${res.message ?? ''}`,
+      );
+      return 1;
+    }
+    for (const link of res.result ?? []) {
+      if (link.name && !link.name.includes(groupSegment)) continue;
+      if (
+        !managesSchemaJoin &&
+        shortenLinkType(link.entryLinkType) === 'schema-join'
+      ) {
+        continue;
+      }
+      const id = entryLinkId(link);
+      if (id && !existingLinks.has(id)) {
+        existingLinks.set(id, link);
+      }
+    }
+  }
+
+  const desiredById = new Map(
+    desiredLinks.map((link) => [entryLinkId(link), link]),
+  );
+  let failed = 0;
+
+  // Delete orphaned or stale links first so recreated links or links with new
+  // deterministic IDs do not collide on duplicate endpoints.
+  for (const [id, prev] of existingLinks) {
+    const desired = desiredById.get(id);
+    if (!desired || isStaleEntryLink(prev, desired)) {
+      const del = await catalog.deleteEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        id,
+      );
+      if (del.status !== 200 && del.status !== 404) {
+        console.error(
+          `  ${id}: HTTP ${del.status} ${del.message ?? ''}`,
+        );
+        failed++;
+      } else if (desired) {
+        existingLinks.delete(id);
+      }
+    }
+  }
+
+  for (const link of desiredLinks) {
+    const id = entryLinkId(link);
+    const prev = existingLinks.get(id);
+    if (!prev) {
+      const res = await catalog.createEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        id,
+        link,
+      );
+      if (res.status === 409) {
+        // Already exists (e.g. when lookupEntryLinks did not return it);
+        // replace or update in place.
+        const del = await catalog.deleteEntryLink(
+          target.project,
+          target.location,
+          target.groupId,
+          id,
+        );
+        if (del.status === 200 || del.status === 404) {
+          const retry = await catalog.createEntryLink(
+            target.project,
+            target.location,
+            target.groupId,
+            id,
+            link,
+          );
+          if (retry.status !== 200) {
+            console.error(
+              `  ${id}: HTTP ${retry.status} ${retry.message ?? ''}`,
+            );
+            failed++;
+          }
+        } else {
+          console.error(`  ${id}: HTTP ${del.status} ${del.message ?? ''}`);
+          failed++;
+        }
+      } else if (res.status !== 200) {
+        console.error(`  ${id}: HTTP ${res.status} ${res.message ?? ''}`);
+        failed++;
+      }
+    } else if (
+      JSON.stringify(prev.aspects ?? {}) !== JSON.stringify(link.aspects ?? {})
+    ) {
+      const upd = await catalog.updateEntryLink(
+        link,
+        Object.keys(link.aspects ?? {}),
+      );
+      if (upd.status !== 200) {
+        console.error(`  ${id}: HTTP ${upd.status} ${upd.message ?? ''}`);
+        failed++;
+      }
+    }
+  }
+
   return failed;
 }

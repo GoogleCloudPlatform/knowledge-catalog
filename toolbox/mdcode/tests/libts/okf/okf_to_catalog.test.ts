@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
-import {CatalogClient, Entry, MetadataChange} from '../../../src/libts/gcp/dataplex';
+import {CatalogClient, Entry, EntryLink, MetadataChange} from '../../../src/libts/gcp/dataplex';
 import {okfToCatalog} from '../../../src/libts/okf/okf_to_catalog';
 
 const CTX = new ApiContext('dst-project', 'us', 'token');
@@ -287,5 +287,118 @@ describe('okfToCatalog', () => {
     expect(create).not.toHaveBeenCalled();
     batch.mockRestore();
     create.mockRestore();
+  });
+
+  test('pushes bundle/_links.yaml (related and definition links) and deletes orphaned links', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      [
+        'links:',
+        '  - type: related',
+        '    entries:',
+        '      - assets',
+        '      - assets/t',
+        '  - type: definition',
+        '    entries:',
+        '      - name: assets/t',
+        '        type: SOURCE',
+        '      - name: projects/ext/locations/us/entryGroups/@bigquery/entries/bq.p.d.t',
+        '        path: Schema.col1',
+        '        type: TARGET',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const batch = spyOn(CatalogClient.prototype, 'batchChangeMetadata')
+      .mockImplementation(async () => okOperation() as any);
+    spyOn(CatalogClient.prototype, 'awaitOperation').mockImplementation(
+      async () => undefined,
+    );
+    spyOn(CatalogClient.prototype, 'getOperation').mockImplementation(
+      async () => ({status: 200, result: {done: true}}) as any,
+    );
+    const lookup = spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+      .mockImplementation(
+        async () =>
+          ({
+            status: 200,
+            result: [
+              {
+                name: `${GROUP}/entryLinks/link-orphaned`,
+                entryLinkType:
+                  'projects/dataplex-types/locations/global/entryLinkTypes/related',
+                entryReferences: [
+                  {name: `${GROUP}/entries/assets`, type: 'UNSPECIFIED'},
+                  {name: `${GROUP}/entries/old`, type: 'UNSPECIFIED'},
+                ],
+              },
+            ],
+          }) as any,
+      );
+    const deleted: string[] = [];
+    const delLink = spyOn(CatalogClient.prototype, 'deleteEntryLink')
+      .mockImplementation(async (_p, _l, _g, id: string) => {
+        deleted.push(id);
+        return {status: 200, result: {}} as any;
+      });
+    const created: Array<{id: string; link: EntryLink}> = [];
+    const createLink = spyOn(CatalogClient.prototype, 'createEntryLink')
+      .mockImplementation(async (_p, _l, _g, id: string, link: EntryLink) => {
+        created.push({id, link});
+        return {status: 200, result: link} as any;
+      });
+    spyOn(console, 'log').mockImplementation(() => {});
+
+    const code = await okfToCatalog(CTX, snapshotFor(base));
+
+    expect(code).toBe(0);
+    expect(deleted).toEqual(['link-orphaned']);
+    expect(created).toHaveLength(2);
+    expect(created[0].link.entryLinkType).toBe(
+      'projects/dataplex-types/locations/global/entryLinkTypes/related',
+    );
+    expect(created[0].link.entryReferences).toEqual([
+      {name: `${GROUP}/entries/assets`, type: 'UNSPECIFIED'},
+      {name: `${GROUP}/entries/assets/t`, type: 'UNSPECIFIED'},
+    ]);
+    expect(created[1].link.entryLinkType).toBe(
+      'projects/dataplex-types/locations/global/entryLinkTypes/definition',
+    );
+    expect(created[1].link.entryReferences).toEqual([
+      {name: `${GROUP}/entries/assets/t`, type: 'SOURCE'},
+      {
+        name: 'projects/ext/locations/us/entryGroups/@bigquery/entries/bq.p.d.t',
+        path: 'Schema.col1',
+        type: 'TARGET',
+      },
+    ]);
+
+    batch.mockRestore();
+    lookup.mockRestore();
+    delLink.mockRestore();
+    createLink.mockRestore();
+  });
+
+  test('--validate-only logs would link for bundle/_links.yaml without network calls', async () => {
+    const base = bundle();
+    fs.writeFileSync(
+      path.join(base, 'bundle', '_links.yaml'),
+      'links:\n  - type: related\n    entries:\n      - assets\n      - assets/t\n',
+      'utf8',
+    );
+    const logs: string[] = [];
+    spyOn(console, 'log').mockImplementation((m: any) => void logs.push(String(m)));
+    const createLink = spyOn(CatalogClient.prototype, 'createEntryLink');
+
+    const code = await okfToCatalog(CTX, snapshotFor(base), {
+      validateOnly: true,
+    });
+
+    expect(code).toBe(0);
+    expect(logs.some((l) => l.startsWith(`would link ${GROUP}/entryLinks/link-`))).toBe(true);
+    expect(createLink).not.toHaveBeenCalled();
+    createLink.mockRestore();
   });
 });
