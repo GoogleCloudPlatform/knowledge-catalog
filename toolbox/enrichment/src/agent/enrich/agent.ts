@@ -2,7 +2,7 @@
 //
 
 import * as adk from '@google/adk';
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 
 
 const NAME = 'kcagent-enrich';
