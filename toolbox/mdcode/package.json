@@ -1,7 +1,16 @@
 {
-  "name": "kcmd",
+  "name": "@google-cloud/kcmd",
   "version": "0.1.0",
   "description": "Google Knowledge Catalog Metadata as Code Library, CLI and MCP Server",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GoogleCloudPlatform/knowledge-catalog.git",
+    "directory": "toolbox/mdcode"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://wombat-dressing-room.appspot.com"
+  },
   "main": "index.js",
   "bin": {
     "kcmd": "./dist/kcmd"

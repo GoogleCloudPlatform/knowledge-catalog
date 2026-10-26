@@ -1,4 +1,4 @@
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 
 const context = kcmd.gcp.ApiContext.default();
 const catalogSnapshot = await kcmd.CatalogSnapshot.fromPath('.', context);

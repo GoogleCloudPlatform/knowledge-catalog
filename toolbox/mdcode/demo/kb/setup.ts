@@ -1,6 +1,6 @@
 import * as cp from 'child_process';
 import * as path from 'node:path';
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 import { YAML } from 'bun';
 
 const context = kcmd.gcp.ApiContext.default();
