@@ -151,6 +151,18 @@ scenarios('kcmd profiles reports what push rejects', [
     ['a malformed overview sidecar', {v2Aspects: true, files: {
        'commerce.overview.md': '---\ncontentType: markdown\n---\nOrders.\n',
      }}, "not 'markdown'", {'': [pushed()], 'no profiles': []}],
+    ['a model file that does not load beside a misnamed profile file', {files: {
+       'commerce.yaml': modelFile(MODEL)
+           .replace('    entities:\n', '    bogus_key: 1\n    entities:\n'),
+       'commerce.profile.prod.yaml': 'name: staging\n',
+     }}, 'bogus_key', {'': [pushed()]}],
+    ['a vanilla model file that does not load beside a GOOGLE block that ' +
+         'does not load', {files: {
+       'commerce.yaml': modelFile({google: {deployments: [graph('prod')]}})
+           .replace('    datasets:\n', "      - vendor_name: GOOGLE\n" +
+                    "        data: '[]'\n    datasets:\n")
+           .replace('        primary_key:', '        bogus_key: 1\n        primary_key:'),
+     }}, 'bogus_key', {'': [pushed()]}],
     ['a repeated metrics_exclude name the model lacks',
      {profiles: {prod: {...PROD, metrics_exclude: ['nope', 'nope']}}},
      "metric 'nope' in 'metrics_exclude'", {prod: [pushed()]}],

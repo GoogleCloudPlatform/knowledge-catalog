@@ -3035,7 +3035,14 @@ semantic_model:
           "'commerce.yaml', which is a 0.2.0.dev0 document";
 
       await expect(push({validateOnly: true, profile: 'prod'})).rejects.toThrow(beside);
-      await expect(profiles()).rejects.toThrow(beside);
+      // A plain push loads the model file first, and so does the report.
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+      expect(await push({validateOnly: true})).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
+      expect(messages(errorSpy)).not.toContain(beside);
+      errorSpy.mockClear();
+      expect(await profiles()).toBe(1);
+      expect(messages(errorSpy)).toContain(problem);
     });
   }
 

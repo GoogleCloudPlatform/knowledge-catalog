@@ -2372,13 +2372,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     }
   };
 
-  // The profiles are read before anything prints, as a graph push reads them.
-  // A profile file that breaks a layout rule throws. When a model's GOOGLE
-  // block profiles cannot be read, the error is printed and the command exits
-  // 1.
-  for (const doc of docs) {
-    if (!readDeclaredProfiles(declaredBy, doc)) return 1;
-  }
   // The errors of a plain push's checks, when a plain push runs in two
   // phases. They replace the checks below.
   let twoPhase: LocalCheckError[]|undefined;
@@ -2398,6 +2391,22 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   }
   const twoPhaseErrors = (belongs: (e: LocalCheckError) => boolean) =>
       [...new Set((twoPhase ?? []).filter(belongs).map(e => e.error))];
+  // Reads every model's profiles. When that fails after a two-phase push
+  // stopped at another error, prints that push's errors instead.
+  for (const doc of docs) {
+    try {
+      declaredBy(doc);
+    } catch (err: any) {
+      const stopped = twoPhaseErrors(() => true);
+      if (stopped.length && !stopped.includes(err.message)) {
+        printRejects('', stopped);
+        return 1;
+      }
+      if (!(err instanceof SemanticModelError)) throw err;
+      console.error(`Error: ${err.message}`);
+      return 1;
+    }
+  }
   // The two-phase errors that belong to `document` and `profile`. With
   // neither, those of the whole push.
   const twoPhaseErrorsOf = (document?: string, profile?: string) =>
