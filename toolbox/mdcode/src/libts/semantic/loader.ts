@@ -51,6 +51,10 @@ export interface LoadOptions {
   // source names a table, not its engine, so the model implies none and every
   // expression text counts.
   cloudSqlDialects?: ReadonlyMap<string, string>;
+  // Turns `parseSource`'s rejection of an unaccepted table source form into a
+  // warning so a caller can load a document whose sources have not all been
+  // repointed yet.
+  warnUnacceptedSource?: boolean;
 }
 
 export interface LoadResult {
@@ -139,7 +143,7 @@ const ACCEPTED_VERSIONS: readonly FormatVersion[] = [
   GOOGLE_VERSION,
 ];
 
-function isFormatVersion(v: string): v is FormatVersion {
+export function isFormatVersion(v: string): v is FormatVersion {
   return (ACCEPTED_VERSIONS as readonly string[]).includes(v);
 }
 
@@ -1166,7 +1170,7 @@ function composeDescription(...parts: (string|undefined)[]): string|undefined {
 
 // The vendor tag for Google-specific extension blocks (kept in sync with the
 // deploy leg's reader). A model-level `deployments:` list folds into one.
-const GOOGLE_VENDOR = 'GOOGLE';
+export const GOOGLE_VENDOR = 'GOOGLE';
 
 // Rewrites the author-friendly sugar forms into the canonical wire shape the
 // schema validates, and rejects deprecated or flavor-mismatched model keys up
@@ -1308,7 +1312,8 @@ export function isGoogleVendor(vendorName: unknown): boolean {
 }
 
 // True when a block list names the GOOGLE vendor.
-function hasGoogleBlock(exts: CustomExtensionDoc[]|undefined): boolean {
+export function hasGoogleBlock(
+    exts: ReadonlyArray<{vendor_name?: unknown}>|undefined): boolean {
   return !!exts?.some(e => isGoogleVendor(e.vendor_name));
 }
 
@@ -1844,15 +1849,16 @@ function requireVanillaBindings(m: ModelDoc): void {
   }
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
+export function isRecord(v: unknown): v is Record<string, any> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
 }
 
 // Each model, dataset, field, relationship and metric in a parsed document
 // that carries an `ai_context`, with the label errors use for it. Runs before
 // schema validation, so it skips anything not shaped as expected.
-function* modelAiContexts(doc: unknown):
-    Generator<{ai: Record<string, unknown>; label: string}> {
+export function*
+    modelAiContexts(doc: unknown):
+        Generator<{ai: Record<string, unknown>; label: string}> {
   const list = (v: unknown) => (Array.isArray(v) ? v : []);
   const named = (kind: string, name: unknown) =>
       typeof name === 'string' ? `${kind} '${name}'` : kind;
@@ -2300,7 +2306,7 @@ function convertDataset(
   // dataSource) and no key -- both are meaningless for a class never
   // materialized. Only a concrete entity is parsed/warned for those.
   const parsedSource = ds.source !== undefined ?
-      parseSource(ds.source, opts, ctxLabel) :
+      parseSource(ds.source, opts, ctxLabel, warnings) :
       undefined;
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
@@ -3377,7 +3383,8 @@ function thirdPartySourceError(source: string, ctx: string): string|undefined {
 // source as written. Throws on a form the loader does not accept. A profile
 // file's sources are read here too, so they follow the same rules.
 export function parseSource(
-    source: string, opts: LoadOptions, ctx: string): ParsedSource {
+    source: string, opts: LoadOptions, ctx: string,
+    warnings?: string[]): ParsedSource {
   const trimmed = source.trim();
 
   if (hasUnquotedWhitespace(trimmed)) {
@@ -3389,14 +3396,8 @@ export function parseSource(
   }
 
   const problem = oldSourceForm(trimmed);
-  if (problem !== undefined) {
-    throw new SemanticModelError(
-        `Semantic model load error: ${ctx}: source '${trimmed}' is ${problem}.`);
-  }
-  const name = asResourceName(trimmed);
-
   // The accepted form: a GCP resource name.
-  if (isAcceptedSource(trimmed)) {
+  if (problem === undefined && isAcceptedSource(trimmed)) {
     const cloudSql = cloudSqlTableOf(trimmed);
     const sourceDialect = cloudSql &&
         opts.cloudSqlDialects?.get(cloudSql.resourceName);
@@ -3406,6 +3407,16 @@ export function parseSource(
       ...(sourceDialect ? {sourceDialect} : {}),
     };
   }
+  if (opts.warnUnacceptedSource) {
+    warnings?.push(
+        `${ctx}: source '${trimmed}' is not a valid GCP resource name.`);
+    return {authoredSource: trimmed, dataSource: ''};
+  }
+  if (problem !== undefined) {
+    throw new SemanticModelError(`Semantic model load error: ${ctx}: source '${
+        trimmed}' is ${problem}.`);
+  }
+  const name = asResourceName(trimmed);
 
   // Legacy instance-based AlloyDB name: accepted under opt-in, written as a
   // resource name; otherwise, and in any spelling, reported with the

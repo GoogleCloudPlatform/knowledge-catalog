@@ -197,7 +197,7 @@ export function mergeProfile(
 // A deep copy in which every node is its own object. structuredClone keeps a
 // YAML anchor and its aliases as one object, so a profile that rebinds or
 // excludes a field on one entity would change every entity that aliases it.
-function plainCopy(value: unknown): any {
+export function plainCopy(value: unknown): any {
   if (Array.isArray(value)) return value.map(plainCopy);
   if (value && typeof value === 'object') {
     return Object.fromEntries(
