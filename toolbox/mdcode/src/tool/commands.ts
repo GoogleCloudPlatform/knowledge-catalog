@@ -170,13 +170,8 @@ export function checkPushSelection(sel: {
 // does not silently take the logical path. A block whose data is not a string
 // is skipped, and the load rejects it.
 export function declaresGraphTarget(text: string): boolean {
-  let doc: any;
-  try {
-    doc = yaml.parse(text, YAML_OPTIONS);
-  } catch {
-    return true;  // let the strict loader report the parse error
-  }
-  const models = Array.isArray(doc?.semantic_model) ? doc.semantic_model : [];
+  const models = parsedModels(text);
+  if (!models) return true;  // let the strict loader report the parse error
   for (const m of models) {
     if (typeof m?.deployment_target === 'string' &&
         m.deployment_target.trim()) {
@@ -185,21 +180,17 @@ export function declaresGraphTarget(text: string): boolean {
     if (Array.isArray(m?.deployments) && m.deployments.length > 0) {
       return true;
     }
-    const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
-    for (const ext of exts) {
-      if (!isGoogleVendor(ext?.vendor_name) || typeof ext?.data !== 'string') {
-        continue;
-      }
+    for (const json of googleData(m)) {
       // The rule every other reader uses: a blank target names nothing, and
       // a non-string one is a target in no accepted form, which the target
       // checks reject.
       let data: unknown;
       try {
-        if (googleBlockTargets([{vendorName: 'GOOGLE', data: ext.data}], '')
+        if (googleBlockTargets([{vendorName: 'GOOGLE', data: json}], '')
                 .length) {
           return true;
         }
-        data = JSON.parse(ext.data);
+        data = JSON.parse(json);
       } catch {
         return true;  // malformed GOOGLE data: strict load will name it
       }
@@ -208,7 +199,7 @@ export function declaresGraphTarget(text: string): boolean {
       }
       // JSON.parse keeps the last of a repeated key, so an earlier value may
       // list a target. The strict load rejects the repeat.
-      if (setsAKeyTwice(ext.data)) return true;
+      if (setsAKeyTwice(json)) return true;
       const {deployments, deploymentTargets} =
           data as {deployments?: unknown; deploymentTargets?: unknown};
       if (deploymentTargets !== undefined &&
@@ -222,6 +213,26 @@ export function declaresGraphTarget(text: string): boolean {
     }
   }
   return false;
+}
+
+// The `semantic_model` entries of a model document's text, or undefined when
+// the YAML does not parse.
+function parsedModels(text: string): any[]|undefined {
+  try {
+    const doc = yaml.parse(text, YAML_OPTIONS);
+    return Array.isArray(doc?.semantic_model) ? doc.semantic_model : [];
+  } catch {
+    return undefined;
+  }
+}
+
+// The data strings of a parsed model's GOOGLE blocks. A block whose data is
+// not a string is left out.
+function googleData(m: any): string[] {
+  const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
+  return exts.filter((ext: any) => isGoogleVendor(ext?.vendor_name))
+      .map((ext: any) => ext.data)
+      .filter((data: unknown) => typeof data === 'string');
 }
 
 
@@ -1586,28 +1597,15 @@ export async function push(options: PushOptions): Promise<number> {
 // list, directly or in a GOOGLE block's data. YAML or JSON that does not
 // parse lists none.
 function listsDeployments(text: string): boolean {
-  let doc: any;
-  try {
-    doc = yaml.parse(text, YAML_OPTIONS);
-  } catch {
-    return false;
-  }
   const nonEmpty = (v: unknown) => Array.isArray(v) && v.length > 0;
-  const models = Array.isArray(doc?.semantic_model) ? doc.semantic_model : [];
-  return models.some((m: any) => {
-    if (nonEmpty(m?.deployments)) return true;
-    const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
-    return exts.some((ext: any) => {
-      if (!isGoogleVendor(ext?.vendor_name) || typeof ext?.data !== 'string') {
-        return false;
-      }
-      try {
-        return nonEmpty(JSON.parse(ext.data)?.deployments);
-      } catch {
-        return false;
-      }
-    });
-  });
+  return !!parsedModels(text)?.some(
+      m => nonEmpty(m?.deployments) || googleData(m).some(json => {
+        try {
+          return nonEmpty(JSON.parse(json)?.deployments);
+        } catch {
+          return false;
+        }
+      }));
 }
 
 // Which of `--deployment` and `--no-deployment` the push options carry.
