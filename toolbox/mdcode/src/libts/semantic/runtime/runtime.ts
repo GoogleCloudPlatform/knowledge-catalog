@@ -154,13 +154,13 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     return {error: `${err?.message ?? err}`};
   }
 
-  // Push reads every model's profiles first, whichever profile it deploys:
-  // its profile files, then the profiles a vanilla model carries in its
-  // GOOGLE block. It refuses the scope when profileDocuments rejects a file,
-  // such as a `<model>.profile.<name>.yaml` file whose `name:` does not match
-  // its file name, or when a GOOGLE block profile does not load. It also
-  // refuses it when a model declares a profile named `default` in any letter
-  // case.
+  // The runtime reads every model's profiles first, as
+  // `kcmd push --profile <name>` does: its profile files, then the profiles
+  // a vanilla model carries in its GOOGLE block. It refuses the scope when
+  // profileDocuments rejects a file, such as a `<model>.profile.<name>.yaml`
+  // file whose `name:` does not match its file name, or when a GOOGLE block
+  // profile does not load. It also refuses it when a model declares a profile
+  // named `default` in any letter case.
   const profilesByDoc = new Map<string, DeclaredProfile[]>();
   // Each model's profile files alone, which an error applying one names.
   const filesByDoc =
