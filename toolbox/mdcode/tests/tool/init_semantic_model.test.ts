@@ -80,10 +80,12 @@ describe('init --semantic-model: entry-group provisioning', () => {
 
         expect(code).toBe(0);
         expect(group).toHaveBeenCalledTimes(1);
-        const [project, location, entryGroupId] = group.mock.calls[0];
+        const [project, location, entryGroupId, entryGroup] =
+            group.mock.calls[0];
         expect(project).toBe('proj');
         expect(location).toBe('us');
         expect(entryGroupId).toBe('sales-group');
+        expect(entryGroup).toEqual({type: 'context-set'});
         expect(
             fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
             .toBe(true);

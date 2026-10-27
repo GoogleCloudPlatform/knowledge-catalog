@@ -285,7 +285,8 @@ export async function init(options: InitOptions): Promise<number> {
     // (409) is success.
     const catalog = new dataplex.CatalogClient(ctx);
     const res = await catalog.createEntryGroup(
-        source.project, source.location, source.entryGroup);
+        source.project, source.location, source.entryGroup,
+        {type: 'context-set'});
     // A caller without create permission may be refused the create of an
     // entry group that exists. A lookup tells the two apart.
     const exists = res.status === 409 ||
