@@ -6,7 +6,9 @@ import {describe, expect, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {cloudSqlDialects, cloudSqlSourcesIn, EntryLookup} from '../../../src/libts/semantic/cloudsql_dialect';
+import {cloudSqlDialects, cloudSqlSourcesIn} from '../../../src/libts/semantic/cloudsql_dialect';
+import {EntryLookup} from '../../../src/libts/semantic/catalog_entry';
+import {entryDenied} from '../gcp/location_responses';
 
 const INSTANCE = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances';
 const MYSQL = `${INSTANCE}/shop/databases/sales/tables/orders`;
@@ -21,8 +23,7 @@ function fakeCatalog(answers: Record<string, ApiResult<{entryType?: string}>>) {
   const catalog: EntryLookup = {
     async lookupEntry(project, location, name) {
       calls.push({project, location, name});
-      return answers[name] ??
-          {status: 403, message: `Permission denied on resource \`${name}\` (or it may not exist).`};
+      return answers[name] ?? entryDenied(name);
     },
   };
   return {catalog, calls};

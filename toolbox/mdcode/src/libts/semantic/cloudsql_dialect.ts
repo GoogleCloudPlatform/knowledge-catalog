@@ -13,16 +13,9 @@
 
 import * as yaml from 'yaml';
 
-import {ApiResult} from '../gcp/api';
-
 import {cloudSqlTableOf} from './loader';
+import {EntryLookup, lookupSystemEntry} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
-
-// The one call this module makes; `CatalogClient` provides it.
-export interface EntryLookup {
-  lookupEntry(project: string, location: string, name: string):
-      Promise<ApiResult<{entryType?: string}>>;
-}
 
 // The dialect each Cloud SQL table or view entry type gives.
 const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
@@ -56,20 +49,16 @@ export async function cloudSqlDialects(
   const dialects = new Map<string, string>();
   const errors: string[] = [];
   await Promise.all([...tables.values()].map(async table => {
-    const entry = `projects/${table.project}/locations/${
-        table.location}/entryGroups/@cloudsql/entries/${table.resourceName}`;
     const at = `source '${table.resourceName}'`;
-    let res: ApiResult<{entryType?: string}>;
-    try {
-      res = await catalog.lookupEntry(table.project, table.location, entry);
-    } catch (err: any) {
-      errors.push(`${at}: looking up its Knowledge Catalog entry failed: ${
-          err?.message ?? err}`);
+    const res = await lookupSystemEntry(
+        catalog, 'cloudsql', table.project, table.location, table.resourceName);
+    if ('error' in res) {
+      errors.push(`${at}: ${res.error}`);
       return;
     }
     // Dataplex answers 403 both when the entry does not exist and when the
     // caller may not read it, so the message names both causes.
-    if (res.status === 403 || res.status === 404) {
+    if ('unreadable' in res) {
       errors.push(
           `${at}: kcmd reads a Cloud SQL table's dialect from its Knowledge ` +
           `Catalog entry, and could not read it. Turn on Dataplex ` +
@@ -79,11 +68,6 @@ export async function cloudSqlDialects(
           `the catalog, or check that you can read the table. If integration ` +
           `is on, check the name: the project ID, the instance's region, and ` +
           `a schema only for PostgreSQL and SQL Server.`);
-      return;
-    }
-    if (res.status !== 200 || !res.result) {
-      errors.push(`${at}: looking up its Knowledge Catalog entry failed (HTTP ${
-          res.status}${res.message ? `: ${res.message}` : ''}).`);
       return;
     }
     // The type comes back as a full name; its last part says the engine.

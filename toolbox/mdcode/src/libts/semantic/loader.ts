@@ -3044,6 +3044,31 @@ export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
       undefined;
 }
 
+// A BigQuery, BigLake, Spanner or AlloyDB table written as its resource name
+// or resource URI: its system, which names its catalog entry group, the parts
+// that say where its catalog entry lives, and its resource name with no
+// leading `//`, which is its entry id. A Cloud SQL table is cloudSqlTableOf's.
+export type SourceTable = {resourceName: string; project: string}&(
+    {system: 'bigquery'; dataset: string}|
+    {system: 'biglake'; catalog: string}|
+    {system: 'spanner'; instance: string}|
+    {system: 'alloydb'; location: string});
+
+// The table `source` names, or undefined when it names none of these.
+export function sourceTableOf(source: string): SourceTable|undefined {
+  const uri = asResourceUri(source.trim());
+  const resourceName = uri.slice(2);
+  let m = uri.match(BIGQUERY_TABLE_URI);
+  if (m) return {system: 'bigquery', resourceName, project: m[1], dataset: m[2]};
+  m = uri.match(BIGLAKE_TABLE_URI);
+  if (m) return {system: 'biglake', resourceName, project: m[1], catalog: m[2]};
+  m = uri.match(SPANNER_TABLE_URI);
+  if (m) return {system: 'spanner', resourceName, project: m[1], instance: m[2]};
+  m = uri.match(ALLOYDB_TABLE_URI);
+  if (m) return {system: 'alloydb', resourceName, project: m[1], location: m[2]};
+  return undefined;
+}
+
 // A GCP resource name: a Google Cloud service host and a path, with no leading
 // `//`, such as `bigquery.googleapis.com/projects/p/datasets/d/tables/t`.
 const RESOURCE_NAME = /^[a-z][a-z0-9-]*\.googleapis\.com\//;
