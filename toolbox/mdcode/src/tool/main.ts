@@ -24,7 +24,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
     .option('--pull', 'Optionally pull catalog entries during initialization')
     .option(
         '--format <format>',
-        'On-disk format. Only `okf` is accepted; omit for the default layout')
+        'How the workspace stores entries on disk, recorded in catalog.yaml for pull and push. Only `okf` (an OKF bundle under bundle/) is accepted; omit for the scope\'s default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -45,9 +45,6 @@ cli.command('pull', 'Pull catalog entries')
     .option(
         '--force-remove',
         'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails. Also deletes a local profile file the catalog\'s stored copies do not include (semantic-model scope)')
-    .option(
-        '--format <format>',
-        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -68,7 +65,8 @@ cli.command('push', 'Push catalog entries')
     .option(
         '--emit-expressions',
         'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
-    .option('--validate-only', 'Only validate changes without applying')
+    .option('--dry-run', 'Run every check and show what would change, without applying anything')
+    .option('--validate-only', 'Same as --dry-run')
     .option(
         '--no-profile',
         'Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched; the graph is deployed by default for the default binding profile; not accepted for a model that lists deployments; semantic-model push only')
@@ -92,9 +90,6 @@ cli.command('push', 'Push catalog entries')
     .option('--deployment [names...]', 'Deploy only these deployments, by name')
     .option(
         '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
-    .option(
-        '--format <format>',
-        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {

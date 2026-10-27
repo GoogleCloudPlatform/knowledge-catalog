@@ -150,6 +150,13 @@ kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
 # catalog/EntryGroups/<entryGroupId>/<model>.yaml.
 kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
 
+# Initialize an OKF workspace for an EntryGroup (or --kb): the entries are kept
+# as an Open Knowledge Format bundle under bundle/, with entry links in
+# bundle/_links.yaml. init records `layout: okf` in catalog.yaml, and pull and
+# push read it, so they take no flag. The entry group may not exist yet;
+# `kcmd push` creates it as a context set.
+kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format okf
+
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 # Reports any conflicts if there are pending changes that have not been
 # pushed to the catalog.

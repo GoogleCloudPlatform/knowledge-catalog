@@ -74,6 +74,26 @@ describe('okfToCatalog --validate-only', () => {
     expect(lines.at(-1)).toContain('2 change(s): 2 create, 0 update');
     batch.mockRestore();
   });
+
+  test('fails with exit code 1 on a malformed OKF concept', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'okfpush-bad-'));
+    const root = path.join(base, 'bundle');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'broken.md'),
+      '---\ntitle: missing type\n---\nbody\n',
+      'utf8',
+    );
+    const errors: string[] = [];
+    spyOn(console, 'error').mockImplementation((m: any) => void errors.push(m));
+
+    const code = await okfToCatalog(CTX, snapshotFor(base), {
+      validateOnly: true,
+    });
+
+    expect(code).toBe(1);
+    expect(errors.join('\n')).toContain('broken');
+  });
 });
 
 describe('okfToCatalog', () => {
@@ -127,7 +147,7 @@ describe('okfToCatalog', () => {
     batch.mockRestore();
   });
 
-  test('an entry that already exists becomes an update', async () => {
+  test('an entry that already exists updates aspects, entrySource, and parentEntry', async () => {
     let sent: MetadataChange[] = [];
     const batch = spyOn(CatalogClient.prototype, 'batchChangeMetadata')
       .mockImplementation(async (_p, _l, _g, changes: MetadataChange[]) => {
@@ -154,6 +174,51 @@ describe('okfToCatalog', () => {
     expect(update?.updateEntryRequest?.updateMask).not.toContain('parent_entry');
     expect(update?.updateEntryRequest?.deleteMissingAspects).toBe(false);
     expect(sent.filter((c) => c.createEntryRequest)).toHaveLength(1);
+    batch.mockRestore();
+  });
+
+  test('pushes a pure OKF bundle (index.md, <dir>/index.md, <dir>/<leaf>.md) in parent-first order', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'okfpush-pure-'));
+    const root = path.join(base, 'bundle');
+    fs.mkdirSync(path.join(root, 'tables'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'index.md'),
+      '---\nokf_version: "0.2"\n---\n# Austin bikeshare knowledge\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(root, 'tables/index.md'),
+      '# Tables\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(root, 'tables/bikeshare_trips.md'),
+      '---\ntype: Table\ntitle: bikeshare_trips\nstatus: verified\n---\n# bikeshare_trips\n',
+      'utf8',
+    );
+
+    let sent: MetadataChange[] = [];
+    const batch = spyOn(CatalogClient.prototype, 'batchChangeMetadata')
+      .mockImplementation(async (_p, _l, _g, changes: MetadataChange[]) => {
+        sent = changes;
+        return okOperation() as any;
+      });
+    spyOn(CatalogClient.prototype, 'awaitOperation').mockImplementation(
+      async () => undefined,
+    );
+    spyOn(CatalogClient.prototype, 'getOperation').mockImplementation(
+      async () => ({status: 200, result: {done: true}}) as any,
+    );
+    spyOn(console, 'log').mockImplementation(() => {});
+
+    const code = await okfToCatalog(CTX, snapshotFor(base));
+
+    expect(code).toBe(0);
+    expect(sent.map((c) => c.createEntryRequest?.entryId)).toEqual([
+      'agents',
+      'tables',
+      'tables/bikeshare_trips',
+    ]);
     batch.mockRestore();
   });
 

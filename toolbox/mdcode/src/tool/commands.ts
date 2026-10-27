@@ -9,10 +9,12 @@ import * as yaml from 'yaml';
 import * as kcmd from '../libts';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
+import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {fileNameOf, formatOverviewSidecar, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {catalogToOkf} from '../libts/okf/catalog_to_okf';
+import {fileContentToConcept} from '../libts/okf/concept';
 import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
 import {okfToCatalog} from '../libts/okf/okf_to_catalog';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
@@ -34,27 +36,38 @@ import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
 import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
+import {readWorkspaceLayout} from '../libts/manifest';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
 
 
-// `--format` selects an alternate on-disk format. Only `okf` exists; anything
+// `kcmd init --format <layout>` chooses how the workspace stores its entries
+// on disk, and records it as `layout:` in catalog.yaml; `pull` and `push` read
+// it back from there, so they take no format flag. Only `okf` exists. Anything
 // else throws rather than falling back to the default layout, which would
 // write a tree the caller did not ask for. main.ts turns the throw into
 // `Error: <message>` and exit 1, as it does for every other command failure.
 export const OKF_FORMAT = 'okf';
 
-function okfSelected(options: {format?: string}, command: string): boolean {
+function okfSelected(options: {format?: string}): boolean {
   if (options.format === undefined) return false;
   if (options.format === OKF_FORMAT) return true;
   throw new Error(
-      `unknown --format '${options.format}' for kcmd ${command}. ` +
+      `unknown --format '${options.format}' for kcmd init. ` +
       `Only '${OKF_FORMAT}' is supported.`);
 }
 
+// Whether the workspace in the current directory is an OKF workspace, as its
+// catalog.yaml records. Read before anything resolves the scope, since an OKF
+// push may create the entry group.
+function okfWorkspace(): boolean {
+  return readWorkspaceLayout('catalog.yaml') === OKF_FORMAT;
+}
+
 export interface InitOptions {
-  // Alternate on-disk format; only `okf`. Omitted means the default layout.
+  // The workspace layout to record in catalog.yaml; only `okf`. Omitted means
+  // the layout the scope implies.
   format?: string;
   entryGroup?: string;
   bigqueryDataset?: string|string[];
@@ -82,8 +95,6 @@ interface CatalogOnlyCounts {
 }
 
 export interface PushOptions {
-  // Alternate on-disk format; only `okf`. Omitted means the default layout.
-  format?: string;
   // Generic push flag for non-semantic-model (CatalogSync) scopes;
   // forwarded to CatalogSync.push. The semantic-model legs ignore it.
   // The catch-all "force the push" toggle -- distinct from
@@ -93,6 +104,9 @@ export interface PushOptions {
   // Run every validation check and report pass/fail, but write nothing
   // to any destination (a dry run). Applies to both push paths.
   validateOnly?: boolean;
+  // `--dry-run`, the README's name for the same thing, as `pull` names it.
+  // push() folds it into validateOnly before anything reads either.
+  dryRun?: boolean;
   // Delete Knowledge Catalog models already in the entry group that this push
   // does not include (a removed or renamed model). Without it, an unrecognized
   // model in the group fails the push. Semantic-model KC push only.
@@ -280,17 +294,49 @@ function pruningDialect(model: SemanticModel): string|undefined {
 
 
 export async function init(options: InitOptions): Promise<number> {
-  const okf = okfSelected(options, 'init');
+  const okf = okfSelected(options);
 
   const ctx = context.ApiContext.default();
 
   let manifest: kcmd.CatalogManifest;
-  if (options.entryGroup) {
-    manifest =
-        await kcmd.CatalogManifest.initWithEntryGroup(options.entryGroup, ctx);
-  } else if (options.kb) {
-    manifest =
-        await kcmd.CatalogManifest.initWithKnowledgeBase(options.kb, ctx);
+  let okfRemoteExists = true;
+  if (options.entryGroup || options.kb) {
+    const scopeName = (options.entryGroup || options.kb)!;
+    const isKb = Boolean(options.kb && !options.entryGroup);
+    try {
+      manifest = isKb
+        ? await kcmd.CatalogManifest.initWithKnowledgeBase(scopeName, ctx)
+        : await kcmd.CatalogManifest.initWithEntryGroup(scopeName, ctx);
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      const parts = scopeName.split('.');
+      if (
+        okf &&
+        msg.includes('Failed to locate EntryGroup') &&
+        parts.length === 3 &&
+        parts.every((p) => Boolean(p))
+      ) {
+        okfRemoteExists = false;
+        const scopePrefix = isKb ? Sources.KB : Sources.ENTRYGROUP;
+        manifest = {
+          source: {
+            type: scopePrefix,
+            name: scopeName,
+            ingestedEntries: false,
+            async *entries() {},
+          },
+          save(filePath: string) {
+            fs.writeFileSync(
+              filePath,
+              yaml.stringify({scope: `${scopePrefix}.${scopeName}`}),
+              'utf8',
+            );
+          },
+        } as unknown as kcmd.CatalogManifest;
+      } else {
+        throw err;
+      }
+    }
   } else if (options.bigqueryDataset) {
     let datasets = '';
     if (Array.isArray(options.bigqueryDataset)) {
@@ -344,6 +390,7 @@ export async function init(options: InitOptions): Promise<number> {
   }
 
   if (okf) {
+    (manifest as any).okfRemoteExists = okfRemoteExists;
     return await initOkfWorkspace(ctx, manifest, {pull: options.pull});
   }
 
@@ -380,8 +427,6 @@ function scopeOf(text: string): string|undefined {
 
 
 export interface PullOptions {
-  // Alternate on-disk format; only `okf`. Omitted means the default layout.
-  format?: string;
   // Reconstruct + report only; never writes a file. Mirrors push
   // --validate-only.
   dryRun?: boolean;
@@ -394,7 +439,7 @@ export interface PullOptions {
 
 
 export async function pull(options: PullOptions = {}): Promise<number> {
-  const okf = okfSelected(options, 'pull');
+  const okf = okfWorkspace();
 
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -1119,15 +1164,241 @@ async function generateOffline(
   }
 }
 
+const EG_DESCRIPTION_MAX_CHARS = 1024;
+const EG_DISPLAY_NAME_MAX_CHARS = 500;
+
+function extractOkfRootMetadata(
+  basePath: string,
+  project: string,
+  location: string,
+  groupId: string,
+): {displayName?: string; description?: string; overviewContent?: string} {
+  const manifestPath = path.join(basePath, 'catalog.yaml');
+  const rawManifest = fs.existsSync(manifestPath)
+    ? (yaml.parse(fs.readFileSync(manifestPath, 'utf8')) ?? {})
+    : {};
+  let displayName =
+    typeof rawManifest.displayName === 'string' && rawManifest.displayName.trim()
+      ? rawManifest.displayName.trim()
+      : undefined;
+  let description =
+    typeof rawManifest.description === 'string' && rawManifest.description.trim()
+      ? rawManifest.description.trim()
+      : undefined;
+  let overviewContent: string | undefined;
+
+  const bundleRoot = path.join(basePath, 'bundle');
+  const candidates = [
+    path.join(bundleRoot, `${groupId}_entry.md`),
+    path.join(bundleRoot, groupId, project, location, `${groupId}_entry.md`),
+    path.join(bundleRoot, 'agents.md'),
+    path.join(bundleRoot, groupId, project, location, 'agents.md'),
+    path.join(bundleRoot, 'index.md'),
+  ];
+  for (const cand of candidates) {
+    if (!fs.existsSync(cand)) continue;
+    try {
+      const concept = fileContentToConcept(
+        fs.readFileSync(cand, 'utf8'),
+        path.basename(cand, '.md'),
+      );
+      const fmTitle =
+        typeof concept.frontmatter['title'] === 'string'
+          ? concept.frontmatter['title'].trim()
+          : '';
+      const fmDesc =
+        typeof concept.frontmatter['description'] === 'string'
+          ? concept.frontmatter['description'].trim()
+          : '';
+      const bodyClean = concept.body
+        .replace(/\n*##\s+OKF\s+Metadata\b[\s\S]*$/i, '')
+        .trim();
+      const h1Match = bodyClean.match(/^#\s+(.+?)\s*$/m);
+      const headingTitle = h1Match?.[1]?.trim() ?? '';
+      const firstPara = bodyClean
+        .split(/\n\s*\n/)
+        .map((p) => p.trim())
+        .find((p) => p && !/^([#*|-]|\d+\.)/.test(p));
+      if (!displayName && (fmTitle || headingTitle)) {
+        displayName = fmTitle || headingTitle;
+      }
+      if (!description && (fmDesc || firstPara)) {
+        description = (fmDesc || firstPara || '').replace(/\s+/g, ' ').trim();
+      }
+      if (!overviewContent && bodyClean) {
+        overviewContent = bodyClean;
+      }
+    } catch {
+      // Ignore unparseable candidate here; okfToCatalog reports concept errors.
+    }
+  }
+  if (displayName) {
+    displayName = displayName.slice(0, EG_DISPLAY_NAME_MAX_CHARS);
+  }
+  if (description) {
+    description = description.slice(0, EG_DESCRIPTION_MAX_CHARS);
+  }
+  return {displayName, description, overviewContent};
+}
+
 export async function push(options: PushOptions): Promise<number> {
-  const okf = okfSelected(options, 'push');
+  if (options.dryRun) options = {...options, validateOnly: true};
+  const okf = okfWorkspace();
 
   const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
   if (okf) {
-    return await okfToCatalog(ctx, snapshot, {validateOnly: options.validateOnly});
+    let snapshot: kcmd.CatalogSnapshot;
+    let createdEg = false;
+    try {
+      snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+    } catch (err: any) {
+      const msg = String(err?.message || err);
+      const rawScope = fs.existsSync('catalog.yaml')
+        ? yaml.parse(fs.readFileSync('catalog.yaml', 'utf8'))?.scope
+        : undefined;
+      const scopeStr =
+        typeof rawScope === 'string'
+          ? rawScope.replace(/^(entryGroup|kb)\./, '')
+          : '';
+      const [project, location, groupId] = scopeStr.split('.');
+      if (
+        !msg.includes('Failed to locate EntryGroup') ||
+        !project ||
+        !location ||
+        !groupId
+      ) {
+        throw err;
+      }
+      if (options.validateOnly) {
+        snapshot = {
+          basePath: '.',
+          manifest: {
+            source: {
+              name: `${project}.${location}.${groupId}`,
+              async *entries() {},
+            },
+          },
+        } as any;
+      } else {
+        const rootMeta = extractOkfRootMetadata('.', project, location, groupId);
+        const catalog = new dataplex.CatalogClient(ctx);
+        const createRes = await catalog.createEntryGroup(
+          project,
+          location,
+          groupId,
+          {
+            type: 'context-set',
+            ...(rootMeta.displayName ? {displayName: rootMeta.displayName} : {}),
+            ...(rootMeta.description ? {description: rootMeta.description} : {}),
+          } as any,
+        );
+        if (createRes.status !== 200 && createRes.status !== 409) {
+          throw err;
+        }
+        if ((createRes.result as any)?.name?.includes('/operations/')) {
+          await catalog.awaitOperation(
+            createRes.result as any,
+            'createEntryGroup',
+          );
+        }
+        createdEg = true;
+        snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+      }
+    }
+    const [project, location, groupId] = snapshot.manifest.source.name.split('.');
+    const rootMeta = extractOkfRootMetadata(
+      snapshot.basePath || '.',
+      project,
+      location,
+      groupId,
+    );
+    if (!options.validateOnly && !createdEg && (rootMeta.displayName || rootMeta.description)) {
+      const catalog = new dataplex.CatalogClient(ctx);
+      const egRes = await catalog.getEntryGroup(project, location, groupId);
+      if (egRes.status === 200 && egRes.result) {
+        const patchBody: Record<string, any> = {};
+        const updateMask: string[] = [];
+        if (
+          rootMeta.displayName &&
+          egRes.result.displayName !== rootMeta.displayName
+        ) {
+          patchBody.displayName = rootMeta.displayName;
+          updateMask.push('displayName');
+        }
+        if (
+          rootMeta.description &&
+          egRes.result.description !== rootMeta.description
+        ) {
+          patchBody.description = rootMeta.description;
+          updateMask.push('description');
+        }
+        if (updateMask.length) {
+          const patchRes = await catalog.updateEntryGroup(
+            project,
+            location,
+            groupId,
+            patchBody,
+            updateMask,
+          );
+          if (patchRes.status === 200 && patchRes.result?.name?.includes('/operations/')) {
+            await catalog.awaitOperation(patchRes.result, 'updateEntryGroup');
+          }
+        }
+      }
+    }
+    const code = await okfToCatalog(ctx, snapshot, {
+      validateOnly: options.validateOnly,
+    });
+    if (code === 0 && !options.validateOnly && rootMeta.overviewContent) {
+      const catalog = new dataplex.CatalogClient(ctx);
+      const pnum = await crm.projectNumber(project, ctx);
+      const repCandidates: string[] = [];
+      if (pnum) {
+        repCandidates.push(
+          `projects/${project}/locations/${location}/entryGroups/@dataplex/entries/` +
+            `projects/${pnum}/locations/${location}/entryGroups/${groupId}`,
+        );
+      }
+      repCandidates.push(
+        `projects/${project}/locations/${location}/entryGroups/${groupId}/entries/${groupId}_entry`,
+      );
+      const ovKey = 'dataplex-types.global.overview';
+      const maxAttempts = createdEg ? 5 : 2;
+      let patchedRep = false;
+      for (let attempt = 0; attempt < maxAttempts && !patchedRep; attempt++) {
+        for (const repName of repCandidates) {
+          const res = await catalog.updateEntry(
+            {
+              name: repName,
+              entryType:
+                'projects/dataplex-types/locations/global/entryTypes/entrygroup',
+              aspects: {
+                [ovKey]: {
+                  data: {
+                    content: rootMeta.overviewContent,
+                    contentType: 'MARKDOWN',
+                  },
+                },
+              },
+            },
+            ['aspects'],
+            [ovKey],
+          );
+          if (res.status === 200) {
+            patchedRep = true;
+            break;
+          }
+        }
+        if (!patchedRep && attempt < maxAttempts - 1) {
+          await new Promise((r) => setTimeout(r, 600));
+        }
+      }
+    }
+    return code;
   }
+
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout

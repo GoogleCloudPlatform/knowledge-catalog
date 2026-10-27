@@ -1,4 +1,4 @@
-// Tests `kcmd pull --format=okf` writing an OKF bundle
+// Tests `kcmd pull` in an OKF workspace (`layout: okf`) writing an OKF bundle
 // (src/libts/okf/catalog_to_okf.ts).
 //
 // The catalog client is spied so nothing reaches the network, and each test
@@ -59,7 +59,7 @@ beforeEach(() => {
   cwd = process.cwd();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-c2okf-'));
   process.chdir(dir);
-  fs.writeFileSync('catalog.yaml', 'scope: entryGroup.p.us.kb\n');
+  fs.writeFileSync('catalog.yaml', 'scope: entryGroup.p.us.kb\nlayout: okf\n');
 
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(console, 'log').mockImplementation(() => {});
@@ -85,7 +85,7 @@ describe('catalogToOkf', () => {
   test('writes one concept per entry, under bundle/', async () => {
     stubCatalog([withOverview('tables/trips', '# Trips\n\nProse.\n')]);
 
-    expect(await pull({format: 'okf'})).toBe(0);
+    expect(await pull()).toBe(0);
 
     // The bundle is a sibling of catalog.yaml, never its parent: the manifest
     // must stay out of the bundle so the bundle is portable OKF.
@@ -104,7 +104,7 @@ describe('catalogToOkf', () => {
 
   test('the overview aspect becomes the markdown body', async () => {
     stubCatalog([withOverview('a', 'body text')]);
-    await pull({format: 'okf'});
+    await pull();
     expect(read('a.md')).toEndWith('---\nbody text\n');
   });
 
@@ -112,7 +112,7 @@ describe('catalogToOkf', () => {
     // SPEC §4.1: `type` is the only required key, so a bodyless concept is
     // conformant and must not be skipped.
     stubCatalog([entry('a')]);
-    await pull({format: 'okf'});
+    await pull();
     expect(read('a.md')).toContain('type: generic');
   });
 
@@ -120,13 +120,13 @@ describe('catalogToOkf', () => {
     stubCatalog([entry('a', {
       aspects: {'dataplex-types.global.generic': {data: {type: 'context-overlay'}}},
     } as Partial<Entry>)]);
-    await pull({format: 'okf'});
+    await pull();
     expect(read('a.md')).toContain('type: context-overlay');
   });
 
   test('description and resource are omitted when absent', async () => {
     stubCatalog([entry('a', {entrySource: {displayName: 'a'}} as Partial<Entry>)]);
-    await pull({format: 'okf'});
+    await pull();
     const text = read('a.md');
     expect(text).not.toContain('description:');
     expect(text).not.toContain('resource:');
@@ -134,7 +134,7 @@ describe('catalogToOkf', () => {
 
   test('nested entry ids become nested directories', async () => {
     stubCatalog([withOverview('assets/bigquery/p.d.t', 'x')]);
-    await pull({format: 'okf'});
+    await pull();
     expect(fs.existsSync(path.join(dir, 'bundle/assets/bigquery/p.d.t.md')))
         .toBe(true);
   });
@@ -142,7 +142,7 @@ describe('catalogToOkf', () => {
   test('--dry-run writes nothing', async () => {
     stubCatalog([withOverview('a', 'x')]);
 
-    expect(await pull({format: 'okf', dryRun: true})).toBe(0);
+    expect(await pull({dryRun: true})).toBe(0);
 
     expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(false);
   });
@@ -155,7 +155,7 @@ describe('catalogToOkf', () => {
     spyOn(CatalogClient.prototype, 'lookupEntry')
         .mockImplementation(async () => ({status: 403, message: 'denied'}) as any);
 
-    await expect(pull({format: 'okf'})).rejects.toThrow(/failed to read entry/);
+    await expect(pull()).rejects.toThrow(/failed to read entry/);
     expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(false);
   });
 
@@ -167,7 +167,7 @@ describe('catalogToOkf', () => {
       },
     } as Partial<Entry>)]);
 
-    await pull({format: 'okf'});
+    await pull();
 
     const text = read('a.md');
     expect(text).toContain('dataplex-types.global.schema');

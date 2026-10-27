@@ -331,6 +331,19 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
+  async updateEntryGroup(project: string, location: string,
+                         entryGroupId: string, entryGroup: Partial<EntryGroup>,
+                         updateMask?: string[]): Promise<api.ApiResult<Operation>> {
+    const name = catalogContainer(project, location, entryGroupId);
+
+    const params: Record<string, any> = {};
+    if (updateMask && updateMask.length) {
+      params.updateMask = updateMask.join(',');
+    }
+
+    return await this._patch<Operation>(name, entryGroup, params);
+  }
+
   // Creates a custom aspect type. `aspectType` carries the display name,
   // description and metadataTemplate; the resource name comes from the id.
   async createAspectType(project: string, location: string, aspectTypeId: string,

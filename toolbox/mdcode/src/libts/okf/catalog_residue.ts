@@ -1,11 +1,18 @@
 // Catalog fields OKF has no key for stored in the `x-kcmd` frontmatter block
 
 import * as gcp from '../gcp';
-import {RESIDUE_KEY} from './concept';
+import {EXTRA_KEY, RESIDUE_KEY} from './concept';
 
 export const RESIDUE_VERSION = 1;
 
 export const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
+export const DOCUMENT_ASPECT_KEY = 'dataplex-types.global.document';
+export const QUERY_TEMPLATE_ASPECT_KEY =
+  'dataplex-types.global.query-template';
+export const DEFAULT_DOCUMENT_ENTRY_TYPE =
+  'projects/dataplex-types/locations/global/entryTypes/document';
+export const QUERY_TEMPLATE_ENTRY_TYPE =
+  'projects/dataplex-types/locations/global/entryTypes/query-template';
 
 export class ResidueError extends Error {}
 
@@ -95,6 +102,14 @@ function at(obj: unknown, dotted: string): unknown {
 }
 
 export function assertResidueOnly(frontmatter: Record<string, unknown>): void {
+  const rawExtra = frontmatter[EXTRA_KEY];
+  if (
+    rawExtra !== undefined &&
+    rawExtra !== null &&
+    (typeof rawExtra !== 'object' || Array.isArray(rawExtra))
+  ) {
+    throw new ResidueError(`${EXTRA_KEY} must be a mapping`);
+  }
   const raw = frontmatter[RESIDUE_KEY];
   if (raw === undefined || raw === null) return;
   if (typeof raw !== 'object' || Array.isArray(raw)) {

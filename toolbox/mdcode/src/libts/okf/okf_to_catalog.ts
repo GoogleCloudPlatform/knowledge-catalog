@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
-import {fileContentToConcept} from './concept';
+import {EXTRA_KEY, fileContentToConcept, RESIDUE_KEY} from './concept';
 import {conceptToEntry} from './concept_to_entry';
 
 const BUNDLE_DIR = 'bundle';
@@ -32,11 +32,24 @@ export async function okfToCatalog(
     return 1;
   }
 
-  const entries = readBundle(root, entryGroup);
-  const existing = new Set<string>();
-  for await (const stub of snapshot.manifest.source.entries(ctx)) {
-    existing.add(stub.name);
+  let entries: gcp.Entry[];
+  try {
+    entries = readBundle(root, entryGroup);
+  } catch (err: any) {
+    console.error(`Error: ${err.message || err}`);
+    return 1;
   }
+  if (!entries.length) {
+    console.error(`no OKF concepts found in ${BUNDLE_DIR}/`);
+    return 1;
+  }
+
+  const existing = new Map<string, gcp.Entry>();
+  for await (const stub of snapshot.manifest.source.entries(ctx)) {
+    existing.set(stub.name, stub);
+  }
+
+  resolveMissingParents(entries, entryGroup, existing);
 
   const changes = entries.map((entry) => toChange(entry, entryGroup, existing));
   const creates = changes.filter((c) => c.createEntryRequest).length;
@@ -45,7 +58,7 @@ export async function okfToCatalog(
     for (const entry of entries) console.log(`would write ${entry.name}`);
     console.log(
       `${changes.length} change(s): ${creates} create, ` +
-        `${changes.length - creates} update. Nothing sent (--validate-only).`,
+        `${changes.length - creates} update. Nothing sent (dry run).`,
     );
     return 0;
   }
@@ -75,21 +88,63 @@ function conceptFiles(dir: string): string[] {
   });
 }
 
-// Parents must exist before their children, and id depth is that order.
+function entryDepth(
+  entry: gcp.Entry,
+  byName: Map<string, gcp.Entry>,
+  seen = new Set<string>(),
+): number {
+  if (!entry.parentEntry || seen.has(entry.name)) {
+    return entryId(entry).split('/').length - 1;
+  }
+  seen.add(entry.name);
+  const parent = byName.get(entry.parentEntry);
+  if (!parent) {
+    return entryId(entry).split('/').length;
+  }
+  return 1 + entryDepth(parent, byName, seen);
+}
+
+// Parents must exist before their children, ordered by parent-chain depth.
 function readBundle(root: string, entryGroup: string): gcp.Entry[] {
   const entries: gcp.Entry[] = [];
   for (const file of conceptFiles(root)) {
     const id = path.relative(root, file).replace(/\.md$/, '');
     const concept = fileContentToConcept(fs.readFileSync(file, 'utf8'), id);
+    const hasExplicitMeta =
+      concept.frontmatter[RESIDUE_KEY] !== undefined ||
+      concept.frontmatter[EXTRA_KEY] !== undefined ||
+      concept.frontmatter['type'] !== undefined;
+    // Skip append-only operation logs (`log.md`) that carry no concept frontmatter.
+    if (id === 'log' && !hasExplicitMeta) continue;
+    // When `agents.md` or `<dir>.md` already exists alongside a generated
+    // directory-listing `index.md`, prefer the explicit entry file.
+    if (
+      id === 'index' &&
+      !hasExplicitMeta &&
+      fs.existsSync(path.join(root, 'agents.md'))
+    ) {
+      continue;
+    }
+    if (
+      id.endsWith('/index') &&
+      !hasExplicitMeta &&
+      fs.existsSync(path.join(root, `${id.slice(0, -'/index'.length)}.md`))
+    ) {
+      continue;
+    }
+
     const entry = conceptToEntry(concept, entryGroup);
     // The `<group>_entry` entry belongs to Dataplex, which creates it itself.
     if (entry.entryType.endsWith('/entrygroup')) continue;
     retargetParent(entry, entryGroup);
     entries.push(entry);
   }
-  return entries.sort(
-    (a, b) => entryId(a).split('/').length - entryId(b).split('/').length,
-  );
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  return entries.sort((a, b) => {
+    const diff = entryDepth(a, byName) - entryDepth(b, byName);
+    if (diff !== 0) return diff;
+    return entryId(a).split('/').length - entryId(b).split('/').length;
+  });
 }
 
 function entryId(entry: gcp.Entry): string {
@@ -104,12 +159,68 @@ function retargetParent(entry: gcp.Entry, entryGroup: string): void {
   entry.parentEntry = entryGroup + entry.parentEntry!.slice(at);
 }
 
+// When intermediate directories (e.g. `assets/bigquery/<project>`,
+// `query-context/templates`, or custom user folders) have no index entry of
+// their own, walk up the path to the nearest existing ancestor entry (or omit
+// `parentEntry` when none exists) so Dataplex never fails on a missing parent.
+function resolveMissingParents(
+  entries: gcp.Entry[],
+  entryGroup: string,
+  existing: Map<string, gcp.Entry>,
+): void {
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  const known = (name: string) => byName.has(name) || existing.has(name);
+  const prefix = `${entryGroup}/entries/`;
+  for (const entry of entries) {
+    if (!entry.parentEntry || known(entry.parentEntry)) continue;
+    if (!entry.parentEntry.startsWith(prefix)) continue;
+    let rel = entry.parentEntry.slice(prefix.length);
+    let resolved: string | undefined;
+    while (rel.includes('/')) {
+      rel = rel.slice(0, rel.lastIndexOf('/'));
+      const candidate = `${prefix}${rel}`;
+      if (known(candidate)) {
+        resolved = candidate;
+        break;
+      }
+    }
+    if (
+      !resolved &&
+      !entry.entryType.endsWith('/entryTypes/query-template') &&
+      entry.name !== `${prefix}agents` &&
+      known(`${prefix}agents`)
+    ) {
+      resolved = `${prefix}agents`;
+    }
+    if (resolved) {
+      entry.parentEntry = resolved;
+    } else {
+      delete entry.parentEntry;
+    }
+  }
+  entries.sort((a, b) => {
+    const diff = entryDepth(a, byName) - entryDepth(b, byName);
+    if (diff !== 0) return diff;
+    return entryId(a).split('/').length - entryId(b).split('/').length;
+  });
+}
+
 function toChange(
   entry: gcp.Entry,
   entryGroup: string,
-  existing: Set<string>,
+  existing: Map<string, gcp.Entry>,
 ): dataplex.MetadataChange {
   if (existing.has(entry.name)) {
+    const priorSource = existing.get(entry.name)?.entrySource;
+    if (priorSource?.createTime || priorSource?.updateTime) {
+      entry.entrySource = {...entry.entrySource};
+      if (priorSource.createTime && !entry.entrySource.createTime) {
+        entry.entrySource.createTime = priorSource.createTime;
+      }
+      if (priorSource.updateTime && !entry.entrySource.updateTime) {
+        entry.entrySource.updateTime = priorSource.updateTime;
+      }
+    }
     return {
       updateEntryRequest: {
         entry,
