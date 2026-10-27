@@ -21,6 +21,15 @@ export interface CatalogLayout {
   loadEntry(name: string): Promise<md.Entry>;
   saveEntry(name: string, entry: md.Entry): Promise<void>;
   deleteEntry(name: string): Promise<void>;
+
+  // Save or delete several entries in one call, in order, with one result per
+  // item in the same order. A failed item is reported, nothing of it is
+  // written, and the other items still apply. Callers go through
+  // CatalogSnapshot, which takes the workspace lock and passes each name at
+  // most once per call. A layout that keeps each entry in its own file uses
+  // saveEachEntry and deleteEachEntry (layouts/batch.ts).
+  saveEntries(entries: md.Entry[]): Promise<md.EntryResult[]>;
+  deleteEntries(names: string[]): Promise<md.EntryResult[]>;
 }
 
 

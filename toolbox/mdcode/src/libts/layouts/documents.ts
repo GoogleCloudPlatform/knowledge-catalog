@@ -6,7 +6,9 @@ import * as glob from 'glob';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 import * as md from '../metadata';
+import { pathInside, readFileIfExists, writeFileAtomic } from '../fsutil';
 import { CatalogLayout } from '../layout';
+import { deleteEachEntry, saveEachEntry } from './batch';
 
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
 const INDEX_NAME = 'index';
@@ -95,7 +97,11 @@ export class DocumentsLayout implements CatalogLayout {
   }
 
   async saveEntry(name: string, entry: md.Entry): Promise<void> {
-    const entryPath = path.join(this._catalogPath, `${name}.md`);
+    // An entry with a file is updated where it was found; a new one, or a
+    // synthesized directory index, goes to `<name>.md`, which must stay inside
+    // the catalog folder.
+    const entryPath = this._index.get(name) ??
+        pathInside(this._catalogPath, `${name}.md`, 'entry name');
     await fs.promises.mkdir(path.dirname(entryPath), { recursive: true });
 
     // Clone to avoid mutating original entry aspects
@@ -115,7 +121,11 @@ export class DocumentsLayout implements CatalogLayout {
 
     const fileContent = toMarkdown(clonedEntry, body);
 
-    await fs.promises.writeFile(entryPath, fileContent, 'utf8');
+    // Leave an unchanged file alone, so its modification time survives a save
+    // of what was read.
+    if (await readFileIfExists(entryPath) !== fileContent) {
+      await writeFileAtomic(entryPath, fileContent);
+    }
     this._index.set(name, entryPath);
     this._synthesizeIndexEntries();
   }
@@ -132,6 +142,14 @@ export class DocumentsLayout implements CatalogLayout {
     await fs.promises.unlink(entryPath);
     this._index.delete(name);
     this._synthesizeIndexEntries();
+  }
+
+  async saveEntries(entries: md.Entry[]): Promise<md.EntryResult[]> {
+    return saveEachEntry(this, entries);
+  }
+
+  async deleteEntries(names: string[]): Promise<md.EntryResult[]> {
+    return deleteEachEntry(this, names);
   }
 
   // Ensure every directory that contains entries has an index entry. Directories

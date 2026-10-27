@@ -200,6 +200,38 @@ models.
 
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 
+#### Editing entries as JSON
+
+`kcmd entry` reads and changes the workspace's entries in kcmd's own entry
+format, for agents and scripts. Every action prints one JSON value on stdout.
+A command that fails as a whole prints its error on stderr, nothing on stdout,
+and exits 1. On a scope that opens without a request, such as a semantic-model
+scope, these commands run no `gcloud` command.
+
+```bash
+# Every entry's name and type, sorted by name; --content prints whole entries,
+# and --type keeps one type, such as semantic-entity.
+kcmd entry list [--type <type>] [--content]
+
+# The named entries, in the order given.
+kcmd entry get <name>...
+
+# Save one entry, or an array of them, exactly as `entry get` prints them;
+# `-` reads standard input. A new name creates an entry.
+kcmd entry save <file>
+
+# Delete the named entries.
+kcmd entry delete <name>...
+```
+
+`save` and `delete` apply their items in order and print one result per item,
+in the same order: `{"name": ..., "ok": true}`, or `"ok": false` with an
+`"error"`. A failed item is skipped and the others are still written; the
+command then exits 1. An item fails when an earlier item names the same entry,
+when it would change an entry's type, or when it creates or deletes an entry in
+a workspace of ingested entries. Two commands never write one workspace at the
+same time: the second fails while `.kcmd.lock` is held.
+
 #### Environment variables
 
 Two optional variables override where `kcmd` talks to the catalog. Both default

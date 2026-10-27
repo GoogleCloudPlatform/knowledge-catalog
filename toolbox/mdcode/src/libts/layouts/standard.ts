@@ -3,10 +3,13 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import * as glob from 'glob';
 import * as yaml from 'yaml';
+import { pathInside, readFileIfExists, writeFileAtomic } from '../fsutil';
 import { CatalogLayout } from '../layout';
 import * as md from '../metadata';
+import { deleteEachEntry, saveEachEntry } from './batch';
 
 
 export class StandardLayout implements CatalogLayout {
@@ -72,10 +75,21 @@ export class StandardLayout implements CatalogLayout {
   }
 
   async saveEntry(name: string, entry: md.Entry): Promise<void> {
-    const entryPath = path.join(this._catalogPath, `${name}.yaml`);
-    await fs.promises.mkdir(path.dirname(entryPath), { recursive: true });
+    // An entry already in the index is updated where it was found; a new one
+    // goes to `<name>.yaml`, which must stay inside the catalog folder.
+    const entryPath = this._index.get(name) ??
+        pathInside(this._catalogPath, `${name}.yaml`, 'entry name');
 
-    await fs.promises.writeFile(entryPath, yaml.stringify(entry), 'utf8');
+    // Leave an unchanged entry's file alone, so its formatting, comments and
+    // modification time survive a save of what was read.
+    const existing = await readFileIfExists(entryPath);
+    if (existing !== undefined && sameEntry(existing, entry)) {
+      this._index.set(name, entryPath);
+      return;
+    }
+
+    await fs.promises.mkdir(path.dirname(entryPath), { recursive: true });
+    await writeFileAtomic(entryPath, yaml.stringify(entry));
     this._index.set(name, entryPath);
   }
 
@@ -88,4 +102,25 @@ export class StandardLayout implements CatalogLayout {
     await fs.promises.unlink(entryPath);
     this._index.delete(name);
   }
+
+  async saveEntries(entries: md.Entry[]): Promise<md.EntryResult[]> {
+    return saveEachEntry(this, entries);
+  }
+
+  async deleteEntries(names: string[]): Promise<md.EntryResult[]> {
+    return deleteEachEntry(this, names);
+  }
+}
+
+
+// Whether a file's YAML holds the same entry. Values the entry leaves
+// undefined are not written to the file, so they are dropped before comparing.
+function sameEntry(fileText: string, entry: md.Entry): boolean {
+  let parsed: unknown;
+  try {
+    parsed = yaml.parse(fileText);
+  } catch {
+    return false;
+  }
+  return isDeepStrictEqual(parsed, JSON.parse(JSON.stringify(entry)));
 }

@@ -9,6 +9,7 @@ import * as dataplex from './gcp/dataplex';
 import * as md from './metadata';
 import { CatalogManifest } from './manifest';
 import { CatalogLayout, createLayout } from './layout';
+import { withWorkspaceLock } from './lock';
 
 
 export class CatalogSnapshot {
@@ -138,6 +139,93 @@ export class CatalogSnapshot {
     }
 
     await this._layout.deleteEntry(name);
+  }
+
+  // Saves several entries in one call, as `kcmd entry save` does. Each entry
+  // is one item, applied in order, with one result per item in the same order.
+  // Before the layout sees them, an item fails, and nothing of it is written,
+  // when its name appears earlier in the call, when it would create an entry
+  // although the workspace's entries are ingested, or when it would change an
+  // existing entry's type. The layout reports the rest. The whole call holds
+  // the workspace lock; a lock held by another process fails it as a whole.
+  async saveEntries(entries: md.Entry[]): Promise<md.EntryResult[]> {
+    return withWorkspaceLock(this.basePath, async () => {
+      const results: Array<md.EntryResult|undefined> =
+          new Array(entries.length).fill(undefined);
+      const seen = new Set<string>();
+      for (const [i, entry] of entries.entries()) {
+        const error = await this._saveRefusal(entry, seen);
+        if (error) results[i] = {name: entry.name, ok: false, error};
+      }
+      return this._merge(
+          results,
+          pending => this._layout.saveEntries(pending.map(i => entries[i])));
+    });
+  }
+
+  // Deletes several entries in one call, as `kcmd entry delete` does, with one
+  // result per name in the same order. A name that appears earlier in the call
+  // fails, and so does every name when the workspace's entries are ingested.
+  // The whole call holds the workspace lock.
+  async deleteEntries(names: string[]): Promise<md.EntryResult[]> {
+    return withWorkspaceLock(this.basePath, async () => {
+      const results: Array<md.EntryResult|undefined> =
+          new Array(names.length).fill(undefined);
+      const seen = new Set<string>();
+      for (const [i, name] of names.entries()) {
+        let error: string|undefined;
+        if (seen.has(name)) {
+          error = repeatedMessage(name);
+        } else if (this.manifest.source.ingestedEntries) {
+          error = 'Entry cannot be deleted as entries are ingested.';
+        }
+        seen.add(name);
+        if (error) results[i] = {name, ok: false, error};
+      }
+      return this._merge(
+          results,
+          pending => this._layout.deleteEntries(pending.map(i => names[i])));
+    });
+  }
+
+  // Why the snapshot refuses to pass a save item to the layout, if it does.
+  private async _saveRefusal(entry: md.Entry, seen: Set<string>):
+      Promise<string|undefined> {
+    const name = entry.name;
+    if (seen.has(name)) return repeatedMessage(name);
+    seen.add(name);
+    if (!this._layout.entryExists(name)) {
+      return this.manifest.source.ingestedEntries ?
+          'Entry cannot be created as entries are ingested.' :
+          undefined;
+    }
+    let existing: md.Entry;
+    try {
+      existing = await this._layout.loadEntry(name);
+    } catch (err: any) {
+      return err?.message ?? String(err);
+    }
+    if (existing.type !== entry.type) {
+      return `entry '${name}' is a ${existing.type}; an update cannot change ` +
+          `its type to ${entry.type}`;
+    }
+    return undefined;
+  }
+
+  // Sends the items that have no result yet to `apply` and puts its results
+  // back in their places.
+  private async _merge(
+      results: Array<md.EntryResult|undefined>,
+      apply: (pending: number[]) => Promise<md.EntryResult[]>):
+      Promise<md.EntryResult[]> {
+    const pending = results.flatMap((r, i) => r ? [] : [i]);
+    if (pending.length) {
+      const applied = await apply(pending);
+      pending.forEach((itemIndex, k) => {
+        results[itemIndex] = applied[k];
+      });
+    }
+    return results as md.EntryResult[];
   }
 
   // Loads the entry and aspect types listed under snapshot in catalog.yaml.
@@ -329,4 +417,10 @@ function toServiceEntry(entry: md.Entry,
 function aspectTypeRefOf(key: string): string {
   const at = key.indexOf('@');
   return at < 0 ? key : key.slice(0, at);
+}
+
+// The error for an item whose entry an earlier item of the call already names.
+function repeatedMessage(name: string): string {
+  return `entry '${name}' appears more than once in this call; merge its ` +
+      `changes into one item`;
 }
