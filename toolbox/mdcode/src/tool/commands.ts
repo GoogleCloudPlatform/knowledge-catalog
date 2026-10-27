@@ -12,9 +12,12 @@ import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {fileNameOf, formatOverviewSidecar, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {SplitLayout} from '../libts/layouts/split';
+import {BUNDLE_DIR, CATALOG_DIR} from '../libts/okf/bundle';
 import {catalogToOkf} from '../libts/okf/catalog_to_okf';
 import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
 import {okfToCatalog} from '../libts/okf/okf_to_catalog';
+import {SplitSource} from '../libts/sources/split';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
@@ -61,6 +64,8 @@ export interface InitOptions {
   bigqueryDataset?: string|string[];
   kb?: string;
   semanticModel?: string;
+  // A context set: its semantic model in OSI+G and the rest in OKF.
+  contextSet?: string;
   pull?: boolean;
 }
 
@@ -278,6 +283,52 @@ function pruningDialect(model: SemanticModel): string|undefined {
 }
 
 
+// Provisions the Knowledge Catalog destination a locally-authored semantic
+// model pushes into, and creates the folder its model file lives in. Both the
+// semantic-model and the context-set scope hold a model, so both need this.
+// Returns an exit code when it fails, or undefined.
+async function provisionModelDestination(
+    ctx: context.ApiContext,
+    source: {project: string, location: string, entryGroup: string, name: string}):
+    Promise<number|undefined> {
+  // Provision the destination entry group now, at init, so push writes only
+  // entries -- matching how the standard layout operates (its push creates
+  // entries, never the entry group). Idempotent: an already-existing group
+  // (409) is success.
+  const catalog = new dataplex.CatalogClient(ctx);
+  const res = await catalog.createEntryGroup(
+      source.project, source.location, source.entryGroup);
+  // A caller without create permission may be refused the create of an
+  // entry group that exists. A lookup tells the two apart.
+  const exists = res.status === 409 ||
+      (res.status === 403 &&
+       (await catalog.getEntryGroup(
+            source.project, source.location, source.entryGroup))
+               .status === 200);
+  if (res.status !== 200 && !exists) {
+    console.error(
+        `Error: failed to create entry group '${source.name}': ` +
+        `${res.message || res.status}`);
+    return 1;
+  }
+  // A few constructs have no built-in system type, so the entry and aspect
+  // types they need are provisioned here too. Everything else the push
+  // writes references types that already exist under `dataplex-types`.
+  // kc_custom_types.ts is the list of what is custom.
+  const provisioned = await provisionCustomTypes(catalog, source);
+  for (const w of provisioned.warnings ?? []) console.warn(`Warning: ${w}`);
+  if (provisioned.error) {
+    console.error(`Error: ${provisioned.error}`);
+    return 1;
+  }
+  if (provisioned.denied) console.warn(`Warning: ${provisioned.denied}`);
+  fs.mkdirSync(
+      path.join(CATALOG_DIR, 'EntryGroups', source.entryGroup),
+      {recursive: true});
+  return undefined;
+}
+
+
 export async function init(options: InitOptions): Promise<number> {
   const okf = okfSelected(options, 'init');
 
@@ -301,44 +352,22 @@ export async function init(options: InitOptions): Promise<number> {
   } else if (options.semanticModel) {
     manifest = await kcmd.CatalogManifest.initWithSemanticModel(
         options.semanticModel, ctx);
-    const source = manifest.source as SemanticModelSource;
-    // Provision the destination entry group now, at init, so push writes only
-    // entries -- matching how the standard layout operates (its push creates
-    // entries, never the entry group). Idempotent: an already-existing group
-    // (409) is success.
-    const catalog = new dataplex.CatalogClient(ctx);
-    const res = await catalog.createEntryGroup(
-        source.project, source.location, source.entryGroup);
-    // A caller without create permission may be refused the create of an
-    // entry group that exists. A lookup tells the two apart.
-    const exists = res.status === 409 ||
-        (res.status === 403 &&
-         (await catalog.getEntryGroup(
-              source.project, source.location, source.entryGroup))
-                 .status === 200);
-    if (res.status !== 200 && !exists) {
-      console.error(
-          `Error: failed to create entry group '${source.name}': ` +
-          `${res.message || res.status}`);
-      return 1;
-    }
-    // A few constructs have no built-in system type, so the entry and aspect
-    // types they need are provisioned here too. Everything else the push
-    // writes references types that already exist under `dataplex-types`.
-    // kc_custom_types.ts is the list of what is custom.
-    const provisioned = await provisionCustomTypes(catalog, source);
-    for (const w of provisioned.warnings ?? []) console.warn(`Warning: ${w}`);
-    if (provisioned.error) {
-      console.error(`Error: ${provisioned.error}`);
-      return 1;
-    }
-    if (provisioned.denied) console.warn(`Warning: ${provisioned.denied}`);
-    fs.mkdirSync(
-        path.join('catalog', 'EntryGroups', source.entryGroup),
-        {recursive: true});
+    const failed = await provisionModelDestination(
+        ctx, manifest.source as SemanticModelSource);
+    if (failed !== undefined) return failed;
+  } else if (options.contextSet) {
+    manifest =
+        await kcmd.CatalogManifest.initWithContextSet(options.contextSet, ctx);
+    const source = manifest.source as SplitSource;
+    const failed = await provisionModelDestination(ctx, source);
+    if (failed !== undefined) return failed;
+    // The OKF half sits beside catalog/, not inside it, so that bundle/ on
+    // its own is a portable OKF bundle.
+    fs.mkdirSync(BUNDLE_DIR, {recursive: true});
   } else {
     console.error(
-        'Error: Must provide --entry-group, --bigquery-dataset, --kb, or --semantic-model');
+        'Error: Must provide --entry-group, --bigquery-dataset, --kb, ' +
+        '--semantic-model, or --context-set');
     return 1;
   }
 
@@ -404,6 +433,18 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     return await pullSemanticModel(ctx, snapshot, options);
+  }
+
+  // A context set is both halves, each pulled by the leg that owns it: the
+  // model by the semantic leg, the rest into the OKF bundle. The source
+  // leaves the model's entries out of what the bundle enumerates, so the two
+  // legs cannot write the same entry.
+  if (snapshot.manifest.source.type === Sources.CONTEXT_SET) {
+    const split = snapshot.layout as SplitLayout;
+    const modelExit =
+        await pullSemanticModel(ctx, snapshot, options, split.semantic);
+    if (modelExit !== 0) return modelExit;
+    return await catalogToOkf(ctx, snapshot, {dryRun: options.dryRun});
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -1128,18 +1169,25 @@ export async function push(options: PushOptions): Promise<number> {
     return await okfToCatalog(ctx, snapshot, {validateOnly: options.validateOnly});
   }
 
-  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
+  // A context set pushes its model exactly as a semantic-model scope does,
+  // then its OKF bundle.
+  const contextSet = snapshot.manifest.source.type === Sources.CONTEXT_SET;
+  if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL || contextSet) {
     // The semantic-model source always resolves to the SemanticModel layout
-    // (see createLayout), so this cast is safe.
-    const layout = snapshot.layout as SemanticModelLayout;
-    const source = snapshot.manifest.source as SemanticModelSource;
+    // (see createLayout), so this cast is safe; a context set keeps one as
+    // half of its split layout, and its source carries the same project,
+    // location and entryGroup.
+    const layout = contextSet ? (snapshot.layout as SplitLayout).semantic :
+                                snapshot.layout as SemanticModelLayout;
+    const source =
+        snapshot.manifest.source as unknown as SemanticModelSource;
     const layoutDocs = layout.modelDocuments();
     const profileDocs = profileDocsReader(layout);
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
     if (takesTwoPhasePath(options, layout, layoutDocs)) {
-      return pushInTwoPhases(options, {
+      const code = await pushInTwoPhases(options, {
         ctx,
         layout,
         source,
@@ -1147,6 +1195,9 @@ export async function push(options: PushOptions): Promise<number> {
         profileDocs,
         defaultProfile: snapshot.manifest.defaultProfile,
       });
+      if (code !== 0 || !contextSet) return code;
+      return await okfToCatalog(
+          ctx, snapshot, {validateOnly: options.validateOnly});
     }
 
     // The push has two axes. The profile axis says how many binding profiles
@@ -1579,6 +1630,15 @@ export async function push(options: PushOptions): Promise<number> {
           'so there is no graph to deploy; give the model a deployment target, ' +
           'or drop --no-kc to publish it to Knowledge Catalog.');
       return 1;
+    }
+    // The model is published; now the rest of the context set. This is the
+    // only way out of this branch that is not a failure, so reaching it means
+    // the model leg passed its checks. Running it first is deliberate: those
+    // checks can reject the whole command, and failing before the bundle's
+    // batches go out leaves less half-applied.
+    if (contextSet) {
+      return await okfToCatalog(
+          ctx, snapshot, {validateOnly: options.validateOnly});
     }
     return 0;
   }
@@ -2810,12 +2870,17 @@ function reportCatalogResult(
 // the second-generation types is written the same way, as its model file,
 // profile files and overview sidecars. Returns a process exit code (0 on
 // success).
+// `modelLayout` is the layout holding the model file. A semantic-model scope
+// resolves to one directly (see createLayout); a context set keeps it as one
+// half of its split layout and passes that half in.
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
-    options: PullOptions): Promise<number> {
+    options: PullOptions,
+    modelLayout?: SemanticModelLayout): Promise<number> {
   // The semantic-model source always resolves to the SemanticModel layout
-  // (see createLayout), so these casts are safe.
-  const layout = snapshot.layout as SemanticModelLayout;
+  // (see createLayout), so these casts are safe. A SplitSource carries the
+  // same project, location and entryGroup.
+  const layout = modelLayout ?? snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
 
   console.log(

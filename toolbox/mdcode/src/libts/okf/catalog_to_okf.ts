@@ -7,12 +7,9 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
-import {assertResidueOnly, buildResidue, OVERVIEW_ASPECT_KEY, typeFacetKey} from './catalog_residue';
-import {Concept, conceptToFileContent, RESIDUE_KEY} from './concept';
-import {splitOkfMetadata} from './okf_metadata';
-
-/** Beside catalog.yaml, never inside it, so the bundle stays portable OKF. */
-const BUNDLE_DIR = 'bundle';
+import {BUNDLE_DIR} from './bundle';
+import {Concept, conceptToFileContent} from './concept';
+import {entryToConcept} from './entry_to_concept';
 
 /** Options forwarded from `kcmd pull`. */
 export interface CatalogToOkfOptions {
@@ -31,7 +28,7 @@ export async function catalogToOkf(
     // Dataplex owns the `<group>_entry` entry and recreates it itself, so push
     // skips it; writing it here would put a file in the bundle push ignores.
     if (entry.entryType?.endsWith('/entrygroup')) continue;
-    concepts.push(entryToConcept(entry, snapshot));
+    concepts.push(entryToConcept(entry, snapshot.manifest.source.localName(entry)));
   }
 
   const root = path.join(snapshot.basePath, BUNDLE_DIR);
@@ -79,40 +76,3 @@ async function* fetchEntries(
   }
 }
 
-function entryToConcept(
-  entry: gcp.Entry,
-  snapshot: kcmd.CatalogSnapshot,
-): Concept {
-  const source = entry.entrySource ?? {};
-  const frontmatter: Record<string, unknown> = {type: conceptType(entry)};
-  if (source.displayName) frontmatter['title'] = source.displayName;
-  if (source.description) frontmatter['description'] = source.description;
-  if (source.resource) frontmatter['resource'] = source.resource;
-
-  const overview = entry.aspects?.[OVERVIEW_ASPECT_KEY];
-  const content =
-    typeof overview?.data?.['content'] === 'string'
-      ? (overview.data['content'] as string)
-      : '';
-  const {body, metadata} = splitOkfMetadata(content);
-  Object.assign(frontmatter, metadata);
-
-  const residue = buildResidue(entry, OVERVIEW_ASPECT_KEY, body);
-  if (residue) frontmatter[RESIDUE_KEY] = residue;
-  assertResidueOnly(frontmatter);
-
-  return {
-    id: snapshot.manifest.source.localName(entry),
-    frontmatter,
-    body,
-  };
-}
-
-function conceptType(entry: gcp.Entry): string {
-  const key = typeFacetKey(entry.entryType);
-  if (key) {
-    const label = entry.aspects?.[key]?.data?.['type'];
-    if (typeof label === 'string' && label) return label;
-  }
-  return entry.entryType?.split('/').pop() || 'concept';
-}

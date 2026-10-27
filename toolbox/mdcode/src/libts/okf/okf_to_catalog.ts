@@ -6,10 +6,10 @@ import * as path from 'node:path';
 import * as gcp from '../gcp';
 import * as dataplex from '../gcp/dataplex';
 import * as kcmd from '../index';
+import {BUNDLE_DIR} from './bundle';
 import {fileContentToConcept} from './concept';
 import {conceptToEntry} from './concept_to_entry';
 
-const BUNDLE_DIR = 'bundle';
 const BATCH_MAX_CHANGES = 250;
 
 /** Options forwarded from `kcmd push`. */

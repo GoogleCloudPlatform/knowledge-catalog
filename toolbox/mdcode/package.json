@@ -15,7 +15,7 @@
     "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
     "build": "npm run build:libts && npm run build:tool",
     "compile": "npx tsc --noEmit",
-    "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/ ./tests/libts/okf/",
+    "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/ ./tests/libts/okf/ ./tests/libts/sources/",
     "test:semantic": "npx bun test ./tests/libts/semantic/",
     "test:tool": "npx bun test ./tests/tool/",
     "test:gcp": "npx bun test ./tests/libts/gcp/",

@@ -22,6 +22,11 @@ cli.command('init', 'Initialize a new catalog snapshot')
     .option(
         '--semantic-model <id>',
         'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
+    .option(
+        '--context-set <id>',
+        'Context set scope as <projectId>.<locationId>.<entryGroupId>: one ' +
+            'workspace holding the semantic model in OSI+G under catalog/ ' +
+            'and the rest of the context set as an OKF bundle under bundle/')
     .option('--pull', 'Optionally pull catalog entries during initialization')
     .option(
         '--format <format>',

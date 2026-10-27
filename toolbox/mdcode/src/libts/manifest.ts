@@ -85,6 +85,11 @@ export class CatalogManifest {
     return CatalogManifest.forNewSource(source);
   }
 
+  static async initWithContextSet(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
+    const source = await createSource(Sources.CONTEXT_SET, name, ctx);
+    return new CatalogManifest(source);
+  }
+
   static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const content = fs.readFileSync(path, 'utf8');
     const parsed = yaml.parse(content);
