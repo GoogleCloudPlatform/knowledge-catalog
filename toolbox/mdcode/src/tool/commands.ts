@@ -1473,6 +1473,20 @@ export async function push(options: PushOptions): Promise<number> {
         return 1;
       }
     }
+    // Every source in the model files' own bindings and in the profiles a
+    // vanilla model's GOOGLE blocks carry must name a table Knowledge Catalog
+    // knows, whichever profile this push applies. The loads above have
+    // reported any document that does not load. A legacy wrapper's sources
+    // are bare names, which the check skips.
+    const sourceErrors = await sourceCheckErrors(
+        loadSemanticModels(
+            layoutDocs, {defaultProject, bindingOptional: true, ...load})
+            .models,
+        ctx, options);
+    if (sourceErrors.length) {
+      for (const e of sourceErrors) console.error(`Error: ${e}`);
+      return 1;
+    }
     for (const n of pruningNotes) PUSH_REPORT.note(n);
 
     for (const {profileName, prepared} of graphPlans) {

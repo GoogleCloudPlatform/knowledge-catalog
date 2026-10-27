@@ -23,6 +23,7 @@ import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {kcV2Aspects, profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
+import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -2841,6 +2842,43 @@ semantic_model:
     expect(await push({validateOnly: true, profile: 'prod'})).toBe(0);
     const customer = deploySpy.mock.calls[0][0][0].model.entities[0];
     expect(customer.dataSource).toBe('test-project.prod.customer');
+  });
+
+  // A model with no deployments list checks every source too, the model
+  // file's and each block profile's, whichever profile the push applies,
+  // before it writes anything.
+  test('push checks every source before it writes, and --skip-source-check looks nothing up', async () => {
+    const PROD = `${BQ}/prod/tables/customer`;
+    const DEV = `${BQ}/dev/tables/customer`;
+    writeModel(JSON.stringify({profiles: [binding('prod', PROD), binding('dev', DEV)]}));
+    const lookup = spyOn(CatalogClient.prototype, 'lookupEntry')
+        .mockImplementation((async (_p: string, _l: string, name: string) =>
+            name.endsWith(`/entries/${DEV}`) ? entryDenied(name) :
+                                               {status: 200, result: {name}}) as any);
+    const deploySpy = spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue(
+        {success: true, warnings: [], created: 0, updated: 0, deleted: 0,
+         linked: 0, unlinked: 0, plan: []} as any);
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+
+    expect(await push({profile: 'prod'})).toBe(1);
+    expect(messages(errorSpy)).toBe(
+        `Error: entity 'Customer' in profile 'dev': source '${DEV}' names no ` +
+        `table Knowledge Catalog knows about. The table may not exist, or you ` +
+        `may not be allowed to read its catalog entry. Fix the source, or ` +
+        `pass --skip-source-check.`);
+    expect(deploySpy).not.toHaveBeenCalled();
+    const entry = (source: string) =>
+        `projects/test-project/locations/us/entryGroups/@bigquery/entries/${source}`;
+    expect(lookup.mock.calls.map(c => c[2]).sort())
+        .toEqual([`${BQ}/raw/tables/customer`, PROD, DEV].map(entry).sort());
+
+    lookup.mockClear();
+    expect(await push({profile: 'prod', skipSourceCheck: true})).toBe(0);
+    expect(lookup).not.toHaveBeenCalled();
+    expect(messages(logSpy))
+        .toContain('Skipping the source existence check (--skip-source-check).');
+    expect(deploySpy).toHaveBeenCalledTimes(1);
   });
 
   // Reading a block profile checks each field binding for SQL, which needs the
