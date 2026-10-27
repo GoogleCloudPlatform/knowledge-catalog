@@ -11,6 +11,7 @@ import * as fs from 'node:fs';
 import * as kcmd from '../libts';
 import * as context from '../libts/gcp/context';
 import * as md from '../libts/metadata';
+import {loadSqlEngine} from '../libts/semantic/sql_parser';
 
 
 export interface EntryOptions {
@@ -45,6 +46,15 @@ export async function entry(
       return 1;
     }
     items = parsed;
+  }
+
+  // A semantic model's entries are read with the SQL parser.
+  try {
+    await loadSqlEngine();
+  } catch (err: any) {
+    console.error(
+        `Error: the SQL parser could not be loaded: ${err?.message ?? err}`);
+    return 1;
   }
 
   // A deferred context: opening a workspace whose scope needs no request, such

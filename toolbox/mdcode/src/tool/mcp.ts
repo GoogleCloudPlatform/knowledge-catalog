@@ -7,6 +7,7 @@ import { z } from 'zod';
 
 import * as kcmd from '../libts';
 import * as gcp from '../libts/gcp';
+import { loadSqlEngine } from '../libts/semantic/sql_parser';
 
 export async function startServer(basePath: string = '.') {
   const server = new McpServer({
@@ -15,6 +16,8 @@ export async function startServer(basePath: string = '.') {
   });
 
   const ctx = gcp.ApiContext.default();
+  // A semantic model's entries are read with the SQL parser.
+  await loadSqlEngine();
   const snapshot = await kcmd.CatalogSnapshot.fromPath(basePath, ctx);
 
   server.registerTool(

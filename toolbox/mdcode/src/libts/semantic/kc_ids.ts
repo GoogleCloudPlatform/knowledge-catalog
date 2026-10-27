@@ -23,6 +23,13 @@ import {Entity, Metric, Relationship, SemanticModel} from './ir';
 export const DEFAULT_TYPE_PROJECT = 'dataplex-types';
 export const DEFAULT_TYPE_LOCATION = 'global';
 
+// Whether Knowledge Catalog push and pull should use the second-generation
+// built-in aspect fields and entry-id layout. Only `KC_V2_ASPECTS=1` enables
+// it; unset, `''`, `'0'`, and `'true'` are all off.
+export function kcV2Aspects(): boolean {
+  return process.env.KC_V2_ASPECTS === '1';
+}
+
 // Matches the container path and trailing bare ID of any Knowledge Catalog
 // resource name:
 // - Entry-group paths (`ENTRY_GROUP_PATH_RE`):
@@ -116,9 +123,15 @@ export class Namer {
         `${slug(model.name)}.metrics.${slug(metric.name)}`;
   }
 
-  /** Bare V2 entry ID for a relationship within a semantic model. */
+  /**
+   * Bare entry ID for a relationship's `semantic-relationship` entry (mapping
+   * Addendum 6): `<model>/relationships/<relationship>` with the second-
+   * generation layout, and the form entityId uses otherwise.
+   */
   relationshipId(model: SemanticModel, rel: Relationship): string {
-    return `${model.name}/relationships/${rel.name}`;
+    return this.v2Aspects ?
+        `${model.name}/relationships/${rel.name}` :
+        `${slug(model.name)}.relationships.${slug(rel.name)}`;
   }
 
   /**

@@ -168,8 +168,8 @@ describe('CatalogSnapshot.deleteEntries', () => {
   });
 });
 
-describe('the semantic-model layout before it exposes entries', () => {
-  test('fails every item with its own message', async () => {
+describe('the semantic-model layout', () => {
+  test('reports its own message for each item', async () => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
         'scope: semantic-model.test-project.us.commerce_eg\n');
@@ -179,8 +179,9 @@ describe('the semantic-model layout before it exposes entries', () => {
         [{name: 'orders', type: 'dataplex-types.global.semantic-entity', resource: {}}]);
     const deleted = await snapshot.deleteEntries(['orders']);
 
-    expect(saved[0].error).toContain('does not support writing per-entry files yet');
-    expect(deleted[0].error).toContain('does not support deleting per-entry files yet');
+    expect(saved[0].error).toContain("save the model's anchor entry");
+    expect(deleted[0].error).toBe(
+        "entry 'orders' does not exist in the semantic model");
   });
 });
 

@@ -29,8 +29,7 @@ export class CatalogSnapshot {
     this._catalog = new dataplex.CatalogClient(ctx);
 
     const catalogPath = path.join(this.basePath, 'catalog');
-    this._layout = createLayout(
-      manifest.source.layout, catalogPath, manifest.source.entryGroup);
+    this._layout = createLayout(manifest.source, catalogPath);
   }
 
   static async fromPath(basePath: string, ctx: gcp.ApiContext): Promise<CatalogSnapshot> {

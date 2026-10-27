@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {entry, matchesType} from '../../src/tool/entry_commands';
 
 const MAIN = path.join(process.cwd(), 'src', 'tool', 'main.ts');
@@ -181,20 +182,51 @@ describe('kcmd entry usage', () => {
 });
 
 describe('kcmd entry on a semantic-model workspace', () => {
-  // Until the semantic-model layout exposes entries, it lists none and
-  // reading one fails with the layout's own message.
-  test('lists nothing, with no request and no gcloud command', async () => {
+  // The model file is shown as the entries push writes for it, with no
+  // request and no gcloud command.
+  test('lists the model\'s entries', async () => {
     writeSemanticWorkspace();
     expect(await entry('list')).toBe(0);
-    expect(printed()).toEqual([]);
+    expect(printed()).toEqual([
+      {name: 'commerce', type: 'dataplex-types.global.semantic-model'},
+      {
+        name: 'commerce.entities.Customer',
+        type: 'dataplex-types.global.semantic-entity',
+      },
+    ]);
   });
 
-  test('get reports that the layout does not expose entries yet', async () => {
+  test('get prints an entry of the model', async () => {
     writeSemanticWorkspace();
-    expect(await entry('get', ['commerce'])).toBe(1);
+    expect(await entry('get', ['commerce.entities.Customer'])).toBe(0);
+    const [customer] = printed();
+    expect(customer.resource).toEqual({displayName: 'Customer', parent: 'commerce'});
+    expect(customer.aspects['dataplex-types.global.schema'].primaryKey)
+        .toEqual({fields: ['key']});
+  });
+
+  test('reports a SQL parser that cannot load', async () => {
+    writeSemanticWorkspace();
+    spyOn(sqlParser, 'loadSqlEngine').mockRejectedValue(new Error('simulated'));
+    expect(await entry('list')).toBe(1);
     expect(out).toEqual([]);
-    expect(err.join('\n'))
-        .toContain('does not expose per-entry Knowledge Catalog files yet');
+    expect(err).toEqual(['Error: the SQL parser could not be loaded: simulated']);
+  });
+
+  test('delete removes an element from the model file', async () => {
+    writeSemanticWorkspace();
+    expect(await entry('delete', ['commerce.entities.Customer'])).toBe(0);
+    expect(printed()).toEqual([{name: 'commerce.entities.Customer', ok: true}]);
+    const model = fs.readFileSync(
+        path.join('catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml'), 'utf8');
+    expect(model).not.toContain('Customer');
+  });
+
+  test('get of an element name, not an entry name, fails', async () => {
+    writeSemanticWorkspace();
+    expect(await entry('get', ['Customer'])).toBe(1);
+    expect(out).toEqual([]);
+    expect(err.join('\n')).toContain('Customer');
   });
 });
 
@@ -230,12 +262,13 @@ describe('kcmd entry, as a process', () => {
     writeSemanticWorkspace();
     const {code, stdout} = run('list', '--type', 'semantic-model');
     expect(code).toBe(0);
-    expect(JSON.parse(stdout)).toEqual([]);
+    expect(JSON.parse(stdout))
+        .toEqual([{name: 'commerce', type: 'dataplex-types.global.semantic-model'}]);
   }, 30000);
 
   test('exits 1 with nothing on stdout when an entry cannot be read', () => {
     writeSemanticWorkspace();
-    const {code, stdout, stderr} = run('get', 'commerce');
+    const {code, stdout, stderr} = run('get', 'Customer');
     expect(code).toBe(1);
     expect(stdout).toBe('');
     expect(stderr).toContain('cannot read 1 of the entries');
@@ -369,10 +402,11 @@ describe('kcmd entry save, as a process', () => {
       stdout: 'pipe',
       stderr: 'pipe',
     });
-    expect(p.exitCode).toBe(1);
-    const results = JSON.parse(p.stdout.toString());
-    expect(results).toHaveLength(1);
-    expect(results[0].name).toBe('refunds');
-    expect(results[0].ok).toBe(false);
+    expect(p.exitCode).toBe(0);
+    expect(JSON.parse(p.stdout.toString()))
+        .toEqual([{name: 'commerce.entities.refunds', ok: true}]);
+    const model = fs.readFileSync(
+        path.join('catalog', 'EntryGroups', 'commerce_eg', 'commerce.yaml'), 'utf8');
+    expect(model).toContain('- name: refunds');
   }, 30000);
 });

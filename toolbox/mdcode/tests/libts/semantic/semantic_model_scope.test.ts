@@ -84,11 +84,9 @@ describe('semantic-model scope wiring', () => {
         expect(snapshot.layout).toBeInstanceOf(SemanticModelLayout);
 
         const layout = snapshot.layout as SemanticModelLayout;
-        // Push-only layout: it exposes no per-entry Knowledge Catalog files.
-        // entryExists agrees with listEntries -- neither reports the model
-        // document as a KC entry.
-        expect(layout.listEntries()).toEqual([]);
-        expect(layout.entryExists('sales')).toBe(false);
+        // The entry view reads the model file, which declares no version, so
+        // the loader refuses it.
+        expect(() => layout.listEntries()).toThrow(/missing 'version'/);
 
         // Only the document under the scoped EntryGroup is discovered; the
         // colliding sales.yaml in other-group is ignored.

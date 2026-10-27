@@ -518,7 +518,7 @@ function sortedByName(entries: Entry[]): Entry[] {
 // Reconstructs an entity from its `semantic-entity` aspect (the backing
 // source), the built-in `schema` aspect (its fields, primary key, and unique
 // constraints), and the built-in `guidelines` aspect (ai_context instructions).
-function readEntity(entry: Entry, warnings: string[]): Entity {
+export function readEntity(entry: Entry, warnings: string[]): Entity {
   const name = entry.entrySource?.displayName ?? idOf(entry.name);
   const semantic = aspectData(entry, 'semantic-entity');
   const schema = aspectData(entry, 'schema');
@@ -575,7 +575,7 @@ function readEntity(entry: Entry, warnings: string[]): Entity {
 // (userManaged:false), which are not authored model content, so those are
 // skipped. Returns undefined when the entry carries no author guidelines
 // instructions.
-function readAiContext(entry: Entry): AiContext|undefined {
+export function readAiContext(entry: Entry): AiContext|undefined {
   const guidelines = aspectData(entry, 'guidelines');
   if (guidelines.userManaged === false) return undefined;
   const instructions = guidelines.instructions;
@@ -627,7 +627,7 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
 // one, else it falls back to the entity the emitter persisted. A default push
 // omits the expression entirely (it is gated behind `--emit-expressions`), so
 // an absent expression is expected, not an error, and does not warn.
-function readMetric(
+export function readMetric(
     entry: Entry, entityNames: string[], warnings: string[]): Metric {
   const name = entry.entrySource?.displayName ?? idOf(entry.name);
   const data = aspectData(entry, 'semantic-metric');
@@ -764,7 +764,7 @@ function aspectData(entry: Entry, type: string): Record<string, any> {
 // project/location the emitter used). Only the aspect at `path` matches, which
 // is the entry itself when `path` is empty and a field for `Schema.<field>`.
 // Returns an empty object when the aspect is absent.
-function aspectDataOf(
+export function aspectDataOf(
     aspects: Record<string, Aspect>|undefined, type: string,
     path = ''): Record<string, any> {
   for (const [key, aspect] of Object.entries(aspects ?? {})) {
@@ -784,7 +784,7 @@ function aspectDataOf(
 // when there is one target, `deployment_1`, `deployment_2`, ... when there are
 // several), warning that the original deployment names were not recovered.
 // Returns undefined when the model has none.
-function readDeploymentTargets(
+export function readDeploymentTargets(
     anchor: Entry, modelName: string, warnings: string[]):
     {extension: CustomExtension; deployments: DeploymentSpec[]}|undefined {
   const deployments: DeploymentSpec[] = unnamedDeployments(

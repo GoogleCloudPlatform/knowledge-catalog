@@ -5,6 +5,8 @@ import * as md from './metadata';
 import { StandardLayout } from './layouts/standard';
 import { DocumentsLayout } from './layouts/documents';
 import { SemanticModelLayout } from './layouts/semantic-model';
+import type { CatalogSource } from './source';
+import type { SemanticModelSource } from './sources/semantic-model';
 
 export enum Layouts {
   STANDARD = 'standard',
@@ -33,17 +35,20 @@ export interface CatalogLayout {
 }
 
 
-export function createLayout(layout: Layouts,
-                             catalogPath: string,
-                             entryGroup?: string): CatalogLayout {
-  switch (layout) {
+// The layout a source's workspace uses, rooted at `catalogPath`.
+export function createLayout(source: CatalogSource,
+                             catalogPath: string): CatalogLayout {
+  switch (source.layout) {
     case Layouts.STANDARD:
       return new StandardLayout(catalogPath);
     case Layouts.DOCUMENTS:
       return new DocumentsLayout(catalogPath);
-    case Layouts.SEMANTIC_MODEL:
-      return new SemanticModelLayout(catalogPath, entryGroup);
+    case Layouts.SEMANTIC_MODEL: {
+      // Only a SemanticModelSource declares this layout.
+      const {project, location, entryGroup} = source as SemanticModelSource;
+      return new SemanticModelLayout(catalogPath, entryGroup, {project, location});
+    }
     default:
-      throw new Error(`Unknown layout type: ${layout}`);
+      throw new Error(`Unknown layout type: ${source.layout}`);
   }
 }
