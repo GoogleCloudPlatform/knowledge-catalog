@@ -1,8 +1,9 @@
-// API client for Cloud Spanner, covering two surfaces the semantic-model push
-// leg needs: Database Admin (updateDatabaseDdl, getDatabase and getOperation)
-// to check the database and deploy Spanner Graph DDL, and the data plane
-// (sessions and executeSql) to PLAN an
-// action's DML against the live database before publishing it.
+// API client for Cloud Spanner, covering three surfaces kcmd needs: Database
+// Admin (updateDatabaseDdl, getDatabase and getOperation) to check the
+// database and deploy Spanner Graph DDL; the data plane (sessions and
+// executeSql) to PLAN an action's DML against the live database before
+// publishing it; and Instance Admin (getInstance and getInstanceConfig) to
+// find the region where Knowledge Catalog keeps a table's entry.
 
 import * as api from './api';
 import * as context from './context';
@@ -45,6 +46,30 @@ export interface SpannerType {
 }
 
 
+// A Spanner instance, as getInstance returns it. `config` is the full name of
+// its instance config, `projects/<p>/instanceConfigs/<c>`.
+export interface Instance {
+  name?: string;
+  config?: string;
+  [key: string]: any;
+}
+
+
+// An instance config, as getInstanceConfig returns it. Each replica names its
+// region, and exactly one is marked `defaultLeaderLocation`. For example,
+// `nam3` lists replicas in us-east4, us-east1 and us-central1, and marks
+// us-east4.
+export interface InstanceConfig {
+  name?: string;
+  replicas?: Array<{
+    location?: string;
+    type?: string;
+    defaultLeaderLocation?: boolean;
+  }>;
+  [key: string]: any;
+}
+
+
 export class SpannerClient extends api.ApiClient {
   constructor(ctx: context.ApiContext) {
     super('https://spanner.googleapis.com', 'v1', ctx);
@@ -68,6 +93,18 @@ export class SpannerClient extends api.ApiClient {
       Promise<api.ApiResult<{name?: string; [key: string]: any}>> {
     return await this._get(
         `projects/${project}/instances/${instance}/databases/${database}`);
+  }
+
+  // Fetches an instance's metadata, which names its instance config.
+  async getInstance(project: string, instance: string):
+      Promise<api.ApiResult<Instance>> {
+    return await this._get<Instance>(`projects/${project}/instances/${instance}`);
+  }
+
+  // Fetches an instance config by its full name, as Instance.config gives it.
+  async getInstanceConfig(configName: string):
+      Promise<api.ApiResult<InstanceConfig>> {
+    return await this._get<InstanceConfig>(configName);
   }
 
   // Fetches a long-running operation by its resource name (as returned in
