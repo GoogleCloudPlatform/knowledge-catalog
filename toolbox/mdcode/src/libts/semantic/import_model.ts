@@ -4,9 +4,11 @@
 import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
-import {FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, isFormatVersion, isGoogleVendor, isRecord, loadModels, modelAiContexts, OSSIE_VERSION, SemanticModelError} from './loader';
-import {NameKind, nameProblem} from './names';
-import {plainCopy} from './resolve_profiles';
+import {ALLOWED_DIALECTS, normalizeDataType, SqlDialect} from './ir';
+import {catalogNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {plainCopy, sourcesDialect} from './resolve_profiles';
+import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
@@ -26,6 +28,11 @@ export interface ImportSemanticModelOptions {
   transpile?: boolean;
   /** When true, treats any third-party repair warning as a hard error. */
   strict?: boolean;
+  /**
+   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
+   * used when converting a Google-flavor model to vanilla (`'ossie'`).
+   */
+  profileFiles?: Array<{fileName: string; content: string}>;
 }
 
 /** Result of importing a semantic model YAML document. */
@@ -93,6 +100,15 @@ const SOURCE_CLI_HINT =
     `'kcmd push' rejects the file until it is repointed, or until ` +
     `'kcmd import' runs again with '--source-prefix'.`;
 
+const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
+
+const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
+  GOOGLE_SQL: 'BIGQUERY',
+  GOOGLESQL: 'BIGQUERY',
+  POSTGRESQL: 'POSTGRES',
+  TSQL: 'SQLSERVER',
+};
+
 const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{re: RegExp; child?: string}> = [
   {re: /^bigquery\.googleapis\.com\/projects\/([^/]+)$/, child: 'datasets'},
   {re: /^bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)$/},
@@ -114,7 +130,10 @@ const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{re: RegExp; child?: string}> = [
     re: /^alloydb\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/clusters\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
   },
   {
-    re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/[^/]+(?:\/schemas\/[^/]+)?$/,
+    re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)$/,
+  },
+  {
+    re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
   },
 ];
 
@@ -303,6 +322,313 @@ function validateInputDocument(doc: ImportDocument): string|undefined {
   for (const r of doc.relationships) check('relationship', r.name);
   for (const mt of doc.metrics) check('metric', mt.name);
   return undefined;
+}
+
+/**
+ * Qualifies a bare dot-separated table name `source` against `prefix` into a
+ * GCP resource name when `prefix` supplies the missing hierarchy segments and
+ * any overlapping segments agree, or returns `undefined` if `source` cannot be
+ * qualified.
+ */
+function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
+    undefined {
+  // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
+  // query-valued sources with unquoted whitespace.
+  const trimmed = source.trim();
+  if (!trimmed || trimmed.includes('/') || trimmed.includes(':') ||
+      hasUnquotedWhitespace(trimmed)) {
+    return undefined;
+  }
+
+  // 2. Split the bare dot-separated table reference into unquoted segments
+  // (unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first) and
+  // verify that any leading segments overlapping `prefix.known` match.
+  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
+          trimmed.startsWith('`') && trimmed.endsWith('`') &&
+          !trimmed.slice(1, -1).includes('`') ?
+      trimmed.slice(1, -1) :
+      trimmed;
+  const segs = catalogNameSegments(unwrapped).map(unquote);
+  if (!segs.length || segs.some(s => !s.length)) return undefined;
+  const needed = prefix.child ? 2 : 1;
+  const overlap = segs.length - needed;
+  if (overlap < 0 || overlap > prefix.known.length) return undefined;
+  const tail = prefix.known.slice(prefix.known.length - overlap);
+  if (tail.some((k, i) => segs[i] !== k)) return undefined;
+
+  // 3. Append the remaining child container (if any) and table segment onto
+  // `prefix.base` and verify the resulting resource name is accepted.
+  const rest = segs.slice(overlap);
+  const qualified = prefix.child ?
+      `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
+      `${prefix.base}/tables/${rest[0]}`;
+  return isAcceptedSource(qualified) ? qualified : undefined;
+}
+
+/**
+ * Canonicalizes `obj.datatype` casing (e.g. `integer` -> `Integer`) and deletes
+ * `Opaque` in any casing.
+ */
+function normalizeDatatype(
+    obj: Record<string, any>, doc: ImportDocument): void {
+  if (typeof obj.datatype !== 'string') return;
+  const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
+  if (!res.ok) return;
+  if (res.type === undefined) {
+    delete obj.datatype;
+    doc.modified = true;
+  } else if (obj.datatype !== res.type) {
+    obj.datatype = res.type;
+    doc.modified = true;
+  }
+}
+
+/**
+ * Maps dialect aliases onto the 9 allowed SQL dialects and drops unsupported
+ * non-SQL dialects on a field or metric, returning `'empty'` if all dialect
+ * entries were dropped.
+ */
+function normalizeExpressionDialects(
+    obj: Record<string, any>, label: string, doc: ImportDocument): 'ok'|
+    'empty' {
+  if (!isRecord(obj.expression) || !Array.isArray(obj.expression.dialects) ||
+      obj.expression.dialects.length === 0) {
+    return 'ok';
+  }
+  const kept: unknown[] = [];
+  for (const entry of obj.expression.dialects) {
+    if (!isRecord(entry) || typeof entry.dialect !== 'string') {
+      kept.push(entry);
+      continue;
+    }
+    const upper = entry.dialect.trim().toUpperCase();
+    const mapped = DIALECT_ALIASES[upper] ??
+        (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
+    if (mapped !== undefined) {
+      if (entry.dialect !== mapped) {
+        entry.dialect = mapped;
+        doc.modified = true;
+      }
+      kept.push(entry);
+    } else {
+      doc.warnOrError(
+          `${label}: dropped unsupported dialect '${entry.dialect}'.`);
+      doc.modified = true;
+    }
+  }
+  obj.expression.dialects = kept;
+  return kept.length === 0 ? 'empty' : 'ok';
+}
+
+/**
+ * Returns why an unanchored metric `mt` is rejected by push's
+ * `validateExpressionReferences` (`'reaches no declared entity'` or
+ * `'reaches multiple entities (...)'`), or `undefined` when anchored or valid.
+ */
+function unanchoredMetricProblem(
+    mt: Record<string, any>, entityNames: string[],
+    impliedDialect?: string): string|undefined {
+  // 1. Skip metrics that already declare an `entity` anchor natively or inside
+  // a `GOOGLE` `custom_extensions` block.
+  if (mt.entity !== undefined ||
+      hasGoogleBlock(asRecords(mt.custom_extensions))) {
+    return undefined;
+  }
+
+  // 2. Collect all SQL dialect expressions on the metric; if none are present
+  // or any entry holds no SQL, leave the metric for `loadModels` to diagnose.
+  const sources = typeof mt.expression === 'string' ?
+      [{text: mt.expression, dialect: 'ANSI_SQL'}] :
+      asRecords(mt.expression?.dialects)
+          .filter(
+              d => typeof d.dialect === 'string' &&
+                  typeof d.expression === 'string')
+          .map(d => ({text: d.expression, dialect: d.dialect}));
+  if (!sources.length ||
+      sources.some(s => noSqlReason(s.text, s.dialect) !== undefined)) {
+    return undefined;
+  }
+  const parsed =
+      sources.map(s => columnsForSource(s.text, s.dialect, impliedDialect));
+  const allColumns = parsed.flatMap(c => c ?? []);
+
+  // 3. Flag the unanchored metric if its parsed expressions reference zero
+  // columns (e.g. `COUNT(*)`) or span multiple declared entities.
+  const reached = entitiesReached(allColumns, entityNames);
+  if (parsed.every(c => c !== undefined) && allColumns.length === 0) {
+    return 'reaches no declared entity';
+  }
+  if (reached.length > 1) {
+    return `reaches multiple entities (${reached.join(', ')})`;
+  }
+  return undefined;
+}
+
+/**
+ * Truncates `obj.description` to `MAX_ENTRY_DESCRIPTION` characters when it
+ * exceeds the limit and records a warning (or error in `strict` mode).
+ */
+function truncateDescription(
+    obj: Record<string, any>, label: string, doc: ImportDocument): void {
+  if (typeof obj.description === 'string' &&
+      obj.description.length > MAX_ENTRY_DESCRIPTION) {
+    doc.warnOrError(
+        `${label}: truncated 'description' from ${obj.description.length} ` +
+        `to ${MAX_ENTRY_DESCRIPTION} characters.`);
+    obj.description = obj.description.slice(0, MAX_ENTRY_DESCRIPTION);
+    doc.modified = true;
+  }
+}
+
+/**
+ * Normalizes a field's datatype and SQL dialect list, removing `f.expression`
+ * with a warning in the Google version (or recording an error in the vanilla
+ * version) if no supported SQL dialect remains.
+ */
+function repairField(
+    f: Record<string, any>, dsName: string, doc: ImportDocument): void {
+  const fLabel = `field '${dsName}.${f.name}'`;
+  normalizeDatatype(f, doc);
+  if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
+    if (doc.targetVersion === OSSIE_VERSION) {
+      doc.errors.push(
+          `${fLabel}: no supported SQL dialect remains in 'expression', ` +
+          `and version '${OSSIE_VERSION}' requires an 'expression' on ` +
+          `every field.`);
+    } else {
+      delete f.expression;
+      doc.modified = true;
+      doc.warnOrError(
+          `${fLabel}: no supported SQL dialect remains; removed ` +
+          `'expression' and left the field unbound.`);
+    }
+  }
+}
+
+/**
+ * Repairs a dataset's `source` (removing query-valued sources, qualifying bare
+ * table names against `doc.sourcePrefix`, and warning on unaccepted sources),
+ * truncates its `description`, and repairs each of its `fields`.
+ */
+function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
+  // 1. Repair or diagnose `ds.source`: remove query-valued sources (in the
+  // Google version), qualify bare table names against `doc.sourcePrefix`, or
+  // warn on unaccepted source formats.
+  const dsLabel = `dataset '${ds.name}'`;
+  if (typeof ds.source === 'string') {
+    const trimmed = ds.source.trim();
+    const qualified = doc.sourcePrefix ?
+        qualifyTableSource(trimmed, doc.sourcePrefix) :
+        undefined;
+    if (hasUnquotedWhitespace(trimmed)) {
+      if (doc.targetVersion === OSSIE_VERSION) {
+        doc.errors.push(
+            `${dsLabel}: query-valued source '${trimmed}' is not supported, ` +
+            `and version '${OSSIE_VERSION}' requires a table 'source' on ` +
+            `every dataset.`);
+      } else {
+        doc.warnOrError(
+            `${dsLabel}: removed query-valued source '${trimmed}'; ` +
+            `dataset is now unbound.`);
+        delete ds.source;
+        doc.modified = true;
+      }
+    } else if (qualified !== undefined) {
+      doc.warnOrError(
+          `${dsLabel}: rewrote bare source '${trimmed}' to '${qualified}'.`);
+      ds.source = qualified;
+      doc.modified = true;
+    } else if (!(oldSourceForm(trimmed) === undefined &&
+                 isAcceptedSource(trimmed))) {
+      doc.warnOrError(`${dsLabel}: source '${trimmed}'${
+          SOURCE_WARNING_SUFFIX.slice(0, -1)}; ${SOURCE_CLI_HINT}`);
+    }
+  }
+
+  // 2. Cap the dataset's `description` at 2,000 characters and repair each of
+  // its `fields`.
+  truncateDescription(ds, dsLabel, doc);
+  for (const f of asRecords(ds.fields)) {
+    repairField(f, String(ds.name ?? ''), doc);
+  }
+}
+
+/**
+ * Repairs a metric's datatype, SQL dialect list, and description, returning
+ * `false` when the metric is unanchored and reaches 0 or >1 entities so the
+ * caller prunes it from `doc.metrics`.
+ */
+function repairMetric(
+    mt: Record<string, any>, entityNames: string[],
+    impliedDialect: string|undefined, doc: ImportDocument): boolean {
+  const mtLabel = `metric '${mt.name}'`;
+  normalizeDatatype(mt, doc);
+  if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
+    doc.errors.push(
+        `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
+    return true;
+  }
+  const problem = unanchoredMetricProblem(mt, entityNames, impliedDialect);
+  if (problem) {
+    const how = doc.targetVersion === OSSIE_VERSION ?
+        `with 'entity' in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
+            `metric (or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
+            `the metric)` :
+        `with an 'entity' anchor`;
+    doc.warnOrError(
+        `${mtLabel}: removed unanchored metric whose expression ` +
+        `${problem}; add the metric back ${how}.`);
+    doc.modified = true;
+    return false;
+  }
+  truncateDescription(mt, mtLabel, doc);
+  return true;
+}
+
+/**
+ * Phase 3 (Repair): Repairs third-party constructs in-place on `doc` (pruning
+ * extra models, repairing datasets and their fields, pruning unanchored
+ * metrics, and truncating descriptions > 2,000 chars).
+ */
+function repairDocument(doc: ImportDocument): void {
+  // 1. Prune extra models after `semantic_model[0]` because `kcmd` allows only
+  // a single model per document, and cap the model's `description` at 2,000
+  // characters (`MAX_ENTRY_DESCRIPTION`).
+  if (doc.root.semantic_model.length > 1) {
+    for (const extra of doc.root.semantic_model.slice(1)) {
+      const name =
+          isRecord(extra) && typeof extra.name === 'string' ? extra.name : '';
+      doc.warnOrError(
+          `Removed extra model${name ? ` '${name}'` : ''} from ` +
+          `'semantic_model'; the format allows one model per document.`);
+    }
+    doc.root.semantic_model = [doc.root.semantic_model[0]];
+    doc.modified = true;
+  }
+  truncateDescription(doc.model, `model '${doc.model.name}'`, doc);
+
+  // 2. Repair each dataset (its table `source`, `description`, and `fields`).
+  for (const ds of doc.datasets) {
+    repairDataset(ds, doc);
+  }
+
+  // 3. Infer the model's source dialect from its repaired datasets via
+  // `sourcesDialect`, and repair or prune each metric (`repairMetric`).
+  const entityNames = doc.datasets.map(ds => ds.name)
+                          .filter((n): n is string => typeof n === 'string');
+  const impliedDialect = sourcesDialect({
+    entities: doc.datasets.map(
+        ds => ({
+          abstract: Boolean(ds.abstract),
+          authoredSource: typeof ds.source === 'string' ? ds.source : undefined,
+          dataSource: '',
+        })),
+  });
+  doc.metrics = doc.metrics.filter(
+      mt => repairMetric(mt, entityNames, impliedDialect, doc));
+  if (Array.isArray(doc.model.metrics)) {
+    doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
+  }
 }
 
 /**
@@ -509,6 +835,7 @@ export async function importSemanticModelYaml(
     return {ok: false, files: [], warnings: [], errors: [gateError]};
   }
 
+  repairDocument(doc);
   await adaptDocument(doc, !!opts.transpile);
 
   const content =

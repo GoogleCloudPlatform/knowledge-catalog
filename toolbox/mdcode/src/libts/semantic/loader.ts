@@ -3136,7 +3136,7 @@ function catalogNameResourceName(fqn: string): string|undefined {
 // dots and colons inside backticks do not split or fail. Returns [] when the
 // quoting is malformed (an unquoted colon, an unclosed backtick, text after a
 // closing backtick, or a backtick mid-segment outside quotes).
-function catalogNameSegments(path: string): string[] {
+export function catalogNameSegments(path: string): string[] {
   const out: string[] = [];
   let cur = '';
   let state: 'start'|'unquoted'|'quoted'|'after_quote' = 'start';
@@ -3190,7 +3190,7 @@ function catalogNameSegments(path: string): string[] {
   return out;
 }
 
-function hasUnquotedWhitespace(source: string): boolean {
+export function hasUnquotedWhitespace(source: string): boolean {
   let quoted = false;
   for (let i = 0; i < source.length; i++) {
     const ch = source[i];
@@ -3508,7 +3508,7 @@ export function parseSource(
       `AlloyDB and Cloud SQL.`);
 }
 
-function unquote(part: string): string {
+export function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
 }
 

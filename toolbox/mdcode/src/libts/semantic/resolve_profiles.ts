@@ -1948,8 +1948,10 @@ function prunedTexts(
 // none. A legacy bare name, which the loader completes into
 // `project.dataset.table` in `dataSource`, names BigQuery however many parts it
 // was written with.
-export function sourcesDialect(
-    model: Pick<SemanticModel, 'entities'>): string|undefined {
+export function sourcesDialect(model: {
+  entities?: ReadonlyArray<
+      Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>;
+}): string|undefined {
   return dialectOfSources(
       (model.entities ?? [])
           .filter(e => !e.abstract)

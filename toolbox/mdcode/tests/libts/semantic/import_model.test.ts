@@ -7,6 +7,8 @@ import {loadModels} from '../../../src/libts/semantic/loader';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
+const CLOUDSQL_PREFIX =
+    'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
 
 /**
  * Builds a minimal valid `0.2.0.dev0` (vanilla Ossie) YAML fixture with
@@ -260,4 +262,234 @@ describe('vanilla output, extensions, and targets', () => {
        expect(res.ok).toBe(false);
        expect(res.errors[0]).toContain(badTarget);
      });
+});
+
+describe('sources', () => {
+  test.each([
+    ['1-part from dataset prefix', 'orders', BQ_PREFIX],
+    ['2-part from dataset prefix', 'sales.orders', BQ_PREFIX],
+    ['3-part from dataset prefix', 'acme.sales.orders', BQ_PREFIX],
+    [
+      'single-backticked 3-part from dataset prefix',
+      '\'`acme.sales.orders`\'',
+      BQ_PREFIX,
+    ],
+    [
+      'single-backticked 2-part from dataset prefix',
+      '\'`sales.orders`\'',
+      BQ_PREFIX,
+    ],
+    [
+      '2-part from project prefix', 'sales.orders',
+      'bigquery.googleapis.com/projects/acme'
+    ],
+  ])('qualifies a %s bare name', async (_, bare, sourcePrefix) => {
+    const res =
+        await importSemanticModelYaml(ossieDoc({source: bare}), {sourcePrefix});
+
+    expect(res.ok).toBe(true);
+    expect(res.warnings[0]).toContain(BQ_TABLE);
+    expect(
+        loadModels(res.files[0].content).models[0].entities[0].authoredSource)
+        .toBe(BQ_TABLE);
+  });
+
+  test.each([
+    ['no sourcePrefix', 'orders', {}],
+    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}],
+    [
+      'backtick-quoted table with dot',
+      '\'sales.`my.table`\'',
+      {sourcePrefix: BQ_PREFIX},
+    ],
+    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}],
+  ])('leaves %s as written with a warning and writes the file',
+     async (_, src, opts) => {
+       const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
+       const cleanSrc = src.replace(/^'|'$/g, '');
+
+       expect(res.ok).toBe(true);
+       expect(res.warnings.some(
+                  w => w.includes(cleanSrc) && w.includes('--source-prefix')))
+           .toBe(true);
+     });
+
+  test(
+      'qualifies matching 1-, 2-, and 3-part Cloud SQL names and warns on disagreeing names',
+      async () => {
+        const dbPrefix =
+            'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app';
+        for (const bare of ['orders', 'public.orders', 'app.public.orders']) {
+          const res = await importSemanticModelYaml(
+              ossieDoc({source: bare}), {sourcePrefix: CLOUDSQL_PREFIX});
+          expect(res.ok).toBe(true);
+          expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
+                     .models[0]
+                     .entities[0]
+                     .authoredSource)
+              .toBe(`${CLOUDSQL_PREFIX}/tables/orders`);
+        }
+        const dbMatch = await importSemanticModelYaml(
+            ossieDoc({source: 'app.orders'}), {sourcePrefix: dbPrefix});
+        const dbMismatch = await importSemanticModelYaml(
+            ossieDoc({source: 'public.orders'}), {sourcePrefix: dbPrefix});
+
+        expect(dbMatch.ok).toBe(true);
+        expect(
+            loadModels(dbMatch.files[0].content, {warnUnacceptedSource: true})
+                .models[0]
+                .entities[0]
+                .authoredSource)
+            .toBe(`${dbPrefix}/tables/orders`);
+        expect(dbMismatch.ok).toBe(true);
+        expect(loadModels(
+                   dbMismatch.files[0].content, {warnUnacceptedSource: true})
+                   .models[0]
+                   .entities[0]
+                   .authoredSource)
+            .toBe('public.orders');
+        expect(dbMismatch.warnings.some(w => w.includes('--source-prefix')))
+            .toBe(true);
+      });
+
+  test(
+      'removes a query-valued source in Google output and rejects it in vanilla output',
+      async () => {
+        const query = '"SELECT * FROM sales.orders"';
+        const googleRes = await importSemanticModelYaml(
+            ossieDoc({source: query}), {flavor: 'google'});
+        const ossieRes = await importSemanticModelYaml(
+            ossieDoc({source: query}), {flavor: 'ossie'});
+
+        expect(googleRes.ok).toBe(true);
+        const loaded =
+            loadModels(googleRes.files[0].content, {bindingOptional: true});
+        expect(loaded.models[0].entities[0].dataSource).toBe('');
+        expect(ossieRes.ok).toBe(false);
+      });
+});
+
+describe('dialects and datatypes', () => {
+  test(
+      'maps dialect aliases, drops non-SQL dialects, canonicalizes datatypes, and drops Opaque',
+      async () => {
+        const extra =
+            `          - name: amount\n            datatype: Opaque\n            expression:\n              dialects:\n                - {dialect: GOOGLESQL, expression: "orders.amount"}\n                - {dialect: POSTGRESQL, expression: "orders.amount"}\n                - {dialect: TSQL, expression: "orders.amount"}\n          - name: bi_only\n            datatype: datetimetz\n            expression:\n              dialects:\n                - {dialect: MDX, expression: "[Measures].[BiOnly]"}\n`;
+        const res = await importSemanticModelYaml(
+            ossieDoc({
+              fieldExpr:
+                  '{\n              dialects: [{dialect: GOOGLE_SQL, expression: "orders.order_id"}, {dialect: TABLEAU, expression: "[Order ID]"}]\n            }\n            datatype: integer',
+              extra,
+            }),
+            {flavor: 'google'});
+
+        expect(res.ok).toBe(true);
+        const fields =
+            loadModels(res.files[0].content).models[0].entities[0].fields;
+        expect(fields[0].type).toBe('Integer');
+        expect(fields[0].dialects?.map(d => d.dialect)).toEqual(['BIGQUERY']);
+        expect(fields[1].type).toBeUndefined();
+        expect(fields[1].dialects?.map(d => d.dialect)).toEqual([
+          'BIGQUERY',
+          'POSTGRES',
+          'SQLSERVER',
+        ]);
+        expect(fields[2].type).toBe('DateTimeTz');
+        expect(fields[2].expression).toBeUndefined();
+      });
+
+  test(
+      'reports an error when a vanilla field or metric is left with no supported dialect',
+      async () => {
+        const extra =
+            `    metrics:\n      - name: total_orders\n        expression:\n          dialects:\n            - {dialect: MAQL, expression: "SELECT COUNT(order_id)"}\n`;
+        const res = await importSemanticModelYaml(ossieDoc({
+          fieldExpr:
+              '{\n              dialects: [{dialect: MAQL, expression: "1"}]\n            }',
+          extra,
+        }));
+
+        expect(res.ok).toBe(false);
+        expect(res.errors.some(e => e.includes('orders.order_id'))).toBe(true);
+        expect(res.errors.some(e => e.includes('total_orders'))).toBe(true);
+      });
+
+  test(
+      'rejects a dialect entry missing a dialect name even when other repairs modify the document',
+      async () => {
+        const res = await importSemanticModelYaml(
+            ossieDoc({
+              fieldExpr:
+                  '{dialects: [{dialect: ANSI_SQL, expression: order_id}, {expression: "CAST(order_id AS STRING)"}]}',
+            }),
+            {flavor: 'google'});
+
+        expect(res.ok).toBe(false);
+        expect(res.files).toEqual([]);
+        expect(res.errors.some(e => e.includes('dialect'))).toBe(true);
+      });
+});
+
+describe('unsupported constructs, lengths, and strict repairs', () => {
+  test(
+      'removes extra models, prunes unanchored metrics, and truncates descriptions > 2000 chars',
+      async () => {
+        const extra = `      - name: customers\n        source: ${
+            BQ_TABLE}\n        primary_key: [customer_id]\n        fields:\n          - name: customer_id\n            expression:\n              dialects: [{dialect: BIGQUERY, expression: "customers.customer_id"}]\n    metrics:\n      - name: row_count\n        expression: "COUNT(*)"\n        custom_extensions:\n          - vendor_name: DBT\n            data: "{}"\n      - name: cross_entity\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(orders.order_id) + COUNT(customers.customer_id)"}]\n      - name: valid_orders\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(orders.order_id)"}]\n  - name: extra_model\n    datasets: []\n`;
+        const res = await importSemanticModelYaml(
+            ossieDoc({modelDescription: 'x'.repeat(2105), extra}));
+        const googleRes = await importSemanticModelYaml(
+            ossieDoc({extra}), {flavor: 'google'});
+
+        expect(res.ok).toBe(true);
+        expect(res.warnings.some(w => w.includes('extra_model'))).toBe(true);
+        expect(res.warnings.some(
+                   w => w.includes('row_count') &&
+                       w.includes('GOOGLE custom_extensions block')))
+            .toBe(true);
+        expect(res.warnings.some(w => w.includes('cross_entity'))).toBe(true);
+        expect(googleRes.warnings.some(
+                   w => w.includes('row_count') &&
+                       w.includes('with an \'entity\' anchor')))
+            .toBe(true);
+        const loaded = loadModels(res.files[0].content);
+        expect(loaded.models).toHaveLength(1);
+        expect(loaded.models[0].description).toHaveLength(2000);
+        expect(loaded.models[0].metrics.map(m => m.name)).toEqual([
+          'valid_orders'
+        ]);
+      });
+
+  test.each([
+    ['bare source in strict mode', googleDoc({source: 'orders'})],
+    [
+      'non-SQL dialect in strict mode', googleDoc({
+        fieldExpr:
+            '{\n              dialects: [{dialect: MDX, expression: "1"}, {dialect: BIGQUERY, expression: "orders.order_id"}]\n            }'
+      })
+    ],
+    [
+      'query source in strict mode',
+      googleDoc({source: '"SELECT * FROM orders"'})
+    ],
+    [
+      'multi-dialect metric with blank SQL entry',
+      googleDoc({
+        extra:
+            '    metrics:\n      - name: m1\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(*)"}, {dialect: ANSI_SQL, expression: "   "}]\n',
+      }),
+    ],
+    [
+      'metric with empty-string entity anchor',
+      googleDoc({
+        extra:
+            '    metrics:\n      - name: m1\n        entity: ""\n        expression: "COUNT(*)"\n',
+      }),
+    ],
+  ])('reports %s as an error', async (_, input) => {
+    const res = await importSemanticModelYaml(input, {strict: true});
+
+    expect(res.ok).toBe(false);
+    expect(res.files).toEqual([]);
+  });
 });
