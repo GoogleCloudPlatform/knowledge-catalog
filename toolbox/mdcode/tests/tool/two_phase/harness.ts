@@ -6,6 +6,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as YAML from 'yaml';
 
+import {BigLakeClient} from '../../../src/libts/gcp/biglake';
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
@@ -17,6 +18,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel} from '../../../src/libts/semantic/loader';
 import * as validateMod from '../../../src/libts/semantic/validate';
 import * as commands from '../../../src/tool/commands';
+import {REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
 export const CTX = new ApiContext('test-project', 'us', 'test-token');
 const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
@@ -176,6 +178,14 @@ const SERVICES = {
   query: [BigQueryClient.prototype, 'query', ok({jobComplete: true})],
   getDataset: [BigQueryClient.prototype, 'getDataset', ok({location: 'US'})],
   getDatabase: [SpannerClient.prototype, 'getDatabase', ok({})],
+  // The source check's reads. Each Spanner instance and BigLake catalog is in
+  // us-central1, shaped as the live responses are, and each table's entry is
+  // found; a case of a missing table answers lookupEntry with entryDenied.
+  getInstance: [SpannerClient.prototype, 'getInstance', ok(REGIONAL_INSTANCE)],
+  getInstanceConfig:
+      [SpannerClient.prototype, 'getInstanceConfig', ok(REGIONAL_CONFIG)],
+  getCatalog: [BigLakeClient.prototype, 'getCatalog', ok(REGIONAL_CATALOG)],
+  lookupEntry: [CatalogClient.prototype, 'lookupEntry', ok({})],
   getEntryType: [CatalogClient.prototype, 'getEntryType', ok({})],
   getAspectType: [CatalogClient.prototype, 'getAspectType', ok({})],
   fetch: [globalThis, 'fetch', () => {
@@ -187,12 +197,14 @@ type Service = keyof typeof SERVICES;
 export const REAL = Object.fromEntries(Object.entries(SERVICES).map(
     ([name, [owner, method]]) => [name, (owner as any)[method] as Function]));
 
-// A call's log entry, such as `apply`, `sources g1` or `deploy g1`.
+// A call's log entry, such as `apply`, `sources g1`, `deploy g1` or
+// `lookupEntry <entry name>`.
 const entry = (service: Service, a: Call) =>
     /^(bq|spanner)$/.test(service) ?
     `${a[2]?.validateOnly ? 'generate' : 'deploy'} ${deploymentNames(a[0])}` :
     /^(sources|bqDml|spannerDml)$/.test(service) ?
-    `${service} ${deploymentNames(a[0])}` : service;
+    `${service} ${deploymentNames(a[0])}` :
+    service === 'lookupEntry' ? `${service} ${a[2]}` : service;
 
 // Answers the calls `applies` holds for. Other calls get the default answer.
 export const when = (applies: (...a: any[]) => unknown, answer: unknown) =>

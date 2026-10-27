@@ -44,7 +44,7 @@ import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, push, skillsGenerate} from '../../src/tool/commands';
-import {passGraphChecks} from '../libts/mocks';
+import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 import {msg} from './two_phase/harness';
 
@@ -140,6 +140,7 @@ beforeEach(() => {
   spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
   spyOn(validateMod, 'validateBigQueryActionStatements').mockResolvedValue([]);
   passGraphChecks();
+  passSourceCheck();
   spyOn(validateMod, 'validateSpannerActionStatements').mockResolvedValue([]);
   spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue({
     success: true,

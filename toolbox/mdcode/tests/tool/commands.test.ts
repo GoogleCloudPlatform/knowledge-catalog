@@ -23,7 +23,7 @@ import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {kcV2Aspects, profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
-import {passGraphChecks} from '../libts/mocks';
+import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -84,6 +84,7 @@ beforeEach(() => {
   spyOn(CatalogClient.prototype, 'getAspectType')
       .mockResolvedValue({status: 200, result: {}} as any);
   passGraphChecks();
+  passSourceCheck();
 });
 
 afterEach(() => {
@@ -1019,10 +1020,15 @@ function fakeCatalog(opts: {missingType?: string} = {}) {
     }
     return {status: 200};
   });
-  // A lookup returns only the aspects it asks for.
+  // A lookup returns only the aspects it asks for. A table's own entry, in a
+  // system entry group such as `@bigquery`, is Dataplex's, not push's: it is
+  // found, as it is for every table that exists.
   spyOn(P, 'lookupEntry')
       .mockImplementation(async (_p: string, _l: string, name: string,
                                  aspectTypes?: string[]) => {
+        if (name.includes('/entryGroups/@')) {
+          return {status: 200, result: {name, entryType: ''}};
+        }
         const e = entries.get(name);
         if (!e) return {status: 404, message: 'not found'};
         const aspects = Object.fromEntries(

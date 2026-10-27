@@ -18,7 +18,7 @@ import * as bigQueryDeploy from '../../src/libts/semantic/deploy_bigquery';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {profiles, push} from '../../src/tool/commands';
-import {passGraphChecks, stubCloudSqlEntry} from '../libts/mocks';
+import {passGraphChecks, passSourceCheck, stubCloudSqlEntry} from '../libts/mocks';
 
 import {modelFile} from './two_phase/harness';
 
@@ -125,6 +125,7 @@ beforeEach(() => {
     throw new Error('a test made a network call');
   }) as any);
   passGraphChecks();
+  passSourceCheck();
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(console, 'log').mockImplementation((...a: any[]) => {
     logs.push(a.join(' '));

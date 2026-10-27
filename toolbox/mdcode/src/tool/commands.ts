@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import * as kcmd from '../libts';
+import {BigLakeClient} from '../libts/gcp/biglake';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
@@ -27,6 +28,7 @@ import {applyProfile, applyProfileExclusions, AvailabilityReport, CloudSqlLoad, 
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
+import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {transpileModels} from '../libts/semantic/transpile';
 import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
@@ -77,6 +79,10 @@ export interface PushOptions {
   // Unlike `force` above, this authorizes a destructive delete rather
   // than overriding a conflict.
   forceRemove?: boolean;
+  // Skip the check that every source names a table with a Knowledge Catalog
+  // entry. The Cloud SQL lookup, which push needs for a table's dialect,
+  // still runs. Semantic-model push only.
+  skipSourceCheck?: boolean;
   // Whether to push the Knowledge Catalog metadata leg. On by default;
   // `--no-kc` sets it false to deploy only the graph. The catalog toggle is
   // symmetric with the profile axis below: `--no-profile` gives a catalog-only
@@ -520,6 +526,28 @@ async function cloudSqlLoad(
     return null;
   }
   return {cloudSqlDialects: dialects};
+}
+
+// Checks that every source in the inline bindings and named profiles of
+// `models` names a table with a Knowledge Catalog entry (see
+// sourceEntryErrors), and gives one message per entity that does not. With
+// --skip-source-check, says so and checks nothing.
+async function sourceCheckErrors(
+    models: LoadedModel[], ctx: context.ApiContext,
+    options: PushOptions): Promise<string[]> {
+  if (options.skipSourceCheck) {
+    console.log('Skipping the source existence check (--skip-source-check).');
+    return [];
+  }
+  const readers = {
+    catalog: new dataplex.CatalogClient(ctx),
+    bigquery: new BigQueryClient(ctx),
+    biglake: new BigLakeClient(ctx),
+    spanner: new SpannerClient(ctx),
+  };
+  return (await Promise.all(
+              models.map(({model}) => sourceEntryErrors(model, readers))))
+      .flat();
 }
 
 // Gives the profiles a model document declares: its profile files, then the
@@ -1555,6 +1583,7 @@ export async function push(options: PushOptions): Promise<number> {
     [!!options.print, '--print'],
     [!!options.emitExpressions, '--emit-expressions'],
     [!!options.forceRemove, '--force-remove'],
+    [!!options.skipSourceCheck, '--skip-source-check'],
     [named, '--deployment'],
     [negated, '--no-deployment'],
   ];
@@ -1716,6 +1745,8 @@ async function pushInTwoPhases(
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
   const {plans, kcModels, fileCopies, notes, overviews} = checked;
+  const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
+  if (sourceErrors.length) return fail(...sourceErrors);
   if (fileCopies.length) {
     const problem = await kc.checkCustomTypes(
         new dataplex.CatalogClient(ctx), source, [FILE_COPY_TYPE_ID]);
