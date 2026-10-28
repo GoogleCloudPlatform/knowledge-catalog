@@ -37,7 +37,7 @@
 // resolve to it, and an exact redeclaration of an inherited field rebinds it.
 
 import {Entity, Field, FIELD_BINDING_KEYS, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel} from './ir';
-import {sqlWithoutComments, stripQualifier} from './sql_expr_utils';
+import {sqlWithoutComments, withoutQualifier} from './sql_expr_utils';
 
 /**
  * Why inheritance cannot be resolved. `unknown-parent` can be a pruning
@@ -254,20 +254,21 @@ export function resolveInheritance(
 // frame once here, and the emitter's table-local renderer then strips the
 // child's own qualifier uniformly for every field (see
 // graph_ddl.renderFieldPropertyCore). Both route through the same
-// `stripQualifier` primitive; they differ only in which qualifier they remove.
+// `withoutQualifier` primitive, which reads the SQL with the parser; they
+// differ only in which qualifier they remove.
 //
-// Comments come out first. A quote inside a comment would otherwise pair with a
-// string literal's, and the qualifier between them would stay. The target text
-// is read in `targetDialect`, BigQuery unless given, and so are the ANSI_SQL
-// entries, which a database of that dialect runs as its own SQL. The imported
-// text is read in its imported dialect, and every other dialect entry in its
-// own. A vendor entry that holds the same text as the target does not change
-// how the target is read.
+// The text comes out without its comments, and the rest stays as written. The
+// target text is read in `targetDialect`, BigQuery unless given, and so are
+// the ANSI_SQL entries, which a database of that dialect runs as its own SQL.
+// The imported text is read in its imported dialect, and every other dialect
+// entry in its own, so a quoted qualifier (`"Person".name` in PostgreSQL) is
+// removed as that dialect quotes it. A vendor entry that holds the same text
+// as the target does not change how the target is read.
 function localizeInheritedField(
     field: Field, ancestor: string, targetDialect?: string): Field {
   const clone = structuredClone(field);
   const local = (text: string, dialect?: string) =>
-      stripQualifier(sqlWithoutComments(text, dialect), ancestor);
+      withoutQualifier(sqlWithoutComments(text, dialect), ancestor, dialect);
   if (clone.expression !== undefined) {
     clone.expression = local(clone.expression, targetDialect);
   }

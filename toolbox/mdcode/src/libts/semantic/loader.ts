@@ -16,7 +16,7 @@ import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, C
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
-import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
+import {columnsForSource, entitiesReached, withoutQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
@@ -273,7 +273,7 @@ export function noSqlReason(
   if (readers.some(d => holdsNoSql(text, d))) return 'is only a comment';
   if (entity === undefined) return undefined;
   const onlyQualifier = (d: string) =>
-      stripQualifier(withoutComments(text, d), entity).trim() === '';
+      withoutQualifier(withoutComments(text, d), entity, d).trim() === '';
   return readers.some(onlyQualifier) ? `is only the qualifier '${entity}.'` :
                                        undefined;
 }

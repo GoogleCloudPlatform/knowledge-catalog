@@ -20,9 +20,9 @@ import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
-import {SqlColumn, withoutComments} from './sql_parser';
+import {SqlColumn} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -175,7 +175,7 @@ export function validatePushRequirements(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
         flaggedMetrics, opts.liftedExclusions));
     if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
-      errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
+      errors.push(...measurePlacementErrors(model, document, flaggedMetrics));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -344,7 +344,7 @@ function profiled(model: SemanticModel, profile: ProfileSpec):
 }
 
 // Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves
-// out a metric that validateBigQueryMetrics or the inheritance rules report:
+// out a metric that measurePlacementErrors or the inheritance rules report:
 // one that reads several entities or none, or one on an abstract or extended
 // entity.
 function measureProblem(
@@ -354,15 +354,10 @@ function measureProblem(
   const columns = columnsForSource(text, 'BIGQUERY');
   if (!columns) return undefined;
   const entities = model.entities ?? [];
-  const names = entities.map(e => e.name);
-  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`), the SQL the
-  // BigQuery graph runs.
-  const matched =
-      referencedEntityNames(withoutComments(text, 'BIGQUERY'), names);
-  if (matched.length > 1 || !matched.length && !metric.entity) return undefined;
-  const reached = entitiesReached(columns, names);
-  const name = reached.length > 1 ? undefined : reached[0] ?? metric.entity;
-  const entity = entities.find(e => e.name === name);
+  const placed =
+      measureEntities(text, entities.map(e => e.name), metric.entity);
+  if (placed.length !== 1) return undefined;
+  const entity = entities.find(e => e.name === placed[0]);
   if (!entity || entity.abstract ||
       entities.some(e => e.extends?.includes(entity.name))) {
     return undefined;
@@ -375,6 +370,55 @@ function measureProblem(
         `or unique key, so the graph has no node table for it`;
   }
   return undefined;
+}
+
+// The BigQuery graph's rules for placing each metric of `model` as a measure,
+// one message per metric that breaks them, skipping each one in
+// `alreadyFlagged`, which validateExpressionReferences has reported. The
+// generator (`bigquery.ts`) places a measure on the one entity whose
+// qualifier its BigQuery SQL writes before a column, or on its anchor when the
+// SQL writes none (see measureEntities), and skips a metric that has no
+// BigQuery or ANSI_SQL text. validateExpressionReferences reads every dialect
+// entry together and lets an authored anchor settle SQL that reads two
+// entities, so it does not catch each metric the generator would skip.
+function measurePlacementErrors(
+    model: SemanticModel, document: string,
+    alreadyFlagged: ReadonlySet<string>): string[] {
+  const errors: string[] = [];
+  const entityNames = (model.entities ?? []).map(e => e.name);
+  for (const metric of model.metrics ?? []) {
+    if (alreadyFlagged.has(metric.name)) continue;
+    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
+    // The text BigQuery runs: its `BIGQUERY` entry, else its `ANSI_SQL` one,
+    // else `expression` for a metric held without a dialect list.
+    const bqText = expressionForDialect(metric, 'BIGQUERY');
+    if (bqText === undefined && metric.importedExpression !== undefined) {
+      errors.push(
+          `${prefix} targets a BigQuery graph with only a '${
+              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
+              IMPORT_TRANSPILE_COMMAND}'.`);
+      continue;
+    }
+    const placed =
+        measureEntities(bqText ?? '', entityNames, metric.entity);
+    if (placed.length > 1) {
+      errors.push(
+          `${prefix} targets a BigQuery graph and its BigQuery SQL reads ` +
+          `several entities (${placed.join(', ')}); a BigQuery measure ` +
+          `belongs to one entity's node table, so scope its expression to ` +
+          `one entity.`);
+    } else if (placed.length === 0) {
+      const anchor = model.version === OSSIE_VERSION ?
+          `'entity' in a GOOGLE custom_extensions block on the metric` :
+          `top-level 'entity'`;
+      errors.push(
+          `${prefix} targets a BigQuery graph but does not resolve to a ` +
+          `single entity; the BigQuery generator places a measure on the ` +
+          `entity its BigQuery SQL reads, or on ${anchor}.`);
+    }
+  }
+  return errors;
 }
 
 // Checks that each bound field of the model file has a text for the dialect
@@ -1644,60 +1688,6 @@ export function validateExpressionReferences(
         }
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);
-    }
-  }
-  return errors;
-}
-
-// Temporary BigQuery-only metric check, until the BigQuery generator places
-// measures with the SQL parser. Rejects a metric that the generator
-// (`bigquery.ts`) would skip: one with only another engine's SQL, which the
-// generator does not emit, or one it drops because its regex
-// (`referencedEntityNames`) disagrees with the parser or because
-// `metric.entity` is unset. Reports only metrics that
-// `validateExpressionReferences` has not already flagged.
-function validateBigQueryMetrics(
-    model: SemanticModel, document: string,
-    alreadyFlagged: ReadonlySet<string>): string[] {
-  const errors: string[] = [];
-  const entityNames = (model.entities ?? []).map(e => e.name);
-  for (const metric of model.metrics ?? []) {
-    if (alreadyFlagged.has(metric.name)) continue;
-    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    // The text BigQuery runs: its `BIGQUERY` entry, else its `ANSI_SQL` one,
-    // else `expression` for a metric held without a dialect list.
-    const bqText = expressionForDialect(metric, 'BIGQUERY');
-    if (bqText === undefined && metric.importedExpression !== undefined) {
-      errors.push(
-          `${prefix} targets a BigQuery graph with only a '${
-              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
-          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
-              IMPORT_TRANSPILE_COMMAND}'.`);
-      continue;
-    }
-    // The generator reads the resolved BigQuery expression (`bqText`) with its
-    // comments removed.
-    const expr =
-        withoutComments(bqText ?? metric.importedExpression ?? '', 'BIGQUERY');
-    let referenced = referencedEntityNames(expr, entityNames);
-    if (referenced.length === 0 && metric.entity) {
-      referenced = [metric.entity];
-    }
-    if (referenced.length > 1) {
-      errors.push(
-          `${prefix} targets a BigQuery graph and references multiple ` +
-          `entities (${referenced.join(', ')}); the BigQuery generator ` +
-          `reads every '<entity>.' outside comments as a qualifier, ` +
-          `including a function namespace such as 'NET.', so remove the ` +
-          `extra '<entity>.' match or scope its expression to one entity.`);
-    } else if (referenced.length === 0) {
-      const anchor = model.version === OSSIE_VERSION ?
-          `'entity' in a GOOGLE custom_extensions block on the metric` :
-          `top-level 'entity'`;
-      errors.push(
-          `${prefix} targets a BigQuery graph but does not resolve to a ` +
-          `single entity; the BigQuery generator reads '<entity>.' ` +
-          `qualifiers in the expression or ${anchor}.`);
     }
   }
   return errors;

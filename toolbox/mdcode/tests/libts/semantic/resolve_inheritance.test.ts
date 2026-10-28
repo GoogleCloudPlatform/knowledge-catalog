@@ -277,6 +277,32 @@ describe('inherited-expression localization', () => {
     expect(label.dialects![1].expression).toBe("first || second || ' '");
     expect(label.dialects![0].expression).toBe(label.importedExpression!);
   });
+
+  test('a quoted qualifier comes off as the text\'s dialect quotes it', () => {
+    // PostgreSQL quotes a name in double quotes, and BigQuery in backticks,
+    // where double quotes make a string, whose `Person.` stays.
+    const text = 'LOWER("Person".email)';
+    const {model: r} = resolveInheritance(model([
+      entity('Person', [], undefined, {
+        fields: [{
+          name: 'email',
+          importedExpression: text,
+          importedDialect: 'POSTGRES',
+          dialects: [
+            {dialect: 'POSTGRES', expression: text},
+            {dialect: 'BIGQUERY', expression: "CONCAT(`Person`.email, \"Person.\")"},
+          ],
+        }],
+      }),
+      entity('Customer', ['id'], ['Person']),
+    ]));
+    const email = entityOf(r, 'Customer').fields.find(f => f.name === 'email')!;
+    expect(email.importedExpression).toBe('LOWER(email)');
+    expect(email.dialects).toEqual([
+      {dialect: 'POSTGRES', expression: 'LOWER(email)'},
+      {dialect: 'BIGQUERY', expression: 'CONCAT(email, "Person.")'},
+    ]);
+  });
 });
 
 

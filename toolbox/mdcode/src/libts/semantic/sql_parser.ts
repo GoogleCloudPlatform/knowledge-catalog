@@ -22,10 +22,14 @@ export interface PolyglotEngine {
       {success: boolean; tokens?: SqlToken[]; error?: string};
 }
 
-// A token the engine reads, as the engine returns it. `span` counts Unicode
-// code points from the start of the text, end exclusive. The comments the
-// tokenizer skipped are attached to the token after them or before them.
-interface SqlToken {
+// A token the engine reads, as the engine returns it. `token_type` is the
+// engine's kind, such as `VAR`, `QUOTED_IDENTIFIER`, `DOT` or `STRING`. `text`
+// is the token as written, except that a quoted identifier or a string literal
+// gives what is inside its quotes. `span` counts Unicode code points from the
+// start of the text, end exclusive. The comments the tokenizer skipped are
+// attached to the token after them or before them.
+export interface SqlToken {
+  token_type: string;
   text: string;
   span: {start: number; end: number};
   comments: string[];
@@ -360,7 +364,7 @@ function isNamePath(node: unknown): boolean {
 
 // The tokens of `expression` in `dialect`, or undefined when the engine cannot
 // tokenize it. Throws when the engine is not loaded.
-function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
+export function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');

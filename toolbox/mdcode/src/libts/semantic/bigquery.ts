@@ -21,7 +21,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {referencedEntityNames, sqlWithoutComments, stripQualifier, SUPPORTED_AGGREGATES} from './sql_expr_utils';
+import {measureEntities, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
@@ -112,7 +112,7 @@ function newLowering(entity: Entity): MeasureLowering {
     fieldNames.add(f.name);
     const expr = fieldExpression(f);
     if (expr === undefined) continue;
-    const local = stripQualifier(expr, entity.name);
+    const local = withoutQualifier(expr, entity.name);
     if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
   }
   return {
@@ -148,18 +148,16 @@ function placeMetric(
     return;
   }
 
-  // The entities whose `<name>.` qualifier the expression uses. String literals
-  // are ignored, so a value like 'orders.x' does not reference `orders`.
-  let referenced = referencedEntityNames(expression, [...entityByName.keys()]);
-
-  // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its
-  // expression; fall back to `metric.entity` when the IR provides one (an
-  // authored `entity` in `0.2.0.dev0/google`, an entity inferred from another
-  // dialect entry, or hand-built IR), so it can still be placed rather than
-  // dropped as "references no entity".
-  if (referenced.length === 0 && metric.entity) {
-    referenced = [metric.entity];
-  }
+  // The entities whose qualifier the expression writes before a column, as
+  // the SQL parser reads it (see measureEntities), so neither a value like
+  // 'orders.x' nor a function namespace such as `NET.` in `NET.HOST(...)`
+  // references an entity. A qualifier-free aggregate (e.g. COUNT(*)) names no
+  // entity in its expression; it falls back to `metric.entity` when the IR
+  // provides one (an authored `entity` in `0.2.0.dev0/google`, an entity
+  // inferred from another dialect entry, or hand-built IR), so it can still be
+  // placed rather than dropped as "references no entity".
+  const referenced =
+      measureEntities(expression, [...entityByName.keys()], metric.entity);
 
   if (referenced.length !== 1) {
     const detail = referenced.length === 0 ?
@@ -227,12 +225,18 @@ function placeMetric(
     return;
   }
 
-  const body = stripQualifier(expression, entityName);
+  const body = withoutQualifier(expression, entityName);
 
   // A graph measure must be one supported aggregate wrapping a single operand;
   // anything else (a non-aggregate, or a compound of aggregates like a ratio)
   // cannot be a single MEASURE. Flag it rather than emit DDL BigQuery rejects.
-  const agg = extractAggregate(body);
+  // The SQL parser finds the aggregate and its operand in the expression as
+  // written, and in `body` when it cannot read that, as with a qualifier it
+  // reserves (`SUM(Date.days)`).
+  const written = singleAggregate(expression, 'BIGQUERY');
+  const agg = written ?
+      {...written, operand: withoutQualifier(written.operand, entityName)} :
+      singleAggregate(body, 'BIGQUERY');
   if (!agg) {
     warnings.push(
         `metric '${metric.name}' expression '${
@@ -360,99 +364,6 @@ function exposeKeyColumn(
   if (!lowering.fieldNames.has(column)) lowering.operandToName.set(column, name);
   return name;
 }
-
-// Extracts the function name and operand from a single-aggregate expression, or
-// returns null when the body is not exactly one supported aggregate wrapping
-// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, a call with no
-// operand, or a multi-argument call). `COUNT(DISTINCT x)` is recognized,
-// yielding operand `x` with distinct.
-function extractAggregate(body: string):
-    {fn: string; operand: string; distinct: boolean}|null {
-  const s = body.trim();
-  const head = s.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
-  if (!head) return null;
-  const fn = head[1];
-  if (!SUPPORTED_AGGREGATES.includes(fn.toUpperCase())) return null;
-
-  // Find the operand bounded by the aggregate's outer parentheses, tracking
-  // string literals and backtick-quoted identifiers and nesting so inner
-  // parens/quotes/backticks don't end it early.
-  let depth = 0, inStr = false, inTick = false, start = -1, end = -1;
-  for (let i = head[0].length - 1; i < s.length; i++) {
-    const c = s[i];
-    if (inStr) {
-      if (c === '\'') inStr = false;
-      continue;
-    }
-    if (inTick) {
-      if (c === '`') inTick = false;
-      continue;
-    }
-    if (c === '\'') {
-      inStr = true;
-      continue;
-    }
-    if (c === '`') {
-      inTick = true;
-      continue;
-    }
-    if (c === '(') {
-      if (depth === 0) start = i + 1;
-      depth++;
-    } else if (c === ')') {
-      if (--depth === 0) {
-        end = i;
-        break;
-      }
-    }
-  }
-  if (start < 0 || end < 0) return null;
-  if (s.slice(end + 1).trim() !== '')
-    return null;  // trailing ops => not a single aggregate
-
-  let operand = s.slice(start, end).trim();
-  let distinct = false;
-  const dm = operand.match(/^DISTINCT(?:\s+(.*))?$/is);
-  if (dm) {
-    distinct = true;
-    operand = (dm[1] ?? '').trim();
-  }
-
-  if (operand === '') return null;  // no operand, as in SUM() or SUM(DISTINCT)
-  if (operand !== '*' && hasTopLevelComma(operand))
-    return null;  // multi-arg aggregate
-  return {fn, operand, distinct};
-}
-
-// True if `expr` contains a comma outside any nested parentheses, string
-// literal, or backtick-quoted identifier (i.e. it is really several arguments,
-// not one operand). A backtick-quoted column like `` `weird,name` `` must not
-// be mistaken for a multi-argument aggregate.
-function hasTopLevelComma(expr: string): boolean {
-  let depth = 0, inStr = false, inTick = false;
-  for (const c of expr) {
-    if (inStr) {
-      if (c === '\'') inStr = false;
-      continue;
-    }
-    if (inTick) {
-      if (c === '`') inTick = false;
-      continue;
-    }
-    if (c === '\'')
-      inStr = true;
-    else if (c === '`')
-      inTick = true;
-    else if (c === '(')
-      depth++;
-    else if (c === ')')
-      depth--;
-    else if (c === ',' && depth === 0)
-      return true;
-  }
-  return false;
-}
-
 
 // Returns `base` if free, else the first `base_2`, `base_3`, ... not in
 // `taken`.

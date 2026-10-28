@@ -22,7 +22,7 @@
 
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {isColumnName, stripQualifier} from './sql_expr_utils';
+import {isColumnName, withoutQualifier} from './sql_expr_utils';
 import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateResult {
@@ -511,7 +511,7 @@ function renderFieldProperty(
 function renderFieldPropertyCore(
     field: Field, entity: string, engine: GraphEngine): string {
   const expr = engine.fieldExpression(field);
-  const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
+  const local = expr !== undefined ? withoutQualifier(expr, entity) : field.name;
   const alias = quoteIfReserved(field.name);
   return local === field.name ? alias :
                                 `${quoteIfReserved(local)} AS ${alias}`;

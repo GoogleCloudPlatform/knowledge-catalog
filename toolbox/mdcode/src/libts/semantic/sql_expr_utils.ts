@@ -4,80 +4,106 @@
 // Expressions reference columns as `<Entity>.<column>`. The SQL parser
 // (`columnReferences`, `entitiesReached`, `fieldsReadOn`) reads column and
 // entity references across dialects for the loader, validator, profile checks,
-// pull reader, and transpiler. The graph generators still use the literal-
-// aware regex helpers (`referencedEntityNames`, `stripQualifier`).
+// pull reader, and transpiler. The graph generators read them with the parser
+// too: `measureEntities` places a measure, `singleAggregate` finds its
+// aggregate, and `withoutQualifier` makes an expression table-local.
 //
 
 import {Field, fieldBinding} from './ir';
-import {SqlColumn, sqlColumns, sqlExpressionTree, withoutComments} from './sql_parser';
+import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments} from './sql_parser';
 
-// Matches a single- or double-quoted SQL string literal, honoring backslash
-// escapes. (Triple-quoted / raw literals are uncommon in these expressions and
-// are treated as ordinary text.)
-export const STRING_LITERAL = /'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g;
-
-// Escapes a string so it can be embedded literally in a RegExp.
-export function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
+// text with no dialect, is read as BigQuery.
+function graphReading(dialect?: string): string {
+  return !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect;
 }
 
-// Replaces string-literal contents with blanks of equal length, so scanning sees
-// literal-free text without shifting any offsets.
-export function blankStringLiterals(expression: string): string {
-  return expression.replace(STRING_LITERAL, m => ' '.repeat(m.length));
+// Each `<name>.` qualifier that `expression`, read in `dialect`, writes before
+// a column, for a name in `names`, as indexes into the text's tokens, in the
+// order written. A name matches case-sensitively, bare or quoted as the
+// dialect quotes an identifier, and not after a dot, so the second `orders` in
+// the struct path `orders.orders.id` is not one. The SQL parser decides which
+// candidates are qualifiers, so a string literal, a comment or a function
+// namespace such as `NET.` in `NET.HOST(orders.url)` holds none. The parser
+// reads each candidate as a placeholder name, so one it reserves as a keyword,
+// such as `Date` in `Date.days`, still reads as a qualifier. When the parser
+// cannot read the text even so, every candidate is taken as a qualifier.
+// Undefined when the engine cannot tokenize the text.
+function qualifiersIn(
+    expression: string, names: ReadonlySet<string>,
+    dialect: string): {tokens: SqlToken[]; at: number[]}|undefined {
+  const tokens = sqlTokens(expression, dialect);
+  if (!tokens) return undefined;
+  const chars = Array.from(expression);
+  const asWritten = (t: SqlToken) =>
+      chars.slice(t.span.start, t.span.end).join('');
+  const candidates: number[] = [];
+  tokens.forEach((t, i) => {
+    if (names.has(t.text) && tokens[i + 1]?.token_type === 'DOT' &&
+        tokens[i - 1]?.token_type !== 'DOT' &&
+        (t.token_type === 'QUOTED_IDENTIFIER' || asWritten(t) === t.text)) {
+      candidates.push(i);
+    }
+  });
+  if (!candidates.length) return {tokens, at: []};
+  // A placeholder stem the text does not hold.
+  let stem = 'kcmd_qualifier_';
+  while (expression.toLowerCase().includes(stem)) stem += '_';
+  let text = '';
+  let end = 0;
+  candidates.forEach((i, k) => {
+    text += chars.slice(end, tokens[i].span.start).join('') + stem + k;
+    end = tokens[i].span.end;
+  });
+  text += chars.slice(end).join('');
+  const columns = columnReferences(text, dialect);
+  const at = !columns ? candidates : candidates.filter(
+      (_, k) => columns.some(c => c.qualifier?.toLowerCase() === stem + k));
+  return {tokens, at};
 }
 
-// Applies `fn` only to the parts of `expression` that lie outside string
-// literals, leaving each literal verbatim.
-export function mapOutsideStringLiterals(
-    expression: string, fn: (segment: string) => string): string {
+// `expression` without each `<qualifier>.` it writes before a column (see
+// qualifiersIn), so it reads the columns of the qualifier's own table. The
+// rest of the text stays as written. The text is read in `dialect`; an
+// ANSI_SQL text, or one with no dialect, is read as BigQuery, as the graph
+// generators read it. Returns `expression` itself when it writes no such
+// qualifier or the engine cannot tokenize it.
+export function withoutQualifier(
+    expression: string, qualifier: string, dialect?: string): string {
+  const read =
+      qualifiersIn(expression, new Set([qualifier]), graphReading(dialect));
+  if (!read?.at.length) return expression;
+  const {tokens, at} = read;
+  const chars = Array.from(expression);
   let out = '';
-  let last = 0;
-  for (const m of expression.matchAll(STRING_LITERAL)) {
-    out += fn(expression.slice(last, m.index));
-    out += m[0];
-    last = m.index! + m[0].length;
+  let end = 0;
+  for (const i of at) {
+    out += chars.slice(end, tokens[i].span.start).join('');
+    // The qualifier, its dot, and what lies between the dot and the column.
+    end = tokens[i + 2]?.span.start ?? tokens[i + 1].span.end;
   }
-  out += fn(expression.slice(last));
-  return out;
+  return out + chars.slice(end).join('');
 }
 
-// Builds a regex matching an `<entity>.` qualifier, including the BigQuery
-// backtick-quoted form (`` `entity`. ``). A negative lookbehind keeps the name
-// from matching inside a larger identifier (e.g. `customer_orders.`) or after a
-// dot in a struct path (e.g. `orders.customer.id`), and the optional backticks
-// let it match whether or not the identifier is quoted.
-function entityQualifier(name: string, flags = ''): RegExp {
-  return new RegExp(`(?<![\\w\`.])\`?${escapeRegExp(name)}\`?\\.`, flags);
-}
-
-// Returns the entity names whose `<name>.` qualifier appears in an expression,
-// in the order they first appear, ignoring text inside string literals.
-// Matching is case-sensitive (the emitter's behavior).
-export function referencedEntityNames(
-    expression: string, entityNames: string[]): string[] {
-  const scannable = blankStringLiterals(expression);
-  const hits: Array<{ name: string; at: number }> = [];
-  for (const name of entityNames) {
-    const m = entityQualifier(name).exec(scannable);
-    if (m) hits.push({ name, at: m.index });
-  }
-  return hits.sort((a, b) => a.at - b.at).map(h => h.name);
-}
-
-// Removes the `<entity>.` qualifier (bare or backtick-quoted) so an expression
-// references table-local columns, without touching text inside string literals.
-export function stripQualifier(expression: string, entity: string): string {
-  const re = entityQualifier(entity, 'g');
-  return mapOutsideStringLiterals(expression, seg => seg.replace(re, ''));
+// The entities from `entityNames` whose qualifier a metric's BigQuery SQL
+// `expression` writes before a column (see qualifiersIn), deduplicated in the
+// order written, or else `entity`, the metric's anchor, when given. The
+// BigQuery generator places the metric's measure on the entity this gives
+// when it gives one, and a BigQuery push rejects a metric it gives several or
+// none for (see validate.ts).
+export function measureEntities(
+    expression: string, entityNames: ReadonlyArray<string>,
+    entity?: string): string[] {
+  const read = qualifiersIn(expression, new Set(entityNames), 'BIGQUERY');
+  const reached = [...new Set(read?.at.map(i => read.tokens[i].text) ?? [])];
+  return reached.length || !entity ? reached : [entity];
 }
 
 // `text`, written in `dialect`, with its comments removed. An ANSI_SQL text, or
 // a text with no dialect, is read as BigQuery, as the loader and the graph
 // generators read it.
 export function sqlWithoutComments(text: string, dialect?: string): string {
-  return withoutComments(
-      text, !dialect || dialect === 'ANSI_SQL' ? 'BIGQUERY' : dialect);
+  return withoutComments(text, graphReading(dialect));
 }
 
 // `field`'s binding, as fieldBinding gives it, with its comments removed.
@@ -177,16 +203,19 @@ export function fieldsReadOn(
 // rejects any other there, such as COUNTIF or APPROX_COUNT_DISTINCT.
 export const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
 
-// Whether `expression`, read in `dialect`, is one of SUPPORTED_AGGREGATES over
-// one operand, or COUNT(*), with at most DISTINCT or ALL. The operand holds no
-// other aggregate, window or subquery.
-export function isSingleAggregate(expression: string, dialect: string):
-    boolean {
+// When `expression`, read in `dialect`, is one of SUPPORTED_AGGREGATES over
+// one operand, or COUNT(*), with at most DISTINCT or ALL, and the operand holds
+// no other aggregate, window or subquery: the function's name as written, the
+// operand as written without the parentheses around it (so
+// `COUNT(DISTINCT(x))` gives `x`), and whether the call is DISTINCT. COUNT(*)
+// gives the operand `*`. Undefined otherwise.
+export function singleAggregate(expression: string, dialect: string):
+    {fn: string; operand: string; distinct: boolean}|undefined {
   const node = unwrapped(sqlExpressionTree(expression, dialect));
   const kind = node && Object.keys(node).length === 1 ? Object.keys(node)[0] :
                                                         undefined;
   if (!kind || !SUPPORTED_AGGREGATES.includes(kind.toUpperCase())) {
-    return false;
+    return undefined;
   }
   const call = node[kind];
   const star = kind === 'count' && call.star === true && !call.this;
@@ -194,13 +223,57 @@ export function isSingleAggregate(expression: string, dialect: string):
   if (!star &&
       (!operand || operand.star || operand.tuple ||
        nestsAggregateOrSubquery(operand))) {
-    return false;
+    return undefined;
   }
   // The parser keeps the call's name in `name` or `original_name`.
   const known = new Set(['this', 'star', 'distinct', 'name', 'original_name']);
-  return Object.entries(call).every(
-      ([key, v]) => known.has(key) || v === null || v === undefined ||
-          v === false || (Array.isArray(v) && v.length === 0));
+  if (!Object.entries(call).every(
+          ([key, v]) => known.has(key) || v === null || v === undefined ||
+              v === false || (Array.isArray(v) && v.length === 0))) {
+    return undefined;
+  }
+  // The call as written: its name, `(`, DISTINCT or ALL if written, the
+  // operand and `)`, inside any parentheses around the whole call.
+  const tokens = unparenthesized(sqlTokens(expression, dialect) ?? []);
+  if (tokens.length < 4 || tokens[1].token_type !== 'L_PAREN' ||
+      tokens[tokens.length - 1].token_type !== 'R_PAREN') {
+    return undefined;
+  }
+  let inner = tokens.slice(2, -1);
+  if (inner[0]?.token_type === 'DISTINCT' || inner[0]?.token_type === 'ALL') {
+    inner = inner.slice(1);
+  }
+  inner = unparenthesized(inner);
+  if (!inner.length) return undefined;
+  const chars = Array.from(expression);
+  return {
+    fn: tokens[0].text,
+    operand: chars.slice(inner[0].span.start, inner[inner.length - 1].span.end)
+                 .join(''),
+    distinct: call.distinct === true,
+  };
+}
+
+// Whether `expression`, read in `dialect`, is a single aggregate (see
+// singleAggregate), the form a BigQuery measure takes.
+export function isSingleAggregate(expression: string, dialect: string):
+    boolean {
+  return singleAggregate(expression, dialect) !== undefined;
+}
+
+// `tokens` without the parentheses around all of them.
+function unparenthesized(tokens: SqlToken[]): SqlToken[] {
+  while (tokens.length >= 2 && tokens[0].token_type === 'L_PAREN') {
+    let depth = 0;
+    let closesAt = -1;
+    for (let i = 0; i < tokens.length && closesAt < 0; i++) {
+      if (tokens[i].token_type === 'L_PAREN') depth++;
+      if (tokens[i].token_type === 'R_PAREN' && --depth === 0) closesAt = i;
+    }
+    if (closesAt !== tokens.length - 1) break;
+    tokens = tokens.slice(1, -1);
+  }
+  return tokens;
 }
 
 // The parser's tree `node` without the parentheses and comments around it.

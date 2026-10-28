@@ -21,6 +21,7 @@
 //     verbatim, never re-qualified from options).
 //   - which SQL each field and metric emits, case by case, such as a dialect
 //     list with no `expression` beside it.
+//   - how the SQL parser reads a metric's entity and aggregate, case by case.
 // Plus a structural invariant guard that parses generated DDL and asserts the
 // shape BigQuery enforces for measures, run over the loaded fixtures.
 //
@@ -337,7 +338,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
   test(
       'a backtick-quoted operand with an embedded comma is one operand, not a multi-arg call',
       () => {
-        // The operand scanner tracks backticks, so a column like `weird,name`
+        // The SQL parser reads a column like `weird,name` as one name, so it
         // is not mistaken for two aggregate arguments and dropped.
         const model = orders();
         model.metrics = [{
@@ -374,6 +375,84 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('customer.amount AS cust_amount_input');
         expect(ddl).toContain('MEASURE(SUM(cust_amount_input)) AS cust_amount');
       });
+});
+
+describe('the SQL parser reads a metric\'s entity and aggregate', () => {
+  // orders, keyed on its column, with a field bound to another column.
+  const model = (...metrics: SemanticModel['metrics']): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics,
+    entities: [
+      {
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['o_id'],
+        fields: [
+          {name: 'o_id', expression: 'o_id'},
+          {name: 'buyer', expression: 'customer_id'},
+          {name: 'url', expression: 'url'},
+        ],
+      },
+      {
+        name: 'NET',
+        dataSource: 'p.d.net',
+        keys: ['n_id'],
+        fields: [{name: 'n_id', expression: 'n_id'}],
+      },
+    ],
+  });
+
+  test('COUNT(DISTINCT(x)) lowers to a valid measure', () => {
+    // The parentheses are the operand's, so the measure counts distinct
+    // buyers. Read with patterns, the operand was `DISTINCT(buyer)`, which
+    // gave the input property `DISTINCT(buyer) AS buyers_input` and the
+    // measure `COUNT(buyers_input)`, which BigQuery rejects.
+    const {ddl, warnings} = generatePropertyGraph(model(
+        {name: 'buyers', expression: 'COUNT(DISTINCT(orders.buyer))'},
+        {name: 'sites', expression: 'COUNT(DISTINCT (orders.url || orders.o_id))'},
+    ), GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT buyer)) AS buyers');
+    expect(ddl).toContain('url || o_id AS sites_input');
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT sites_input)) AS sites');
+    expect(ddl).not.toContain('DISTINCT(');
+  });
+
+  test('ALL is the default, so it lowers to the plain aggregate', () => {
+    // Read with patterns, it gave the input property `ALL o_id AS ...`.
+    const {ddl, warnings} = generatePropertyGraph(
+        model({name: 'orders_seen', expression: 'COUNT(ALL orders.o_id)'}),
+        GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('MEASURE(COUNT(o_id)) AS orders_seen');
+  });
+
+  test('a function namespace named like an entity is not that entity', () => {
+    // Read with patterns, `NET.` made the metric span NET and orders.
+    const {ddl, warnings} = generatePropertyGraph(model(
+        {name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))'},
+    ), GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('NET.HOST(url) AS hosts_input');
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT hosts_input)) AS hosts');
+  });
+
+  test('a qualifier the parser reserves as a keyword still places the measure', () => {
+    const {ddl, warnings} = generatePropertyGraph({
+      name: 'm',
+      relationships: [],
+      metrics: [{name: 'total_days', expression: 'SUM(Date.days)'}],
+      entities: [{
+        name: 'Date',
+        dataSource: 'p.d.dates',
+        keys: ['d_id'],
+        fields: [{name: 'd_id', expression: 'd_id'}],
+      }],
+    }, GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('MEASURE(SUM(days)) AS total_days');
+  });
 });
 
 
