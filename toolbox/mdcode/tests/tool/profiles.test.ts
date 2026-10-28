@@ -708,10 +708,12 @@ ${targets ? `    deployments:\n${deployments.join('')}` : ''}\
 ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : ''}`;
   }
 
-  // `model` with unique keys in place of primary keys. A graph generator
-  // builds a node only from a primary key.
-  const uniqueKeysOnly = (model: string) =>
-      model.replace(/primary_key: \[(\w+)\]/g, 'unique_keys: [[$1]]');
+  // `model` with no key on any entity, and so no relationship, since push
+  // rejects a join that covers no key. A graph generator builds a node only
+  // from a primary or unique key.
+  const noKeys = (model: string) =>
+      model.replace(/        primary_key: \[\w+\]\n/g, '')
+          .replace(/    relationships:\n[\s\S]*$/, '');
 
   // `model` with no source on customer.
   const customerUnbound = (model: string) =>
@@ -1072,9 +1074,9 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       },
     ],
     [
-      'a legacy profile names a graph and no entity has a primary key',
+      'a legacy profile names a graph and no entity has a key',
       {
-        'commerce.yaml': uniqueKeysOnly(commerce()),
+        'commerce.yaml': noKeys(commerce()),
         'commerce.profiles/prod.yaml': legacyProfile(true),
       },
     ],
@@ -1210,10 +1212,10 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
   // error names the deployment.
   const DEPLOYMENT_LABEL = "[commerce] deployment 'prod': ";
   const ungenerated: Array<[string, string]> = [
-    ['BigQuery', uniqueKeysOnly(commerce({targets: 1}))],
+    ['BigQuery', noKeys(commerce({targets: 1}))],
     [
       'Spanner',
-      uniqueKeysOnly(commerce({targets: 1}))
+      noKeys(commerce({targets: 1}))
           .replace(`${GRAPH}_prod`, `${SPANNER_DB}/graphs/commerce`)
           .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`),
     ],

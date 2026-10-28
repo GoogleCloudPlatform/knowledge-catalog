@@ -130,10 +130,11 @@ export function generateGraphDdl(
       new Set(entities.filter(e => e.abstract).map(e => e.name));
 
 
-  // A graph node table requires a non-empty KEY. An entity whose primary key is
-  // empty cannot form a valid node, so skip it (and, below, any edge that
-  // references it) rather than emit `KEY()` — invalid DDL. The loader already
-  // warns about the missing key; this records the resulting structural drop.
+  // A graph node table requires a non-empty KEY: the entity's primary key, else
+  // its first unique key (nodeKey). An entity with neither cannot form a valid
+  // node, so skip it (and, below, any edge that references it) rather than emit
+  // `KEY()` — invalid DDL. The loader already warns about the missing key; this
+  // records the resulting structural drop.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
     // An abstract entity is intentionally table-less: skip its node table (it
@@ -143,7 +144,7 @@ export function generateGraphDdl(
       skipped.add(entity.name);
       return false;
     }
-    if (entity.keys && entity.keys.length) return true;
+    if (nodeKey(entity).length) return true;
     warnings.push(
         `entity '${
             entity.name}': empty KEY (no primary key); node table skipped, ` +
@@ -378,7 +379,7 @@ function renderNodeTable(
         2,
         `KEY(${
             physicalColumns(
-                entity.keys, engine, warnings, `entity '${entity.name}'`)
+                nodeKey(entity), engine, warnings, `entity '${entity.name}'`)
                 .join(', ')})`),
   ];
   // Element-table description and synonyms attach to the node's DEFAULT LABEL
@@ -517,6 +518,18 @@ function renderFieldPropertyCore(
 }
 
 
+// The key an entity's node is keyed by: its primary key, else its first unique
+// key that names a column. A relationship may join on a unique key, so an
+// entity with only unique keys is a valid node and edge endpoint. Empty when the
+// entity states neither, and then it gets no node table. Every place the graph
+// reads an entity's key reads it here: the node KEY, a direct edge's KEY and
+// SOURCE KEY ... REFERENCES, an association edge's REFERENCES, and the column
+// BigQuery's COUNT(*) measure counts.
+export function nodeKey(entity: Pick<Entity, 'keys'|'uniqueKeys'>): string[] {
+  if (entity.keys?.length) return entity.keys;
+  return entity.uniqueKeys?.find(k => k.length > 0) ?? [];
+}
+
 // Writes a key or join column -- a node KEY, an edge KEY, SOURCE KEY or
 // DESTINATION KEY, or a REFERENCES target -- as the physical column it names.
 // The format defines `primary_key`, `unique_keys`, `from_columns` and
@@ -560,8 +573,8 @@ function renderEdgeTable(
   // backs the edge (one edge row per source row). Its FK columns
   // (`rel.source.columns`) reference the destination's key columns
   // (`rel.destination.columns`); the edge is keyed by, and references its
-  // source node through, the source entity's own key (looked up here rather
-  // than duplicated onto the relationship).
+  // source node through, the key of the source entity's node (nodeKey, looked up
+  // here rather than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
   const relCtx = `relationship '${rel.name}'`;
   let backing: string;
@@ -576,11 +589,11 @@ function renderEdgeTable(
     sourceKey = rel.source.columns;
   } else {
     backing = engine.table(sourceEntity.dataSource, warnings, relCtx);
-    sourceKey = sourceEntity.keys;
+    sourceKey = nodeKey(sourceEntity);
   }
 
   // Every key clause names physical columns: the edge is the source entity's own
-  // table, so its KEY and SOURCE KEY are the source entity's key, and its
+  // table, so its KEY and SOURCE KEY are the source node's key, and its
   // DESTINATION KEY is the FK, the relationship's `from_columns`, referencing
   // the destination's `to_columns`.
   const key = physicalColumns(sourceKey, engine, warnings, relCtx).join(', ');
@@ -613,8 +626,8 @@ function renderEdgeTable(
 
 // Renders a many-to-many edge backed by an association (junction) table. Unlike
 // a direct FK, the edge has its OWN backing table and KEY, each endpoint's
-// SOURCE/DESTINATION KEY names the junction columns referencing that entity's
-// declared key, and the junction's own `fields` become edge PROPERTIES.
+// SOURCE/DESTINATION KEY names the junction columns referencing the key of
+// that entity's node, and the junction's own `fields` become edge PROPERTIES.
 function renderAssociationEdge(
     rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
     engine: GraphEngine, warnings: string[]): string {
@@ -626,7 +639,7 @@ function renderAssociationEdge(
         `table will be invalid (an edge requires a KEY)`);
   }
 
-  // The REFERENCES target is each endpoint entity's declared key; fall back to
+  // The REFERENCES target is the key of each endpoint's node; fall back to
   // the endpoint's own columns (and warn) when the entity cannot be resolved.
   const refColumns = (end: {entity: string; columns: string[]}): string => {
     const entity = entitiesByName.get(end.entity);
@@ -635,7 +648,7 @@ function renderAssociationEdge(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
     }
     return physicalColumns(
-               entity ? entity.keys : end.columns, engine, warnings, relCtx)
+               entity ? nodeKey(entity) : end.columns, engine, warnings, relCtx)
         .join(', ');
   };
   // The junction table's own key and join columns.

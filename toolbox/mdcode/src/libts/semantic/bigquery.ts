@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {referencedEntityNames, sqlWithoutComments, stripQualifier, SUPPORTED_AGGREGATES} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -247,7 +247,8 @@ function placeMetric(
   loweringByEntity.set(entityName, lowering);
 
   // Resolve the aggregate's operand to an exposed property. COUNT(*) has no
-  // operand column, so it counts the (non-null) key property instead.
+  // operand column, so it counts the first column of the node's key instead:
+  // the primary key, else the first unique key (nodeKey).
   let operandExpr = agg.operand;
   if (operandExpr === '*') {
     // The entity is already known to have a key (checked above), so only the
@@ -259,7 +260,7 @@ function placeMetric(
           `(only COUNT(*) over a keyed node can be lowered)`);
       return;
     }
-    operandExpr = entity.keys[0];
+    operandExpr = nodeKey(entity)[0];
   }
 
   // A field with no BigQuery SQL is left out of the node table, so a measure

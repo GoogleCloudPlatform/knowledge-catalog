@@ -501,9 +501,9 @@ NODE TABLES (
     }
   });
 
-  // Spanner drops the metric with a warning, and BigQuery emits it. No entity
-  // in the lineitem fixture has a primary key, so the error comes before any
-  // metric is reached.
+  // Spanner drops the metric with a warning, and BigQuery emits it. The
+  // lineitem fixture's orders is keyed only by a unique key; with that taken
+  // away no entity has a key, so the error comes before any metric is reached.
   test('metric warnings come after the entity warnings, and the no-node-table error leaves them out', () => {
     const noKey = (e: string) => `entity '${e}': empty KEY (no primary key); ` +
         `node table skipped, as a graph node requires a KEY`;
@@ -513,10 +513,14 @@ NODE TABLES (
       entity('party', '', [], {}, {abstract: true}),
     ], {metrics: [{name: 'revenue', entity: 'orders',
                    expression: 'SUM(orders.amount)'}]});
-    const [lineitem] = loadModels(
+    const [loaded] = loadModels(
         fs.readFileSync(path.join(FIXTURES, 'lineitem_databricks_ext.yaml'),
                         'utf8'),
         {allowLegacyBareSource: true}).models;
+    const lineitem = {
+      ...loaded,
+      entities: loaded.entities.map(e => ({...e, uniqueKeys: undefined})),
+    };
     for (const [engine, generate] of ENGINES) {
       expect(generate(shop).warnings, engine).toEqual([
         noKey('drafts'),
@@ -744,6 +748,115 @@ describe('key and join columns, on both engines', () => {
       }
       expect(keyWarnings([...before.warnings, ...after.warnings]), engine)
           .toEqual([]);
+    }
+  });
+});
+
+
+// A relationship may join on a unique key, so an entity with no primary key is
+// keyed by its first unique key, on both engines, wherever the graph reads its
+// key.
+describe('a node with no primary key, on both engines', () => {
+  const ENGINES = [
+    ['BigQuery', generatePropertyGraph],
+    ['Spanner', generateSpannerPropertyGraph],
+  ] as const;
+  // customers states no primary key. Its first unique key is customer_code;
+  // its second is email.
+  const customers = (more: Partial<Entity> = {}) => entity(
+      'customers', 'Customers', [], {name: 'name'},
+      {uniqueKeys: [['customer_code'], ['email']], ...more});
+  const orders = entity('orders', 'Orders', ['order_id'], {amount: 'amount'});
+  const regions =
+      entity('regions', 'Regions', ['region_id'], {label: 'label'});
+  const keyLines = (ddl: string) => ddl.split('\n')
+      .filter(l => /KEY\(|REFERENCES/.test(l))
+      .map(l => l.trim().replace(/,$/, ''));
+
+  test('an entity with only a unique key gets a node keyed by it, and an edge to it is emitted', () => {
+    // `drafts` states neither key (an empty unique key counts as none), so it
+    // still gets no node table.
+    const model = modelOf('shop', [
+      orders, customers(),
+      entity('drafts', 'Drafts', [], {note: 'note'}, {uniqueKeys: [[]]}),
+    ], {relationships: [
+      {
+        name: 'placed_by',
+        source: {entity: 'orders', columns: ['cust_code']},
+        destination: {entity: 'customers', columns: ['customer_code']},
+      },
+      {
+        name: 'gifted_to',
+        source: {entity: 'orders', columns: []},
+        destination: {entity: 'customers', columns: []},
+        association: {
+          dataSource: 'Gifts',
+          keys: ['gift_id'],
+          sourceColumns: ['order_id'],
+          destinationColumns: ['customer_code'],
+          fields: [],
+        },
+      },
+    ]});
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(keyLines(ddl), engine).toEqual([
+        'KEY(order_id)',
+        'KEY(customer_code)',
+        'KEY(order_id)',
+        'SOURCE KEY(order_id) REFERENCES orders(order_id)',
+        'DESTINATION KEY(cust_code) REFERENCES customers(customer_code)',
+        'KEY(gift_id)',
+        'SOURCE KEY(order_id) REFERENCES orders(order_id)',
+        'DESTINATION KEY(customer_code) REFERENCES customers(customer_code)',
+      ]);
+      expect(ddl, engine).not.toContain('AS drafts');
+      expect(warnings, engine).toEqual([
+        `entity 'drafts': empty KEY (no primary key); node table skipped, ` +
+            `as a graph node requires a KEY`,
+      ]);
+    }
+  });
+
+  test('an edge from it uses its unique key', () => {
+    const model = modelOf('shop', [customers(), regions], {relationships: [{
+      name: 'lives_in',
+      source: {entity: 'customers', columns: ['region_fk']},
+      destination: {entity: 'regions', columns: ['region_id']},
+    }]});
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(keyLines(ddl), engine).toEqual([
+        'KEY(customer_code)',
+        'KEY(region_id)',
+        'KEY(customer_code)',
+        'SOURCE KEY(customer_code) REFERENCES customers(customer_code)',
+        'DESTINATION KEY(region_fk) REFERENCES regions(region_id)',
+      ]);
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  test('COUNT(*) anchored to it counts over that key', () => {
+    const model = modelOf('shop', [customers()], {metrics: [
+      {name: 'customer_count', entity: 'customers', expression: 'COUNT(*)'},
+    ]});
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toContain('KEY(customer_code)');
+      if (engine === 'BigQuery') {
+        expect(ddl, engine).toContain(
+            '      name,\n      customer_code,\n' +
+            '      MEASURE(COUNT(customer_code)) AS customer_count\n');
+        expect(warnings, engine).toEqual([]);
+      } else {
+        // Spanner Graph has no MEASURE, so only the node is keyed by it.
+        expect(ddl, engine).not.toContain('MEASURE');
+        expect(warnings, engine).toEqual([
+          `metric 'customer_count' is not emitted: Spanner Graph has no ` +
+              `MEASURE, so model-level metrics have no home in it`,
+        ]);
+      }
     }
   });
 });

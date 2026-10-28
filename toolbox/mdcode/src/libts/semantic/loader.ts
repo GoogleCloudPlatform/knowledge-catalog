@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect} from './resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
@@ -1996,10 +1996,13 @@ function expressionWarning(
              preferred}')`;
 }
 
-// The warning a concrete entity with no primary key gives, or undefined.
-function keyWarning(entity: Pick<Entity, 'name'|'keys'|'abstract'>):
-    string|undefined {
-  return !entity.keys.length && !entity.abstract ?
+// The warning a concrete entity with neither a primary key nor a unique key
+// gives, or undefined. A unique key is enough, as the graph keys the entity's
+// node by the first one.
+function keyWarning(
+    entity: Pick<Entity, 'name'|'keys'|'uniqueKeys'|'abstract'>): string|
+    undefined {
+  return !statesKey(entity.keys, entity.uniqueKeys) && !entity.abstract ?
       noPrimaryKeyWarning(entity.name) :
       undefined;
 }
@@ -2310,7 +2313,8 @@ function convertDataset(
       undefined;
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
-  const kw = keyWarning({name: ds.name, keys, abstract: ds.abstract});
+  const kw = keyWarning(
+      {name: ds.name, keys, uniqueKeys: ds.unique_keys, abstract: ds.abstract});
   if (kw) warnings.push(kw);
   const fields = (ds.fields ?? []).map(
       f => convertField(f, ds.name, version, warnings, dialect));
