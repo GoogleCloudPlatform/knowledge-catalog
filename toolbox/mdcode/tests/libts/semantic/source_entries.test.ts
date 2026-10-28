@@ -143,6 +143,9 @@ describe('sourceEntryErrors', () => {
      couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],
     // The services have always given these fields; the guards keep an answer
     // without one from crashing the push.
+    ['a dataset with no location', BIGQUERY, `getDataset ${P} kcmd_demo`,
+     ok({...US_DATASET, location: undefined}),
+     couldNotCheck(BIGQUERY, `reading the location of dataset '${P}.kcmd_demo' gave no location.`)],
     ['a catalog with no region', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`,
      ok({...REGIONAL_CATALOG, replicas: []}),
      couldNotCheck(BIGLAKE, `reading the region of catalog 'kcmd-src-biglake-57138' gave no region.`)],

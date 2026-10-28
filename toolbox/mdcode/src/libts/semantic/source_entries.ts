@@ -110,11 +110,13 @@ function locationOf(
       return Promise.resolve({result: table.location});
     case 'bigquery':
       return once(`bigquery/${project}/${table.dataset}`, async () => {
+        const what =
+            `reading the location of dataset '${project}.${table.dataset}'`;
         const res = await read(
-            `reading the location of dataset '${project}.${table.dataset}'`,
-            () => readers.bigquery.getDataset(project, table.dataset));
-        return 'result' in res ? {result: res.result.location.toLowerCase()} :
-                                 res;
+            what, () => readers.bigquery.getDataset(project, table.dataset));
+        return 'result' in res ?
+            located(res.result.location, what, 'no location') :
+            res;
       });
     case 'biglake':
       return once(`biglake/${project}/${table.catalog}`, async () => {
