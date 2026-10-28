@@ -151,11 +151,10 @@ EDGE TABLES (
 `);
        });
 
-  // A subtype of a concrete entity shares its label. The supertype's label
-  // loses its OPTIONS, the subtype's remapped `customer_id` gives way to the
-  // supertype's, and the subtype's `LABEL orders` block repeats the
-  // supertype's properties with the engine's SQL and field metadata. Both
-  // warnings name the engine.
+  // A subtype of a concrete entity carries its label. The supertype forms no
+  // node table, the subtype reads its remapped `customer_id` from its own
+  // column, and its `LABEL orders` block lists the supertype's properties, in
+  // the supertype's order, with the engine's SQL and field metadata.
   test('a class hierarchy takes its metadata and SQL text from the engine',
        () => {
          const model: SemanticModel = {
@@ -195,20 +194,12 @@ EDGE TABLES (
          expect(ddl).toBe(`\
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
-  <table p.d.orders> AS orders
-    KEY(order_id)
-    DEFAULT LABEL
-    PROPERTIES(
-      id AS order_id,
-      amount_usd AS amount <field options Total>,
-      customer_id
-    ),
   <table p.d.gift_orders> AS gift_orders
     KEY(order_id)
     DEFAULT LABEL
     <options Orders sent as gifts>
     PROPERTIES(
-      customer_id,
+      buyer_id AS customer_id,
       id AS order_id,
       amount_usd AS amount <field options Total>
     )
@@ -216,21 +207,11 @@ NODE TABLES (
     PROPERTIES(
       id AS order_id,
       amount_usd AS amount <field options Total>,
-      customer_id
+      buyer_id AS customer_id
     )
 );
 `);
-         expect(warnings).toEqual([
-           `entity 'orders' is a supertype in a class hierarchy; its ` +
-               `description/synonyms are dropped from the shared 'orders' ` +
-               `label (Marked forbids OPTIONS on a label bound by multiple ` +
-               `tables)`,
-           `entity 'gift_orders' remaps inherited property 'customer_id' to ` +
-               `a different column/expression than its supertype; Marked ` +
-               `allows only one definition per property under a shared ` +
-               `label, so the supertype's is used and the subclass's ` +
-               `remapping is dropped`,
-         ]);
+         expect(warnings).toEqual([]);
        });
 
   test('warnings name the engine', () => {
@@ -278,11 +259,18 @@ NODE TABLES (
           keys: [],
           fields: [{name: 'x', expression: 'keyless.x'}],
         },
+        // A concrete parent with a KEY still forms no node table.
+        {
+          name: 'member',
+          dataSource: 'p.d.member',
+          keys: ['customer_id'],
+          fields: [{name: 'customer_id', expression: 'member.customer_id'}],
+        },
         {
           name: 'vip',
           dataSource: 'p.d.vip',
           keys: ['customer_id'],
-          extends: ['party'],
+          extends: ['party', 'member'],
           fields: [{name: 'customer_id', expression: 'vip.customer_id'}],
         },
       ],
@@ -299,9 +287,9 @@ NODE TABLES (
       },
     });
     expect(seen).toEqual({
-      skipped: ['keyless', 'party'],
-      ancestorsUsed: ['party'],
-      entities: ['customers', 'keyless', 'orders', 'party', 'vip'],
+      skipped: ['keyless', 'member', 'party'],
+      ancestorsUsed: ['member', 'party'],
+      entities: ['customers', 'keyless', 'member', 'orders', 'party', 'vip'],
     });
   });
 });
