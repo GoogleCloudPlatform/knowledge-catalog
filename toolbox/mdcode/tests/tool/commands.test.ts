@@ -297,6 +297,48 @@ semantic_model:
 });
 
 
+// A model with no deployments list but with profile files takes today's path
+// under --profile, --no-profile and --all-profiles. Push checks the sources of
+// every profile file there too, before it writes anything.
+describe('today\'s path checks every profile file\'s sources', () => {
+  const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
+  const [RAW, PROD, DEV] =
+      ['raw', 'prod', 'dev'].map(d => `${BQ}/${d}/tables/customer`);
+  const profileFile = (name: string, source: string) =>
+      `name: ${name}\nentities:\n  - name: Customer\n    source: ${source}\n` +
+      '    primary_key: [cust_key]\n    fields: [{ name: key, expression: cust_key }]\n';
+  const entry = (source: string) =>
+      `projects/test-project/locations/us/entryGroups/@bigquery/entries/${source}`;
+
+  for (const flags of [{profile: 'prod'}, {profile: false}, {allProfiles: true}]) {
+    test(`a missing table in profile file dev stops push ${JSON.stringify(flags)}`, async () => {
+      writeWorkspace();
+      const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
+      fs.writeFileSync(path.join(eg, 'commerce.yaml'),
+                       MODEL_YAML.replace('    entities:\n      - name: Customer\n',
+                                          `    entities:\n      - name: Customer\n        source: ${RAW}\n`));
+      fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), profileFile('prod', PROD));
+      fs.writeFileSync(path.join(eg, 'commerce.profile.dev.yaml'), profileFile('dev', DEV));
+      const lookup = spyOn(CatalogClient.prototype, 'lookupEntry')
+          .mockImplementation((async (_p: string, _l: string, name: string) =>
+              name.endsWith(`/entries/${DEV}`) ? entryDenied(name) :
+                                                 {status: 200, result: {name}}) as any);
+      const deploySpy = spyOn(kc, 'deployKnowledgeCatalog');
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(await push(flags)).toBe(1);
+      expect(messages(errorSpy)).toBe(
+          `Error: entity 'Customer' in profile 'dev': source '${DEV}' names no ` +
+          `table Knowledge Catalog knows about. The table may not exist, or you ` +
+          `may not be allowed to read its catalog entry. Fix the source, or ` +
+          `pass --skip-source-check.`);
+      expect(deploySpy).not.toHaveBeenCalled();
+      expect(lookup.mock.calls.map(c => c[2]).sort())
+          .toEqual([RAW, PROD, DEV].map(entry).sort());
+    });
+  }
+});
+
 describe('a catalog-only push with a sibling profile file', () => {
   const KC_OK = {
     success: true, created: 0, updated: 0, deleted: 0, linked: 0, unlinked: 0,

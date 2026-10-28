@@ -1473,15 +1473,21 @@ export async function push(options: PushOptions): Promise<number> {
         return 1;
       }
     }
-    // Every source in the model files' own bindings and in the profiles a
-    // vanilla model's GOOGLE blocks carry must name a table Knowledge Catalog
-    // knows, whichever profile this push applies. The loads above have
-    // reported any document that does not load. A legacy wrapper's sources
-    // are bare names, which the check skips.
+    // Every source in the model files' own bindings, in their profile files
+    // and in the profiles a vanilla model's GOOGLE blocks carry must name a
+    // table Knowledge Catalog knows, whichever profile this push applies.
+    // Push takes this path with profile files under --profile, --no-profile
+    // and --all-profiles. The loads above have reported any document that
+    // does not load; a profile file withProfileFiles cannot read is reported
+    // where push reads it, so its model is checked without its profile files.
+    // A legacy wrapper's sources are bare names, which the check skips.
     const sourceErrors = await sourceCheckErrors(
         loadSemanticModels(
             layoutDocs, {defaultProject, bindingOptional: true, ...load})
-            .models,
+            .models.map(base => {
+              const model = withProfileFiles(base, profileDocs);
+              return 'errors' in model ? base : model;
+            }),
         ctx, options);
     if (sourceErrors.length) {
       for (const e of sourceErrors) console.error(`Error: ${e}`);
