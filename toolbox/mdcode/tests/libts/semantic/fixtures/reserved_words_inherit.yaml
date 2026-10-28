@@ -14,7 +14,7 @@ semantic_model:
       # `Order` is reserved -> the ancestor label is quoted everywhere it appears.
       - name: Order
         source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/orders
-        primary_key: [id]
+        primary_key: [order_id]
         fields:
           - name: id
             expression:
@@ -27,7 +27,7 @@ semantic_model:
       # It restates `total` with a column of its own table.
       - name: Vip
         source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/vip_orders
-        primary_key: [id]
+        primary_key: [order_id]
         extends: [Order]
         fields:
           - name: id

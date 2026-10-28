@@ -22,8 +22,8 @@
 
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {fieldBindingWithoutComments, stripQualifier} from './sql_expr_utils';
-import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
+import {isColumnName, stripQualifier} from './sql_expr_utils';
+import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
@@ -378,8 +378,7 @@ function renderNodeTable(
         2,
         `KEY(${
             physicalColumns(
-                entity, entity.keys, engine, warnings,
-                `entity '${entity.name}'`)
+                entity.keys, engine, warnings, `entity '${entity.name}'`)
                 .join(', ')})`),
   ];
   // Element-table description and synonyms attach to the node's DEFAULT LABEL
@@ -518,41 +517,32 @@ function renderFieldPropertyCore(
 }
 
 
-// Resolves a logical field name to the physical column it binds to on
-// `entity`'s table. A structural key reference -- node KEY, edge KEY, SOURCE
-// KEY, DESTINATION KEY, and each REFERENCES target -- must name a real column,
-// never the property alias exposed under the field's name: BigQuery rejects an
-// alias there ("Column '<alias>' not found"). A profile that binds a field to a
-// differently named column makes name != column common. Falls back to the name
-// itself when it is not a declared field (already a raw column) or the entity is
-// unknown.
-function physicalColumn(
-    entity: Entity|undefined, fieldName: string, engine: GraphEngine): string {
-  const field = entity?.fields.find(f => f.name === fieldName);
-  if (entity === undefined || field === undefined) return fieldName;
-  // A key or join column names a column, and a bare column name reads the same
-  // in every dialect, so a field with no SQL for this engine still gives it.
-  const expr =
-      engine.fieldExpression(field) ?? fieldBindingWithoutComments(field);
-  return expr !== undefined ? stripQualifier(expr, entity.name) : fieldName;
+// Writes a key or join column -- a node KEY, an edge KEY, SOURCE KEY or
+// DESTINATION KEY, or a REFERENCES target -- as the physical column it names.
+// The format defines `primary_key`, `unique_keys`, `from_columns` and
+// `to_columns` as column names, which need not match any field, so the name is
+// never looked up in the entity's fields: a field of the same name may read
+// another column or compute a value, and a key site takes only a column. An
+// unquoted name is backtick-quoted when it is reserved or is not a simple
+// identifier, and a backtick-quoted name is written as it is.
+function physicalColumn(column: string): string {
+  return /^`[^`]+`$/.test(column) ? column : quoteIdentifier(column);
 }
 
+// Writes each key or join column with physicalColumn. A value isColumnName
+// rejects is an expression rather than a column; push rejects it, and a caller
+// that generates without validating gets it as written, with a warning naming
+// it, rather than opaque DDL the engine rejects at deploy.
 function physicalColumns(
-    entity: Entity|undefined, fieldNames: string[], engine: GraphEngine,
-    warnings: string[], context: string): string[] {
-  return fieldNames.map(n => {
-    const col = physicalColumn(entity, n, engine);
-    // A structural site (KEY / SOURCE KEY / DESTINATION KEY / REFERENCES) must
-    // name a bare column. A field bound to a computed expression resolves to
-    // SQL, not a column, which the engine rejects at deploy; warn here so the
-    // problem is named statically rather than surfacing as opaque DDL.
-    if (!isSimpleIdentifier(col)) {
-      warnings.push(
-          `${context}: field '${n}' is bound to a non-column expression (${
-              col}); a KEY/REFERENCES site requires a bare column, so ${
-              engine.name} will reject the generated DDL`);
-    }
-    return quoteIfReserved(col);
+    columns: string[], engine: GraphEngine, warnings: string[],
+    context: string): string[] {
+  return columns.map(c => {
+    if (isColumnName(c)) return physicalColumn(c);
+    warnings.push(
+        `${context}: key or join column '${c}' is not a physical column ` +
+        `name; a KEY/REFERENCES site requires a column, so ${
+            engine.name} will reject the generated DDL`);
+    return c;
   });
 }
 
@@ -573,7 +563,6 @@ function renderEdgeTable(
   // source node through, the source entity's own key (looked up here rather
   // than duplicated onto the relationship).
   const sourceEntity = entitiesByName.get(rel.source.entity);
-  const destEntity = entitiesByName.get(rel.destination.entity);
   const relCtx = `relationship '${rel.name}'`;
   let backing: string;
   let sourceKey: string[];
@@ -591,17 +580,14 @@ function renderEdgeTable(
   }
 
   // Every key clause names physical columns: the edge is the source entity's own
-  // table, so its KEY / SOURCE KEY / the FK in DESTINATION KEY all resolve
-  // against the source entity, while the destination REFERENCES resolves against
-  // the destination entity's key.
-  const key = physicalColumns(sourceEntity, sourceKey, engine, warnings, relCtx)
-                  .join(', ');
-  const destFk = physicalColumns(
-                     sourceEntity, rel.source.columns, engine, warnings, relCtx)
-                     .join(', ');
+  // table, so its KEY and SOURCE KEY are the source entity's key, and its
+  // DESTINATION KEY is the FK, the relationship's `from_columns`, referencing
+  // the destination's `to_columns`.
+  const key = physicalColumns(sourceKey, engine, warnings, relCtx).join(', ');
+  const destFk =
+      physicalColumns(rel.source.columns, engine, warnings, relCtx).join(', ');
   const destRef =
-      physicalColumns(
-          destEntity, rel.destination.columns, engine, warnings, relCtx)
+      physicalColumns(rel.destination.columns, engine, warnings, relCtx)
           .join(', ');
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
@@ -632,8 +618,8 @@ function renderEdgeTable(
 function renderAssociationEdge(
     rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
     engine: GraphEngine, warnings: string[]): string {
-  const backing = engine.table(
-      assoc.dataSource, warnings, `relationship '${rel.name}'`);
+  const relCtx = `relationship '${rel.name}'`;
+  const backing = engine.table(assoc.dataSource, warnings, relCtx);
   if (!assoc.keys?.length) {
     warnings.push(
         `relationship '${rel.name}': association table has no KEY; the edge ` +
@@ -647,26 +633,26 @@ function renderAssociationEdge(
     if (!entity) {
       warnings.push(
           `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.map(quoteIfReserved).join(', ');
     }
     return physicalColumns(
-               entity, entity.keys, engine, warnings,
-               `relationship '${rel.name}'`)
+               entity ? entity.keys : end.columns, engine, warnings, relCtx)
         .join(', ');
   };
+  // The junction table's own key and join columns.
+  const columns = (names: string[]): string =>
+      physicalColumns(names, engine, warnings, relCtx).join(', ');
 
   const lines = [
     line(1, `${backing} AS ${quoteIfReserved(rel.name)}`),
-    line(2, `KEY(${assoc.keys.map(quoteIfReserved).join(', ')})`),
+    line(2, `KEY(${columns(assoc.keys)})`),
     line(
         2,
-        `SOURCE KEY(${assoc.sourceColumns.map(quoteIfReserved).join(', ')}) ` +
+        `SOURCE KEY(${columns(assoc.sourceColumns)}) ` +
             `REFERENCES ${quoteIfReserved(rel.source.entity)}(${
                 refColumns(rel.source)})`),
     line(
         2,
-        `DESTINATION KEY(${
-            assoc.destinationColumns.map(quoteIfReserved).join(', ')}) ` +
+        `DESTINATION KEY(${columns(assoc.destinationColumns)}) ` +
             `REFERENCES ${quoteIfReserved(rel.destination.entity)}(${
                 refColumns(rel.destination)})`),
   ];

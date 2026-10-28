@@ -20,6 +20,7 @@ import * as path from 'path';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {Entity, Field, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {applyProfileExclusions, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
 import {GenerateOptions, generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -256,7 +257,8 @@ describe(
       // DESTINATION KEY, and each REFERENCES target -- must name the physical
       // column, never the property alias exposed under the field name, or
       // Spanner rejects the DDL
-      // ("Column 'o_orderkey' not found in table 'Orders'"). PROPERTIES still
+      // ("Column 'o_orderkey' not found in table 'Orders'"). Keys and join
+      // columns name the physical columns themselves, and PROPERTIES still
       // exposes the alias. Mirrors the BigQuery leg.
       const remapped = (): SemanticModel => ({
         name: 'sales',
@@ -265,7 +267,7 @@ describe(
           {
             name: 'orders',
             dataSource: 'Orders',
-            keys: ['o_orderkey'],
+            keys: ['OrderId'],
             fields: [
               {name: 'o_orderkey', expression: 'OrderId'},
               {name: 'o_custkey', expression: 'CustomerId'},
@@ -274,7 +276,7 @@ describe(
           {
             name: 'customer',
             dataSource: 'Customers',
-            keys: ['c_custkey'],
+            keys: ['CustomerId'],
             fields: [
               {name: 'c_custkey', expression: 'CustomerId'},
               {name: 'c_name', expression: 'FullName'},
@@ -283,8 +285,8 @@ describe(
         ],
         relationships: [{
           name: 'orders_to_customer',
-          source: {entity: 'orders', columns: ['o_custkey']},
-          destination: {entity: 'customer', columns: ['c_custkey']},
+          source: {entity: 'orders', columns: ['CustomerId']},
+          destination: {entity: 'customer', columns: ['CustomerId']},
         }],
       });
 
@@ -311,14 +313,14 @@ describe(
           });
 
       test(
-          'a key field bound to a non-column expression is warned (Spanner needs a bare column)',
+          'a key that is not a column name is warned (Spanner needs a bare column)',
           () => {
             const model = remapped();
-            model.entities[0].fields[0].expression = 'UPPER(OrderId)';
+            model.entities[0].keys = ['UPPER(OrderId)'];
             const {warnings} = generateSpannerPropertyGraph(model);
             expect(warnings.some(
-                       w => w.includes('o_orderkey') &&
-                           w.includes('non-column expression')))
+                       w => w.includes('UPPER(OrderId)') &&
+                           w.includes('not a physical column name')))
                 .toBe(true);
           });
     });
@@ -402,12 +404,12 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
 });
 
 
-test('a field, key or join column reads its SPANNER text, else its ANSI_SQL text, without comments', () => {
+test('a field reads its SPANNER text, else its ANSI_SQL text, without comments', () => {
   // Spanner reads `#` as a comment, where PostgreSQL reads an operator. `share`
   // is written only for Snowflake, and a transpile pass wrote BigQuery SQL into
   // its `expression`.
   const {ddl, warnings} = generateSpannerPropertyGraph(modelOf('shop', [
-    entity('orders', 'Orders', ['id'], {
+    entity('orders', 'Orders', ['order_id'], {
       id: 'orders.order_id -- the key',
       cust: 'orders.cust_id /* the customer */',
       order_day: texts({BIGQUERY: 'TIMESTAMP_TRUNC(order_ts, DAY)',
@@ -425,11 +427,11 @@ test('a field, key or join column reads its SPANNER text, else its ANSI_SQL text
       fee: {importedExpression: 'fee_amount -- in cents',
             importedDialect: 'SPANNER'},
     }),
-    entity('customers', 'customers', ['cid'],
+    entity('customers', 'customers', ['customer_id'],
            {cid: 'customers.customer_id # key'}),
   ], {relationships: [{name: 'placed_by',
-                       source: {entity: 'orders', columns: ['cust']},
-                       destination: {entity: 'customers', columns: ['cid']}}]}));
+                       source: {entity: 'orders', columns: ['cust_id']},
+                       destination: {entity: 'customers', columns: ['customer_id']}}]}));
   for (const text of [
          `TIMESTAMP_TRUNC(order_ts, DAY, 'UTC') AS order_day`,
          `DATE_TRUNC('month', order_ts) AS order_month`, 'net_amount AS net',
@@ -547,11 +549,11 @@ NODE TABLES (
                {id: 'id', email: otherOnly('c_email')}, {extends: ['Party']}),
         entity('Supplier', 'Supplier', ['id'], {id: 'id', email: 's_email'},
                {extends: ['Party']}),
-        entity('Person', 'Person', ['id'],
+        entity('Person', 'Person', ['person_id'],
                {id: otherOnly('person_id'), email: otherOnly('p_email')}),
-        entity('Employee', 'Employee', ['id'], {tier: 'tier'},
+        entity('Employee', 'Employee', ['person_id'], {tier: 'tier'},
                {extends: ['Person']}),
-        entity('Orders', 'Orders', ['id'],
+        entity('Orders', 'Orders', ['order_id'],
                {id: otherOnly('order_id'), status: otherOnly('order_status')}),
       ], {relationships: [{
         name: 'supplied_by',
@@ -610,6 +612,143 @@ EDGE TABLES (
 });
 
 
+// Keys and join columns are physical column names, so each engine writes them
+// as written and never reads a field of the same name.
+describe('key and join columns, on both engines', () => {
+  const ENGINES = [
+    ['BigQuery', generatePropertyGraph],
+    ['Spanner', generateSpannerPropertyGraph],
+  ] as const;
+  // orders placed by customers, joined from `from` to `to`.
+  const shop = (orders: Entity, customers: Entity, from: string[], to: string[]) =>
+      modelOf('shop', [orders, customers], {relationships: [{
+        name: 'placed_by',
+        source: {entity: 'orders', columns: from},
+        destination: {entity: 'customers', columns: to},
+      }]});
+  const keyWarnings = (warnings: string[]) =>
+      warnings.filter(w => w.includes('KEY/REFERENCES'));
+
+  test('a primary key named like a field with a computed expression emits the bare column', () => {
+    const model = shop(
+        entity('orders', 'Orders', ['raw_order_id'], {
+          raw_order_id: 'CAST(raw_order_id AS STRING)',
+          customer_id: 'customer_id',
+        }),
+        entity('customers', 'Customers', ['customer_id'],
+               {customer_id: 'CAST(customer_id AS STRING)'}),
+        ['customer_id'], ['customer_id']);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      for (const text of [
+             'KEY(raw_order_id)', 'KEY(customer_id)',
+             'SOURCE KEY(raw_order_id) REFERENCES orders(raw_order_id)',
+             'DESTINATION KEY(customer_id) REFERENCES customers(customer_id)',
+             'CAST(raw_order_id AS STRING) AS raw_order_id']) {
+        expect(ddl, engine).toContain(text);
+      }
+      expect(ddl, engine).not.toContain('KEY(CAST');
+      expect(ddl, engine).not.toContain('(CAST(customer_id AS STRING))');
+      expect(keyWarnings(warnings), engine).toEqual([]);
+    }
+  });
+
+  test('a join column with no matching field emits as written', () => {
+    // Neither `cust_fk` nor `customer_id` is a field. A column that is not a
+    // simple identifier is backtick-quoted, as a reserved one is.
+    const model = shop(
+        entity('orders', 'Orders', ['order_id'], {id: 'order_id'}),
+        entity('customers', 'Customers', ['customer_id'], {name: 'name'}),
+        ['cust_fk'], ['customer_id']);
+    const quoted = shop(
+        entity('orders', 'Orders', ['order_id'], {id: 'order_id'}),
+        entity('customers', 'Customers', ['2nd_id'], {name: 'name'}),
+        ['select'], ['2nd_id']);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toContain(
+          'DESTINATION KEY(cust_fk) REFERENCES customers(customer_id)');
+      expect(keyWarnings(warnings), engine).toEqual([]);
+      const other = generate(quoted);
+      expect(other.ddl, engine).toContain(
+          'DESTINATION KEY(`select`) REFERENCES customers(`2nd_id`)');
+      expect(other.ddl, engine).toContain('KEY(`2nd_id`)');
+      expect(keyWarnings(other.warnings), engine).toEqual([]);
+    }
+  });
+
+  test('a backtick-quoted column emits as written, with no warning', () => {
+    const model = shop(
+        entity('orders', 'Orders', ['`order id`'], {id: '`order id`'}),
+        entity('customers', 'Customers', ['`customer id`'],
+               {id: '`customer id`'}),
+        ['`cust fk`'], ['`customer id`']);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      for (const text of [
+             'KEY(`order id`)', 'KEY(`customer id`)',
+             'SOURCE KEY(`order id`) REFERENCES orders(`order id`)',
+             'DESTINATION KEY(`cust fk`) REFERENCES customers(`customer id`)']) {
+        expect(ddl, engine).toContain(text);
+      }
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  test('a key or join column that is not a column name is written as is, with a warning', () => {
+    const model = shop(
+        entity('orders', 'Orders', ['order_id'], {id: 'order_id'}),
+        entity('customers', 'Customers', ['customer_id'], {name: 'name'}),
+        ['LOWER(cust_fk)'], ['customer_id']);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toContain('DESTINATION KEY(LOWER(cust_fk))');
+      expect(keyWarnings(warnings), engine).toEqual([
+        `relationship 'placed_by': key or join column 'LOWER(cust_fk)' is ` +
+            `not a physical column name; a KEY/REFERENCES site requires a ` +
+            `column, so ${engine} will reject the generated DDL`,
+      ]);
+    }
+  });
+
+  test('a profile that excludes a field named like a key or join column leaves KEY and REFERENCES unchanged', () => {
+    const model = shop(
+        entity('orders', 'Orders', ['order_id'], {
+          order_id: 'CAST(order_id AS STRING)',
+          customer_id: 'UPPER(customer_id)',
+          amount: 'amount',
+        }),
+        entity('customers', 'Customers', ['customer_id'],
+               {customer_id: 'LOWER(customer_id)', name: 'name'}),
+        ['customer_id'], ['customer_id']);
+    const excluded = pruneUnavailable(applyProfileExclusions(model, [
+      {model: 'shop', entity: 'orders', field: 'order_id'},
+      {model: 'shop', entity: 'orders', field: 'customer_id'},
+      {model: 'shop', entity: 'customers', field: 'customer_id'},
+    ]), 'restricted').model;
+    const keyLines = (ddl: string) =>
+        ddl.split('\n').filter(l => /KEY\(|REFERENCES/.test(l)).map(l => l.trim());
+    for (const [engine, generate] of ENGINES) {
+      const before = generate(model);
+      const after = generate(excluded);
+      expect(keyLines(before.ddl), engine).toEqual([
+        'KEY(order_id)',
+        'KEY(customer_id)',
+        'KEY(order_id)',
+        'SOURCE KEY(order_id) REFERENCES orders(order_id)',
+        'DESTINATION KEY(customer_id) REFERENCES customers(customer_id)',
+      ]);
+      expect(keyLines(after.ddl), engine).toEqual(keyLines(before.ddl));
+      for (const text of ['CAST(', 'UPPER(', 'LOWER(']) {
+        expect(after.ddl, engine).not.toContain(text);
+      }
+      expect(keyWarnings([...before.warnings, ...after.warnings]), engine)
+          .toEqual([]);
+    }
+  });
+});
+
+
 describe('a comment in a field expression', () => {
   // Left in, a line comment runs to the end of the line and swallows the
   // ` AS <name>` after the expression, and the comma after that.
@@ -620,7 +759,7 @@ describe('a comment in a field expression', () => {
     entities: [{
       name: 'orders',
       dataSource: 'Orders',
-      keys: ['id'],
+      keys: ['order_id'],
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
@@ -650,7 +789,7 @@ describe('a comment in a field expression', () => {
       entities: [{
         name: 'orders',
         dataSource: 'Orders',
-        keys: ['id'],
+        keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
           {name: 'amount', expression: 'orders/* in cents */.amount'},

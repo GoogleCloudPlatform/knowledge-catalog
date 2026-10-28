@@ -152,17 +152,16 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('MEASURE(COUNT(o_orderkey)) AS order_count');
       });
 
-  test('a key field bound to a computed expression warns at the structural site', () => {
-    // A KEY / SOURCE KEY / REFERENCES site must name a bare column. A key bound
-    // to a computed expression resolves to SQL, not a column, which BigQuery
-    // rejects; the generator must warn statically rather than emit broken DDL.
+  test('a key named like a field bound to a computed expression stays the column', () => {
+    // A KEY / SOURCE KEY / REFERENCES site must name a bare column, and a key
+    // names one, never a field. So the same-named field's computed expression
+    // does not reach KEY, and nothing is warned.
     const model = orders();
     model.entities[0].fields[0].expression = 'CONCAT(orders.a, orders.b)';
-    const {warnings} = generatePropertyGraph(model, GEN_OPTS);
-    expect(warnings.some(
-               w => w.includes('o_orderkey') &&
-                   w.includes('non-column expression')))
-        .toBe(true);
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('KEY(o_orderkey)');
+    expect(ddl).not.toContain('KEY(CONCAT');
+    expect(warnings.filter(w => w.includes('key or join column'))).toEqual([]);
   });
 
   test(
@@ -1067,7 +1066,7 @@ describe('a comment in a field expression', () => {
     entities: [{
       name: 'orders',
       dataSource: 'p.d.orders',
-      keys: ['id'],
+      keys: ['order_id'],
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
@@ -1167,7 +1166,7 @@ describe('a comment in a field expression', () => {
       entities: [{
         name: 'orders',
         dataSource: 'p.d.orders',
-        keys: ['id'],
+        keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
           {name: 'amount', expression: 'orders/* in cents */.amount'},
@@ -1463,7 +1462,9 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
         `MEASURE)`);
   });
 
-  test('a key field with only Snowflake SQL keeps its column in KEY', () => {
+  test('a key named like a field with only Snowflake SQL stays the column', () => {
+    // The key names the column `order_id`; the field of that name, which has
+    // no BigQuery SQL, is left out of the properties.
     const model = orders();
     model.entities[0].keys = ['order_id'];
     model.entities[0].fields = [{
@@ -1473,8 +1474,8 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       importedDialect: 'SNOWFLAKE',
     }];
     const {ddl} = generatePropertyGraph(model, GEN_OPTS);
-    expect(ddl).toContain('KEY(o_orderkey)');
-    expect(ddl).not.toContain('order_id');
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).not.toContain('o_orderkey');
   });
 
   test('an association field with no BigQuery SQL is left out of its edge', () => {

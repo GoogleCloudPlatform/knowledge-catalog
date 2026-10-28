@@ -8,7 +8,9 @@
 #
 # Nothing here says where the data lives, what the columns are called, or what
 # SQL performs the write. Those are physical facts, and they are in
-# commerce.profiles/. There are two profiles -- spanner.yaml and alloydb.yaml --
+# commerce.profiles/. The one exception is the primary keys and join columns,
+# which the format defines as physical column names; both databases name them
+# alike. There are two profiles -- spanner.yaml and alloydb.yaml --
 # pointing this one model at two different databases, with different table
 # names, a differently named column and a different SQL dialect between them.
 # This file is the same bytes under both, which is the claim the pair exists to
@@ -65,7 +67,7 @@ semantic_model:
 
     entities:
       - name: Customer
-        primary_key: [customerId]
+        primary_key: [customer_id]
         fields:
           - {name: customerId, datatype: Integer}
           - name: name
@@ -78,7 +80,7 @@ semantic_model:
           A customer order. Its total is the sum of its line items: items, tax
           and fees add, credits subtract. A positive total is money owed to the
           company.
-        primary_key: [orderId]
+        primary_key: [order_id]
         fields:
           - name: orderId
             datatype: Integer
@@ -98,7 +100,7 @@ semantic_model:
         description: >-
           One line of an order. A charge line is positive; a credit line is
           negative, so that the order total is always a plain sum.
-        primary_key: [lineItemId]
+        primary_key: [line_item_id]
         fields:
           - {name: lineItemId, datatype: String}
           - {name: orderId, datatype: Integer}

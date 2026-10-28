@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -329,60 +329,6 @@ describe('stripQualifier', () => {
     expect(stripQualifier('orders.orders.id', 'orders')).toBe('orders.id');
     expect(stripQualifier('`orders`.`orders`.id', 'orders'))
         .toBe('`orders`.id');
-  });
-});
-
-describe('coversKeyByColumns', () => {
-  test('gives no answer while a key names a field with no column', () => {
-    // The primary key reads field `id`, unbound here, so whether a join covers
-    // a key cannot be told, even though it covers the unique key.
-    const customer = {
-      name: 'customer',
-      fields: [{name: 'id'}, {name: 'email', expression: 'email'}],
-    };
-    expect(coversKeyByColumns(customer, ['email'], ['id'], [['email']]))
-        .toBeUndefined();
-    expect(coversKeyByColumns(
-               {...customer, fields: [{name: 'email', expression: 'email'}]},
-               ['email'], ['id'], [['email']]))
-        .toBe(true);
-  });
-
-  test('reads a key field\'s column without its comment, as the generators do', () => {
-    const orders = {
-      name: 'orders',
-      fields: [{name: 'id', expression: 'orders.order_id -- the key'}],
-    };
-    expect(coversKeyByColumns(orders, ['order_id'], ['id'], [])).toBe(true);
-  });
-
-  test('reads a key field\'s vendor SQL in its own dialect, as the generators do', () => {
-    // PostgreSQL reads `#` as an operator, so the key's column is the whole
-    // text, which no join column names.
-    const orders = {
-      name: 'orders',
-      fields: [{
-        name: 'id',
-        dialects: [{dialect: 'POSTGRES' as const, expression: 'order_id # 1'}],
-        importedExpression: 'order_id # 1',
-        importedDialect: 'POSTGRES' as const,
-      }],
-    };
-    expect(coversKeyByColumns(orders, ['order_id'], ['id'], [])).toBe(false);
-    // A target text is read as BigQuery, even when a PostgreSQL entry holds
-    // the same text.
-    const shared = {
-      name: 'orders',
-      fields: [{
-        name: 'id',
-        expression: 'order_id # pk',
-        dialects: [
-          {dialect: 'POSTGRES' as const, expression: 'order_id # pk'},
-          {dialect: 'BIGQUERY' as const, expression: 'order_id # pk'},
-        ],
-      }],
-    };
-    expect(coversKeyByColumns(shared, ['order_id'], ['id'], [])).toBe(true);
   });
 });
 

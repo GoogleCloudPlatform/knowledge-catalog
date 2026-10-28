@@ -1,9 +1,10 @@
 # A store that renamed one column and does not carry `discount`. A profile is
-# an overlay, so it re-declares the columns it serves and excludes the one it
-# does not: `Customer.name` maps to a different column, and `discount` is in
-# `fields_exclude` -- so it is unbound here, and `total_discount` prunes with it.
-# The golden shows the remapped column beside the re-declared columns, and
-# `discount` + `total_discount` pruned.
+# an overlay, so it re-declares the columns it serves, its primary keys and the
+# `placed_by` join columns, and excludes the one it does not: `Customer.name`
+# maps to a different column, and `discount` is in `fields_exclude` -- so it is
+# unbound here, and `total_discount` prunes with it. The golden shows the
+# remapped column beside the re-declared columns, and `discount` +
+# `total_discount` pruned.
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -11,13 +12,19 @@ semantic_model:
     entities:
       - name: Customer
         source: bigquery.googleapis.com/projects/acme-eu/datasets/sales/tables/customers
+        primary_key: [customer_id]
         fields:
           - { name: id, expression: customer_id }
           - { name: name, expression: full_name }
       - name: Order
         source: bigquery.googleapis.com/projects/acme-eu/datasets/sales/tables/orders
+        primary_key: [order_id]
         fields:
           - { name: id, expression: order_id }
           - { name: customerId, expression: customer_id }
           - { name: amount, expression: amount }
         fields_exclude: [discount]
+    relationships:
+      - name: placed_by
+        from_columns: [customer_id]
+        to_columns: [customer_id]

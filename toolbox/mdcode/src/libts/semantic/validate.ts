@@ -13,14 +13,14 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
-import {Action, ActionParameter, Constraint, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, evaluatedTexts, expressionSources, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
-import {columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
 
@@ -1322,13 +1322,13 @@ function validateColumnsAndRelationships(
 // `to_columns` cover a key, so a join that covers no key is invalid in
 // every model, whatever it deploys to. The check runs on every push, a
 // catalog-only push included. A superset of a key covers it (see
-// coversKey). Keys and join columns are compared as the physical
-// columns they name, and a key that names a field with no column yet cannot be
-// judged until a binding gives it one. Skipped here when the check's own inputs
-// are absent or already invalid (reported by their own checks): an association
-// (junction-table) relationship, an empty `to_columns` list, a non-column entry
-// in `to_columns`, an undeclared or abstract `to` entity, or a non-column entry
-// in the `to` entity's `primary_key` or `unique_keys`.
+// coversKey). Keys and join columns are physical columns, so they are compared
+// as written, never read through a field of the same name. Skipped here when
+// the check's own inputs are absent or already invalid (reported by their own
+// checks): an association (junction-table) relationship, an empty `to_columns`
+// list, a non-column entry in `to_columns`, an undeclared or abstract `to`
+// entity, or a non-column entry in the `to` entity's `primary_key` or
+// `unique_keys`.
 function relationshipKeyErrors(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
@@ -1347,9 +1347,7 @@ function relationshipKeyErrors(
         !(target.uniqueKeys ?? []).flat().every(isColumnName)) {
       continue;
     }
-    const covered = coversKeyByColumns(
-        target, to, target.keys, target.uniqueKeys ?? []);
-    if (covered === false) {
+    if (!coversKey(to, target.keys, target.uniqueKeys ?? [])) {
       errors.push(
           `relationship '${rel.name}' in model '${model.name}' (${
               document}): its to_columns ${

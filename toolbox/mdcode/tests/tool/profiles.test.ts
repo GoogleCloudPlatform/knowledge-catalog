@@ -2035,8 +2035,7 @@ semantic_model:
     });
 
     // The comparison skips what push's key check or the completeness check
-    // reports, and what push's key check may misread. It compares no join
-    // until the hierarchy resolves.
+    // reports. It compares no join until the hierarchy resolves.
     test('and reports each key and join problem at most once', async () => {
       const model = () => joinOnEmail(commerce());
       const unknown = (binding: string) =>
@@ -2066,12 +2065,12 @@ semantic_model:
           'commerce.profile.a.yaml': profileFile('a').replace(
               'to_columns: [c_id]', 'to_columns: ["`c_name`"]'),
         }, {model: [compared("profile 'a'", '`c_name`')], a: []}],
-        ['an AlloyDB key field bound to "c_id", which push may misread', {
-          'commerce.yaml': commerce()
-              .replace('primary_key: [c_id]', 'primary_key: [c_key]')
-              .replace('name: c_id,', 'name: c_key,'),
-          'commerce.profile.x.yaml': onAlloy(profileFile('x', 'c_key')).replace(
-              '{ name: c_id, expression: c_id }', '{ name: c_key, ' +
+        // Keys and join columns are compared as written, so a field of the
+        // key's name bound to "c_id" changes nothing.
+        ['an AlloyDB field named like the key bound to "c_id"', {
+          'commerce.yaml': commerce(),
+          'commerce.profile.x.yaml': onAlloy(profileFile('x')).replace(
+              '{ name: c_id, expression: c_id }', '{ name: c_id, ' +
                   'expression: {dialects: [{dialect: ALLOYDB, expression: ' +
                   '\'"c_id"\'}]} }'),
         }, {x: []}],

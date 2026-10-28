@@ -1535,12 +1535,12 @@ describe('validateProfileConsistency', () => {
     const m = irModel();
     m.entities[1].keys = [];
     // d states an empty primary key, so its join is checked against the model
-    // file's key, which its to_columns cover.
+    // file's key, the column `key`, which its to_columns cover.
     expect(validateProfileConsistency(m, [
       p('a', {entities: [{name: 'Order', primaryKey: ['id']}]}), p('b'),
       p('c', {entities: [{name: 'Order', uniqueKeys: [['tenant', 'oid']]}]}),
       p('d', {entities: [{name: 'Customer', primaryKey: []}],
-              relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}]}),
+              relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['key']}]}),
     ])).toEqual([]);
   });
 
@@ -3627,11 +3627,11 @@ describe('a relationship joins on a key of its target', () => {
 });
 
 
-// A key or join column may name a field or its column, and both name the same
-// column, as the graph generators read them.
-describe('keys and join columns compare as the columns they name', () => {
+// A key or join column is a physical column, so it is compared as written and
+// never read through a field of the same name, as the graph generators emit it.
+describe('keys and join columns compare as written', () => {
   const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  test('a key named by field covers a join named by column, in every binding', () => {
+  test('a key named like a field does not cover a join on the field\'s column', () => {
     const model = {
       name: 'm',
       entities: [
@@ -3646,14 +3646,30 @@ describe('keys and join columns compare as the columns they name', () => {
       }],
     } as any;
     // prod binds the key field to another column and joins on that column,
-    // without restating the primary key.
+    // without restating the primary key, which stays the column `key`.
     const prod: ProfileSpec = {
       name: 'prod',
       entities: [{name: 'customer', source: BQ('c2'),
                   fields: [{name: 'key', expression: 'c_custkey'}]}],
       relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['c_custkey']}],
     };
-    expect(validateProfileConsistency(model, [prod])).toEqual([]);
+    const errors = validateProfileConsistency(model, [prod]).join('\n');
+    expect(errors).toContain(
+        "the model file joins on to_columns [\"c_key\"], which cover no " +
+        "primary or unique key of 'customer'");
+    expect(errors).toContain(
+        "profile 'prod' joins on to_columns [\"c_custkey\"], which cover no " +
+        "primary or unique key of 'customer'");
+    // Joining on the key's own column passes in both bindings.
+    const onKey = {
+      ...model,
+      relationships: [{...model.relationships[0],
+                       destination: {entity: 'customer', columns: ['key']}}],
+    };
+    expect(validateProfileConsistency(onKey, [{
+      ...prod,
+      relationships: [{name: 'placed_by', fromColumns: ['o_cust'], toColumns: ['key']}],
+    }])).toEqual([]);
   });
 
   test('a relationship through a junction table is not checked', () => {

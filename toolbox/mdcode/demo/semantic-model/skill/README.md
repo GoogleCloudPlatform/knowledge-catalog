@@ -91,7 +91,7 @@ developer:
     A customer order. Its total is the sum of its line items: items, tax
     and fees add, credits subtract. A positive total is money owed to the
     company.
-  primary_key: [orderId]
+  primary_key: [order_id]
   fields:
     - name: orderId
       datatype: Integer

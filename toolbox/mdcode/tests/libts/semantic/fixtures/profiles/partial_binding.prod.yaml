@@ -1,7 +1,8 @@
 # Environment swap: the same schema in a different project/dataset. This
-# profile re-declares every column -- here to the same column names, over the
-# prod tables. The golden shows
-# the prod tables with the identical column set and all three metrics intact.
+# profile re-declares every column, its primary keys and the `placed_by` join
+# columns -- here to the same column names, over the prod tables. The golden
+# shows the prod tables with the identical column set and all three metrics
+# intact.
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -9,13 +10,19 @@ semantic_model:
     entities:
       - name: Customer
         source: bigquery.googleapis.com/projects/acme-prod/datasets/sales/tables/customers
+        primary_key: [customer_id]
         fields:
           - { name: id, expression: customer_id }
           - { name: name, expression: customer_name }
       - name: Order
         source: bigquery.googleapis.com/projects/acme-prod/datasets/sales/tables/orders
+        primary_key: [order_id]
         fields:
           - { name: id, expression: order_id }
           - { name: customerId, expression: customer_id }
           - { name: amount, expression: amount }
           - { name: discount, expression: discount }
+    relationships:
+      - name: placed_by
+        from_columns: [customer_id]
+        to_columns: [customer_id]
