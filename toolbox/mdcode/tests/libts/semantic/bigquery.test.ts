@@ -26,13 +26,14 @@
 // shape BigQuery enforces for measures, run over the loaded fixtures.
 //
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import {GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -455,6 +456,46 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
         expect(warnings).toEqual([]);
         expect(ddl).toContain('`acme.sales.order items` AS order_items');
       });
+});
+
+
+describe('a BigLake source', () => {
+  // Loaded rather than hand-built, so the test covers the loader's half too:
+  // it reads a BigLake resource name into the four-part name BigQuery gives a
+  // Lakehouse table, `<project>.<catalog>.<namespace>.<table>`.
+  beforeAll(loadSqlEngine);
+
+  test('is written as a BigQuery source is, one name in backticks', () => {
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: lake
+    entities:
+      - name: orders
+        source: biglake.googleapis.com/projects/acme/catalogs/lakehouse/namespaces/sales/tables/orders
+        primary_key: [order_id]
+        fields:
+          - {name: order_id, expression: order_id}
+          - {name: customer_id, expression: customer_id}
+      - name: customers
+        source: bigquery.googleapis.com/projects/acme/datasets/crm/tables/customers
+        primary_key: [customer_id]
+        fields:
+          - {name: customer_id, expression: customer_id}
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+`);
+    const {ddl, warnings} =
+        generatePropertyGraph(models[0], {project: 'acme', dataset: 'graphs'});
+    expect(warnings).toEqual([]);
+    // Its node table and the edge it backs both read it.
+    expect(ddl).toContain('\n  `acme.lakehouse.sales.orders` AS orders\n');
+    expect(ddl).toContain('\n  `acme.lakehouse.sales.orders` AS placed_by\n');
+    expect(ddl).toContain('\n  `acme.crm.customers` AS customers\n');
+  });
 });
 
 

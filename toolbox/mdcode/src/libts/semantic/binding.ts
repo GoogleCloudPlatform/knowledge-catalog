@@ -49,10 +49,9 @@ export function boundTable(
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  // A BigQuery resource URI is rewritten to `project.dataset.table` upstream in
-  // the loader, but a Spanner-native (or other `scheme://`) URI is kept
-  // verbatim there, so reduce it to its final path segment here before the
-  // dotted reduction below.
+  // A BigQuery or BigLake source reaches here dotted, but a Spanner, AlloyDB or
+  // Cloud SQL source as its resource URI (see isResourceUri), so reduce a URI
+  // to its final path segment before the dotted reduction below.
   const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
   const last = splitDotted(source).map(unquote).pop() ?? source;
   return quote(last);
@@ -67,9 +66,12 @@ export function spannerTable(
 }
 
 
-// A Google Cloud resource name (`//host/...`) or any `scheme://...` URI, as
-// opposed to a bare or dotted table reference. Mirrors the loader's source
-// parsing so the two agree on what counts as a URI.
+// A resource URI (`//host/...`) or any `scheme://...` URI, as opposed to a bare
+// or dotted table reference. The loader accepts a source only as a GCP resource
+// name, and gives the IR a BigQuery or BigLake table, or a legacy bare name, as
+// its dotted name, and a Spanner, AlloyDB or Cloud SQL table as its resource
+// URI, with the leading `//` (see `parseSource` and `sourceToDataSource`). It
+// rejects any `scheme://` source, so only a hand-built IR reaches that arm.
 function isResourceUri(source: string): boolean {
   return source.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(source);
 }
