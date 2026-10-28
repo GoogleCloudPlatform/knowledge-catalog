@@ -1,0 +1,87 @@
+name: Release @google-cloud/kcmd
+
+on:
+  workflow_dispatch:
+    inputs:
+      dist_tag:
+        description: 'npm distribution tag (e.g. latest, next, beta)'
+        required: false
+        default: 'latest'
+        type: string
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: toolbox/mdcode
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: toolbox/mdcode/package-lock.json
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.14'
+
+      - name: Install dependencies, build, and test
+        run: |
+          npm ci
+          npm run build
+          npm test
+
+      - name: Authenticate with OSS Exit Gate (WIF)
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: 'projects/305452601764/locations/global/workloadIdentityPools/builders/providers/github'
+
+      - name: Setup gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Publish @google-cloud/kcmd to Artifact Registry and trigger OSS Exit Gate
+        env:
+          DIST_TAG: ${{ inputs.dist_tag || 'latest' }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          echo "Publishing @google-cloud/kcmd@${VERSION} (tag: ${DIST_TAG}) to OSS Exit Gate..."
+
+          cat > .npmrc << 'NPMRC'
+          @google-cloud:registry=https://us-npm.pkg.dev/oss-exit-gate-prod/knowledge-catalog--npm/
+          //us-npm.pkg.dev/oss-exit-gate-prod/knowledge-catalog--npm/:always-auth=true
+          NPMRC
+          trap 'rm -f .npmrc manifest.json' EXIT
+
+          npx --yes google-artifactregistry-auth
+          npm publish
+          echo "Artifact published to Artifact Registry."
+
+          node -e '
+            const fs = require("fs");
+            const version = process.argv[1];
+            const tag = process.argv[2];
+            const manifest = {
+              publishing_groups: [
+                {
+                  namespace: "@google-cloud",
+                  packages: [{ name: "kcmd", version }],
+                },
+              ],
+              ...(tag && tag !== "latest"
+                ? { registry_config: { npm: { tags: [tag] } } }
+                : {}),
+            };
+            fs.writeFileSync("manifest.json", JSON.stringify(manifest, null, 2) + "\n");
+          ' "${VERSION}" "${DIST_TAG}"
+
+          gcloud storage cp manifest.json gs://oss-exit-gate-prod-projects-bucket/knowledge-catalog/npm/manifests/manifest.json
+          echo "Manifest uploaded to GCS; OSS Exit Gate release triggered."
