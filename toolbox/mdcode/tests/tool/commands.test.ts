@@ -3,7 +3,7 @@
 // back (src/tool/commands.ts,
 // src/libts/semantic/deploy_knowledge_catalog.ts).
 
-import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
+import {afterEach, beforeEach, describe, expect, mock, Mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -980,11 +980,30 @@ function writeRoundTripWorkspace(profile = ROUND_TRIP_PROFILE): void {
       path.join(entryGroupDir(), 'commerce.profile.prod.yaml'), profile);
 }
 
+// The engine of a Cloud SQL instance, as its tables' entry types name it.
+type CloudSqlEngine = 'mysql'|'postgresql'|'sqlserver';
+
+// The type of the entry Dataplex keeps for the table whose system entry is
+// `name`, as a full name: the live types of a BigQuery, BigLake, Spanner and
+// AlloyDB table (2026-10-27), and the Cloud SQL table type of `engine`.
+// Dataplex knows each instance's engine; a name in a schema cannot tell
+// PostgreSQL from SQL Server, so without `engine` a table in a schema is
+// PostgreSQL's and any other MySQL's.
+function systemEntryType(name: string, engine?: CloudSqlEngine): string {
+  const group = /\/entryGroups\/@([a-z]+)\//.exec(name)![1];
+  const type = group === 'cloudsql' ?
+      `cloudsql-${engine ?? (name.includes('/schemas/') ? 'postgresql' : 'mysql')}-table` :
+      {bigquery: 'bigquery-table', biglake: 'biglake-table',
+       spanner: 'cloud-spanner-table', alloydb: 'alloydb-table'}[group];
+  return `projects/655216118709/locations/global/entryTypes/${type}`;
+}
+
 // An in-memory catalog that push writes into and pull reads from. Every
 // client call the two legs make is answered here, and fetch throws, so no
 // test reaches the network. `missingType` names a custom type the project
-// lacks.
-function fakeCatalog(opts: {missingType?: string} = {}) {
+// lacks, and `cloudSqlEngine` the engine of every Cloud SQL instance.
+function fakeCatalog(
+    opts: {missingType?: string; cloudSqlEngine?: CloudSqlEngine} = {}) {
   const entries = new Map<string, Entry>();
   const P = CatalogClient.prototype;
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
@@ -1027,7 +1046,7 @@ function fakeCatalog(opts: {missingType?: string} = {}) {
       .mockImplementation(async (_p: string, _l: string, name: string,
                                  aspectTypes?: string[]) => {
         if (name.includes('/entryGroups/@')) {
-          return {status: 200, result: {name, entryType: ''}};
+          return {status: 200, result: {name, entryType: systemEntryType(name, opts.cloudSqlEngine)}};
         }
         const e = entries.get(name);
         if (!e) return {status: 404, message: 'not found'};
@@ -1093,6 +1112,37 @@ describe('the file copy round trip', () => {
          expect(fs.readFileSync(profilePath, 'utf8')).toBe(ROUND_TRIP_PROFILE);
          expect(serialize).not.toHaveBeenCalled();
        });
+
+  // The catalog answers a Cloud SQL table's entry with its engine's type, which
+  // gives the push the table's dialect, as it answers every other table's.
+  const CLOUDSQL = 'cloudsql.googleapis.com/projects/test-project/locations/' +
+      'us-central1/instances/shop/databases/sales';
+  for (const [engine, table] of [
+    ['mysql', `${CLOUDSQL}/tables/customer`],
+    ['postgresql', `${CLOUDSQL}/schemas/public/tables/customer`],
+    ['sqlserver', `${CLOUDSQL}/schemas/dbo/tables/customer`],
+  ] as const) {
+    test(`a profile file that binds a Cloud SQL for ${engine} table is pushed and stored`, async () => {
+      const cloudSqlProfile = PROD_PROFILE.replace(/source: .*/, `source: ${table}`);
+      writeRoundTripWorkspace(cloudSqlProfile);
+      const {entries} = fakeCatalog({cloudSqlEngine: engine});
+      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+      expect(await push({deployment: false})).toBe(0);
+      expect(messages(errorSpy)).toBe('');
+      expect(storedCopies(entries)).toEqual({
+        'commerce.yaml': ROUND_TRIP_MODEL,
+        'commerce.profile.prod.yaml': cloudSqlProfile,
+      });
+      // The table is looked up once, and its entry names its engine.
+      const lookup = CatalogClient.prototype.lookupEntry as unknown as Mock<any>;
+      const types = (await Promise.all(lookup.mock.results.map(r => r.value)))
+                        .map(a => a.result?.entryType as string)
+                        .filter(t => t.includes('/cloudsql-'));
+      expect(types).toEqual([
+          `projects/655216118709/locations/global/entryTypes/cloudsql-${engine}-table`]);
+    });
+  }
 
   test('a push with --no-profile still stores the profile copies', async () => {
     writeRoundTripWorkspace();
