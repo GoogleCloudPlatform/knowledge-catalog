@@ -42,6 +42,17 @@ export interface MetricPlacementInput {
   skipped: ReadonlySet<string>;
   // Entities some node-forming entity extends.
   ancestorsUsed: ReadonlySet<string>;
+  // The SQL `field` of `entity` renders from on the node table (see fieldSql).
+  // When it has none there, `reads` is what a warning says it reads, as in
+  // "field 'net', which reads field 'gross', which has no 'BIGQUERY' or
+  // 'ANSI_SQL' expression".
+  fieldSql(entity: Entity, field: Field): {sql: string}|{reads: string};
+  // `sql`, written on `entity`'s table, as that table reads it: each field of
+  // `entity` it names as `<entity>.<field>` reads as that field's own SQL, as
+  // in a field expression (see fieldSql), and other columns lose the
+  // `<entity>.` qualifier. When a field it names has no SQL, `reads` is as for
+  // fieldSql.
+  localSql(entity: Entity, sql: string): {sql: string}|{reads: string};
 }
 
 // The engine's name, and the four ways the engines differ (see the header).
@@ -205,8 +216,31 @@ export function generateGraphDdl(
   // it). The result is keyed by entity name; entries on a skipped entity simply
   // never render.
   const entityByName = new Map(entities.map(e => [e.name, e]));
+  // The SQL `sql` gives, or, when a field on the way has none, what a warning
+  // says it reads: each field on `through`, then those `sql` went through.
+  const readOf = (entity: Entity, sql: FieldSql, through: string[]) =>
+      'sql' in sql ? {sql: sql.sql} : {
+        reads: missingSibling(
+            'through' in sql ? [...through, ...sql.through] : through, entity,
+            engine)
+      };
   const measurePropertiesByEntity = engine.placeMetrics(
-      metrics, {entityByName, skipped, ancestorsUsed}, warnings);
+      metrics, {
+        entityByName,
+        skipped,
+        ancestorsUsed,
+        fieldSql: (entity, field) =>
+            readOf(entity, fieldSql(field, entity, engine), [field.name]),
+        localSql: (entity, sql) => readOf(
+            entity,
+            siblingsRead(
+                sql, entity,
+                name => fieldSql(
+                    entity.fields.find(f => f.name === name)!, entity,
+                    engine)),
+            []),
+      },
+      warnings);
 
   // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
   // signature, so the label renderer must reach every LABEL CARRIER by name:
@@ -521,24 +555,39 @@ function fieldSql(
     path: readonly string[] = []): FieldSql {
   const expr = engine.fieldExpression(field);
   if (expr === undefined) return {noSql: true};
-  const sibling = (name: string) => owner.fields.find(f => f.name === name);
-  const named = new Set(
-      (columnReferences(expr, 'BIGQUERY') ?? [])
-          .filter(c => c.qualifier === owner.name && sibling(c.name))
-          .map(c => c.name));
-  const local = withoutQualifier(expr, owner.name);
-  if (!named.size) return {sql: local};
   const chain = [...path, field.name];
-  const replacements = new Map<string, string>();
-  for (const name of named) {
+  return siblingsRead(expr, owner, name => {
     if (chain.includes(name)) {
       throw new Error(
           selfReferenceMessage(owner.name, chain.slice(chain.indexOf(name))));
     }
-    const read = fieldSql(sibling(name)!, owner, engine, chain);
-    if ('noSql' in read) return {through: [name]};
-    if ('through' in read) return {through: [name, ...read.through]};
-    if (read.sql !== name) replacements.set(name, parenthesized(read.sql));
+    return fieldSql(
+        owner.fields.find(f => f.name === name)!, owner, engine, chain);
+  });
+}
+
+// `expr`, SQL on `owner`'s table, local to that table, with each sibling it
+// names as `<owner>.<field>` replaced with what `read` gives for that sibling
+// (see fieldSql). When a sibling has no SQL, `through` runs from it to the
+// sibling with none.
+function siblingsRead(
+    expr: string, owner: FieldOwner,
+    read: (name: string) => FieldSql): {sql: string}|{through: string[]} {
+  const named = new Set(
+      (columnReferences(expr, 'BIGQUERY') ?? [])
+          .filter(
+              c => c.qualifier === owner.name &&
+                  owner.fields.some(f => f.name === c.name))
+          .map(c => c.name));
+  const local = withoutQualifier(expr, owner.name);
+  const replacements = new Map<string, string>();
+  for (const name of named) {
+    const sibling = read(name);
+    if ('noSql' in sibling) return {through: [name]};
+    if ('through' in sibling) return {through: [name, ...sibling.through]};
+    if (sibling.sql !== name) {
+      replacements.set(name, parenthesized(sibling.sql));
+    }
   }
   // A sibling bound to the column of its own name reads the same either way,
   // and the stripped text keeps the expression as written.
