@@ -8,10 +8,9 @@
     "directory": "toolbox/mdcode"
   },
   "publishConfig": {
-    "access": "public",
-    "registry": "https://wombat-dressing-room.appspot.com"
+    "access": "public"
   },
-  "main": "index.js",
+  "main": "./build/ts/kcmd/index.js",
   "bin": {
     "kcmd": "./dist/kcmd"
   },
@@ -19,6 +18,11 @@
   "exports": {
     ".": "./build/ts/kcmd/index.js"
   },
+  "files": [
+    "build/ts/kcmd/",
+    "dist/kcmd",
+    "README.md"
+  ],
   "scripts": {
     "build:libts": "npx tsc -p src/libts/tsconfig.json",
     "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
@@ -32,8 +36,8 @@
     "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Google LLC",
+  "license": "Apache-2.0",
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
