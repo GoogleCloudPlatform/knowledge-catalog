@@ -26,11 +26,13 @@ EDGE TABLES (
   `sqlgen-testing.demo.orders` AS orders_customers
     KEY(order_id)
     SOURCE KEY(order_id) REFERENCES orders(order_id)
-    DESTINATION KEY(customer_id) REFERENCES customers(customer_id),
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
+    NO PROPERTIES,
   `sqlgen-testing.demo.order_items` AS orderitems_orders
     KEY(order_item_id)
     SOURCE KEY(order_item_id) REFERENCES order_items(order_item_id)
     DESTINATION KEY(order_id) REFERENCES orders(order_id)
+    NO PROPERTIES
 );
 
 -- warnings --
