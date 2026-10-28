@@ -2710,6 +2710,59 @@ ${extraMetric}`;
           ]);
       expect(warnings).toEqual([]);
     });
+
+    // The graph renders a field that names a sibling from the sibling's SQL,
+    // so a field that names itself, directly or through siblings, has none.
+    test('rejects a field that names itself, directly or through sibling fields, in any dialect', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'a', expression: 'orders.b + 1'},
+            {name: 'b', expression: 'orders.a - 1'},
+            {name: 'total', expression: 'orders.total * 2'},
+            {
+              name: 'c',
+              expression: 'o_c',
+              dialects: [{dialect: 'BIGQUERY', expression: 'orders.c + 1'}],
+            },
+          ],
+        }],
+      });
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true});
+      expect(errors).toEqual([
+        "field 'orders.a' in model 'm' (doc) names itself through " +
+            "'orders.b'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+        "field 'orders.b' in model 'm' (doc) names itself through " +
+            "'orders.a'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+        "field 'orders.total' in model 'm' (doc) names itself; a field " +
+            'expression may name other fields of its entity, but not ' +
+            'itself, directly or through other fields.',
+        "field 'orders.c' in model 'm' (doc) names itself; a field " +
+            'expression may name other fields of its entity, but not ' +
+            'itself, directly or through other fields.',
+      ]);
+    });
+
+    test('accepts a chain of fields that name their siblings', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'a', expression: 'x + y'},
+            {name: 'b', expression: 'orders.a * 2'},
+            {name: 'c', expression: 'orders.b + orders.a + orders.net_amount'},
+          ],
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    });
   });
 
   describe('across dialects', () => {

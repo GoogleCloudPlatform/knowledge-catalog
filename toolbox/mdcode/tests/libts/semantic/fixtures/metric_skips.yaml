@@ -20,20 +20,20 @@ semantic_model:
         fields:
           - name: o_orderkey
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.o_orderkey }]
+              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
           - name: customer_id
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.customer_id }]
+              dialects: [{ dialect: BIGQUERY, expression: customer_id }]
           - name: status
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.status }]
+              dialects: [{ dialect: BIGQUERY, expression: status }]
       - name: customers
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/customers
         primary_key: [c_custkey]
         fields:
           - name: c_custkey
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: customers.c_custkey }]
+              dialects: [{ dialect: BIGQUERY, expression: c_custkey }]
     relationships:
       - name: orders_to_customer
         from: orders

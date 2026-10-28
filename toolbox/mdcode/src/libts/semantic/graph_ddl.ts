@@ -15,15 +15,18 @@
 //   3. Element metadata. The per-element `OPTIONS` clause carrying
 //      descriptions and synonyms (BigQuery has one; Spanner has none).
 //   4. SQL text. Which SQL a field binds to: the engine's own dialect entry
-//      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one.
+//      (`BIGQUERY` or `SPANNER`), falling back to the `ANSI_SQL` one. A field
+//      that names a sibling field reads that sibling's SQL in its place (see
+//      fieldSql).
 //
 // ./bigquery supplies the BigQuery engine, and ./spanner the Spanner engine.
 //
 
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {isColumnName, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, isColumnName, withoutQualifier} from './sql_expr_utils';
 import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
+import {rewriteColumns, sqlExpressionTree} from './sql_parser';
 
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
@@ -224,7 +227,7 @@ export function generateGraphDdl(
   const leftOutUnder = new Map<string, Set<string>>();
   for (const e of validEntities) {
     for (const f of e.fields) {
-      if (!hasOnlyOtherEnginesSql(f, engine)) continue;
+      if (!isLeftOut(f, e, engine)) continue;
       for (const a of e.extends ?? []) {
         leftOutUnder.set(a, (leftOutUnder.get(a) ?? new Set()).add(f.name));
       }
@@ -301,12 +304,10 @@ function renderNodeTable(
     for (const f of ancestor.fields) {
       // The ancestor's node table leaves out a field this engine has no SQL
       // for, so there is no rendering to defer to.
-      if (engine.fieldExpression(f) === undefined) continue;
+      if (!('sql' in fieldSql(f, ancestor, engine))) continue;
       if (!inheritedRender.has(f.name)) {
-        inheritedRender.set(
-            f.name, renderFieldProperty(f, ancestor.name, engine));
-        inheritedCore.set(
-            f.name, renderFieldPropertyCore(f, ancestor.name, engine));
+        inheritedRender.set(f.name, renderFieldProperty(f, ancestor, engine));
+        inheritedCore.set(f.name, renderFieldPropertyCore(f, ancestor, engine));
       }
     }
   }
@@ -321,11 +322,11 @@ function renderNodeTable(
   // subclass loses, rather than mislabeling an added description as a redefined
   // column.
   const renderOwn = (f: Field): string => {
-    const own = renderFieldProperty(f, entity.name, engine);
+    const own = renderFieldProperty(f, entity, engine);
     const canonical = inheritedRender.get(f.name);
     if (canonical === undefined) return own;  // not inherited: render as-is
     if (canonical === own) return canonical;  // identical: nothing to warn
-    if (renderFieldPropertyCore(f, entity.name, engine) !==
+    if (renderFieldPropertyCore(f, entity, engine) !==
         inheritedCore.get(f.name)) {
       warnings.push(
           `entity '${entity.name}' remaps inherited property '${
@@ -355,17 +356,25 @@ function renderNodeTable(
   // pruning normally strips it before generation, but a caller that generates
   // DDL straight from a bindingOptional load without pruning could still reach
   // here with one, such as a purely logical field. Skip it too rather than emit
-  // `<name>` as a phantom bare column the source table does not have.
+  // `<name>` as a phantom bare column the source table does not have. A field
+  // that names a sibling the engine has no SQL for has none either, so it is
+  // skipped with a warning naming that sibling.
   const boundFields = entity.fields.filter(f => {
-    if (engine.fieldExpression(f) !== undefined) return true;
+    const sql = fieldSql(f, entity, engine);
+    if ('sql' in sql) return true;
+    const omitted = inheritedRender.has(f.name) ?
+        `node table's own label, and the supertype's label keeps the ` +
+            `supertype's definition` :
+        `node table`;
     warnings.push(
-        isFieldBound(f) ?
+        'through' in sql ?
+            `entity '${entity.name}': field '${f.name}' reads ${
+                missingSibling(sql.through, entity, engine)}; omitted from ` +
+                `the ${omitted}` :
+            isFieldBound(f) ?
             `entity '${entity.name}': field '${f.name}' has no '${
                 engine.dialect}' or 'ANSI_SQL' expression; omitted from the ` +
-                (inheritedRender.has(f.name) ?
-                     `node table's own label, and the supertype's label keeps ` +
-                         `the supertype's definition` :
-                     `node table`) :
+                omitted :
             `entity '${entity.name}': field '${f.name}' has no column under ` +
                 `this binding; omitted from the node table (bind it, or ` +
                 `govern the logical model in Knowledge Catalog instead)`);
@@ -412,7 +421,7 @@ function renderNodeTable(
   if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
   if (labelOpts) lines.push(line(2, labelOpts));
   lines.push(...propertiesClause(
-      properties, entity.fields.some(f => hasOnlyOtherEnginesSql(f, engine))));
+      properties, entity.fields.some(f => isLeftOut(f, entity, engine))));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
@@ -456,16 +465,15 @@ function renderNodeTable(
         }
         const child = boundFields.find(cf => cf.name === af.name);
         if (child) {
-          signature.push(renderFieldProperty(child, entity.name, engine));
+          signature.push(renderFieldProperty(child, entity, engine));
         }
       }
     } else {
       // Only the fields the ancestor's own node table lists.
       signature =
-          ancestor.fields.filter(f => engine.fieldExpression(f) !== undefined)
-              .map(f => renderFieldProperty(f, ancestor.name, engine));
-      anyLeftOut =
-          ancestor.fields.some(f => hasOnlyOtherEnginesSql(f, engine));
+          ancestor.fields.filter(f => 'sql' in fieldSql(f, ancestor, engine))
+              .map(f => renderFieldProperty(f, ancestor, engine));
+      anyLeftOut = ancestor.fields.some(f => isLeftOut(f, ancestor, engine));
     }
     lines.push(...propertiesClause(signature, anyLeftOut));
   }
@@ -480,9 +488,99 @@ function propertiesClause(
   return anyLeftOut ? [line(2, 'NO PROPERTIES')] : [];
 }
 
-// Whether a field has SQL, but none the engine reads.
-function hasOnlyOtherEnginesSql(field: Field, engine: GraphEngine): boolean {
-  return isFieldBound(field) && engine.fieldExpression(field) === undefined;
+// Whether a field has SQL, but the engine has none to render it from: none of
+// its SQL is the engine's, or it names a sibling that has none.
+function isLeftOut(
+    field: Field, owner: FieldOwner, engine: GraphEngine): boolean {
+  return isFieldBound(field) && !('sql' in fieldSql(field, owner, engine));
+}
+
+// The fields a field expression may name as `<name>.<field>`: an entity's,
+// or a relationship's association table's under the relationship's name.
+type FieldOwner = Pick<Entity, 'name'|'fields'>;
+
+// What a field renders from on one engine: its SQL, local to its table; or
+// `noSql` when the engine has no SQL for it; or, when it names a sibling the
+// engine has no SQL for, the chain of siblings it reads through, from the one
+// it names to the one with no SQL.
+type FieldSql = {sql: string}|{noSql: true}|{through: string[]};
+
+// The SQL `field` of `owner` renders from on `engine`. The text is the
+// engine's (fieldExpression), and a field may name a sibling field in it as
+// `<owner>.<field>` (Model Spec 3.5.3). Each sibling it names is replaced with
+// that sibling's own SQL for the engine, in parentheses unless that SQL is a
+// lone column, by rewriting the parsed expression and generating SQL from it.
+// Both engines' SQL is read as BigQuery's. An expression that names no sibling
+// only loses the owner's qualifier, so it stays as written, as does one whose
+// siblings are each bound to the column of their own name, and one the parser
+// cannot rewrite. Throws when the field names itself, directly or
+// through its siblings, since no SQL can render it; push validation rejects
+// such a model first (validateExpressionReferences).
+function fieldSql(
+    field: Field, owner: FieldOwner, engine: GraphEngine,
+    path: readonly string[] = []): FieldSql {
+  const expr = engine.fieldExpression(field);
+  if (expr === undefined) return {noSql: true};
+  const sibling = (name: string) => owner.fields.find(f => f.name === name);
+  const named = new Set(
+      (columnReferences(expr, 'BIGQUERY') ?? [])
+          .filter(c => c.qualifier === owner.name && sibling(c.name))
+          .map(c => c.name));
+  const local = withoutQualifier(expr, owner.name);
+  if (!named.size) return {sql: local};
+  const chain = [...path, field.name];
+  const replacements = new Map<string, string>();
+  for (const name of named) {
+    if (chain.includes(name)) {
+      throw new Error(
+          selfReferenceMessage(owner.name, chain.slice(chain.indexOf(name))));
+    }
+    const read = fieldSql(sibling(name)!, owner, engine, chain);
+    if ('noSql' in read) return {through: [name]};
+    if ('through' in read) return {through: [name, ...read.through]};
+    if (read.sql !== name) replacements.set(name, parenthesized(read.sql));
+  }
+  // A sibling bound to the column of its own name reads the same either way,
+  // and the stripped text keeps the expression as written.
+  if (!replacements.size) return {sql: local};
+  const rewritten = rewriteColumns(
+      expr, 'BIGQUERY',
+      c => c.qualifier === owner.name ? replacements.get(c.name) : undefined,
+      owner.name);
+  return {sql: rewritten ?? local};
+}
+
+// The error for a field that names itself: `cycle` starts at that field and
+// runs through the siblings it reads back to it.
+function selfReferenceMessage(owner: string, cycle: string[]): string {
+  const [field, ...through] = cycle;
+  return `field '${owner}.${field}' names itself` +
+      (through.length ?
+           ` through ${through.map(n => `'${owner}.${n}'`).join(', ')}` :
+           '') +
+      `; a field expression may name other fields of its entity, but not ` +
+      `itself, directly or through other fields`;
+}
+
+// `sql` in parentheses, unless it is a lone column or already in them.
+function parenthesized(sql: string): string {
+  const tree = sqlExpressionTree(sql, 'BIGQUERY');
+  const kind = tree && Object.keys(tree).length === 1 ?
+      Object.keys(tree)[0] :
+      undefined;
+  return kind === 'column' || kind === 'paren' ? sql : `(${sql})`;
+}
+
+// What a warning says a field reads when it names a sibling the engine has no
+// SQL for: each sibling on `through`, and what the last one lacks.
+function missingSibling(
+    through: string[], owner: FieldOwner, engine: GraphEngine): string {
+  const last = owner.fields.find(f => f.name === through[through.length - 1]);
+  const lacks = last && isFieldBound(last) ?
+      `has no '${engine.dialect}' or 'ANSI_SQL' expression` :
+      `has no column under this binding`;
+  return `${through.map(n => `field '${n}'`).join(', which reads ')}, ` +
+      `which ${lacks}`;
 }
 
 // Renders a field as a graph property: a bare column when the expression is
@@ -491,8 +589,8 @@ function hasOnlyOtherEnginesSql(field: Field, engine: GraphEngine): boolean {
 // per the `derived_property` rule. A field with no expression is exposed as a
 // bare column under its name.
 function renderFieldProperty(
-    field: Field, entity: string, engine: GraphEngine): string {
-  const core = renderFieldPropertyCore(field, entity, engine);
+    field: Field, owner: FieldOwner, engine: GraphEngine): string {
+  const core = renderFieldPropertyCore(field, owner, engine);
   const opts = engine.fieldOptions(field);
   return opts ? `${core} ${opts}` : core;
 }
@@ -506,15 +604,19 @@ function renderFieldProperty(
 // renderOwn). This is also the single place a field expression is lowered to
 // its table-local form: the resolve-inheritance pass first rewrites an
 // inherited field's expression into the child's frame (localizeInheritedField),
-// then this strips the entity's own qualifier -- one normalization, in one
+// then fieldSql strips the entity's own qualifier and reads each sibling the
+// expression names through that sibling's SQL -- one normalization, in one
 // place, applied to own and inherited fields alike.
 function renderFieldPropertyCore(
-    field: Field, entity: string, engine: GraphEngine): string {
-  const expr = engine.fieldExpression(field);
-  const local = expr !== undefined ? withoutQualifier(expr, entity) : field.name;
+    field: Field, owner: FieldOwner, engine: GraphEngine): string {
+  const sql = fieldSql(field, owner, engine);
+  const local = 'sql' in sql ? sql.sql : field.name;
   const alias = quoteIfReserved(field.name);
-  return local === field.name ? alias :
-                                `${quoteIfReserved(local)} AS ${alias}`;
+  // A field bound to the column of its name, such as `order` bound to
+  // `` `order` ``, is that column.
+  return local === field.name || local === alias ?
+      alias :
+      `${quoteIfReserved(local)} AS ${alias}`;
 }
 
 
@@ -667,23 +769,25 @@ function renderAssociationEdge(
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
 
-  // The junction's own non-key fields are the edge's properties.
+  // The junction's own non-key fields are the edge's properties. They name
+  // each other under the relationship's name.
+  const owner: FieldOwner = {name: rel.name, fields: assoc.fields ?? []};
   const properties =
-      (assoc.fields ?? [])
+      owner.fields
           .filter(f => {
-            if (engine.fieldExpression(f) !== undefined || !isFieldBound(f)) {
-              return true;
-            }
+            const sql = fieldSql(f, owner, engine);
+            if ('sql' in sql || !isFieldBound(f)) return true;
             warnings.push(
-                `relationship '${rel.name}': field '${f.name}' has no '${
-                    engine.dialect}' or 'ANSI_SQL' expression; omitted from ` +
-                `the edge table`);
+                `relationship '${rel.name}': field '${f.name}' ` +
+                ('through' in sql ?
+                     `reads ${missingSibling(sql.through, owner, engine)}` :
+                     `has no '${engine.dialect}' or 'ANSI_SQL' expression`) +
+                `; omitted from the edge table`);
             return false;
           })
-          .map(f => renderFieldProperty(f, rel.name, engine));
+          .map(f => renderFieldProperty(f, owner, engine));
   lines.push(...propertiesClause(
-      properties,
-      (assoc.fields ?? []).some(f => hasOnlyOtherEnginesSql(f, engine))));
+      properties, owner.fields.some(f => isLeftOut(f, owner, engine))));
 
   return lines.join('\n');
 }

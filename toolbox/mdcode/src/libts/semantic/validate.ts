@@ -13,7 +13,7 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
-import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {bindsThirdPartyTable, databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
@@ -1438,6 +1438,82 @@ function fieldNoSqlErrors(
   return errors;
 }
 
+// The errors for the fields of `entity` that name themselves, directly or
+// through other fields of `entity`. The graph renders a field that names a
+// sibling as `<entity>.<field>` from that sibling's own SQL, so a field that
+// reaches itself that way has no SQL to render. A field expression that writes
+// its own column as `<entity>.<field>` names itself too: write the bare column
+// instead. Each dialect is read on its own, from the text an engine of that
+// dialect renders (its entry, else the ANSI_SQL one), so two texts that no one
+// engine reads together do not form a cycle.
+function selfReferenceErrors(
+    entity: Entity, model: SemanticModel, document: string,
+    impliedDialect: string|undefined): string[] {
+  const fields = entity.fields ?? [];
+  const names = new Set(fields.map(f => f.name));
+  const dialects = new Set<string>(['ANSI_SQL']);
+  for (const f of fields) {
+    for (const d of f.dialects ?? []) dialects.add(d.dialect);
+    if (f.importedDialect) dialects.add(f.importedDialect);
+  }
+  const errors = new Set<string>();
+  for (const dialect of dialects) {
+    // The fields of `entity` each field names, in this dialect.
+    const reads = new Map<string, string[]>();
+    for (const f of fields) {
+      const text = expressionForDialect(f, dialect as SqlDialect);
+      if (text === undefined ||
+          noSqlReason(text, dialect, entity.name) !== undefined) {
+        continue;
+      }
+      const columns = columnsForSource(text, dialect, impliedDialect) ?? [];
+      reads.set(
+          f.name, fieldsReadOn(columns, entity.name).filter(n => names.has(n)));
+    }
+    for (const f of fields) {
+      const through = pathBack(f.name, reads);
+      if (!through) continue;
+      errors.add(
+          `field '${entity.name}.${f.name}' in model '${model.name}' (${
+              document}) names itself` +
+          (through.length ?
+               ` through ${
+                   through.map(n => `'${entity.name}.${n}'`).join(', ')}` :
+               '') +
+          `; a field expression may name other fields of its entity, but ` +
+          `not itself, directly or through other fields.`);
+    }
+  }
+  return [...errors];
+}
+
+// The shortest run of other fields through which `start` reaches itself in
+// `reads`, empty when it names itself directly, or undefined when it does not
+// reach itself.
+function pathBack(
+    start: string, reads: ReadonlyMap<string, string[]>): string[]|undefined {
+  const via = new Map<string, string[]>();
+  const queue: string[] = [];
+  for (const next of reads.get(start) ?? []) {
+    if (next === start) return [];
+    if (!via.has(next)) {
+      via.set(next, [next]);
+      queue.push(next);
+    }
+  }
+  while (queue.length) {
+    const name = queue.shift()!;
+    for (const next of reads.get(name) ?? []) {
+      if (next === start) return via.get(name);
+      if (!via.has(next)) {
+        via.set(next, [...via.get(name)!, next]);
+        queue.push(next);
+      }
+    }
+  }
+  return undefined;
+}
+
 // The error for a metric with no SQL, or undefined. A metric is rejected when
 // none of its texts holds SQL, with or without an anchor, since the graph
 // would drop it. It is also rejected when any one of its texts holds none, as
@@ -1480,6 +1556,9 @@ function metricNoSqlError(
 //     1. Reject any reference to an entity other than E.
 //     2. For references to E itself, every field named must be declared or
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
+//     3. Reject a field that names itself, directly or through other fields of
+//        E, since the graph renders a field that names a sibling from that
+//        sibling's SQL (see selfReferenceErrors).
 //
 // Exported so `commands.ts` can also run it on the unpruned model before
 // `pruneUnavailable` drops unbound fields and metrics on a graph push. When
@@ -1568,6 +1647,8 @@ export function validateExpressionReferences(
           }
         }
       }
+      errors.push(
+          ...selfReferenceErrors(entity, model, document, impliedDialect));
     }
 
     for (const metric of model.metrics ?? []) {

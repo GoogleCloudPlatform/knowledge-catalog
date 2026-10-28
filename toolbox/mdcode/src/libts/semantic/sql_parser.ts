@@ -20,6 +20,8 @@ export interface PolyglotEngine {
       {success: boolean; ast?: unknown[]; error?: string};
   tokenize(sql: string, dialect: string):
       {success: boolean; tokens?: SqlToken[]; error?: string};
+  generate(ast: unknown, dialect: string):
+      {success: boolean; sql?: string[]; error?: string};
 }
 
 // A token the engine reads, as the engine returns it. `token_type` is the
@@ -111,16 +113,98 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
 // keyword, such as `Order.amount`, is read again inside parentheses on lines
 // of their own, so a trailing `--` comment stays inside.
 export function sqlExpressionTree(expression: string, dialect: string): any {
+  return parsedExpression(expression, dialect)?.statement.select
+      .expressions[0];
+}
+
+// The engine's statement `SELECT <expression>` for sqlExpressionTree, or
+// undefined. `wrapped` is set when the expression had to be read inside
+// parentheses, which the statement then holds.
+function parsedExpression(expression: string, dialect: string):
+    {statement: any; wrapped: boolean}|undefined {
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
   }
   if (!expression.trim()) return undefined;
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  const ast: any = oneExpression(engineDialect, `SELECT ${expression}`) ??
+  const plain = oneExpression(engineDialect, `SELECT ${expression}`);
+  if (plain) return {statement: plain, wrapped: false};
+  const wrapped =
       oneExpression(engineDialect, `SELECT (\n${expression}\n)`, 'paren');
-  return ast?.select.expressions[0];
+  return wrapped ? {statement: wrapped, wrapped: true} : undefined;
 }
+
+// `expression`, read in `dialect`, with column references rewritten, or
+// undefined when the engine cannot read it as one expression. `replace` gets
+// each column sqlColumns would report and returns the SQL to put in its place,
+// or undefined to leave it. A column `replace` leaves that is qualified by
+// `dropQualifier` loses the qualifier. The result is SQL the engine generates
+// from the rewritten tree, so the rest of the expression may change in
+// formatting, such as the case of a function name. The replacement goes in as
+// it reads: wrap it in parentheses to keep it whole inside an operator.
+export function rewriteColumns(
+    expression: string, dialect: string,
+    replace: (column: SqlColumn) => string | undefined,
+    dropQualifier?: string): string|undefined {
+  const parsed = parsedExpression(expression, dialect);
+  if (!parsed) return undefined;
+  const {statement, wrapped} = parsed;
+  const select = statement.select;
+  if (wrapped) select.expressions[0] = select.expressions[0].paren.this;
+  const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
+  const columns: SqlColumn[] = [];
+  const sites = new Map<SqlColumn, ColumnSite>();
+  columnSites = sites;
+  try {
+    collectColumns(select.expressions, columns, new Set(), engineDialect);
+  } finally {
+    columnSites = undefined;
+  }
+  for (const column of columns) {
+    const site = sites.get(column);
+    if (!site) continue;
+    const sql = replace(column);
+    if (sql !== undefined) {
+      const tree = sqlExpressionTree(sql, dialect);
+      if (!tree) return undefined;
+      replaceNode(site.node, tree);
+    } else if (column.qualifier !== undefined &&
+               column.qualifier === dropQualifier) {
+      if (site.node.column) {
+        site.node.column.table = null;
+      } else {
+        // `Time.hour` read as a field of a column named `Time`.
+        replaceNode(site.node, {
+          column: {
+            name: site.node.dot.field,
+            table: null,
+            join_mark: false,
+            trailing_comments: [],
+          },
+        });
+      }
+    }
+  }
+  const res = loadedEngine!.generate([statement], engineDialect);
+  const sql = res.success ? res.sql?.[0] : undefined;
+  return sql?.startsWith('SELECT ') ? sql.slice('SELECT '.length) : undefined;
+}
+
+// Puts `replacement` in place of `node`, keeping the object its parent holds.
+function replaceNode(node: Record<string, unknown>, replacement: object): void {
+  for (const key of Object.keys(node)) delete node[key];
+  Object.assign(node, replacement);
+}
+
+// Where collectColumns read a column: a `column` node, or the `dot` node of
+// `Time.hour`, whose first part is the qualifier.
+interface ColumnSite {
+  node: Record<string, any>;
+}
+
+// While rewriteColumns runs, the site of each column collectColumns reports.
+let columnSites: Map<SqlColumn, ColumnSite>|undefined;
 
 // The parsed statement when `sql` is a `SELECT` of exactly one expression and
 // nothing else: no alias, no `FROM`, `WHERE`, `DISTINCT` or other clause. The
@@ -206,19 +290,23 @@ function collectColumns(
     if (typeof qualifier === 'string' ? bound.has(qualifier) : bound.has(name)) {
       return;
     }
-    out.push({
+    const column = {
       ...(typeof qualifier === 'string' ? {qualifier} : {}),
       name,
-    });
+    };
+    columnSites?.set(column, {node: obj});
+    out.push(column);
     return;
   }
   if (keys.length === 1 && keys[0] === 'dot') {
     // A struct path reads as its first two parts. The engine reads `Time.hour`
     // as a field of a column named `Time`, because `Time` is also a type name,
     // so the first part is still the qualifier.
+    let holder = obj;
     let inner = obj.dot;
     while (inner?.this && Object.keys(inner.this).length === 1 &&
            inner.this.dot) {
+      holder = inner.this;
       inner = inner.this.dot;
     }
     const column = inner?.this?.column;
@@ -226,11 +314,15 @@ function collectColumns(
       const qualifier = column.table?.name;
       if (typeof qualifier === 'string') {
         if (!bound.has(qualifier)) {
-          out.push({qualifier, name: column.name.name});
+          const read = {qualifier, name: column.name.name};
+          columnSites?.set(read, {node: inner.this});
+          out.push(read);
         }
       } else if (typeof inner.field?.name === 'string') {
         if (!bound.has(column.name.name)) {
-          out.push({qualifier: column.name.name, name: inner.field.name});
+          const read = {qualifier: column.name.name, name: inner.field.name};
+          columnSites?.set(read, {node: holder});
+          out.push(read);
         }
       }
       return;

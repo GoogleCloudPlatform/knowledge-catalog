@@ -73,8 +73,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
             keys: ['student_id'],
             fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
+              {name: 'student_id', expression: 'student_id'},
+              {name: 'name', expression: 'name'}
             ]
           },
           {
@@ -82,8 +82,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
             keys: ['course_id'],
             fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
+              {name: 'course_id', expression: 'course_id'},
+              {name: 'title', expression: 'title'}
             ]
           },
         ],
@@ -99,7 +99,7 @@ describe(
               destinationColumns: ['course_id'],
               fields: [{
                 name: 'grade',
-                expression: 'enrollment.grade',
+                expression: 'grade',
                 description: 'Letter grade'
               }]
             }
@@ -134,7 +134,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
       name: 'orders',
       dataSource: 'orders',
       keys: ['o_orderkey'],
-      fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+      fields: [{name: 'o_orderkey', expression: 'o_orderkey'}]
     }],
   });
 
@@ -271,7 +271,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
           dataSource: 'order_items',
           keys: ['order_item_id'],
           fields: [
-            {name: 'order_item_id', expression: 'order_items.order_item_id'}
+            {name: 'order_item_id', expression: 'order_item_id'}
           ],
         });
         model.metrics = [{
@@ -299,7 +299,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
           dataSource: 'order_items',
           keys: ['order_item_id'],
           fields: [
-            {name: 'order_item_id', expression: 'order_items.order_item_id'}
+            {name: 'order_item_id', expression: 'order_item_id'}
           ],
         });
         model.metrics = [{
@@ -362,7 +362,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
           name: 'customer',
           dataSource: 'customer',
           keys: ['c_id'],
-          fields: [{name: 'c_id', expression: 'customer.c_id'}],
+          fields: [{name: 'c_id', expression: 'c_id'}],
         });
         model.metrics = [{
           name: 'cust_amount',
@@ -541,7 +541,7 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             name: 'e',
             dataSource: 't',
             keys: ['id'],
-            fields: [{name: 'id', expression: 'e.id'}]
+            fields: [{name: 'id', expression: 'id'}]
           }],
         };
         const {ddl} = generatePropertyGraph(
@@ -585,7 +585,7 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             name: 'e',
             dataSource: 't',
             keys: ['id'],
-            fields: [{name: 'id', expression: 'e.id'}]
+            fields: [{name: 'id', expression: 'id'}]
           }],
         };
         const {ddl} =
@@ -605,7 +605,7 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             name: 'order_items',
             dataSource: 'acme.sales.order items',
             keys: ['id'],
-            fields: [{name: 'id', expression: 'order_items.id'}]
+            fields: [{name: 'id', expression: 'id'}]
           }],
         };
         const {ddl, warnings} = generatePropertyGraph(model);
@@ -678,10 +678,10 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
           examples: ['how many orders?'],
         },
         fields: [
-          {name: 'o_orderkey', expression: 'orders.o_orderkey'},
+          {name: 'o_orderkey', expression: 'o_orderkey'},
           {
             name: 'amount',
-            expression: 'orders.amount',
+            expression: 'amount',
             label: 'Order amount',
             aiContext: {synonyms: ['total', 'value']},
           },
@@ -691,7 +691,7 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
         name: 'customers',
         dataSource: 'customers',
         keys: ['c_custkey'],
-        fields: [{name: 'c_custkey', expression: 'customers.c_custkey'}],
+        fields: [{name: 'c_custkey', expression: 'c_custkey'}],
       },
     ],
     relationships: [{
@@ -869,7 +869,7 @@ describe(
             name: 'orders',
             dataSource: 'orders',
             keys: ['o_orderkey'],
-            fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+            fields: [{name: 'o_orderkey', expression: 'o_orderkey'}]
           }],
           metrics:
               [{name: 'n_orders', expression: 'COUNT(*)', entity: 'orders'}],
@@ -1089,7 +1089,7 @@ describe('inherited property rendering (shared-label consistency)', () => {
         // property.
         const model = base([{name: 'id', expression: 'id'}], [
           {name: 'id', expression: 'id'},
-          {name: 'email', expression: 'Person.email'}
+          {name: 'email', expression: 'email'}
         ]);
         const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
         expect(ddl).not.toContain('Person.email');
@@ -1219,13 +1219,13 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
         name: 'Order',
         dataSource: 'proj.ds.orders',
         keys: ['order'],
-        fields: [{name: 'order', expression: 'Order.order'}],
+        fields: [{name: 'order', expression: '`order`'}],
       },
       {
         name: 'Group',
         dataSource: 'proj.ds.groups',
         keys: ['id'],
-        fields: [{name: 'id', expression: 'Group.id'}],
+        fields: [{name: 'id', expression: 'id'}],
       },
     ],
     relationships: [{
@@ -1267,7 +1267,7 @@ describe('a comment in a field expression', () => {
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
-        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'notes', expression: '/* free text */ notes'},
         {name: 'status', expression: 'status # open or closed'},
         {name: 'code', expression: "CONCAT('--', code)"},
       ],
@@ -1366,16 +1366,16 @@ describe('a comment in a field expression', () => {
         keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
-          {name: 'amount', expression: 'orders/* in cents */.amount'},
-          {name: 'select', expression: 'orders. /* a keyword */ select'},
+          {name: 'amount', expression: 'orders/* in cents */.amount_cents'},
+          {name: 'select', expression: 'orders. /* a keyword */ group'},
         ],
       }],
     };
     const {ddl, warnings} = generatePropertyGraph(dotted, GEN_OPTS);
     expect(ddl).toContain('KEY(order_id)');
     expect(ddl).toContain(
-        '      order_id AS id,\n      amount,\n      `select`,\n' +
-        '      MEASURE(SUM(amount)) AS revenue\n');
+        '      order_id AS id,\n      amount_cents AS amount,\n' +
+        '      `group` AS `select`,\n      MEASURE(SUM(amount)) AS revenue\n');
     expect(warnings).toEqual([]);
   });
 
@@ -1425,7 +1425,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       name: 'orders',
       dataSource: 'orders',
       keys: ['o_orderkey'],
-      fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+      fields: [{name: 'o_orderkey', expression: 'o_orderkey'}]
     }],
   });
 
@@ -1539,7 +1539,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           keys: ['id'],
           extends: ['party'],
           fields: [
-            {name: 'id', expression: 'person.id'},
+            {name: 'id', expression: 'id'},
             {
               name: 'nm',
               dialects: [{dialect: 'BIGQUERY', expression: 'person.full_name'}],
@@ -1564,7 +1564,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           dataSource: 'p.d.person',
           keys: ['id'],
           fields: [
-            {name: 'id', expression: 'person.id'},
+            {name: 'id', expression: 'id'},
             {name: 'nick', ...snowflakeOnly()},
           ],
         },
@@ -1573,7 +1573,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           dataSource: 'p.d.customer',
           keys: ['id'],
           extends: ['person'],
-          fields: [{name: 'id', expression: 'customer.id'}],
+          fields: [{name: 'id', expression: 'id'}],
         },
       ],
     };
@@ -1595,7 +1595,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       keys: ['id'],
       extends: ['party'],
       fields: [
-        {name: 'id', expression: `${name}.id`},
+        {name: 'id', expression: 'id'},
         {name: 'nm', expression: `${name}.${name}_nm`},
         {name: 'code', ...code},
       ],
@@ -1665,7 +1665,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       name: 'parts',
       dataSource: 'parts',
       keys: ['p_partkey'],
-      fields: [{name: 'p_partkey', expression: 'parts.p_partkey'}],
+      fields: [{name: 'p_partkey', expression: 'p_partkey'}],
     });
     model.relationships = [{
       name: 'contains',
@@ -1697,8 +1697,8 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           dataSource: 'p.d.person',
           keys: ['id'],
           fields: [
-            {name: 'id', expression: 'person.id'},
-            {name: 'nick', expression: 'person.nick'},
+            {name: 'id', expression: 'id'},
+            {name: 'nick', expression: 'nick'},
           ],
         },
         {
@@ -1707,7 +1707,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           keys: ['id'],
           extends: ['person'],
           fields: [
-            {name: 'id', expression: 'customer.id'},
+            {name: 'id', expression: 'id'},
             {name: 'nick', ...snowflakeOnly()},
           ],
         },
@@ -1719,5 +1719,165 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
         `entity 'customer': field 'nick' has no 'BIGQUERY' or 'ANSI_SQL' ` +
         `expression; omitted from the node table's own label, and the ` +
         `supertype's label keeps the supertype's definition`);
+  });
+});
+
+describe('a field expression that names a sibling field', () => {
+  // An `orders` entity keyed on `id`, with `fields` after the key.
+  const ordersWith = (fields: Field[]): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'p.d.orders',
+      keys: ['id'],
+      fields: [{name: 'id', expression: 'order_id'}, ...fields],
+    }],
+  });
+
+  test('reads the columns its siblings are bound to', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        ordersWith([
+          {name: 'gross', expression: 'g_amt'},
+          {name: 'discount', expression: 'd_amt'},
+          {name: 'net', expression: 'orders.gross - orders.discount'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      g_amt AS gross,\n' +
+        '      d_amt AS discount,\n' +
+        '      g_amt - d_amt AS net\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('reads a sibling\'s expression in parentheses, through a chain of siblings', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'a', expression: 'x + y'},
+          {name: 'b', expression: 'orders.a * 2'},
+          {name: 'c', expression: 'orders.b + orders.a'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      x + y AS a,\n' +
+        '      (x + y) * 2 AS b,\n' +
+        '      ((x + y) * 2) + (x + y) AS c\n');
+  });
+
+  // An expression that names a sibling is generated again from its parsed
+  // form, so its SQL is rewritten in the parser's style.
+  test('leaves an expression that names no sibling as written', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'nm', expression: 'full_name'},
+          {name: 'tag', expression: 'lower(full_name) || "!"'},
+          {name: 'shout', expression: 'lower(orders.nm) || "!"'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain('      lower(full_name) || "!" AS tag,\n');
+    expect(ddl).toContain('      LOWER(full_name) || \'!\' AS shout\n');
+  });
+
+  // The parser would write `DAYOFWEEK` as `DOW`, which BigQuery does not read.
+  test('leaves an expression as written when each sibling it names is bound to the column of its name', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'd', expression: 'd'},
+          {name: 'nm', expression: 'nm'},
+          {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
+          {name: 'tag', expression: 'lower(orders.nm) || "!"'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
+        '      lower(nm) || "!" AS tag\n');
+  });
+
+  test('two fields that name each other are rejected', () => {
+    expect(() => generatePropertyGraph(
+               ordersWith([
+                 {name: 'a', expression: 'orders.b + 1'},
+                 {name: 'b', expression: 'orders.a - 1'},
+               ]),
+               GEN_OPTS))
+        .toThrow(`field 'orders.a' names itself through 'orders.b'`);
+    expect(() => generatePropertyGraph(
+               ordersWith([{name: 'total', expression: 'orders.total * 2'}]),
+               GEN_OPTS))
+        .toThrow(`field 'orders.total' names itself;`);
+  });
+
+  test('a field whose sibling has no BigQuery SQL is left out, with a warning that names the sibling', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        ordersWith([
+          {name: 'gross', dialects: [{dialect: 'SPANNER', expression: 'g_amt'}]},
+          {name: 'net', expression: 'orders.gross - 1'},
+          {name: 'twice', expression: 'orders.net * 2'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).not.toMatch(/AS (gross|net|twice)/);
+    expect(warnings).toEqual([
+      `entity 'orders': field 'gross' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+          `expression; omitted from the node table`,
+      `entity 'orders': field 'net' reads field 'gross', which has no ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table`,
+      `entity 'orders': field 'twice' reads field 'net', which reads field ` +
+          `'gross', which has no 'BIGQUERY' or 'ANSI_SQL' expression; ` +
+          `omitted from the node table`,
+    ]);
+  });
+
+  test('an association field reads its siblings under the relationship name', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      metrics: [],
+      entities: [
+        {
+          name: 'students',
+          dataSource: 'p.d.students',
+          keys: ['sid'],
+          fields: [{name: 'sid', expression: 'sid'}],
+        },
+        {
+          name: 'courses',
+          dataSource: 'p.d.courses',
+          keys: ['cid'],
+          fields: [{name: 'cid', expression: 'cid'}],
+        },
+      ],
+      relationships: [{
+        name: 'enrollment',
+        source: {entity: 'students', columns: []},
+        destination: {entity: 'courses', columns: []},
+        association: {
+          dataSource: 'p.d.enrollments',
+          keys: ['eid'],
+          sourceColumns: ['sid'],
+          destinationColumns: ['cid'],
+          fields: [
+            {name: 'grade', expression: 'letter'},
+            {name: 'passed', expression: 'enrollment.grade <> \'F\''},
+            {
+              name: 'late',
+              dialects: [{dialect: 'SNOWFLAKE', expression: 'x'}],
+              importedExpression: 'x',
+              importedDialect: 'SNOWFLAKE',
+            },
+            {name: 'on_time', expression: 'NOT enrollment.late'},
+          ],
+        },
+      }],
+    };
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain(
+        '    PROPERTIES(\n' +
+        '      letter AS grade,\n' +
+        '      letter <> \'F\' AS passed\n' +
+        '    )\n');
+    expect(warnings).toContain(
+        `relationship 'enrollment': field 'on_time' reads field 'late', ` +
+        `which has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the ` +
+        `edge table`);
   });
 });
