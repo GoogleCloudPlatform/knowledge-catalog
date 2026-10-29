@@ -44,10 +44,10 @@ export interface LoadOptions {
   // excludes it, as applying a profile file does. The loaded model does not
   // mark them.
   excluded?: ReadonlyArray<ProfileExclusion>;
-  // The dialect of each Cloud SQL table written as its resource name, keyed by
-  // the resource name with no leading `//`, as sourceDialects read them from
-  // the tables' Knowledge Catalog entries. A command looks them up before it
-  // loads. Without this map a Cloud SQL resource name implies no dialect: the
+  // The dialect of each Cloud SQL table written as its resource name and each
+  // third-party table, keyed as dialectLookupKey gives, as sourceDialects read
+  // them from the tables' Knowledge Catalog entries. A command looks them up
+  // before it loads. Without this map such a source implies no dialect: the
   // source names a table, not its engine, so the model implies none and every
   // expression text counts.
   sourceDialects?: ReadonlyMap<string, string>;
@@ -3241,14 +3241,14 @@ export function hasUnquotedWhitespace(source: string): boolean {
 // a query, a graph rather than a table, a catalog name under a prefix kcmd does
 // not accept, or one with the wrong number of segments. The result starts with
 // its system, which DIALECT_OF_SYSTEM maps to the dialect the source infers,
-// except for a Cloud SQL resource name (see dialectOfSources).
+// except for a source whose dialect is looked up (see dialectOfSources).
 //
 // A database is what a single query can reach: all of BigQuery, BigLake
 // included because BigQuery reads it; one Spanner, AlloyDB or Cloud SQL for
 // PostgreSQL database, or one Cloud SQL for MySQL or SQL Server instance. The
-// segment counts are those of the Knowledge Catalog FQN reference. A
-// third-party table is in no accepted form: the preview supports Google Cloud
-// tables only (see thirdPartySourceError). The shape of a Cloud SQL resource
+// segment counts are those of the Knowledge Catalog FQN reference. Every
+// third-party table gets the one key `thirdparty`, which is no target's
+// database. The shape of a Cloud SQL resource
 // name cannot tell a SQL Server table from a PostgreSQL one, so this keys it
 // on its database, and the one-database rule widens it to its instance once
 // the lookup names SQL Server.
@@ -3271,6 +3271,7 @@ export function databaseOf(written: string): string|undefined {
   if (m) return `cloudsql_mysql/${m[1]}.${m[2]}.${m[3]}`;
   m = source.match(CLOUDSQL_SCHEMA_TABLE_URI);
   if (m) return `cloudsql/${m[1]}.${m[2]}.${m[3]}.${m[4]}`;
+  if (thirdPartyEntryOf(source)) return 'thirdparty';
   if (source.length > MAX_CATALOG_NAME_LENGTH) return undefined;
   m = source.match(/^([a-z_]+):(.+)$/);
   if (!m) return undefined;
@@ -3343,9 +3344,38 @@ export function sourceToDataSource(source: string): string {
 // The catalog name prefixes of third-party tables, and the shape of a
 // Knowledge Catalog entry name.
 const THIRD_PARTY_PREFIXES =
-    ['snowflake:', 'databricks:', 'mysql:', 'postgresql:'];
+    ['snowflake:', 'databricks:', 'mysql:', 'postgresql:', 'sqlserver:'];
 const ENTRY_NAME =
     /^projects\/[^/]+\/locations\/[^/]+\/entryGroups\/([^/]+)\/entries\/(.+)$/;
+// The entry name form, as messages show it.
+export const ENTRY_NAME_FORM =
+    'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>';
+
+// A table outside Google Cloud, written as the Knowledge Catalog entry name of
+// its entry, which is in an entry group that is not a system one: the entry's
+// project and location, and the entry name.
+export interface ThirdPartyEntry {
+  project: string;
+  location: string;
+  name: string;
+}
+
+// The third-party entry `source` names, or undefined when it names none.
+export function thirdPartyEntryOf(source: string): ThirdPartyEntry|undefined {
+  const name = source.trim();
+  const m = name.match(ENTRY_NAME);
+  if (!m || m[1].startsWith('@')) return undefined;
+  const [, project, , location] = name.split('/');
+  return {project, location, name};
+}
+
+// The key LoadOptions.sourceDialects holds a source's dialect under: a Cloud
+// SQL table's resource name, or a third-party table's entry name. Undefined
+// for a source whose own name gives its dialect.
+export function dialectLookupKey(source: string): string|undefined {
+  return cloudSqlTableOf(source)?.resourceName ??
+      thirdPartyEntryOf(source)?.name;
+}
 
 // Why `source` is not accepted when it is a Knowledge Catalog entry name in a
 // system entry group, one whose id starts with `@`, such as `@bigquery`.
@@ -3393,18 +3423,14 @@ function unsupportedServiceSourceError(
       undefined;
 }
 
-// Why `source` is not accepted when it names a third-party table, in any form:
-// a catalog name under a third-party prefix, or a Knowledge Catalog entry name
-// outside a system entry group. Undefined for any other source. The preview
-// supports Google Cloud tables only.
-function thirdPartySourceError(source: string, ctx: string): string|undefined {
-  const entry = source.match(ENTRY_NAME);
-  const thirdParty = THIRD_PARTY_PREFIXES.some(p => source.startsWith(p)) ||
-      (entry !== null && !entry[1].startsWith('@'));
-  return thirdParty ?
+// Why `source` is not accepted when it is a catalog name under a third-party
+// prefix, such as `snowflake:acme.retail.public.orders`. Undefined for any
+// other source.
+function thirdPartyNameError(source: string, ctx: string): string|undefined {
+  return THIRD_PARTY_PREFIXES.some(p => source.startsWith(p)) ?
       `Semantic model load error: ${ctx}: source '${source}' is a ` +
-          `third-party table; the preview supports Google Cloud tables ` +
-          `only: BigQuery, BigLake, Spanner, AlloyDB and Cloud SQL.` :
+          `Knowledge Catalog name; write the entry name of the table's ` +
+          `Knowledge Catalog entry instead, such as '${ENTRY_NAME_FORM}'.` :
       undefined;
 }
 
@@ -3428,11 +3454,10 @@ export function parseSource(
   }
 
   const problem = oldSourceForm(trimmed);
-  // The accepted form: a GCP resource name.
+  // The accepted forms: a GCP resource name, or a third-party entry name.
   if (problem === undefined && isAcceptedSource(trimmed)) {
-    const cloudSql = cloudSqlTableOf(trimmed);
-    const sourceDialect = cloudSql &&
-        opts.sourceDialects?.get(cloudSql.resourceName);
+    const key = dialectLookupKey(trimmed);
+    const sourceDialect = key && opts.sourceDialects?.get(key);
     return {
       authoredSource: trimmed,
       dataSource: sourceToDataSource(trimmed),
@@ -3473,7 +3498,7 @@ export function parseSource(
 
   const unsupported = unsupportedServiceSourceError(trimmed, ctx) ??
       systemEntrySourceError(trimmed, ctx) ??
-      thirdPartySourceError(trimmed, ctx);
+      thirdPartyNameError(trimmed, ctx);
   if (unsupported) throw new SemanticModelError(unsupported);
 
   if (trimmed.length > MAX_CATALOG_NAME_LENGTH) {
@@ -3541,9 +3566,9 @@ export function parseSource(
       `'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
       `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
       `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
-      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'). The preview ` +
-      `supports Google Cloud tables only: BigQuery, BigLake, Spanner, ` +
-      `AlloyDB and Cloud SQL.`);
+      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'), ` +
+      `or, for a table outside Google Cloud, the entry name of its ` +
+      `Knowledge Catalog entry ('${ENTRY_NAME_FORM}').`);
 }
 
 export function unquote(part: string): string {

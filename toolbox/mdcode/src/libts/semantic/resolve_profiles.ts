@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1045,14 +1045,14 @@ export function loadProfileFile(
   return profileSpecOf(doc, profileName);
 }
 
-// The Cloud SQL dialects a command looked up before it loads
+// The source dialects a command looked up before it loads
 // (LoadOptions.sourceDialects).
 export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>;
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
   // The preferred dialect the model was loaded with, which picks the text each
-  // field takes, and the Cloud SQL dialects it was given.
+  // field takes, and the source dialects it was given.
   load?: Pick<LoadOptions, 'dialect'|'sourceDialects'>;
   // Collects the warnings a load gives for the values the profile sets.
   // applyProfile only; the other functions return them.
@@ -1940,14 +1940,14 @@ export function sourcesDialect(model: {
 // A three-part dotted name, which is how the loader completes a legacy bare
 // name, names BigQuery.
 //
-// A Cloud SQL table written as its resource name implies the dialect its
-// catalog entry's type names, which a lookup read into `lookedUp`
-// (LoadOptions.sourceDialects).
+// A Cloud SQL table written as its resource name, and a third-party table,
+// imply the dialect their catalog entry gives, which a lookup read into
+// `lookedUp` (LoadOptions.sourceDialects).
 function dialectOfSources(
     sources: Array<{source: string; lookedUp?: string}>): string|undefined {
   const dialects = new Set<string|undefined>(sources.map(({source, lookedUp}) => {
     const s = source.trim();
-    if (cloudSqlTableOf(s)) return lookedUp;
+    if (dialectLookupKey(s)) return lookedUp;
     const db = databaseOf(s) ??
         (/^[^./:\s`]+\.[^./:\s`]+\.[^./:\s`]+$/.test(s) ? 'bigquery' :
                                                          undefined);

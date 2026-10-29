@@ -1,5 +1,6 @@
-// The dialect of a Cloud SQL table written as its resource name, read from the
-// table's Knowledge Catalog entry (b/573288219).
+// The dialect of a Cloud SQL table written as its resource name
+// (b/573288219), or of a third-party table written as its entry name, read
+// from the table's Knowledge Catalog entry.
 //
 // The resource name cannot say the dialect: a MySQL table has no schema, but a
 // PostgreSQL table and a SQL Server table have the same shape. Dataplex keeps an
@@ -7,14 +8,19 @@
 // system entry group `@cloudsql`, and the entry's id is the table's resource
 // name. Its entry type names the engine.
 //
+// A third-party table's entry names its system twice: in the prefix of its
+// fullyQualifiedName, which Dataplex checks, and in entrySource.system, which
+// is free text. So the prefix decides, and the system only when the entry has
+// no fullyQualifiedName.
+//
 // This is the only place kcmd makes a network call to learn a dialect. A
-// command looks every Cloud SQL source up once, before it loads the model, and
+// command looks every such source up once, before it loads the model, and
 // passes the dialects to the load (LoadOptions.sourceDialects).
 
 import * as yaml from 'yaml';
 
-import {cloudSqlTableOf} from './loader';
-import {EntryLookup, lookupSystemEntry} from './catalog_entry';
+import {cloudSqlTableOf, dialectLookupKey, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The dialect each Cloud SQL table or view entry type gives.
@@ -27,28 +33,41 @@ const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
   'cloudsql-sqlserver-view': 'SQLSERVER',
 };
 
+// The dialect each third-party system gives, keyed by the prefix of an entry's
+// fullyQualifiedName or by its entrySource.system in lower case.
+const DIALECT_OF_SYSTEM = new Map([
+  ['snowflake', 'SNOWFLAKE'], ['databricks', 'DATABRICKS'], ['mysql', 'MYSQL'],
+  ['postgresql', 'POSTGRES'], ['postgres', 'POSTGRES'],
+  ['sqlserver', 'SQLSERVER'],
+]);
+
 export interface SourceDialects {
-  // Each Cloud SQL resource name, with no leading `//`, and its dialect.
+  // Each source, keyed as dialectLookupKey gives, and its dialect.
   dialects: Map<string, string>;
   // One message per source whose dialect could not be read.
   errors: string[];
 }
 
-// Looks up the dialect of every Cloud SQL table the model and profile files
-// `texts` write as a resource name or resource URI (see sourcesToLookUp),
-// once per table, in parallel. Makes no call when they write none. Never
-// throws: a lookup that fails is reported in `errors`.
+// Looks up the dialect of every Cloud SQL and third-party table the model and
+// profile files `texts` write (see sourcesToLookUp), once per table, in
+// parallel. With `thirdParty` false, looks up Cloud SQL tables only. Makes no
+// call when they write none. Never throws: a lookup that fails is reported in
+// `errors`.
 export async function sourceDialects(
-    texts: Iterable<string>, catalog: EntryLookup): Promise<SourceDialects> {
+    texts: Iterable<string>, catalog: EntryLookup,
+    {thirdParty = true} = {}): Promise<SourceDialects> {
   const tables = new Map<string, NonNullable<ReturnType<typeof cloudSqlTableOf>>>();
+  const entries = new Map<string, ThirdPartyEntry>();
   for (const source of sourcesToLookUp(texts)) {
     // Keyed by resource name, so both spellings of one table are one lookup.
     const table = cloudSqlTableOf(source);
     if (table) tables.set(table.resourceName, table);
+    const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
+    if (entry) entries.set(entry.name, entry);
   }
   const dialects = new Map<string, string>();
   const errors: string[] = [];
-  await Promise.all([...tables.values()].map(async table => {
+  const lookups = [...tables.values()].map(async table => {
     const at = `source '${table.resourceName}'`;
     const res = await lookupSystemEntry(
         catalog, 'cloudsql', table.project, table.location, table.resourceName);
@@ -81,21 +100,58 @@ export async function sourceDialects(
       return;
     }
     dialects.set(table.resourceName, dialect);
+  });
+  lookups.push(...[...entries.values()].map(async ({project, location, name}) => {
+    const at = `source '${name}'`;
+    const res = await read(
+        'looking up its Knowledge Catalog entry',
+        () => catalog.lookupEntry(project, location, name));
+    if ('error' in res) {
+      errors.push(`${at}: ${res.error}`);
+      return;
+    }
+    if ('unreadable' in res) {
+      errors.push(
+          `${at} names no table Knowledge Catalog knows about. The entry may ` +
+          `not exist, or you may not be allowed to read it. kcmd reads a ` +
+          `third-party table's dialect from its entry, so add the table to ` +
+          `Knowledge Catalog, or fix the source.`);
+      return;
+    }
+    const {fullyQualifiedName: fqn, entrySource} = res.result;
+    const system = entrySource?.system;
+    const dialect = DIALECT_OF_SYSTEM.get(
+        (fqn ? fqn.split(':')[0] : system?.toLowerCase()) ?? '');
+    if (!dialect) {
+      const has = fqn ? `fullyQualifiedName '${fqn}'` :
+          system ? `entrySource.system '${system}' and no fullyQualifiedName` :
+                   'neither a fullyQualifiedName nor an entrySource.system';
+      errors.push(
+          `${at}: kcmd cannot tell the table's SQL dialect from its Knowledge ` +
+          `Catalog entry, which has ${has}. kcmd reads the prefix of the ` +
+          `entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
+          `postgresql: or sqlserver:), or entrySource.system when there is ` +
+          `no fullyQualifiedName.`);
+      return;
+    }
+    dialects.set(name, dialect);
   }));
+  await Promise.all(lookups);
   errors.sort();
   return {dialects, errors};
 }
 
-// Every Cloud SQL table written as a resource name or resource URI anywhere in
-// the model and profile files `texts`, including the JSON a vanilla model's
-// GOOGLE blocks carry. Values are read from the parsed YAML, so a name in a
+// Every Cloud SQL table written as a resource name or resource URI, and every
+// third-party table written as an entry name, anywhere in the model and
+// profile files `texts`, including the JSON a vanilla model's GOOGLE blocks
+// carry. Values are read from the parsed YAML, so a name in a
 // comment is not collected. A file that does not parse collects nothing; the
 // load reports it.
 export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
   const visit = (value: unknown): void => {
     if (typeof value === 'string') {
-      if (cloudSqlTableOf(value)) {
+      if (dialectLookupKey(value)) {
         found.add(value.trim());
       } else if (/^\s*[[{]/.test(value)) {
         try {

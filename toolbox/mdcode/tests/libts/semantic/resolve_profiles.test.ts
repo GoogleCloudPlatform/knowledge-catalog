@@ -2066,17 +2066,22 @@ describe('completeness sees the model as the profile does', () => {
         .toBeUndefined();
   });
 
-  // A profile's rebinding is read as the model file's source is, so a
-  // third-party table is rejected there too, and counts as no database.
-  test('a profile that binds a third-party source is rejected', () => {
-    const errors = validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source: 'snowflake:acct.db.public.c'},
-      {name: 'vip', source: BQ('vip')},
-    ])).join('\n');
+  // A profile's rebinding is read as the model file's source is. A catalog
+  // name under a third-party prefix is rejected and counts as no database.
+  // Every third-party entry name is in one database, apart from BigQuery's.
+  test('a profile that binds a third-party table', () => {
+    const errorsFor = (customer: string, vip = BQ('vip')) =>
+        validateProfileCompleteness(model(true), spec([
+          {name: 'customer', source: customer}, {name: 'vip', source: vip},
+        ])).join('\n');
+    const errors = errorsFor('snowflake:acct.db.public.c');
     expect(errors).toContain(
-        "source 'snowflake:acct.db.public.c' is a third-party table; the " +
-        "preview supports Google Cloud tables only");
+        "source 'snowflake:acct.db.public.c' is a Knowledge Catalog name");
     expect(errors).not.toContain('more than one database');
+    const entry = (t: string) => `projects/acme/locations/us/entryGroups/sf/entries/${t}`;
+    expect(errorsFor(entry('c'))).toContain(
+        "binds entities in more than one database ('customer', 'vip')");
+    expect(errorsFor(entry('c'), entry('v'))).toEqual('');
   });
 
   // A source the loader's reader rejects is reported, and names no

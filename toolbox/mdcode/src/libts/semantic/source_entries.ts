@@ -19,8 +19,8 @@
 // must be read, not guessed. Every read is a direct lookup: Dataplex search
 // misses entries a lookup finds, and is not exact.
 //
-// A Cloud SQL source is not looked up here: sourceDialects already looks up
-// its entry, and fails the push when it is missing.
+// A Cloud SQL or third-party source is not looked up here: sourceDialects
+// already looks up its entry directly, and fails the push when it is missing.
 
 import type {BigLakeClient} from '../gcp/biglake';
 import type {BigQueryClient} from '../gcp/bigquery';
@@ -44,7 +44,7 @@ export interface SourceReaders {
 // that order. Looks each table up once, and reads each dataset, catalog and
 // instance's location once, all in parallel. Skips an abstract entity, an
 // entity with no source, and a source that names no table this module knows
-// (a Cloud SQL table, or a legacy bare name). Never throws.
+// (a Cloud SQL or third-party table, or a legacy bare name). Never throws.
 export async function sourceEntryErrors(
     model: Pick<SemanticModel, 'entities'|'profiles'>,
     readers: SourceReaders): Promise<string[]> {

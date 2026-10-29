@@ -3233,43 +3233,38 @@ describe('strict entity sources', () => {
     }
   });
 
-  // The preview supports Google Cloud tables only, so a third-party table is
-  // rejected in every form: a catalog name under a third-party prefix, and a
-  // Knowledge Catalog entry name.
-  test('a third-party source is rejected in every form', () => {
+  // A table outside Google Cloud is written as the entry name of its catalog
+  // entry, in an entry group that is not a system one, also where bare table
+  // names are allowed. A catalog name under a third-party prefix, or an entry
+  // name with a leading `//`, is rejected.
+  test('a third-party table is accepted as its entry name and in no other form', () => {
+    const loadSource = (source: string, opts = {}) => load(GOOGLE, {
+      name: 'm',
+      datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
+    }, opts);
+    const entry = 'projects/acme/locations/us/entryGroups/snowflake/entries/acct.db.public.orders';
+    expect(databaseOf(entry)).toBe('thirdparty');
+    for (const opts of [{}, { allowLegacyBareSource: true }]) {
+      const e = loadSource(entry, opts).models[0].entities[0];
+      expect([e.authoredSource, e.dataSource, writtenSource(e)]).toEqual([entry, entry, entry]);
+    }
     for (const source of [
       'snowflake:acct.db.public.orders',
       'databricks:table:metastore.cat.sch.orders',
       'mysql:inst.db.orders',
       'postgresql:inst.db.public.orders',
-      'projects/acme/locations/us/entryGroups/snowflake/entries/acct.db.public.orders',
+      'sqlserver:inst.db.dbo.orders',
     ]) {
       expect(databaseOf(source)).toBeUndefined();
-      expect(() => load(GOOGLE, {
-        name: 'm',
-        datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
-      })).toThrow(
-        `dataset 'orders': source '${source}' is a third-party table; the ` +
-        `preview supports Google Cloud tables only: BigQuery, BigLake, ` +
-        `Spanner, AlloyDB and Cloud SQL.`);
+      expect(() => loadSource(source)).toThrow(
+        `dataset 'orders': source '${source}' is a Knowledge Catalog name; ` +
+        `write the entry name of the table's Knowledge Catalog entry instead, ` +
+        `such as 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.`);
     }
-  });
-
-  // Push and the runtime load a legacy `semantic_model:` wrapper with bare
-  // table names allowed. An entry name has no `:`, so it must be rejected
-  // before the bare table name rule reads it.
-  test('an entry name is rejected where bare table names are allowed', () => {
-    for (const [source, message] of [
-      ['projects/acme/locations/us/entryGroups/snowflake/entries/acct.db.public.orders',
-       'is a third-party table'],
-      ['projects/acme/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders',
-       "is a Knowledge Catalog entry name in the system entry group '@bigquery'"],
-    ]) {
-      expect(() => load(GOOGLE, {
-        name: 'm',
-        datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
-      }, { allowLegacyBareSource: true })).toThrow(`source '${source}' ${message}`);
-    }
+    expect(() => loadSource(`//${entry}`)).toThrow(`source '//${entry}' is not a valid table reference`);
+    expect(() => loadSource(
+      'projects/acme/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders',
+      { allowLegacyBareSource: true })).toThrow("is a Knowledge Catalog entry name in the system entry group '@bigquery'");
   });
 
   test('a malformed resource name is rejected as a URI with the same mistake is', () => {
@@ -3401,7 +3396,7 @@ describe('strict entity sources', () => {
         name: 'm',
         datasets: [{ name: 'orders', source: bad, primary_key: ['id'], fields: [] }],
       })).toThrow(
-        new RegExp(`dataset 'orders': source '${bad}' is not a valid table reference[\\s\\S]*The preview supports Google Cloud tables only`),
+        new RegExp(`dataset 'orders': source '${bad}' is not a valid table reference[\\s\\S]*for a table outside Google Cloud, the entry name of its Knowledge Catalog entry`),
       );
     }
   });

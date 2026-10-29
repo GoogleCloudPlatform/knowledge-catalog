@@ -80,8 +80,8 @@ export interface PushOptions {
   // than overriding a conflict.
   forceRemove?: boolean;
   // Skip the check that every source names a table with a Knowledge Catalog
-  // entry. The Cloud SQL lookup, which push needs for a table's dialect,
-  // still runs. Semantic-model push only.
+  // entry. The lookup of a Cloud SQL or third-party table's entry, which push
+  // needs for the table's dialect, still runs. Semantic-model push only.
   skipSourceCheck?: boolean;
   // Whether to push the Knowledge Catalog metadata leg. On by default;
   // `--no-kc` sets it false to deploy only the graph. The catalog toggle is
@@ -501,10 +501,10 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
   };
 }
 
-// The dialect of each Cloud SQL table the model documents `docs` and their
-// profile files write as a resource name, read from the tables' Knowledge
+// The dialect of each Cloud SQL and third-party table the model documents
+// `docs` and their profile files write, read from the tables' Knowledge
 // Catalog entries, for every load the command makes. Makes no call when no file
-// writes one. Prints each table whose entry cannot be read and returns null.
+// writes one. Prints each table whose dialect cannot be read and returns null.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs): Promise<DialectLoad|null> {
@@ -1160,8 +1160,8 @@ export async function push(options: PushOptions): Promise<number> {
     const kcProfileName =
         namedProfile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
 
-    // A Cloud SQL table written as its resource name takes its dialect from its
-    // Knowledge Catalog entry, looked up once before anything loads.
+    // A Cloud SQL or third-party table takes its dialect from its Knowledge
+    // Catalog entry, looked up once before anything loads.
     const load = await dialectLoad(ctx, layoutDocs, profileDocs);
     if (!load) return 1;
 
@@ -2370,8 +2370,8 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const defaultProject = source.project ?? ctx.project;
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
-  // A Cloud SQL table written as its resource name takes its dialect from its
-  // Knowledge Catalog entry, looked up once, as push does.
+  // A Cloud SQL or third-party table takes its dialect from its Knowledge
+  // Catalog entry, looked up once, as push does.
   const load = await dialectLoad(ctx, docs, profileDocs);
   if (!load) return 1;
   // The inline bindings' header. 'default' is not a profile document and

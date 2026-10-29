@@ -1,6 +1,6 @@
-// Tests for src/libts/semantic/source_dialect.ts: a Cloud SQL table's dialect
-// read from its Knowledge Catalog entry. The catalog is faked; nothing here
-// calls a service.
+// Tests for src/libts/semantic/source_dialect.ts: a Cloud SQL or third-party
+// table's dialect read from its Knowledge Catalog entry. The catalog is faked;
+// nothing here calls a service.
 
 import {describe, expect, test} from 'bun:test';
 
@@ -15,10 +15,11 @@ const MYSQL = `${INSTANCE}/shop/databases/sales/tables/orders`;
 const POSTGRES = `${INSTANCE}/pg/databases/shop/schemas/sales/tables/orders`;
 const POSTGRES_VIEW = `${INSTANCE}/pg/databases/shop/schemas/sales/tables/open_orders`;
 const SQLSERVER = `${INSTANCE}/ms/databases/shop/schemas/sales/tables/orders`;
+const THIRD_PARTY = 'projects/acme/locations/us-central1/entryGroups/sf/entries/orders';
 
 // A catalog that answers from `answers`, keyed by entry name, and records each
 // call. An entry it does not know gets the 403 Dataplex gives a missing entry.
-function fakeCatalog(answers: Record<string, ApiResult<{entryType?: string}>>) {
+function fakeCatalog(answers: Record<string, ApiResult<object>>) {
   const calls: Array<{project: string; location: string; name: string}> = [];
   const catalog: EntryLookup = {
     async lookupEntry(project, location, name) {
@@ -116,11 +117,12 @@ describe('sourceDialects', () => {
         throw new Error('socket hang up');
       },
     };
-    const {errors} = await sourceDialects([POSTGRES, MYSQL], failing);
+    const {errors} = await sourceDialects([POSTGRES, MYSQL, THIRD_PARTY], failing);
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
       `source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
       `source '${MYSQL}': looking up its Knowledge Catalog entry failed: socket hang up`,
+      `source '${THIRD_PARTY}': looking up its Knowledge Catalog entry failed: socket hang up`,
     ]);
   });
 
@@ -131,8 +133,67 @@ describe('sourceDialects', () => {
   });
 });
 
+// A third-party table's entry gives its dialect by the prefix of its
+// fullyQualifiedName, or, with none, by its entrySource.system in any case.
+describe('sourceDialects of a third-party table', () => {
+  const dialectOf = async (result: object) =>
+      sourceDialects([THIRD_PARTY], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
+
+  test('each fullyQualifiedName prefix and system gives its dialect, and the prefix wins', async () => {
+    const fqn = (fullyQualifiedName: string) => ({fullyQualifiedName});
+    const system = (s: string) => ({entrySource: {system: s}});
+    for (const [result, dialect] of [
+      [fqn('snowflake:acme.retail.public.orders'), 'SNOWFLAKE'],
+      [fqn('databricks:table:1234.main.retail.orders'), 'DATABRICKS'],
+      [fqn('mysql:host.sales.orders'), 'MYSQL'],
+      [fqn('postgresql:host.sales.public.orders'), 'POSTGRES'],
+      [fqn('sqlserver:host.sales.dbo.orders'), 'SQLSERVER'],
+      [system('Snowflake'), 'SNOWFLAKE'],
+      [system('DATABRICKS'), 'DATABRICKS'],
+      [system('mysql'), 'MYSQL'],
+      [system('PostgreSQL'), 'POSTGRES'],
+      [system('POSTGRES'), 'POSTGRES'],
+      [system('SQLSERVER'), 'SQLSERVER'],
+      [{...fqn('snowflake:acme.orders'), ...system('DATABRICKS')}, 'SNOWFLAKE'],
+    ] as const) {
+      expect({result, ...await dialectOf(result)})
+          .toEqual({result, dialects: new Map([[THIRD_PARTY, dialect]]), errors: []});
+    }
+  });
+
+  test('an entry that gives no dialect is rejected, naming the entry', async () => {
+    for (const [result, has] of [
+      [{}, 'neither a fullyQualifiedName nor an entrySource.system'],
+      [{fullyQualifiedName: 'custom:acme.orders', entrySource: {system: 'SNOWFLAKE'}},
+       "fullyQualifiedName 'custom:acme.orders'"],
+      [{entrySource: {system: 'ORACLE'}},
+       "entrySource.system 'ORACLE' and no fullyQualifiedName"],
+    ] as const) {
+      expect(await dialectOf(result)).toEqual({dialects: new Map(), errors: [
+        `source '${THIRD_PARTY}': kcmd cannot tell the table's SQL dialect from ` +
+        `its Knowledge Catalog entry, which has ${has}. kcmd reads the prefix ` +
+        `of the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
+        `postgresql: or sqlserver:), or entrySource.system when there is no ` +
+        `fullyQualifiedName.`,
+      ]});
+    }
+  });
+
+  // tests/tool/two_phase/third_party.test.ts holds the missing entry's text.
+  test('is looked up once, by its entry name, and a missing entry is reported; with thirdParty false, not at all', async () => {
+    const {catalog, calls} = fakeCatalog({});
+    expect((await sourceDialects([THIRD_PARTY, THIRD_PARTY], catalog)).errors)
+        .toEqual([expect.stringContaining(
+            `source '${THIRD_PARTY}' names no table Knowledge Catalog knows about.`)]);
+    expect(calls).toEqual([{project: 'acme', location: 'us-central1', name: THIRD_PARTY}]);
+    expect(await sourceDialects([THIRD_PARTY], catalog, {thirdParty: false}))
+        .toEqual({dialects: new Map(), errors: []});
+    expect(calls).toHaveLength(1);
+  });
+});
+
 describe('sourcesToLookUp', () => {
-  test('collects resource names from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
+  test('collects Cloud SQL resource names and third-party entry names from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
     const model = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
@@ -154,9 +215,13 @@ semantic_model:
 entities:
   - name: orders
     source: "${POSTGRES}"
+  - name: lines
+    source: ${THIRD_PARTY}
+  - name: items
+    source: projects/acme/locations/us/entryGroups/@bigquery/entries/items
 `;
     expect(sourcesToLookUp([model, vanilla, profile]).sort())
-        .toEqual([POSTGRES, MYSQL, SQLSERVER].sort());
+        .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY].sort());
     // A file that does not parse collects nothing, even a name it holds.
     expect(sourcesToLookUp([`source: ${MYSQL}\nname: [unclosed`])).toEqual([]);
     // Nor does one whose values cannot be read, and that does not throw: an
