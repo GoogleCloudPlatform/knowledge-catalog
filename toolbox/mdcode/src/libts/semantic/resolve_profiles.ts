@@ -1894,7 +1894,7 @@ export function expressionSources(
 // dialect list offers its imported text when that is in the profile's dialect,
 // and otherwise the text the loader picked. With no known dialect, every text
 // counts, each read in the dialect it is written in.
-function textsFor(
+export function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
@@ -1906,25 +1906,13 @@ function textsFor(
   return text !== undefined ? [{text, dialect}] : [];
 }
 
-// The texts a profile of `dialect` evaluates for a field or metric, as
-// textsFor gives them. With `transpiled`, the caller translates a text written
-// only in a vendor dialect its translator reads into BigQuery SQL, so a
-// BigQuery profile evaluates that text too, read in the dialect it is written
-// in.
-export function evaluatedTexts(
-    f: Parameters<typeof textsFor>[0], dialect: string|undefined,
-    transpiled: boolean): Array<{text: string; dialect: string}> {
-  const out = textsFor(f, dialect);
-  if (out.length || !transpiled || dialect !== 'BIGQUERY' ||
-      f.expression !== undefined || !f.importedExpression ||
-      !transpilesFrom(f.importedDialect ?? '')) {
-    return out;
-  }
-  const written = f.importedDialect || 'ANSI_SQL';
-  return [{
-    text: f.importedExpression,
-    dialect: written === 'ANSI_SQL' ? dialect : written,
-  }];
+// Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
+// with no text for `dialect`: one in a BigQuery model whose only text is an
+// imported one, in a dialect the translator reads.
+export function importTranspiles(
+    f: Parameters<typeof textsFor>[0], dialect: string|undefined): boolean {
+  return dialect === 'BIGQUERY' && f.expression === undefined &&
+      !!f.importedExpression && transpilesFrom(f.importedDialect ?? '');
 }
 
 // The texts pruning reads: those a profile of `dialect` evaluates (see
@@ -2006,10 +1994,6 @@ export interface CompletenessOptions extends CloudSqlLoad {
   // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
   // dialect is `dialect` or the caller cannot read it either.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
-  // The caller transpiles a field or metric whose only text is in a vendor
-  // dialect its translator reads into BigQuery SQL, so a BigQuery profile can
-  // run it. The rules that read references then read that text.
-  transpiled?: boolean;
 }
 
 /**
@@ -2269,9 +2253,6 @@ export function validateProfileCompleteness(
           `leave it out in 'fields_exclude'`);
     }
   }
-  // The texts this profile evaluates for a field or metric.
-  const profileTexts: typeof textsFor = (f, d) =>
-      evaluatedTexts(f, d, !!opts.transpiled);
   // Each field or metric, as "field 'Entity.field'" or "metric 'name'", with
   // a text this check cannot read that push reads in another dialect: an
   // ANSI_SQL text, which push reads in its own dialect. Push reads every
@@ -2291,7 +2272,7 @@ export function validateProfileCompleteness(
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
   if (dialect) {
-    const runs = (f: Field) => profileTexts(f, dialect).length > 0;
+    const runs = (f: Field) => textsFor(f, dialect).length > 0;
     for (const e of entities) {
       if (e.abstract || rejected.has(e.name)) continue;
       for (const f of seenOf.get(e.name)?.values() ?? []) {
@@ -2338,7 +2319,7 @@ export function validateProfileCompleteness(
         // because inheritance strips the qualifier when it copies one down.
         for (const dep of fieldDependencies(
                  profiled, e.name, f.name, unreadable, dialect,
-                 profileTexts, noteUnread)) {
+                 textsFor, noteUnread)) {
           const target = `${e.name}.${dep}`;
           if (excluded.has(target) || dangling.has(target)) {
             dangling.set(key, dangling.get(target) ?? target);
@@ -2362,7 +2343,7 @@ export function validateProfileCompleteness(
     for (const m of baseModel.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
       const read: Array<ReadonlyArray<SqlColumn>> = [];
-      for (const text of profileTexts(m as Field, dialect)) {
+      for (const text of textsFor(m as Field, dialect)) {
         // A text with no SQL has nothing to read.
         if (noSqlReason(text.text, text.dialect) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);

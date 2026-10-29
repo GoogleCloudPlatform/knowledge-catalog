@@ -33,7 +33,7 @@ const GOLDEN =
 // The full artifact: DDL generated from the transpiled model, then every
 // warning as a SQL comment. Mirrors bigquery.e2e's render but inserts the
 // transpile pass and drops the loader's now-stale "needs transpilation" notes,
-// exactly as `kcmd push --transpile` does (see src/tool/commands.ts).
+// as `kcmd import --transpile` writes the BigQuery SQL the graph reads.
 async function render(): Promise<string> {
   const text = fs.readFileSync(path.join(FIXTURES, FIXTURE), 'utf8');
   const {models, warnings: loadWarnings} = loadModels(text, {

@@ -148,3 +148,14 @@ describe('kcmd import', () => {
     expect(out).toContain('--flavor is required');
   }, 30000);  // Spawning a command takes longer than the default timeout.
 });
+
+describe('kcmd push --transpile', () => {
+  test('is still an option, so push can say it is no longer supported', () => {
+    const {code, out} = run('push', '--transpile');
+    expect(code).toBe(1);
+    expect(out).not.toContain('Unknown option');
+    expect(out).toContain(
+        "'--transpile' is no longer supported on 'kcmd push'; use 'kcmd import " +
+        "--transpile' to translate SQL dialects when importing a model.");
+  }, 30000);  // Spawning a command takes longer than the default timeout.
+});

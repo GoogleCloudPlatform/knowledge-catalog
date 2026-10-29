@@ -1975,7 +1975,8 @@ semantic_model:
       expect(validatePushRequirements([loaded(vanillaDoc)], {targetOptional: true})).toEqual([]);
       expect(validatePushRequirements([loaded(vanillaDoc)])).toEqual([]);
 
-      // Metric with only a non-BigQuery dialect expression is rejected without --transpile.
+      // Metric with only a non-BigQuery dialect expression is rejected, and
+      // the error names kcmd import --transpile.
       expect(bqPush([orders()], {
         name: 'pg_rev',
         importedExpression: 'SUM("orders"."net_amount")',
@@ -1983,7 +1984,10 @@ semantic_model:
         entity: 'orders',
         authoredEntity: 'orders',
         dialects: [{dialect: 'POSTGRES', expression: 'SUM("orders"."net_amount")'}],
-      })).toContain("targets a BigQuery graph with only a 'POSTGRES' expression");
+      })).toContain(
+          "targets a BigQuery graph with only a 'POSTGRES' expression; supply " +
+          "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +
+          "import --transpile'.");
     });
 
     test('the BigQuery placement error offers the anchor the flavor writes', () => {
@@ -3247,20 +3251,19 @@ describe('validateInlineDialects', () => {
 ${extra}`);
   const dialects = (...entries: string[]) =>
       `{ dialects: [${entries.map(e => `{ dialect: ${e}, expression: x }`)}] }`;
-  const check = (m: SemanticModel, transpiled = false) =>
-      validateInlineDialects(m, 'doc', {transpiled});
+  const check = (m: SemanticModel) => validateInlineDialects(m, 'doc');
   // The error for field `f` of `entity`, whose source has `dialect`, ending
   // in `hint`. `a` is the article before the dialect.
   const MISSING = (entity: string, dialect: string, hint = '', a = 'a') =>
       `field '${entity}.f' in model 'm' (doc) has no expression for ${
           dialect} or ANSI_SQL, and the model file binds entity '${
           entity}' to ${a} ${dialect} source${hint}.`;
-  const HINT = '; give it one, or pass --transpile';
+  const HINT = "; give it one, or add one with 'kcmd import --transpile'";
 
   // A bound field needs a text for its source's dialect, an ANSI_SQL text, or
   // the string form. An inherited field is judged by the source of the entity
   // that inherits it.
-  test('holds each bound field to the dialect of its own entity\'s source, and suggests --transpile only for a text it translates', () => {
+  test('holds each bound field to the dialect of its own entity\'s source, and suggests kcmd import --transpile only for a text it translates', () => {
     const bigQueryText = dialects('BIGQUERY');
     // Entity `other` on Spanner has field `f` with only a BigQuery text, and
     // entity `leaf` on Spanner inherits `f` from `e`.
@@ -3271,7 +3274,7 @@ ${extra}`);
           primary_key: [id], fields: [{ name: id, expression: id }] }\n`;
     const alloyDb = `${TARGET.alloydb}/schemas/s/tables/t`;
     const cases: Array<[source: string, expression: string, extra: string,
-                        errors: string[], transpiled?: boolean]> = [
+                        errors: string[]]> = [
       [SPANNER_TABLE, bigQueryText, '', [MISSING('e', 'SPANNER')]],
       [SPANNER_TABLE, dialects('SPANNER'), '', []],
       [SPANNER_TABLE, dialects('BIGQUERY', 'ANSI_SQL'), '', []],
@@ -3282,20 +3285,17 @@ ${extra}`);
        [MISSING('e', 'BIGQUERY', HINT), MISSING('other', 'SPANNER')]],
       // The message reads "an" before a dialect that starts with a vowel.
       [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', '', 'an')]],
-      // With --transpile, push translates a Snowflake, Spanner or AlloyDB
-      // text into BigQuery SQL. An unsupported dialect is not translated.
+      // kcmd import --transpile translates a Snowflake, Spanner or AlloyDB
+      // text into BigQuery SQL, so only a BigQuery source gets the hint.
       [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [MISSING('e', 'BIGQUERY', HINT)]],
-      [BQ_TABLE('t'), dialects('SNOWFLAKE'), '', [], true],
-      [SPANNER_TABLE, dialects('SNOWFLAKE'), '', [MISSING('e', 'SPANNER')], true],
+      [SPANNER_TABLE, dialects('SNOWFLAKE'), '', [MISSING('e', 'SPANNER')]],
       [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY', HINT)]],
-      [BQ_TABLE('t'), dialects('SPANNER'), '', [], true],
       [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY', HINT)]],
-      [BQ_TABLE('t'), dialects('ALLOYDB'), '', [], true],
     ];
-    for (const [source, expression, extra, errors, transpiled] of cases) {
-      const actual = check(withField(source, expression, extra), transpiled);
-      expect({source, expression, extra, transpiled, errors: actual})
-          .toEqual({source, expression, extra, transpiled, errors});
+    for (const [source, expression, extra, errors] of cases) {
+      const actual = check(withField(source, expression, extra));
+      expect({source, expression, extra, errors: actual})
+          .toEqual({source, expression, extra, errors});
     }
     // An unsupported dialect on an in-memory model is not translated.
     const unsupported = withField(BQ_TABLE('t'), dialects('SNOWFLAKE'));
@@ -3305,7 +3305,6 @@ ${extra}`);
       importedDialect: 'TERADATA',
     };
     expect(check(unsupported)).toEqual([MISSING('e', 'BIGQUERY')]);
-    expect(check(unsupported, true)).toEqual([MISSING('e', 'BIGQUERY')]);
     // An unbound field and an entity with no source are skipped.
     const unbound = withField(SPANNER_TABLE, bigQueryText);
     unbound.entities[0].fields[1] = {name: 'f'};

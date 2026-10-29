@@ -19,7 +19,7 @@ import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inherited
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, evaluatedTexts, expressionSources, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -377,22 +377,17 @@ function measureProblem(
 }
 
 // Checks that each bound field of the model file has a text for the dialect
-// of its entity's source, and returns one message per field. With
-// `opts.transpiled`, a text that --transpile translates also counts.
+// of its entity's source, and returns one message per field.
 export function validateInlineDialects(
-    model: SemanticModel, document: string,
-    opts: {transpiled?: boolean} = {}): string[] {
+    model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
   for (const e of resolvedEntities(model)) {
     const dialect = sourcesDialect({entities: [e]});
     if (!dialect) continue;
     for (const f of e.fields ?? []) {
-      if (!isFieldBound(f) ||
-          evaluatedTexts(f, dialect, !!opts.transpiled).length) {
-        continue;
-      }
-      const hint = evaluatedTexts(f, dialect, true).length ?
-          '; give it one, or pass --transpile' : '';
+      if (!isFieldBound(f) || textsFor(f, dialect).length) continue;
+      const hint = importTranspiles(f, dialect) ?
+          `; give it one, or add one with 'kcmd import --transpile'` : '';
       errors.push(
           `field '${e.name}.${f.name}' in model '${model.name}' (${
               document}) has no expression for ${dialect} or ANSI_SQL, and ` +
@@ -1678,7 +1673,8 @@ function validateBigQueryMetrics(
       errors.push(
           `${prefix} targets a BigQuery graph with only a '${
               metric.importedDialect ?? 'vendor'}' expression; supply a ` +
-          `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
+          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd ` +
+          `import --transpile'.`);
       continue;
     }
     // The generator reads the resolved BigQuery expression (`bqText`) with its

@@ -41,7 +41,7 @@ export const CUSTOMER = {
   primary_key: ['key'],
   fields: [{name: 'key', expression: 'c_key'}],
 };
-// A metric with only Snowflake SQL, and the warning --transpile gives for it.
+// A metric with only Snowflake SQL.
 export const SNOWFLAKE_METRIC = {
   name: 'positive_keys',
   expression: {
@@ -51,9 +51,6 @@ export const SNOWFLAKE_METRIC = {
     }],
   },
 };
-export const TRANSPILE_WARNING =
-    "Warning: [commerce] metric 'positive_keys': transpiled 'SNOWFLAKE' -> " +
-    "'BIGQUERY'";
 // A profile that binds Customer to `source`, or to table customer in
 // `dataset`.
 export const boundAt = (source: string) =>

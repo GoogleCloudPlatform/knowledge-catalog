@@ -5,7 +5,7 @@
 
 import {expect} from 'bun:test';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, spannerGraph, TRANSPILE_WARNING, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -404,27 +404,6 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       warnings: [has("unbound 'default' profile"),
                  "Note: profile 'prod' leaves 1 field(s) unbound."],
     }],
-  },
-  {
-    name: '--transpile transpiles the catalog\'s model and each deployment\'s model, with the SQL its profile sets, and prints each warning once',
-    deployments: ['g1', {name: 'g2', profile: 'p'}],
-    entities: [WITH_SCORE],
-    profiles: {p: scoreSql('p', 'SNOWFLAKE', 'IFF(score > 0, score, 0)')},
-    metrics: [SNOWFLAKE_METRIC],
-    flags: {validateOnly: true, transpile: true},
-    calls: ['generate g1', 'generate g2'],
-    warnings: [
-      TRANSPILE_WARNING,
-      "Warning: [commerce, deployment 'g2'] field 'Customer.score': " +
-          "transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
-    ],
-    check: r => {
-      for (const models of [...r.fake.bq.mock.calls.map(c => c[0]),
-                            r.fake.preflight.mock.calls[0][0]]) {
-        expect(models[0].model.metrics![0].dialects)
-            .toContainEqual(expect.objectContaining({dialect: 'BIGQUERY'}));
-      }
-    },
   },
   {
     name: 'each profile prints its own warning about the SQL it sets, also ' +
