@@ -232,10 +232,12 @@ entities:
         .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY].sort());
     // A file whose only source is a BigQuery table collects nothing from an
     // entry name under another key, as a `source` in a description's JSON, or
-    // as a `source` inside ai_context or inside another vendor's block.
+    // as a `source` inside ai_context, an action parameter's default or another
+    // vendor's block.
     expect(sourcesToLookUp([`source: bigquery.googleapis.com/projects/p/datasets/d/tables/t\n` +
         `description: '{"source": "${THIRD_PARTY}"}'\nsynonyms: ["${THIRD_PARTY}"]\n` +
         `ai_context: {custom: {lineage: [{source: ${THIRD_PARTY}}]}}\n` +
+        `actions: [{name: a, parameters: [{name: p, default: {source: ${THIRD_PARTY}}}]}]\n` +
         `custom_extensions: [{vendor_name: ACME, data: '{"source": "${THIRD_PARTY}"}'}]\n`]))
         .toEqual([]);
     // A file that does not parse collects nothing, even a name it holds.
