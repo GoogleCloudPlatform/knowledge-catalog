@@ -334,9 +334,9 @@ export function owlToIr(owl: OwlModel, modelName: string): ToIrResult {
   //      a composite key to a possibly non-unique one, changing the grain.
   //   2. A class with no usable owl:hasKey but exactly one single-column
   //      inverse-functional property still has a natural identifier; promote
-  //      that unique key to the primary_key so the entity is valid for graph
-  //      generation rather than keyless. (Ambiguous cases -- several unique
-  //      keys, or a composite one -- are left alone.)
+  //      that unique key to the primary_key so the entity has a grain.
+  //      (Ambiguous cases -- several unique keys, or a composite one -- are
+  //      left alone.)
   for (const entity of entities) {
     const fieldNames = new Set(entity.fields.map(f => f.name));
     const missing = entity.keys.filter(k => !fieldNames.has(k));

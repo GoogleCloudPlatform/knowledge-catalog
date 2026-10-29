@@ -377,18 +377,25 @@ and they belong in different places:
 1. **The join columns on each edge — in the model.** The import gives every
    relationship its endpoints (`from`/`to`) but no join columns; which columns an
    edge joins on is a *logical* fact the model owns, not a physical binding, so
-   you add it to the imported model itself. The keys the import already recovered
-   (`primary_key`, `unique_keys`) tell you which columns an edge's `to_columns`
-   must reference:
+   you add it to the imported model itself. A key and a join column each name a
+   column of the table, and the import names each key after the property it came
+   from. So change each imported key to the column its property is bound to, and
+   join on that column:
 
    ```yaml
-   # sales.yaml — add the join columns to the imported relationship
+   # sales.yaml: key each entity by its column, and add the join columns
+   entities:
+     - name: Customer
+       primary_key: [c_custkey]    # imported as [customerId]
+       unique_keys: [[c_email]]    # imported as [[email]]
+     - name: Order
+       primary_key: [o_orderkey]   # imported as [orderId]
    relationships:
      - name: placedBy
        from: Order
        to: Customer
        from_columns: [o_custkey]   # the Order-side foreign key
-       to_columns: [customerId]    # Customer's key column
+       to_columns: [c_custkey]     # Customer's key column
    ```
 
 2. **The physical binding — in a profile.** Which table each entity reads, which

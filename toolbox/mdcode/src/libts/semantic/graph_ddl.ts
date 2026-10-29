@@ -518,27 +518,18 @@ function renderFieldPropertyCore(
 }
 
 
-// The key an entity's node is keyed by: its primary key, else its first unique
-// key that names a column. A relationship may join on a unique key, so an
-// entity with only unique keys is a valid node and edge endpoint. Empty when the
-// entity states neither, and then it gets no node table. Every place the graph
-// reads an entity's key reads it here: the node KEY, a direct edge's KEY and
-// SOURCE KEY ... REFERENCES, an association edge's REFERENCES, and the column
-// BigQuery's COUNT(*) measure counts.
+// The key an entity's node is keyed by: its primary key, else its first
+// non-empty unique key. Empty when the entity states neither, and then it gets
+// no node table.
 export function nodeKey(entity: Pick<Entity, 'keys'|'uniqueKeys'>): string[] {
   if (entity.keys?.length) return entity.keys;
   return entity.uniqueKeys?.find(k => k.length > 0) ?? [];
 }
 
-// Writes a key or join column -- a node KEY, an edge KEY, SOURCE KEY or
-// DESTINATION KEY, or a REFERENCES target -- as the physical column it names.
-// The format defines `primary_key`, `unique_keys`, `from_columns` and
-// `to_columns` as column names, which need not match any field, so the name is
-// never looked up in the entity's fields: a field of the same name may read
-// another column or compute a value, and a key site takes only a column. An
-// unquoted name is backtick-quoted when it is reserved or is not a simple
-// identifier, and a backtick-quoted name is written as it is.
-function physicalColumn(column: string): string {
+// Writes a key or join column as the column it names. An unquoted name is
+// backtick-quoted when it is reserved or is not a simple identifier, and a
+// backtick-quoted name is written as it is.
+export function physicalColumn(column: string): string {
   return /^`[^`]+`$/.test(column) ? column : quoteIdentifier(column);
 }
 

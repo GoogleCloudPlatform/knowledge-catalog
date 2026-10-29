@@ -2409,20 +2409,16 @@ export function validateProfileCompleteness(
  * Returns one message for each binding, the model file's included, whose
  * `to_columns` for a relationship cover no primary or unique key of its
  * target, or an empty list. A superset of a key covers it (see coversKey).
- * Relationships are checked only after the hierarchy resolves. Keys and join
- * columns are compared as written. A binding whose key or join columns are not
- * all column names (isColumnName) is left out. `applied` names the profile the push applies. The "covers no
- * key" check then leaves out that profile's join, or the model file's when the
- * profile states none.
+ * Keys and join columns are compared as written. A binding whose key or join
+ * columns are not all column names (isColumnName) is left out. `applied` names
+ * the profile the push applies. The "covers no key" check then leaves out that
+ * profile's join, or the model file's when the profile states none.
  */
 export function validateProfileConsistency(
     baseModel: SemanticModel, profiles: ProfileSpec[],
     applied?: string): string[] {
   const errors: string[] = [];
   const entities = baseModel.entities ?? [];
-
-  // What an entity inherits is not known until the hierarchy resolves.
-  if (inheritanceErrorOf(baseModel)) return errors;
   const byName = new Map(entities.map(e => [e.name, e]));
   for (const r of baseModel.relationships ?? []) {
     if (r.association) continue;
@@ -2437,8 +2433,6 @@ export function validateProfileConsistency(
     // A binding that states no keys is checked against the model file's,
     // since completeness reports the missing keys. A binding with no join
     // columns is left out; completeness reports it for a named profile.
-    // Keys and join columns are physical columns, so they are compared as
-    // written, never read through a field of the same name.
     const record =
         (who: string, to: string[], pk: string[], uks: string[][]) => {
           // The column name checks report a value that is not a column name.

@@ -1332,11 +1332,7 @@ function validateColumnsAndRelationships(
 function relationshipKeyErrors(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
-  const entities = (model.entities ?? []).some(e => e.extends?.length) ?
-      ifResolvable(() => resolveInheritance(model).model.entities) ??
-          model.entities :
-      model.entities ?? [];
-  const byName = new Map(entities.map(e => [e.name, e]));
+  const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   for (const rel of model.relationships ?? []) {
     const to = rel.destination.columns;
     if (rel.association || !to.length) continue;

@@ -5044,8 +5044,6 @@ semantic_model:
     try {
       expect(() => pruneUnavailable(m, 'default')).toThrow('boom');
       expect(() => validateProfileCompleteness(m, prod)).toThrow('boom');
-      expect(() => validateProfileConsistency(m, [prod, {...prod, name: 'p2'}]))
-          .toThrow('boom');
     } finally {
       spy.mockRestore();
     }

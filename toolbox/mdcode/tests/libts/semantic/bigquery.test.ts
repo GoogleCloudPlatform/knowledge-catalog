@@ -153,6 +153,84 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('MEASURE(COUNT(o_orderkey)) AS order_count');
       });
 
+  // COUNT(*) counts the key column itself. A key names a column, never a field,
+  // so a field of the same name neither supplies the counted value nor drops
+  // the metric.
+  describe('COUNT(*) counts the key column', () => {
+    const keyedByOrderId = (field: Field): SemanticModel => ({
+      ...orders(),
+      entities: [{
+        name: 'orders',
+        dataSource: 'orders',
+        keys: ['order_id'],
+        fields: [field],
+      }],
+      metrics: [{name: 'order_count', expression: 'COUNT(*)', entity: 'orders'}],
+    });
+
+    test('not a same-named field that reads another column', () => {
+      const {ddl} = generatePropertyGraph(
+          keyedByOrderId(
+              {name: 'order_id', expression: 'orders.legacy_ref'}),
+          GEN_OPTS);
+      expect(ddl).toContain('KEY(order_id)');
+      expect(ddl).toContain('order_id AS order_count_input');
+      expect(ddl).toContain(
+          'MEASURE(COUNT(order_count_input)) AS order_count');
+    });
+
+    test('when a same-named field has no BigQuery SQL', () => {
+      const {ddl, warnings} = generatePropertyGraph(
+          keyedByOrderId({
+            name: 'order_id',
+            dialects: [{dialect: 'SNOWFLAKE', expression: 'legacy_ref::text'}],
+            importedExpression: 'legacy_ref::text',
+            importedDialect: 'SNOWFLAKE',
+          }),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          'MEASURE(COUNT(order_count_input)) AS order_count');
+      expect(warnings.filter(w => w.includes('aggregates field'))).toEqual([]);
+    });
+
+    test('quoted when BigQuery cannot read it bare', () => {
+      const model = orders();
+      model.entities[0].keys = ['2nd_id'];
+      model.metrics =
+          [{name: 'order_count', expression: 'COUNT(*)', entity: 'orders'}];
+      const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain('`2nd_id` AS order_count_input');
+    });
+
+    test('in one property that a later metric over the column reuses', () => {
+      const model = orders();
+      model.entities[0].keys = ['o_key'];
+      model.metrics = [
+        {name: 'n', expression: 'COUNT(*)', entity: 'orders'},
+        {name: 'm', expression: 'COUNT(DISTINCT orders.o_key)', entity: 'orders'},
+      ];
+      const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain('MEASURE(COUNT(o_key)) AS n');
+      expect(ddl).toContain('MEASURE(COUNT(DISTINCT o_key)) AS m');
+      expect(ddl).not.toContain('_input');
+    });
+
+    test('while a later metric over a same-named field still reads the field', () => {
+      const model = keyedByOrderId(
+          {name: 'order_id', expression: 'orders.legacy_ref'});
+      model.metrics.push({
+        name: 'distinct_refs',
+        expression: 'COUNT(DISTINCT orders.order_id)',
+        entity: 'orders'
+      });
+      const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain(
+          'MEASURE(COUNT(order_count_input)) AS order_count');
+      expect(ddl).toContain(
+          'MEASURE(COUNT(DISTINCT order_id)) AS distinct_refs');
+    });
+  });
+
   test('a key named like a field bound to a computed expression stays the column', () => {
     // A KEY / SOURCE KEY / REFERENCES site must name a bare column, and a key
     // names one, never a field. So the same-named field's computed expression

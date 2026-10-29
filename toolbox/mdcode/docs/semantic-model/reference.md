@@ -250,7 +250,7 @@ becomes one part of that graph:
 | Model element | BigQuery construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
-| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key, or by its first unique key when it has none |
+| Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key, or by its first unique key when it has none. A measure reads only one of the rows whose key is NULL, and `COUNT(*)` skips them, so a unique key used this way should hold no NULLs |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | `MEASURE` on a node table | must resolve to a single entity and reduce to one supported aggregate over one operand (otherwise the push is rejected; see [Validation](#validation)) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
@@ -295,7 +295,7 @@ entities:
       - { name: name, datatype: String }
   - name: Customer
     extends: [Party]           # the one keyword you add
-    primary_key: [id]          # each subclass keeps its OWN key; keys do not inherit
+    primary_key: [c_custkey]   # each subclass keeps its OWN key; keys do not inherit
     source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/customer
     fields:
       - { name: id,   expression: c_custkey }
@@ -303,7 +303,7 @@ entities:
       - { name: tier, datatype: String, expression: c_tier }
   - name: Supplier
     extends: [Party]
-    primary_key: [id]
+    primary_key: [s_suppkey]
     source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/supplier
     fields:
       - { name: id,     expression: s_suppkey }
@@ -430,7 +430,7 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`spanner.googleapis.com/…/tables/Orders` → `Orders`), a table in the target database |
+| Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`spanner.googleapis.com/…/tables/Orders` → `Orders`), a table in the target database. An entity with no primary key is keyed by its first unique key, and Spanner rejects the graph unless the table's primary key or a unique index covers that key. A `UNIQUE NULL_FILTERED` index leaves the rows whose key is NULL out of the graph. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |

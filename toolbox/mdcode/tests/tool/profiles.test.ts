@@ -2037,7 +2037,7 @@ semantic_model:
     });
 
     // The comparison skips what push's key check or the completeness check
-    // reports. It compares no join until the hierarchy resolves.
+    // reports.
     test('and reports each key and join problem at most once', async () => {
       const model = () => joinOnEmail(commerce());
       const unknown = (binding: string) =>
@@ -2076,12 +2076,16 @@ semantic_model:
                   'expression: {dialects: [{dialect: ALLOYDB, expression: ' +
                   '\'"c_id"\'}]} }'),
         }, {x: []}],
-        ['customer extends an unknown entity, so no join is compared', {
+        ['customer extends an unknown entity, and a join is still compared', {
           'commerce.yaml': commerce().replace(
               'name: customer\n', 'name: customer\n        extends: [nope]\n'),
           'commerce.profile.a.yaml': profileFile('a'),
           'commerce.profile.b.yaml': joinOnEmail(profileFile('b')),
-        }, {model: [unknown('commerce')], a: [], b: []}],
+        }, {
+          model: [compared("profile 'b'", 'c_email'), unknown('commerce')],
+          a: [],
+          b: [],
+        }],
       ];
       for (const [label, files, pushes] of cases) {
         fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});

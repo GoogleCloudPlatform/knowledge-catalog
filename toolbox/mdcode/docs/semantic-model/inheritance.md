@@ -102,7 +102,7 @@ store you can bind inline on the model as the `default` profile:
 ```yaml
       - name: Customer
         extends: [Party]
-        primary_key: [id]
+        primary_key: [c_custkey]
         source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/customer
         fields:
           - { name: id,           expression: c_custkey }
@@ -163,7 +163,7 @@ and each of those is a `Party`:
           - { name: tax_id, datatype: String }
       - name: Employee
         extends: [Person, Taxpayer]
-        primary_key: [id]
+        primary_key: [e_id]
         source: bigquery.googleapis.com/projects/my-project/datasets/hr/tables/employee
         fields:
           - { name: id,         expression: e_id }
@@ -234,7 +234,7 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
           - { name: founded_year, datatype: Integer }
       - name: Customer
         extends: [Person]
-        primary_key: [id]
+        primary_key: [c_id]
         source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/customer
         fields:
           - { name: id,         expression: c_id }
@@ -243,7 +243,7 @@ kind: a `Customer` is a person, a `Vendor` is an organization:
           - { name: tier,       datatype: String, expression: c_tier }
       - name: Vendor
         extends: [Organization]
-        primary_key: [id]
+        primary_key: [v_id]
         source: bigquery.googleapis.com/projects/my-project/datasets/sales/tables/vendor
         fields:
           - { name: id,           expression: v_id }

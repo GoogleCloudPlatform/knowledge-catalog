@@ -430,8 +430,8 @@ export interface RelationshipEnd {
  * produces -- a junction edge is backed by its OWN table (`dataSource`) with
  * its OWN key (`keys`) and may carry edge `fields` (properties of the
  * association itself, e.g. an enrollment's grade). Each side names the columns
- * ON THE JUNCTION TABLE that reference the corresponding endpoint entity's
- * declared `keys`. The open format has no association-table syntax yet, so this
+ * ON THE JUNCTION TABLE that reference the key of the endpoint entity's node
+ * (see nodeKey). The open format has no association-table syntax yet, so this
  * is produced by hand-built IR (or a future format extension), not the loader.
  */
 export interface Association {

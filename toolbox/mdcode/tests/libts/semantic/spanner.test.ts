@@ -51,6 +51,17 @@ const texts = (sql: Record<string, string>): Partial<Field> => {
   };
 };
 
+// Each engine's name, generator, and quote around graph and table names.
+const ENGINES = [
+  ['BigQuery', generatePropertyGraph, '`'],
+  ['Spanner', generateSpannerPropertyGraph, ''],
+] as const;
+
+// The trimmed KEY and REFERENCES lines of `ddl`, without a trailing comma.
+const keyLines = (ddl: string) => ddl.split('\n')
+    .filter(l => /KEY\(|REFERENCES/.test(l))
+    .map(l => l.trim().replace(/,$/, ''));
+
 
 describe(
     'M:N association edge (no association-table syntax in the open format yet)',
@@ -452,12 +463,6 @@ test('a field reads its SPANNER text, else its ANSI_SQL text, without comments',
 
 
 describe('rules the Spanner graph shares with the BigQuery graph', () => {
-  // Each engine's name, generator, and quote around graph and table names.
-  const ENGINES = [
-    ['BigQuery', generatePropertyGraph, '`'],
-    ['Spanner', generateSpannerPropertyGraph, ''],
-  ] as const;
-
   // Customer inherits `email` from the concrete parent Person and maps it to
   // another column. Under the shared `Person` label the parent's column wins.
   test('a subtype that remaps an inherited column gets its parent\'s', () => {
@@ -619,10 +624,6 @@ EDGE TABLES (
 // Keys and join columns are physical column names, so each engine writes them
 // as written and never reads a field of the same name.
 describe('key and join columns, on both engines', () => {
-  const ENGINES = [
-    ['BigQuery', generatePropertyGraph],
-    ['Spanner', generateSpannerPropertyGraph],
-  ] as const;
   // orders placed by customers, joined from `from` to `to`.
   const shop = (orders: Entity, customers: Entity, from: string[], to: string[]) =>
       modelOf('shop', [orders, customers], {relationships: [{
@@ -730,8 +731,6 @@ describe('key and join columns, on both engines', () => {
       {model: 'shop', entity: 'orders', field: 'customer_id'},
       {model: 'shop', entity: 'customers', field: 'customer_id'},
     ]), 'restricted').model;
-    const keyLines = (ddl: string) =>
-        ddl.split('\n').filter(l => /KEY\(|REFERENCES/.test(l)).map(l => l.trim());
     for (const [engine, generate] of ENGINES) {
       const before = generate(model);
       const after = generate(excluded);
@@ -757,10 +756,6 @@ describe('key and join columns, on both engines', () => {
 // keyed by its first unique key, on both engines, wherever the graph reads its
 // key.
 describe('a node with no primary key, on both engines', () => {
-  const ENGINES = [
-    ['BigQuery', generatePropertyGraph],
-    ['Spanner', generateSpannerPropertyGraph],
-  ] as const;
   // customers states no primary key. Its first unique key is customer_code;
   // its second is email.
   const customers = (more: Partial<Entity> = {}) => entity(
@@ -769,9 +764,6 @@ describe('a node with no primary key, on both engines', () => {
   const orders = entity('orders', 'Orders', ['order_id'], {amount: 'amount'});
   const regions =
       entity('regions', 'Regions', ['region_id'], {label: 'label'});
-  const keyLines = (ddl: string) => ddl.split('\n')
-      .filter(l => /KEY\(|REFERENCES/.test(l))
-      .map(l => l.trim().replace(/,$/, ''));
 
   test('an entity with only a unique key gets a node keyed by it, and an edge to it is emitted', () => {
     // `drafts` states neither key (an empty unique key counts as none), so it
