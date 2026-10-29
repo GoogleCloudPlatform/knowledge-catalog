@@ -810,11 +810,11 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   table, since no graph can read it. A push with no deployment publishes such
   a model to Knowledge Catalog. A model with no deployments list that binds a
   third-party table is refused when its GOOGLE block names a BigQuery or
-  Spanner graph, even under `--no-profile` or `--no-deployment`. A push in two
-  phases checks every deployment this way, whether or not `--deployment` names
-  it, and under `--no-deployment` too. It reads each entity's `source` from the
-  profile the deployment names, or from the model file when it names none.
-  *(static)*
+  Spanner graph or an AlloyDB database, even under `--no-profile` or
+  `--no-deployment`. A push in two phases checks every deployment this way,
+  whether or not `--deployment` names it, and under `--no-deployment` too. It
+  reads each entity's `source` from the profile the deployment names, or from
+  the model file when it names none. *(static)*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a BigQuery table or a BigLake table (e.g. an

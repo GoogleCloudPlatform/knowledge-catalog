@@ -1784,17 +1784,17 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// One error for each third-party table of `model` under each BigQuery or
-// Spanner graph target its GOOGLE block or legacy wrapper names. `model` has
-// no deployments list.
+// One error for each third-party table of `model` under each target its
+// GOOGLE block or legacy wrapper names. `model` has no deployments list.
 export function thirdPartyGraphErrors(
     document: string, model: SemanticModel): string[] {
-  const {bigQuery, spanner} = googleDeploymentTargets(model);
+  const {bigQuery, spanner, alloyDb} = googleDeploymentTargets(model);
   const entities = (model.entities ?? [])
                        .filter(e => thirdPartyEntryOf(e.authoredSource ?? ''));
   return [
     ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
     ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),
+    ...alloyDb.map(coordinates => ({engine: 'alloydb' as const, coordinates})),
   ].flatMap(t => {
     const {target, outside} = targetDatabase(t);
     return entities.map(

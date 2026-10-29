@@ -961,7 +961,7 @@ async function prepareModels(
       liftedExclusions,
       v2Aspects: kcV2Aspects(),
     }),
-    // No graph target reads a third-party table, even on a catalog-only push,
+    // No target reads a third-party table, even on a catalog-only push,
     // since the catalog keeps the target.
     ...labeled(models).flatMap(
         m => thirdPartyGraphErrors(m.document, m.model)),

@@ -90,7 +90,11 @@ scenarios('a third-party table', [
       errors: [err(singlePhase(SPANNER, "commerce, profile 'sf'"))],
     },
     {flags: {deployment: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
-    {flags: {profile: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]}],
+    {flags: {profile: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
+    {files: {'commerce.yaml': modelFile({google: {deploymentTargets: [ALLOYDB]}})
+                                  .replace(bqTable('customer'), ENTRY)},
+     flags: {profile: false}, code: 1, nothingWritten: true,
+     errors: [err(singlePhase("AlloyDB database 'test-project/us-central1/c/db'"))]}],
   },
   {
     name: 'a missing entry stops the push before anything is written, with or without --skip-source-check, and stops kcmd profiles',
