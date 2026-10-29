@@ -1,7 +1,8 @@
 # A SECOND binding profile over the same logical model (profile_binding.yaml),
 # so one logical declaration yields two physical realizations. The operational
 # store lays the data out differently -- different tables, different column
-# names, a different deployment target. It binds `segment` (so `segment_count`,
+# names, a different deployment target, and so its own primary keys and
+# `placed_by` join columns. It binds `segment` (so `segment_count`,
 # pruned under `analytical`, is available here) and leaves `amount` unbound (so
 # `total_amount`, available under `analytical`, is pruned here). Read this golden
 # beside the analytical one: the two answer different questions from one model.
@@ -12,12 +13,18 @@ semantic_model:
     entities:
       - name: Customer
         source: bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/dim_customer
+        primary_key: [cust_key]
         fields:
           - { name: id, expression: cust_key }
           - { name: name, expression: cust_name }
           - { name: segment, expression: cust_segment }
       - name: Order
         source: bigquery.googleapis.com/projects/acme-ops/datasets/ops/tables/fct_order
+        primary_key: [order_key]
         fields:
           - { name: id, expression: order_key }
           - { name: customerId, expression: cust_key }
+    relationships:
+      - name: placed_by
+        from_columns: [cust_key]
+        to_columns: [cust_key]

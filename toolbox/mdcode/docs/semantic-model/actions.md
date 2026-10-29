@@ -78,7 +78,7 @@ semantic_model:
     entities:
       - name: Account
         description: A customer's money at this bank.
-        primary_key: [accountId]
+        primary_key: [account_id]
         source: bigquery.googleapis.com/projects/my-project/datasets/bank/tables/account
         fields:
           - { name: accountId,      datatype: Integer, expression: account_id }
@@ -88,7 +88,7 @@ semantic_model:
           - { name: status,         datatype: String,  expression: status, description: "open, frozen or closed." }
       - name: Transfer
         description: One movement of money between two accounts.
-        primary_key: [transferId]
+        primary_key: [transfer_id]
         source: bigquery.googleapis.com/projects/my-project/datasets/bank/tables/transfer
         fields:
           - { name: transferId, datatype: String,  expression: transfer_id }
@@ -98,8 +98,8 @@ semantic_model:
       - name: TransferDebits
         from: Transfer
         to: Account
-        from_columns: [debitedId]
-        to_columns: [accountId]
+        from_columns: [debited_account_id]
+        to_columns: [account_id]
     actions:
       - name: TransferFunds
         description: Move money from one account to another.

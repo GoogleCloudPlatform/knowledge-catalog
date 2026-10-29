@@ -32,7 +32,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Field expression (canonical SQL)                               | only with `--emit-expressions`  | only if pushed with it                         | builds the DDL                                                       | builds the DDL                                                       |
 | Field dimension role (`is_time`)                               | only with `--emit-expressions`³ | only if pushed with it³                        | noted in `OPTIONS(description)`                                      | — dropped                                                            |
 | Primary key                                                    | `schema.primaryKey`             | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
-| Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | — dropped (only PK emitted)                                          | — dropped (only PK emitted)                                          |
+| Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | the first is `KEY(...)` when there is no primary key; else dropped   | the first is `KEY(...)` when there is no primary key; else dropped   |
 | Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
 | Relationship (1:1 / 1:N)                                       | `schema-join` link¹⁵            | ✓ (name normalized⁶)                           | `EDGE TABLE`                                                         | `EDGE TABLE`                                                         |
 | Relationship (M:N / `association`)                             | — not stored                    | —                                              | `EDGE TABLE` (via junction table)                                    | `EDGE TABLE` (via junction table)                                    |
@@ -266,8 +266,8 @@ preserved; their separate structure is not.
 The model's own statement-level metadata has nowhere to go: BigQuery silently
 drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
 not in the graph — the `description` and `ai_context.instructions` are carried
-into Knowledge Catalog instead. Unique keys beyond the primary key are also
-dropped (only the primary key is emitted). The imported vendor SQL is never
+into Knowledge Catalog instead. Of an entity's keys only one is emitted: its
+primary key, else its first unique key. The imported vendor SQL is never
 emitted. `push --transpile` adds a `BIGQUERY` entry for a vendor-only
 expression or an `ANSI_SQL` expression that double-quotes column names, and the
 graph builds each field and metric from its `BIGQUERY` entry, else its `ANSI_SQL` one. A field with none of these is left out of its node table with a warning,

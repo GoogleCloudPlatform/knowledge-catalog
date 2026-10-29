@@ -1133,20 +1133,15 @@ describe('a relationship joins on a key of its target', () => {
     expect(check(ent('customer'), ['`id`'])).toEqual([]);
   });
 
-  test('a key field\'s column is read without its comment, as the generators read it', () => {
-    // The generators emit `KEY(cust_id)` for this field, so a join on
-    // `cust_id` covers the key.
-    const commented = ent('customer', {
+  test('a field named like a key does not change the column the key names', () => {
+    // The generators emit `KEY(id)` whatever field `id` reads, so only a join
+    // on `id` covers the key.
+    const named = ent('customer', {
       fields: [{name: 'id', expression: 'cust_id -- the customer number'}],
     });
-    expect(check(commented, ['cust_id'])).toEqual([]);
-  });
-
-  test('a join name matches a field exactly, as the generators read it', () => {
-    // The generators read `ID` as a column, not as field `id`, so the join
-    // does not reach the key they emit, `cust_id`.
-    const named = ent('customer', {fields: [{name: 'id', expression: 'cust_id'}]});
-    expect(check(named, ['ID']).join('\n'))
+    expect(check(named, ['id'])).toEqual([]);
+    expect(check(named, ['ID'])).toEqual([]);
+    expect(check(named, ['cust_id']).join('\n'))
         .toContain("cover no primary or unique key of 'customer'");
   });
 
@@ -1167,7 +1162,7 @@ describe('a relationship joins on a key of its target', () => {
 });
 
 
-describe('a relationship key check reads names as columns', () => {
+describe('a relationship key check compares names as written', () => {
   const join = (toEntity: string, to: string[]) => ({
     name: 'placed_by',
     source: {entity: 'orders', columns: to.map(c => `o_${c.replace(/`/g, '')}`)},
@@ -1178,22 +1173,25 @@ describe('a relationship key check reads names as columns', () => {
       [loaded(model({entities: [orders, ...entities], relationships: [rel]}))],
       {targetOptional: true});
 
-  test('a key that names a field covers a join on that field\'s column', () => {
+  // A key is a physical column, so `customerId` is not read as the column
+  // the field of that name is bound to.
+  test('a key that names a field does not cover a join on that field\'s column', () => {
     const customer: Entity = {
       name: 'customer', dataSource: 'p.d.c', keys: ['customerId'],
       fields: [{name: 'customerId', expression: 'customer_id'}],
     };
-    expect(check([customer], join('customer', ['customer_id']))).toEqual([]);
+    expect(check([customer], join('customer', ['customer_id'])).join('\n'))
+        .toContain("cover no primary or unique key of 'customer'");
+    expect(check([customer], join('customer', ['customerId']))).toEqual([]);
   });
 
-  // The column is bound only in a profile, so this binding cannot tell which
-  // column the key is; the profile's binding is checked instead.
-  test('a key that names a field with no column yet is not judged', () => {
+  test('a key that names an unbound field is judged as the column it names', () => {
     const customer: Entity = {
       name: 'customer', dataSource: 'p.d.c', keys: ['customerId'],
       fields: [{name: 'customerId'}],
     };
-    expect(check([customer], join('customer', ['customer_id']))).toEqual([]);
+    expect(check([customer], join('customer', ['customer_id'])).join('\n'))
+        .toContain("cover no primary or unique key of 'customer'");
   });
 
   test('a relationship through a junction table is not checked', () => {

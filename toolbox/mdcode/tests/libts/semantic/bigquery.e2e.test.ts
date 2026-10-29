@@ -221,10 +221,13 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
         ]);
       });
 
-  test('a dataset with only unique_keys (no primary_key) is warned about', () => {
-    expect(loadWarnings)
-        .toContain(
-            'dataset \'orders\': no primary_key; the entity\'s KEY will be empty (invalid for graph generation)');
+  // The graph keys a node by its first unique key when it has no primary key,
+  // so only the dataset with neither is warned about.
+  test('a dataset with only unique_keys (no primary_key) is not warned about', () => {
+    const noKey = (dataset: string) => `dataset '${dataset}': no primary_key; ` +
+        `the entity's KEY will be empty (invalid for graph generation)`;
+    expect(loadWarnings).toContain(noKey('lineitem'));
+    expect(loadWarnings).not.toContain(noKey('orders'));
   });
 });
 

@@ -19,7 +19,7 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput} from './graph_ddl';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
 import {referencedEntityNames, sqlWithoutComments, stripQualifier, SUPPORTED_AGGREGATES} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
@@ -247,9 +247,11 @@ function placeMetric(
   loweringByEntity.set(entityName, lowering);
 
   // Resolve the aggregate's operand to an exposed property. COUNT(*) has no
-  // operand column, so it counts the (non-null) key property instead.
+  // operand column, so it counts the first column of the node's key instead:
+  // the primary key, else the first unique key (nodeKey).
   let operandExpr = agg.operand;
-  if (operandExpr === '*') {
+  const countsKey = agg.operand === '*';
+  if (countsKey) {
     // The entity is already known to have a key (checked above), so only the
     // aggregate itself can disqualify a `*` operand: BigQuery lowers `COUNT(*)`
     // to a count over the key, but no other aggregate has a `*` form.
@@ -259,12 +261,13 @@ function placeMetric(
           `(only COUNT(*) over a keyed node can be lowered)`);
       return;
     }
-    operandExpr = entity.keys[0];
+    operandExpr = nodeKey(entity)[0];
   }
 
   // A field with no BigQuery SQL is left out of the node table, so a measure
   // over it would aggregate a property the table does not declare.
-  if (entity.fields.some(
+  if (!countsKey &&
+      entity.fields.some(
           f => f.name === operandExpr && isFieldBound(f) &&
               fieldExpression(f) === undefined)) {
     warnings.push(
@@ -290,7 +293,9 @@ function placeMetric(
   }
   lowering.taken.add(metric.name);
 
-  const propName = exposeOperand(lowering, operandExpr, metric.name);
+  const propName = countsKey ?
+      exposeKeyColumn(lowering, operandExpr, metric.name) :
+      exposeOperand(lowering, operandExpr, metric.name);
   const aggregate =
       `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
 
@@ -333,6 +338,26 @@ function exposeOperand(
   }
   lowering.taken.add(name);
   lowering.operandToName.set(operandExpr, name);
+  return name;
+}
+
+// Exposes the key column COUNT(*) counts and returns its property name,
+// reusing a field whose expression is exactly that column, or the property an
+// earlier metric exposed for it.
+function exposeKeyColumn(
+    lowering: MeasureLowering, column: string, metricName: string): string {
+  const existing =
+      lowering.byLocalExpr.get(column) ?? lowering.operandToName.get(column);
+  if (existing) return existing;
+  const bare = isSimpleIdentifier(column) && !lowering.taken.has(column);
+  const name =
+      bare ? column : uniqueName(`${metricName}_input`, lowering.taken);
+  lowering.derivedProperties.push(
+      bare ? quoteIfReserved(column) : `${physicalColumn(column)} AS ${name}`);
+  lowering.taken.add(name);
+  // An operand named like a field reads that field (exposeOperand), so only a
+  // column no field is named after is shared with a later metric's operand.
+  if (!lowering.fieldNames.has(column)) lowering.operandToName.set(column, name);
   return name;
 }
 

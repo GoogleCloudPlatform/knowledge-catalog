@@ -13,7 +13,7 @@ semantic_model:
       # `Order` and `Group` are reserved -> quoted node labels + REFERENCES.
       - name: Order
         source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/orders
-        primary_key: [id]
+        primary_key: [order_id]
         fields:
           - name: id
             expression:
@@ -27,7 +27,7 @@ semantic_model:
               dialects: [{ dialect: BIGQUERY, expression: order }, { dialect: ANSI_SQL, expression: order }]
       - name: Group
         source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/groups
-        primary_key: [id]
+        primary_key: [group_id]
         fields:
           - name: id
             expression:
@@ -37,8 +37,8 @@ semantic_model:
       - name: from
         from: Order
         to: Group
-        from_columns: [groupId]
-        to_columns: [id]
+        from_columns: [group_fk]
+        to_columns: [group_id]
     metrics:
       # `range` is a reserved measure name -> quoted `AS` on the MEASURE.
       - name: range

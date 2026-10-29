@@ -709,10 +709,12 @@ ${targets ? `    deployments:\n${deployments.join('')}` : ''}\
 ${joined ? '        from_columns: [p_customer]\n        to_columns: [c_id]\n' : ''}`;
   }
 
-  // `model` with unique keys in place of primary keys. A graph generator
-  // builds a node only from a primary key.
-  const uniqueKeysOnly = (model: string) =>
-      model.replace(/primary_key: \[(\w+)\]/g, 'unique_keys: [[$1]]');
+  // `model` with no key on any entity, and so no relationship, since push
+  // rejects a join that covers no key. A graph generator builds a node only
+  // from a primary or unique key.
+  const noKeys = (model: string) =>
+      model.replace(/        primary_key: \[\w+\]\n/g, '')
+          .replace(/    relationships:\n[\s\S]*$/, '');
 
   // `model` with no source on customer.
   const customerUnbound = (model: string) =>
@@ -1073,9 +1075,9 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
       },
     ],
     [
-      'a legacy profile names a graph and no entity has a primary key',
+      'a legacy profile names a graph and no entity has a key',
       {
-        'commerce.yaml': uniqueKeysOnly(commerce()),
+        'commerce.yaml': noKeys(commerce()),
         'commerce.profiles/prod.yaml': legacyProfile(true),
       },
     ],
@@ -1211,10 +1213,10 @@ ${exclude ? '        fields_exclude: [notes]\n' : ''}`;
   // error names the deployment.
   const DEPLOYMENT_LABEL = "[commerce] deployment 'prod': ";
   const ungenerated: Array<[string, string]> = [
-    ['BigQuery', uniqueKeysOnly(commerce({targets: 1}))],
+    ['BigQuery', noKeys(commerce({targets: 1}))],
     [
       'Spanner',
-      uniqueKeysOnly(commerce({targets: 1}))
+      noKeys(commerce({targets: 1}))
           .replace(`${GRAPH}_prod`, `${SPANNER_DB}/graphs/commerce`)
           .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`),
     ],
@@ -2036,8 +2038,7 @@ semantic_model:
     });
 
     // The comparison skips what push's key check or the completeness check
-    // reports, and what push's key check may misread. It compares no join
-    // until the hierarchy resolves.
+    // reports.
     test('and reports each key and join problem at most once', async () => {
       const model = () => joinOnEmail(commerce());
       const unknown = (binding: string) =>
@@ -2067,21 +2068,25 @@ semantic_model:
           'commerce.profile.a.yaml': profileFile('a').replace(
               'to_columns: [c_id]', 'to_columns: ["`c_name`"]'),
         }, {model: [compared("profile 'a'", '`c_name`')], a: []}],
-        ['an AlloyDB key field bound to "c_id", which push may misread', {
-          'commerce.yaml': commerce()
-              .replace('primary_key: [c_id]', 'primary_key: [c_key]')
-              .replace('name: c_id,', 'name: c_key,'),
-          'commerce.profile.x.yaml': onAlloy(profileFile('x', 'c_key')).replace(
-              '{ name: c_id, expression: c_id }', '{ name: c_key, ' +
+        // Keys and join columns are compared as written, so a field of the
+        // key's name bound to "c_id" changes nothing.
+        ['an AlloyDB field named like the key bound to "c_id"', {
+          'commerce.yaml': commerce(),
+          'commerce.profile.x.yaml': onAlloy(profileFile('x')).replace(
+              '{ name: c_id, expression: c_id }', '{ name: c_id, ' +
                   'expression: {dialects: [{dialect: ALLOYDB, expression: ' +
                   '\'"c_id"\'}]} }'),
         }, {x: []}],
-        ['customer extends an unknown entity, so no join is compared', {
+        ['customer extends an unknown entity, and a join is still compared', {
           'commerce.yaml': commerce().replace(
               'name: customer\n', 'name: customer\n        extends: [nope]\n'),
           'commerce.profile.a.yaml': profileFile('a'),
           'commerce.profile.b.yaml': joinOnEmail(profileFile('b')),
-        }, {model: [unknown('commerce')], a: [], b: []}],
+        }, {
+          model: [compared("profile 'b'", 'c_email'), unknown('commerce')],
+          a: [],
+          b: [],
+        }],
       ];
       for (const [label, files, pushes] of cases) {
         fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});

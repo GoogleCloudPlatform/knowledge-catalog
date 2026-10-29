@@ -8,7 +8,7 @@
 // aware regex helpers (`referencedEntityNames`, `stripQualifier`).
 //
 
-import {coversKey, Entity, Field, fieldBinding} from './ir';
+import {Field, fieldBinding} from './ir';
 import {SqlColumn, sqlColumns, sqlExpressionTree, withoutComments} from './sql_parser';
 
 // Matches a single- or double-quoted SQL string literal, honoring backslash
@@ -94,34 +94,6 @@ export function fieldBindingWithoutComments(
   return sqlWithoutComments(
       text,
       field.expression === undefined ? field.importedDialect : targetDialect);
-}
-
-// The physical column a key or join column names, as the BigQuery graph reads
-// it: a name that matches one of the entity's fields is that field's column,
-// read without its comments, and any other name is a column already. Undefined
-// when the name is a field with no column in this binding.
-export function keyColumn(
-    entity: Pick<Entity, 'name'|'fields'>, name: string): string|undefined {
-  const field = entity.fields.find(f => f.name === name);
-  if (!field) return name;
-  const expr = fieldBindingWithoutComments(field);
-  return expr === undefined ? undefined :
-                              stripQualifier(expr, entity.name).trim();
-}
-
-// Whether `toColumns` cover a key once every name is read as its column (see
-// coversKey), or undefined when that cannot be told yet: a join column or a
-// key column names a field with no column in this binding.
-export function coversKeyByColumns(
-    entity: Pick<Entity, 'name'|'fields'>, toColumns: string[],
-    primaryKey: string[], uniqueKeys: string[][]): boolean|undefined {
-  const col = (name: string) => keyColumn(entity, name);
-  const to = toColumns.map(col);
-  if (to.some(c => c === undefined)) return undefined;
-  const keys = [primaryKey, ...uniqueKeys].map(k => k.map(col));
-  if (keys.some(k => k.some(c => c === undefined))) return undefined;
-  return coversKey(
-      to as string[], keys[0] as string[], keys.slice(1) as string[][]);
 }
 
 // Results of columnReferences by dialect and text, so the checks one push

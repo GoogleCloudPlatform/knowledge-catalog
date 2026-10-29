@@ -37,10 +37,10 @@
 
 import * as yaml from 'yaml';
 
-import {Action, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
+import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, columnsForSource, coversKeyByColumns, entitiesReached, fieldsReadOn, isColumnName, keyColumn} from './sql_expr_utils';
+import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {transpilesFrom} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
@@ -2411,28 +2411,17 @@ export function validateProfileCompleteness(
  * Returns one message for each binding, the model file's included, whose
  * `to_columns` for a relationship cover no primary or unique key of its
  * target, or an empty list. A superset of a key covers it (see coversKey).
- * Relationships are checked only after the hierarchy resolves. A binding
- * whose key or join columns do not all read as bare or backtick-quoted columns
- * is left out. `applied` names the profile the push applies. The "covers no
- * key" check then leaves out that profile's join, or the model file's when the
- * profile states none.
+ * Keys and join columns are compared as written. A binding whose key or join
+ * columns are not all column names (isColumnName) is left out. `applied` names
+ * the profile the push applies. The "covers no key" check then leaves out that
+ * profile's join, or the model file's when the profile states none.
  */
 export function validateProfileConsistency(
     baseModel: SemanticModel, profiles: ProfileSpec[],
     applied?: string): string[] {
   const errors: string[] = [];
   const entities = baseModel.entities ?? [];
-
-  // What an entity inherits is not known until the hierarchy resolves.
-  if (inheritanceErrorOf(baseModel)) return errors;
   const byName = new Map(entities.map(e => [e.name, e]));
-  // Each binding's fields, so a key or join column that names a field is read
-  // as that field's column, as the BigQuery graph reads it. A value the
-  // loader's readers reject is left unapplied; the completeness check reports
-  // it.
-  const baseFields = fieldsByEntity(baseModel);
-  const profileFields = new Map(profiles.map(
-      p => [p.name, fieldsByEntity(applyBindings(baseModel, p, {}).model)]));
   for (const r of baseModel.relationships ?? []) {
     if (r.association) continue;
     const target = byName.get(r.destination.entity);
@@ -2447,23 +2436,12 @@ export function validateProfileConsistency(
     // since completeness reports the missing keys. A binding with no join
     // columns is left out; completeness reports it for a named profile.
     const record =
-        (who: string, fields: Map<string, Map<string, Field>>, to: string[],
-         pk: string[], uks: string[][]) => {
-          const entity = {
-            name: target.name,
-            fields: [...(fields.get(target.name)?.values() ?? [])],
-          };
+        (who: string, to: string[], pk: string[], uks: string[][]) => {
           // The column name checks report a value that is not a column name.
-          // Push's key check may misread a field bound to anything but a bare
-          // or backtick-quoted column, such as PostgreSQL's "c_id".
-          if (!to.length || ![...to, ...pk, ...uks.flat()].every(
-                  c => /^(\w+|`[^`]+`)$/.test(keyColumn(entity, c) ?? c))) {
+          if (!to.length || ![...to, ...pk, ...uks.flat()].every(isColumnName)) {
             return;
           }
-          const covered = coversKeyByColumns(entity, to, pk, uks);
-          // A key that names a field with no column in this binding cannot be
-          // judged here.
-          if (covered === false && who !== checkedByPush) {
+          if (!coversKey(to, pk, uks) && who !== checkedByPush) {
             errors.push(
                 `relationship '${r.name}': ${who} joins on to_columns ${
                     JSON.stringify(to)}, which cover no primary or unique key ` +
@@ -2471,14 +2449,13 @@ export function validateProfileConsistency(
           }
         };
     record(
-        'the model file', baseFields, r.destination.columns, target.keys,
+        'the model file', r.destination.columns, target.keys,
         target.uniqueKeys ?? []);
     for (const p of profiles) {
       const pr = p.relationships.find(x => x.name === r.name);
       const pe = p.entities.find(e => e.name === target.name);
       record(
-          `profile '${p.name}'`, profileFields.get(p.name)!,
-          pr?.toColumns ?? [],
+          `profile '${p.name}'`, pr?.toColumns ?? [],
           pe?.primaryKey?.length ? pe.primaryKey : target.keys,
           nonEmptyKeys(pe?.uniqueKeys).length ? pe!.uniqueKeys! :
                                                target.uniqueKeys ?? []);

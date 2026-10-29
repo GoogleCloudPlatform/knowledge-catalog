@@ -14,13 +14,13 @@ semantic_model:
     entities:
       - name: Customer
         source: bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/customers
-        primary_key: [id]
+        primary_key: [customer_id]
         fields:
           - { name: id, label: Customer ID, expression: customer_id }
           - { name: name, expression: customer_name }
       - name: Order
         source: bigquery.googleapis.com/projects/acme-dev/datasets/sales/tables/orders
-        primary_key: [id]
+        primary_key: [order_id]
         fields:
           - { name: id, expression: order_id }
           - { name: customerId, expression: customer_id }
@@ -30,8 +30,8 @@ semantic_model:
       - name: placed_by
         from: Order
         to: Customer
-        from_columns: [customerId]
-        to_columns: [id]
+        from_columns: [customer_id]
+        to_columns: [customer_id]
     metrics:
       - name: order_count
         expression: COUNT(Order.id)

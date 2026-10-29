@@ -26,13 +26,14 @@
 // shape BigQuery enforces for measures, run over the loaded fixtures.
 //
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import {GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -152,17 +153,94 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('MEASURE(COUNT(o_orderkey)) AS order_count');
       });
 
-  test('a key field bound to a computed expression warns at the structural site', () => {
-    // A KEY / SOURCE KEY / REFERENCES site must name a bare column. A key bound
-    // to a computed expression resolves to SQL, not a column, which BigQuery
-    // rejects; the generator must warn statically rather than emit broken DDL.
+  // COUNT(*) counts the key column itself. A key names a column, never a field,
+  // so a field of the same name neither supplies the counted value nor drops
+  // the metric.
+  describe('COUNT(*) counts the key column', () => {
+    const keyedByOrderId = (field: Field): SemanticModel => ({
+      ...orders(),
+      entities: [{
+        name: 'orders',
+        dataSource: 'orders',
+        keys: ['order_id'],
+        fields: [field],
+      }],
+      metrics: [{name: 'order_count', expression: 'COUNT(*)', entity: 'orders'}],
+    });
+
+    test('not a same-named field that reads another column', () => {
+      const {ddl} = generatePropertyGraph(
+          keyedByOrderId(
+              {name: 'order_id', expression: 'orders.legacy_ref'}),
+          GEN_OPTS);
+      expect(ddl).toContain('KEY(order_id)');
+      expect(ddl).toContain('order_id AS order_count_input');
+      expect(ddl).toContain(
+          'MEASURE(COUNT(order_count_input)) AS order_count');
+    });
+
+    test('when a same-named field has no BigQuery SQL', () => {
+      const {ddl, warnings} = generatePropertyGraph(
+          keyedByOrderId({
+            name: 'order_id',
+            dialects: [{dialect: 'SNOWFLAKE', expression: 'legacy_ref::text'}],
+            importedExpression: 'legacy_ref::text',
+            importedDialect: 'SNOWFLAKE',
+          }),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          'MEASURE(COUNT(order_count_input)) AS order_count');
+      expect(warnings.filter(w => w.includes('aggregates field'))).toEqual([]);
+    });
+
+    test('quoted when BigQuery cannot read it bare', () => {
+      const model = orders();
+      model.entities[0].keys = ['2nd_id'];
+      model.metrics =
+          [{name: 'order_count', expression: 'COUNT(*)', entity: 'orders'}];
+      const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain('`2nd_id` AS order_count_input');
+    });
+
+    test('in one property that a later metric over the column reuses', () => {
+      const model = orders();
+      model.entities[0].keys = ['o_key'];
+      model.metrics = [
+        {name: 'n', expression: 'COUNT(*)', entity: 'orders'},
+        {name: 'm', expression: 'COUNT(DISTINCT orders.o_key)', entity: 'orders'},
+      ];
+      const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain('MEASURE(COUNT(o_key)) AS n');
+      expect(ddl).toContain('MEASURE(COUNT(DISTINCT o_key)) AS m');
+      expect(ddl).not.toContain('_input');
+    });
+
+    test('while a later metric over a same-named field still reads the field', () => {
+      const model = keyedByOrderId(
+          {name: 'order_id', expression: 'orders.legacy_ref'});
+      model.metrics.push({
+        name: 'distinct_refs',
+        expression: 'COUNT(DISTINCT orders.order_id)',
+        entity: 'orders'
+      });
+      const {ddl} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain(
+          'MEASURE(COUNT(order_count_input)) AS order_count');
+      expect(ddl).toContain(
+          'MEASURE(COUNT(DISTINCT order_id)) AS distinct_refs');
+    });
+  });
+
+  test('a key named like a field bound to a computed expression stays the column', () => {
+    // A KEY / SOURCE KEY / REFERENCES site must name a bare column, and a key
+    // names one, never a field. So the same-named field's computed expression
+    // does not reach KEY, and nothing is warned.
     const model = orders();
     model.entities[0].fields[0].expression = 'CONCAT(orders.a, orders.b)';
-    const {warnings} = generatePropertyGraph(model, GEN_OPTS);
-    expect(warnings.some(
-               w => w.includes('o_orderkey') &&
-                   w.includes('non-column expression')))
-        .toBe(true);
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain('KEY(o_orderkey)');
+    expect(ddl).not.toContain('KEY(CONCAT');
+    expect(warnings.filter(w => w.includes('key or join column'))).toEqual([]);
   });
 
   test(
@@ -456,6 +534,46 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
         expect(warnings).toEqual([]);
         expect(ddl).toContain('`acme.sales.order items` AS order_items');
       });
+});
+
+
+describe('a BigLake source', () => {
+  // Loaded rather than hand-built, so the test covers the loader's half too:
+  // it reads a BigLake resource name into the four-part name BigQuery gives a
+  // Lakehouse table, `<project>.<catalog>.<namespace>.<table>`.
+  beforeAll(loadSqlEngine);
+
+  test('is written as a BigQuery source is, one name in backticks', () => {
+    const {models} = loadModels(`version: "0.2.0.dev0/google"
+semantic_model:
+  - name: lake
+    entities:
+      - name: orders
+        source: biglake.googleapis.com/projects/acme/catalogs/lakehouse/namespaces/sales/tables/orders
+        primary_key: [order_id]
+        fields:
+          - {name: order_id, expression: order_id}
+          - {name: customer_id, expression: customer_id}
+      - name: customers
+        source: bigquery.googleapis.com/projects/acme/datasets/crm/tables/customers
+        primary_key: [customer_id]
+        fields:
+          - {name: customer_id, expression: customer_id}
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customers
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+`);
+    const {ddl, warnings} =
+        generatePropertyGraph(models[0], {project: 'acme', dataset: 'graphs'});
+    expect(warnings).toEqual([]);
+    // Its node table and the edge it backs both read it.
+    expect(ddl).toContain('\n  `acme.lakehouse.sales.orders` AS orders\n');
+    expect(ddl).toContain('\n  `acme.lakehouse.sales.orders` AS placed_by\n');
+    expect(ddl).toContain('\n  `acme.crm.customers` AS customers\n');
+  });
 });
 
 
@@ -1067,7 +1185,7 @@ describe('a comment in a field expression', () => {
     entities: [{
       name: 'orders',
       dataSource: 'p.d.orders',
-      keys: ['id'],
+      keys: ['order_id'],
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
@@ -1167,7 +1285,7 @@ describe('a comment in a field expression', () => {
       entities: [{
         name: 'orders',
         dataSource: 'p.d.orders',
-        keys: ['id'],
+        keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
           {name: 'amount', expression: 'orders/* in cents */.amount'},
@@ -1463,7 +1581,9 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
         `MEASURE)`);
   });
 
-  test('a key field with only Snowflake SQL keeps its column in KEY', () => {
+  test('a key named like a field with only Snowflake SQL stays the column', () => {
+    // The key names the column `order_id`; the field of that name, which has
+    // no BigQuery SQL, is left out of the properties.
     const model = orders();
     model.entities[0].keys = ['order_id'];
     model.entities[0].fields = [{
@@ -1473,8 +1593,8 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       importedDialect: 'SNOWFLAKE',
     }];
     const {ddl} = generatePropertyGraph(model, GEN_OPTS);
-    expect(ddl).toContain('KEY(o_orderkey)');
-    expect(ddl).not.toContain('order_id');
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).not.toContain('o_orderkey');
   });
 
   test('an association field with no BigQuery SQL is left out of its edge', () => {

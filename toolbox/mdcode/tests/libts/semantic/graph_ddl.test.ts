@@ -28,10 +28,11 @@ describe('each engine difference comes from the engine', () => {
     fieldOptions: field => field.description === undefined ?
         undefined :
         `<field options ${field.description}>`,
-    // Other SQL than the field's own for the key column and `amount`, and none
-    // for `notes`, so the expected DDL shows every place the graph reads a
-    // field's SQL: properties, key and join columns, and the filter that leaves
-    // out a field the engine has no SQL for.
+    // Other SQL than the field's own for `order_id` and `amount`, and none for
+    // `notes`, so the expected DDL shows every place the graph reads a field's
+    // SQL: properties, and the filter that leaves out a field the engine has no
+    // SQL for. Key and join columns name columns, so they never read it, even
+    // where a field has their name.
     fieldExpression: field => {
       switch (field.name) {
         case 'order_id':
@@ -113,7 +114,7 @@ describe('each engine difference comes from the engine', () => {
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
   <table p.d.orders> AS orders
-    KEY(id)
+    KEY(order_id)
     <options One row per order>
     PROPERTIES(
       id AS order_id,
@@ -123,21 +124,21 @@ NODE TABLES (
       <measure revenue>
     ),
   <table p.d.customers> AS customers
-    KEY(CAST(id AS STRING))
+    KEY(customer_id)
     PROPERTIES(
       CAST(id AS STRING) AS customer_id
     )
 )
 EDGE TABLES (
   <table p.d.orders> AS placed_by
-    KEY(id)
-    SOURCE KEY(id) REFERENCES orders(id)
-    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
+    KEY(order_id)
+    SOURCE KEY(order_id) REFERENCES orders(order_id)
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
     <options Who placed it>,
   <table p.d.gifts> AS gifted_to
     KEY(gift_id)
-    SOURCE KEY(order_id) REFERENCES orders(id)
-    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
+    SOURCE KEY(order_id) REFERENCES orders(order_id)
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
     <options Who received it>
     PROPERTIES(
       card_text AS message <field options Card text>
@@ -145,7 +146,7 @@ EDGE TABLES (
   <table ghost> AS from_ghost
     KEY(customer_id)
     SOURCE KEY(customer_id) REFERENCES ghost(customer_id)
-    DESTINATION KEY(customer_id) REFERENCES customers(CAST(id AS STRING))
+    DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
 );
 `);
        });
@@ -195,7 +196,7 @@ EDGE TABLES (
 CREATE OR REPLACE PROPERTY GRAPH <graph shop>
 NODE TABLES (
   <table p.d.orders> AS orders
-    KEY(id)
+    KEY(order_id)
     DEFAULT LABEL
     PROPERTIES(
       id AS order_id,
@@ -203,7 +204,7 @@ NODE TABLES (
       customer_id
     ),
   <table p.d.gift_orders> AS gift_orders
-    KEY(id)
+    KEY(order_id)
     DEFAULT LABEL
     <options Orders sent as gifts>
     PROPERTIES(
@@ -234,10 +235,17 @@ NODE TABLES (
 
   test('warnings name the engine', () => {
     const {warnings} = generateGraphDdl(MODEL, MARKED);
-    expect(warnings).toContain(
-        `entity 'customers': field 'customer_id' is bound to a non-column ` +
-        `expression (CAST(id AS STRING)); a KEY/REFERENCES site ` +
-        `requires a bare column, so Marked will reject the generated DDL`);
+    // A key named like a field with a computed expression is still a column.
+    expect(warnings.filter(w => w.includes('KEY/REFERENCES'))).toEqual([]);
+    const computedKey = {
+      ...MODEL,
+      entities: [MODEL.entities[0],
+                 {...MODEL.entities[1], keys: ['CAST(id AS STRING)']}],
+    };
+    expect(generateGraphDdl(computedKey, MARKED).warnings).toContain(
+        `entity 'customers': key or join column 'CAST(id AS STRING)' is not ` +
+        `a physical column name; a KEY/REFERENCES site requires a column, so ` +
+        `Marked will reject the generated DDL`);
     expect(warnings).toContain(
         `1 action(s) reach Knowledge Catalog only; the Marked push deploys ` +
         `none of them.`);

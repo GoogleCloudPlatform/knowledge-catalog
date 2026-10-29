@@ -440,7 +440,7 @@ echo 'default_profile: analytical' >> catalog.yaml
 >     entities:
 >       - name: orders
 >         source: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
->         primary_key: [order_id]
+>         primary_key: [o_orderkey]
 >         fields:
 >           - { name: order_id, datatype: Integer, expression: o_orderkey }
 >           # ...
