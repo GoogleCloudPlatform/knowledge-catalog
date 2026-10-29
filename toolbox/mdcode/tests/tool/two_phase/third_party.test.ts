@@ -26,15 +26,19 @@ const MISSING = err(
     'entry may not exist, or you may not be allowed to read it. kcmd reads a ' +
     "third-party table's dialect from its entry, so add the table to " +
     'Knowledge Catalog, or fix the source.');
-// Push's refusal of deployment `d`, which targets `target`, for the binding
-// in `bindings`.
-const refused = (target: string, outside = 'a table in that database',
-                 {d = 'd', bindings = 'the model file'} = {}) =>
-    `[commerce] deployment '${d}' targets ${target}, but ${bindings} binds ` +
-    `entity 'Customer' to '${ENTRY}', which is not ${outside}.`;
-const BQ_TABLE = 'a BigQuery or BigLake table';
-const BIGQUERY = refused('a BigQuery graph', BQ_TABLE);
-const SINGLE_PHASE = refused('a BigQuery graph', BQ_TABLE, {d: 'default'});
+const BQ = 'a BigQuery graph';
+const SPANNER = "Spanner database 'test-project/i/db'";
+// Why a graph that targets `target` cannot read Customer's table.
+const outside = (target: string) => `'${ENTRY}', which is not ${
+    target === BQ ? 'a BigQuery or BigLake table' : 'a table in that database'}.`;
+// Push's refusal of deployment 'd', which targets `target`.
+const refused = (target: string) => `[commerce] deployment 'd' targets ${
+    target}, but the model file binds entity 'Customer' to ${outside(target)}`;
+// The refusal for a model with no deployments list, in the document `doc`.
+const singlePhase = (target: string, doc = 'commerce') =>
+    `model 'commerce' (${doc}) targets ${target}, but binds entity ` +
+    `'Customer' to ${outside(target)}`;
+const BIGQUERY = refused(BQ);
 const ORDER = {
   name: 'Order', source: bqTable('order'), primary_key: ['id'],
   fields: [{name: 'id', expression: 'o_id'}],
@@ -55,8 +59,7 @@ scenarios('a third-party table', [
     report: {code: 1, rejects: {'no profiles': [BIGQUERY]}},
     then: [
       {deployments: [{name: 'd', target: spannerGraph('g')}], code: 1,
-       errors: [err(refused("Spanner database 'test-project/i/db'"))],
-       nothingWritten: true},
+       errors: [err(refused(SPANNER))], nothingWritten: true},
       {deployments: [{name: 'd', target: ALLOYDB}], code: 1,
        errors: [err(refused("AlloyDB database 'test-project/us-central1/c/db'"))],
        nothingWritten: true},
@@ -72,19 +75,18 @@ scenarios('a third-party table', [
   {
     // A model with no deployments list pushes in one phase, with the graph
     // target of its GOOGLE block or of a legacy profile folder.
-    name: 'a graph that a model with no deployments list names refuses one before anything is written',
+    name: 'a model with no deployments list is refused before anything is written when its GOOGLE block or legacy profile names a graph',
     files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g')]}})
                                  .replace(bqTable('customer'), ENTRY)},
     services: LOOKUP,
-    code: 1, nothingWritten: true, errors: [err(SINGLE_PHASE)],
-    report: {code: 1, rejects: {'no profiles': [SINGLE_PHASE]}},
+    code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))],
+    report: {code: 1, rejects: {'no profiles': [singlePhase(BQ)]}},
     then: [{
       files: {}, flags: {profile: 'sf'},
       legacy: {sf: `semantic_model:\n  - name: commerce\n    deployment_target: ${
           spannerGraph('g')}\n    entities: [{name: Customer, source: ${ENTRY}}]\n`},
       code: 1, nothingWritten: true,
-      errors: [err(refused("Spanner database 'test-project/i/db'", undefined,
-                           {d: 'sf', bindings: "profile 'sf'"}))],
+      errors: [err(singlePhase(SPANNER, "commerce, profile 'sf'"))],
     }],
   },
   {

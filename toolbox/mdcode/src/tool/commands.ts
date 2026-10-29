@@ -961,6 +961,9 @@ async function prepareModels(
       liftedExclusions,
       v2Aspects: kcV2Aspects(),
     }),
+    // No graph reads a third-party table, as the two-phase push checks too.
+    ...prune ? labeled(models).flatMap(
+        m => thirdPartyGraphErrors(m.document, m.model)) : [],
   ])];
   for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
     report.warning(w);
@@ -1052,9 +1055,6 @@ async function pushErrors(
     if (error) return [...errors, error];
   }
   if (!graph) return errors;
-  const thirdParty = prepared.models.flatMap(
-      m => thirdPartyGraphErrors(m.document, m.model, profileName));
-  if (thirdParty.length) return [...errors, ...thirdParty];
   // Push then generates each graph's DDL. Under --validate-only,
   // deployBigQuery and deploySpanner only generate the DDL and call no service.
   const legs = [
@@ -1370,13 +1370,6 @@ export async function push(options: PushOptions): Promise<number> {
       }
       const prepared = await prepareOnce(docs, profileName, true);
       if (!prepared) return 1;
-      // No graph reads a third-party table, as the two-phase push checks too.
-      const thirdParty = prepared.models.flatMap(
-          m => thirdPartyGraphErrors(m.document, m.model, profileName));
-      if (thirdParty.length) {
-        for (const e of thirdParty) console.error(`Error: ${e}`);
-        return 1;
-      }
       for (const d of docs) loadedDocs.add(d.name);
       noteCatalogOnly(prepared.models);
       for (const m of prepared.models) {

@@ -12,7 +12,7 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
+import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, thirdPartyEntryOf, undefinedEndpointProblem} from './loader';
@@ -1758,20 +1758,7 @@ export function deploymentTableErrors(
     sourceOf = e => bound.get(e.name);
     bindings = `profile '${profile.name}'`;
   }
-  // The database the tables must be in, as databaseOf gives it, and how an
-  // error names the target and a table outside it.
-  const {engine, coordinates: c} = deployment;
-  let database = 'bigquery';
-  let target = 'a BigQuery graph';
-  let outside = 'which is not a BigQuery or BigLake table';
-  if (engine !== 'bigquery') {
-    const [system, name] = engine === 'spanner' ?
-        ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
-        ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
-    database = `${engine}/${name}`;
-    target = `${system} database '${name}'`;
-    outside = 'which is not a table in that database';
-  }
+  const {database, target, outside} = targetTables(deployment);
   const errors: string[] = [];
   for (const e of model.entities ?? []) {
     const source = sourceOf(e)?.trim();
@@ -1783,26 +1770,37 @@ export function deploymentTableErrors(
   return errors;
 }
 
-// deploymentTableErrors for the third-party tables of `model`, which has no
-// deployments list and has `profile` applied, under each BigQuery or Spanner
-// graph target its GOOGLE block or legacy wrapper names.
+// The database the tables of a graph target must be in, as databaseOf gives
+// it, and how an error names the target and a table outside it.
+function targetTables({engine, coordinates: c}: ParsedDeploymentTarget) {
+  if (engine === 'bigquery') {
+    return {database: 'bigquery', target: 'a BigQuery graph',
+            outside: 'which is not a BigQuery or BigLake table'};
+  }
+  const [system, name] = engine === 'spanner' ?
+      ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
+      ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
+  return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
+          outside: 'which is not a table in that database'};
+}
+
+// One error for each third-party table of `model`, which has no deployments
+// list, under each BigQuery or Spanner graph target its GOOGLE block or legacy
+// wrapper names.
 export function thirdPartyGraphErrors(
-    document: string, model: SemanticModel, profile: string): string[] {
+    document: string, model: SemanticModel): string[] {
+  const {bigQuery, spanner} = googleDeploymentTargets(model);
   const entities = (model.entities ?? [])
                        .filter(e => thirdPartyEntryOf(e.authoredSource ?? ''));
-  const bound = {
-    ...model, entities,
-    profiles: [{
-      name: profile, relationships: [],
-      entities: entities.map(e => ({name: e.name, source: e.authoredSource})),
-    }],
-  };
-  const {bigQuery, spanner} = googleDeploymentTargets(model);
   return [
     ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
     ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),
-  ].flatMap(t => deploymentTableErrors(
-                document, bound, {...t, name: profile, profile}));
+  ].flatMap(t => {
+    const {target, outside} = targetTables(t);
+    return entities.map(
+        e => `model '${model.name}' (${document}) targets ${target}, but ` +
+            `binds entity '${e.name}' to '${e.authoredSource}', ${outside}.`);
+  });
 }
 
 
