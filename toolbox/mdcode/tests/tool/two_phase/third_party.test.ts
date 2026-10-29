@@ -103,7 +103,7 @@ scenarios('a third-party table', [
             errors: [MISSING], nothingWritten: true}],
   },
   {
-    name: 'a field bound to one needs SQL in its dialect or in ANSI_SQL, in the model file and in a profile, whose tables must be in one account',
+    name: "a field bound to one needs SQL in its dialect or ANSI_SQL, and a profile's third-party tables must be in one account",
     entities: [DATABRICKS],
     flags: {deployment: false},
     services: LOOKUP,

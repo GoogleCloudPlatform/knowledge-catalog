@@ -1758,7 +1758,7 @@ export function deploymentTableErrors(
     sourceOf = e => bound.get(e.name);
     bindings = `profile '${profile.name}'`;
   }
-  const {database, target, outside} = targetTables(deployment);
+  const {database, target, outside} = targetDatabase(deployment);
   const errors: string[] = [];
   for (const e of model.entities ?? []) {
     const source = sourceOf(e)?.trim();
@@ -1772,7 +1772,7 @@ export function deploymentTableErrors(
 
 // The database the tables of a graph target must be in, as databaseOf gives
 // it, and how an error names the target and a table outside it.
-function targetTables({engine, coordinates: c}: ParsedDeploymentTarget) {
+function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
   if (engine === 'bigquery') {
     return {database: 'bigquery', target: 'a BigQuery graph',
             outside: 'which is not a BigQuery or BigLake table'};
@@ -1784,9 +1784,9 @@ function targetTables({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// One error for each third-party table of `model`, which has no deployments
-// list, under each BigQuery or Spanner graph target its GOOGLE block or legacy
-// wrapper names.
+// One error for each third-party table of `model` under each BigQuery or
+// Spanner graph target its GOOGLE block or legacy wrapper names. `model` has
+// no deployments list.
 export function thirdPartyGraphErrors(
     document: string, model: SemanticModel): string[] {
   const {bigQuery, spanner} = googleDeploymentTargets(model);
@@ -1796,7 +1796,7 @@ export function thirdPartyGraphErrors(
     ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
     ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),
   ].flatMap(t => {
-    const {target, outside} = targetTables(t);
+    const {target, outside} = targetDatabase(t);
     return entities.map(
         e => `model '${model.name}' (${document}) targets ${target}, but ` +
             `binds entity '${e.name}' to '${e.authoredSource}', ${outside}.`);

@@ -1046,8 +1046,8 @@ export function loadProfileFile(
 }
 
 // The source dialects a command looked up before it loads
-// (LoadOptions.sourceDialects), and the database each third-party table's
-// entry names, keyed by entry name, for the one-database rule.
+// (LoadOptions.sourceDialects). `sourceDatabases` holds the database each
+// third-party table's entry names, by entry name, for the one-database rule.
 export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&
     {sourceDatabases?: ReadonlyMap<string, string>};
 
