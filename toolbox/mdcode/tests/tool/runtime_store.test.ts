@@ -350,8 +350,9 @@ semantic_model:
 
 
 // kcmd has no engine for a third-party table, so the runtime refuses the
-// profile that binds one, before it looks anything up, and so do
-// skills-generate and --print-store.
+// profile that binds one, and so do skills-generate and --print-store. The
+// Cloud SQL lookups run first, and the refusal comes after the profiles load,
+// before any store is resolved.
 describe('a third-party source', () => {
   test('is refused under the profile that binds it, naming the entity and the table', async () => {
     const ENTRY = 'projects/acme/locations/us/entryGroups/sf/entries/orders';

@@ -696,8 +696,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   of its `entrySource.system`, in any letter case: `SNOWFLAKE`, `DATABRICKS`,
   `MYSQL`, `POSTGRESQL` or `POSTGRES`, or `SQLSERVER`. A missing entry, or one
   that gives no dialect, stops the command before anything is written. A field
-  or metric bound to the table then needs SQL in that dialect or in
-  `ANSI_SQL`. *(live — needs read access to the entry)*
+  the model file binds to the table then needs SQL in that dialect or in
+  `ANSI_SQL`. So does every field and metric of a profile whose sources fix
+  that dialect. *(live — needs read access to the entry)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span

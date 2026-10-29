@@ -3010,7 +3010,8 @@ function pickDialect(
 interface ParsedSource {
   dataSource: string;
   authoredSource: string;
-  // The looked-up dialect of a Cloud SQL resource name, when the load has it.
+  // The looked-up dialect of a Cloud SQL or third-party table, when the load
+  // has it.
   sourceDialect?: string;
 }
 
@@ -3351,9 +3352,8 @@ const ENTRY_NAME =
 export const ENTRY_NAME_FORM =
     'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>';
 
-// A table outside Google Cloud, written as the Knowledge Catalog entry name of
-// its entry, which is in an entry group that is not a system one: the entry's
-// project and location, and the entry name.
+// The Knowledge Catalog entry of a table outside Google Cloud. Its entry group
+// is not a system one. `name` is the entry name the source writes.
 export interface ThirdPartyEntry {
   project: string;
   location: string;

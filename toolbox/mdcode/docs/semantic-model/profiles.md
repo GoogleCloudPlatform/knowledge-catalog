@@ -82,13 +82,13 @@ and warns for each such value. A table outside Google Cloud is written as
 the entry name of its Knowledge Catalog entry,
 `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, and takes the
 dialect its entry records (see [Validation](reference.md#validation)). A name
-under a prefix such as `snowflake:` or `databricks:table:` is rejected.
-A Bigtable or Dataproc Metastore table is rejected too, since the preview does not support
-them yet. An entry name in a system entry group, such as `@bigquery`, is
-rejected with an error that says what to write instead. A bare table name, a
-query, and any other prefix are rejected. The source also fixes the profile's
-SQL dialect, so every field the profile binds needs an expression in that
-dialect or in `ANSI_SQL`.
+under a prefix such as `snowflake:` or `databricks:table:` is rejected. A
+Bigtable or Dataproc Metastore table is rejected too, since the preview does
+not support them yet. An entry name in a system entry group, such as
+`@bigquery`, is rejected with an error that says what to write instead. A bare
+table name, a query, and any other prefix are rejected. The source also fixes
+the profile's SQL dialect, so every field the profile binds needs an expression
+in that dialect or in `ANSI_SQL`.
 
 A Cloud SQL table's resource name is
 `cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>`

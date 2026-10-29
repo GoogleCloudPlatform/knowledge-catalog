@@ -692,11 +692,11 @@ bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<table>
 spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<table>
 ```
 
-A table outside Google Cloud is written as the entry name of its Knowledge
-Catalog entry, `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`.
 A resource URI, the same name with a leading `//`, and a Knowledge Catalog name
 such as `bigquery:<p>.<d>.<t>` are rejected, and the error names the resource
-name to write. [profiles.md](profiles.md#sources) lists every accepted store.
+name to write. A table outside Google Cloud is written as the entry name of its
+Knowledge Catalog entry, `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`.
+[profiles.md](profiles.md#sources) lists every accepted store.
 Ossie requires `source` on every dataset; `kcmd` relaxes it to optional
 ([§4.2](#42-relaxations-looser-than-ossie)) so a purely logical model loads, but
 a non-abstract dataset in a model bound for a graph MUST have one.
