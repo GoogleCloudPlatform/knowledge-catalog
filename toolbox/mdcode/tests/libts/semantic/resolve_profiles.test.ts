@@ -2063,11 +2063,9 @@ describe('completeness sees the model as the profile does', () => {
         .toBeUndefined();
   });
 
-  // A profile's rebinding is read as the model file's source is. A catalog
-  // name under a third-party prefix is rejected and counts as no database.
-  // A third-party table is in the database its entry's fullyQualifiedName
-  // names, or, with none, in one with every table of its system. Either way
-  // it is apart from BigQuery's.
+  // A profile's rebinding is read as the model file's source is, so a catalog
+  // name under a third-party prefix is rejected and counts as no database. A
+  // third-party table's database is the one its entry names, or its system's.
   test('a profile that binds a third-party table', () => {
     const entry = (g: string, t: string) => `projects/acme/locations/us/entryGroups/${g}/entries/${t}`;
     const [sf, sf2, dbx] = [entry('sf', 'c'), entry('sf', 'v'), entry('dbx', 'v')];
@@ -2090,6 +2088,7 @@ describe('completeness sees the model as the profile does', () => {
     }
     expect(errorsFor(sf, sf2, {sourceDialects})).toEqual('');
     expect(errorsFor(sf, sf2, accounts('a', 'a'))).toEqual('');
+    expect(errorsFor(sf, sf2, {sourceDialects, sourceDatabases: new Map([[sf, 'snowflake/a']])})).toEqual('');
   });
 
   // A source the loader's reader rejects is reported, and names no

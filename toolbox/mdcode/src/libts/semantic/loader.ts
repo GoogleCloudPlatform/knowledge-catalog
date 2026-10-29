@@ -3252,8 +3252,8 @@ export function hasUnquotedWhitespace(source: string): boolean {
 // PostgreSQL one, so this keys it on its database, and the one-database rule
 // widens it to its instance once the lookup names SQL Server. Every
 // third-party table gets the key `thirdparty`, which is no target's database.
-// The one-database rule splits it by the database its entry's
-// fullyQualifiedName names, or by the system the lookup names.
+// The one-database rule puts it in the database its entry's
+// fullyQualifiedName names, or else with the other tables of its system.
 export function databaseOf(written: string): string|undefined {
   if (hasUnquotedWhitespace(written)) return undefined;
   const source = asResourceUri(written);

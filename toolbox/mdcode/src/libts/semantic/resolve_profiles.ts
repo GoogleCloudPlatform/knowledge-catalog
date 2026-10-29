@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -2074,14 +2074,20 @@ export function validateProfileCompleteness(
     }
     const lookedUp = profiledByName.get(e.name)?.sourceDialect;
     stated.push({source: pe.source, lookedUp});
-    // One query reaches every database of a SQL Server instance. A
-    // third-party table is in the database its entry's fullyQualifiedName
-    // names, or, with none, in one with every table of its system.
+    // One query reaches every database of a SQL Server instance. A third-party
+    // table is in the database its entry's fullyQualifiedName names.
     const table = lookedUp === 'SQLSERVER' && cloudSqlTableOf(pe.source);
     const key = table ? table.resourceName.split('/databases/')[0] :
         db !== 'thirdparty' ? db :
         opts.sourceDatabases?.get(pe.source.trim()) ?? `thirdparty/${lookedUp}`;
     if (!databases.has(key)) databases.set(key, e.name);
+  }
+  // A third-party table whose entry names no database is in the database of
+  // the other tables of its system.
+  for (const [prefix, systemDialect] of DIALECT_OF_FQN_PREFIX) {
+    if ([...databases.keys()].some(k => k.startsWith(`${prefix}/`))) {
+      databases.delete(`thirdparty/${systemDialect}`);
+    }
   }
   if (databases.size > 1) {
     const named = [...databases.values()].map(n => `'${n}'`).join(', ');

@@ -147,11 +147,14 @@ describe('sourceDialects of a third-party table', () => {
     const system = (s: string) => ({entrySource: {system: s}});
     const rows: Array<[object, string, string?]> = [
       [fqn('snowflake:acme.retail.public.orders'), 'SNOWFLAKE', 'snowflake/acme'],
+      [fqn('snowflake:ACME.retail.public.orders'), 'SNOWFLAKE', 'snowflake/acme'],
+      [fqn('snowflake:.retail.public.orders'), 'SNOWFLAKE'],
       [fqn('databricks:table:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
       [fqn('databricks:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
       [fqn('mysql:host.sales.orders'), 'MYSQL', 'mysql/host'],
       [fqn('postgresql:`db.example.com`.sales.public.orders'), 'POSTGRES',
        'postgresql/db.example.com/sales'],
+      [fqn('postgresql:host'), 'POSTGRES'],
       [fqn('sqlserver:host.sales.dbo.orders'), 'SQLSERVER', 'sqlserver/host'],
       [system('Snowflake'), 'SNOWFLAKE'],
       [system('DATABRICKS'), 'DATABRICKS'],
@@ -174,6 +177,7 @@ describe('sourceDialects of a third-party table', () => {
       [{}, 'neither a fullyQualifiedName nor an entrySource.system'],
       [{fullyQualifiedName: 'custom:acme.orders', entrySource: {system: 'SNOWFLAKE'}},
        "fullyQualifiedName 'custom:acme.orders'"],
+      [{fullyQualifiedName: 'snowflake'}, "fullyQualifiedName 'snowflake'"],
       [{entrySource: {system: 'ORACLE'}},
        "entrySource.system 'ORACLE' and no fullyQualifiedName"],
       // Dataplex rejects this prefix, and kcmd reads only postgresql:.

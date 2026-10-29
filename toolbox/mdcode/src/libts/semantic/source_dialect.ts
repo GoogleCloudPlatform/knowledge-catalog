@@ -135,7 +135,7 @@ async function thirdPartyDialect(
   const {fullyQualifiedName: fqn, entrySource} = res.result;
   const system = entrySource?.system;
   const dialect = fqn ?
-      DIALECT_OF_FQN_PREFIX.get(fqn.split(':')[0]) :
+      DIALECT_OF_FQN_PREFIX.get(fqn.match(/^([a-z]+):/)?.[1] ?? '') :
       DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
   if (dialect) return {dialect, database: fqn && databaseOfFqn(fqn)};
   const has = fqn ? `fullyQualifiedName '${fqn}'` :
@@ -151,14 +151,17 @@ async function thirdPartyDialect(
 }
 
 // The database a third-party table's fullyQualifiedName `fqn` names: a
-// Snowflake account, a Databricks metastore, a MySQL or SQL Server host, or a
-// PostgreSQL host and database. A Databricks name may carry the subtype
-// `table:`. Undefined when the name has too few segments to tell.
+// Snowflake account in lower case, a Databricks metastore, a MySQL or SQL
+// Server host, or a PostgreSQL host and database. Undefined unless every
+// segment is set and one follows the database's, as in a table's name.
 function databaseOfFqn(fqn: string): string|undefined {
   const [, prefix, path] = fqn.match(/^([a-z]+):(?:table:)?(.*)$/) ?? [];
   const seg = catalogNameSegments(path ?? '');
   const n = prefix === 'postgresql' ? 2 : 1;
-  return seg.length > n ? [prefix, ...seg.slice(0, n)].join('/') : undefined;
+  if (seg.length <= n || seg.includes('')) return undefined;
+  // A Snowflake account name ignores letter case.
+  if (prefix === 'snowflake') seg[0] = seg[0].toLowerCase();
+  return [prefix, ...seg.slice(0, n)].join('/');
 }
 
 // Every Cloud SQL table written as a resource name or resource URI anywhere in
