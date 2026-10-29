@@ -347,3 +347,26 @@ semantic_model:
         'patch ms --enable-dataplex-integration --project acme-ops)');
   });
 });
+
+
+// kcmd has no engine for a third-party table, so the runtime refuses the
+// profile that binds one, before it looks anything up, and so do
+// skills-generate and --print-store.
+describe('a third-party source', () => {
+  test('is refused under the profile that binds it, naming the entity and the table', async () => {
+    const ENTRY = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
+    writeModel('commerce.yaml', model(
+        `      - {name: prod, target: ${SPANNER_DB}/graphs/g}\n`,
+        `${SPANNER_DB}/tables/Orders`, false));
+    writeModel('commerce.profile.sf.yaml',
+               `name: sf\nentities:\n  - name: Order\n    source: ${ENTRY}\n`);
+    const error = `[commerce] model 'commerce' binds entity 'Order' to ` +
+        `third-party table '${ENTRY}', and kcmd has no engine for a ` +
+        `third-party table.`;
+    expect(await createSemanticRuntimes({ctx: CTX, profile: 'sf'})).toEqual({error});
+    expect(await skillsGenerate({out: 'skills', profile: 'sf'})).toBe(1);
+    expect(await profiles({printStore: true, profile: 'sf'})).toBe(1);
+    expect(logs).toEqual([`Error: ${error}`, `Error: ${error}`]);
+    expect('error' in await createSemanticRuntimes({ctx: CTX})).toBe(false);
+  });
+});

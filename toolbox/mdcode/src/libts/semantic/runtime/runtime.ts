@@ -22,7 +22,7 @@ import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
-import {loadSemanticModels, SemanticModelError} from '../loader';
+import {loadSemanticModels, SemanticModelError, thirdPartyEntryOf} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {applyProfileExclusions, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, isLegacyWrapper, loadProfileFile, ProfileExclusion, profileErrorMessage, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
@@ -183,10 +183,11 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // A Cloud SQL table written as its resource name takes its dialect from its
   // Knowledge Catalog entry, looked up once for the scope before anything
   // loads. A table whose entry cannot be read stops the scope, as push does.
+  // A third-party table is not looked up, since the scope is refused below.
   const lookup = await sourceDialects(
       [...docs.map(d => d.text),
        ...[...filesByDoc.values()].flat().map(f => f.text)],
-      new CatalogClient(ctx));
+      new CatalogClient(ctx), {thirdParty: false});
   if (lookup.errors.length) return {error: lookup.errors.join('\n')};
   const load = {sourceDialects: lookup.dialects};
 
@@ -274,6 +275,20 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
         const file = fileNameOf(layout, doc.name, p.path);
         return {error: `[${file}] ${err.message}`};
       }
+    }
+  }
+
+  // kcmd has no engine that reads a third-party table.
+  for (const {document, model} of models) {
+    const bound = (model.entities ?? [])
+                      .find(e => thirdPartyEntryOf(e.authoredSource ?? ''));
+    if (bound) {
+      return {
+        error: `[${document}] model '${model.name}' binds entity '${
+            bound.name}' to third-party table '${
+            bound.authoredSource}', and kcmd has no engine for a ` +
+            `third-party table.`,
+      };
     }
   }
 
