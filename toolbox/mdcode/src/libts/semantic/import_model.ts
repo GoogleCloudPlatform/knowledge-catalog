@@ -4,9 +4,10 @@
 import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
-import {ALLOWED_DIALECTS, normalizeDataType, SqlDialect} from './ir';
+import {ALLOWED_DIALECTS, normalizeDataType, SemanticModel, SqlDialect} from './ir';
 import {catalogNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {plainCopy, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -28,11 +29,6 @@ export interface ImportSemanticModelOptions {
   transpile?: boolean;
   /** When true, treats any third-party repair warning as a hard error. */
   strict?: boolean;
-  /**
-   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
-   * used when converting a Google-flavor model to vanilla (`'ossie'`).
-   */
-  profileFiles?: Array<{fileName: string; content: string}>;
 }
 
 /** Result of importing a semantic model YAML document. */
@@ -40,9 +36,10 @@ export interface ImportSemanticModelResult {
   /** True when `errors` is empty and `files` was produced. */
   ok: boolean;
   /**
-   * Generated output files (`<model-name>.yaml`), or `[]` when `ok` is false.
+   * Generated output files (`<model>.yaml` and any
+   * `<model>.profile.<name>.yaml` files), or `[]` when `ok` is false.
    */
-  files: Array<{fileName: string; content: string}>;
+  files: SerializedFile[];
   /** Non-fatal repair and translation diagnostics. */
   warnings: string[];
   /** Validation or strict-mode errors that prevented file output. */
@@ -179,7 +176,8 @@ function adaptAiContext(ai: Record<string, unknown>): void {
 
 /**
  * Phase 1 (Parse): Parses raw YAML, verifies the top-level document envelope,
- * validates `opts.sourcePrefix` when present, and constructs the mutable
+ * validates `opts.sourcePrefix` when present, refuses a document with a
+ * `GOOGLE` block unless `strict` is set, and constructs the mutable
  * `ImportDocument` (or returns a fatal error string).
  */
 function parseImportDocument(
@@ -224,15 +222,29 @@ function parseImportDocument(
     sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
   }
 
-  // 4. Deep-copy `parsedDoc` via `plainCopy` to decouple shared YAML anchor /
-  // alias references before in-place mutations, and assemble `ImportDocument`.
-  const root = plainCopy(parsedDoc) as Record<string, any>;
-  const model = root.semantic_model[0] as Record<string, any>;
-  const inputVersion = root.version as FormatVersion;
+  // 4. Enforce strict-mode and version conversion gates: reject documents with
+  // `GOOGLE` extension blocks when `strict` is false (since third-party tools
+  // do not write `GOOGLE` blocks), and reject unsupported version conversions.
+  const docRecord = parsedDoc as Record<string, any>;
+  const strict = !!opts.strict;
+  if (!strict && documentHasGoogleBlock(docRecord)) {
+    return `Document contains a '${GOOGLE_VENDOR}' custom_extensions block ` +
+        `(written for kcmd); use '--input first-party' to convert a ` +
+        `first-party model.`;
+  }
+  const inputVersion = docRecord.version as FormatVersion;
   const targetVersion: FormatVersion = opts.flavor ?
       (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
       inputVersion;
-  const strict = !!opts.strict;
+  if (inputVersion === GOOGLE_VERSION && targetVersion === OSSIE_VERSION) {
+    return `Converting from version '${GOOGLE_VERSION}' to '${
+        OSSIE_VERSION}' is not supported yet.`;
+  }
+
+  // 5. Deep-copy `parsedDoc` via `plainCopy` to decouple shared YAML anchor /
+  // alias references before in-place mutations, and assemble `ImportDocument`.
+  const root = plainCopy(docRecord);
+  const model = root.semantic_model[0] as Record<string, any>;
   const warnings: string[] = [];
   const errors: string[] = [];
   return {
@@ -253,75 +265,89 @@ function parseImportDocument(
 }
 
 /**
- * Phase 2 (Pre-validation): Enforces strict-mode and version conversion gates
- * (returning a fatal error string if refused) and validates all identifier
- * names in the input document in a single pass.
+ * Extracts and parses all valid JSON object payloads from `GOOGLE`
+ * `custom_extensions` blocks on `exts`, leaving malformed JSON to be reported
+ * by `fromDocument`.
  */
-function validateInputDocument(doc: ImportDocument): string|undefined {
-  // 1. Enforce strict-mode and version conversion gates: reject documents with
-  // `GOOGLE` extension blocks when `strict` is false (since third-party tools
-  // do not write `GOOGLE` blocks), and reject unsupported version conversions
-  // so we never emit a partially converted file.
-  const googleBlocksPresent = documentHasGoogleBlock(doc.root);
-  if (!doc.strict && googleBlocksPresent) {
-    return `Document contains a '${GOOGLE_VENDOR}' custom_extensions block ` +
-        `(written for kcmd); use '--input first-party' to convert a ` +
-        `first-party model.`;
+function parseGoogleBlocks(exts: unknown): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [];
+  for (const b of asRecords(exts)) {
+    if (!isGoogleVendor(b.vendor_name) || typeof b.data !== 'string') continue;
+    try {
+      const parsed: unknown = JSON.parse(b.data);
+      if (isRecord(parsed)) blocks.push(parsed);
+    } catch {
+      // Leave malformed JSON to be reported by `fromDocument`.
+    }
   }
-  if (doc.inputVersion === GOOGLE_VERSION &&
-      doc.targetVersion === OSSIE_VERSION) {
-    return `Converting from version '${GOOGLE_VERSION}' to '${
-        OSSIE_VERSION}' is not supported yet.`;
-  }
-  if (doc.inputVersion === OSSIE_VERSION &&
-      doc.targetVersion === GOOGLE_VERSION && googleBlocksPresent) {
-    return `Converting a '${OSSIE_VERSION}' document with a '${
-        GOOGLE_VENDOR}' custom_extensions block to '${
-        GOOGLE_VERSION}' is not supported yet.`;
-  }
+  return blocks;
+}
 
-  // 2. Validate all model, deployment, profile, entity/dataset, field,
-  // relationship, and metric names in a single pass so every invalid or
-  // over-length identifier is reported at once (without rewriting names that
-  // may appear inside SQL).
-  // Validates `name` against `kind`'s identifier rules via `nameProblem` and
-  // appends any error (prefixed by `scope` when given) to `doc.errors`.
-  const check = (kind: NameKind, name: unknown, scope?: string) => {
+/**
+ * Validates all model, deployment, profile, entity/dataset, field,
+ * relationship, and metric names in `doc` (plus any `googleBlocks`) in a single
+ * pass so every invalid or over-length identifier is reported at once.
+ */
+function validateObjectNames(
+    doc: ImportDocument, googleBlocks: Array<Record<string, unknown>>,
+    modelScope: string): void {
+  // Validates a single identifier `name` against `kind`'s rules via
+  // `nameProblem` and appends any error to `doc.errors`.
+  const validateName = (kind: NameKind, name: unknown, scope?: string) => {
     if (typeof name !== 'string') return;
     const problem = nameProblem(kind, name);
     if (problem) doc.errors.push(scope ? `${scope}: ${problem}` : problem);
   };
-  check('model', doc.model.name);
+  // Validates the `name` property of every record in `records`.
+  const validateRecords =
+      (kind: NameKind, records: Array<Record<string, unknown>>,
+       scope?: string) => {
+        for (const record of records) validateName(kind, record.name, scope);
+      };
+
+  // 1. Validate model, deployment, and profile names (inline and `GOOGLE`
+  // block).
+  validateName('model', doc.model.name);
+  validateRecords('deployment', asRecords(doc.model.deployments), modelScope);
+  validateRecords('profile', asRecords(doc.model.profiles), modelScope);
+  for (const g of googleBlocks) {
+    validateRecords('deployment', asRecords(g.deployments), modelScope);
+    validateRecords('profile', asRecords(g.profiles), modelScope);
+  }
+
+  // 2. Validate dataset/entity, field, relationship, and metric names.
+  for (const ds of doc.datasets) {
+    validateName('entity', ds.name);
+    const dsScope =
+        typeof ds.name === 'string' ? `dataset '${ds.name}'` : 'dataset';
+    validateRecords('field', asRecords(ds.fields), dsScope);
+  }
+  validateRecords('relationship', doc.relationships);
+  validateRecords('metric', doc.metrics);
+}
+
+/**
+ * Phase 2 (Pre-validation): Rejects legacy `deploymentTargets` inside a
+ * vanilla model's `GOOGLE` block when converting to the Google version, and
+ * validates all identifier names in the input document.
+ */
+function validateInputDocument(doc: ImportDocument): void {
+  // 1. Reject legacy `deploymentTargets` inside a vanilla model's `GOOGLE`
+  // block when converting to the Google version (`0.2.0.dev0/google`).
   const modelScope = typeof doc.model.name === 'string' ?
       `model '${doc.model.name}'` :
       'model';
-  const googleData =
-      asRecords(doc.model.custom_extensions)
-          .filter(
-              b => isGoogleVendor(b.vendor_name) && typeof b.data === 'string')
-          .map(b => yaml.parseDocument(b.data).toJS())
-          .filter(isRecord);
-  for (const d
-           of [...asRecords(doc.model.deployments),
-               ...googleData.flatMap(g => asRecords(g.deployments)),
-  ]) {
-    check('deployment', d.name, modelScope);
+  const googleBlocks = parseGoogleBlocks(doc.model.custom_extensions);
+  if (doc.inputVersion === OSSIE_VERSION &&
+      doc.targetVersion === GOOGLE_VERSION &&
+      googleBlocks.some(g => 'deploymentTargets' in g)) {
+    doc.errors.push(
+        `${modelScope}: 'deploymentTargets' is no longer supported; ` +
+        `use 'deployments:' inside the GOOGLE block instead.`);
   }
-  for (const p
-           of [...asRecords(doc.model.profiles),
-               ...googleData.flatMap(g => asRecords(g.profiles)),
-  ]) {
-    check('profile', p.name, modelScope);
-  }
-  for (const ds of doc.datasets) {
-    check('entity', ds.name);
-    const dsScope =
-        typeof ds.name === 'string' ? `dataset '${ds.name}'` : 'dataset';
-    for (const f of asRecords(ds.fields)) check('field', f.name, dsScope);
-  }
-  for (const r of doc.relationships) check('relationship', r.name);
-  for (const mt of doc.metrics) check('metric', mt.name);
-  return undefined;
+
+  // 2. Validate all identifier names in the document.
+  validateObjectNames(doc, googleBlocks, modelScope);
 }
 
 /**
@@ -752,14 +778,78 @@ async function transpileDocument(doc: ImportDocument): Promise<void> {
 }
 
 /**
- * Phase 4 (Adapt): Adapts `doc` to its target version (`adaptToGoogleVersion`
- * or `adaptToOssieVersion`) and, when `transpile` is true, translates
- * expressions via `transpileDocument`.
+ * Validates every deployment target on `model` using `googleDeploymentTargets`
+ * and `targetProblem` so invalid targets fail import with `kcmd push`'s exact
+ * message.
  */
-async function adaptDocument(
-    doc: ImportDocument, transpile: boolean): Promise<void> {
-  // 1. Adapt `doc` to the target output version (`0.2.0.dev0/google` or
-  // `0.2.0.dev0`).
+function validateDeploymentTargets(
+    model: SemanticModel, doc: ImportDocument): void {
+  for (const t of googleDeploymentTargets(model).uris) {
+    if (targetProblem('', t)) {
+      const d = model.deployments?.find(x => x.target === t);
+      doc.errors.push(
+          d ? deploymentTargetError(model, d) :
+              googleBlockTargetError(model, t));
+    }
+  }
+}
+
+/**
+ * Loads `doc.root` into the `SemanticModel` IR for cross-version conversion,
+ * recording any `SemanticModelError` on `doc.errors`.
+ */
+function loadSemanticModel(doc: ImportDocument): SemanticModel|undefined {
+  try {
+    const loaded = fromDocument(
+        doc.root, {bindingOptional: true, warnUnacceptedSource: true});
+    return loaded.models[0];
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    doc.errors.push(err.message);
+    return undefined;
+  }
+}
+
+/**
+ * Phase 4 (Convert): Generates converted output file(s) across versions by
+ * loading `doc.root` into the `SemanticModel` IR, optionally running
+ * `transpileModel`, and serializing with `serializeModelFiles`.
+ */
+async function generateConvertedFiles(
+    doc: ImportDocument,
+    opts: ImportSemanticModelOptions): Promise<SerializedFile[]> {
+  // 1. Load the input document (including any `GOOGLE` blocks in `0.2.0.dev0`)
+  // into the `SemanticModel` IR.
+  if (doc.errors.length > 0) return [];
+  let model = loadSemanticModel(doc);
+  if (!model) return [];
+
+  // 2. When `opts.transpile` is enabled, translate vendor or double-quoted
+  // `ANSI_SQL` expressions to `BIGQUERY`.
+  if (opts.transpile) {
+    const transpiled = await transpileModel(model);
+    model = transpiled.model;
+    doc.warnings.push(...transpiled.warnings);
+  }
+
+  // 3. Switch `model.version` to `doc.targetVersion` and serialize the output
+  // file(s) with `serializeModelFiles`.
+  model.version = doc.targetVersion;
+  const serialized = serializeModelFiles(model);
+  doc.warnings.push(...serialized.warnings);
+  return serialized.files;
+}
+
+/**
+ * Phase 4 (Adapt): Adapts `doc` in place to its target version
+ * (`adaptToGoogleVersion` or `adaptToOssieVersion`), optionally transpiles
+ * expressions via `transpileDocument`, and returns the adapted output file.
+ */
+async function generateAdaptedFiles(
+    doc: ImportDocument, rawYaml: string,
+    transpile: boolean): Promise<SerializedFile[]> {
+  // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
+  // or `0.2.0.dev0`).
   if (doc.inputVersion === OSSIE_VERSION &&
       doc.targetVersion === GOOGLE_VERSION) {
     adaptToGoogleVersion(doc);
@@ -772,6 +862,12 @@ async function adaptDocument(
   if (transpile && doc.errors.length === 0) {
     await transpileDocument(doc);
   }
+
+  // 3. Serialize `doc.root` when modified or preserve `rawYaml` verbatim when
+  // unmodified.
+  const content =
+      doc.modified ? yaml.stringify(doc.root, {lineWidth: 0}) : rawYaml;
+  return [{fileName: `${doc.model.name}.yaml`, content}];
 }
 
 /**
@@ -798,16 +894,9 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
 
     // 2. Validate every deployment target on the loaded model (across both
     // `m.deployments` and `GOOGLE`-block `deploymentTargets`) using
-    // `googleDeploymentTargets` and `targetProblem` so invalid targets fail
-    // import with `kcmd push`'s exact message.
+    // `validateDeploymentTargets`.
     for (const m of loaded.models) {
-      for (const t of googleDeploymentTargets(m).uris) {
-        if (targetProblem('', t)) {
-          const d = m.deployments?.find(x => x.target === t);
-          doc.errors.push(
-              d ? deploymentTargetError(m, d) : googleBlockTargetError(m, t));
-        }
-      }
+      validateDeploymentTargets(m, doc);
     }
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
@@ -823,34 +912,31 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
 export async function importSemanticModelYaml(
     rawYaml: string,
     opts: ImportSemanticModelOptions = {}): Promise<ImportSemanticModelResult> {
+  // 1. Initialize the SQL parser and parse/pre-validate the input document.
   await loadSqlEngine();
-
   const doc = parseImportDocument(rawYaml, opts);
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
+  validateInputDocument(doc);
 
-  const gateError = validateInputDocument(doc);
-  if (gateError) {
-    return {ok: false, files: [], warnings: [], errors: [gateError]};
-  }
-
+  // 2. Run third-party repairs (which record errors in `strict` mode).
   repairDocument(doc);
-  await adaptDocument(doc, !!opts.transpile);
 
-  const content =
-      doc.modified ? yaml.stringify(doc.root, {lineWidth: 0}) : rawYaml;
-  if (doc.errors.length === 0) {
-    validateOutputDocument(content, doc);
-  }
+  // 3. Generate the converted or adapted output file(s).
+  const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
+  const files = shouldConvert ?
+      await generateConvertedFiles(doc, opts) :
+      await generateAdaptedFiles(doc, rawYaml, !!opts.transpile);
 
-  if (doc.errors.length > 0) {
-    return {ok: false, files: [], warnings: doc.warnings, errors: doc.errors};
+  // 4. Validate the primary output document and return the result.
+  if (files.length > 0 && doc.errors.length === 0) {
+    validateOutputDocument(files[0].content, doc);
   }
   return {
-    ok: true,
-    files: [{fileName: `${doc.model.name}.yaml`, content}],
+    ok: doc.errors.length === 0,
+    files: doc.errors.length === 0 ? files : [],
     warnings: doc.warnings,
-    errors: [],
+    errors: doc.errors,
   };
 }

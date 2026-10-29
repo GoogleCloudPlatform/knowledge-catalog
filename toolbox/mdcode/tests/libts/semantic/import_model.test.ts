@@ -1,9 +1,11 @@
 // Tests for the semantic model import engine (import_model.ts).
 
 import {describe, expect, test} from 'bun:test';
+import * as yaml from 'yaml';
 
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
+import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
@@ -131,13 +133,6 @@ describe('conversion, strict mode, and translation', () => {
     [
       'Google to vanilla', googleDoc(),
       {flavor: 'ossie' as const, strict: true}, 'not supported yet'
-    ],
-    [
-      'vanilla with GOOGLE block to Google', ossieDoc({
-        extra:
-            `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '{}'\n`
-      }),
-      {flavor: 'google' as const, strict: true}, 'not supported yet'
     ],
     [
       'GOOGLE block without strict', ossieDoc({
@@ -492,4 +487,174 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
     expect(res.ok).toBe(false);
     expect(res.files).toEqual([]);
   });
+});
+
+describe('first-party flavor conversion (vanilla -> Google)', () => {
+  test(
+      'converts vanilla 0.2.0.dev0 with GOOGLE blocks and custom ai_context to Google flavor and profile files',
+      async () => {
+        const input = `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: retail
+    ai_context:
+      instructions: "Retail model"
+      owner: analytics
+    datasets:
+      - name: orders
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "orders.order_id"
+        ai_context:
+          tier: gold
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"extends":["base_orders"]}'
+      - name: base_orders
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: "base_orders.order_id"
+    relationships:
+      - name: order_base
+        from: orders
+        to: base_orders
+        from_columns: [order_id]
+        to_columns: [order_id]
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"description":"Order to base"}'
+    metrics:
+      - name: total_orders
+        expression:
+          dialects:
+            - dialect: BIGQUERY
+              expression: "COUNT(*)"
+        custom_extensions:
+          - vendor_name: GOOGLE
+            data: '{"entity":"orders"}'
+          - vendor_name: DBT
+            data: '{"keep":true}'
+    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |
+          {
+            "deployments": [
+              {
+                "name": "prod_bq",
+                "target": "bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail",
+                "profile": "prod"
+              }
+            ],
+            "profiles": [
+              {
+                "name": "prod",
+                "entities": [
+                  {
+                    "name": "orders",
+                    "source": "${BQ_TABLE}",
+                    "primary_key": ["order_id"]
+                  }
+                ]
+              }
+            ]
+          }
+`;
+        const res = await importSemanticModelYaml(
+            input, {flavor: 'google', strict: true, transpile: true});
+
+        expect(res.ok).toBe(true);
+        expect(res.errors).toEqual([]);
+        expect(res.files.map(f => f.fileName)).toEqual([
+          'retail.yaml',
+          'retail.profile.prod.yaml',
+        ]);
+        const parsedModelDoc = yaml.parse(res.files[0].content);
+        expect(parsedModelDoc.version).toBe('0.2.0.dev0/google');
+        expect(parsedModelDoc.semantic_model[0].datasets).toBeUndefined();
+        expect(parsedModelDoc.semantic_model[0].ai_context.custom).toEqual({
+          owner: 'analytics',
+        });
+        expect(res.files[0].content).not.toContain('vendor_name: GOOGLE');
+        const loaded = loadModels(res.files[0].content).models[0];
+        expect(loaded.entities[0].fields[0].dialects).toEqual([
+          {dialect: 'SNOWFLAKE', expression: 'orders.order_id'},
+          {dialect: 'BIGQUERY', expression: 'orders.order_id'},
+        ]);
+        expect(loaded.entities[0].aiContext?.additionalProperties).toEqual({
+          tier: 'gold',
+        });
+        expect(loaded.entities[0].extends).toEqual(['base_orders']);
+        expect(loaded.relationships[0].description).toBe('Order to base');
+        expect(loaded.metrics[0].authoredEntity).toBe('orders');
+        expect(loaded.metrics[0].customExtensions).toEqual([
+          {vendorName: 'DBT', data: '{"keep":true}'},
+        ]);
+        expect(loaded.deployments).toEqual([
+          {
+            name: 'prod_bq',
+            target:
+                'bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail',
+            profile: 'prod',
+          },
+        ]);
+        const loadedProfile = loadProfileFile(res.files[1].content, 'prod');
+        expect(loadedProfile).toEqual({
+          name: 'prod',
+          entities: [
+            {
+              name: 'orders',
+              source: BQ_TABLE,
+              primaryKey: ['order_id'],
+            },
+          ],
+          relationships: [],
+        });
+      });
+
+  test.each([
+    [
+      'legacy deploymentTargets in vanilla GOOGLE block',
+      ossieDoc({
+        extra: `    custom_extensions:
+      - vendor_name: GOOGLE
+        data: |
+          {
+            "deploymentTargets": [
+              "//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail"
+            ]
+          }
+`,
+      }),
+      {flavor: 'google' as const, strict: true},
+      `model 'retail': 'deploymentTargets' is no longer supported; use 'deployments:' inside the GOOGLE block instead.`,
+    ],
+    [
+      'non-JSON YAML alias in GOOGLE block data',
+      ossieDoc({
+        extra: `    custom_extensions:
+      - vendor_name: GOOGLE
+        data: '{*bad}'
+`,
+      }),
+      {flavor: 'google' as const, strict: true},
+      `the 'data' of a GOOGLE custom_extensions block must be a JSON object`,
+    ],
+  ])('refuses invalid GOOGLE block when converting to Google flavor: %s',
+     async (_, input, opts, expectedMsg) => {
+       const res = await importSemanticModelYaml(input, opts);
+
+       expect(res.ok).toBe(false);
+       expect(res.files).toEqual([]);
+       expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
+     });
 });
