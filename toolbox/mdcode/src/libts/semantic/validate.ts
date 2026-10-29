@@ -15,7 +15,7 @@ import {googleDeploymentTargets} from './deploy_bigquery';
 import {ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, thirdPartyEntryOf, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -1781,6 +1781,28 @@ export function deploymentTableErrors(
         `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
   }
   return errors;
+}
+
+// deploymentTableErrors for the third-party tables of `model`, which has no
+// deployments list and has `profile` applied, under each BigQuery or Spanner
+// graph target its GOOGLE block or legacy wrapper names.
+export function thirdPartyGraphErrors(
+    document: string, model: SemanticModel, profile: string): string[] {
+  const entities = (model.entities ?? [])
+                       .filter(e => thirdPartyEntryOf(e.authoredSource ?? ''));
+  const bound = {
+    ...model, entities,
+    profiles: [{
+      name: profile, relationships: [],
+      entities: entities.map(e => ({name: e.name, source: e.authoredSource})),
+    }],
+  };
+  const {bigQuery, spanner} = googleDeploymentTargets(model);
+  return [
+    ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
+    ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),
+  ].flatMap(t => deploymentTableErrors(
+                document, bound, {...t, name: profile, profile}));
 }
 
 

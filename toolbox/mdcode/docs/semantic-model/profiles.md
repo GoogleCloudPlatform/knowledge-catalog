@@ -106,8 +106,8 @@ table. When the entry cannot be read, the command stops and says so.
 
 A profile's sources all sit in one database, meaning the system one query can
 reach: all of BigQuery, or one Spanner, AlloyDB or Cloud SQL for PostgreSQL
-database, or one Cloud SQL for MySQL or SQL Server instance. Every third-party
-table counts as one database. A profile moves an entity
+database, or one Cloud SQL for MySQL or SQL Server instance. The third-party
+tables of one system count as one database. A profile moves an entity
 between stores by swapping its source and, when the two stores shape the data
 differently, the column each field reads.
 

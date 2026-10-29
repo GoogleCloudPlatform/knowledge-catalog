@@ -19,7 +19,7 @@
 
 import * as yaml from 'yaml';
 
-import {CloudSqlTable, cloudSqlTableOf, dialectLookupKey, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {CloudSqlTable, cloudSqlTableOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryFields, EntryLookup, lookupSystemEntry, Read, read} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -33,13 +33,14 @@ const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
   'cloudsql-sqlserver-view': 'SQLSERVER',
 };
 
-// The dialect each third-party system gives, keyed by the prefix of an entry's
-// fullyQualifiedName or by its entrySource.system in lower case.
-const DIALECT_OF_THIRD_PARTY_SYSTEM = new Map([
+// The dialect each fullyQualifiedName prefix of a third-party entry gives.
+const DIALECT_OF_FQN_PREFIX = new Map([
   ['snowflake', 'SNOWFLAKE'], ['databricks', 'DATABRICKS'], ['mysql', 'MYSQL'],
-  ['postgresql', 'POSTGRES'], ['postgres', 'POSTGRES'],
-  ['sqlserver', 'SQLSERVER'],
+  ['postgresql', 'POSTGRES'], ['sqlserver', 'SQLSERVER'],
 ]);
+// The dialect each entrySource.system gives, in lower case.
+const DIALECT_OF_ENTRY_SYSTEM =
+    new Map([...DIALECT_OF_FQN_PREFIX, ['postgres', 'POSTGRES']]);
 
 export interface SourceDialects {
   // Each source, keyed as dialectLookupKey gives, and its dialect.
@@ -135,8 +136,9 @@ function thirdPartyLookup(
         `Knowledge Catalog, or fix the source.`,
     dialectOf: ({fullyQualifiedName: fqn, entrySource}) => {
       const system = entrySource?.system;
-      const dialect = DIALECT_OF_THIRD_PARTY_SYSTEM.get(
-          (fqn ? fqn.split(':')[0] : system?.toLowerCase()) ?? '');
+      const dialect = fqn ?
+          DIALECT_OF_FQN_PREFIX.get(fqn.split(':')[0]) :
+          DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
       if (dialect) return {dialect};
       const has = fqn ? `fullyQualifiedName '${fqn}'` :
           system ? `entrySource.system '${system}' and no fullyQualifiedName` :
@@ -152,17 +154,18 @@ function thirdPartyLookup(
   };
 }
 
-// Every Cloud SQL table written as a resource name or resource URI, and every
-// third-party table written as an entry name, anywhere in the model and
-// profile files `texts`, including the JSON a vanilla model's GOOGLE blocks
-// carry. Values are read from the parsed YAML, so a name in a
-// comment is not collected. A file that does not parse collects nothing; the
-// load reports it.
+// Every Cloud SQL table written as a resource name or resource URI anywhere in
+// the model and profile files `texts`, and every third-party table written as
+// an entry name as the value of a `source` key, including in the JSON a
+// vanilla model's GOOGLE blocks carry. Values are read from the parsed YAML,
+// so a name in a comment is not collected. A file that does not parse collects
+// nothing; the load reports it.
 export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
-  const visit = (value: unknown): void => {
+  const visit = (value: unknown, key?: string): void => {
     if (typeof value === 'string') {
-      if (dialectLookupKey(value)) {
+      if (cloudSqlTableOf(value) ||
+          (key === 'source' && thirdPartyEntryOf(value))) {
         found.add(value.trim());
       } else if (/^\s*[[{]/.test(value)) {
         try {
@@ -172,9 +175,9 @@ export function sourcesToLookUp(texts: Iterable<string>): string[] {
         }
       }
     } else if (Array.isArray(value)) {
-      value.forEach(visit);
+      value.forEach(v => visit(v));
     } else if (value && typeof value === 'object') {
-      Object.values(value).forEach(visit);
+      for (const [k, v] of Object.entries(value)) visit(v, k);
     }
   };
   for (const text of texts) {

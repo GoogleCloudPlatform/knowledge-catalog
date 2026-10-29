@@ -3246,12 +3246,12 @@ export function hasUnquotedWhitespace(source: string): boolean {
 // A database is what a single query can reach: all of BigQuery, BigLake
 // included because BigQuery reads it; one Spanner, AlloyDB or Cloud SQL for
 // PostgreSQL database, or one Cloud SQL for MySQL or SQL Server instance. The
-// segment counts are those of the Knowledge Catalog FQN reference. Every
-// third-party table gets the one key `thirdparty`, which is no target's
-// database. The shape of a Cloud SQL resource
-// name cannot tell a SQL Server table from a PostgreSQL one, so this keys it
-// on its database, and the one-database rule widens it to its instance once
-// the lookup names SQL Server.
+// segment counts are those of the Knowledge Catalog FQN reference. The shape
+// of a Cloud SQL resource name cannot tell a SQL Server table from a
+// PostgreSQL one, so this keys it on its database, and the one-database rule
+// widens it to its instance once the lookup names SQL Server. Every
+// third-party table gets the key `thirdparty`, which is no target's database,
+// and the one-database rule splits it by the system the lookup names.
 export function databaseOf(written: string): string|undefined {
   if (hasUnquotedWhitespace(written)) return undefined;
   const source = asResourceUri(written);
@@ -3421,6 +3421,18 @@ function unsupportedServiceSourceError(
           `${service.name} resource; the preview does not support ` +
           `${service.name} sources yet.` :
       undefined;
+}
+
+// True when `source` is in a Google Cloud form, accepted or not: a resource
+// name or resource URI, a catalog name of a Google Cloud system, or an entry
+// name in a system entry group.
+export function isGoogleCloudForm(source: string): boolean {
+  const system = source.match(/^([a-z_]+):/)?.[1];
+  return RESOURCE_NAME.test(source.replace(/^\/\//, '')) ||
+      [...CATALOG_NAME_FORMS.map(([p]) => p),
+       ...UNSUPPORTED_SERVICES.map(s => s.prefix)]
+          .some(p => p.startsWith(`${system}:`)) ||
+      !!source.match(ENTRY_NAME)?.[1].startsWith('@');
 }
 
 // Why `source` is not accepted when it is a catalog name under a third-party

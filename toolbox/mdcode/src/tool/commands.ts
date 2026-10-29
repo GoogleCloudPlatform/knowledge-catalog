@@ -31,7 +31,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {deploymentTableErrors, inlineBindingWarnings, storeMessage, thirdPartyGraphErrors, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -1052,6 +1052,9 @@ async function pushErrors(
     if (error) return [...errors, error];
   }
   if (!graph) return errors;
+  const thirdParty = prepared.models.flatMap(
+      m => thirdPartyGraphErrors(m.document, m.model, profileName));
+  if (thirdParty.length) return [...errors, ...thirdParty];
   // Push then generates each graph's DDL. Under --validate-only,
   // deployBigQuery and deploySpanner only generate the DDL and call no service.
   const legs = [
@@ -1367,6 +1370,13 @@ export async function push(options: PushOptions): Promise<number> {
       }
       const prepared = await prepareOnce(docs, profileName, true);
       if (!prepared) return 1;
+      // No graph reads a third-party table, as the two-phase push checks too.
+      const thirdParty = prepared.models.flatMap(
+          m => thirdPartyGraphErrors(m.document, m.model, profileName));
+      if (thirdParty.length) {
+        for (const e of thirdParty) console.error(`Error: ${e}`);
+        return 1;
+      }
       for (const d of docs) loadedDocs.add(d.name);
       noteCatalogOnly(prepared.models);
       for (const m of prepared.models) {

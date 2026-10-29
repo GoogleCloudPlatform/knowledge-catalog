@@ -2068,20 +2068,26 @@ describe('completeness sees the model as the profile does', () => {
 
   // A profile's rebinding is read as the model file's source is. A catalog
   // name under a third-party prefix is rejected and counts as no database.
-  // Every third-party entry name is in one database, apart from BigQuery's.
+  // The third-party tables of one system, as the lookup names it, are one
+  // database, apart from BigQuery's and from another system's.
   test('a profile that binds a third-party table', () => {
+    const entry = (g: string, t: string) => `projects/acme/locations/us/entryGroups/${g}/entries/${t}`;
+    const [sf, sf2, dbx] = [entry('sf', 'c'), entry('sf', 'v'), entry('dbx', 'v')];
+    const sourceDialects =
+        new Map([[sf, 'SNOWFLAKE'], [sf2, 'SNOWFLAKE'], [dbx, 'DATABRICKS']]);
     const errorsFor = (customer: string, vip = BQ('vip')) =>
         validateProfileCompleteness(model(true), spec([
           {name: 'customer', source: customer}, {name: 'vip', source: vip},
-        ])).join('\n');
+        ]), [], {sourceDialects}).join('\n');
     const errors = errorsFor('snowflake:acct.db.public.c');
     expect(errors).toContain(
         "source 'snowflake:acct.db.public.c' is a Knowledge Catalog name");
     expect(errors).not.toContain('more than one database');
-    const entry = (t: string) => `projects/acme/locations/us/entryGroups/sf/entries/${t}`;
-    expect(errorsFor(entry('c'))).toContain(
-        "binds entities in more than one database ('customer', 'vip')");
-    expect(errorsFor(entry('c'), entry('v'))).toEqual('');
+    for (const vip of [BQ('vip'), dbx]) {
+      expect(errorsFor(sf, vip)).toContain(
+          "binds entities in more than one database ('customer', 'vip')");
+    }
+    expect(errorsFor(sf, sf2)).toEqual('');
   });
 
   // A source the loader's reader rejects is reported, and names no

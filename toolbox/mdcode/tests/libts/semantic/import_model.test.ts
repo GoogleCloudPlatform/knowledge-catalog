@@ -289,28 +289,33 @@ describe('sources', () => {
         .toBe(BQ_TABLE);
   });
 
+  // Only a source in no Google Cloud form gets the entry name advice.
   test.each([
-    ['no sourcePrefix', 'orders', {}],
-    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}],
+    ['no sourcePrefix', 'orders', {}, true],
+    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, true],
     [
       'backtick-quoted table with dot',
       '\'sales.`my.table`\'',
       {sourcePrefix: BQ_PREFIX},
+      true,
     ],
-    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}],
+    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, true],
+    ['resource URI', `//${BQ_TABLE}`, {}, false],
+    ['first-party catalog name', 'bigquery:acme.sales.orders', {}, false],
+    ['system entry name', 'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {}, false],
   ])('leaves %s as written with a warning and writes the file',
-     async (_, src, opts) => {
+     async (_, src, opts, advice) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
        const cleanSrc = src.replace(/^'|'$/g, '');
 
        expect(res.ok).toBe(true);
-       expect(res.warnings.some(
-                  w => w.includes(cleanSrc) && w.includes('--source-prefix') &&
-                      w.endsWith('A table outside Google Cloud is written as ' +
-                                 'the entry name of its Knowledge Catalog ' +
-                                 "entry, 'projects/<p>/locations/<l>/" +
-                                 "entryGroups/<g>/entries/<id>'.")))
-           .toBe(true);
+       const warning = res.warnings.find(
+           w => w.includes(cleanSrc) && w.includes('--source-prefix'));
+       expect(warning?.endsWith(
+                  'A table outside Google Cloud is written as the entry name ' +
+                  "of its Knowledge Catalog entry, 'projects/<p>/locations/" +
+                  "<l>/entryGroups/<g>/entries/<id>'."))
+           .toBe(advice);
      });
 
   test('keeps a third-party entry name as written, with no warning', async () => {

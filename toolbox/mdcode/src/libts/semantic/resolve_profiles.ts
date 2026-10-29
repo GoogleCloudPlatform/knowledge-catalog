@@ -2070,12 +2070,13 @@ export function validateProfileCompleteness(
       rejected.add(e.name);
       continue;
     }
-    stated.push(
-        {source: pe.source, lookedUp: profiledByName.get(e.name)?.sourceDialect});
-    // One query reaches every database of a SQL Server instance.
-    const table = profiledByName.get(e.name)?.sourceDialect === 'SQLSERVER' &&
-        cloudSqlTableOf(pe.source);
-    const key = table ? table.resourceName.split('/databases/')[0] : db;
+    const lookedUp = profiledByName.get(e.name)?.sourceDialect;
+    stated.push({source: pe.source, lookedUp});
+    // One query reaches every database of a SQL Server instance. The
+    // third-party tables of one system count as one database.
+    const table = lookedUp === 'SQLSERVER' && cloudSqlTableOf(pe.source);
+    const key = table ? table.resourceName.split('/databases/')[0] :
+        db === 'thirdparty' ? `thirdparty/${lookedUp}` : db;
     if (!databases.has(key)) databases.set(key, e.name);
   }
   if (databases.size > 1) {

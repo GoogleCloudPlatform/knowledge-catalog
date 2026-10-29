@@ -16,6 +16,8 @@ const POSTGRES = `${INSTANCE}/pg/databases/shop/schemas/sales/tables/orders`;
 const POSTGRES_VIEW = `${INSTANCE}/pg/databases/shop/schemas/sales/tables/open_orders`;
 const SQLSERVER = `${INSTANCE}/ms/databases/shop/schemas/sales/tables/orders`;
 const THIRD_PARTY = 'projects/acme/locations/us-central1/entryGroups/sf/entries/orders';
+// A file that binds THIRD_PARTY, which is collected only as a source.
+const THIRD_PARTY_FILE = `source: ${THIRD_PARTY}`;
 
 // A catalog that answers from `answers`, keyed by entry name, and records each
 // call. An entry it does not know gets the 403 Dataplex gives a missing entry.
@@ -117,7 +119,7 @@ describe('sourceDialects', () => {
         throw new Error('socket hang up');
       },
     };
-    const {errors} = await sourceDialects([POSTGRES, MYSQL, THIRD_PARTY], failing);
+    const {errors} = await sourceDialects([POSTGRES, MYSQL, THIRD_PARTY_FILE], failing);
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
       `source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
@@ -137,7 +139,7 @@ describe('sourceDialects', () => {
 // fullyQualifiedName, or, with none, by its entrySource.system in any case.
 describe('sourceDialects of a third-party table', () => {
   const dialectOf = async (result: object) =>
-      sourceDialects([THIRD_PARTY], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
+      sourceDialects([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
 
   test('each fullyQualifiedName prefix and system gives its dialect, and the prefix wins', async () => {
     const fqn = (fullyQualifiedName: string) => ({fullyQualifiedName});
@@ -168,6 +170,9 @@ describe('sourceDialects of a third-party table', () => {
        "fullyQualifiedName 'custom:acme.orders'"],
       [{entrySource: {system: 'ORACLE'}},
        "entrySource.system 'ORACLE' and no fullyQualifiedName"],
+      // Dataplex rejects this prefix, and kcmd reads only postgresql:.
+      [{fullyQualifiedName: 'postgres:host.db.public.orders'},
+       "fullyQualifiedName 'postgres:host.db.public.orders'"],
     ] as const) {
       expect(await dialectOf(result)).toEqual({dialects: new Map(), errors: [
         `source '${THIRD_PARTY}': kcmd cannot tell the table's SQL dialect from ` +
@@ -182,18 +187,18 @@ describe('sourceDialects of a third-party table', () => {
   // tests/tool/two_phase/third_party.test.ts holds the missing entry's text.
   test('is looked up once, by its entry name, and a missing entry is reported; with thirdParty false, not at all', async () => {
     const {catalog, calls} = fakeCatalog({});
-    expect((await sourceDialects([THIRD_PARTY, THIRD_PARTY], catalog)).errors)
+    expect((await sourceDialects([THIRD_PARTY_FILE, THIRD_PARTY_FILE], catalog)).errors)
         .toEqual([expect.stringContaining(
             `source '${THIRD_PARTY}' names no table Knowledge Catalog knows about.`)]);
     expect(calls).toEqual([{project: 'acme', location: 'us-central1', name: THIRD_PARTY}]);
-    expect(await sourceDialects([THIRD_PARTY], catalog, {thirdParty: false}))
+    expect(await sourceDialects([THIRD_PARTY_FILE], catalog, {thirdParty: false}))
         .toEqual({dialects: new Map(), errors: []});
     expect(calls).toHaveLength(1);
   });
 });
 
 describe('sourcesToLookUp', () => {
-  test('collects Cloud SQL resource names and third-party entry names from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
+  test('collects Cloud SQL resource names, and third-party entry names written as a source, from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
     const model = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
@@ -222,6 +227,20 @@ entities:
 `;
     expect(sourcesToLookUp([model, vanilla, profile]).sort())
         .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY].sort());
+    // An entry name that is not a source, such as one in ai_context or in
+    // another vendor's block, is not collected.
+    expect(sourcesToLookUp([`version: "0.2.0.dev0"
+semantic_model:
+  - name: shop
+    description: ${THIRD_PARTY}
+    custom_extensions:
+      - vendor_name: ACME
+        data: '{"glossary": "${THIRD_PARTY}"}'
+    datasets:
+      - name: orders
+        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
+        ai_context: {synonyms: ["${THIRD_PARTY}"]}
+`])).toEqual([]);
     // A file that does not parse collects nothing, even a name it holds.
     expect(sourcesToLookUp([`source: ${MYSQL}\nname: [unclosed`])).toEqual([]);
     // Nor does one whose values cannot be read, and that does not throw: an
