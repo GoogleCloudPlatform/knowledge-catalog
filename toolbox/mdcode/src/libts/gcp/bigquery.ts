@@ -52,7 +52,9 @@ export interface Job {
 export class BigQueryClient extends api.ApiClient {
 
   constructor(ctx: context.ApiContext) {
-    super('https://bigquery.googleapis.com', 'bigquery/v2', ctx);
+    super(
+        process.env.BIGQUERY_API_ENDPOINT || 'https://bigquery.googleapis.com',
+        'bigquery/v2', ctx);
   }
 
   async getDataset(project: string, dataset: string): Promise<api.ApiResult<Dataset>> {

@@ -2260,14 +2260,27 @@ async function generateOffline(
 // (billing project, reference) pair is probed once. Returns one message per
 // unreachable table (empty when all pass).
 //
+export interface ValidateBigQueryDataSourcesOptions {
+  // When true, a 3-part native BigQuery table that returns "Not found: Table
+  // ..." is allowed through because deployBigQuery provisions missing backing
+  // tables via CREATE TABLE IF NOT EXISTS before creating the property graph.
+  allowMissingTables?: boolean;
+}
+
 // With `graph`, each probe runs in `graph.location`, the location of dataset
 // `graph.dataset`, and a probe that fails there runs again with no location.
 // When that run finds the table in another location, the error says so,
 // starting with `graph.at`, which names the deployment.
 export async function validateBigQueryDataSources(
     models: LoadedModel[], bq: BigQueryClient, defaultProject: string,
-    graph?: {at: string; dataset: string; location: string}):
-    Promise<string[]> {
+    graphOrOpts?: {at: string; dataset: string; location: string}|
+    ValidateBigQueryDataSourcesOptions,
+    opts?: ValidateBigQueryDataSourcesOptions): Promise<string[]> {
+  const graph = graphOrOpts && 'at' in graphOrOpts ? graphOrOpts : undefined;
+  const allowMissingTables = opts?.allowMissingTables ??
+      (graphOrOpts && 'allowMissingTables' in graphOrOpts ?
+           graphOrOpts.allowMissingTables :
+           undefined);
   // Dedup by billing project + reference so a table shared across
   // entities/models is probed once; keep the first reference for a locatable
   // error message.
@@ -2316,6 +2329,10 @@ export async function validateBigQueryDataSources(
       }
     }
     const msg = res.message?.trim() || `HTTP ${res.status}`;
+    if (allowMissingTables && /not found/i.test(msg) &&
+        !/not found:\s*dataset/i.test(msg) && ref.split('.').length <= 3) {
+      continue;
+    }
     const why = /not found/i.test(msg) ?
         'does not exist' :
         /access denied|permission denied|not authorized|does not have permission/i

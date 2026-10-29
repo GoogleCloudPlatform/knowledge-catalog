@@ -30,7 +30,7 @@ import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import {GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
+import {generateCreateBackingTablesDdl, GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {Field, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
@@ -2003,5 +2003,113 @@ describe('a metric operand that names a field', () => {
     expect(warnings).toContain(
         `metric 'memos' aggregates field 'memo', which has no column under ` +
         `this binding; skipped (nothing to emit as a MEASURE)`);
+  });
+});
+
+describe('generateCreateBackingTablesDdl', () => {
+  test('emits CREATE TABLE IF NOT EXISTS for entities, FK columns, and association edges', () => {
+    const model: SemanticModel = {
+      name: 'academic_graph',
+      entities: [
+        {
+          name: 'Party',
+          abstract: true,
+          dataSource: '',
+          keys: [],
+          fields: [
+            {name: 'name', type: 'String', description: 'Canonical name'},
+          ],
+        },
+        {
+          name: 'Person',
+          extends: ['Party'],
+          dataSource: 'my-project.my_dataset.Person',
+          keys: ['person_id'],
+          description: 'A human individual.',
+          aiContext: {synonyms: ['Author', 'Researcher']},
+          fields: [
+            {
+              name: 'person_id',
+              type: 'String',
+              expression: 'Person.person_id',
+              description: 'Unique identifier.',
+              aiContext: {synonyms: ['author_id']},
+            },
+            {
+              name: 'name',
+              expression: 'Person.name',
+            },
+            {
+              name: 'age',
+              type: 'Integer',
+              expression: 'Person.age',
+            },
+          ],
+        },
+        {
+          name: 'Organization',
+          dataSource: 'my-project.my_dataset.Organization',
+          keys: ['org_id'],
+          description: 'A company or institution.',
+          fields: [
+            {
+              name: 'org_id',
+              type: 'Integer',
+              expression: 'Organization.org_id',
+            },
+          ],
+        },
+      ],
+      relationships: [
+        {
+          name: 'WORKS_AT',
+          source: {entity: 'Person', columns: ['employer_org_id']},
+          destination: {entity: 'Organization', columns: ['org_id']},
+        },
+        {
+          name: 'COLLABORATES_WITH',
+          description: 'Collaboration edge.',
+          source: {entity: 'Person', columns: ['person_id']},
+          destination: {entity: 'Person', columns: ['person_id']},
+          association: {
+            dataSource: 'my-project.my_dataset.Collaborations',
+            keys: ['collab_id'],
+            sourceColumns: ['person_a_id'],
+            destinationColumns: ['person_b_id'],
+            fields: [
+              {
+                name: 'since_date',
+                type: 'Date',
+                expression: 'COLLABORATES_WITH.since_date',
+                description: 'Start date',
+              },
+            ],
+          },
+        },
+      ],
+      metrics: [],
+    };
+
+    const ddls = generateCreateBackingTablesDdl(model);
+    expect(ddls).toEqual([
+      `CREATE TABLE IF NOT EXISTS \`my-project.my_dataset.Person\` (\n` +
+          `  person_id STRING OPTIONS(description="Unique identifier."),\n` +
+          `  name STRING OPTIONS(description="Canonical name"),\n` +
+          `  age INT64,\n` +
+          `  employer_org_id INT64\n` +
+          `)\n` +
+          `OPTIONS(description="A human individual.");`,
+      `CREATE TABLE IF NOT EXISTS \`my-project.my_dataset.Organization\` (\n` +
+          `  org_id INT64\n` +
+          `)\n` +
+          `OPTIONS(description="A company or institution.");`,
+      `CREATE TABLE IF NOT EXISTS \`my-project.my_dataset.Collaborations\` (\n` +
+          `  collab_id STRING,\n` +
+          `  person_a_id STRING,\n` +
+          `  person_b_id STRING,\n` +
+          `  since_date DATE OPTIONS(description="Start date")\n` +
+          `)\n` +
+          `OPTIONS(description="Collaboration edge.");`,
+    ]);
   });
 });

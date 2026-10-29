@@ -20,8 +20,9 @@
 //
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
-import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {columnReferences, measureEntities, requalified, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, unusedName, withoutQualifier} from './sql_expr_utils';
+import {AiContext, DataType, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {resolveInheritance} from './resolve_inheritance';
+import {columnReferences, fieldBindingWithoutComments, isColumnName, measureEntities, requalified, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -63,6 +64,263 @@ function bigQueryEngine(opts: GenerateOptions): GraphEngine {
     dialect: 'BIGQUERY',
     fieldExpression,
   };
+}
+
+/**
+ * Generates `CREATE TABLE IF NOT EXISTS` statements for all concrete backing
+ * tables (node tables and association edge tables) of a semantic model.
+ *
+ * This allows `kcmd push` to provision empty typed backing tables in BigQuery
+ * before executing `CREATE OR REPLACE PROPERTY GRAPH`.
+ */
+export function generateCreateBackingTablesDdl(
+    model: SemanticModel, _opts: GenerateOptions = {}): string[] {
+  const resolved = resolveInheritance(model);
+  const entities = resolved.model.entities ?? [];
+  const relationships = resolved.model.relationships ?? [];
+  const metrics = resolved.model.metrics ?? [];
+
+  const abstractNames =
+      new Set(entities.filter(e => e.abstract).map(e => e.name));
+  const skipped = new Set<string>();
+  const validEntities = entities.filter(entity => {
+    if (abstractNames.has(entity.name)) {
+      skipped.add(entity.name);
+      return false;
+    }
+    if (entity.keys && entity.keys.length) return true;
+    skipped.add(entity.name);
+    return false;
+  });
+
+  const validEntityByName = new Map(validEntities.map(e => [e.name, e]));
+
+  // Identify columns aggregated with numeric functions (SUM, AVG) so untyped
+  // fields referenced by numeric measures default to FLOAT64 rather than
+  // STRING.
+  const numericColumnsByEntity = new Map<string, Set<string>>();
+  const allEntityNames = entities.map(e => e.name);
+  for (const metric of metrics) {
+    const expr = metricExpression(metric);
+    if (expr === undefined) continue;
+    const referenced = measureEntities(expr, allEntityNames, metric.entity);
+    if (referenced.length !== 1) continue;
+    const entityName = referenced[0];
+    const entity = validEntityByName.get(entityName);
+    if (!entity) continue;
+    const body = withoutQualifier(expr, entityName);
+    const agg = singleAggregate(body, 'BIGQUERY');
+    if (!agg) continue;
+    const fn = agg.fn.toUpperCase();
+    if (fn !== 'SUM' && fn !== 'AVG') continue;
+    const operand = agg.operand;
+    const cols = numericColumnsByEntity.get(entityName) ?? new Set<string>();
+    cols.add(operand);
+    const col = physicalColumnForEntity(entity, operand);
+    cols.add(col);
+    numericColumnsByEntity.set(entityName, cols);
+  }
+
+  interface TableColumnSpec {
+    name: string;
+    type: string;
+    options?: string;
+  }
+  interface TableSpec {
+    tableRef: string;
+    columns: Map<string, TableColumnSpec>;
+    options?: string;
+  }
+
+  const tablesByRef = new Map<string, TableSpec>();
+  const ensureTable = (
+      dataSource: string, description?: string,
+      ai?: AiContext): TableSpec|undefined => {
+    const trimmed = (dataSource ?? '').trim();
+    if (!trimmed || /\s/.test(trimmed) || trimmed.startsWith('//') ||
+        /^[a-z][\w+.-]*:\/\//i.test(trimmed)) {
+      return undefined;
+    }
+    const tableRef = `\`${trimmed}\``;
+    let spec = tablesByRef.get(tableRef);
+    if (!spec) {
+      spec = {
+        tableRef,
+        columns: new Map(),
+        options: tableOptionsClause(elementDescription(description, ai)),
+      };
+      tablesByRef.set(tableRef, spec);
+    } else if (!spec.options) {
+      spec.options = tableOptionsClause(elementDescription(description, ai));
+    }
+    return spec;
+  };
+
+  const addColumn = (
+      spec: TableSpec, rawCol: string, type: string, options?: string) => {
+    const col = rawCol.trim();
+    if (!col || !isColumnName(col)) return;
+    const quoted = quoteIfReserved(col);
+    const existing = spec.columns.get(quoted);
+    if (!existing) {
+      spec.columns.set(quoted, {name: quoted, type, options});
+    } else {
+      if (existing.type === 'STRING' && type !== 'STRING') {
+        existing.type = type;
+      }
+      if (!existing.options && options) {
+        existing.options = options;
+      }
+    }
+  };
+
+  const resolveFieldColumnType = (
+      entity: Entity, field: Field, colName: string): string => {
+    if (field.type && field.type !== 'Opaque') {
+      return bigQueryColumnType(field.type);
+    }
+    const numericCols = numericColumnsByEntity.get(entity.name);
+    if (numericCols &&
+        (numericCols.has(field.name) || numericCols.has(colName))) {
+      return 'FLOAT64';
+    }
+    return 'STRING';
+  };
+
+  for (const entity of validEntities) {
+    const spec =
+        ensureTable(entity.dataSource, entity.description, entity.aiContext);
+    if (!spec) continue;
+
+    for (const keyName of entity.keys) {
+      const field = entity.fields.find(f => f.name === keyName);
+      const col = physicalColumnForEntity(entity, keyName);
+      const type = field ?
+          resolveFieldColumnType(entity, field, col) :
+          (numericColumnsByEntity.get(entity.name)?.has(col) ? 'FLOAT64' :
+                                                               'STRING');
+      const opts =
+          field ? tableOptionsClause(fieldDescription(field)) : undefined;
+      addColumn(spec, col, type, opts);
+    }
+
+    for (const field of entity.fields) {
+      const expr = fieldExpression(field);
+      if (expr === undefined) continue;
+      const local = withoutQualifier(expr, entity.name).trim();
+      if (!isColumnName(local)) continue;
+      const type = resolveFieldColumnType(entity, field, local);
+      const opts = tableOptionsClause(fieldDescription(field));
+      addColumn(spec, local, type, opts);
+    }
+
+    for (const metric of metrics) {
+      const expr = metricExpression(metric);
+      if (expr === undefined) continue;
+      const referenced = measureEntities(expr, allEntityNames, metric.entity);
+      if (referenced.length !== 1 || referenced[0] !== entity.name) continue;
+      const body = withoutQualifier(expr, entity.name);
+      const agg = singleAggregate(body, 'BIGQUERY');
+      if (!agg || agg.operand === '*') continue;
+      if (isSimpleIdentifier(agg.operand)) {
+        const fn = agg.fn.toUpperCase();
+        const type = (fn === 'SUM' || fn === 'AVG') ? 'FLOAT64' : 'STRING';
+        addColumn(spec, agg.operand, type);
+      }
+    }
+  }
+
+  for (const rel of relationships) {
+    if ([rel.source.entity, rel.destination.entity].some(n => skipped.has(n))) {
+      continue;
+    }
+    const sourceEntity = validEntityByName.get(rel.source.entity);
+    const destEntity = validEntityByName.get(rel.destination.entity);
+
+    if (rel.association) {
+      const assoc = rel.association;
+      const spec =
+          ensureTable(assoc.dataSource, rel.description, rel.aiContext);
+      if (!spec) continue;
+      for (const k of assoc.keys ?? []) {
+        const field = (assoc.fields ?? []).find(f => f.name === k);
+        addColumn(
+            spec, k, bigQueryColumnType(field?.type),
+            field ? tableOptionsClause(fieldDescription(field)) : undefined);
+      }
+      for (let i = 0; i < (assoc.sourceColumns ?? []).length; i++) {
+        const sc = assoc.sourceColumns[i];
+        const srcKeyName = sourceEntity?.keys[i];
+        const srcField = sourceEntity?.fields.find(f => f.name === srcKeyName);
+        addColumn(spec, sc, bigQueryColumnType(srcField?.type));
+      }
+      for (let i = 0; i < (assoc.destinationColumns ?? []).length; i++) {
+        const dc = assoc.destinationColumns[i];
+        const dstKeyName = destEntity?.keys[i];
+        const dstField = destEntity?.fields.find(f => f.name === dstKeyName);
+        addColumn(spec, dc, bigQueryColumnType(dstField?.type));
+      }
+      for (const field of assoc.fields ?? []) {
+        const expr = fieldExpression(field);
+        if (expr === undefined && isFieldBound(field)) continue;
+        const local =
+            expr !== undefined ? withoutQualifier(expr, rel.name).trim() :
+                                 field.name;
+        if (!isColumnName(local)) continue;
+        addColumn(
+            spec, local, bigQueryColumnType(field.type),
+            tableOptionsClause(fieldDescription(field)));
+      }
+      continue;
+    }
+
+    if (sourceEntity && destEntity) {
+      const srcSpec = ensureTable(
+          sourceEntity.dataSource, sourceEntity.description,
+          sourceEntity.aiContext);
+      const dstSpec = ensureTable(
+          destEntity.dataSource, destEntity.description,
+          destEntity.aiContext);
+      for (let i = 0; i < rel.source.columns.length; i++) {
+        const srcName = rel.source.columns[i];
+        const dstName =
+            rel.destination.columns[i] ?? rel.destination.columns[0];
+        const srcCol = physicalColumnForEntity(sourceEntity, srcName);
+        const dstCol =
+            dstName ? physicalColumnForEntity(destEntity, dstName) : undefined;
+        const srcField = sourceEntity.fields.find(f => f.name === srcName);
+        const dstField =
+            dstName ? destEntity.fields.find(f => f.name === dstName) :
+                      undefined;
+        const inferredType =
+            bigQueryColumnType(srcField?.type ?? dstField?.type);
+        if (srcSpec) {
+          addColumn(
+              srcSpec, srcCol, inferredType,
+              srcField ? tableOptionsClause(fieldDescription(srcField)) :
+                         undefined);
+        }
+        if (dstSpec && dstCol) {
+          addColumn(
+              dstSpec, dstCol, bigQueryColumnType(dstField?.type),
+              dstField ? tableOptionsClause(fieldDescription(dstField)) :
+                         undefined);
+        }
+      }
+    }
+  }
+
+  const statements: string[] = [];
+  for (const spec of tablesByRef.values()) {
+    if (!spec.columns.size) continue;
+    const colLines = [...spec.columns.values()].map(
+        c => `  ${c.name} ${c.type}${c.options ? ` ${c.options}` : ''}`);
+    const optsSuffix = spec.options ? `\n${spec.options}` : '';
+    statements.push(
+        `CREATE TABLE IF NOT EXISTS ${spec.tableRef} (\n${
+            colLines.join(',\n')}\n)${optsSuffix};`);
+  }
+  return statements;
 }
 
 // Places each metric on the single entity its aggregate references, lowering
@@ -577,4 +835,47 @@ function quote(s: string): string {
                       .replace(/\r/g, '\\r')
                       .replace(/\t/g, '\\t');
   return `"${escaped}"`;
+}
+
+// Renders the `OPTIONS(description=...)` clause for a BigQuery table or column
+// in `CREATE TABLE IF NOT EXISTS`. Unlike property-graph label/property
+// options, BigQuery table and column options only accept `description` (not
+// `synonyms`).
+function tableOptionsClause(description?: string): string|undefined {
+  if (!description) return undefined;
+  return `OPTIONS(description=${quote(description)})`;
+}
+
+function physicalColumnForEntity(
+    entity: Entity|undefined, fieldName: string): string {
+  const field = entity?.fields.find(f => f.name === fieldName);
+  if (entity === undefined || field === undefined) return fieldName;
+  const expr = fieldExpression(field) ?? fieldBindingWithoutComments(field);
+  return expr !== undefined ? withoutQualifier(expr, entity.name).trim() :
+                              fieldName;
+}
+
+function bigQueryColumnType(dataType?: DataType): string {
+  switch (dataType) {
+    case 'Integer':
+      return 'INT64';
+    case 'Float':
+      return 'FLOAT64';
+    case 'Decimal':
+      return 'NUMERIC';
+    case 'Boolean':
+      return 'BOOL';
+    case 'Date':
+      return 'DATE';
+    case 'Time':
+      return 'TIME';
+    case 'DateTime':
+      return 'DATETIME';
+    case 'DateTimeTz':
+      return 'TIMESTAMP';
+    case 'String':
+    case 'Opaque':
+    default:
+      return 'STRING';
+  }
 }

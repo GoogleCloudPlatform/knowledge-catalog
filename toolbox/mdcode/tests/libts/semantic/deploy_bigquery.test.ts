@@ -163,6 +163,7 @@ describe('deployBigQuery', () => {
 
       // The DDL is returned to the caller, not printed by the library.
       const ddl = res.ddl.join('\n');
+      expect(ddl).toContain('CREATE TABLE IF NOT EXISTS `demo.sales.orders`');
       expect(ddl).toContain('CREATE OR REPLACE PROPERTY GRAPH');
       // The graph name is qualified from the deployment target, not gcloud
       // defaults.
@@ -182,11 +183,18 @@ describe('deployBigQuery', () => {
       const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(true);
       expect(res.deployed).toBe(1);
-      expect(querySpy).toHaveBeenCalledTimes(1);
+      expect(querySpy).toHaveBeenCalledTimes(2);
 
       // query(project, sql, location) -- the resolved dataset location is
-      // threaded to the job.
-      const [project, sql, location] = querySpy.mock.calls[0];
+      // threaded to the job. First call creates backing table, second creates
+      // the property graph.
+      const [tableProject, tableSql, tableLocation] = querySpy.mock.calls[0];
+      expect(tableProject).toBe('demo');
+      expect(tableSql).toContain(
+          'CREATE TABLE IF NOT EXISTS `demo.sales.orders`');
+      expect(tableLocation).toBe('US');
+
+      const [project, sql, location] = querySpy.mock.calls[1];
       expect(project).toBe('demo');
       expect(sql).toContain(
           'CREATE OR REPLACE PROPERTY GRAPH `demo.sales.sales_graph`');
@@ -213,7 +221,7 @@ describe('deployBigQuery', () => {
     try {
       const res = await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
       expect(res.success).toBe(true);
-      expect(pollSpy).toHaveBeenCalledTimes(1);
+      expect(pollSpy).toHaveBeenCalledTimes(2);
       // getQueryResults(project, jobId, location) -- jobId is the second arg.
       expect(pollSpy.mock.calls[0][1]).toBe('job-1');
     } finally {
@@ -268,7 +276,7 @@ describe('deployBigQuery', () => {
           const res =
               await deployBigQuery(models([{name: 'sales', text: OSSIE}]), CTX, {});
           expect(res.success).toBe(true);
-          expect(jobSpy).toHaveBeenCalledTimes(1);
+          expect(jobSpy).toHaveBeenCalledTimes(2);
         } finally {
           dsSpy.mockRestore();
           jobSpy.mockRestore();
@@ -460,15 +468,15 @@ describe('deployBigQuery', () => {
 
   test(
       'reports already-deployed graphs when a later target fails', async () => {
-        // Two documents, each a single-target model: the first deploys, the
-        // second fails. The failure must surface that graph #1 already mutated
-        // production.
+        // Two documents, each a single-target model (1 backing table + 1 graph
+        // query = 2 queries per target): the first deploys, the second fails.
+        // The failure must surface that graph #1 already mutated production.
         const dsSpy = mockDataset();
         let calls = 0;
         const querySpy = spyOn(bq.BigQueryClient.prototype, 'query')
                              .mockImplementation(async () => {
                                calls++;
-                               return calls === 1 ?
+                               return calls <= 2 ?
                                    {status: 200, result: {jobComplete: true}} :
                                    {status: 400, message: 'boom'};
                              });

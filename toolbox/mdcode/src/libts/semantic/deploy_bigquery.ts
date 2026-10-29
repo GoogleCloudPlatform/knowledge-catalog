@@ -16,7 +16,7 @@ import {ApiResult} from '../gcp/api';
 import {BigQueryClient, QueryResponse} from '../gcp/bigquery';
 import * as context from '../gcp/context';
 
-import {generatePropertyGraph} from './bigquery';
+import {generateCreateBackingTablesDdl, generatePropertyGraph} from './bigquery';
 // The GOOGLE deployment-target reader lives in its own module so both deploy
 // legs (BigQuery, Spanner) and the push-time validator share one parse. The
 // BigQuery-facing views are re-exported here so existing importers
@@ -234,6 +234,11 @@ export async function deployBigQuery(
     }
 
     for (const target of targets) {
+      const tableDdls = generateCreateBackingTablesDdl(model, {
+        project: target.project,
+        dataset: target.dataset,
+        graphName: target.graphName,
+      });
       const gen = generatePropertyGraph(model, {
         project: target.project,
         dataset: target.dataset,
@@ -242,7 +247,7 @@ export async function deployBigQuery(
       for (const w of gen.warnings) {
         warnings.push(`[${model.name} -> ${target.graphName}] ${w}`);
       }
-      ddl.push(`-- ${target.uri}\n${gen.ddl}`);
+      ddl.push(`-- ${target.uri}\n${[...tableDdls, gen.ddl].join('\n')}`);
 
       if (options.validateOnly) {
         continue;
@@ -255,19 +260,21 @@ export async function deployBigQuery(
         return fail(
             `Failed to deploy '${target.graphName}': ${err.message || err}`);
       }
-      const started = await bigQuery.query(target.project, gen.ddl, location);
-      const outcome = await awaitQueryDone(
-          bigQuery, target.project, started, maxPolls, backoffMs);
-      if (!outcome.ok) {
-        // These are CREATE OR REPLACE statements executed one at a time, so
-        // any graphs already deployed in this run have mutated production and
-        // are not rolled back. Surface that alongside the failing target.
-        const partial = deployed ?
-            ` (${deployed} graph(s) already deployed in this run; ` +
-                `CREATE OR REPLACE changes are not rolled back)` :
-            '';
-        return fail(`Failed to deploy '${target.graphName}': ${outcome.error}${
-            partial}`);
+      for (const stmt of [...tableDdls, gen.ddl]) {
+        const started = await bigQuery.query(target.project, stmt, location);
+        const outcome = await awaitQueryDone(
+            bigQuery, target.project, started, maxPolls, backoffMs);
+        if (!outcome.ok) {
+          // These are CREATE OR REPLACE statements executed one at a time, so
+          // any graphs already deployed in this run have mutated production and
+          // are not rolled back. Surface that alongside the failing target.
+          const partial = deployed ?
+              ` (${deployed} graph(s) already deployed in this run; ` +
+                  `CREATE OR REPLACE changes are not rolled back)` :
+              '';
+          return fail(`Failed to deploy '${target.graphName}': ${
+              outcome.error}${partial}`);
+        }
       }
 
       deployed++;

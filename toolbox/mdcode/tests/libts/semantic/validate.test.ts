@@ -141,6 +141,10 @@ describe('validateBigQueryDataSources', () => {
         expect(errs[0]).toContain('does not exist');
         expect(errs[0]).toContain('entity \'gone\'');
         expect(errs[0]).toContain('doc');
+
+        const allowed = await validateBigQueryDataSources(
+            [loaded(m)], bq, 'p', {allowMissingTables: true});
+        expect(allowed).toEqual([]);
       });
 
   test('covers a four-part REST-catalog / Iceberg source', async () => {

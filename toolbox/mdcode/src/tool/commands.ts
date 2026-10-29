@@ -1137,8 +1137,8 @@ async function liveErrors(
   }
   const graph =
       location ? {at, dataset: `${project}.${dataset}`, location} : undefined;
-  const accessErrors =
-      await validateBigQueryDataSources([model], bq, defaultProject, graph);
+  const accessErrors = await validateBigQueryDataSources(
+      [model], bq, defaultProject, graph, {allowMissingTables: true});
   if (accessErrors.length) return accessErrors;
   for (const ddl of plan.generated?.ddl ?? []) {
     const res = await bq.query(project, ddl, location, true);
