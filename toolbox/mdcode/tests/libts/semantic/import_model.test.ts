@@ -305,9 +305,21 @@ describe('sources', () => {
 
        expect(res.ok).toBe(true);
        expect(res.warnings.some(
-                  w => w.includes(cleanSrc) && w.includes('--source-prefix')))
+                  w => w.includes(cleanSrc) && w.includes('--source-prefix') &&
+                      w.endsWith('A table outside Google Cloud is written as ' +
+                                 'the entry name of its Knowledge Catalog ' +
+                                 "entry, 'projects/<p>/locations/<l>/" +
+                                 "entryGroups/<g>/entries/<id>'.")))
            .toBe(true);
      });
+
+  test('keeps a third-party entry name as written, with no warning', async () => {
+    const entry = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: entry}), {sourcePrefix: BQ_PREFIX});
+    expect([res.ok, res.warnings, res.files[0].content])
+        .toEqual([true, [], ossieDoc({source: entry})]);
+  });
 
   test(
       'qualifies matching 1-, 2-, and 3-part Cloud SQL names and warns on disagreeing names',
