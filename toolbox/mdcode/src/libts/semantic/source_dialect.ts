@@ -19,7 +19,7 @@
 
 import * as yaml from 'yaml';
 
-import {CloudSqlTable, cloudSqlTableOf, DIALECT_OF_FQN_PREFIX, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_FQN_PREFIX, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -40,12 +40,16 @@ const DIALECT_OF_ENTRY_SYSTEM =
 export interface SourceDialects {
   // Each source, keyed as dialectLookupKey gives, and its dialect.
   dialects: Map<string, string>;
+  // Each third-party table whose entry's fullyQualifiedName names its
+  // database, keyed by entry name, and that database (see databaseOfFqn).
+  databases: Map<string, string>;
   // One message per source whose dialect could not be read.
   errors: string[];
 }
 
-// A table's dialect, or why kcmd cannot tell it.
-type Dialect = {dialect: string}|{error: string};
+// A table's dialect and, for a third-party table, its database, or why kcmd
+// cannot tell the dialect.
+type Dialect = {dialect: string; database?: string}|{error: string};
 
 // Looks up the dialect of every Cloud SQL and third-party table the model and
 // profile files `texts` write (see sourcesToLookUp), once per table, in
@@ -67,14 +71,16 @@ export async function sourceDialects(
     if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
   }
   const dialects = new Map<string, string>();
+  const databases = new Map<string, string>();
   const errors: string[] = [];
   await Promise.all([...lookups].map(async ([key, lookUp]) => {
     const got = await lookUp();
     if ('error' in got) errors.push(got.error);
     else dialects.set(key, got.dialect);
+    if ('database' in got && got.database) databases.set(key, got.database);
   }));
   errors.sort();
-  return {dialects, errors};
+  return {dialects, databases, errors};
 }
 
 // The dialect of a Cloud SQL table, by its entry's type.
@@ -109,7 +115,7 @@ async function cloudSqlDialect(
 }
 
 // The dialect of a third-party table, by its entry's fullyQualifiedName or
-// entrySource.system.
+// entrySource.system, and the database the fullyQualifiedName names.
 async function thirdPartyDialect(
     catalog: EntryLookup,
     {project, location, name}: ThirdPartyEntry): Promise<Dialect> {
@@ -131,7 +137,7 @@ async function thirdPartyDialect(
   const dialect = fqn ?
       DIALECT_OF_FQN_PREFIX.get(fqn.split(':')[0]) :
       DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
-  if (dialect) return {dialect};
+  if (dialect) return {dialect, database: fqn && databaseOfFqn(fqn)};
   const has = fqn ? `fullyQualifiedName '${fqn}'` :
       system ? `entrySource.system '${system}' and no fullyQualifiedName` :
                'neither a fullyQualifiedName nor an entrySource.system';
@@ -142,6 +148,17 @@ async function thirdPartyDialect(
         `postgresql: or sqlserver:), or entrySource.system when there is no ` +
         `fullyQualifiedName.`,
   };
+}
+
+// The database a third-party table's fullyQualifiedName `fqn` names: a
+// Snowflake account, a Databricks metastore, a MySQL or SQL Server host, or a
+// PostgreSQL host and database. A Databricks name may carry the subtype
+// `table:`. Undefined when the name has too few segments to tell.
+function databaseOfFqn(fqn: string): string|undefined {
+  const [, prefix, path] = fqn.match(/^([a-z]+):(?:table:)?(.*)$/) ?? [];
+  const seg = catalogNameSegments(path ?? '');
+  const n = prefix === 'postgresql' ? 2 : 1;
+  return seg.length > n ? [prefix, ...seg.slice(0, n)].join('/') : undefined;
 }
 
 // Every Cloud SQL table written as a resource name or resource URI anywhere in

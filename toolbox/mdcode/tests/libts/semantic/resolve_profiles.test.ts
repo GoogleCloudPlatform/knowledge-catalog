@@ -1950,6 +1950,11 @@ describe('completeness sees the model as the profile does', () => {
       primaryKey: ['id'], fields: [ID, column('email')], ...e,
     })),
   });
+  // The errors of a profile that binds customer to `a` and vip to `b`.
+  const errorsFor = (a: string, b = BQ('vip'), opts?: CompletenessOptions) =>
+      validateProfileCompleteness(model(true), spec([
+        {name: 'customer', source: a}, {name: 'vip', source: b},
+      ]), [], opts).join('\n');
 
   test('an exclusion on an ancestor leaves its descendants\' field in place', () => {
     // customer excludes email; vip still reads email from its own table.
@@ -1984,9 +1989,6 @@ describe('completeness sees the model as the profile does', () => {
   });
 
   test('only the accepted source forms are accepted', () => {
-    const errorsFor = (source: string) => validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source}, {name: 'vip', source: BQ('v')},
-    ])).join('\n');
     for (const bad of [
            'not_a_table', 'acme.raw.customer', 'custom:foo.bar', 'trino:c.s.t',
            'oracle:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
@@ -2012,11 +2014,6 @@ describe('completeness sees the model as the profile does', () => {
   // schema, and its database is its instance; a PostgreSQL or SQL Server table
   // has a schema, and its database is the one it names.
   test('Cloud SQL resource names classify by instance and database', () => {
-    const errorsFor = (a: string, b: string,
-                       sourceDialects?: ReadonlyMap<string, string>) =>
-        validateProfileCompleteness(model(true), spec([
-          {name: 'customer', source: a}, {name: 'vip', source: b},
-        ]), [], {sourceDialects}).join('\n');
     const inst = 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst';
     // MySQL: one instance is one database, whatever its databases.
     expect(errorsFor(`${inst}/databases/sales/tables/c`, `${inst}/databases/crm/tables/v`))
@@ -2034,7 +2031,7 @@ describe('completeness sees the model as the profile does', () => {
       `${inst}/databases/db2/schemas/public/tables/v`,
     ] as const;
     const lookedUp = (dialect: string) =>
-        new Map(twoDatabases.map(s => [s, dialect]));
+        ({sourceDialects: new Map(twoDatabases.map(s => [s, dialect]))});
     expect(errorsFor(...twoDatabases)).toContain('more than one database');
     expect(errorsFor(...twoDatabases, lookedUp('POSTGRES')))
         .toContain('more than one database');
@@ -2068,26 +2065,31 @@ describe('completeness sees the model as the profile does', () => {
 
   // A profile's rebinding is read as the model file's source is. A catalog
   // name under a third-party prefix is rejected and counts as no database.
-  // The third-party tables of one system, as the lookup names it, are one
-  // database, apart from BigQuery's and from another system's.
+  // A third-party table is in the database its entry's fullyQualifiedName
+  // names, or, with none, in one with every table of its system. Either way
+  // it is apart from BigQuery's.
   test('a profile that binds a third-party table', () => {
     const entry = (g: string, t: string) => `projects/acme/locations/us/entryGroups/${g}/entries/${t}`;
     const [sf, sf2, dbx] = [entry('sf', 'c'), entry('sf', 'v'), entry('dbx', 'v')];
     const sourceDialects =
         new Map([[sf, 'SNOWFLAKE'], [sf2, 'SNOWFLAKE'], [dbx, 'DATABRICKS']]);
-    const errorsFor = (customer: string, vip = BQ('vip')) =>
-        validateProfileCompleteness(model(true), spec([
-          {name: 'customer', source: customer}, {name: 'vip', source: vip},
-        ]), [], {sourceDialects}).join('\n');
+    // sf and sf2 in the Snowflake accounts `a` and `b`.
+    const accounts = (a: string, b: string) => ({
+      sourceDialects,
+      sourceDatabases: new Map([[sf, `snowflake/${a}`], [sf2, `snowflake/${b}`]]),
+    });
     const errors = errorsFor('snowflake:acct.db.public.c');
     expect(errors).toContain(
         "source 'snowflake:acct.db.public.c' is a Knowledge Catalog name");
     expect(errors).not.toContain('more than one database');
-    for (const vip of [BQ('vip'), dbx]) {
-      expect(errorsFor(sf, vip)).toContain(
+    for (const [vip, opts] of [
+      [BQ('vip'), {sourceDialects}], [dbx, {sourceDialects}], [sf2, accounts('a', 'b')],
+    ] as const) {
+      expect(errorsFor(sf, vip, opts)).toContain(
           "binds entities in more than one database ('customer', 'vip')");
     }
-    expect(errorsFor(sf, sf2)).toEqual('');
+    expect(errorsFor(sf, sf2, {sourceDialects})).toEqual('');
+    expect(errorsFor(sf, sf2, accounts('a', 'a'))).toEqual('');
   });
 
   // A source the loader's reader rejects is reported, and names no

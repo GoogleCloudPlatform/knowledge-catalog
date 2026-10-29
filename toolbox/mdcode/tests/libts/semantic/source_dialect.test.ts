@@ -137,6 +137,7 @@ describe('sourceDialects', () => {
 
 // A third-party table's entry gives its dialect by the prefix of its
 // fullyQualifiedName, or, with none, by its entrySource.system in any case.
+// The fullyQualifiedName also names the table's database.
 describe('sourceDialects of a third-party table', () => {
   const dialectOf = async (result: object) =>
       sourceDialects([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
@@ -144,22 +145,27 @@ describe('sourceDialects of a third-party table', () => {
   test('each fullyQualifiedName prefix and system gives its dialect, and the prefix wins', async () => {
     const fqn = (fullyQualifiedName: string) => ({fullyQualifiedName});
     const system = (s: string) => ({entrySource: {system: s}});
-    for (const [result, dialect] of [
-      [fqn('snowflake:acme.retail.public.orders'), 'SNOWFLAKE'],
-      [fqn('databricks:table:1234.main.retail.orders'), 'DATABRICKS'],
-      [fqn('mysql:host.sales.orders'), 'MYSQL'],
-      [fqn('postgresql:host.sales.public.orders'), 'POSTGRES'],
-      [fqn('sqlserver:host.sales.dbo.orders'), 'SQLSERVER'],
+    const rows: Array<[object, string, string?]> = [
+      [fqn('snowflake:acme.retail.public.orders'), 'SNOWFLAKE', 'snowflake/acme'],
+      [fqn('databricks:table:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
+      [fqn('databricks:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
+      [fqn('mysql:host.sales.orders'), 'MYSQL', 'mysql/host'],
+      [fqn('postgresql:`db.example.com`.sales.public.orders'), 'POSTGRES',
+       'postgresql/db.example.com/sales'],
+      [fqn('sqlserver:host.sales.dbo.orders'), 'SQLSERVER', 'sqlserver/host'],
       [system('Snowflake'), 'SNOWFLAKE'],
       [system('DATABRICKS'), 'DATABRICKS'],
       [system('mysql'), 'MYSQL'],
       [system('PostgreSQL'), 'POSTGRES'],
       [system('POSTGRES'), 'POSTGRES'],
       [system('SQLSERVER'), 'SQLSERVER'],
-      [{...fqn('snowflake:acme.orders'), ...system('DATABRICKS')}, 'SNOWFLAKE'],
-    ] as const) {
-      expect({result, ...await dialectOf(result)})
-          .toEqual({result, dialects: new Map([[THIRD_PARTY, dialect]]), errors: []});
+      [{...fqn('snowflake:acme.orders'), ...system('DATABRICKS')}, 'SNOWFLAKE', 'snowflake/acme'],
+    ];
+    for (const [result, dialect, database] of rows) {
+      expect({result, ...await dialectOf(result)}).toEqual({
+        result, dialects: new Map([[THIRD_PARTY, dialect]]),
+        databases: new Map(database ? [[THIRD_PARTY, database]] : []), errors: [],
+      });
     }
   });
 
@@ -174,7 +180,7 @@ describe('sourceDialects of a third-party table', () => {
       [{fullyQualifiedName: 'postgres:host.db.public.orders'},
        "fullyQualifiedName 'postgres:host.db.public.orders'"],
     ] as const) {
-      expect(await dialectOf(result)).toEqual({dialects: new Map(), errors: [
+      expect(await dialectOf(result)).toEqual({dialects: new Map(), databases: new Map(), errors: [
         `source '${THIRD_PARTY}': kcmd cannot tell the table's SQL dialect from ` +
         `its Knowledge Catalog entry, which has ${has}. kcmd reads the prefix ` +
         `of the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
@@ -192,7 +198,7 @@ describe('sourceDialects of a third-party table', () => {
             `source '${THIRD_PARTY}' names no table Knowledge Catalog knows about.`)]);
     expect(calls).toEqual([{project: 'acme', location: 'us-central1', name: THIRD_PARTY}]);
     expect(await sourceDialects([THIRD_PARTY_FILE], catalog, {thirdParty: false}))
-        .toEqual({dialects: new Map(), errors: []});
+        .toEqual({dialects: new Map(), databases: new Map(), errors: []});
     expect(calls).toHaveLength(1);
   });
 });

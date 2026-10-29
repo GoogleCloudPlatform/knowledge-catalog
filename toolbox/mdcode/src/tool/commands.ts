@@ -516,13 +516,13 @@ async function dialectLoad(
       // A profile file the layout rejects is reported where it is read.
     }
   }
-  const {dialects, errors} =
+  const {dialects, databases, errors} =
       await sourceDialects(texts, new dataplex.CatalogClient(ctx));
   if (errors.length) {
     for (const e of errors) console.error(`Error: ${e}`);
     return null;
   }
-  return {sourceDialects: dialects};
+  return {sourceDialects: dialects, sourceDatabases: databases};
 }
 
 // Checks that every source in the inline bindings and named profiles of

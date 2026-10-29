@@ -11,14 +11,14 @@ import {ALLOYDB, bqGraph, bqTable, CUSTOMER, err, modelFile, scenarios, spannerG
 const entry = (group: string, id: string) =>
     `projects/test-project/locations/us/entryGroups/${group}/entries/${id}`;
 const ENTRY = entry('sf', 'customer');
-const DBX = entry('dbx', 'order');
+const OTHER_ACCOUNT = entry('sf2', 'order');
 // Entity Customer bound to ENTRY, whose entry is a Snowflake table's.
 const THIRD_PARTY = {...CUSTOMER, source: ENTRY};
-// ENTRY is a Snowflake table's entry, and DBX a Databricks table's.
+// ENTRY and OTHER_ACCOUNT are tables in two Snowflake accounts.
 const LOOKUP = {
   lookupEntry: (_p: string, _l: string, name: string) => ({
     [ENTRY]: {status: 200, result: {fullyQualifiedName: 'snowflake:acme.db.public.c'}},
-    [DBX]: {status: 200, result: {fullyQualifiedName: 'databricks:1.main.r.o'}},
+    [OTHER_ACCOUNT]: {status: 200, result: {fullyQualifiedName: 'snowflake:other.db.public.o'}},
   })[name],
 };
 const MISSING = err(
@@ -100,7 +100,7 @@ scenarios('a third-party table', [
             errors: [MISSING], nothingWritten: true}],
   },
   {
-    name: 'a field bound to one needs SQL in its dialect or in ANSI_SQL, in the model file and in a profile, whose tables must be of one system',
+    name: 'a field bound to one needs SQL in its dialect or in ANSI_SQL, in the model file and in a profile, whose tables must be in one account',
     entities: [DATABRICKS],
     flags: {deployment: false},
     services: LOOKUP,
@@ -117,9 +117,9 @@ scenarios('a third-party table', [
           "expression for SNOWFLAKE or ANSI_SQL, and this profile's sources " +
           'are SNOWFLAKE')],
     }, {
-      // A Snowflake and a Databricks table are two databases.
+      // Tables in two Snowflake accounts are in two databases.
       entities: [CUSTOMER, ORDER],
-      profiles: {x: {entities: {Customer: THIRD_PARTY, Order: {...ORDER, source: DBX}}}},
+      profiles: {x: {entities: {Customer: THIRD_PARTY, Order: {...ORDER, source: OTHER_ACCOUNT}}}},
       code: 1,
       errors: [err(
           "[commerce.profile.x.yaml] profile 'x' binds entities in more than " +

@@ -1046,8 +1046,10 @@ export function loadProfileFile(
 }
 
 // The source dialects a command looked up before it loads
-// (LoadOptions.sourceDialects).
-export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>;
+// (LoadOptions.sourceDialects), and the database each third-party table's
+// entry names, keyed by entry name, for the one-database rule.
+export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&
+    {sourceDatabases?: ReadonlyMap<string, string>};
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
@@ -2072,11 +2074,13 @@ export function validateProfileCompleteness(
     }
     const lookedUp = profiledByName.get(e.name)?.sourceDialect;
     stated.push({source: pe.source, lookedUp});
-    // One query reaches every database of a SQL Server instance. The
-    // third-party tables of one system count as one database.
+    // One query reaches every database of a SQL Server instance. A
+    // third-party table is in the database its entry's fullyQualifiedName
+    // names, or, with none, in one with every table of its system.
     const table = lookedUp === 'SQLSERVER' && cloudSqlTableOf(pe.source);
     const key = table ? table.resourceName.split('/databases/')[0] :
-        db === 'thirdparty' ? `thirdparty/${lookedUp}` : db;
+        db !== 'thirdparty' ? db :
+        opts.sourceDatabases?.get(pe.source.trim()) ?? `thirdparty/${lookedUp}`;
     if (!databases.has(key)) databases.set(key, e.name);
   }
   if (databases.size > 1) {

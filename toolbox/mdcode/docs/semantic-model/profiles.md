@@ -105,11 +105,14 @@ integration turned on (`gcloud sql instances patch <i>
 table. When the entry cannot be read, the command stops and says so.
 
 A profile's sources all sit in one database, meaning the system one query can
-reach: all of BigQuery, or one Spanner, AlloyDB or Cloud SQL for PostgreSQL
-database, or one Cloud SQL for MySQL or SQL Server instance. The third-party
-tables of one system count as one database. A profile moves an entity
-between stores by swapping its source and, when the two stores shape the data
-differently, the column each field reads.
+reach: all of BigQuery, one Spanner, AlloyDB or PostgreSQL database, one MySQL
+or SQL Server instance, one Snowflake account, or one Databricks metastore. A
+PostgreSQL, MySQL or SQL Server table counts the same way in Cloud SQL and
+outside it. `kcmd` reads a third-party table's database from its entry's
+`fullyQualifiedName`. When the entry has none, the third-party tables of one
+system count as one database. A profile moves an entity between stores by
+swapping its source and, when the two stores shape the data differently, the
+column each field reads.
 
 ## What a profile may change — the contract
 
