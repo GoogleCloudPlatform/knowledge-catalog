@@ -151,6 +151,7 @@ describe('sourceDialects of a third-party table', () => {
       [fqn('snowflake:.retail.public.orders'), 'SNOWFLAKE'],
       [fqn('databricks:table:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
       [fqn('databricks:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
+      [fqn('databricks:view:1234.main.retail.orders_v'), 'DATABRICKS', 'databricks/1234'],
       [fqn('mysql:host.sales.orders'), 'MYSQL', 'mysql/host'],
       [fqn('postgresql:`db.example.com`.sales.public.orders'), 'POSTGRES',
        'postgresql/db.example.com/sales'],

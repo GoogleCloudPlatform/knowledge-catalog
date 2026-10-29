@@ -155,7 +155,8 @@ async function thirdPartyDialect(
 // Server host, or a PostgreSQL host and database. Undefined unless every
 // segment is set and one follows the database's, as in a table's name.
 function databaseOfFqn(fqn: string): string|undefined {
-  const [, prefix, path] = fqn.match(/^([a-z]+):(?:table:)?(.*)$/) ?? [];
+  const [, prefix, path] =
+      fqn.match(/^([a-z]+):(?:(?:table|view):)?(.*)$/) ?? [];
   const seg = catalogNameSegments(path ?? '');
   const n = prefix === 'postgresql' ? 2 : 1;
   if (seg.length <= n || seg.includes('')) return undefined;
