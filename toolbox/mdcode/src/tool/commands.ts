@@ -961,9 +961,10 @@ async function prepareModels(
       liftedExclusions,
       v2Aspects: kcV2Aspects(),
     }),
-    // No graph reads a third-party table, as the two-phase push checks too.
-    ...prune ? labeled(models).flatMap(
-        m => thirdPartyGraphErrors(m.document, m.model)) : [],
+    // No graph target reads a third-party table, even on a catalog-only push,
+    // since the catalog keeps the target.
+    ...labeled(models).flatMap(
+        m => thirdPartyGraphErrors(m.document, m.model)),
   ])];
   for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
     report.warning(w);
@@ -1967,12 +1968,14 @@ async function checkBeforeWrites(
     return stop([...profileErrors, ...kcErrors]);
   }
   // Each deployment's tables must be in the database it deploys to, whether
-  // or not this push selects the deployment.
+  // or not this push selects the deployment. The catalog keeps the GOOGLE
+  // block targets of a model with no deployments list, so they are checked too.
   const tableErrors = models.flatMap(
-      ({document, model}) => (everyByDoc.get(document) ?? [])
-          .flatMap(d => ofProfile(
+      ({document, model}) => model.deployments ?
+          (everyByDoc.get(document) ?? []).flatMap(d => ofProfile(
               document, d.profile,
-              ...deploymentTableErrors(document, model, d))));
+              ...deploymentTableErrors(document, model, d))) :
+          ofModel(document, ...thirdPartyGraphErrors(document, model)));
   if (tableErrors.length) return stop(tableErrors);
 
   const plans: DeploymentPlan[] = [];

@@ -74,7 +74,8 @@ scenarios('a third-party table', [
   },
   {
     // A model with no deployments list pushes in one phase, with the graph
-    // target of its GOOGLE block or of a legacy profile folder.
+    // target of its GOOGLE block or of a legacy profile folder. A catalog-only
+    // push is refused too, since the catalog keeps the GOOGLE block target.
     name: 'a model with no deployments list is refused before anything is written when its GOOGLE block or legacy profile names a graph',
     files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g')]}})
                                  .replace(bqTable('customer'), ENTRY)},
@@ -87,7 +88,9 @@ scenarios('a third-party table', [
           spannerGraph('g')}\n    entities: [{name: Customer, source: ${ENTRY}}]\n`},
       code: 1, nothingWritten: true,
       errors: [err(singlePhase(SPANNER, "commerce, profile 'sf'"))],
-    }],
+    },
+    {flags: {deployment: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
+    {flags: {profile: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]}],
   },
   {
     name: 'a missing entry stops the push before anything is written, with or without --skip-source-check, and stops kcmd profiles',
