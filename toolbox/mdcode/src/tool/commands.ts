@@ -1969,7 +1969,8 @@ async function checkBeforeWrites(
   }
   // Each deployment's tables must be in the database it deploys to, whether
   // or not this push selects the deployment. The catalog keeps the GOOGLE
-  // block targets of a model with no deployments list, so they are checked too.
+  // block targets of a model with no deployments list, so a third-party table
+  // under one is refused too.
   const tableErrors = models.flatMap(
       ({document, model}) => model.deployments ?
           (everyByDoc.get(document) ?? []).flatMap(d => ofProfile(

@@ -75,7 +75,8 @@ scenarios('a third-party table', [
   {
     // A model with no deployments list pushes in one phase, with the graph
     // target of its GOOGLE block or of a legacy profile folder. A catalog-only
-    // push is refused too, since the catalog keeps the GOOGLE block target.
+    // push, in one phase or two, is refused too, since the catalog keeps the
+    // GOOGLE block target.
     name: 'a model with no deployments list is refused before anything is written when its GOOGLE block or legacy profile names a graph',
     files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g')]}})
                                  .replace(bqTable('customer'), ENTRY)},
