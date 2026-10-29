@@ -1046,14 +1046,14 @@ export function loadProfileFile(
 }
 
 // The Cloud SQL dialects a command looked up before it loads
-// (LoadOptions.cloudSqlDialects).
-export type CloudSqlLoad = Pick<LoadOptions, 'cloudSqlDialects'>;
+// (LoadOptions.sourceDialects).
+export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>;
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
   // The preferred dialect the model was loaded with, which picks the text each
   // field takes, and the Cloud SQL dialects it was given.
-  load?: Pick<LoadOptions, 'dialect'|'cloudSqlDialects'>;
+  load?: Pick<LoadOptions, 'dialect'|'sourceDialects'>;
   // Collects the warnings a load gives for the values the profile sets.
   // applyProfile only; the other functions return them.
   warnings?: string[];
@@ -1172,7 +1172,7 @@ export interface AppliedProfile {
  */
 function applyProfileToDocument(
     doc: {name: string; text: string}, profile: ProfileSpec,
-    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
       doc, (base, from) => applyProfileSpec(base, profile, {from, load}), load);
 }
@@ -1180,7 +1180,7 @@ function applyProfileToDocument(
 /** applyProfileToDocument for the profile file `text`. */
 function applyProfileFileToDocument(
     doc: {name: string; text: string}, text: string, profileName: string,
-    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
       doc,
       (base, from) => applyProfileFile(base, text, profileName, {from, load}),
@@ -1192,7 +1192,7 @@ function applyToDocument(
     apply: (base: SemanticModel,
             from: {document: string; warnings: string[]}) =>
         {model: SemanticModel; warnings: string[]}|{error: string},
-    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   const loaded = loadSemanticModels(
       [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
@@ -1264,7 +1264,7 @@ export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
  */
 export function profileForDocument(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
-    profileName: string, load: CloudSqlLoad = {}): DocumentProfile {
+    profileName: string, load: DialectLoad = {}): DocumentProfile {
   const chosen = profiles.find(p => p.name === profileName);
   if (!chosen) return {kind: 'missing', declared: profiles.map(p => p.name)};
   if ('spec' in chosen || isProfileFileForm(chosen.text)) {
@@ -1942,7 +1942,7 @@ export function sourcesDialect(model: {
 //
 // A Cloud SQL table written as its resource name implies the dialect its
 // catalog entry's type names, which a lookup read into `lookedUp`
-// (LoadOptions.cloudSqlDialects).
+// (LoadOptions.sourceDialects).
 function dialectOfSources(
     sources: Array<{source: string; lookedUp?: string}>): string|undefined {
   const dialects = new Set<string|undefined>(sources.map(({source, lookedUp}) => {
@@ -1958,7 +1958,7 @@ function dialectOfSources(
 }
 
 /** What the caller of validateProfileCompleteness checks itself. */
-export interface CompletenessOptions extends CloudSqlLoad {
+export interface CompletenessOptions extends DialectLoad {
   // The caller checks the model the profile gives, as push does for the
   // profile it selects. The rules the caller's check covers are left out:
   // whether the hierarchy still resolves, what the profile's field
@@ -2025,7 +2025,7 @@ export function validateProfileCompleteness(
   const unknownAncestry = unresolvedEntities(baseModel);
   const {model: profiled, errors: unread} =
       applyBindings(
-          baseModel, profile, {load: {cloudSqlDialects: opts.cloudSqlDialects}});
+          baseModel, profile, {load: {sourceDialects: opts.sourceDialects}});
   errors.push(...unread.map(e => `${at}: ${e}`));
   const profiledError = inheritanceErrorOf(profiled);
   if (profiledError && !inheritanceErrorOf(baseModel) && !applied) {

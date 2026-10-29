@@ -17,7 +17,6 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
@@ -25,10 +24,11 @@ import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semant
 import {isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfile, applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
+import {applyProfile, applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, DocumentProfile, expressionSources, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
+import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
 import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
@@ -418,7 +418,7 @@ export {isProfileFileForm};
 function profiledDoc(
     doc: {name: string; text: string},
     res: Extract<DocumentProfile, {kind: 'file'|'wrapper'}>,
-    load: CloudSqlLoad): ProfiledDoc {
+    load: DialectLoad): ProfiledDoc {
   if (res.kind === 'file') {
     return {
       name: doc.name,
@@ -505,9 +505,9 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
 // profile files write as a resource name, read from the tables' Knowledge
 // Catalog entries, for every load the command makes. Makes no call when no file
 // writes one. Prints each table whose entry cannot be read and returns null.
-async function cloudSqlLoad(
+async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
-    profileDocs: ProfileDocs): Promise<CloudSqlLoad|null> {
+    profileDocs: ProfileDocs): Promise<DialectLoad|null> {
   const texts = docs.map(d => d.text);
   for (const doc of docs) {
     try {
@@ -517,12 +517,12 @@ async function cloudSqlLoad(
     }
   }
   const {dialects, errors} =
-      await cloudSqlDialects(texts, new dataplex.CatalogClient(ctx));
+      await sourceDialects(texts, new dataplex.CatalogClient(ctx));
   if (errors.length) {
     for (const e of errors) console.error(`Error: ${e}`);
     return null;
   }
-  return {cloudSqlDialects: dialects};
+  return {sourceDialects: dialects};
 }
 
 // Checks that every source in the inline bindings and named profiles of
@@ -695,7 +695,7 @@ function namedProfileErrors(
     pushChecks: (doc: ProfiledDoc, profile: string) => {applied?: boolean},
     profileDocs: ProfileDocs, declared: DeclaredProfiles, warnings: string[],
     pushedProfile: string,
-    load: CloudSqlLoad): LocalCheckError[] {
+    load: DialectLoad): LocalCheckError[] {
   const errors: LocalCheckError[] = [];
   for (const d of docs) {
     // Each named profile, with the label its errors carry and a function that
@@ -843,7 +843,7 @@ async function prepareModels(
     docs: ProfiledDoc[], profileName: string, opts: {
       prune: boolean; defaultProject: string; profileDocs: ProfileDocs;
       declared: DeclaredProfiles;
-      load: CloudSqlLoad;
+      load: DialectLoad;
     },
     report: PrepareReport): Promise<PreparedModels|null> {
   const {prune, defaultProject} = opts;
@@ -1025,7 +1025,7 @@ function warnModelFileNames(
 async function pushErrors(
     doc: ProfiledDoc, profileName: string, defaultProject: string,
     ctx: context.ApiContext, profileDocs: ProfileDocs,
-    declared: DeclaredProfiles, load: CloudSqlLoad,
+    declared: DeclaredProfiles, load: DialectLoad,
     source: SemanticModelSource, onlyModelDoc: boolean,
     overviews: ReadonlyMap<string, OverviewSidecar>,
     warn: (warning: string) => void): Promise<string[]> {
@@ -1162,7 +1162,7 @@ export async function push(options: PushOptions): Promise<number> {
 
     // A Cloud SQL table written as its resource name takes its dialect from its
     // Knowledge Catalog entry, looked up once before anything loads.
-    const load = await cloudSqlLoad(ctx, layoutDocs, profileDocs);
+    const load = await dialectLoad(ctx, layoutDocs, profileDocs);
     if (!load) return 1;
 
     // Reserve the profile name 'default': it is the sentinel for the inline
@@ -1726,7 +1726,7 @@ interface TwoPhaseScope {
   profileDocs: ProfileDocs;
   // The default_profile catalog.yaml names, if any.
   defaultProfile?: string;
-  load: CloudSqlLoad;
+  load: DialectLoad;
 }
 
 // One selected deployment, its message prefix and the model it deploys. A
@@ -1747,7 +1747,7 @@ async function pushInTwoPhases(
   const fail = printErrors;
   const flagError = twoPhaseFlagError(options);
   if (flagError) return fail(flagError);
-  const load = await cloudSqlLoad(ctx, scope.docs, scope.profileDocs);
+  const load = await dialectLoad(ctx, scope.docs, scope.profileDocs);
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
@@ -2372,7 +2372,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const declaredBy = declaredProfilesReader(profileDocs);
   // A Cloud SQL table written as its resource name takes its dialect from its
   // Knowledge Catalog entry, looked up once, as push does.
-  const load = await cloudSqlLoad(ctx, docs, profileDocs);
+  const load = await dialectLoad(ctx, docs, profileDocs);
   if (!load) return 1;
   // The inline bindings' header. 'default' is not a profile document and
   // never can be -- a push rejects a file by that name. It names the inline

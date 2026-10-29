@@ -110,7 +110,7 @@ export interface Entity {
   authoredSource?: string;  // the source string as typed
   // The dialect of a Cloud SQL table written as its resource name, as its
   // Knowledge Catalog entry's type names it. Set only when the load was given
-  // the dialects a lookup read (LoadOptions.cloudSqlDialects).
+  // the dialects a lookup read (LoadOptions.sourceDialects).
   sourceDialect?: string;
   keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array

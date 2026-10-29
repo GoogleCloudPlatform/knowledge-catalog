@@ -19,7 +19,7 @@
 // must be read, not guessed. Every read is a direct lookup: Dataplex search
 // misses entries a lookup finds, and is not exact.
 //
-// A Cloud SQL source is not looked up here: cloudSqlDialects already looks up
+// A Cloud SQL source is not looked up here: sourceDialects already looks up
 // its entry, and fails the push when it is missing.
 
 import type {BigLakeClient} from '../gcp/biglake';

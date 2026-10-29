@@ -211,7 +211,7 @@ describe('sourceEntryErrors', () => {
         entity('unbound', ''),
         // A legacy bare name, which the load completes into `dataSource`.
         entity('legacy', 'orders', {dataSource: `${P}.kcmd_demo.orders`}),
-        // cloudSqlDialects looks a Cloud SQL table up.
+        // sourceDialects looks a Cloud SQL table up.
         entity('cloudsql', `cloudsql.googleapis.com/projects/${P}/locations/us-central1/instances/i/databases/d/tables/t`),
       ],
       profiles: [profile('p', [['orders']])],

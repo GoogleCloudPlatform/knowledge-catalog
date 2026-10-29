@@ -9,7 +9,7 @@
 //
 // This is the only place kcmd makes a network call to learn a dialect. A
 // command looks every Cloud SQL source up once, before it loads the model, and
-// passes the dialects to the load (LoadOptions.cloudSqlDialects).
+// passes the dialects to the load (LoadOptions.sourceDialects).
 
 import * as yaml from 'yaml';
 
@@ -27,7 +27,7 @@ const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
   'cloudsql-sqlserver-view': 'SQLSERVER',
 };
 
-export interface CloudSqlDialects {
+export interface SourceDialects {
   // Each Cloud SQL resource name, with no leading `//`, and its dialect.
   dialects: Map<string, string>;
   // One message per source whose dialect could not be read.
@@ -35,13 +35,13 @@ export interface CloudSqlDialects {
 }
 
 // Looks up the dialect of every Cloud SQL table the model and profile files
-// `texts` write as a resource name or resource URI (see cloudSqlSourcesIn),
+// `texts` write as a resource name or resource URI (see sourcesToLookUp),
 // once per table, in parallel. Makes no call when they write none. Never
 // throws: a lookup that fails is reported in `errors`.
-export async function cloudSqlDialects(
-    texts: Iterable<string>, catalog: EntryLookup): Promise<CloudSqlDialects> {
+export async function sourceDialects(
+    texts: Iterable<string>, catalog: EntryLookup): Promise<SourceDialects> {
   const tables = new Map<string, NonNullable<ReturnType<typeof cloudSqlTableOf>>>();
-  for (const source of cloudSqlSourcesIn(texts)) {
+  for (const source of sourcesToLookUp(texts)) {
     // Keyed by resource name, so both spellings of one table are one lookup.
     const table = cloudSqlTableOf(source);
     if (table) tables.set(table.resourceName, table);
@@ -91,7 +91,7 @@ export async function cloudSqlDialects(
 // GOOGLE blocks carry. Values are read from the parsed YAML, so a name in a
 // comment is not collected. A file that does not parse collects nothing; the
 // load reports it.
-export function cloudSqlSourcesIn(texts: Iterable<string>): string[] {
+export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
   const visit = (value: unknown): void => {
     if (typeof value === 'string') {

@@ -2013,10 +2013,10 @@ describe('completeness sees the model as the profile does', () => {
   // has a schema, and its database is the one it names.
   test('Cloud SQL resource names classify by instance and database', () => {
     const errorsFor = (a: string, b: string,
-                       cloudSqlDialects?: ReadonlyMap<string, string>) =>
+                       sourceDialects?: ReadonlyMap<string, string>) =>
         validateProfileCompleteness(model(true), spec([
           {name: 'customer', source: a}, {name: 'vip', source: b},
-        ]), [], {cloudSqlDialects}).join('\n');
+        ]), [], {sourceDialects}).join('\n');
     const inst = 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst';
     // MySQL: one instance is one database, whatever its databases.
     expect(errorsFor(`${inst}/databases/sales/tables/c`, `${inst}/databases/crm/tables/v`))
@@ -2095,11 +2095,11 @@ describe('completeness sees the model as the profile does', () => {
     // Tables in one Cloud SQL for MySQL instance, as the lookup reads them.
     const mysql = (t: string) =>
         `cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/sales/tables/${t}`;
-    const cloudSqlDialects = new Map([mysql('c'), mysql('v')].map(t => [t, 'MYSQL']));
+    const sourceDialects = new Map([mysql('c'), mysql('v')].map(t => [t, 'MYSQL']));
     const errorsFor = (customer: string) => validateProfileCompleteness(m, spec([
       {name: 'customer', source: customer, fields: [ID]},
       {name: 'vip', source: mysql('v'), fields: [ID]},
-    ]), [], {cloudSqlDialects}).join('\n');
+    ]), [], {sourceDialects}).join('\n');
     for (const rejected of ['snowflake:acct.db.public.c', 'acme.sales.c', '']) {
       const errors = errorsFor(rejected);
       expect({rejected, errors}).toEqual({
@@ -3031,14 +3031,14 @@ describe('profile completeness: dialects and struct paths', () => {
   test('a Cloud SQL resource name takes the dialect its catalog entry gave, and none without one', () => {
     const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/ms/' +
         'databases/shop/schemas/sales/tables/orders';
-    const sqlServer = {cloudSqlDialects: new Map([[CS, 'SQLSERVER']])};
+    const sqlServer = {sourceDialects: new Map([[CS, 'SQLSERVER']])};
     expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual([]);
-    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: sqlServer.cloudSqlDialects})
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: sqlServer.sourceDialects})
                .join('\n'))
         .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
     // The dialects are per table: another table's does not count.
-    const other = {cloudSqlDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
-    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: other.cloudSqlDialects})).toEqual([]);
+    const other = {sourceDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: other.sourceDialects})).toEqual([]);
   });
 
   test('the loader and a profile record the looked-up dialect on the entity', () => {
@@ -3051,7 +3051,7 @@ describe('profile completeness: dialects and struct paths', () => {
         entities: [{name: 'orders', source, primary_key: ['id'], fields: [{name: 'id', expression: 'id'}]}],
       }],
     });
-    const opts = {cloudSqlDialects: new Map([[CS, 'MYSQL']])};
+    const opts = {sourceDialects: new Map([[CS, 'MYSQL']])};
     const [model] = fromDocument(doc(CS), opts).models;
     expect(model.entities[0].sourceDialect).toBe('MYSQL');
     expect(sourcesDialect(model)).toBe('MYSQL');
@@ -3739,7 +3739,7 @@ entities:
         'databases/shop/schemas/sales/tables/orders';
     const file = FILE.replace(`"${BQ('orders_prod')}"`, `"${CS}"`);
     const res = profileForDocument(DOC, [{name: 'prod', text: file}], 'prod', {
-      cloudSqlDialects: new Map([[CS, 'POSTGRES']]),
+      sourceDialects: new Map([[CS, 'POSTGRES']]),
     });
     if (res.kind !== 'file') throw new Error(JSON.stringify(res));
     expect(res.model.entities.find(e => e.name === 'orders')!.sourceDialect)
@@ -3749,7 +3749,7 @@ entities:
     const withCs = {name: 'sales', text: DOC.text.replace(`"${BQ('orders')}"`, `"${CS}"`)};
     expect(withCs.text).toContain(CS);
     const kept = profileForDocument(withCs, [{name: 'prod', text: 'name: prod\n'}], 'prod', {
-      cloudSqlDialects: new Map([[CS, 'POSTGRES']]),
+      sourceDialects: new Map([[CS, 'POSTGRES']]),
     });
     if (kept.kind !== 'file') throw new Error(JSON.stringify(kept));
     expect(kept.model.entities.find(e => e.name === 'orders')!.sourceDialect)

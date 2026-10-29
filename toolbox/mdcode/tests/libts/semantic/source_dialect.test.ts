@@ -1,4 +1,4 @@
-// Tests for src/libts/semantic/cloudsql_dialect.ts: a Cloud SQL table's dialect
+// Tests for src/libts/semantic/source_dialect.ts: a Cloud SQL table's dialect
 // read from its Knowledge Catalog entry. The catalog is faked; nothing here
 // calls a service.
 
@@ -6,8 +6,8 @@ import {describe, expect, test} from 'bun:test';
 
 import {ApiResult} from '../../../src/libts/gcp/api';
 import {CatalogClient} from '../../../src/libts/gcp/dataplex';
-import {cloudSqlDialects, cloudSqlSourcesIn} from '../../../src/libts/semantic/cloudsql_dialect';
 import {EntryLookup} from '../../../src/libts/semantic/catalog_entry';
+import {sourceDialects, sourcesToLookUp} from '../../../src/libts/semantic/source_dialect';
 import {entryDenied} from '../gcp/location_responses';
 
 const INSTANCE = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances';
@@ -33,7 +33,7 @@ const entryName = (resourceName: string) =>
 const typed = (type: string): ApiResult<{entryType?: string}> =>
     ({status: 200, result: {entryType: `projects/dataplex-types/locations/global/entryTypes/${type}`}});
 
-describe('cloudSqlDialects', () => {
+describe('sourceDialects', () => {
   // Each argument is read as a file's text; a bare resource name is a file
   // whose one value is that name.
   test('each Cloud SQL table or view entry type gives its dialect', async () => {
@@ -44,7 +44,7 @@ describe('cloudSqlDialects', () => {
       [entryName(SQLSERVER)]: typed('cloudsql-sqlserver-table'),
     });
     const {dialects, errors} =
-        await cloudSqlDialects([MYSQL, POSTGRES, POSTGRES_VIEW, SQLSERVER], catalog);
+        await sourceDialects([MYSQL, POSTGRES, POSTGRES_VIEW, SQLSERVER], catalog);
     expect(errors).toEqual([]);
     expect(dialects).toEqual(new Map([
       [MYSQL, 'MYSQL'], [POSTGRES, 'POSTGRES'], [POSTGRES_VIEW, 'POSTGRES'],
@@ -62,19 +62,19 @@ describe('cloudSqlDialects', () => {
         result: {entryType: 'projects/655216118709/locations/global/entryTypes/cloudsql-postgresql-table'},
       },
     });
-    expect((await cloudSqlDialects([POSTGRES], catalog)).dialects.get(POSTGRES)).toBe('POSTGRES');
+    expect((await sourceDialects([POSTGRES], catalog)).dialects.get(POSTGRES)).toBe('POSTGRES');
   });
 
   test('each table is looked up once', async () => {
     const {catalog, calls} = fakeCatalog({[entryName(MYSQL)]: typed('cloudsql-mysql-table')});
-    const {dialects} = await cloudSqlDialects([MYSQL, MYSQL], catalog);
+    const {dialects} = await sourceDialects([MYSQL, MYSQL], catalog);
     expect(calls).toHaveLength(1);
     expect(dialects).toEqual(new Map([[MYSQL, 'MYSQL']]));
   });
 
   test('other sources are not looked up', async () => {
     const {catalog, calls} = fakeCatalog({});
-    const {dialects, errors} = await cloudSqlDialects([
+    const {dialects, errors} = await sourceDialects([
       'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
       'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t',
     ], catalog);
@@ -85,7 +85,7 @@ describe('cloudSqlDialects', () => {
 
   test('a missing or unreadable entry says to turn on Dataplex integration', async () => {
     const {catalog} = fakeCatalog({});
-    const {dialects, errors} = await cloudSqlDialects([SQLSERVER], catalog);
+    const {dialects, errors} = await sourceDialects([SQLSERVER], catalog);
     expect(dialects.size).toBe(0);
     expect(errors).toEqual([
       `source '${SQLSERVER}': kcmd reads a Cloud SQL table's dialect from its ` +
@@ -100,7 +100,7 @@ describe('cloudSqlDialects', () => {
 
   test('an entry of another type is reported with its type', async () => {
     const {catalog} = fakeCatalog({[entryName(MYSQL)]: typed('cloudsql-mysql-database')});
-    expect((await cloudSqlDialects([MYSQL], catalog)).errors).toEqual([
+    expect((await sourceDialects([MYSQL], catalog)).errors).toEqual([
       `source '${MYSQL}': its Knowledge Catalog entry has type ` +
       `'cloudsql-mysql-database', which is not a Cloud SQL table or view type ` +
       `kcmd knows (cloudsql-mysql-table, cloudsql-mysql-view, ` +
@@ -116,7 +116,7 @@ describe('cloudSqlDialects', () => {
         throw new Error('socket hang up');
       },
     };
-    const {errors} = await cloudSqlDialects([POSTGRES, MYSQL], failing);
+    const {errors} = await sourceDialects([POSTGRES, MYSQL], failing);
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
       `source '${POSTGRES}': looking up its Knowledge Catalog entry failed (HTTP 503: unavailable).`,
@@ -131,7 +131,7 @@ describe('cloudSqlDialects', () => {
   });
 });
 
-describe('cloudSqlSourcesIn', () => {
+describe('sourcesToLookUp', () => {
   test('collects resource names from YAML values, GOOGLE-block JSON and profile files, not from comments', () => {
     const model = `version: "0.2.0.dev0/google"
 semantic_model:
@@ -155,19 +155,19 @@ entities:
   - name: orders
     source: "${POSTGRES}"
 `;
-    expect(cloudSqlSourcesIn([model, vanilla, profile]).sort())
+    expect(sourcesToLookUp([model, vanilla, profile]).sort())
         .toEqual([POSTGRES, MYSQL, SQLSERVER].sort());
     // A file that does not parse collects nothing, even a name it holds.
-    expect(cloudSqlSourcesIn([`source: ${MYSQL}\nname: [unclosed`])).toEqual([]);
+    expect(sourcesToLookUp([`source: ${MYSQL}\nname: [unclosed`])).toEqual([]);
     // Nor does one whose values cannot be read, and that does not throw: an
     // alias whose anchor is not set.
-    expect(cloudSqlSourcesIn([`source: ${MYSQL}\nother: *missing\n`])).toEqual([]);
+    expect(sourcesToLookUp([`source: ${MYSQL}\nother: *missing\n`])).toEqual([]);
     // Nor does an alias that refers to itself, whose values are cyclic, stop
     // it; the other files are still read.
-    expect(cloudSqlSourcesIn([`a: &a [*a]\nsource: ${MYSQL}\n`, `source: ${POSTGRES}\n`]))
+    expect(sourcesToLookUp([`a: &a [*a]\nsource: ${MYSQL}\n`, `source: ${POSTGRES}\n`]))
         .toEqual([POSTGRES]);
     // A tag kcmd does not resolve is read as the loader reads it: a !!set
     // stays a plain mapping, so its values are walked.
-    expect(cloudSqlSourcesIn([`tables: !!set\n  orders: ${MYSQL}\n`])).toEqual([MYSQL]);
+    expect(sourcesToLookUp([`tables: !!set\n  orders: ${MYSQL}\n`])).toEqual([MYSQL]);
   });
 });

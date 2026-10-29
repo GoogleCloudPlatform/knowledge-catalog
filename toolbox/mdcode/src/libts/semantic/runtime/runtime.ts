@@ -21,11 +21,11 @@ import {fileNameOf, SemanticModelLayout} from '../../layouts/semantic-model';
 import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
-import {cloudSqlDialects} from '../cloudsql_dialect';
 import {SemanticModel} from '../ir';
 import {loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {applyProfileExclusions, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, isLegacyWrapper, loadProfileFile, ProfileExclusion, profileErrorMessage, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
+import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
 import {resolveStore, Store, withPrimaryInstance} from './store';
@@ -183,12 +183,12 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // A Cloud SQL table written as its resource name takes its dialect from its
   // Knowledge Catalog entry, looked up once for the scope before anything
   // loads. A table whose entry cannot be read stops the scope, as push does.
-  const lookup = await cloudSqlDialects(
+  const lookup = await sourceDialects(
       [...docs.map(d => d.text),
        ...[...filesByDoc.values()].flat().map(f => f.text)],
       new CatalogClient(ctx));
   if (lookup.errors.length) return {error: lookup.errors.join('\n')};
-  const load = {cloudSqlDialects: lookup.dialects};
+  const load = {sourceDialects: lookup.dialects};
 
   const merged: Array<{
     name: string; text: string; allowLegacyBareSource?: boolean;

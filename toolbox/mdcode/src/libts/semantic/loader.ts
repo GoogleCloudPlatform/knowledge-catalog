@@ -45,12 +45,12 @@ export interface LoadOptions {
   // mark them.
   excluded?: ReadonlyArray<ProfileExclusion>;
   // The dialect of each Cloud SQL table written as its resource name, keyed by
-  // the resource name with no leading `//`, as cloudSqlDialects read them from
+  // the resource name with no leading `//`, as sourceDialects read them from
   // the tables' Knowledge Catalog entries. A command looks them up before it
   // loads. Without this map a Cloud SQL resource name implies no dialect: the
   // source names a table, not its engine, so the model implies none and every
   // expression text counts.
-  cloudSqlDialects?: ReadonlyMap<string, string>;
+  sourceDialects?: ReadonlyMap<string, string>;
   // Turns `parseSource`'s rejection of an unaccepted table source form into a
   // warning so a caller can load a document whose sources have not all been
   // repointed yet.
@@ -3432,7 +3432,7 @@ export function parseSource(
   if (problem === undefined && isAcceptedSource(trimmed)) {
     const cloudSql = cloudSqlTableOf(trimmed);
     const sourceDialect = cloudSql &&
-        opts.cloudSqlDialects?.get(cloudSql.resourceName);
+        opts.sourceDialects?.get(cloudSql.resourceName);
     return {
       authoredSource: trimmed,
       dataSource: sourceToDataSource(trimmed),
