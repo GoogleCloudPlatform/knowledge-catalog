@@ -4,13 +4,17 @@
 import type {ApiResult} from '../gcp/api';
 import {catalogContainer} from '../gcp/dataplex';
 
+// The fields of an entry that a read uses.
+export interface EntryFields {
+  entryType?: string;
+  fullyQualifiedName?: string;
+  entrySource?: {system?: string};
+}
+
 // The one catalog call an entry read makes; `CatalogClient` provides it.
 export interface EntryLookup {
   lookupEntry(project: string, location: string, name: string):
-      Promise<ApiResult<{
-        entryType?: string; fullyQualifiedName?: string;
-        entrySource?: {system?: string};
-      }>>;
+      Promise<ApiResult<EntryFields>>;
 }
 
 // What a read gave: its result; `unreadable`, when the service answered 403

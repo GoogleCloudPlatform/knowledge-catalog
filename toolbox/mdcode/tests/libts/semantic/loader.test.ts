@@ -3077,6 +3077,12 @@ describe('per-engine expression lists', () => {
 
 
 describe('strict entity sources', () => {
+  // Loads a Google-flavor model whose one dataset, orders, reads `source`.
+  const loadSource = (source: string, opts = {}) => load(GOOGLE, {
+    name: 'm',
+    datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
+  }, opts);
+
   // A string with a `/` is never a bare table name, so a resource name whose
   // host is misspelled or not lowercase is rejected as its URI is, even under
   // the legacy flag.
@@ -3158,24 +3164,20 @@ describe('strict entity sources', () => {
   // resource name. A source written as that entry name is rejected, and the
   // message names the resource name to write instead.
   test('an entry name in a system entry group is rejected, naming the resource name', () => {
-    const loadSource = (source: string) => () => load(GOOGLE, {
-      name: 'm',
-      datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
-    });
     for (const [group, name] of [
       ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
       ['@spanner', 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
     ]) {
       const source = `projects/acme/locations/us/entryGroups/${group}/entries/${name}`;
       expect(databaseOf(source)).toBeUndefined();
-      expect(loadSource(source)).toThrow(
+      expect(() => loadSource(source)).toThrow(
         `dataset 'orders': source '${source}' is a Knowledge Catalog entry ` +
         `name in the system entry group '${group}'; write the table's ` +
         `resource name instead: '${name}'.`);
     }
     // An entry id that is not a resource name gets an example instead.
     const odd = 'projects/acme/locations/us/entryGroups/@bigquery/entries/orders';
-    expect(loadSource(odd)).toThrow(
+    expect(() => loadSource(odd)).toThrow(
       "write the table's resource name instead, such as " +
       "'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>'.");
   });
@@ -3184,13 +3186,9 @@ describe('strict entity sources', () => {
   // table's resource name. A dataset entry gets an example, and a Bigtable or
   // Dataproc Metastore entry is told the service is not supported yet.
   test('a dataset, Bigtable or Dataproc Metastore entry name is not told to write its id', () => {
-    const loadSource = (source: string) => () => load(GOOGLE, {
-      name: 'm',
-      datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
-    });
     const entry = (group: string, id: string) =>
       `projects/acme/locations/us/entryGroups/${group}/entries/${id}`;
-    expect(loadSource(entry('@bigquery',
+    expect(() => loadSource(entry('@bigquery',
       'bigquery.googleapis.com/projects/acme/datasets/raw'))).toThrow(
       "in the system entry group '@bigquery'; write the table's resource " +
       "name instead, such as " +
@@ -3201,7 +3199,7 @@ describe('strict entity sources', () => {
        'metastore.googleapis.com/projects/acme/locations/us/services/svc/databases/db/tables/orders',
        'Dataproc Metastore'],
     ]) {
-      expect(loadSource(entry(group, id))).toThrow(
+      expect(() => loadSource(entry(group, id))).toThrow(
         `preview does not support ${service} sources yet.`);
     }
   });
@@ -3238,10 +3236,6 @@ describe('strict entity sources', () => {
   // names are allowed. A catalog name under a third-party prefix, or an entry
   // name with a leading `//`, is rejected.
   test('a third-party table is accepted as its entry name and in no other form', () => {
-    const loadSource = (source: string, opts = {}) => load(GOOGLE, {
-      name: 'm',
-      datasets: [{ name: 'orders', source, primary_key: ['id'], fields: [] }],
-    }, opts);
     const entry = 'projects/acme/locations/us/entryGroups/snowflake/entries/acct.db.public.orders';
     expect(databaseOf(entry)).toBe('thirdparty');
     for (const opts of [{}, { allowLegacyBareSource: true }]) {
