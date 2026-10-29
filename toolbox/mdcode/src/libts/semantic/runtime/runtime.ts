@@ -183,7 +183,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // A Cloud SQL table written as its resource name takes its dialect from its
   // Knowledge Catalog entry, looked up once for the scope before anything
   // loads. A table whose entry cannot be read stops the scope, as push does.
-  // A third-party table is not looked up, since the scope is refused below.
+  // A third-party table is not looked up, since no runtime reads one.
   const lookup = await sourceDialects(
       [...docs.map(d => d.text),
        ...[...filesByDoc.values()].flat().map(f => f.text)],

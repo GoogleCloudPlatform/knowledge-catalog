@@ -162,15 +162,15 @@ function databaseOfFqn(fqn: string): string|undefined {
 }
 
 // Every Cloud SQL table written as a resource name or resource URI anywhere in
-// the model and profile files `texts`, and every third-party table written as
-// its entry name as a `source` value outside ai_context and another vendor's
+// the model and profile files `texts`, and every third-party entry name written
+// as a `source` value, unless it sits in ai_context or in another vendor's
 // custom_extensions block. The JSON of a GOOGLE block is read too. Values are
 // read from the parsed YAML, so a name in a comment is not collected. A file
 // that does not parse collects nothing; the load reports it.
 export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
-  // `value` is held by `key`. `opaque` marks a value inside ai_context or
-  // another vendor's block, whose `source` names no table.
+  // `key` names the member that holds `value`. `opaque` marks a value inside
+  // ai_context or another vendor's block, whose `source` names no table.
   const visit = (value: unknown, key?: string, opaque = false): void => {
     if (typeof value === 'string') {
       if (cloudSqlTableOf(value) ||

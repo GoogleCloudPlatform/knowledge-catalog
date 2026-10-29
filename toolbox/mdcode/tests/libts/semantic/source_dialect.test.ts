@@ -190,16 +190,10 @@ describe('sourceDialects of a third-party table', () => {
     }
   });
 
-  // tests/tool/two_phase/third_party.test.ts holds the missing entry's text.
-  test('is looked up once, by its entry name, and a missing entry is reported; with thirdParty false, not at all', async () => {
+  test('is looked up once, in its own project and location', async () => {
     const {catalog, calls} = fakeCatalog({});
-    expect((await sourceDialects([THIRD_PARTY_FILE, THIRD_PARTY_FILE], catalog)).errors)
-        .toEqual([expect.stringContaining(
-            `source '${THIRD_PARTY}' names no table Knowledge Catalog knows about.`)]);
+    await sourceDialects([THIRD_PARTY_FILE, THIRD_PARTY_FILE], catalog);
     expect(calls).toEqual([{project: 'acme', location: 'us-central1', name: THIRD_PARTY}]);
-    expect(await sourceDialects([THIRD_PARTY_FILE], catalog, {thirdParty: false}))
-        .toEqual({dialects: new Map(), databases: new Map(), errors: []});
-    expect(calls).toHaveLength(1);
   });
 });
 

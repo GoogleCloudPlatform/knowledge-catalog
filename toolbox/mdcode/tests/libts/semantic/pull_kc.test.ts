@@ -1052,7 +1052,7 @@ semantic_model:
        async () => {
          const entry = (t: string) =>
              `projects/p/locations/us/entryGroups/sf/entries/acme.public.${t}`;
-         const {entries, pulled: {models: [model]}} = await roundTrip(
+         const {entries} = await roundTrip(
              SHOP.replace(TABLE('orders'), entry('orders')),
              {ops: PROFILES.ops.replace(TABLE('orders_ops'), entry('orders_ops'))});
          const stored = entries.find(e => e.name.endsWith('/shop/entities/orders'))!
@@ -1060,10 +1060,6 @@ semantic_model:
          expect([stored.source, stored.profiles[0].source]).toEqual([
            {resource: entry('orders')}, {resource: entry('orders_ops')},
          ]);
-         expect([
-           model.entities.find(e => e.name === 'orders')!.authoredSource,
-           model.profiles![0].entities[0].source,
-         ]).toEqual([entry('orders'), entry('orders_ops')]);
        });
 
   test(

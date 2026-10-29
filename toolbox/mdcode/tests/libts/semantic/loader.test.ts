@@ -3386,10 +3386,7 @@ describe('strict entity sources', () => {
 
     // 5. Unknown prefix / unsupported URI
     for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'oracle:p.i.t', '//trino.example.com/anything', 'SNOWFLAKE:acct.db.public.orders']) {
-      expect(() => load(GOOGLE, {
-        name: 'm',
-        datasets: [{ name: 'orders', source: bad, primary_key: ['id'], fields: [] }],
-      })).toThrow(
+      expect(() => loadSource(bad)).toThrow(
         new RegExp(`dataset 'orders': source '${bad}' is not a valid table reference[\\s\\S]*for a table outside Google Cloud, the entry name of its Knowledge Catalog entry`),
       );
     }
