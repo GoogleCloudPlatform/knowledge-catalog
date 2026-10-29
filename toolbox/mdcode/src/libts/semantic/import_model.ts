@@ -4,11 +4,11 @@
 import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
-import {ALLOWED_DIALECTS, normalizeDataType, SemanticModel, SqlDialect} from './ir';
+import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {catalogNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
-import {plainCopy, sourcesDialect} from './resolve_profiles';
+import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
@@ -29,6 +29,11 @@ export interface ImportSemanticModelOptions {
   transpile?: boolean;
   /** When true, treats any third-party repair warning as a hard error. */
   strict?: boolean;
+  /**
+   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
+   * used when converting a Google-flavor model to vanilla (`'ossie'`).
+   */
+  profileFiles?: SerializedFile[];
 }
 
 /** Result of importing a semantic model YAML document. */
@@ -177,8 +182,9 @@ function adaptAiContext(ai: Record<string, unknown>): void {
 /**
  * Phase 1 (Parse): Parses raw YAML, verifies the top-level document envelope,
  * validates `opts.sourcePrefix` when present, refuses a document with a
- * `GOOGLE` block unless `strict` is set, and constructs the mutable
- * `ImportDocument` (or returns a fatal error string).
+ * `GOOGLE` block or a Google-flavor model to convert to vanilla unless
+ * `strict` is set, and constructs the mutable `ImportDocument` (or returns a
+ * fatal error string).
  */
 function parseImportDocument(
     rawYaml: string, opts: ImportSemanticModelOptions): ImportDocument|string {
@@ -222,29 +228,28 @@ function parseImportDocument(
     sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
   }
 
-  // 4. Enforce strict-mode and version conversion gates: reject documents with
-  // `GOOGLE` extension blocks when `strict` is false (since third-party tools
-  // do not write `GOOGLE` blocks), and reject unsupported version conversions.
-  const docRecord = parsedDoc as Record<string, any>;
+  // 4. Reject a document written for kcmd when `strict` is false: one with a
+  // `GOOGLE` block, or a Google-flavor model converting to vanilla.
   const strict = !!opts.strict;
-  if (!strict && documentHasGoogleBlock(docRecord)) {
+  if (!strict && documentHasGoogleBlock(parsedDoc as Record<string, any>)) {
     return `Document contains a '${GOOGLE_VENDOR}' custom_extensions block ` +
         `(written for kcmd); use '--input first-party' to convert a ` +
         `first-party model.`;
   }
-  const inputVersion = docRecord.version as FormatVersion;
-  const targetVersion: FormatVersion = opts.flavor ?
-      (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
-      inputVersion;
-  if (inputVersion === GOOGLE_VERSION && targetVersion === OSSIE_VERSION) {
-    return `Converting from version '${GOOGLE_VERSION}' to '${
-        OSSIE_VERSION}' is not supported yet.`;
+  if (!strict && opts.flavor === 'ossie' &&
+      (parsedDoc as Record<string, any>).version === GOOGLE_VERSION) {
+    return `Document is a '${GOOGLE_VERSION}' model (written for kcmd); use ` +
+        `'--input first-party' to convert it to '${OSSIE_VERSION}'.`;
   }
 
   // 5. Deep-copy `parsedDoc` via `plainCopy` to decouple shared YAML anchor /
   // alias references before in-place mutations, and assemble `ImportDocument`.
-  const root = plainCopy(docRecord);
+  const root = plainCopy(parsedDoc) as Record<string, any>;
   const model = root.semantic_model[0] as Record<string, any>;
+  const inputVersion = root.version as FormatVersion;
+  const targetVersion: FormatVersion = opts.flavor ?
+      (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
+      inputVersion;
   const warnings: string[] = [];
   const errors: string[] = [];
   return {
@@ -262,6 +267,16 @@ function parseImportDocument(
     errors,
     warnOrError: (msg: string) => (strict ? errors : warnings).push(msg),
   };
+}
+
+/**
+ * Extracts the profile name from a `<model>.profile.<name>.yaml` filename (or
+ * bare `<name>.yaml` / `<name>` identifier).
+ */
+function parseProfileName(fileName: string): string {
+  const stem = fileName.replace(/^.*[/\\]/, '').replace(/\.ya?ml$/i, '');
+  const match = stem.match(/^.+?\.profile(?:\.(.*))?$/i);
+  return match ? (match[1] ?? '') : stem;
 }
 
 /**
@@ -285,12 +300,13 @@ function parseGoogleBlocks(exts: unknown): Array<Record<string, unknown>> {
 
 /**
  * Validates all model, deployment, profile, entity/dataset, field,
- * relationship, and metric names in `doc` (plus any `googleBlocks`) in a single
- * pass so every invalid or over-length identifier is reported at once.
+ * relationship, and metric names in `doc` (plus any `googleBlocks` and
+ * `profileFiles`) in a single pass so every invalid or over-length identifier
+ * is reported at once.
  */
 function validateObjectNames(
     doc: ImportDocument, googleBlocks: Array<Record<string, unknown>>,
-    modelScope: string): void {
+    modelScope: string, profileFiles?: SerializedFile[]): void {
   // Validates a single identifier `name` against `kind`'s rules via
   // `nameProblem` and appends any error to `doc.errors`.
   const validateName = (kind: NameKind, name: unknown, scope?: string) => {
@@ -305,14 +321,19 @@ function validateObjectNames(
         for (const record of records) validateName(kind, record.name, scope);
       };
 
-  // 1. Validate model, deployment, and profile names (inline and `GOOGLE`
-  // block).
+  // 1. Validate model, deployment, and profile names (inline, `GOOGLE` block,
+  // and sibling `profileFiles`).
   validateName('model', doc.model.name);
   validateRecords('deployment', asRecords(doc.model.deployments), modelScope);
   validateRecords('profile', asRecords(doc.model.profiles), modelScope);
   for (const g of googleBlocks) {
     validateRecords('deployment', asRecords(g.deployments), modelScope);
     validateRecords('profile', asRecords(g.profiles), modelScope);
+  }
+  if (doc.targetVersion === OSSIE_VERSION) {
+    for (const pf of profileFiles ?? []) {
+      validateName('profile', parseProfileName(pf.fileName), modelScope);
+    }
   }
 
   // 2. Validate dataset/entity, field, relationship, and metric names.
@@ -329,9 +350,11 @@ function validateObjectNames(
 /**
  * Phase 2 (Pre-validation): Rejects legacy `deploymentTargets` inside a
  * vanilla model's `GOOGLE` block when converting to the Google version, and
- * validates all identifier names in the input document.
+ * validates all identifier names in the input document and any attached
+ * `profileFiles`.
  */
-function validateInputDocument(doc: ImportDocument): void {
+function validateInputDocument(
+    doc: ImportDocument, profileFiles?: SerializedFile[]): void {
   // 1. Reject legacy `deploymentTargets` inside a vanilla model's `GOOGLE`
   // block when converting to the Google version (`0.2.0.dev0/google`).
   const modelScope = typeof doc.model.name === 'string' ?
@@ -346,8 +369,8 @@ function validateInputDocument(doc: ImportDocument): void {
         `use 'deployments:' inside the GOOGLE block instead.`);
   }
 
-  // 2. Validate all identifier names in the document.
-  validateObjectNames(doc, googleBlocks, modelScope);
+  // 2. Validate all identifier names in the document and attached profiles.
+  validateObjectNames(doc, googleBlocks, modelScope, profileFiles);
 }
 
 /**
@@ -795,6 +818,102 @@ function validateDeploymentTargets(
 }
 
 /**
+ * Loads each sibling `<model>.profile.<name>.yaml` entry in `profileFiles` via
+ * `loadProfileFile` and attaches the resulting `ProfileSpec` list to
+ * `model.profiles`, recording any reserved or duplicate profile name or
+ * profile load error in `doc.errors`.
+ */
+function attachProfileFiles(
+    model: SemanticModel, profileFiles: SerializedFile[]|undefined,
+    doc: ImportDocument): void {
+  if (!profileFiles?.length) return;
+  const profiles: ProfileSpec[] = [];
+  const seen = new Set<string>();
+  for (const pf of profileFiles) {
+    const profileName = parseProfileName(pf.fileName);
+    if (nameProblem('profile', profileName)) continue;
+    const lower = profileName.toLowerCase();
+    if (lower === DEFAULT_PROFILE) {
+      doc.errors.push(
+          `model '${model.name}': a profile may not be named ` +
+          `'${profileName}'; '${DEFAULT_PROFILE}' names the model's inline ` +
+          `bindings.`);
+      continue;
+    }
+    if (seen.has(lower)) {
+      doc.errors.push(
+          `model '${model.name}': duplicate profile name '${profileName}'; ` +
+          `profile names must be unique ignoring case.`);
+      continue;
+    }
+    seen.add(lower);
+    try {
+      profiles.push(loadProfileFile(pf.content, profileName));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      doc.errors.push(err.message);
+    }
+  }
+  if (profiles.length > 0) {
+    model.profiles = profiles;
+  }
+}
+
+/**
+ * Verifies that `model` can be converted to the vanilla (`0.2.0.dev0`) version:
+ * it must declare no `actions`, no `constraints`, and no `abstract` entities,
+ * and every entity must have a `source`, every field an `expression`, and
+ * every relationship its join columns (`from_columns` and `to_columns`).
+ * Appends every gap to `doc.errors`.
+ */
+function validateOssieConversion(
+    model: SemanticModel, doc: ImportDocument): void {
+  const prefix = `Cannot convert '${model.name}' to version '${OSSIE_VERSION}'`;
+
+  // 1. Reject actions and constraints, which have no representation in
+  // `0.2.0.dev0`.
+  for (const a of model.actions ?? []) {
+    doc.errors.push(
+        `${prefix}: action '${a.name}' is not supported in version ` +
+        `'${OSSIE_VERSION}'.`);
+  }
+  for (const c of model.constraints ?? []) {
+    doc.errors.push(
+        `${prefix}: constraint '${c.name}' is not supported in version ` +
+        `'${OSSIE_VERSION}'.`);
+  }
+
+  // 2. Reject abstract entities and require every concrete entity and field to
+  // be bound.
+  for (const e of model.entities) {
+    if (e.abstract) {
+      doc.errors.push(
+          `${prefix}: entity '${e.name}' is 'abstract', which version ` +
+          `'${OSSIE_VERSION}' does not support.`);
+      continue;
+    }
+    if (!e.authoredSource && !e.dataSource) {
+      doc.errors.push(`${prefix}: entity '${e.name}' has no 'source'.`);
+    }
+    for (const f of e.fields) {
+      if (!isFieldBound(f)) {
+        doc.errors.push(
+            `${prefix}: field '${e.name}.${f.name}' has no 'expression'.`);
+      }
+    }
+  }
+
+  // 3. Require every relationship to declare its join columns.
+  for (const r of model.relationships) {
+    if (!r.source.columns.length || !r.destination.columns.length) {
+      doc.errors.push(
+          `${prefix}: relationship '${r.name}' has no join columns ` +
+          `('from_columns' and 'to_columns').`);
+    }
+  }
+}
+
+/**
  * Loads `doc.root` into the `SemanticModel` IR for cross-version conversion,
  * recording any `SemanticModelError` on `doc.errors`.
  */
@@ -811,9 +930,11 @@ function loadSemanticModel(doc: ImportDocument): SemanticModel|undefined {
 }
 
 /**
- * Phase 4 (Convert): Generates converted output file(s) across versions by
- * loading `doc.root` into the `SemanticModel` IR, optionally running
- * `transpileModel`, and serializing with `serializeModelFiles`.
+ * Phase 4 (Convert): Generates converted output file(s) across versions
+ * (`0.2.0.dev0` <-> `0.2.0.dev0/google`) by loading `doc.root` into the
+ * `SemanticModel` IR, optionally running `transpileModel`, attaching profile
+ * files and checking conversion gaps when targeting `0.2.0.dev0`, and
+ * serializing with `serializeModelFiles`.
  */
 async function generateConvertedFiles(
     doc: ImportDocument,
@@ -832,7 +953,15 @@ async function generateConvertedFiles(
     doc.warnings.push(...transpiled.warnings);
   }
 
-  // 3. Switch `model.version` to `doc.targetVersion` and serialize the output
+  // 3. When converting to `0.2.0.dev0`, load sibling profile files and verify
+  // the model has no conversion gaps.
+  if (doc.targetVersion === OSSIE_VERSION) {
+    attachProfileFiles(model, opts.profileFiles, doc);
+    validateOssieConversion(model, doc);
+    if (doc.errors.length > 0) return [];
+  }
+
+  // 4. Switch `model.version` to `doc.targetVersion` and serialize the output
   // file(s) with `serializeModelFiles`.
   model.version = doc.targetVersion;
   const serialized = serializeModelFiles(model);
@@ -918,7 +1047,7 @@ export async function importSemanticModelYaml(
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
-  validateInputDocument(doc);
+  validateInputDocument(doc, opts.profileFiles);
 
   // 2. Run third-party repairs (which record errors in `strict` mode).
   repairDocument(doc);
