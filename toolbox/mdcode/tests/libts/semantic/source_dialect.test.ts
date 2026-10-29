@@ -230,9 +230,11 @@ entities:
 `;
     expect(sourcesToLookUp([model, vanilla, profile]).sort())
         .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY].sort());
-    // An entry name under another key, or as a `source` inside ai_context or
-    // inside another vendor's block, is not collected.
-    expect(sourcesToLookUp([`description: ${THIRD_PARTY}\nsynonyms: ["${THIRD_PARTY}"]\n` +
+    // A file whose only source is a BigQuery table collects nothing from an
+    // entry name under another key, as a `source` in a description's JSON, or
+    // as a `source` inside ai_context or inside another vendor's block.
+    expect(sourcesToLookUp([`source: bigquery.googleapis.com/projects/p/datasets/d/tables/t\n` +
+        `description: '{"source": "${THIRD_PARTY}"}'\nsynonyms: ["${THIRD_PARTY}"]\n` +
         `ai_context: {custom: {lineage: [{source: ${THIRD_PARTY}}]}}\n` +
         `custom_extensions: [{vendor_name: ACME, data: '{"source": "${THIRD_PARTY}"}'}]\n`]))
         .toEqual([]);
