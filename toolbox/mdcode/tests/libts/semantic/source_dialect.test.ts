@@ -220,33 +220,24 @@ semantic_model:
   - name: shop
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '${JSON.stringify({profiles: [{name: 'ms', entities: [{name: 'orders', source: SQLSERVER}]}]})}'
+        data: '${JSON.stringify({profiles: [{name: 'ms', entities: [
+          {name: 'orders', source: SQLSERVER}, {name: 'lines', source: THIRD_PARTY}]}]})}'
 `;
     const profile = `name: pg
 entities:
   - name: orders
     source: "${POSTGRES}"
-  - name: lines
-    source: ${THIRD_PARTY}
   - name: items
     source: projects/acme/locations/us/entryGroups/@bigquery/entries/items
 `;
     expect(sourcesToLookUp([model, vanilla, profile]).sort())
         .toEqual([POSTGRES, MYSQL, SQLSERVER, THIRD_PARTY].sort());
-    // An entry name that is not a source, such as one in ai_context or in
-    // another vendor's block, is not collected.
-    expect(sourcesToLookUp([`version: "0.2.0.dev0"
-semantic_model:
-  - name: shop
-    description: ${THIRD_PARTY}
-    custom_extensions:
-      - vendor_name: ACME
-        data: '{"glossary": "${THIRD_PARTY}"}'
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        ai_context: {synonyms: ["${THIRD_PARTY}"]}
-`])).toEqual([]);
+    // An entry name under another key, or as a `source` inside ai_context or
+    // inside another vendor's block, is not collected.
+    expect(sourcesToLookUp([`description: ${THIRD_PARTY}\nsynonyms: ["${THIRD_PARTY}"]\n` +
+        `ai_context: {custom: {lineage: [{source: ${THIRD_PARTY}}]}}\n` +
+        `custom_extensions: [{vendor_name: ACME, data: '{"source": "${THIRD_PARTY}"}'}]\n`]))
+        .toEqual([]);
     // A file that does not parse collects nothing, even a name it holds.
     expect(sourcesToLookUp([`source: ${MYSQL}\nname: [unclosed`])).toEqual([]);
     // Nor does one whose values cannot be read, and that does not throw: an

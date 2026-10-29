@@ -19,7 +19,7 @@
 
 import * as yaml from 'yaml';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_FQN_PREFIX, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_FQN_PREFIX, isGoogleVendor, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
 
@@ -163,28 +163,34 @@ function databaseOfFqn(fqn: string): string|undefined {
 
 // Every Cloud SQL table written as a resource name or resource URI anywhere in
 // the model and profile files `texts`, and every third-party table written as
-// an entry name as the value of a `source` key, including in the JSON a
-// vanilla model's GOOGLE blocks carry. Values are read from the parsed YAML,
-// so a name in a comment is not collected. A file that does not parse collects
-// nothing; the load reports it.
+// its entry name as a `source` value outside ai_context and another vendor's
+// custom_extensions block. The JSON of a GOOGLE block is read too. Values are
+// read from the parsed YAML, so a name in a comment is not collected. A file
+// that does not parse collects nothing; the load reports it.
 export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
-  const visit = (value: unknown, key?: string): void => {
+  // `value` is held by `key`. `opaque` marks a value inside ai_context or
+  // another vendor's block, whose `source` names no table.
+  const visit = (value: unknown, key?: string, opaque = false): void => {
     if (typeof value === 'string') {
       if (cloudSqlTableOf(value) ||
-          (key === 'source' && thirdPartyEntryOf(value))) {
+          (key === 'source' && !opaque && thirdPartyEntryOf(value))) {
         found.add(value.trim());
       } else if (/^\s*[[{]/.test(value)) {
         try {
-          visit(JSON.parse(value));
+          visit(JSON.parse(value), undefined, opaque);
         } catch {
           // Not JSON: an ordinary string.
         }
       }
     } else if (Array.isArray(value)) {
-      value.forEach(v => visit(v));
+      value.forEach(v => visit(v, undefined, opaque));
     } else if (value && typeof value === 'object') {
-      for (const [k, v] of Object.entries(value)) visit(v, k);
+      const vendor =
+          'vendor_name' in value && !isGoogleVendor(value.vendor_name);
+      for (const [k, v] of Object.entries(value)) {
+        visit(v, k, opaque || vendor || k === 'ai_context');
+      }
     }
   };
   for (const text of texts) {
