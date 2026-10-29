@@ -151,17 +151,18 @@ async function thirdPartyDialect(
 }
 
 // The database a third-party table's fullyQualifiedName `fqn` names: a
-// Snowflake account in lower case, a Databricks metastore, a MySQL or SQL
-// Server host, or a PostgreSQL host and database. Undefined unless every
-// segment is set and one follows the database's, as in a table's name.
+// Snowflake account, a MySQL or SQL Server host, or a PostgreSQL host and
+// database, each account and host in lower case, or a Databricks metastore.
+// Undefined unless every segment is set and one follows the database's, as in
+// a table's name.
 function databaseOfFqn(fqn: string): string|undefined {
   const [, prefix, path] =
       fqn.match(/^([a-z]+):(?:(?:table|view):)?(.*)$/) ?? [];
   const seg = catalogNameSegments(path ?? '');
   const n = prefix === 'postgresql' ? 2 : 1;
   if (seg.length <= n || seg.includes('')) return undefined;
-  // A Snowflake account name ignores letter case.
-  if (prefix === 'snowflake') seg[0] = seg[0].toLowerCase();
+  // A Snowflake account and a host name ignore letter case.
+  if (prefix !== 'databricks') seg[0] = seg[0].toLowerCase();
   return [prefix, ...seg.slice(0, n)].join('/');
 }
 
