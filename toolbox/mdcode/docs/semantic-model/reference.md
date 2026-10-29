@@ -122,8 +122,9 @@ binding is checked too. Beside declared profiles it is listed only when push
 would reject it. Some errors fail every push of the scope, such as a second
 model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles and still checks each
-profile, unless a plain push runs in two phases. A Cloud SQL table whose entry
-cannot be read stops the command before the report. When
+profile, unless a plain push runs in two phases. A Cloud SQL or third-party
+table whose dialect cannot be read from its entry stops the command before the
+report. When
 `default_profile` names a profile that a model does not declare,
 a push that names no profile fails. That error prints above the model's
 profiles. When push warns that the model file's own bindings are incomplete,
@@ -133,7 +134,8 @@ names another profile.
 The command is read-only. It applies and prunes each profile and generates each
 graph as `push --validate-only` does, but deploys nothing, so you can compare
 coverage before choosing one. Like push, it reads the Knowledge Catalog entry
-of each Cloud SQL table written as its resource name, for the table's dialect.
+of each Cloud SQL table written as its resource name and of each third-party
+table, for the table's dialect.
 The other checks that need a service run only at push time: the BigQuery source table probe, the dry runs of action
 statements and of each BigQuery graph's DDL, the check that a deployment's
 BigQuery dataset or Spanner database exists and, on a push without
@@ -220,7 +222,9 @@ the model itself, it runs only the one on inheritance. It fails when an
 `extends` names an entity the model does not declare, when `extends` forms a
 cycle, or when an entity inherits one field from two unrelated ancestors. It
 runs none of the others, such as a concrete entity with no source or an action
-guarded by a constraint the model lacks.
+guarded by a constraint the model lacks. It fails when the profile binds a
+third-party table, naming the entity and the table, since kcmd has no engine
+that reads one. So does `kcmd profiles --print-store`.
 
 For a model with actions, it also fails without writing anything when the
 profile names a store that cannot be resolved. That happens when the model
@@ -677,6 +681,23 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   profile, with the keys it states, except for the metrics it leaves
   unavailable. On Spanner, that profile must leave every metric unavailable.
   *(static)*
+* **A third-party table is written as its entry name, and takes the dialect
+  its entry records.** A table outside Google Cloud is written as the entry
+  name of its Knowledge Catalog entry,
+  `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, in an entry group
+  whose id does not begin with `@`. An entry name in a system entry group is
+  rejected with the resource name to write, and so are a Knowledge Catalog
+  name such as `snowflake:acme.retail.public.orders` and a value with a
+  leading `//`. Push and `kcmd profiles` look each entry up once before they
+  load the model. The prefix of the entry's `fullyQualifiedName` gives the
+  dialect: `snowflake:` gives `SNOWFLAKE`, `databricks:` gives `DATABRICKS`,
+  `mysql:` gives `MYSQL`, `postgresql:` gives `POSTGRES` and `sqlserver:`
+  gives `SQLSERVER`. An entry with no `fullyQualifiedName` gives the dialect
+  of its `entrySource.system`, in any letter case: `SNOWFLAKE`, `DATABRICKS`,
+  `MYSQL`, `POSTGRESQL` or `POSTGRES`, or `SQLSERVER`. A missing entry, or one
+  that gives no dialect, stops the command before anything is written. A field
+  or metric bound to the table then needs SQL in that dialect or in
+  `ANSI_SQL`. *(live — needs read access to the entry)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span
@@ -784,7 +805,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Each deployment's tables are in the database it deploys to.** A Spanner or
   AlloyDB deployment reads only tables in its target database. A BigQuery
   deployment reads only BigQuery or BigLake tables, in any dataset of any
-  project. A Cloud SQL table fails every deployment. A push in two phases checks
+  project. A Cloud SQL table fails every deployment, and so does a third-party
+  table, since no graph can read it. A push with no deployment publishes such
+  a model to Knowledge Catalog. A push in two phases checks
   every deployment this way, whether or not `--deployment` names it, and under
   `--no-deployment` too. It reads each entity's `source` from the profile the
   deployment names, or from the model file when it names none. *(static)*
