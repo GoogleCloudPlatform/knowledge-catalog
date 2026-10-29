@@ -3352,6 +3352,9 @@ describe('strict entity sources', () => {
       datasets: [{ name: 'orders', source: 'SELECT * FROM orders', primary_key: ['id'], fields: [] }],
     })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
 
+    // Each bare-name message also names the command that completes bare names.
+    const VIA_IMPORT = "Or run 'kcmd import <file> --source-prefix <prefix>' " +
+        'to complete each bare table name from the database <prefix> names.';
     // 2. Bare table names (1-, 2-, and 3-part). The hint shows the GCP
     // resource name, filling in what the name gives.
     for (const [bare, hint] of [
@@ -3365,7 +3368,7 @@ describe('strict entity sources', () => {
       })).toThrow(
         `dataset 'orders': bare table name '${bare}' is not a valid source. ` +
         `Write the table's GCP resource name instead, for example:\n` +
-        `  source: ${hint}`,
+        `  source: ${hint}\n` + VIA_IMPORT,
       );
       // Passes when allowLegacyBareSource is set
       const { models } = load(GOOGLE, {
@@ -3381,7 +3384,7 @@ describe('strict entity sources', () => {
       name: 'm',
       datasets: [{ name: 'orders', source: 'acme.lake.sales.orders', primary_key: ['id'], fields: [] }],
     })).toThrow(
-      "dataset 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write its BigLake resource name instead:\n  source: biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders",
+      "dataset 'orders': bare table name 'acme.lake.sales.orders' is not a valid source. Write its BigLake resource name instead:\n  source: biglake.googleapis.com/projects/acme/catalogs/lake/namespaces/sales/tables/orders\n" + VIA_IMPORT,
     );
 
     // 4. Overlong source (> 4000 characters)

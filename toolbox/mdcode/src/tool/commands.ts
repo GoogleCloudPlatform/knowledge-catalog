@@ -12,13 +12,14 @@ import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
-import {fileNameOf, formatOverviewSidecar, OverviewSidecar, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {fileNameOf, formatOverviewSidecar, OverviewSidecar, profileFilesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {cloudSqlDialects} from '../libts/semantic/cloudsql_dialect';
 import {googleBlockTargets, googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
+import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
@@ -1754,10 +1755,7 @@ interface DeploymentPlan {
 async function pushInTwoPhases(
     options: PushOptions, scope: Omit<TwoPhaseScope, 'load'>): Promise<number> {
   const {ctx, source} = scope;
-  const fail = (...errors: string[]) => {
-    for (const e of new Set(errors)) console.error(`Error: ${e}`);
-    return 1;
-  };
+  const fail = printErrors;
   const flagError = twoPhaseFlagError(options);
   if (flagError) return fail(flagError);
   const load = await cloudSqlLoad(ctx, scope.docs, scope.profileDocs);
@@ -3217,20 +3215,11 @@ export async function owl(
   // finds it.
   let writtenPath: string;
   if (options.out) {
-    fs.mkdirSync(path.dirname(path.resolve(options.out)), {recursive: true});
-    fs.writeFileSync(options.out, result.yaml);
+    writeFileAt(options.out, result.yaml);
     writtenPath = options.out;
   } else {
-    const ctx = context.ApiContext.default();
-    const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
-    if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
-      console.error(
-          `Error: this catalog is not a semantic-model scope, so there is no ` +
-          `model layout to write into. Run \`kcmd init --semantic-model ...\` ` +
-          `first, or pass --out <path> to write the OSI document directly.`);
-      return 1;
-    }
-    const layout = snapshot.layout as SemanticModelLayout;
+    const layout = await workspaceLayout();
+    if (typeof layout === 'string') return printErrors(layout);
     layout.writeModelDocument(modelName, result.yaml);
     writtenPath = layout.modelPath(modelName);
   }
@@ -3239,9 +3228,141 @@ export async function owl(
   return 0;
 }
 
+export interface ImportCommandOptions {
+  // Who wrote the file. `third-party` (default): a file another product wrote;
+  // import repairs its problems and reports them as warnings. `first-party`: a
+  // file written for kcmd; import converts it exactly or fails.
+  input?: string;
+  // The flavor to write, `ossie` or `google`. Required: the input does not say
+  // which flavor its owner wants.
+  flavor?: string;
+  // The GCP resource name of the database whose tables complete each bare
+  // table name.
+  sourcePrefix?: string;
+  // Add a BigQuery translation beside SQL in another dialect.
+  transpile?: boolean;
+  // A `.yaml` or `.yml` file to write the one output file to, or a directory
+  // to write each output file into. Without it, the files go into the
+  // workspace's semantic-model layout, as `kcmd owl import` writes.
+  out?: string;
+}
+
+const IMPORT_INPUTS = ['third-party', 'first-party'];
+const IMPORT_FLAVORS = ['ossie', 'google'];
+const YAML_FILE = /\.ya?ml$/i;
+
+// Handles `kcmd import <file>`: reads a semantic model file, has the import
+// engine repair or convert it to `--flavor`, and writes the files it gives.
+// Writes nothing when the engine reports an error. Returns a process exit code.
+export async function importModel(
+    file: string, options: ImportCommandOptions = {}): Promise<number> {
+  const fail = printErrors;
+  const {input = 'third-party', flavor} = options;
+  if (!flavor) {
+    return fail(
+        `--flavor is required: name the flavor to write, 'ossie' or 'google'.`);
+  }
+  if (!IMPORT_FLAVORS.includes(flavor)) {
+    return fail(`--flavor '${flavor}' is not a flavor; use 'ossie' or 'google'.`);
+  }
+  if (!IMPORT_INPUTS.includes(input)) {
+    return fail(
+        `--input '${input}' is not supported; use 'third-party' or ` +
+        `'first-party'.`);
+  }
+  if (!fs.existsSync(file)) return fail(`file not found: ${file}`);
+
+  // A Google-flavor model's profiles are its own files beside it, found by
+  // the input file's name without `.yaml` or `.yml`, not by the model name
+  // inside it.
+  const profileFiles =
+      profileFilesBeside(
+          path.dirname(file), path.basename(file).replace(YAML_FILE, ''))
+          .map(p => ({
+                 fileName: path.basename(p.path),
+                 content: fs.readFileSync(p.path, 'utf8'),
+               }));
+  const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
+    flavor: flavor as 'ossie' | 'google',
+    sourcePrefix: options.sourcePrefix,
+    transpile: !!options.transpile,
+    strict: input === 'first-party',
+    profileFiles,
+  });
+  for (const w of result.warnings) console.warn(`Warning: ${w}`);
+  if (!result.ok) return fail(...result.errors);
+
+  // Every target is found before anything is written, so a file that has
+  // none writes nothing.
+  let targets: Array<{path: string; write: (text: string) => void}|undefined>;
+  if (options.out && YAML_FILE.test(options.out)) {
+    if (result.files.length > 1) {
+      return fail(
+          `--out '${options.out}' names a file, but the import gives ${
+              result.files.length} files (${
+              result.files.map(f => f.fileName).join(', ')}); name a ` +
+          `directory instead.`);
+    }
+    const out = options.out;
+    targets = [{path: out, write: text => writeFileAt(out, text)}];
+  } else if (options.out) {
+    const out = options.out;
+    targets = result.files.map(f => {
+      const target = path.join(out, f.fileName);
+      return {path: target, write: text => writeFileAt(target, text)};
+    });
+  } else {
+    const layout = await workspaceLayout();
+    if (typeof layout === 'string') return fail(layout);
+    // The engine's first file is the model file, `<model>.yaml`; the rest are
+    // its profile files, which pull's mapping writes beside it.
+    const model = result.files[0].fileName.replace(YAML_FILE, '');
+    targets = result.files.map(
+        f => pulledFileTarget(layout, model, f.fileName, false));
+  }
+  const unplaced = result.files.filter((_, i) => !targets[i]);
+  if (unplaced.length) {
+    return fail(...unplaced.map(
+        f => `the import gives '${f.fileName}', which has no place in the ` +
+            `semantic-model layout.`));
+  }
+  const written = result.files.map((f, i) => {
+    targets[i]!.write(f.content);
+    return targets[i]!.path;
+  });
+  for (const w of written) console.log(`wrote ${w}`);
+  return 0;
+}
+
 // Selects the singular or plural form based on `n` (English count agreement).
 function plural(n: number, one: string, many: string): string {
   return n === 1 ? one : many;
+}
+
+// Prints each of `errors` once, as `Error: ...`, and gives exit code 1.
+function printErrors(...errors: string[]): number {
+  for (const e of new Set(errors)) console.error(`Error: ${e}`);
+  return 1;
+}
+
+// Writes `text` to `file`, creating its directory.
+function writeFileAt(file: string, text: string): void {
+  fs.mkdirSync(path.dirname(path.resolve(file)), {recursive: true});
+  fs.writeFileSync(file, text);
+}
+
+// The semantic-model layout of the workspace in `.`, where `kcmd owl import`
+// and `kcmd import` write without --out, or the error for a workspace that
+// has none.
+async function workspaceLayout(): Promise<SemanticModelLayout|string> {
+  const snapshot =
+      await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
+    return `this catalog is not a semantic-model scope, so there is no ` +
+        `model layout to write into. Run \`kcmd init --semantic-model ...\` ` +
+        `first, or pass --out <path> to write the file directly.`;
+  }
+  return snapshot.layout as SemanticModelLayout;
 }
 
 

@@ -3501,7 +3501,10 @@ export function parseSource(
       };
     }
     // A name with an empty segment, or with more than four, gets the general
-    // error below.
+    // error below. Both bare-name messages below also name the command that
+    // completes bare names from a database the author names.
+    const viaImport = `\nOr run 'kcmd import <file> --source-prefix <prefix>' ` +
+        `to complete each bare table name from the database <prefix> names.`;
     if (segs.length <= 4 && segs.every(s => s.length > 0)) {
       if (segs.length === 4) {
         throw new SemanticModelError(
@@ -3509,7 +3512,7 @@ export function parseSource(
             `is not a valid source. Write its BigLake resource name ` +
             `instead:\n` +
             `  source: biglake.googleapis.com/projects/${segs[0]}/catalogs/${
-                segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}`);
+                segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}${viaImport}`);
       }
       const p = segs.length >= 3 ? segs[0] : '<project>';
       const d = segs.length >= 3 ? segs[1] :
@@ -3520,7 +3523,7 @@ export function parseSource(
           `is not a valid source. Write the table's GCP resource name ` +
           `instead, for example:\n` +
           `  source: bigquery.googleapis.com/projects/${p}/datasets/${d}/` +
-          `tables/${t}`);
+          `tables/${t}${viaImport}`);
     }
   }
 
