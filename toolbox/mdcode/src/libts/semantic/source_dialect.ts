@@ -1,6 +1,6 @@
-// The dialect of a Cloud SQL table written as its resource name
-// (b/573288219), or of a third-party table written as its entry name, read
-// from the table's Knowledge Catalog entry.
+// The dialect of a Cloud SQL table written as its resource name, or of a
+// third-party table written as its entry name, read from the table's
+// Knowledge Catalog entry.
 //
 // The resource name cannot say the dialect: a MySQL table has no schema, but a
 // PostgreSQL table and a SQL Server table have the same shape. Dataplex keeps an
@@ -19,8 +19,8 @@
 
 import * as yaml from 'yaml';
 
-import {CloudSqlTable, cloudSqlTableOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
-import {EntryFields, EntryLookup, lookupSystemEntry, Read, read} from './catalog_entry';
+import {CloudSqlTable, cloudSqlTableOf, DIALECT_OF_FQN_PREFIX, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The dialect each Cloud SQL table or view entry type gives.
@@ -33,11 +33,6 @@ const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
   'cloudsql-sqlserver-view': 'SQLSERVER',
 };
 
-// The dialect each fullyQualifiedName prefix of a third-party entry gives.
-const DIALECT_OF_FQN_PREFIX = new Map([
-  ['snowflake', 'SNOWFLAKE'], ['databricks', 'DATABRICKS'], ['mysql', 'MYSQL'],
-  ['postgresql', 'POSTGRES'], ['sqlserver', 'SQLSERVER'],
-]);
 // The dialect each entrySource.system gives, in lower case.
 const DIALECT_OF_ENTRY_SYSTEM =
     new Map([...DIALECT_OF_FQN_PREFIX, ['postgres', 'POSTGRES']]);
@@ -49,13 +44,8 @@ export interface SourceDialects {
   errors: string[];
 }
 
-// How to read one table's entry, what to say when it cannot be read, and the
-// dialect the entry gives or why it gives none.
-interface DialectLookup {
-  read: () => Promise<Read<EntryFields>>;
-  unreadable: string;
-  dialectOf: (entry: EntryFields) => {dialect: string}|{error: string};
-}
+// A table's dialect, or why kcmd cannot tell it.
+type Dialect = {dialect: string}|{error: string};
 
 // Looks up the dialect of every Cloud SQL and third-party table the model and
 // profile files `texts` write (see sourcesToLookUp), once per table, in
@@ -67,20 +57,19 @@ export async function sourceDialects(
     {thirdParty = true} = {}): Promise<SourceDialects> {
   // Keyed as dialectLookupKey gives, so both spellings of one table are one
   // lookup.
-  const lookups = new Map<string, DialectLookup>();
+  const lookups = new Map<string, () => Promise<Dialect>>();
   for (const source of sourcesToLookUp(texts)) {
     const table = cloudSqlTableOf(source);
-    if (table) lookups.set(table.resourceName, cloudSqlLookup(catalog, table));
+    if (table) {
+      lookups.set(table.resourceName, () => cloudSqlDialect(catalog, table));
+    }
     const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
-    if (entry) lookups.set(entry.name, thirdPartyLookup(catalog, entry));
+    if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
   }
   const dialects = new Map<string, string>();
   const errors: string[] = [];
-  await Promise.all([...lookups].map(async ([key, lookup]) => {
-    const res = await lookup.read();
-    const got = 'error' in res ? {error: `source '${key}': ${res.error}`} :
-        'unreadable' in res ? {error: lookup.unreadable} :
-                              lookup.dialectOf(res.result);
+  await Promise.all([...lookups].map(async ([key, lookUp]) => {
+    const got = await lookUp();
     if ('error' in got) errors.push(got.error);
     else dialects.set(key, got.dialect);
   }));
@@ -88,69 +77,70 @@ export async function sourceDialects(
   return {dialects, errors};
 }
 
-// The lookup of a Cloud SQL table's entry, by its type.
-function cloudSqlLookup(
-    catalog: EntryLookup, table: CloudSqlTable): DialectLookup {
+// The dialect of a Cloud SQL table, by its entry's type.
+async function cloudSqlDialect(
+    catalog: EntryLookup, table: CloudSqlTable): Promise<Dialect> {
   const at = `source '${table.resourceName}'`;
-  return {
-    read: () => lookupSystemEntry(
-        catalog, 'cloudsql', table.project, table.location, table.resourceName),
-    // Dataplex answers 403 both when the entry does not exist and when the
-    // caller may not read it, so the message names both causes.
-    unreadable:
-        `${at}: kcmd reads a Cloud SQL table's dialect from its Knowledge ` +
-        `Catalog entry, and could not read it. Turn on Dataplex ` +
-        `integration for instance '${table.instance}' (gcloud sql ` +
-        `instances patch ${table.instance} --enable-dataplex-integration ` +
-        `--project ${table.project}) and wait for the table to appear in ` +
-        `the catalog, or check that you can read the table. If integration ` +
-        `is on, check the name: the project ID, the instance's region, and ` +
-        `a schema only for PostgreSQL and SQL Server.`,
-    dialectOf: ({entryType}) => {
-      // The type comes back as a full name; its last part says the engine.
-      const type = (entryType ?? '').split('/').pop() ?? '';
-      const dialect = DIALECT_OF_ENTRY_TYPE[type];
-      return dialect ? {dialect} : {
-        error: `${at}: its Knowledge Catalog entry has type '${type}', which ` +
-            `is not a Cloud SQL table or view type kcmd knows (${
-                   Object.keys(DIALECT_OF_ENTRY_TYPE).join(', ')}).`,
-      };
-    },
+  const res = await lookupSystemEntry(
+      catalog, 'cloudsql', table.project, table.location, table.resourceName);
+  if ('error' in res) return {error: `${at}: ${res.error}`};
+  // Dataplex answers 403 both when the entry does not exist and when the
+  // caller may not read it, so the message names both causes.
+  if ('unreadable' in res) {
+    return {
+      error: `${at}: kcmd reads a Cloud SQL table's dialect from its ` +
+          `Knowledge Catalog entry, and could not read it. Turn on Dataplex ` +
+          `integration for instance '${table.instance}' (gcloud sql ` +
+          `instances patch ${table.instance} --enable-dataplex-integration ` +
+          `--project ${table.project}) and wait for the table to appear in ` +
+          `the catalog, or check that you can read the table. If integration ` +
+          `is on, check the name: the project ID, the instance's region, and ` +
+          `a schema only for PostgreSQL and SQL Server.`,
+    };
+  }
+  // The type comes back as a full name; its last part says the engine.
+  const type = (res.result.entryType ?? '').split('/').pop() ?? '';
+  const dialect = DIALECT_OF_ENTRY_TYPE[type];
+  return dialect ? {dialect} : {
+    error: `${at}: its Knowledge Catalog entry has type '${type}', which is ` +
+        `not a Cloud SQL table or view type kcmd knows (${
+               Object.keys(DIALECT_OF_ENTRY_TYPE).join(', ')}).`,
   };
 }
 
-// The lookup of a third-party table's entry, by its fullyQualifiedName or
+// The dialect of a third-party table, by its entry's fullyQualifiedName or
 // entrySource.system.
-function thirdPartyLookup(
-    catalog: EntryLookup, {project, location, name}: ThirdPartyEntry):
-    DialectLookup {
+async function thirdPartyDialect(
+    catalog: EntryLookup,
+    {project, location, name}: ThirdPartyEntry): Promise<Dialect> {
   const at = `source '${name}'`;
+  const res = await read(
+      'looking up its Knowledge Catalog entry',
+      () => catalog.lookupEntry(project, location, name));
+  if ('error' in res) return {error: `${at}: ${res.error}`};
+  if ('unreadable' in res) {
+    return {
+      error: `${at} names no table Knowledge Catalog knows about. The entry ` +
+          `may not exist, or you may not be allowed to read it. kcmd reads a ` +
+          `third-party table's dialect from its entry, so add the table to ` +
+          `Knowledge Catalog, or fix the source.`,
+    };
+  }
+  const {fullyQualifiedName: fqn, entrySource} = res.result;
+  const system = entrySource?.system;
+  const dialect = fqn ?
+      DIALECT_OF_FQN_PREFIX.get(fqn.split(':')[0]) :
+      DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
+  if (dialect) return {dialect};
+  const has = fqn ? `fullyQualifiedName '${fqn}'` :
+      system ? `entrySource.system '${system}' and no fullyQualifiedName` :
+               'neither a fullyQualifiedName nor an entrySource.system';
   return {
-    read: () => read(
-        'looking up its Knowledge Catalog entry',
-        () => catalog.lookupEntry(project, location, name)),
-    unreadable:
-        `${at} names no table Knowledge Catalog knows about. The entry may ` +
-        `not exist, or you may not be allowed to read it. kcmd reads a ` +
-        `third-party table's dialect from its entry, so add the table to ` +
-        `Knowledge Catalog, or fix the source.`,
-    dialectOf: ({fullyQualifiedName: fqn, entrySource}) => {
-      const system = entrySource?.system;
-      const dialect = fqn ?
-          DIALECT_OF_FQN_PREFIX.get(fqn.split(':')[0]) :
-          DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
-      if (dialect) return {dialect};
-      const has = fqn ? `fullyQualifiedName '${fqn}'` :
-          system ? `entrySource.system '${system}' and no fullyQualifiedName` :
-                   'neither a fullyQualifiedName nor an entrySource.system';
-      return {
-        error: `${at}: kcmd cannot tell the table's SQL dialect from its ` +
-            `Knowledge Catalog entry, which has ${has}. kcmd reads the ` +
-            `prefix of the entry's fullyQualifiedName (snowflake:, ` +
-            `databricks:, mysql:, postgresql: or sqlserver:), or ` +
-            `entrySource.system when there is no fullyQualifiedName.`,
-      };
-    },
+    error: `${at}: kcmd cannot tell the table's SQL dialect from its ` +
+        `Knowledge Catalog entry, which has ${has}. kcmd reads the prefix of ` +
+        `the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
+        `postgresql: or sqlserver:), or entrySource.system when there is no ` +
+        `fullyQualifiedName.`,
   };
 }
 

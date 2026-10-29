@@ -3342,10 +3342,12 @@ export function sourceToDataSource(source: string): string {
   return value;
 }
 
-// The catalog name prefixes of third-party tables, and the shape of a
-// Knowledge Catalog entry name.
-const THIRD_PARTY_PREFIXES =
-    ['snowflake:', 'databricks:', 'mysql:', 'postgresql:', 'sqlserver:'];
+// The dialect each fullyQualifiedName prefix of a third-party table gives.
+export const DIALECT_OF_FQN_PREFIX = new Map([
+  ['snowflake', 'SNOWFLAKE'], ['databricks', 'DATABRICKS'], ['mysql', 'MYSQL'],
+  ['postgresql', 'POSTGRES'], ['sqlserver', 'SQLSERVER'],
+]);
+// The shape of a Knowledge Catalog entry name.
 const ENTRY_NAME =
     /^projects\/[^/]+\/locations\/[^/]+\/entryGroups\/([^/]+)\/entries\/(.+)$/;
 // The entry name form, as messages show it.
@@ -3439,7 +3441,7 @@ export function isGoogleCloudForm(source: string): boolean {
 // prefix, such as `snowflake:acme.retail.public.orders`. Undefined for any
 // other source.
 function thirdPartyNameError(source: string, ctx: string): string|undefined {
-  return THIRD_PARTY_PREFIXES.some(p => source.startsWith(p)) ?
+  return DIALECT_OF_FQN_PREFIX.has(source.match(/^([a-z]+):/)?.[1] ?? '') ?
       `Semantic model load error: ${ctx}: source '${source}' is a ` +
           `Knowledge Catalog name; write the entry name of the table's ` +
           `Knowledge Catalog entry instead, such as '${ENTRY_NAME_FORM}'.` :
