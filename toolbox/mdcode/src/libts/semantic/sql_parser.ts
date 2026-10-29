@@ -32,20 +32,23 @@ interface SqlToken {
   trailing_comments: string[];
 }
 
-// The engine, initialized once and shared process-wide. The Rust/WASM blob is
-// embedded into the standalone binary via bun's `import(... , {with: {type:
-// 'file'}})` (statically analyzable, so bundled) and handed to `init()` as
-// bytes -- the package's default loader reads the blob from disk at runtime,
-// which fails inside a `bun --compile` binary, so we use the `/manual` entry
-// instead.
+// The engine, initialized once and shared process-wide. Under Bun, the
+// Rust/WASM blob is embedded into the standalone binary via `import(...,
+// {with: {type: 'file'}})` (statically analyzable, so bundled); under Node.js,
+// it is resolved from `node_modules` via `require.resolve(...)`. In both
+// cases the bytes are handed to `init()` via the `/manual` entry so the same
+// loader works inside a `bun --compile` binary and a standard npm install.
 let enginePromise: Promise<PolyglotEngine>|undefined;
 let loadedEngine: PolyglotEngine|undefined;
 
 export function loadSqlEngine(): Promise<PolyglotEngine> {
   if (!enginePromise) {
     enginePromise = (async () => {
-      const {default: wasmPath} = await import(
-          '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}});
+      const wasmPath = 'Bun' in globalThis ?
+          (await import(
+               '@polyglot-sql/sdk/polyglot_sql.wasm', {with: {type: 'file'}}))
+              .default :
+          require.resolve('@polyglot-sql/sdk/polyglot_sql.wasm');
       const engine =
           await import('@polyglot-sql/sdk/manual') as unknown as PolyglotEngine;
       await engine.init({wasmUrl: readFileSync(wasmPath) as unknown as string});
