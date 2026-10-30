@@ -269,8 +269,8 @@ describe('expression warnings judge each expression on the table that runs it', 
   });
 
   // An inherited field is judged on the table of each entity that inherits
-  // it. A metric is judged on the tables of the entities it reaches and
-  // their subtypes, or on any table of the model when it reaches none.
+  // it, and a metric on the tables of the entities it reaches, or on any
+  // table of the model when it reaches none.
   test('an inherited field and a metric are judged on the tables that run them', () => {
     const {warnings} = fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
       name: 'shop',
@@ -278,18 +278,14 @@ describe('expression warnings judge each expression on the table that runs it', 
         entity('p', SPANNER, [{name: 'f', expression: expr('x', 'SPANNER')}]),
         entity('c', BQ, [], {extends: ['p']}),
         entity('o', SPANNER, []),
-        {name: 'a', abstract: true, fields: []},
-        entity('b', BQ, [], {extends: ['a']}),
       ],
       metrics: [{name: 'm', entity: 'o', expression: expr('SUM(o.x)', 'SPANNER')},
-                {name: 'n', expression: expr('COUNT(*)', 'SPANNER')},
-                {name: 'q', entity: 'a', expression: expr('SUM(a.x)', 'SPANNER')}],
+                {name: 'n', expression: expr('COUNT(*)', 'SPANNER')}],
     }]});
     expect(warnings).toEqual([
       vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
       vendor('SPANNER')[1].replace("'m'", "'n'"),
       "metric 'n': expression references no known entity; it may not be placeable downstream",
-      vendor('SPANNER')[1].replace("'m'", "'q'"),
     ]);
   });
 });

@@ -2013,28 +2013,26 @@ function runsDialect(
   return sourcesDialect({entities: [entity]}) === dialect.toUpperCase();
 }
 
-// The warning each field's expression gives, on each of the resolved
-// `entities` whose table runs SQL in `preferred`. An inherited field is judged
-// on each entity that inherits it, and named after that entity.
-function fieldWarnings(
-    entities: ReadonlyArray<Entity>, preferred: string): string[] {
-  return entities.filter(e => runsDialect(e, preferred))
+// The warning each field's expression gives, on each entity whose table runs
+// SQL in `preferred`. An inherited field is judged on each entity that
+// inherits it, and named after that entity.
+function fieldWarnings(model: SemanticModel, preferred: string): string[] {
+  return resolvedEntities(model)
+      .filter(e => runsDialect(e, preferred))
       .flatMap(e => e.fields.map(
           f => expressionWarning(f, `field '${e.name}.${f.name}'`, preferred)))
       .filter((w): w is string => w !== undefined);
 }
 
 // The warning `metric`'s expression gives on the tables of the `reached`
-// entities and their subtypes, taken from the resolved `entities`, or on every
-// table when it reaches none. On a table of the `preferred` dialect it is
-// expressionWarning's, and otherwise it names the first table whose dialect
-// has no text in the metric.
+// entities, or on every table when it reaches none. On a table of the
+// `preferred` dialect it is expressionWarning's, and otherwise it names the
+// first table whose dialect has no text in the metric.
 function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
     preferred: string): string|undefined {
-  const named = entities.filter(
-      e => [e.name, ...e.extends ?? []].some(n => reached.includes(n)));
+  const named = entities.filter(e => reached.includes(e.name));
   const tables = named.length ? named : entities;
   if (tables.some(e => runsDialect(e, preferred))) {
     return expressionWarning(metric, `metric '${metric.name}'`, preferred);
@@ -2127,8 +2125,7 @@ export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT): string[] {
   const entities = model.entities ?? [];
   const out = entities.map(keyWarning).filter((w): w is string => !!w);
-  const resolved = resolvedEntities(model);
-  out.push(...fieldWarnings(resolved, preferred));
+  out.push(...fieldWarnings(model, preferred));
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   const excluded = new Set(model.excludedMetrics);
@@ -2137,7 +2134,7 @@ export function entityAndMetricWarnings(
     const {referenced, warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     const w = metricWarning(
-        m, [m.authoredEntity, ...referenced], resolved, preferred);
+        m, [m.authoredEntity, ...referenced], entities, preferred);
     if (w) out.push(w);
     if (mw) out.push(mw);
   }
@@ -2230,16 +2227,14 @@ function convertModel(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`,
       true);
 
-  // A field is judged on each entity that inherits it, and a metric on the
-  // subtypes of the entities it reaches, so their warnings wait until every
-  // entity is read.
-  const resolved =
-      resolvedEntities({name: m.name, entities, relationships, metrics: []});
-  warnings.push(...fieldWarnings(resolved, dialect));
+  // A field is judged on each entity that inherits it too, so its warning
+  // waits until every entity is read.
+  warnings.push(...fieldWarnings(
+      {name: m.name, entities, relationships, metrics: []}, dialect));
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(
-          mt, version, resolved, warnings, dialect, impliedDialect));
+          mt, version, entities, warnings, dialect, impliedDialect));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, true);
 
