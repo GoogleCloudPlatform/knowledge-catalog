@@ -75,14 +75,9 @@ function updateNode(u: Update, value: unknown, prev: unknown): yaml.Node {
     out = u.doc.createNode(value);
   }
   // A value written in a new shape keeps the comments of the one it replaces.
-  // A comment after a scalar or alias goes above the mapping or list that
-  // replaces it.
   if (out !== node && yaml.isNode(node)) {
-    const moved = !yaml.isCollection(node) && yaml.isCollection(out);
-    out.commentBefore = moved ?
-        [node.commentBefore, node.comment].filter(c => c).join('\n') :
-        node.commentBefore;
-    if (!moved) out.comment = node.comment;
+    out.commentBefore = node.commentBefore;
+    out.comment = node.comment;
   }
   return out;
 }
@@ -110,7 +105,7 @@ function updateMap(
 function updatePair(u: Update, pair: yaml.Pair, value: unknown): void {
   const prev = pair.value;
   const first = yaml.isCollection(prev) ? prev.items[0] : undefined;
-  if (yaml.isScalar(pair.key) && !pair.key.comment) {
+  if (yaml.isScalar(pair.key)) {
     moveKeyLineComment(pair, pair.key, value);
   }
   pair.value = updateNode(u, value, prev);
@@ -118,16 +113,15 @@ function updatePair(u: Update, pair: yaml.Pair, value: unknown): void {
   // would print as a line of spaces under the key.
   const next = yaml.isCollection(prev) ? prev.items[0] : undefined;
   const owner = yaml.isPair(next) ? next.key : next;
-  if (pair.value === prev && next !== first && yaml.isNode(owner)) {
+  if (next !== first && yaml.isNode(owner)) {
     owner.spaceBefore = false;
   }
 }
 
 /**
- * Moves the comment on the line of `pair`'s key onto `key`, so it stays on
- * that line. The library keeps it on the value: after a scalar, or on a block
- * collection together with the comment above the first item, which moves onto
- * that item so it goes or moves with it.
+ * Moves the comment on `pair`'s key line onto `key` when the value is a block
+ * collection, or a scalar that becomes one. The comment above the
+ * collection's first item moves onto that item, so it goes or moves with it.
  */
 function moveKeyLineComment(
     pair: yaml.Pair, key: yaml.Scalar, value: unknown): void {
@@ -137,15 +131,12 @@ function moveKeyLineComment(
     const first = prev.items[0];
     const owner = yaml.isPair(first) ? first.key : first;
     const before = prev.commentBefore;
-    if (prev.flow || !before || !yaml.isNode(owner) ||
-        !before.startsWith(keyLine ?? '')) {
-      return;
-    }
+    if (prev.flow || !before || !yaml.isNode(owner)) return;
     const above =
         keyLine === undefined ? before : before.slice(keyLine.length + 1);
     key.comment = keyLine;
     owner.commentBefore =
-        [above, owner.commentBefore].filter(c => c).join('\n') || undefined;
+        [above, owner.commentBefore].filter(c => c).join('\n');
     prev.commentBefore = undefined;
   } else if (yaml.isNode(prev) && isObject(value)) {
     // A scalar that becomes a mapping or list.
