@@ -111,7 +111,9 @@ A profile file's comments are dropped when its contents move into the model
 file. A JSON file is written as
 YAML, and import reports the conversion. Without `--out`, the files go into
 the scope's entry group folder, and an import that would leave one of the
-model's profile files there unwritten is refused.
+model's profile files there unwritten is refused. An import into a folder that
+already holds another model's file is refused too, since an entry group holds
+one model.
 
 | Flag | Effect |
 |------|--------|
