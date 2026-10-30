@@ -9,7 +9,7 @@ import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, writeScope} from './harness';
+import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
@@ -74,6 +74,14 @@ scenarios('push --no-deployment', [
       has('needs transpilation'),
       has("metric 'quoted_keys': its 'ANSI_SQL' expression double-quotes a name"),
     ],
+    then: [{
+      // Push checks no model-file metric against a Spanner table's dialect,
+      // so the load's warning is the only message.
+      entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
+      metrics: [SNOWFLAKE_METRIC],
+      code: 0,
+      warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
+    }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),
