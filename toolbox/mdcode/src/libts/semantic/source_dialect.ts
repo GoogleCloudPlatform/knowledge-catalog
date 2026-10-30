@@ -188,14 +188,12 @@ export function tableFqnParts(fqn: string):
   // name stays in its segment when it comes after the name's first backtick.
   const [, prefix, subtype, path] =
       fqn.match(/^([a-z]+):(?:([a-z0-9_-]+):)?(.*)$/s) ?? [];
-  const names = TABLE_FQN_PARTS.get(prefix ?? '');
-  const parts = catalogNameSegments(path ?? '', true);
+  const parts = TABLE_FQN_PARTS.get(prefix ?? '');
+  const seg = catalogNameSegments(path ?? '', true);
   const tableSubtype = subtype === undefined ||
       (prefix === 'databricks' && (subtype === 'table' || subtype === 'view'));
-  if (!names || !tableSubtype || parts.length !== names.length) {
-    return undefined;
-  }
-  return {prefix, parts};
+  if (!parts || !tableSubtype || seg.length !== parts.length) return undefined;
+  return {prefix, parts: seg};
 }
 
 // The database the fullyQualifiedName `fqn` of a third-party table or view

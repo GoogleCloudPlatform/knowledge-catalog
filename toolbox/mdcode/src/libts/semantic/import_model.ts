@@ -30,10 +30,8 @@ export interface ImportSemanticModelOptions {
    */
   sourcePrefix?: string;
   /**
-   * Lists the entries of an entry group, every page. Called once, when
-   * `sourcePrefix` names an entry group and a dataset's source is a bare table
-   * name. Required for such a `sourcePrefix`; `CatalogClient.listEntries`
-   * provides it.
+   * Lists every entry of an entry group, as `CatalogClient.listEntries` does.
+   * Required when `sourcePrefix` names an entry group.
    */
   listEntries?: EntryLister;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
@@ -204,11 +202,11 @@ const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{re: RegExp; child?: string}> = [
   },
 ];
 
-// The entry group a `--source-prefix` may name. A system entry group, such as
-// `@bigquery`, holds Google Cloud tables, which a source names by resource
-// name, so it is not one.
+// An entry group a `--source-prefix` names. A system entry group, such as
+// `@bigquery`, is refused, since its entries are Google Cloud tables, which a
+// source names by resource name.
 const ENTRY_GROUP_PREFIX =
-    /^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/@][^/]*)$/;
+    /^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)$/;
 
 /** Filters an unknown array down to its plain-object elements. */
 function asRecords(v: unknown): Record<string, any>[] {
@@ -302,17 +300,19 @@ function parseImportDocument(
     const group = base.match(ENTRY_GROUP_PREFIX);
     if (match?.m) {
       sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
-    } else if (group && opts.listEntries) {
+    } else if (group?.[3].startsWith('@')) {
+      return `sourcePrefix '${opts.sourcePrefix}' names the system entry ` +
+          `group '${group[3]}', whose entries are Google Cloud tables. Pass ` +
+          `the GCP resource name of their database instead, such as ` +
+          `'bigquery.googleapis.com/projects/<p>/datasets/<d>'.`;
+    } else if (group) {
       entryGroup = {
         base,
         project: group[1],
         location: group[2],
         group: group[3],
-        list: opts.listEntries,
+        list: opts.listEntries!,
       };
-    } else if (group) {
-      return `sourcePrefix '${opts.sourcePrefix}' names an entry group, but ` +
-          `the import was given no way to list its entries.`;
     } else {
       return `Invalid sourcePrefix '${opts.sourcePrefix}'; expected the GCP ` +
           `resource name of a BigQuery project or dataset, a BigLake ` +
@@ -595,20 +595,21 @@ function completeFromEntryGroup(
     doc.modified = true;
     return;
   }
-  doc.warnOrError(
-      matches.length ?
-          `${dsLabel}: left bare source '${source}' as written, since ` +
-              `several entries in entry group '${group}' have a ` +
-              `fullyQualifiedName that ends in it: ${
-                  matches
-                      .map(m => `'${m.name}' (${m.fullyQualifiedName})`)
-                      .join(', ')}. 'kcmd push' rejects the file until the ` +
-              `source names one of them.` :
-          `${dsLabel}: left bare source '${source}' as written, since no ` +
-              `entry for a table or view in entry group '${group}' has a ` +
-              `fullyQualifiedName that ends in it. 'kcmd push' rejects the ` +
-              `file until the source is the entry name of the table's ` +
-              `Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);
+  const left = `${dsLabel}: left bare source '${source}' as written, since `;
+  if (matches.length) {
+    const names =
+        matches.map(m => `'${m.name}' (${m.fullyQualifiedName})`).join(', ');
+    doc.warnOrError(
+        `${left}several entries in entry group '${group}' have a ` +
+        `fullyQualifiedName that ends in it: ${names}. 'kcmd push' rejects ` +
+        `the file until the source names one of them.`);
+  } else {
+    doc.warnOrError(
+        `${left}no entry for a table or view in entry group '${group}' has ` +
+        `a fullyQualifiedName that ends in it. 'kcmd push' rejects the file ` +
+        `until the source is the entry name of the table's Knowledge ` +
+        `Catalog entry, '${ENTRY_NAME_FORM}'.`);
+  }
 }
 
 /**
