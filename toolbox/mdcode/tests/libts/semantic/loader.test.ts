@@ -231,8 +231,9 @@ describe('expression warnings judge each expression on the table that runs it', 
       `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
   const quoted = both(
       `its 'ANSI_SQL' expression double-quotes a name, which BigQuery reads ` +
-      `as a string; give it a 'BIGQUERY' expression, or add one with 'kcmd ` +
-      `import <file> --input first-party --flavor <ossie|google> --transpile'`);
+      `as a string; write a text value in single quotes, or give it a ` +
+      `'BIGQUERY' expression; in a model file, 'kcmd import <file> --input ` +
+      `first-party --flavor <ossie|google> --transpile' adds one`);
   const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
       'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
       'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
