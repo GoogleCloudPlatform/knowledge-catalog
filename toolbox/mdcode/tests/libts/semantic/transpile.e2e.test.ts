@@ -5,7 +5,7 @@
 // (`vendor_dialects.bigquery.golden.sql`) captures the UN-transpiled output --
 // each field or metric with only vendor SQL omitted with a warning, because
 // the loader left `expression` unset and BigQuery never emits another engine's
-// SQL. This one captures what `kcmd push --transpile` produces instead: the
+// SQL. This one captures what `kcmd import --transpile` produces instead: the
 // same model after the pass adds a target `BIGQUERY` entry to `dialects` from
 // each node's `importedExpression` (or double-quoted `ANSI_SQL` entry), so the
 // DDL carries GoogleSQL. Every expression in the golden was dry-run-validated

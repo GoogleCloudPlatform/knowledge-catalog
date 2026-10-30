@@ -753,29 +753,6 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     }
   });
 
-  test('a metric with only vendor text is judged by the SQL --transpile writes', () => {
-    // The BigQuery graph emits no Snowflake text, so pruning does not read
-    // it. Pruning does read the BigQuery SQL that push's --transpile pass
-    // writes into `expression`, because the graph emits that.
-    const m = irModel();
-    const metric = m.metrics!.find(x => x.name === 'avg_lifetime_value')!;
-    metric.expression = undefined;
-    metric.importedExpression = 'AVG("Customer"."lifetimeValue")';
-    metric.importedDialect = 'SNOWFLAKE';
-    const {model, report} = pruneUnavailable(m, 'operational');
-    expect(metricNames(model)).toContain('avg_lifetime_value');
-    expect(report.droppedMetrics.map(d => d.name))
-        .not.toContain('avg_lifetime_value');
-    metric.dialects =
-        [{dialect: 'SNOWFLAKE', expression: 'AVG(Customer.lifetimeValue)'}];
-    metric.importedExpression = 'AVG(Customer.lifetimeValue)';
-    metric.expression = 'AVG(Customer.lifetimeValue)';
-    const transpiled = pruneUnavailable(m, 'operational');
-    expect(metricNames(transpiled.model)).toEqual(['order_count']);
-    expect(transpiled.report.droppedMetrics).toContainEqual(
-        {name: 'avg_lifetime_value', reason: 'field Customer.lifetimeValue is unbound', field: 'Customer.lifetimeValue'});
-  });
-
   test("a metric is judged by the text its sources' dialect evaluates", () => {
     // The sources are BigQuery tables, so only the BIGQUERY text counts.
     const m = irModel();

@@ -273,8 +273,7 @@ export function validateDeployments(
     // unavailable. The completeness check reports a named profile that does
     // not apply, and the fields its metrics read.
     const bound = named ? profiled(model, named) : pruneUnavailable(
-        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model),
-        {noGraph: alloyDb});
+        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
     if (!bound) continue;
     const available = bound.model.metrics ?? [];
     if (named) {
@@ -352,10 +351,8 @@ function measureProblem(
   if (!columns) return undefined;
   const entities = model.entities ?? [];
   const names = entities.map(e => e.name);
-  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`) rather than
-  // `metric.expression`: `transpileModel` appends translated SQL to
-  // `metric.dialects` and leaves `metric.expression` unset on vendor-only
-  // metrics.
+  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`), the SQL the
+  // BigQuery graph runs.
   const matched =
       referencedEntityNames(withoutComments(text, 'BIGQUERY'), names);
   if (matched.length > 1 || !matched.length && !metric.entity) return undefined;
@@ -1663,12 +1660,9 @@ function validateBigQueryMetrics(
   for (const metric of model.metrics ?? []) {
     if (alreadyFlagged.has(metric.name)) continue;
     const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    // `transpileModel` appends translated SQL as a `BIGQUERY` entry in
-    // `metric.dialects` without setting `metric.expression`, so resolve the
-    // BigQuery text via `expressionForDialect` first (falling back to
-    // `metric.expression` for hand-built in-memory models without `dialects`).
-    const bqText =
-        expressionForDialect(metric, 'BIGQUERY') ?? metric.expression;
+    // The text BigQuery runs: its `BIGQUERY` entry, else its `ANSI_SQL` one,
+    // else `expression` for a metric held without a dialect list.
+    const bqText = expressionForDialect(metric, 'BIGQUERY');
     if (bqText === undefined && metric.importedExpression !== undefined) {
       errors.push(
           `${prefix} targets a BigQuery graph with only a '${

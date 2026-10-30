@@ -19,9 +19,8 @@
 //   - degenerate inputs the format forbids (a model with no datasets) and pure
 //     GenerateOptions behavior (graph naming; a source `dataSource` is emitted
 //     verbatim, never re-qualified from options).
-//   - which SQL each field and metric emits, case by case: a dialect list with
-//     no `expression` beside it, and an `expression` the transpile pass wrote
-//     next to vendor-only SQL.
+//   - which SQL each field and metric emits, case by case, such as a dialect
+//     list with no `expression` beside it.
 // Plus a structural invariant guard that parses generated DDL and asserts the
 // shape BigQuery enforces for measures, run over the loaded fixtures.
 //
@@ -1426,22 +1425,6 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
     expect(warnings).toContain(
         `metric 'revenue' has no 'BIGQUERY' or 'ANSI_SQL' expression; ` +
         `skipped (nothing to emit as a MEASURE)`);
-  });
-
-  test('SQL the transpile pass wrote into expression is still emitted', () => {
-    const model = orders();
-    model.entities[0].fields.push(
-        {name: 'ratio', ...snowflakeOnly(), expression: 'IF(b = 0, 0, a / b)'});
-    model.metrics = [{
-      name: 'revenue',
-      ...snowflakeOnly(),
-      expression: 'SUM(orders.amount)',
-    }];
-    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
-    expect(ddl).toContain('IF(b = 0, 0, a / b) AS ratio');
-    expect(ddl).toContain('MEASURE(SUM(amount)) AS revenue');
-    expect(ddl).not.toContain('DIV0');
-    expect(warnings).toEqual([]);
   });
 
   test('a field or metric with no SQL at all keeps the unbound message', () => {
