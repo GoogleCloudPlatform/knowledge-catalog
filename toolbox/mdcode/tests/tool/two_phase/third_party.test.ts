@@ -55,16 +55,16 @@ const alloyDbModel = (source: string) => ({
   'commerce.yaml': modelFile({google: {deploymentTargets: [ALLOYDB]}})
                        .replace(bqTable('customer'), source),
 });
-// The AlloyDB target error of a plain push, which advises a catalog-only push
-// when `catalogOnly` is set.
-const alloyDbTarget = (catalogOnly: boolean) => err(
+// The AlloyDB target error of a plain push. With `advice` set, it advises a
+// graph target or a catalog-only push.
+const alloyDbTarget = (advice: boolean) => err(
     `model 'commerce' (commerce) target '${ALLOYDB}' is an AlloyDB database, ` +
     'which a model runs against rather than deploys to; AlloyDB has no ' +
-    'property graph for a push to publish. Declare a BigQuery or Spanner ' +
-    "Graph target (list 'deployments' in a GOOGLE custom_extensions block on " +
-    "the model, or set version: '0.2.0.dev0/google' and use 'deployments:')" +
-    (catalogOnly ? ", or run 'kcmd push --no-profile' to publish to " +
-         'Knowledge Catalog only.' : '.'));
+    'property graph for a push to publish.' +
+    (advice ? ' Declare a BigQuery or Spanner Graph target (list ' +
+         "'deployments' in a GOOGLE custom_extensions block on the model, or " +
+         "set version: '0.2.0.dev0/google' and use 'deployments:'), or run " +
+         "'kcmd push --no-profile' to publish to Knowledge Catalog only." : ''));
 
 scenarios('a third-party table', [
   {
@@ -111,8 +111,8 @@ scenarios('a third-party table', [
     {flags: {profile: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
     {files: alloyDbModel(ENTRY), flags: {profile: false}, code: 1,
      nothingWritten: true, errors: [err(singlePhase(ALLOYDB_DB))]},
-    // A plain push also gives the AlloyDB target error. It advises a
-    // catalog-only push only when no third-party table makes that push fail.
+    // A plain push also gives the AlloyDB target error. It gives advice only
+    // when the model binds no third-party table.
     {files: alloyDbModel(ENTRY), code: 1, nothingWritten: true,
      errors: [alloyDbTarget(false), err(singlePhase(ALLOYDB_DB))]},
     {files: alloyDbModel(bqTable('customer')), code: 1, nothingWritten: true,

@@ -127,20 +127,19 @@ export function validatePushRequirements(
         // property-graph DDL, so there is no graph here for a push to deploy
         // -- which makes this a deployment pointed at the wrong verb rather
         // than a URI to correct, and the message says which verb it is for.
-        // A catalog-only push also refuses a model that binds a third-party
-        // table (thirdPartyTargetErrors). The error advises one only when the
-        // model binds none.
-        const catalogOnly = model.entities?.some(
+        // When the model binds a third-party table, a graph target and a
+        // catalog-only push are refused too, so the error gives no advice and
+        // the refusal beside it says why.
+        const advice = model.entities?.some(
             e => thirdPartyEntryOf(e.authoredSource ?? '')) ? '' :
-            `, or run 'kcmd push --no-profile' to publish to Knowledge ` +
-            `Catalog only`;
+            ` Declare a BigQuery or Spanner Graph target (${
+                where ?? DEPLOYMENTS_VERSION_HINT}), or run 'kcmd push ` +
+            `--no-profile' to publish to Knowledge Catalog only.`;
         errors.push(
             `model '${model.name}' (${document}) target '${
                 deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
             `model runs against rather than deploys to; AlloyDB has no ` +
-            `property graph for a push to publish. Declare a BigQuery or ` +
-            `Spanner Graph target (${
-                where ?? DEPLOYMENTS_VERSION_HINT})${catalogOnly}.`);
+            `property graph for a push to publish.${advice}`);
       }
     }
 
