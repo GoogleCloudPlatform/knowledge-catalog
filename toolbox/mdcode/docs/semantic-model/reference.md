@@ -93,20 +93,19 @@ kcmd import <file> --flavor <ossie|google>
 ```
 
 Imports a semantic model file into the flavor `--flavor` names. A file another
-product wrote is repaired, and each repair is reported as a warning. A file
-written for kcmd converts between flavors exactly or not at all. Renaming a
-dialect such as `GOOGLE_SQL` or `bigquery`, and recasing a vanilla datatype
-such as `integer`, are repairs too. The
-`<model>.profile.<name>.yaml` files beside `<file>` go in with it. Nothing is
-written when the import reports an error. The written file keeps the input's
-comments, except those on anything import removes or moves elsewhere in the
-file, such as a key that goes into or out of a `GOOGLE` block. A profile
-file's comments are dropped when its contents move into the model file.
-Without `--out`, the files go into the scope's entry group folder, and an
-import that would leave one of the model's profile files there unwritten is
-refused. Without `--out`, an import is also refused when the entry group
-folder already holds another model's file, since an entry group holds one
-model.
+product wrote is repaired, and each repair is reported as a warning. Renaming
+a dialect such as `GOOGLE_SQL` or `bigquery` is a repair, and so is recasing a
+vanilla datatype such as `integer`. A file written for kcmd converts between
+flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
+`<file>` go in with it. Nothing is written when the import reports an error.
+The written file keeps the input's comments, except those on anything import
+removes or moves elsewhere in the file, such as a key that goes into or out of
+a `GOOGLE` block. A profile file's comments are dropped when its contents move
+into the model file. Without `--out`, the files go into the scope's entry group
+folder, and an import that would leave one of the model's profile files there
+unwritten is refused. Without `--out`, an import is also refused when the entry
+group folder already holds another model's file, since an entry group holds
+one model.
 
 | Flag | Effect |
 |------|--------|

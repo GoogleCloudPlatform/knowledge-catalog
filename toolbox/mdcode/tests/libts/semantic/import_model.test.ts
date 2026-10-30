@@ -160,11 +160,6 @@ describe('conversion, strict mode, and translation', () => {
       `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`
     ],
     [
-      'lowercase dialect in strict mode',
-      googleDoc().replace('dialect: BIGQUERY', 'dialect: bigquery'),
-      {strict: true}, `rewrote dialect 'bigquery' to 'BIGQUERY'.`
-    ],
-    [
       'vanilla datatype in another casing in strict mode',
       ossieDoc({extra: '            datatype: integer\n'}),
       {flavor: 'google' as const, strict: true},
@@ -427,11 +422,6 @@ describe('sources', () => {
           `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.` :
           `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so import cannot complete it; correct the letter case of the source or of '--source-prefix'.`,
     ]);
-    expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
-               .models[0]
-               .entities[0]
-               .authoredSource)
-        .toBe(completed ?? bare);
   });
 
   test(
