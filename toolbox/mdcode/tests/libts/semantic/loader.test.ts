@@ -203,16 +203,16 @@ describe('expression warnings judge each expression on the table that runs it', 
   const PG = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/t';
   // The table a lookup has not read, as in `kcmd import`.
   const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
+  const TP = 'projects/p/locations/us/entryGroups/g/entries/orders';
   const opts: LoadOptions = {
     bindingOptional: true,
-    warnUnacceptedSource: true,
-    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES']]),
+    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [TP, 'SNOWFLAKE']]),
   };
   const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
       ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
-  // The field and metric warnings of a model whose entity 't' reads `source`,
-  // with a field 'f' and a metric 'm' whose texts each read column x, loaded
-  // preferring `dialect`.
+  // The field and metric warnings for entity 't' on `source`. Field 'f' and
+  // metric 'm' read x through `dialects`, a list of [dialect, text] pairs or
+  // a string for the string form. The load prefers `dialect`.
   const warned = (source: string|undefined, dialects: Array<[string, string]>|string,
                   dialect?: string) => {
     const sql = (text: (x: string) => string) => typeof dialects === 'string' ?
@@ -247,23 +247,19 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a Cloud SQL for MySQL table, MySQL text', MYSQL, [['MYSQL', 'x']], []],
     ['a Cloud SQL for PostgreSQL table, PostgreSQL text', PG, [['POSTGRES', 'x']], []],
     ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
+    ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],
+    ['a third-party table, a double-quoted name in ANSI_SQL', TP, [['ANSI_SQL', '"x"']], []],
     ['an entity with no source, Snowflake text', undefined, [['SNOWFLAKE', 'x']], []],
-    ['a source in no accepted form, Snowflake text', 'orders', [['SNOWFLAKE', 'x']], []],
     ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
-    ['a Spanner table, ANSI_SQL text', SPANNER, [['ANSI_SQL', 'x']], []],
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
     ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
     ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
      [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
-    ['a Cloud SQL for PostgreSQL table, a double-quoted name in ANSI_SQL', PG,
-     [['ANSI_SQL', '"x"']], []],
   ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(
       '%s', (_, source, dialects, expected) => {
         expect(warned(source, dialects)).toEqual(expected);
       });
 
-  // The double-quoted name warning is about BigQuery, so a load that prefers
-  // another dialect gives that dialect's note.
   test('a load preferring Spanner gives no double-quoted name warning', () => {
     expect(warned(SPANNER, [['ANSI_SQL', '"x"']], 'SPANNER'))
         .toEqual([note[0].replaceAll('BIGQUERY', 'SPANNER')]);
