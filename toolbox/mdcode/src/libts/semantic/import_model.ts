@@ -406,6 +406,34 @@ function validateInputDocument(
 }
 
 /**
+ * The segments of a bare dot-separated table name `source`, each unquoted and
+ * marked when it was quoted, or `undefined` when `source` is not a bare name.
+ */
+function bareNameSegments(source: string, prefix: ParsedSourcePrefix):
+    Array<{text: string; quoted: boolean}>|undefined {
+  // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
+  // query-valued sources with unquoted whitespace.
+  const trimmed = source.trim();
+  if (!trimmed || trimmed.includes('/') || trimmed.includes(':') ||
+      hasUnquotedWhitespace(trimmed)) {
+    return undefined;
+  }
+
+  // 2. Split the bare dot-separated table reference into unquoted segments,
+  // unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first.
+  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
+          trimmed.startsWith('`') && trimmed.endsWith('`') &&
+          !trimmed.slice(1, -1).includes('`') ?
+      trimmed.slice(1, -1) :
+      trimmed;
+  const segs = catalogNameParts(unwrapped).map(p => ({
+    text: unquote(p.text),
+    quoted: p.backticked || /^".+"$/.test(p.text),
+  }));
+  return segs.length && segs.every(s => s.text.length) ? segs : undefined;
+}
+
+/**
  * Qualifies a bare dot-separated table name `source` against `prefix` into a
  * GCP resource name when `prefix` supplies the missing hierarchy segments and
  * any overlapping segments agree, or returns `undefined` if `source` cannot be
@@ -416,27 +444,9 @@ function validateInputDocument(
 function qualifyTableSource(
     source: string, prefix: ParsedSourcePrefix, ignoreCase = false): string|
     undefined {
-  // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
-  // query-valued sources with unquoted whitespace.
-  const trimmed = source.trim();
-  if (!trimmed || trimmed.includes('/') || trimmed.includes(':') ||
-      hasUnquotedWhitespace(trimmed)) {
-    return undefined;
-  }
-
-  // 2. Split the bare dot-separated table reference into unquoted segments
-  // (unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first) and
-  // verify that any leading segments overlapping `prefix.known` match.
-  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
-          trimmed.startsWith('`') && trimmed.endsWith('`') &&
-          !trimmed.slice(1, -1).includes('`') ?
-      trimmed.slice(1, -1) :
-      trimmed;
-  const segs = catalogNameParts(unwrapped).map(p => ({
-    text: unquote(p.text),
-    quoted: p.backticked || /^".+"$/.test(p.text),
-  }));
-  if (!segs.length || segs.some(s => !s.text.length)) return undefined;
+  // Verify that any leading segments overlapping `prefix.known` match.
+  const segs = bareNameSegments(source, prefix);
+  if (!segs) return undefined;
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
@@ -450,7 +460,7 @@ function qualifyTableSource(
   const tail = prefix.known.slice(prefix.known.length - overlap);
   if (tail.some((k, i) => !agrees(segs[i], k))) return undefined;
 
-  // 3. Append the remaining child container (if any) and table segment onto
+  // Append the remaining child container (if any) and table segment onto
   // `prefix.base` and verify the resulting resource name is accepted.
   const rest = segs.slice(overlap).map(read);
   const qualified = prefix.child ?
@@ -645,14 +655,23 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
       doc.modified = true;
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
-      const caseOnly = doc.sourcePrefix !== undefined &&
-          qualifyTableSource(trimmed, doc.sourcePrefix, true) !== undefined;
+      // Why a prefix that nearly fits the name cannot complete it.
+      const p = doc.sourcePrefix;
+      let why: string|undefined;
+      if (p && qualifyTableSource(trimmed, p, true) !== undefined) {
+        why = `differs from '--source-prefix' only in letter case, so ` +
+            `import cannot complete it; correct the letter case of the ` +
+            `source or of '--source-prefix'.`;
+      } else if (p?.child && bareNameSegments(trimmed, p)?.length === 1) {
+        // The container it lacks: a dataset, namespace or schema.
+        const lacks = p.child.slice(0, -1);
+        why = `names no ${lacks}, and neither does '--source-prefix', so ` +
+            `import cannot complete it; add the ${lacks} to the source or to ` +
+            `'--source-prefix'.`;
+      }
       doc.warnOrError(
-          caseOnly ?
-              `${dsLabel}: source '${trimmed}' differs from ` +
-                  `'--source-prefix' only in letter case, so it is left as ` +
-                  `written; fix the case by hand.` :
-              sourceWarning(dsLabel, trimmed));
+          why ? `${dsLabel}: source '${trimmed}' ${why}` :
+                sourceWarning(dsLabel, trimmed));
     }
   }
 

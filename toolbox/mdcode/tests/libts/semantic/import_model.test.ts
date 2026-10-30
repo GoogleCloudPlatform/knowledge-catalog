@@ -13,6 +13,8 @@ const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
 const CLOUDSQL_PREFIX =
     'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
+const ALLOYDB_DB =
+    'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/c1/databases/analytics';
 
 /**
  * Builds a minimal valid `0.2.0.dev0` (vanilla Ossie) YAML fixture with
@@ -167,6 +169,11 @@ describe('conversion, strict mode, and translation', () => {
       ossieDoc({extra: '            datatype: integer\n'}),
       {flavor: 'google' as const, strict: true},
       `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
+    ],
+    [
+      'one-part name against an AlloyDB database prefix in strict mode',
+      googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
+      `dataset 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
     ],
     [
       'lowercase Opaque in strict mode',
@@ -397,8 +404,6 @@ describe('sources', () => {
             .toBe(true);
       });
 
-  const ALLOYDB_DB =
-      'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/c1/databases/analytics';
   const ALLOYDB = `${ALLOYDB_DB}/schemas/public`;
   // [label, bare name, prefix, the source it completes to, or undefined when
   // it differs from the prefix only in letter case]
@@ -420,7 +425,7 @@ describe('sources', () => {
     expect(res.warnings).toEqual([
       completed ?
           `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.` :
-          `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so it is left as written; fix the case by hand.`,
+          `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so import cannot complete it; correct the letter case of the source or of '--source-prefix'.`,
     ]);
     expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
                .models[0]
