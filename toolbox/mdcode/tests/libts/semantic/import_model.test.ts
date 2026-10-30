@@ -1078,6 +1078,29 @@ ${metrics}# end of model
     expect(res.files[0].content).not.toContain('metrics');
   });
 
+  test('writes a changed CRLF file with LF line endings only', async () => {
+    const input =
+        thirdParty
+            .replace(
+                '# the order key', '# the order key\n          # second line')
+            .replace(/\n/g, '\r\n');
+
+    const res = await importSemanticModelYaml(input);
+
+    expect(res.files[0].content)
+        .toContain('# the order key\n          # second line\n');
+    expect(res.files[0].content).not.toContain('\r');
+  });
+
+  test('writes a changed JSON file as block YAML', async () => {
+    const json = JSON.stringify(yaml.parse(thirdParty), null, 2);
+
+    const res = await importSemanticModelYaml(json);
+
+    expect(res.files[0].content)
+        .toContain('\n    datasets:\n      - name: orders\n');
+  });
+
   test('keeps every comment of the Apache Ossie TPC-DS example', async () => {
     const raw = readFileSync(
         join(__dirname, 'fixtures/ossie/tpcds_semantic_model.yaml'), 'utf8');

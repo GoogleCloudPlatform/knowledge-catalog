@@ -213,9 +213,12 @@ function parseImportDocument(
     rawYaml: string, opts: ImportSemanticModelOptions): ImportDocument|string {
   // 1. Parse raw YAML with strict YAML 1.2 options (`YAML_OPTIONS`) so syntax
   // errors and duplicate keys are caught immediately. The parser's tokens tell
-  // a comment on a key's line from one above the first item under it.
-  const document =
-      yaml.parseDocument(rawYaml, {...YAML_OPTIONS, keepSourceTokens: true});
+  // a comment on a key's line from one above the first item under it. Line
+  // endings are read as LF, because the library keeps the carriage returns
+  // of a comment of several lines and a changed file would mix the two.
+  const document = yaml.parseDocument(
+      rawYaml.replaceAll('\r\n', '\n'),
+      {...YAML_OPTIONS, keepSourceTokens: true});
   let parsedDoc: unknown;
   try {
     if (document.errors.length > 0) throw document.errors[0];
@@ -1054,6 +1057,13 @@ function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
     if (to && to in model && !(from in model)) pair.key.value = to;
   }
   updateDocument(doc.document, root, doc.links);
+  // A JSON file is one flow mapping. It is written as block YAML, as before.
+  if (yaml.isMap(doc.document.contents) && doc.document.contents.flow) {
+    yaml.visit(doc.document, {
+      Collection: (_, n) => void (n.flow = false),
+      Scalar: (_, n) => void delete n.type,
+    });
+  }
   return doc.document.toString({lineWidth: 0, flowCollectionPadding: false});
 }
 
