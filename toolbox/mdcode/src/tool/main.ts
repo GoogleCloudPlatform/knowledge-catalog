@@ -122,7 +122,7 @@ cli.command(
     .option('--flavor <flavor>', 'Flavor to write: ossie or google; required')
     .option(
         '--source-prefix <prefix>',
-        'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d')
+        'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d, or the Knowledge Catalog entry group projects/p/locations/l/entryGroups/g whose table entries complete them by fullyQualifiedName')
     .option(
         '--transpile',
         'Add a BigQuery translation beside SQL in another dialect; off by default')

@@ -9,6 +9,7 @@ import {catalogNameParts, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_V
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
+import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {needsTranspile, transpileModel} from './transpile';
@@ -23,9 +24,18 @@ export interface ImportSemanticModelOptions {
   flavor?: 'ossie'|'google';
   /**
    * First-party GCP container resource name used to qualify bare table
-   * sources.
+   * sources, or the name of a Knowledge Catalog entry group
+   * (`projects/<p>/locations/<l>/entryGroups/<g>`) whose table entries complete
+   * them by their fullyQualifiedName.
    */
   sourcePrefix?: string;
+  /**
+   * Lists the entries of an entry group, every page. Called once, when
+   * `sourcePrefix` names an entry group and a dataset's source is a bare table
+   * name. Required for such a `sourcePrefix`; `CatalogClient.listEntries`
+   * provides it.
+   */
+  listEntries?: EntryLister;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -41,6 +51,11 @@ export interface ImportSemanticModelOptions {
    */
   profileFiles?: SerializedFile[];
 }
+
+/** The one catalog call import makes. */
+export type EntryLister =
+    (project: string, location: string, entryGroup: string) =>
+        AsyncIterable<{name: string; fullyQualifiedName?: string}>;
 
 /** Result of importing a semantic model YAML document. */
 export interface ImportSemanticModelResult {
@@ -65,6 +80,25 @@ interface ParsedSourcePrefix {
   base: string;
   known: string[];
   child?: string;
+}
+
+/** A `--source-prefix` that names a Knowledge Catalog entry group. */
+interface EntryGroupPrefix {
+  /** The entry group's name, as written. */
+  base: string;
+  project: string;
+  location: string;
+  group: string;
+  list: EntryLister;
+}
+
+/** An entry of the `--source-prefix` entry group that names a table or view. */
+interface TableEntry {
+  /** The entry's name, under the entry group as `--source-prefix` writes it. */
+  name: string;
+  fullyQualifiedName: string;
+  /** The parts of `fullyQualifiedName` after its prefix, unquoted. */
+  parts: string[];
 }
 
 /** Mutable representation of a semantic model document during import. */
@@ -96,6 +130,13 @@ interface ImportDocument {
   targetVersion: FormatVersion;
   /** Validated `--source-prefix` container resource name, if supplied. */
   sourcePrefix?: ParsedSourcePrefix;
+  /** The `--source-prefix` entry group, if it names one. */
+  entryGroup?: EntryGroupPrefix;
+  /**
+   * The table entries of `entryGroup`, listed when a dataset's source is a
+   * bare table name.
+   */
+  entryTables?: TableEntry[];
   /** Whether strict mode (`--input first-party`) is active. */
   strict: boolean;
   /** True when any mutations have been applied to `root`. */
@@ -163,6 +204,12 @@ const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{re: RegExp; child?: string}> = [
     re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
   },
 ];
+
+// The entry group a `--source-prefix` may name. A system entry group, such as
+// `@bigquery`, holds Google Cloud tables, which a source names by resource
+// name, so it is not one.
+const ENTRY_GROUP_PREFIX =
+    /^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/@][^/]*)$/;
 
 /** Filters an unknown array down to its plain-object elements. */
 function asRecords(v: unknown): Record<string, any>[] {
@@ -244,20 +291,37 @@ function parseImportDocument(
     }
   }
 
-  // 3. Validate `opts.sourcePrefix` against the 8 supported first-party GCP
-  // container resource name patterns before doing any document work.
+  // 3. Validate `opts.sourcePrefix` against the 9 supported first-party GCP
+  // container resource name patterns, or as an entry group, before doing any
+  // document work.
   let sourcePrefix: ParsedSourcePrefix|undefined;
+  let entryGroup: EntryGroupPrefix|undefined;
   if (opts.sourcePrefix !== undefined) {
     const base = opts.sourcePrefix.trim();
     const match = SOURCE_PREFIX_PATTERNS.map(p => ({m: base.match(p.re), p}))
                       .find(x => x.m !== null);
-    if (!match?.m) {
+    const group = base.match(ENTRY_GROUP_PREFIX);
+    if (match?.m) {
+      sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
+    } else if (group && opts.listEntries) {
+      entryGroup = {
+        base,
+        project: group[1],
+        location: group[2],
+        group: group[3],
+        list: opts.listEntries,
+      };
+    } else if (group) {
+      return `sourcePrefix '${opts.sourcePrefix}' names an entry group, but ` +
+          `the import was given no way to list its entries.`;
+    } else {
       return `Invalid sourcePrefix '${opts.sourcePrefix}'; expected the GCP ` +
           `resource name of a BigQuery project or dataset, a BigLake ` +
           `catalog or namespace, a Spanner database, an AlloyDB database ` +
-          `or schema, or a Cloud SQL database or schema (with no leading '//').`;
+          `or schema, or a Cloud SQL database or schema (with no leading ` +
+          `'//'), or the name of a Knowledge Catalog entry group ` +
+          `('projects/<p>/locations/<l>/entryGroups/<g>').`;
     }
-    sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
   }
 
   // 4. Reject a document written for kcmd when `strict` is false: one with a
@@ -295,6 +359,7 @@ function parseImportDocument(
     inputVersion,
     targetVersion,
     sourcePrefix,
+    entryGroup,
     strict,
     modified: false,
     warnings,
@@ -411,7 +476,7 @@ function validateInputDocument(
  * The segments of a bare dot-separated table name `source`, each unquoted and
  * marked when it was quoted, or `undefined` when `source` is not a bare name.
  */
-function bareNameSegments(source: string, prefix: ParsedSourcePrefix):
+function bareNameSegments(source: string, prefix?: ParsedSourcePrefix):
     Array<{text: string; quoted: boolean}>|undefined {
   // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
   // query-valued sources with unquoted whitespace.
@@ -423,7 +488,7 @@ function bareNameSegments(source: string, prefix: ParsedSourcePrefix):
 
   // 2. Split the bare dot-separated table reference into unquoted segments,
   // unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first.
-  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
+  const unwrapped = prefix?.base.startsWith('bigquery.googleapis.com/') &&
           trimmed.startsWith('`') && trimmed.endsWith('`') &&
           !trimmed.slice(1, -1).includes('`') ?
       trimmed.slice(1, -1) :
@@ -469,6 +534,82 @@ function qualifyTableSource(
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
   return isAcceptedSource(qualified) ? qualified : undefined;
+}
+
+/**
+ * Phase 2b (Catalog read): When `doc.entryGroup` is set and a dataset's
+ * source is a bare table name, lists the entry group's entries once into
+ * `doc.entryTables`, keeping those whose fullyQualifiedName names a table or
+ * view. Returns the error when the list fails.
+ */
+async function listEntryTables(doc: ImportDocument): Promise<string|undefined> {
+  const group = doc.entryGroup;
+  if (!group ||
+      !doc.datasets.some(
+          ds => typeof ds.source === 'string' && bareNameSegments(ds.source))) {
+    return undefined;
+  }
+  const tables: TableEntry[] = [];
+  try {
+    for await (const e of group.list(
+                   group.project, group.location, group.group)) {
+      const fqn = e.fullyQualifiedName ?? '';
+      const table = tableFqnParts(fqn);
+      if (!table) continue;
+      tables.push({
+        name: `${group.base}${e.name.slice(e.name.indexOf('/entries/'))}`,
+        fullyQualifiedName: fqn,
+        parts: table.parts,
+      });
+    }
+  } catch (err: any) {
+    return `Could not list the entries of entry group '${group.base}' to ` +
+        `complete bare table names: ${err?.message ?? err}`;
+  }
+  doc.entryTables = tables;
+  return undefined;
+}
+
+/**
+ * Completes the bare table name `source` of `ds` from `doc.entryTables` with
+ * the one entry whose fullyQualifiedName ends in its parts. Leaves a name no
+ * entry or several entries end in as written, and reports it, naming the
+ * candidates.
+ */
+function completeFromEntryGroup(
+    ds: Record<string, any>, source: string,
+    parts: Array<{text: string; quoted: boolean}>, doc: ImportDocument): void {
+  const dsLabel = `dataset '${ds.name}'`;
+  const group = doc.entryGroup!.base;
+  // Compared from the end, so a name with more parts than an entry's matches
+  // none.
+  const matches = doc.entryTables!.filter(
+      t => parts.every((p, i) => t.parts.at(i - parts.length) === p.text));
+  if (matches.length === 1) {
+    // The author asked for this rewrite with --source-prefix, so it is a
+    // warning in strict mode too.
+    const [m] = matches;
+    doc.warnings.push(
+        `${dsLabel}: rewrote bare source '${source}' to '${m.name}', the ` +
+        `entry whose fullyQualifiedName is '${m.fullyQualifiedName}'.`);
+    ds.source = m.name;
+    doc.modified = true;
+    return;
+  }
+  doc.warnOrError(
+      matches.length ?
+          `${dsLabel}: left bare source '${source}' as written, since ` +
+              `several entries in entry group '${group}' have a ` +
+              `fullyQualifiedName that ends in it: ${
+                  matches
+                      .map(m => `'${m.name}' (${m.fullyQualifiedName})`)
+                      .join(', ')}. 'kcmd push' rejects the file until the ` +
+              `source names one of them.` :
+          `${dsLabel}: left bare source '${source}' as written, since no ` +
+              `entry for a table or view in entry group '${group}' has a ` +
+              `fullyQualifiedName that ends in it. 'kcmd push' rejects the ` +
+              `file until the source is the entry name of the table's ` +
+              `Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);
 }
 
 /**
@@ -622,19 +763,22 @@ function repairField(
 
 /**
  * Repairs a dataset's `source` (removing query-valued sources, qualifying bare
- * table names against `doc.sourcePrefix`, and warning on unaccepted sources),
- * truncates its `description`, and repairs each of its `fields`.
+ * table names against `doc.sourcePrefix` or completing them from
+ * `doc.entryTables`, and warning on unaccepted sources), truncates its
+ * `description`, and repairs each of its `fields`.
  */
 function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 1. Repair or diagnose `ds.source`: remove query-valued sources (in the
-  // Google version), qualify bare table names against `doc.sourcePrefix`, or
-  // warn on unaccepted source formats.
+  // Google version), qualify bare table names against `doc.sourcePrefix` or
+  // complete them from `doc.entryTables`, or warn on unaccepted source
+  // formats.
   const dsLabel = `dataset '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
     const qualified = doc.sourcePrefix ?
         qualifyTableSource(trimmed, doc.sourcePrefix) :
         undefined;
+    const parts = doc.entryTables ? bareNameSegments(trimmed) : undefined;
     if (hasUnquotedWhitespace(trimmed)) {
       if (doc.targetVersion === OSSIE_VERSION) {
         doc.errors.push(
@@ -655,6 +799,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
           `${dsLabel}: rewrote bare source '${trimmed}' to '${qualified}'.`);
       ds.source = qualified;
       doc.modified = true;
+    } else if (parts) {
+      completeFromEntryGroup(ds, trimmed, parts, doc);
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
       // Why a prefix that nearly fits the name cannot complete it.
@@ -1215,7 +1361,17 @@ export async function importSemanticModelYaml(
   }
   validateInputDocument(doc, opts.profileFiles);
 
-  // 2. Run third-party repairs (which record errors in `strict` mode).
+  // 2. Read the `--source-prefix` entry group, if needed, and run third-party
+  // repairs (which record errors in `strict` mode).
+  const listError = await listEntryTables(doc);
+  if (listError) {
+    return {
+      ok: false,
+      files: [],
+      warnings: doc.warnings,
+      errors: [...doc.errors, listError],
+    };
+  }
   repairDocument(doc);
 
   // 3. Generate the converted or adapted output file(s). Only a conversion to

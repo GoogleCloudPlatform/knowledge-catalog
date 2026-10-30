@@ -11,6 +11,7 @@ import * as path from 'node:path';
 
 import * as kcmd from '../../src/libts';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import * as engine from '../../src/libts/semantic/import_model';
 import {Sources} from '../../src/libts/source';
 import {ImportCommandOptions, importModel} from '../../src/tool/commands';
@@ -121,7 +122,8 @@ describe('kcmd import', () => {
       write('retail.yaml', model());
       const call = spyOn(engine, 'importSemanticModelYaml');
       expect(await importModel('retail.yaml', {...options, out: 'out'})).toBe(0);
-      expect(call.mock.calls).toEqual([[model(), {...expected, profileFiles: []}]]);
+      expect(call.mock.calls).toEqual(
+          [[model(), {...expected, profileFiles: [], listEntries: expect.any(Function)}]]);
     });
   }
 
@@ -207,6 +209,29 @@ describe('kcmd import', () => {
     ]);
     expect(fs.readFileSync(path.join(dir, 'out', 'retail.yaml'), 'utf8'))
         .toContain(`source: ${PREFIX}/tables/orders\n`);
+  });
+
+  // The command lists the entry group with the Dataplex client, which follows
+  // each page.
+  test('completes a bare name from an entry on a later page of the --source-prefix entry group', async () => {
+    const group = 'projects/acme/locations/us/entryGroups/sf';
+    const page = (id: string, nextPageToken?: string) => ({
+      status: 200,
+      result: {
+        entries: [{name: `${group}/entries/${id}`, entryType: 'type',
+                   fullyQualifiedName: `snowflake:acme.retail.public.${id}`}],
+        nextPageToken,
+      },
+    });
+    const get = spyOn(CatalogClient.prototype as any, '_get').mockImplementation(
+        async (_: string, params: any) => params.pageToken ? page('orders') : page('items', 'T'));
+    write('retail.yaml', model('public.orders'));
+    expect(await importModel('retail.yaml', {flavor: 'ossie', sourcePrefix: group, out: 'out'}))
+        .toBe(0);
+    expect(get.mock.calls.map(([name, params]: any) => [name, params.pageToken]))
+        .toEqual([[`${group}/entries`, undefined], [`${group}/entries`, 'T']]);
+    expect(fs.readFileSync(path.join(dir, 'out', 'retail.yaml'), 'utf8'))
+        .toContain(`source: ${group}/entries/orders\n`);
   });
 
   // A profile file the import does not write would stay beside the model:

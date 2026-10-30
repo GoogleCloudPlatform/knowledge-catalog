@@ -135,6 +135,11 @@ describe('conversion, strict mode, and translation', () => {
       'biglake.googleapis.com/projects/acme/catalogs/c.1'
     ],
     [
+      'entry group sourcePrefix with no way to list it', ossieDoc(),
+      {sourcePrefix: 'projects/acme/locations/us/entryGroups/sf'},
+      'given no way to list its entries'
+    ],
+    [
       'Google to vanilla without strict', googleDoc(),
       {flavor: 'ossie' as const}, '--input first-party'
     ],
@@ -500,6 +505,102 @@ describe('sources', () => {
         expect(loaded.models[0].entities[0].dataSource).toBe('');
         expect(ossieRes.ok).toBe(false);
       });
+});
+
+describe('sources completed from an entry group', () => {
+  const GROUP = 'projects/acme/locations/us/entryGroups/sf';
+  // Listed with the project number, and written with the project as
+  // --source-prefix spells it.
+  const entry = (id: string, fullyQualifiedName: string) =>
+      ({name: `projects/123/locations/us/entryGroups/sf/entries/${id}`, fullyQualifiedName});
+  const ENTRIES = [
+    entry('orders', 'snowflake:acme.retail.public.orders'),
+    entry('items-a', 'snowflake:acme.retail.public.items'),
+    entry('items-b', 'snowflake:acme.retail.sales.items'),
+    entry('public', 'snowflake:acme.retail.public'),
+    entry('dotted', 'snowflake:acme.retail.`my.schema`.t'),
+  ];
+  // Each [dataset, source] pair as a dataset of a vanilla model.
+  const model = (...datasets: Array<[string, string]>) =>
+      'version: "0.2.0.dev0"\nsemantic_model:\n  - name: retail\n    datasets:\n' +
+      datasets.map(([name, source]) => `      - name: ${name}\n        source: ${
+          source}\n        primary_key: [id]\n        fields:\n          - name: id\n` +
+          `            expression: {dialects: [{dialect: BIGQUERY, expression: ${name}.id}]}\n`)
+          .join('');
+  // A lister that records each call and yields ENTRIES, or throws `error`.
+  const lister = (error?: string) => {
+    const calls: string[][] = [];
+    const listEntries = async function*(...args: string[]) {
+      calls.push(args);
+      if (error) throw new Error(error);
+      yield* ENTRIES;
+    };
+    return {calls, listEntries};
+  };
+  const input = model(
+      ['orders', 'public.orders'], ['quoted', `'"public"."orders"'`],
+      ['dotted', "'`my.schema`.t'"], ['items', 'items'], ['ghosts', 'public.ghosts']);
+  const completed = [
+    `dataset 'orders': rewrote bare source 'public.orders' to '${GROUP}/entries/orders', ` +
+        "the entry whose fullyQualifiedName is 'snowflake:acme.retail.public.orders'.",
+    `dataset 'quoted': rewrote bare source '"public"."orders"' to '${GROUP}/entries/orders', ` +
+        "the entry whose fullyQualifiedName is 'snowflake:acme.retail.public.orders'.",
+    `dataset 'dotted': rewrote bare source '\`my.schema\`.t' to '${GROUP}/entries/dotted', ` +
+        "the entry whose fullyQualifiedName is 'snowflake:acme.retail.`my.schema`.t'.",
+  ];
+  const left = [
+    "dataset 'items': left bare source 'items' as written, since several entries in " +
+        `entry group '${GROUP}' have a fullyQualifiedName that ends in it: '${
+            GROUP}/entries/items-a' (snowflake:acme.retail.public.items), '${
+            GROUP}/entries/items-b' (snowflake:acme.retail.sales.items). 'kcmd push' ` +
+        'rejects the file until the source names one of them.',
+    "dataset 'ghosts': left bare source 'public.ghosts' as written, since no entry for " +
+        `a table or view in entry group '${GROUP}' has a fullyQualifiedName that ends in ` +
+        "it. 'kcmd push' rejects the file until the source is the entry name of the " +
+        "table's Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.",
+  ];
+
+  // A completion is a warning in strict mode too; a name left as written is an
+  // error there, as any bare source is.
+  test.each([
+    ['third-party', false, [...completed, ...left], []],
+    ['first-party', true, completed, left],
+  ])('completes each name one entry ends in, and reports the rest (%s)',
+     async (_, strict, warnings, errors) => {
+       const {calls, listEntries} = lister();
+       const res = await importSemanticModelYaml(
+           input, {flavor: 'ossie', strict, sourcePrefix: GROUP, listEntries});
+       expect([res.warnings, res.errors]).toEqual([warnings, errors]);
+       expect(calls).toEqual([['acme', 'us', 'sf']]);
+       if (!strict) {
+         expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
+                    .models[0].entities.map(e => e.authoredSource))
+             .toEqual([`${GROUP}/entries/orders`, `${GROUP}/entries/orders`,
+                       `${GROUP}/entries/dotted`, 'items', 'public.ghosts']);
+       }
+     });
+
+  // [label, input, sourcePrefix]
+  test.each([
+    ['a first-party prefix', model(['orders', 'orders']), BQ_PREFIX],
+    ['sources that are not bare names',
+     model(['orders', `${GROUP}/entries/orders`], ['other', 'trino:cat.public.orders']), GROUP],
+  ])('reads no catalog for %s', async (_, text, sourcePrefix) => {
+    const {calls, listEntries} = lister();
+    const res = await importSemanticModelYaml(text, {sourcePrefix, listEntries});
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  test('stops when the entry group cannot be listed', async () => {
+    const {listEntries} = lister('Failed to list entries: Permission denied');
+    const res = await importSemanticModelYaml(
+        input, {sourcePrefix: GROUP, listEntries});
+    expect([res.ok, res.files, res.errors]).toEqual([false, [], [
+      `Could not list the entries of entry group '${GROUP}' to complete bare ` +
+          'table names: Failed to list entries: Permission denied',
+    ]]);
+  });
 });
 
 describe('dialects and datatypes', () => {

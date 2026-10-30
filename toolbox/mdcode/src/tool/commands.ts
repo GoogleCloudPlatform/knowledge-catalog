@@ -3216,7 +3216,8 @@ export interface ImportCommandOptions {
   // which flavor its owner wants.
   flavor?: string;
   // The GCP resource name of the database whose tables complete each bare
-  // table name.
+  // table name, or the name of the Knowledge Catalog entry group whose table
+  // entries complete them.
   sourcePrefix?: string;
   // Add a BigQuery translation beside SQL in another dialect.
   transpile?: boolean;
@@ -3267,6 +3268,11 @@ export async function importModel(
     transpile: !!options.transpile,
     strict: input === 'first-party',
     profileFiles,
+    // Called only for a --source-prefix that names an entry group, so an
+    // import that reads no catalog needs no credentials.
+    listEntries: (project, location, entryGroup) =>
+        new dataplex.CatalogClient(context.ApiContext.default())
+            .listEntries(project, location, entryGroup),
   });
   for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);
