@@ -563,12 +563,17 @@ semantic_model:
         entity: orders
         expression: "COUNT(*)"
 `;
+  const longSql =
+      `CASE WHEN orders.order_id > 0 THEN 'known order' ELSE 'unknown order' END`;
   const profileYaml = `
 name: prod
 entities:
   - name: orders
     source: ${BQ_TABLE}
     primary_key: [order_id]
+    fields:
+      - name: order_id
+        expression: {dialects: [{dialect: BIGQUERY, expression: "${longSql}"}]}
 `;
 
   test(
@@ -912,6 +917,10 @@ semantic_model:
         expect(loadProfileFile(canonicalGoogle.files[1].content, 'prod'))
             .toEqual(loadProfileFile(profileYaml, 'prod'));
         expect(roundTrippedCanonical.files).toEqual(canonicalGoogle.files);
+        // Long SQL stays on one line in the GOOGLE block and the profile file.
+        expect(toVanilla.files[0].content).toContain(longSql);
+        expect(canonicalGoogle.files[1].content)
+            .toContain(`expression: ${longSql}\n`);
       });
 
   test('ignores profileFiles when target flavor is google', async () => {
