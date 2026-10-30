@@ -338,13 +338,13 @@ describe('sources', () => {
   // and a part in double quotes keeps its dot.
   const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
   const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
-  const ALLOYDB =
+  const ALLOYDB_APP =
       'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/app';
   test.each([
     ['`acme.lake.sales.orders`', LAKE, LAKE_TABLE],
     ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
-    ['public."order.items"', ALLOYDB, `${ALLOYDB}/schemas/public/tables/order.items`],
+    ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
     const res = await importSemanticModelYaml(
         ossieDoc({source: `'${bare}'`}), {sourcePrefix});
@@ -468,6 +468,40 @@ describe('sources', () => {
         expect(dbMismatch.warnings.some(w => w.includes('--source-prefix')))
             .toBe(true);
       });
+
+  const ALLOYDB_DB =
+      'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/c1/databases/analytics';
+  const ALLOYDB = `${ALLOYDB_DB}/schemas/public`;
+  // [label, bare name, prefix, the source it completes to, or undefined when
+  // it differs from the prefix only in letter case]
+  test.each([
+    ['AlloyDB, unquoted', 'ANALYTICS.PUBLIC.ORDERS', ALLOYDB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB database', 'Public.ORDERS', ALLOYDB_DB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB, double-quoted table', 'PUBLIC."Orders"', ALLOYDB, `${ALLOYDB}/tables/Orders`],
+    ['AlloyDB, backticked table', 'PUBLIC.`Orders`', ALLOYDB, `${ALLOYDB}/tables/Orders`],
+    ['AlloyDB, backticked schema', '`public`.ORDERS', ALLOYDB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
+    ['BigQuery', 'SALES.orders', BQ_PREFIX, undefined],
+    ['Cloud SQL', 'PUBLIC.orders', CLOUDSQL_PREFIX, undefined],
+  ])('matches letter case against a prefix: %s', async (_, bare, sourcePrefix, completed) => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({
+          source: `'${bare}'`,
+          fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: order_id}]}',
+        }),
+        {sourcePrefix});
+
+    expect(res.warnings).toEqual([
+      completed ?
+          `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.` :
+          `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so it is left as written; fix the case by hand.`,
+    ]);
+    expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
+               .models[0]
+               .entities[0]
+               .authoredSource)
+        .toBe(completed ?? bare);
+  });
 
   test(
       'removes a query-valued source in Google output and rejects it in vanilla output',
