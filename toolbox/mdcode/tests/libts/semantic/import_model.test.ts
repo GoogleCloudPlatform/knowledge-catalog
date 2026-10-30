@@ -1,6 +1,8 @@
 // Tests for the semantic model import engine (import_model.ts).
 
 import {describe, expect, test} from 'bun:test';
+import {readFileSync} from 'fs';
+import {join} from 'path';
 import * as yaml from 'yaml';
 
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
@@ -102,7 +104,7 @@ describe('conversion, strict mode, and translation', () => {
             {flavor: 'google', sourcePrefix: BQ_PREFIX});
 
         expect(res.ok).toBe(true);
-        expect(res.files[0].content).toContain('version: 0.2.0.dev0/google');
+        expect(res.files[0].content).toContain('version: "0.2.0.dev0/google"');
         expect(res.files[0].content).toContain('entities:');
         const loaded = loadModels(res.files[0].content);
         expect(loaded.models[0].aiContext?.additionalProperties).toEqual({
@@ -923,5 +925,119 @@ semantic_model:
     expect(googleRes.ok).toBe(true);
     expect(googleRes.errors).toEqual([]);
     expect(googleRes.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+  });
+});
+
+describe('comments', () => {
+  const HEADER =
+      '# Copyright 2026 Example Corp. Licensed under the Apache License, Version 2.0.';
+  const ORDER_COUNT = '      # orders placed\n      - name: order_count\n';
+
+  // A model file with a comment on each part import may change. A
+  // third-party file needs repairs, one of them removing the unanchored
+  // `row_count`; a first-party file converts with none.
+  function commented(google: boolean, firstParty: boolean, metrics: string) {
+    const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
+    const source = firstParty ? BQ_TABLE : 'orders';
+    const datatype = firstParty ? 'Integer' : 'integer';
+    const dialect = firstParty ? 'SNOWFLAKE' : 'snowflake';
+    return `${HEADER}
+
+version: "${version}"  # format version
+semantic_model:
+  - name: retail
+    ${google ? 'entities' : 'datasets'}:
+      # one row per order
+      - name: orders
+        source: ${source}  # the orders table
+        primary_key: [order_id]
+        fields:
+          # the order key
+          - name: order_id
+            datatype: ${datatype}  # a whole number
+            expression:
+              dialects:
+                - dialect: ${dialect}  # as written
+                  expression: orders.order_id
+    metrics:  # every metric
+${metrics}# end of model
+`;
+  }
+  const thirdParty = commented(false, false, `      # rows in any table
+      - name: row_count
+        expression: COUNT(*)
+${ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders
+`);
+
+  // The text that shows each comment in place in an output file.
+  function kept(google: boolean, source: string, counts: string): string[] {
+    const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
+    const list = google ? 'entities' : 'datasets';
+    return [
+      `${HEADER}\n\nversion: "${version}" # format version\n`,
+      `  - name: retail\n    ${list}:\n      # one row per order\n`,
+      '      # one row per order\n      - name: orders\n',
+      `        source: ${source} # the orders table\n`,
+      '          # the order key\n          - name: order_id\n',
+      '            datatype: Integer # a whole number\n',
+      '                - dialect: SNOWFLAKE # as written\n',
+      `    metrics:\n      # every metric\n${ORDER_COUNT}`,
+      counts,
+      '\n# end of model\n',
+    ];
+  }
+  const ABOVE =
+      '        expression:\n          # counts orders\n          dialects:';
+  const INLINE = '        expression: COUNT(orders.order_id) # counts orders\n';
+  const TRANSPILED =
+      '# as written\n                  expression: orders.order_id\n                - dialect: BIGQUERY\n';
+
+  test.each([
+    [
+      'third-party repairs and a removed metric', thirdParty, {},
+      kept(false, 'orders', ABOVE)
+    ],
+    [
+      'a source completed from --source-prefix', thirdParty,
+      {sourcePrefix: BQ_PREFIX}, kept(false, BQ_TABLE, ABOVE)
+    ],
+    [
+      'a BIGQUERY entry added by --transpile', thirdParty, {transpile: true},
+      [...kept(false, 'orders', ABOVE), TRANSPILED]
+    ],
+    [
+      'a third-party file written in the Google flavor', thirdParty,
+      {flavor: 'google' as const}, kept(true, 'orders', INLINE)
+    ],
+  ])('keeps comments in place through %s', async (_, input, opts, lines) => {
+    const res = await importSemanticModelYaml(input, opts);
+
+    expect(res.errors).toEqual([]);
+    for (const line of lines) expect(res.files[0].content).toContain(line);
+    expect(res.files[0].content).not.toContain('# rows in any table');
+  });
+
+  test('keeps every comment of the Apache Ossie TPC-DS example', async () => {
+    const raw = readFileSync(
+        join(__dirname, 'fixtures/ossie/tpcds_semantic_model.yaml'), 'utf8');
+    // Every comment the parser finds in `text`, in order.
+    const comments = (text: string) => {
+      const doc = yaml.parseDocument(text);
+      const found: Array<string|null|undefined> = [doc.commentBefore];
+      yaml.visit(
+          doc, {Node: (_, n) => void found.push(n.commentBefore, n.comment)});
+      return [...found, doc.comment].filter(c => c);
+    };
+
+    const instructions = raw.split('\n').find(l => l.includes('instructions'));
+
+    const res = await importSemanticModelYaml(raw);
+
+    expect(res.files[0].content).not.toContain('customer_lifetime_value');
+    expect(comments(res.files[0].content)).toEqual(comments(raw));
+    expect(res.files[0].content)
+        .toContain(
+            '        primary_key: [ss_item_sk, ss_ticket_number] # Composite primary key\n');
+    expect(res.files[0].content).toContain(`${instructions}\n`);
   });
 });

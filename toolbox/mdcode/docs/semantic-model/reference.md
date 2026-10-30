@@ -96,9 +96,11 @@ Imports a semantic model file into the flavor `--flavor` names. A file another
 product wrote is repaired, and each repair is reported as a warning. A file
 written for kcmd converts between flavors exactly or not at all. The
 `<model>.profile.<name>.yaml` files beside `<file>` go in with it. Nothing is
-written when the import reports an error. Without `--out`, the files go into
-the scope's entry group folder, and an import that would leave one of the
-model's profile files there unwritten is refused.
+written when the import reports an error. The written file keeps the input's
+comments, except those on anything import removes or moves elsewhere in the
+file, such as a key that goes into or out of a `GOOGLE` block. Without
+`--out`, the files go into the scope's entry group folder, and an import that
+would leave one of the model's profile files there unwritten is refused.
 
 | Flag | Effect |
 |------|--------|
