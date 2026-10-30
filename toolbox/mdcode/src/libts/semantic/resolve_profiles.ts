@@ -2064,15 +2064,18 @@ export function validateProfileCompleteness(
       errors.push(`${at}: entity '${e.name}' has no source in this profile`);
       continue;
     }
-    // A source the loader's reader rejects is already reported. One that
-    // databaseOf cannot read names no database, so its entity's fields are
-    // not held to the dialect the other sources imply.
+    // A source the loader's reader rejects is already reported, and its
+    // entity keeps the model file's table and dialect. databaseOf still reads
+    // some rejected sources, such as one with a leading `//`. An entity whose
+    // source is rejected or names no database is left out of the dialect
+    // rule, so its fields are not held to the dialect the other sources imply.
     const db = databaseOf(pe.source.trim());
-    if (!db) {
+    const profiledEntity = profiledByName.get(e.name);
+    if (!db || profiledEntity?.authoredSource !== pe.source.trim()) {
       rejected.add(e.name);
       continue;
     }
-    const lookedUp = profiledByName.get(e.name)?.sourceDialect;
+    const lookedUp = profiledEntity.sourceDialect;
     stated.push({source: pe.source, lookedUp});
     // One query reaches every database of a SQL Server instance. A third-party
     // table is in the database its entry's fullyQualifiedName names.

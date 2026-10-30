@@ -2112,7 +2112,9 @@ describe('completeness sees the model as the profile does', () => {
       {name: 'customer', source: customer, fields: [ID]},
       {name: 'vip', source: mysql('v'), fields: [ID]},
     ]), [], {sourceDialects}).join('\n');
-    for (const rejected of ['snowflake:acct.db.public.c', 'acme.sales.c', '']) {
+    for (const rejected of [
+           'snowflake:acct.db.public.c', 'acme.sales.c', '', `//${mysql('c')}`,
+         ]) {
       const errors = errorsFor(rejected);
       expect({rejected, errors}).toEqual({
         rejected,
@@ -2122,6 +2124,10 @@ describe('completeness sees the model as the profile does', () => {
       expect(errors).toContain(
           "field 'vip.email' has no expression for MYSQL or ANSI_SQL");
     }
+    // A source with a leading '//' names a table, and the reader still
+    // rejects it as a resource URI.
+    expect(errorsFor(`//${mysql('c')}`)).toContain(
+        `source '//${mysql('c')}' is a resource URI`);
     // A source in the same instance gives the profile its dialect.
     expect(errorsFor(mysql('c'))).toContain(
         "field 'customer.email' has no expression for MYSQL or ANSI_SQL");
