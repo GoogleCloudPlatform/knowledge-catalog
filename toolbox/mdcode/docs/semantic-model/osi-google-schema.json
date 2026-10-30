@@ -955,8 +955,9 @@
     },
     "FieldName": {
       "type": "string",
-      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,299}$",
-      "description": "A field name. A BigQuery column name: a letter or underscore, then letters, digits or underscores, up to 300 characters."
+      "pattern": "^(`[^`]+`|[\\p{L}\\p{N}\\p{Pc}\\p{Pd}\\p{M}\\s&%=>+:'<#|]+)$",
+      "maxLength": 300,
+      "description": "A field name. A BigQuery flexible column name: can be a backtick-quoted string, or contain letters, numbers, marks, connectors, dashes, spaces, and specific symbols, up to 300 characters."
     },
     "ProfileDocument": {
       "type": "object",
