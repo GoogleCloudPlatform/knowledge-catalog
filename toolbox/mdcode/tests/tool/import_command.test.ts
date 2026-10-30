@@ -245,15 +245,15 @@ describe('kcmd import', () => {
     // Profile prod, whose field order_id has only Snowflake SQL.
     const PROFILE =
         `# The prod tables.\nname: prod\nentities:\n  - name: orders\n` +
-        `    source: ${PREFIX}/tables/orders_prod\n    fields:\n      - name: order_id\n` +
-        '        expression: {dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}\n';
-    // PROFILE translated by --transpile. The rest of the file keeps its text,
-    // its comment included.
+        `    source: ${PREFIX}/tables/orders_prod     # the prod copy\n` +
+        '    fields:\n      - name: order_id\n        expression:\n' +
+        '          dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]\n' +
+        '    primary_key: [order_id]     # same key\n';
+    // PROFILE translated by --transpile. Only the expression changes.
     const TRANSLATED = PROFILE.replace(
-        ' {dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}\n',
-        '\n          dialects:\n            - dialect: SNOWFLAKE\n' +
-            '              expression: NVL(order_id, 0)\n            - dialect: BIGQUERY\n' +
-            '              expression: COALESCE(order_id, 0)\n');
+        'dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]',
+        '{ dialects: [ { dialect: SNOWFLAKE, expression: "NVL(order_id, 0)" }, ' +
+            '{ dialect: BIGQUERY, expression: "COALESCE(order_id, 0)" } ] }');
     const setUp = () => {
       workspace();
       write(MODEL_FILE, google);

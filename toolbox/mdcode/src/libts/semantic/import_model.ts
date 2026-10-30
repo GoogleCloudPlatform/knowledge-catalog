@@ -1079,24 +1079,36 @@ function syncDialects(
 }
 
 /**
- * Adds to the profile file `content` each dialect entry that the translated
- * `profile` gained, and returns the new text. Edits the YAML document in place,
- * so the rest of the file keeps its comments and layout. Returns `content`
- * unchanged when no entry was added.
+ * Returns the profile file `content` with each expression that gained a dialect
+ * entry in the translated `profile` rewritten in place as one flow mapping.
+ * Every other character of the file stays as written.
  */
 function withDialects(content: string, profile: ProfileSpec): string {
   const ydoc = yaml.parseDocument(content, YAML_OPTIONS);
   const root = ydoc.toJS();
-  let changed = false;
+  const edits: Array<{start: number; end: number; text: string}> = [];
   // The profile lists its entities and fields in the file's order.
   profile.entities.forEach((pe, i) => (pe.fields ?? []).forEach((f, j) => {
     const raw = root.entities[i].fields[j];
-    if (syncDialects(raw, f.dialects)) {
-      ydoc.setIn(['entities', i, 'fields', j, 'expression'], raw.expression);
-      changed = true;
-    }
+    if (!syncDialects(raw, f.dialects)) return;
+    const node =
+        ydoc.getIn(['entities', i, 'fields', j, 'expression'], true) as yaml.Node;
+    const [start, end] = node.range!;
+    const entry = new yaml.Document(raw.expression);
+    (entry.contents as yaml.YAMLMap).flow = true;
+    // The node's range can end in whitespace, which stays.
+    const written = content.slice(start, end);
+    edits.push({
+      start,
+      end,
+      text: entry.toString({lineWidth: 0}).trimEnd() +
+          written.slice(written.trimEnd().length),
+    });
   }));
-  return changed ? ydoc.toString({lineWidth: 0}) : content;
+  // Applied from the end of the file, so each edit's offsets still hold.
+  return edits.reverse().reduce(
+      (out, {start, end, text}) => out.slice(0, start) + text + out.slice(end),
+      content);
 }
 
 /**
