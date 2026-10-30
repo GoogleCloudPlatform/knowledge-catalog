@@ -63,7 +63,8 @@ from them. So:
   and Gemini CLI, both headless; the install table covers the others.
 
 Commands below use `my-project` and `my-instance`. Substitute your own, in these
-commands and in `catalog/EntryGroups/commerce_demo/commerce.profiles/spanner.yaml`.
+commands, in `catalog/EntryGroups/commerce_demo/commerce.profile.spanner.yaml`,
+and in the `spanner` deployment in `commerce.yaml`.
 
 ```bash
 export PROJECT=my-project
@@ -184,17 +185,18 @@ A constraint is inert until something references it. `guards:` on the action is
 what gives these four effect; a constraint nobody names is documentation.
 
 **Nothing above says where the data lives.** No table, no column, no SQL. Those
-are physical facts and they are in `commerce.profiles/`.
+are physical facts and they are in the profile files beside it.
 
 ## 2. The binding profiles
 
-`commerce.profiles/spanner.yaml` maps the model onto a Spanner database. It may
+`commerce.profile.spanner.yaml` maps the model onto a Spanner database. It may
 not add an entity, rename a field or change what anything means — the loader
 rejects that — so the whole of what is deployment-specific is in this one file:
 
 ```yaml
 - name: Order
   source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Orders
+  primary_key: [order_id]
   fields:
     - {name: orderId, expression: order_id}
     - {name: total, expression: total}
@@ -222,17 +224,22 @@ The total is recomputed from the lines rather than adjusted by the credit
 amount, so the order cannot stop adding up however the action is called, and
 there is no arithmetic for a reading agent to get wrong.
 
-`commerce.profiles/alloydb.yaml` is a second profile over the same model:
+`commerce.profile.alloydb.yaml` is a second profile over the same model:
 different tables (`purchase_order`, `order_line`), one differently named column
 (`order_total`), and PostgreSQL in place of GoogleSQL. `commerce.yaml` is the
 same bytes under both. [Section 8](#9-the-same-skill-against-a-different-database)
 generates the skill under it and diffs the two.
 
-`catalog.yaml` picks which one is in force by default:
+`commerce.yaml` says where each profile is deployed:
 
 ```yaml
-scope: semantic-model.my-project.us-central1.commerce_demo
-default_profile: spanner
+deployments:
+  - name: spanner
+    target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/graphs/commerce
+    profile: spanner
+  - name: alloydb
+    target: alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/databases/semantic_skill_demo
+    profile: alloydb
 ```
 
 ## 3. Create the store
@@ -287,12 +294,15 @@ Before generating the skill, check that the profile binds the model to your
 store. Run this from this directory, the one holding `catalog.yaml`:
 
 ```console
-$ kcmd profiles
+$ kcmd profiles --profile spanner
 Model 'commerce' (commerce_demo):
-  spanner  (default)
+  profile 'spanner'
     target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/graphs/commerce
-    entities: Customer, Order, LineItem
-    actions: IssueCredit (sql)
+    sources:
+      Customer -> spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Customer
+      Order -> spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/Orders
+      LineItem -> spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/tables/LineItem
+    cannot answer: nothing withheld.
 ```
 
 ### What the rules caught, when something was settling them
@@ -811,12 +821,13 @@ carried at the time put them to a judge — see the note in
 
 ## 9. The same skill against a different database
 
-`commerce.profiles/alloydb.yaml` binds the same model to AlloyDB: tables
+`commerce.profile.alloydb.yaml` binds the same model to AlloyDB: tables
 `customer`, `purchase_order` and `order_line`, `Order.total` bound to
 `order_total`, and PostgreSQL statements. The `alloydb` profile names its
 database by cluster, so `kcmd skills-generate --profile alloydb` looks up the
-cluster's primary instance through the AlloyDB API. Point `alloydb.yaml` at a
-cluster you can read before you run it. The output below shows the placeholder
+cluster's primary instance through the AlloyDB API. Point the profile file and
+the `alloydb` deployment in `commerce.yaml` at a cluster you can read before
+you run it. The output below shows the placeholder
 names, with `my-instance` as the primary instance. Generate under it:
 
 ```bash
@@ -913,10 +924,10 @@ And remove the generated skill from wherever you installed it —
 
 | File | What it is |
 | --- | --- |
-| `catalog.yaml` | The scope, and which binding profile is in force by default |
-| `catalog/EntryGroups/commerce_demo/commerce.yaml` | The model: entities, one action, four rules. No physical facts |
-| `catalog/EntryGroups/commerce_demo/commerce.profiles/spanner.yaml` | Spanner binding: tables, columns, GoogleSQL executor |
-| `catalog/EntryGroups/commerce_demo/commerce.profiles/alloydb.yaml` | AlloyDB binding: the same model, different names, PostgreSQL |
+| `catalog.yaml` | The scope |
+| `catalog/EntryGroups/commerce_demo/commerce.yaml` | The model: entities, one action, four rules, and where each profile is deployed |
+| `catalog/EntryGroups/commerce_demo/commerce.profile.spanner.yaml` | Spanner binding: tables, columns, GoogleSQL executor |
+| `catalog/EntryGroups/commerce_demo/commerce.profile.alloydb.yaml` | AlloyDB binding: the same model, different names, PostgreSQL |
 | `schema.spanner.sql` | Tables the `spanner` profile binds to |
 | `schema.alloydb.sql` | Tables the `alloydb` profile binds to |
 
