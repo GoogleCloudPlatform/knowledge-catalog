@@ -1360,7 +1360,7 @@ function warningsAfterProfile(
       new Set(entityAndMetricWarnings(model, preferred).map(w => prefix + w));
   const kept = (from?.warnings ?? []).filter(w => !before.has(w));
   const after =
-      entityAndMetricWarnings(applied, preferred).map(w => prefix + w);
+      entityAndMetricWarnings(applied, preferred, true).map(w => prefix + w);
   return [...new Set([...after, ...kept])];
 }
 

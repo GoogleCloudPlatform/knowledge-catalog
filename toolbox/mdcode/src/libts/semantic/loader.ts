@@ -2028,16 +2028,17 @@ function fieldWarnings(model: SemanticModel, preferred: string): string[] {
 // The warning `metric`'s expression gives on the tables of the `reached`
 // entities, or on every table when it reaches none. On a table of the
 // `preferred` dialect it is expressionWarning's, and otherwise it names the
-// first table whose dialect has no text in the metric.
+// first table whose dialect has no text in the metric, unless `profiled`.
 function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
-    preferred: string): string|undefined {
+    preferred: string, profiled: boolean): string|undefined {
   const named = entities.filter(e => reached.includes(e.name));
   const tables = named.length ? named : entities;
   if (tables.some(e => runsDialect(e, preferred))) {
     return expressionWarning(metric, `metric '${metric.name}'`, preferred);
   }
+  if (profiled) return undefined;
   for (const e of tables) {
     const dialect = sourcesDialect({entities: [e]});
     if (dialect &&
@@ -2119,11 +2120,13 @@ export function inferMetricEntities(
 // Every warning a load gives about `model`'s entities and metrics, in the
 // order a load gives them: each concrete entity's missing key, each field's
 // expression warning, then each metric's expression warning and its warning
-// when it names no entity. A metric a profile excludes gives none. A profile
-// changes only these; a load's other warnings, about actions, come after
-// them.
+// when it names no entity. A metric a profile excludes gives none. With
+// `profiled`, the profile check reports a metric its tables cannot run, so
+// no warning repeats it. A profile changes only these; a load's other
+// warnings, about actions, come after them.
 export function entityAndMetricWarnings(
-    model: SemanticModel, preferred: string = DEFAULT_DIALECT): string[] {
+    model: SemanticModel, preferred: string = DEFAULT_DIALECT,
+    profiled = false): string[] {
   const entities = model.entities ?? [];
   const out = entities.map(keyWarning).filter((w): w is string => !!w);
   out.push(...fieldWarnings(model, preferred));
@@ -2135,7 +2138,7 @@ export function entityAndMetricWarnings(
     const {referenced, warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     const w = metricWarning(
-        m, [m.authoredEntity, ...referenced], entities, preferred);
+        m, [m.authoredEntity, ...referenced], entities, preferred, profiled);
     if (w) out.push(w);
     if (mw) out.push(mw);
   }
@@ -2640,7 +2643,7 @@ function convertMetric(
       entityNames, dialect, impliedDialect, version);
   const ew = metricWarning(
       {name: mt.name, dialects, stringForm}, [authored, ...referenced],
-      entities, dialect);
+      entities, dialect, false);
   if (ew) warnings.push(ew);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};

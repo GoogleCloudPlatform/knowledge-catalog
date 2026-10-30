@@ -84,6 +84,13 @@ scenarios('push --no-deployment', [
       metrics: [SNOWFLAKE_METRIC],
       code: 0,
       warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
+    }, {
+      // Under a profile on Spanner, push's error is the only message.
+      profiles: {ops: {entities: {Customer: {...CUSTOMER, source: SPANNER_CUSTOMER}}}},
+      metrics: [SNOWFLAKE_METRIC],
+      flags: {deployment: undefined, validateOnly: true, profile: 'ops'},
+      code: 1,
+      warnings: [],
     }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
