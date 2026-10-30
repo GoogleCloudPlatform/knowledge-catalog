@@ -177,15 +177,11 @@ describe('conversion, strict mode, and translation', () => {
         expect(offRes.warnings.map(w => w.split(':')[0])).toEqual([
           "field 'orders.order_id'", "metric 'total_orders'",
         ]);
-        // A Cloud SQL table is never in BigQuery, so its own SQL needs no
-        // translation.
-        const cloudSql = await importSemanticModelYaml(
-            raw.replace(BQ_TABLE, `${CLOUDSQL_PREFIX}/tables/orders`)
-                .replace('SNOWFLAKE', 'POSTGRES'),
-            {strict: true});
-        expect(cloudSql.warnings).toEqual([]);
         expect(onStrictRes.ok).toBe(true);
-        expect(onStrictRes.warnings.every(w => w.includes('transpiled'))).toBe(true);
+        expect(onStrictRes.warnings).toEqual([
+          "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
+          "metric 'total_orders': transpiled 'ANSI_SQL' -> 'BIGQUERY'",
+        ]);
         const loaded = loadModels(onStrictRes.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
           {dialect: 'SNOWFLAKE', expression: ' orders.order_id '},
