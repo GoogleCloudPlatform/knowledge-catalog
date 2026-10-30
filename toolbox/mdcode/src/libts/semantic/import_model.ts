@@ -992,11 +992,18 @@ async function generateConvertedFiles(
   }
 
   // 4. Switch `model.version` to `doc.targetVersion` and serialize the output
-  // file(s) with `serializeModelFiles`.
+  // file(s) with `serializeModelFiles`. The model file is the input document
+  // changed to hold the serialized model, which keeps the input's comments
+  // wherever an entity, field, metric, relationship or key maps one to one.
+  // It quotes strings a YAML 1.1 reader would misread, as the serializer does.
   model.version = doc.targetVersion;
   const serialized = serializeModelFiles(model);
   doc.warnings.push(...serialized.warnings);
-  return serialized.files;
+  const [modelFile, ...profiles] = serialized.files;
+  doc.document.setSchema('1.2', {...YAML_OPTIONS, compat: 'yaml-1.1'});
+  const content =
+      writeDocument(doc, yaml.parse(modelFile.content, YAML_OPTIONS));
+  return [{...modelFile, content}, ...profiles];
 }
 
 /**

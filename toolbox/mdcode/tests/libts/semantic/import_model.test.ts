@@ -528,6 +528,7 @@ semantic_model:
       examples: ["total orders"]
       custom:
         owner: analytics
+        flag: "yes"
     deployments:
       - name: prod_bq
         target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail
@@ -723,6 +724,8 @@ semantic_model:
             .toBe('analytics');
         expect(parsedVanillaDoc.semantic_model[0].ai_context.custom)
             .toBeUndefined();
+        // A YAML 1.1 reader would read a plain `yes` as true.
+        expect(res.files[0].content).toContain('flag: "yes"');
         const loaded = loadModels(res.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
           {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
@@ -734,6 +737,7 @@ semantic_model:
         expect(loaded.profiles?.map(p => p.name)).toEqual(['prod']);
         expect(loaded.aiContext?.additionalProperties).toEqual({
           owner: 'analytics',
+          flag: 'yes',
         });
       });
 
@@ -968,6 +972,14 @@ ${metrics}# end of model
         expression: COUNT(*)
 ${ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders
 `);
+  const vanilla =
+      commented(false, true, `${ORDER_COUNT}        expression:  # counts orders
+          dialects: [{dialect: ANSI_SQL, expression: COUNT(orders.order_id)}]
+        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]
+`);
+  const google = commented(true, true, `${ORDER_COUNT}        entity: orders
+        expression: COUNT(orders.order_id)  # counts orders
+`);
 
   // The text that shows each comment in place in an output file.
   function kept(google: boolean, source: string, counts: string): string[] {
@@ -1008,6 +1020,14 @@ ${ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders
     [
       'a third-party file written in the Google flavor', thirdParty,
       {flavor: 'google' as const}, kept(true, 'orders', INLINE)
+    ],
+    [
+      'a conversion from vanilla to Google', vanilla,
+      {flavor: 'google' as const, strict: true}, kept(true, BQ_TABLE, ABOVE)
+    ],
+    [
+      'a conversion from Google to vanilla', google,
+      {flavor: 'ossie' as const, strict: true}, kept(false, BQ_TABLE, ABOVE)
     ],
   ])('keeps comments in place through %s', async (_, input, opts, lines) => {
     const res = await importSemanticModelYaml(input, opts);
