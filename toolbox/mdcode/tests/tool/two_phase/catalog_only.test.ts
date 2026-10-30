@@ -66,11 +66,17 @@ scenarios('push --no-deployment', [
   },
   {
     // Push translates nothing; kcmd import --transpile does.
-    name: 'a vendor-only metric reaches Knowledge Catalog as written, with the loader\'s warning',
-    metrics: [SNOWFLAKE_METRIC],
+    name: 'a vendor-only metric and an ANSI_SQL metric that double-quotes a name reach Knowledge Catalog as written, each with the loader\'s warning',
+    metrics: [SNOWFLAKE_METRIC, {
+      name: 'quoted_keys', entity: 'Customer',
+      expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("key")'}]},
+    }],
     flags: {validateOnly: true},
     code: 0,
-    warnings: [has('needs transpilation')],
+    warnings: [
+      has('needs transpilation'),
+      has("metric 'quoted_keys': its 'ANSI_SQL' expression double-quotes a name"),
+    ],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),

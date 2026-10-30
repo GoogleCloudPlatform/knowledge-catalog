@@ -172,9 +172,10 @@ describe('conversion, strict mode, and translation', () => {
 
         expect(offRes.ok).toBe(true);
         expect(offRes.files[0].content).toBe(raw);
-        // Without translation, the BigQuery table's vendor field warns.
+        // Without translation, the BigQuery table's vendor field and its
+        // double-quoted ANSI_SQL metric each warn.
         expect(offRes.warnings.map(w => w.split(':')[0])).toEqual([
-          "field 'orders.order_id'",
+          "field 'orders.order_id'", "metric 'total_orders'",
         ]);
         // A Cloud SQL table is never in BigQuery, so its own SQL needs no
         // translation.
@@ -184,6 +185,7 @@ describe('conversion, strict mode, and translation', () => {
             {strict: true});
         expect(cloudSql.warnings).toEqual([]);
         expect(onStrictRes.ok).toBe(true);
+        expect(onStrictRes.warnings.every(w => w.includes('transpiled'))).toBe(true);
         const loaded = loadModels(onStrictRes.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
           {dialect: 'SNOWFLAKE', expression: ' orders.order_id '},

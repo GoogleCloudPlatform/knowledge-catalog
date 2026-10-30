@@ -94,7 +94,7 @@ interface Pending {
  *     (e.g., `` `orders`.`note` = 'a "quoted" ` string' ``), and any quoted
  *     column identifiers use backticks in both dialects.
  */
-function hasDoubleQuotedColumn(expression: string): boolean {
+export function hasDoubleQuotedColumn(expression: string): boolean {
   if (!expression.includes('"')) return false;
   return quotedColumnCount(sqlExpressionTree(expression, 'ANSI_SQL')) >
       quotedColumnCount(sqlExpressionTree(expression, 'BIGQUERY'));

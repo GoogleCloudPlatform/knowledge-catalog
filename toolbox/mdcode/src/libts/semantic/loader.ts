@@ -15,9 +15,10 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, IMPORT_TRANSPILE_COMMAND, ProfileExclusion, profileSpecOf, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
+import {hasDoubleQuotedColumn} from './transpile';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1976,19 +1977,32 @@ function fallsBackToAnsi(
 }
 
 // The warning an expression a table of the `preferred` dialect runs gives, or
-// undefined: the ANSI_SQL note when it takes its ANSI_SQL text, and a warning
-// naming `ctx` when it has neither, so its text needs transpilation. The
-// string form is an ANSI_SQL text the author meant for every engine, so it
-// gives none. Read from the IR, so a profile's bindings are judged as a load
-// judges a model file's.
+// undefined. With no text for `preferred`, an ANSI_SQL text gives the ANSI_SQL
+// note, and a warning naming `ctx` instead when the table is a BigQuery table
+// and the text double-quotes a name. With neither, the expression gives a
+// warning naming `ctx`, since its text needs transpilation. The string form is
+// an ANSI_SQL text the author meant for every engine, so it gives no note. Read
+// from the IR, so a profile's bindings are judged as a load judges a model
+// file's.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, ctx: string,
     preferred: string): string|undefined {
   const dialects = item.dialects ?? [];
-  if (item.stringForm || !dialects.length) return undefined;
+  if (!dialects.length) return undefined;
   if (dialects.some(d => d.dialect === preferred.toUpperCase())) {
     return undefined;
   }
+  const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
+  // Standard SQL reads a double-quoted name as a name, and BigQuery reads it
+  // as a string.
+  if (ansi && preferred.toUpperCase() === DEFAULT_DIALECT &&
+      hasDoubleQuotedColumn(ansi.expression)) {
+    return `${ctx}: its '${FALLBACK_DIALECT}' expression double-quotes a ` +
+        `name, which BigQuery reads as a string; give it a '${
+               DEFAULT_DIALECT}' expression, or add one with '${
+               IMPORT_TRANSPILE_COMMAND}'`;
+  }
+  if (item.stringForm) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
   const vendor = dialects.find(d => d.dialect !== FALLBACK_DIALECT);
   return `${ctx}: no '${preferred}' or '${
