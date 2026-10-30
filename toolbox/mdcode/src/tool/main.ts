@@ -7,6 +7,18 @@ import * as commands from './commands';
 import * as mcp from './mcp';
 
 
+// Runs a command and exits with the code it gives. An exception prints as an
+// error and exits with 1.
+async function run(command: () => Promise<number>): Promise<void> {
+  let exitCode = 1;
+  try {
+    exitCode = await command();
+  } catch (err: any) {
+    console.error('Error:', err.message || err);
+  }
+  process.exit(exitCode);
+}
+
 const cli = cac.cac('kcmd').version('1.0.0').help();
 cli.command('init', 'Initialize a new catalog snapshot')
     .option(
@@ -22,17 +34,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
         '--semantic-model <id>',
         'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
     .option('--pull', 'Optionally pull catalog entries during initialization')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.init(options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action((options) => run(() => commands.init(options)));
 
 
 cli.command('pull', 'Pull catalog entries')
@@ -42,17 +44,7 @@ cli.command('pull', 'Pull catalog entries')
     .option(
         '--force-remove',
         'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails. Also deletes a local profile file the catalog\'s stored copies do not include (semantic-model scope)')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.pull(options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action((options) => run(() => commands.pull(options)));
 
 cli.command('push', 'Push catalog entries')
     .option('--force', 'Force push changes')
@@ -89,18 +81,10 @@ cli.command('push', 'Push catalog entries')
     .option('--deployment [names...]', 'Deploy only these deployments, by name')
     .option(
         '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        const deployment = commands.typedDeployment(process.argv.slice(2));
-        exitCode = await commands.push({...options, deployment});
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action((options) => run(async () => {
+      const deployment = commands.typedDeployment(process.argv.slice(2));
+      return commands.push({...options, deployment});
+    }));
 
 
 cli.command(
@@ -112,17 +96,7 @@ cli.command(
     .option(
         '--print-store',
         'Print only the store the profile deploys to, on one line and nothing else, for a script to read: project/instance/database for Spanner, and the backend named ahead of the path for any other store')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.profiles(options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action((options) => run(() => commands.profiles(options)));
 
 
 cli.command(
@@ -134,17 +108,9 @@ cli.command(
     .option(
         '--compact',
         'Emit compact flow YAML (primary_key: [id], inline field/relationship maps) instead of the default block layout')
-    .action(async (action, file, options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.owl(action, file, options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action(
+        (action, file, options) =>
+            run(() => commands.owl(action, file, options)));
 
 
 cli.command(
@@ -163,17 +129,7 @@ cli.command(
     .option(
         '--out <path>',
         'A .yaml file to write the one output file to, or a directory to write each output file into; defaults to the semantic-model layout')
-    .action(async (file, options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.importModel(file, options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action((file, options) => run(() => commands.importModel(file, options)));
 
 
 cli.command(
@@ -191,17 +147,7 @@ cli.command(
     .option(
         '--force',
         'Replace a skill that is already there, including deleting a reference file for an action the model no longer declares')
-    .action(async (options) => {
-      let exitCode = 1;
-      try {
-        exitCode = await commands.skillsGenerate(options);
-      } catch (err: any) {
-        console.error('Error:', err.message || err);
-        exitCode = 1;
-      }
-
-      process.exit(exitCode);
-    });
+    .action((options) => run(() => commands.skillsGenerate(options)));
 
 
 cli.command('mcp', 'Run the Model Context Protocol (MCP) server')
