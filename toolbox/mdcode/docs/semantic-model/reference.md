@@ -707,9 +707,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   systems, so each entity is judged by its own source. `kcmd import
   --transpile` adds a BigQuery entry for a text it can translate. Every push
   runs this check, whether or not a deployment uses those bindings. When a
-  BigQuery table runs an `ANSI_SQL` text that double-quotes a name, push
-  accepts it and warns, naming the field or metric, since BigQuery reads that
-  name as a string. *(static)*
+  BigQuery table runs an `ANSI_SQL` entry or the string form with a
+  double-quoted token, push accepts it and warns, naming the field or metric,
+  since BigQuery reads that token as text. *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
   subtype redeclares an inherited field only to bind it. A concrete entity

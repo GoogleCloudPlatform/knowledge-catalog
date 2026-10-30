@@ -75,7 +75,7 @@ scenarios('push --no-deployment', [
     code: 0,
     warnings: [
       has('needs transpilation'),
-      has("metric 'quoted_keys': its 'ANSI_SQL' expression double-quotes a name"),
+      has("metric 'quoted_keys': BigQuery reads \"key\" in its 'ANSI_SQL' expression as text"),
     ],
     then: [{
       // Push checks no model-file metric against a Spanner table's dialect,

@@ -18,7 +18,7 @@ import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, IMPORT_TRANSPILE_COMMAND, ProfileExclusion, profileSpecOf, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
-import {hasDoubleQuotedColumn} from './transpile';
+import {doubleQuotedName, hasDoubleQuotedColumn} from './transpile';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1978,8 +1978,8 @@ function fallsBackToAnsi(
 
 // The warning `item` gives on a table of the `preferred` dialect, or undefined
 // when it has text in that dialect. Vendor-only text needs transpilation, and
-// ANSI_SQL text warns on BigQuery when it double-quotes a name, or else gives
-// the ANSI_SQL note when it is not the string form.
+// ANSI_SQL text warns on BigQuery when it holds a double-quoted token, or else
+// gives the ANSI_SQL note when it is not the string form.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, ctx: string,
     preferred: string): string|undefined {
@@ -1991,10 +1991,11 @@ function expressionWarning(
   const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
   if (ansi && preferred.toUpperCase() === DEFAULT_DIALECT &&
       hasDoubleQuotedColumn(ansi.expression)) {
-    return `${ctx}: its '${FALLBACK_DIALECT}' expression double-quotes a ` +
-        `name, which BigQuery reads as a string; write a text value in ` +
-        `single quotes, or give it a '${DEFAULT_DIALECT}' expression; in a ` +
-        `model file, '${IMPORT_TRANSPILE_COMMAND}' adds one`;
+    return `${ctx}: BigQuery reads "${
+               doubleQuotedName(ansi.expression)}" in its '${
+               FALLBACK_DIALECT}' expression as text; if you meant a column, ` +
+        `give it a '${DEFAULT_DIALECT}' expression without the double ` +
+        `quotes; in a model file, '${IMPORT_TRANSPILE_COMMAND}' adds one`;
   }
   if (item.stringForm) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);

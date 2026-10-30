@@ -230,10 +230,10 @@ describe('expression warnings judge each expression on the table that runs it', 
       `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
       `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
   const quoted = both(
-      `its 'ANSI_SQL' expression double-quotes a name, which BigQuery reads ` +
-      `as a string; write a text value in single quotes, or give it a ` +
-      `'BIGQUERY' expression; in a model file, 'kcmd import <file> --input ` +
-      `first-party --flavor <ossie|google> --transpile' adds one`);
+      `BigQuery reads "x" in its 'ANSI_SQL' expression as text; if you meant ` +
+      `a column, give it a 'BIGQUERY' expression without the double quotes; ` +
+      `in a model file, 'kcmd import <file> --input first-party --flavor ` +
+      `<ossie|google> --transpile' adds one`);
   const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
       'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
       'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
@@ -263,9 +263,9 @@ describe('expression warnings judge each expression on the table that runs it', 
         expect(warned(source, dialects)).toEqual(expected);
       });
 
-  test('a load preferring Spanner gives no double-quoted name warning', () => {
-    expect(warned(SPANNER, [['ANSI_SQL', '"x"']], 'SPANNER'))
-        .toEqual([note[0].replaceAll('BIGQUERY', 'SPANNER')]);
+  test('a load preferring PostgreSQL gives only its ANSI_SQL note', () => {
+    expect(warned(PG, [['ANSI_SQL', '"x"']], 'POSTGRES'))
+        .toEqual([note[0].replaceAll('BIGQUERY', 'POSTGRES')]);
   });
 
   // An inherited field is judged on the table of each entity that inherits

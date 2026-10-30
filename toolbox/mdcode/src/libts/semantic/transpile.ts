@@ -84,7 +84,7 @@ interface Pending {
  * The `ANSI_SQL` parser marks both `"..."` and `` `...` `` column identifiers
  * with `quoted: true`, whereas `BIGQUERY` marks only `` `...` `` as `quoted:
  * true` and treats `"..."` as a string literal (or fails to parse `."..."`).
- * Comparing `quotedColumnCount` across the two ASTs yields three cases:
+ * Comparing how many `quotedNames` the two ASTs hold yields three cases:
  *   - `ANSI_SQL > BIGQUERY`: at least one column identifier is double-quoted
  *     (e.g., `"orders"."amount"` or `"amount"`).
  *   - `ANSI_SQL < BIGQUERY`: `expression` uses BigQuery-only syntax (such as a
@@ -96,45 +96,54 @@ interface Pending {
  */
 export function hasDoubleQuotedColumn(expression: string): boolean {
   if (!expression.includes('"')) return false;
-  return quotedColumnCount(sqlExpressionTree(expression, 'ANSI_SQL')) >
-      quotedColumnCount(sqlExpressionTree(expression, 'BIGQUERY'));
+  return quotedNames(sqlExpressionTree(expression, 'ANSI_SQL')).length >
+      quotedNames(sqlExpressionTree(expression, 'BIGQUERY')).length;
 }
 
 /**
- * Returns the number of quoted column, table qualifier, and struct field
- * identifiers (`quoted: true`) in a `@polyglot-sql/sdk` AST `node`.
+ * Returns a name that `expression` double-quotes, for a message: the first
+ * name the `ANSI_SQL` parser marks quoted that `expression` writes in double
+ * quotes, else the first name it marks quoted.
+ */
+export function doubleQuotedName(expression: string): string|undefined {
+  const names = quotedNames(sqlExpressionTree(expression, 'ANSI_SQL'));
+  return names.find(n => expression.includes(`"${n}"`)) ?? names[0];
+}
+
+/**
+ * Returns the names of the quoted column, table qualifier, and struct field
+ * identifiers (`quoted: true`) in a `@polyglot-sql/sdk` AST `node`, in tree
+ * order, with a table qualifier before its column name.
  *
  * `@polyglot-sql/sdk` represents simple or table-qualified column references as
  * `{column: {name: {name, quoted}, table?: {name, quoted}}}` and chained
  * struct field accesses (such as `orders.addr."city"`) as
  * `{dot: {this: <base>, field: {name, quoted}}}`. When `sqlExpressionTree`
  * cannot parse an expression in the requested dialect, it returns `undefined`,
- * for which this function returns `0`.
+ * for which this function returns `[]`.
  */
-function quotedColumnCount(node: unknown): number {
+function quotedNames(node: unknown): string[] {
   // Base case: `undefined` (when `sqlExpressionTree` fails to parse), `null`,
-  // or primitive AST leaf values (`string`, `number`, `boolean`) have 0 quoted
+  // or primitive AST leaf values (`string`, `number`, `boolean`) have no quoted
   // column identifiers.
-  if (!node || typeof node !== 'object') return 0;
+  if (!node || typeof node !== 'object') return [];
   const obj = node as Record<string, any>;
+  const quoted = (id: any): string[] => id?.quoted === true ? [id.name] : [];
   // A `{column: {name, table}}` node represents a bare (`"col"`) or
-  // table-qualified (`"orders"."col"`) column reference; count the column name
-  // and optional table qualifier separately whenever `quoted === true`.
+  // table-qualified (`"orders"."col"`) column reference; take the optional
+  // table qualifier and the column name separately whenever `quoted === true`.
   if (obj.column) {
-    return (obj.column.name?.quoted === true ? 1 : 0) +
-        (obj.column.table?.quoted === true ? 1 : 0);
+    return [...quoted(obj.column.table), ...quoted(obj.column.name)];
   }
   // A `{dot: {this, field}}` node represents a struct subfield access (e.g.
-  // `orders.addr."city"`); count `field` if `quoted === true` and recurse into
-  // `this` for the base column or outer struct path.
+  // `orders.addr."city"`); recurse into `this` for the base column or outer
+  // struct path, and take `field` if `quoted === true`.
   if (obj.dot) {
-    return (obj.dot.field?.quoted === true ? 1 : 0) +
-        quotedColumnCount(obj.dot.this);
+    return [...quotedNames(obj.dot.this), ...quoted(obj.dot.field)];
   }
   // For any other AST container node (such as `sum`, `eq`, `case`) or array of
-  // child AST nodes, recursively sum the counts across all child values.
-  return Object.values(obj).reduce<number>(
-      (sum, val) => sum + quotedColumnCount(val), 0);
+  // child AST nodes, recursively collect the names across all child values.
+  return Object.values(obj).flatMap(quotedNames);
 }
 
 /**
