@@ -114,24 +114,25 @@ export function validatePushRequirements(
           model.deployments?.length ?
           `under 'deployments' in its GOOGLE custom_extensions block` :
           undefined;
+      // When the model binds a third-party table, a graph target and a
+      // catalog-only push are refused too, so neither error below gives advice
+      // and the refusal beside it says why.
+      const thirdParty = model.entities?.some(
+          e => thirdPartyEntryOf(e.authoredSource ?? ''));
       if (deployInfo.uris.length !== 1) {
         errors.push(
             `model '${model.name}' (${document}) declares ${
                 deployInfo.uris
                     .length} deployments; push uses ` +
-            `exactly one deployment for now, with a BigQuery Graph or ` +
-            `Spanner Graph target${
-                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
+            `exactly one deployment for now${thirdParty ? '.' :
+            `, with a BigQuery Graph or Spanner Graph target${
+                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`}`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
         // -- which makes this a deployment pointed at the wrong verb rather
         // than a URI to correct, and the message says which verb it is for.
-        // When the model binds a third-party table, a graph target and a
-        // catalog-only push are refused too, so the error gives no advice and
-        // the refusal beside it says why.
-        const advice = model.entities?.some(
-            e => thirdPartyEntryOf(e.authoredSource ?? '')) ? '' :
+        const advice = thirdParty ? '' :
             ` Declare a BigQuery or Spanner Graph target (${
                 where ?? DEPLOYMENTS_VERSION_HINT}), or run 'kcmd push ` +
             `--no-profile' to publish to Knowledge Catalog only.`;

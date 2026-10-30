@@ -116,7 +116,13 @@ scenarios('a third-party table', [
     {files: alloyDbModel(ENTRY), code: 1, nothingWritten: true,
      errors: [alloyDbTarget(false), err(singlePhase(ALLOYDB_DB))]},
     {files: alloyDbModel(bqTable('customer')), code: 1, nothingWritten: true,
-     errors: [alloyDbTarget(true)]}],
+     errors: [alloyDbTarget(true)]},
+    // Two graph targets give the deployment count error, with no advice.
+    {files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g'), spannerGraph('g')]}})
+                                  .replace(bqTable('customer'), ENTRY)},
+     code: 1, nothingWritten: true,
+     errors: [err("model 'commerce' (commerce) declares 2 deployments; push uses exactly one deployment for now."),
+              err(singlePhase(BQ)), err(singlePhase(SPANNER))]}],
   },
   {
     name: 'a missing entry stops the push before anything is written, with or without --skip-source-check, and stops kcmd profiles',
