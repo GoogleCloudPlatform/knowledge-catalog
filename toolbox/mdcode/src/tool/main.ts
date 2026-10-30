@@ -80,7 +80,7 @@ cli.command('push', 'Push catalog entries')
         'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
     .option(
         '--transpile',
-        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model and the profiles it writes; a Google model re-imported in place keeps its profile files as written')
+        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model and each profile it writes')
     .option(
         '--profile [name]',
         'No longer supported on push; declare a deployment with profile: prod under deployments: and run kcmd push --deployment <name>')

@@ -722,6 +722,8 @@ relationships:
   // translate.
   const HINT = "; give it one, or add one with 'kcmd import <file> " +
       "--input first-party --flavor <ossie|google> --transpile'.";
+  // The same hint at the end of a profile's error, which has no closing period.
+  const PROFILE_HINT = HINT.slice(0, -1);
   // Field amount, whose one text is `text` in `dialect`.
   const amount = (dialect: string, text: string) =>
       `{ name: amount, expression: { dialects: [{ dialect: ${dialect}, ` +
@@ -2049,7 +2051,7 @@ semantic_model:
         };
         for (const [label, profile, prod] of [
                ['inherited', complete('prod'), []],
-               ['rebound', rebound, [blockError('BIGQUERY', HINT.slice(0, -1))]],
+               ['rebound', rebound, [blockError('BIGQUERY', PROFILE_HINT)]],
                ['on Spanner', onSpanner, [blockError('SPANNER')]],
              ] as const) {
           writeScope({'commerce.yaml': withAmount(profile)});
@@ -2378,8 +2380,6 @@ semantic_model:
     // A named profile that keeps the field unchanged gets no error of its
     // own when push's own check names it. A profile that rebinds it or is on
     // another database, or whose field that check skips, keeps its own error.
-    // A profile file's error suggests kcmd import only when the field's SQL is
-    // the model file's.
     test('reports a model file field with only a vendor text once beside a named profile', async () => {
       // The error of profile 'prod' for field amount, with no text for the
       // `dialect` of its sources, ending in `hint`.
@@ -2409,15 +2409,14 @@ semantic_model:
       const cases: Array<[label: string, model: string, profile: string,
                           errors: string[]]> = [
         ['inherited', commerce(), profileFile('prod'), [hinted]],
-        ['rebound', commerce(), rebound, [profileError(), hinted]],
+        ['rebound', commerce(), rebound, [profileError('BIGQUERY', PROFILE_HINT), hinted]],
         ['on Spanner', commerce(), spannerProfile,
          [profileError('SPANNER'), hinted]],
         ['declared on the child, rebound on its parent', child, childProfile,
          [hinted]],
-        // The SQL is the model file's, which import translates.
         ['no source in the model file',
          commerce().replace(`        source: ${BQ('dev', 'purchase')}\n`, ''),
-         profileFile('prod'), [profileError('BIGQUERY', HINT.slice(0, -1))]],
+         profileFile('prod'), [profileError('BIGQUERY', PROFILE_HINT)]],
       ];
       for (const [label, model, profile, errors] of cases) {
         const text = withFields(model, amount('SNOWFLAKE', '"amount +"'));
