@@ -22,7 +22,7 @@ import {CatalogSnapshot} from '../../snapshot';
 import {Sources} from '../../source';
 import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
-import {loadSemanticModels, SemanticModelError, thirdPartyEntryOf} from '../loader';
+import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
 import {applyProfileExclusions, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, isLegacyWrapper, loadProfileFile, ProfileExclusion, profileErrorMessage, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
@@ -280,8 +280,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   // kcmd has no engine that reads a third-party table.
   for (const {document, model} of models) {
-    const bound = (model.entities ?? [])
-                      .find(e => thirdPartyEntryOf(e.authoredSource ?? ''));
+    const bound = (model.entities ?? []).find(bindsThirdPartyTable);
     if (bound) {
       return {
         error: `[${document}] model '${model.name}' binds entity '${

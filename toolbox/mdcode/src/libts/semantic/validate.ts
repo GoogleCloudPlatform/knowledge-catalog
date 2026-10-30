@@ -15,7 +15,7 @@ import {googleDeploymentTargets} from './deploy_bigquery';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, thirdPartyEntryOf, undefinedEndpointProblem} from './loader';
+import {bindsThirdPartyTable, databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -117,8 +117,7 @@ export function validatePushRequirements(
       // When the model binds a third-party table, a graph target and a
       // catalog-only push are refused too, so neither error below gives advice.
       // When the model names a target, the refusal beside it says why.
-      const thirdParty = model.entities?.some(
-          e => thirdPartyEntryOf(e.authoredSource ?? ''));
+      const thirdParty = model.entities?.some(bindsThirdPartyTable);
       if (deployInfo.uris.length !== 1) {
         errors.push(
             `model '${model.name}' (${document}) declares ${
@@ -1794,8 +1793,7 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
 export function thirdPartyTargetErrors(
     document: string, model: SemanticModel): string[] {
   const {bigQuery, spanner, alloyDb} = googleDeploymentTargets(model);
-  const entities = (model.entities ?? [])
-                       .filter(e => thirdPartyEntryOf(e.authoredSource ?? ''));
+  const entities = (model.entities ?? []).filter(bindsThirdPartyTable);
   return [
     ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
     ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),

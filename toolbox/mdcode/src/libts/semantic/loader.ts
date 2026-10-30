@@ -3372,6 +3372,12 @@ export function thirdPartyEntryOf(source: string): ThirdPartyEntry|undefined {
   return {project, location, name};
 }
 
+// True when `entity` is written with a third-party table's entry name.
+export function bindsThirdPartyTable(
+    entity: {authoredSource?: string}): boolean {
+  return thirdPartyEntryOf(entity.authoredSource ?? '') !== undefined;
+}
+
 // The key LoadOptions.sourceDialects holds a source's dialect under: a Cloud
 // SQL table's resource name, or a third-party table's entry name. Undefined
 // for a source whose own name gives its dialect.
