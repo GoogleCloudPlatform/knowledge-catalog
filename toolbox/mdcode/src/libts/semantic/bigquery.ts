@@ -469,13 +469,7 @@ function uniqueName(base: string, taken: Set<string>): string {
 // else its `ANSI_SQL` one (see expressionForDialect), read as BigQuery with its
 // comments removed. Another engine's vendor SQL is never returned. The DDL puts
 // ` AS <name>` and a comma after the expression on the same line, and a line
-// comment left in would swallow them. The `?? expression` fallback is for the
-// `--transpile` push option, whose pass (./transpile) writes translated
-// BigQuery SQL into `expression` for an item that only had vendor text. Every
-// command loads with the default dialect, BIGQUERY, under which the loader
-// fills `expression` only from a `BIGQUERY` or `ANSI_SQL` entry, so when the
-// list has neither, `expression` can only have come from that pass.
-// Once push drops `--transpile`, the fallback changes nothing.
+// comment left in would swallow them.
 function fieldExpression(f: Field): string|undefined {
   return bigQuerySql(f);
 }
@@ -483,7 +477,7 @@ function metricExpression(m: Metric): string|undefined {
   return bigQuerySql(m);
 }
 function bigQuerySql(item: Field|Metric): string|undefined {
-  const text = expressionForDialect(item, 'BIGQUERY') ?? item.expression;
+  const text = expressionForDialect(item, 'BIGQUERY');
   return text === undefined ? undefined : sqlWithoutComments(text);
 }
 

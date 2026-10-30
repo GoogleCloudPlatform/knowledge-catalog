@@ -2677,7 +2677,19 @@ semantic_model:
     expect(kcSpy).not.toHaveBeenCalled();
   });
 
-  test('--transpile fills a vendor-only expression and drops the warning about it', async () => {
+  test('--transpile is refused before push reads anything', async () => {
+    expect(await push({validateOnly: true, transpile: true})).toBe(1);
+    expect(prints(console.error)).toEqual([
+      "Error: '--transpile' is no longer supported on 'kcmd push'; use " +
+      "'kcmd import <file> --input first-party --flavor <ossie|google> " +
+      "--transpile' to translate SQL dialects when importing a model. " +
+      "Import translates the model file only, so write a profile's " +
+      "'BIGQUERY' or 'ANSI_SQL' expressions yourself.",
+    ]);
+    expect(prints(console.warn)).toEqual([]);
+  });
+
+  test('a vendor-only metric for a BigQuery graph points at kcmd import --transpile', async () => {
     writeModel(`version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -2697,37 +2709,14 @@ semantic_model:
             - { dialect: SNOWFLAKE, expression: "SUM(IFF(purchase.amount > 0, purchase.amount, 0))" }
 `);
     const kcSpy = spyOn(kc, 'preflightKnowledgeCatalog');
-    spyOn(validateMod, 'validateBigQueryDataSources').mockResolvedValue([]);
-    spyOn(validateMod, 'validateBigQueryActionStatements').mockResolvedValue([]);
-    spyOn(bqLeg, 'deployBigQuery').mockResolvedValue(
-        {success: true, deployed: 0, ddl: [], warnings: []} as any);
-    const metric = () =>
-        kcSpy.mock.calls.at(-1)![0][0].model.metrics![0];
     expect(await push({validateOnly: true})).toBe(1);
     expect(prints(console.warn).join('\n')).toContain('needs transpilation');
-    expect(prints(console.error).join('\n'))
-        .toContain("targets a BigQuery graph with only a 'SNOWFLAKE' expression");
+    expect(prints(console.error).join('\n')).toContain(
+        "targets a BigQuery graph with only a 'SNOWFLAKE' expression; supply " +
+        "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +
+        "import <file> --input first-party --flavor <ossie|google> " +
+        "--transpile'.");
     expect(kcSpy).not.toHaveBeenCalled();
-
-    (console.warn as any).mockClear();
-    (console.error as any).mockClear();
-    expect(await push({validateOnly: true, transpile: true})).toBe(0);
-    expect(prints(console.warn).join('\n')).not.toContain('needs transpilation');
-    expect(prints(console.warn)).toContain(
-        "Warning: [commerce] metric 'positive_spend': transpiled " +
-        "'SNOWFLAKE' -> 'BIGQUERY'");
-    expect(metric().expression).toBeUndefined();
-    expect(metric().dialects).toEqual([
-      {
-        dialect: 'SNOWFLAKE',
-        expression: 'SUM(IFF(purchase.amount > 0, purchase.amount, 0))',
-      },
-      {
-        dialect: 'BIGQUERY',
-        expression: 'SUM(IF(purchase.amount > 0, purchase.amount, 0))',
-      },
-    ]);
-    expect(metric().stringForm).toBe(false);
   });
 
   test('a pruned push warns about a metric whose SQL it cannot read', async () => {

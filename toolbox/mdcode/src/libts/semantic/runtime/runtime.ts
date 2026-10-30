@@ -117,7 +117,7 @@ export interface CreateRuntimeOptions {
 /**
  * One runtime per model document in the scope, in discovery order.
  *
- * A lighter path than push's: nothing is transpiled, pruned or validated for
+ * A lighter path than push's: nothing is pruned or validated for
  * deployment, because running an action needs the model as authored rather
  * than the subset a deployed graph can answer. Bindings stay optional, so a
  * purely logical model yields a runtime with no store -- readable and

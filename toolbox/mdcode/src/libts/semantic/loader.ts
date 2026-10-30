@@ -352,9 +352,9 @@ export function expressionDocOf(
 // read as BigQuery, and its imported text in its imported dialect, or as
 // BigQuery with none, unless that reading already read or named it.
 // serializeModel writes both. Either text can be outside the dialect list
-// when the field or metric was built in memory, or when push filled
-// `expression` by transpiling. The problem names each text that holds no
-// SQL. `entity` is the entity a field belongs to, and is absent for a metric.
+// when the field or metric was built in memory. The problem names each text
+// that holds no SQL. `entity` is the entity a field belongs to, and is absent
+// for a metric.
 export function noSqlProblemOf(
     x: Pick<
         Field,

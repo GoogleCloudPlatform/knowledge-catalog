@@ -10,7 +10,7 @@ import * as YAML from 'yaml';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, pushed, scenarios, Scope, SNOWFLAKE_METRIC, TRANSPILE_WARNING, writeScope} from './harness';
+import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, pushed, scenarios, Scope, SNOWFLAKE_METRIC, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const legacy = (model: string, entities?: object[], actions?: object[]) =>
@@ -65,7 +65,8 @@ scenarios('push --no-deployment', [
     }],
   },
   {
-    name: '--transpile adds a BIGQUERY dialect entry in the model Knowledge Catalog receives',
+    // Push translates nothing; kcmd import --transpile does.
+    name: 'a vendor-only metric reaches Knowledge Catalog as written, with the loader\'s warning',
     metrics: [SNOWFLAKE_METRIC],
     flags: {validateOnly: true},
     code: 0,
@@ -73,15 +74,6 @@ scenarios('push --no-deployment', [
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),
-    then: [{
-      flags: {validateOnly: true, transpile: true},
-      code: 0,
-      warnings: [TRANSPILE_WARNING],
-      check: r => expect(r.published.metrics![0].dialects).toEqual([
-        {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
-        {dialect: 'BIGQUERY', expression: 'SUM(IF(Customer.key > 0, 1, 0))'},
-      ]),
-    }],
   },
   {
     name: '--validate-only --print prints the catalog plan first',

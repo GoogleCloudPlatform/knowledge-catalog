@@ -5,7 +5,7 @@
 // (`vendor_dialects.bigquery.golden.sql`) captures the UN-transpiled output --
 // each field or metric with only vendor SQL omitted with a warning, because
 // the loader left `expression` unset and BigQuery never emits another engine's
-// SQL. This one captures what `kcmd push --transpile` produces instead: the
+// SQL. This one captures what `kcmd import --transpile` produces instead: the
 // same model after the pass adds a target `BIGQUERY` entry to `dialects` from
 // each node's `importedExpression` (or double-quoted `ANSI_SQL` entry), so the
 // DDL carries GoogleSQL. Every expression in the golden was dry-run-validated
@@ -33,7 +33,7 @@ const GOLDEN =
 // The full artifact: DDL generated from the transpiled model, then every
 // warning as a SQL comment. Mirrors bigquery.e2e's render but inserts the
 // transpile pass and drops the loader's now-stale "needs transpilation" notes,
-// exactly as `kcmd push --transpile` does (see src/tool/commands.ts).
+// as `kcmd import --transpile` writes the BigQuery SQL the graph reads.
 async function render(): Promise<string> {
   const text = fs.readFileSync(path.join(FIXTURES, FIXTURE), 'utf8');
   const {models, warnings: loadWarnings} = loadModels(text, {

@@ -25,13 +25,12 @@ import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semant
 import {isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfile, applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
+import {applyProfile, applyProfileExclusions, AvailabilityReport, CloudSqlLoad, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DocumentProfile, expressionSources, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, modelFileAloneMessage, ProfileExclusion, profileErrorMessage, profileForDocument, profileSourceMessage, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency, withoutExclusions,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {transpileModels} from '../libts/semantic/transpile';
 import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
@@ -100,12 +99,9 @@ export interface PushOptions {
   // expression). Off by default so a push matches the live types; enable once
   // the templates gain these fields. Semantic-model KC push only.
   emitExpressions?: boolean;
-  // Rewrite vendor-dialect expressions (e.g. Snowflake/Databricks) to GoogleSQL
-  // before deploying, filling any target `expression` the loader left unset
-  // because only an `importedExpression` was supplied. Off by default (a model
-  // authored in GoogleSQL/ANSI needs nothing). Runs per prepared binding, so
-  // both the graph and Knowledge Catalog legs see the filled expressions.
-  // Semantic-model push only. See ../libts/semantic/transpile.
+  // No longer supported: push refuses it, and `kcmd import --transpile`
+  // translates SQL dialects instead. It stays an option so the refusal can say
+  // so.
   transpile?: boolean;
   // How many binding profiles the graph leg deploys for -- the graph axis. cac
   // folds three flags onto this one key: `--no-profile` sets it false (deploy
@@ -690,16 +686,15 @@ interface LocalCheckError {
 // with no profile applied. `pushChecks` says what push's own checks cover for
 // each profile, so these checks leave that out. A
 // legacy `semantic_model:` wrapper, and a file under the reserved name
-// 'default', which no push deploys, are not read here. With `transpile`, push
-// fills in BigQuery SQL for a text written only in a vendor dialect its
-// translator reads. Push also checks the keys and join columns of the model
-// file and of each named profile. Push's own key check covers the join of
-// `pushedProfile`, so this check leaves it out. The warnings go to `warnings`.
+// 'default', which no push deploys, are not read here. Push also checks the
+// keys and join columns of the model file and of each named profile. Push's
+// own key check covers the join of `pushedProfile`, so this check leaves it
+// out. The warnings go to `warnings`.
 function namedProfileErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
     pushChecks: (doc: ProfiledDoc, profile: string) => {applied?: boolean},
     profileDocs: ProfileDocs, declared: DeclaredProfiles, warnings: string[],
-    transpile: boolean, pushedProfile: string,
+    pushedProfile: string,
     load: CloudSqlLoad): LocalCheckError[] {
   const errors: LocalCheckError[] = [];
   for (const d of docs) {
@@ -785,7 +780,6 @@ function namedProfileErrors(
           ...validateProfileCompleteness(logical, spec, profileWarnings, {
             ...pushChecks(d, p.name),
             ownSqlOnly,
-            transpiled: transpile,
             ...load,
           }).map(tag));
       warnings.push(...profileWarnings.map(at));
@@ -801,14 +795,13 @@ function namedProfileErrors(
 // inlineBindingWarnings go to `warnings`.
 function modelFileBindingErrors(
     docs: ProfiledDoc[], checkedByDoc: Map<string, SemanticModel>,
-    declared: DeclaredProfiles, warnings: string[],
-    transpile: boolean): string[] {
+    declared: DeclaredProfiles, warnings: string[]): string[] {
   const errors: string[] = [];
   for (const d of docs) {
     const base = d.base ?? (d.excluded ? undefined : checkedByDoc.get(d.name));
     if (!base) continue;
     errors.push(
-        ...validateInlineDialects(base, d.name, {transpiled: transpile}),
+        ...validateInlineDialects(base, d.name),
         ...validateInheritedColumns(base, d.name));
     let named: boolean|undefined;
     try {
@@ -850,7 +843,6 @@ async function prepareModels(
     docs: ProfiledDoc[], profileName: string, opts: {
       prune: boolean; defaultProject: string; profileDocs: ProfileDocs;
       declared: DeclaredProfiles;
-      transpile?: boolean;
       load: CloudSqlLoad;
     },
     report: PrepareReport): Promise<PreparedModels|null> {
@@ -875,10 +867,7 @@ async function prepareModels(
       d => d.applied ?
           d.warnings ?? [] :
           loaded.warnings.filter(w => w.startsWith(`[${d.name}] `)));
-  for (const w of warnings) {
-    if (opts.transpile && w.includes('needs transpilation')) continue;
-    report.warning(w);
-  }
+  for (const w of warnings) report.warning(w);
   // A pruned push needs every concrete entity bound. The load above checks
   // a legacy wrapper's merged text; a profile file's applied model is
   // checked here.
@@ -916,18 +905,13 @@ async function prepareModels(
     ...namedProfileErrors(
         docs, checkedByDoc,
         (d, name) => ({applied: !!d.applied && name === profileName}),
-        opts.profileDocs, opts.declared, unprunedWarnings, !!opts.transpile,
-        profileName, opts.load)
+        opts.profileDocs, opts.declared, unprunedWarnings, profileName,
+        opts.load)
         .map(e => e.error),
     ...modelFileBindingErrors(
-        docs, checkedByDoc, opts.declared, unprunedWarnings, !!opts.transpile),
+        docs, checkedByDoc, opts.declared, unprunedWarnings),
   ];
   let unprunedErrors: string[] = [];
-  if (opts.transpile) {
-    const transpiled = await transpileModels(models);
-    models = transpiled.models;
-    for (const w of transpiled.warnings) report.warning(w);
-  }
   if (prune) {
     // A profile's exclusions apply to the entity that names each one, which
     // the merged document cannot say on its own. Only a
@@ -1113,6 +1097,13 @@ async function generateOffline(
 }
 
 export async function push(options: PushOptions): Promise<number> {
+  if (options.transpile) {
+    return printErrors(
+        `'--transpile' is no longer supported on 'kcmd push'; use '${
+            IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects when ` +
+        `importing a model. Import translates the model file only, so write ` +
+        `a profile's 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
+  }
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -1243,8 +1234,8 @@ export async function push(options: PushOptions): Promise<number> {
 
     // Apply + prepare a profile once and reuse it. The graph leg and the
     // Knowledge Catalog leg both consume the default binding, so without this a
-    // bound `kcmd push` would load, transpile, prune, and validate the same
-    // profile twice -- and print every loader/transpile warning twice. Keyed by
+    // bound `kcmd push` would load, prune, and validate the same
+    // profile twice -- and print every loader warning twice. Keyed by
     // the inputs that change the result: profile name, prune, and (since
     // --all-profiles may prepare a filtered subset of the documents) the set of
     // document names.
@@ -1283,7 +1274,6 @@ export async function push(options: PushOptions): Promise<number> {
             defaultProject,
             profileDocs,
             declared,
-            transpile: options.transpile,
             load,
           },
           report);
@@ -1593,12 +1583,11 @@ export async function push(options: PushOptions): Promise<number> {
 
   // These flags only take effect on a semantic-model push; on a regular
   // catalog snapshot they are inert. Warn rather than silently ignore them, so
-  // a user who expected (say) --transpile to run isn't misled by a clean exit.
+  // a user who expected (say) --profile to apply isn't misled by a clean exit.
   const {named, negated} = deploymentFlags(options.deployment);
   const semanticOnlyFlags: Array<[boolean, string]> = [
     [typeof options.profile === 'string', '--profile'],
     [!!options.allProfiles, '--all-profiles'],
-    [!!options.transpile, '--transpile'],
     [options.profile === false, '--no-profile'],
     [options.kc === false, '--no-kc'],
     [!!options.print, '--print'],
@@ -1851,13 +1840,10 @@ async function checkBeforeWrites(
       errors.map(error => ({error, document}));
   const ofProfile = (document: string, profile: string, ...errors: string[]) =>
       errors.map(error => ({error, document, profile}));
-  // Prints each warning once, and none of the loader's 'needs
-  // transpilation' warnings under --transpile. A deployment's warning is
-  // skipped when the catalog's model printed it as `asCatalog`.
+  // Prints each warning once.
   const printed = new Set<string>();
-  const warn = (w: string, asCatalog = w) => {
-    if (quiet || options.transpile && w.includes('needs transpilation')) return;
-    if (printed.has(w) || printed.has(asCatalog)) return;
+  const warn = (w: string) => {
+    if (quiet || printed.has(w)) return;
     printed.add(w);
     console.warn(`Warning: ${w}`);
   };
@@ -1944,14 +1930,12 @@ async function checkBeforeWrites(
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
       docs, new Map(loaded.models.map(m => [m.document, m.model])), () => ({}),
-      profileDocs, declaredBy, profileWarnings, !!options.transpile,
-      DEFAULT_PROFILE, load);
+      profileDocs, declaredBy, profileWarnings, DEFAULT_PROFILE, load);
   for (const {document, model} of models) {
     profileErrors.push(
         ...ofProfile(
             document, DEFAULT_PROFILE,
-            ...validateInlineDialects(
-                model, document, {transpiled: !!options.transpile}),
+            ...validateInlineDialects(model, document),
             ...validateInheritedColumns(model, document)),
         // One call per profile, so each error carries its deployments' profile.
         ...[...new Set(everyByDoc.get(document)!.map(d => d.profile))].flatMap(
@@ -1964,14 +1948,8 @@ async function checkBeforeWrites(
         declaredNames(document).some(n => n.toLowerCase() !== DEFAULT_PROFILE);
     profileWarnings.push(...inlineBindingWarnings(model, document, named));
   }
-  let kcModels = models;
-  if (options.transpile) {
-    const transpiled = await transpileModels(kcModels);
-    kcModels = transpiled.models;
-    for (const w of transpiled.warnings) warn(w);
-  }
   const kcWarnings: string[] = [];
-  const kcErrors = kcModels.flatMap(
+  const kcErrors = models.flatMap(
       m => ofModel(m.document, ...validatePushRequirements(
           [m.model.deployments === undefined ?
                m :
@@ -1999,7 +1977,7 @@ async function checkBeforeWrites(
   for (const base of models) {
     for (const deployment of selectedByDoc.get(base.document) ?? []) {
       const plan = await deploymentPlan(
-          base, profileDocs(base.document), deployment, ctx, options, warn,
+          base, profileDocs(base.document), deployment, ctx, warn,
           notes);
       if ('errors' in plan) {
         return stop(
@@ -2008,7 +1986,7 @@ async function checkBeforeWrites(
       plans.push(plan);
     }
   }
-  return {plans, kcModels, fileCopies, notes, overviews};
+  return {plans, kcModels: models, fileCopies, notes, overviews};
 }
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
@@ -2104,7 +2082,7 @@ function defaultProfileCheck(
 async function deploymentPlan(
     base: LoadedModel, files: ReturnType<ProfileDocs>,
     deployment: ResolvedDeployment, ctx: context.ApiContext,
-    options: PushOptions, warn: (w: string, asCatalog?: string) => void,
+    warn: (w: string) => void,
     notes: string[]): Promise<DeploymentPlan|{errors: string[]}> {
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
@@ -2143,16 +2121,9 @@ async function deploymentPlan(
     }
     for (const w of warnings) warn(`[${document}] ${w}`);
   }
-  // Messages name the deployment. A warning the catalog's model already gave
-  // under the document's own name is not repeated.
+  // Messages name the deployment.
   const label = `${document}, deployment '${deployment.name}'`;
-  const warnDeployment = (w: string) => warn(w, w.replaceAll(label, document));
-  let checked: LoadedModel = {document: label, model: applied};
-  if (options.transpile) {
-    const transpiled = await transpileModels([checked]);
-    checked = transpiled.models[0];
-    for (const w of transpiled.warnings) warnDeployment(w);
-  }
+  const checked: LoadedModel = {document: label, model: applied};
   // Pruning can remove the field these rules are about, so they run first.
   // checkBeforeWrites has already warned about the SQL they cannot read.
   const unprunedErrors = [

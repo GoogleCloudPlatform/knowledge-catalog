@@ -19,7 +19,7 @@ import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inherited
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, evaluatedTexts, expressionSources, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -273,8 +273,7 @@ export function validateDeployments(
     // unavailable. The completeness check reports a named profile that does
     // not apply, and the fields its metrics read.
     const bound = named ? profiled(model, named) : pruneUnavailable(
-        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model),
-        {noGraph: alloyDb});
+        model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
     if (!bound) continue;
     const available = bound.model.metrics ?? [];
     if (named) {
@@ -352,10 +351,8 @@ function measureProblem(
   if (!columns) return undefined;
   const entities = model.entities ?? [];
   const names = entities.map(e => e.name);
-  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`) rather than
-  // `metric.expression`: `transpileModel` appends translated SQL to
-  // `metric.dialects` and leaves `metric.expression` unset on vendor-only
-  // metrics.
+  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`), the SQL the
+  // BigQuery graph runs.
   const matched =
       referencedEntityNames(withoutComments(text, 'BIGQUERY'), names);
   if (matched.length > 1 || !matched.length && !metric.entity) return undefined;
@@ -377,22 +374,17 @@ function measureProblem(
 }
 
 // Checks that each bound field of the model file has a text for the dialect
-// of its entity's source, and returns one message per field. With
-// `opts.transpiled`, a text that --transpile translates also counts.
+// of its entity's source, and returns one message per field.
 export function validateInlineDialects(
-    model: SemanticModel, document: string,
-    opts: {transpiled?: boolean} = {}): string[] {
+    model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
   for (const e of resolvedEntities(model)) {
     const dialect = sourcesDialect({entities: [e]});
     if (!dialect) continue;
     for (const f of e.fields ?? []) {
-      if (!isFieldBound(f) ||
-          evaluatedTexts(f, dialect, !!opts.transpiled).length) {
-        continue;
-      }
-      const hint = evaluatedTexts(f, dialect, true).length ?
-          '; give it one, or pass --transpile' : '';
+      if (!isFieldBound(f) || textsFor(f, dialect).length) continue;
+      const hint = importTranspiles(f, dialect) ?
+          `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` : '';
       errors.push(
           `field '${e.name}.${f.name}' in model '${model.name}' (${
               document}) has no expression for ${dialect} or ANSI_SQL, and ` +
@@ -1668,17 +1660,15 @@ function validateBigQueryMetrics(
   for (const metric of model.metrics ?? []) {
     if (alreadyFlagged.has(metric.name)) continue;
     const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    // `transpileModel` appends translated SQL as a `BIGQUERY` entry in
-    // `metric.dialects` without setting `metric.expression`, so resolve the
-    // BigQuery text via `expressionForDialect` first (falling back to
-    // `metric.expression` for hand-built in-memory models without `dialects`).
-    const bqText =
-        expressionForDialect(metric, 'BIGQUERY') ?? metric.expression;
+    // The text BigQuery runs: its `BIGQUERY` entry, else its `ANSI_SQL` one,
+    // else `expression` for a metric held without a dialect list.
+    const bqText = expressionForDialect(metric, 'BIGQUERY');
     if (bqText === undefined && metric.importedExpression !== undefined) {
       errors.push(
           `${prefix} targets a BigQuery graph with only a '${
               metric.importedDialect ?? 'vendor'}' expression; supply a ` +
-          `'BIGQUERY' or 'ANSI_SQL' expression or pass --transpile.`);
+          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
+              IMPORT_TRANSPILE_COMMAND}'.`);
       continue;
     }
     // The generator reads the resolved BigQuery expression (`bqText`) with its

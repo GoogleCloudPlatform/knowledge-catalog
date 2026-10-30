@@ -105,7 +105,7 @@ model's profile files there unwritten is refused.
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
 | `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. |
-| `--transpile` | Add a BigQuery translation beside SQL in another dialect. Off by default. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model file only. A profile's SQL stays as written. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
 ### profiles
@@ -680,9 +680,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span
-  systems, so each entity is judged by its own source. With `--transpile`, a
-  text that push translates into BigQuery SQL also counts. Every push runs this
-  check, whether or not a deployment uses those bindings. *(static)*
+  systems, so each entity is judged by its own source. `kcmd import
+  --transpile` adds a BigQuery entry for a text it can translate. Every push
+  runs this check, whether or not a deployment uses those bindings. *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
   subtype redeclares an inherited field only to bind it. A concrete entity

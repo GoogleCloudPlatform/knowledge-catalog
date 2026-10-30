@@ -900,8 +900,10 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
       `field '${name}' in model 'commerce' (commerce) has no expression for ` +
       `${dialect} or ANSI_SQL, and the model file binds entity '${
           name.split('.')[0]}' to a ${dialect} source`;
-  // The end of the error for a field whose text --transpile can translate.
-  const HINT = '; give it one, or pass --transpile.';
+  // The end of the error for a field whose text kcmd import --transpile can
+  // translate.
+  const HINT = "; give it one, or add one with 'kcmd import <file> " +
+      "--input first-party --flavor <ossie|google> --transpile'.";
   // Field amount, whose one text is `text` in `dialect`.
   const amount = (dialect: string, text: string) =>
       `{ name: amount, expression: { dialects: [{ dialect: ${dialect}, ` +
@@ -2501,30 +2503,8 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
       }
     });
 
-    // Push's translator reads Spanner (as BigQuery) and AlloyDB (as
-    // PostgreSQL) SQL, so --transpile fills in a BigQuery entry for a BigQuery
-    // profile.
-    test('and under --transpile translates a metric written only in Spanner or AlloyDB SQL', async () => {
-      for (const dialect of ['SPANNER', 'ALLOYDB']) {
-        writeScope({
-          'commerce.yaml': `${commerce()}    metrics:
-      - name: spend
-        entity: purchase
-        expression:
-          dialects:
-            - { dialect: ${dialect}, expression: "SUM(purchase.p_id)" }
-`,
-          'commerce.profile.prod.yaml': profileFile('prod'),
-        });
-        errs.length = 0;
-        expect(await push({validateOnly: true, transpile: true})).toBe(0);
-        expect(errs).toEqual([]);
-      }
-    });
-
-    // Under --transpile, push fills in BigQuery SQL for a text written only
-    // in a vendor dialect, so a BigQuery profile can run it.
-    test('and lets --transpile fill in a vendor-only metric for a BigQuery profile', async () => {
+    // A BigQuery profile cannot run a metric written only in a vendor dialect.
+    test('and rejects a vendor-only metric for a BigQuery profile', async () => {
       writeScope({
         'commerce.yaml': `${commerce()}    metrics:
       - name: positive_spend
@@ -2535,60 +2515,16 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
 `,
         'commerce.profile.prod.yaml': profileFile('prod'),
       });
-      expect(await push({validateOnly: true, transpile: true})).toBe(0);
-      expect(await push({validateOnly: true, profile: 'prod', transpile: true}))
-          .toBe(0);
-      expect(errs).toEqual([]);
       expect(await pushResult()).toEqual({
         code: 1,
         errors: [
           "[commerce.profile.prod.yaml] profile 'prod': metric " +
               "'positive_spend' has no expression for BIGQUERY or ANSI_SQL, " +
-              "and this profile's sources are BIGQUERY; give it one, or add " +
-              "it to 'metrics_exclude'",
+              "and this profile's sources are BIGQUERY; give it one, add " +
+              "one with 'kcmd import <file> --input first-party --flavor " +
+              "<ossie|google> --transpile', or add it to 'metrics_exclude'",
         ],
       });
-    });
-
-    // Under --transpile, a BigQuery profile runs the text written only in a
-    // vendor dialect, so the check reads what that text reads.
-    test('and under --transpile reads what a vendor-only text reads', async () => {
-      writeScope({
-        'commerce.yaml': commerce().replace(
-            '          - { name: p_id, expression: p_id }\n',
-            '          - { name: p_id, expression: p_id }\n' +
-                '          - { name: p_amount, expression: amount }\n' +
-                '          - name: p_tax\n' +
-                '            expression:\n' +
-                '              dialects:\n' +
-                '                - { dialect: SNOWFLAKE, expression: ' +
-                '"IFF(purchase.p_amount > 0, purchase.p_amount, 0)" }\n') +
-            `    metrics:
-      - name: spend
-        entity: purchase
-        expression:
-          dialects:
-            - { dialect: SNOWFLAKE, expression: "SUM(purchase.p_amount)" }
-`,
-        'commerce.profile.prod.yaml': profileFile('prod').replace(
-            `    source: ${BQ('prod', 'purchase')}\n`,
-            `    source: ${BQ('prod', 'purchase')}\n` +
-                '    fields_exclude: [p_amount]\n'),
-      });
-      const errors = [
-        "[commerce.profile.prod.yaml] profile 'prod': field 'purchase.p_tax' " +
-            "depends on 'purchase.p_amount', which this profile excludes; " +
-            "exclude 'purchase.p_tax' too, or rebind it",
-        "[commerce.profile.prod.yaml] profile 'prod': metric 'spend' reaches " +
-            "'purchase.p_amount', which this profile excludes; add 'spend' " +
-            "to 'metrics_exclude'",
-      ].map(e => `Error: ${e}`);
-      for (const profile of [undefined, 'prod']) {
-        errs.length = 0;
-        expect(await push({validateOnly: true, profile, transpile: true}))
-            .toBe(1);
-        expect(errs).toEqual(errors);
-      }
     });
 
     // A profile file push cannot read gives one error, which names the file,
@@ -2980,10 +2916,9 @@ semantic_model:
     });
 
     // Each entity's fields are judged by its own source, whether or not a
-    // deployment uses them. Push's translator reads Snowflake SQL and no
-    // Spanner SQL, so only a Snowflake text gets the --transpile hint, even
-    // one the translator cannot parse.
-    test('rejects a field with no text for its entity\'s source dialect, and suggests --transpile only when push can translate it', async () => {
+    // deployment uses them. A text kcmd import --transpile can translate gets
+    // its hint, even one the translator cannot parse.
+    test('rejects a field with no text for its entity\'s source dialect, and suggests kcmd import --transpile when it can translate it', async () => {
       writeScope({
         'commerce.yaml': commerce()
             .replace(BQ('dev', 'purchase'), `${SPANNER_DB}/tables/purchase`)
@@ -3000,21 +2935,18 @@ semantic_model:
 
       const missing = modelNoText('purchase.amount');
       for (const targets of [0, 1]) {
-        for (const [dialect, text, errors, transpiledErrors] of [
-               ['SNOWFLAKE', 'amount', [missing + HINT], []],
-               ['SNOWFLAKE', '"amount +"', [missing + HINT], []],
-               ['SPANNER', 'amount', [missing + HINT], []],
-             ] as Array<[string, string, string[], string[]]>) {
+        for (const [dialect, text] of [
+               ['SNOWFLAKE', 'amount'],
+               ['SNOWFLAKE', '"amount +"'],
+               ['SPANNER', 'amount'],
+             ]) {
           writeScope({
             'commerce.yaml':
                 withFields(commerce({targets}), amount(dialect, text)),
           });
           const label = {targets, dialect, text};
           expect({...label, ...await pushResult()})
-              .toEqual({...label, code: 1, errors});
-          expect({...label, ...await pushResult({...noDeployment, transpile: true})})
-              .toEqual({...label, code: transpiledErrors.length ? 1 : 0,
-                        errors: transpiledErrors});
+              .toEqual({...label, code: 1, errors: [missing + HINT]});
         }
       }
     });

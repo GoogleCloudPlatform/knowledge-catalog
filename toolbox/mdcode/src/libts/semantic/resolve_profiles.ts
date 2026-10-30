@@ -648,21 +648,17 @@ export interface AvailabilityReport {
  * every metric that reads an unavailable field dropped; and every action with
  * no executor dropped. A field counts whether the entity declares or inherits
  * it. What a field or metric reads comes from the text `dialect` evaluates
- * (see prunedTexts). `dialect` defaults to the dialect the model's sources
+ * (see textsFor). `dialect` defaults to the dialect the model's sources
  * imply. When the sources are in systems of different dialects, or one names
- * no system, there is no dialect and every text counts. With `opts.noGraph`,
- * only the text `dialect` evaluates counts, as on a database with no graph
- * such as AlloyDB.
+ * no system, there is no dialect and every text counts.
  * The input is never mutated. The report names each dropped block
  * and the unbound field that stops it, so a caller can state the withheld
  * coverage. A model with nothing unbound resolves unchanged.
  */
 export function pruneUnavailable(
     model: SemanticModel, profileName: string,
-    dialect: string|undefined = sourcesDialect(model),
-    opts: {noGraph?: boolean} = {}):
+    dialect: string|undefined = sourcesDialect(model)):
     {model: SemanticModel; report: AvailabilityReport} {
-  const texts = opts.noGraph ? textsFor : prunedTexts;
   const clone: SemanticModel = structuredClone(model);
   const report: AvailabilityReport = {
     profile: profileName,
@@ -718,7 +714,7 @@ export function pruneUnavailable(
         dependencies.set(
             key,
             fieldDependencies(
-                clone, e.name, f.name, unreadable, dialect, texts)
+                clone, e.name, f.name, unreadable, dialect)
                 .map(dep => `${e.name}.${dep}`));
       }
     }
@@ -799,7 +795,7 @@ export function pruneUnavailable(
     }
     const columns: SqlColumn[] = [];
     // A text with no SQL has nothing to read.
-    const sources = texts(mt, dialect)
+    const sources = textsFor(mt, dialect)
                         .filter(s => noSqlReason(s.text, s.dialect) === undefined);
     let unread = 0;
     for (const {text, dialect} of sources) {
@@ -1894,7 +1890,7 @@ export function expressionSources(
 // dialect list offers its imported text when that is in the profile's dialect,
 // and otherwise the text the loader picked. With no known dialect, every text
 // counts, each read in the dialect it is written in.
-function textsFor(
+export function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
@@ -1906,41 +1902,18 @@ function textsFor(
   return text !== undefined ? [{text, dialect}] : [];
 }
 
-// The texts a profile of `dialect` evaluates for a field or metric, as
-// textsFor gives them. With `transpiled`, the caller translates a text written
-// only in a vendor dialect its translator reads into BigQuery SQL, so a
-// BigQuery profile evaluates that text too, read in the dialect it is written
-// in.
-export function evaluatedTexts(
-    f: Parameters<typeof textsFor>[0], dialect: string|undefined,
-    transpiled: boolean): Array<{text: string; dialect: string}> {
-  const out = textsFor(f, dialect);
-  if (out.length || !transpiled || dialect !== 'BIGQUERY' ||
-      f.expression !== undefined || !f.importedExpression ||
-      !transpilesFrom(f.importedDialect ?? '')) {
-    return out;
-  }
-  const written = f.importedDialect || 'ANSI_SQL';
-  return [{
-    text: f.importedExpression,
-    dialect: written === 'ANSI_SQL' ? dialect : written,
-  }];
-}
+// The import command that adds BigQuery SQL to a model file. Push reads only
+// files written for kcmd, so `--input first-party` fits each of them.
+export const IMPORT_TRANSPILE_COMMAND =
+    'kcmd import <file> --input first-party --flavor <ossie|google> --transpile';
 
-// The texts pruning reads: those a profile of `dialect` evaluates (see
-// textsFor). A BIGQUERY profile also reads `expression` for an item with no
-// BIGQUERY or ANSI_SQL text, since the BigQuery graph emits the SQL that push's
-// `--transpile` pass writes there.
-function prunedTexts(
-    f: Pick<
-        Field,
-        'expression'|'dialects'|'importedExpression'|'importedDialect'>,
-    dialect: string|undefined): Array<{text: string; dialect: string}> {
-  const out = textsFor(f, dialect);
-  if (out.length || dialect !== 'BIGQUERY' || f.expression === undefined) {
-    return out;
-  }
-  return [{text: f.expression, dialect}];
+// Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
+// with no text for `dialect`: true when `dialect` is BIGQUERY and its only
+// text is an imported one, in a dialect the translator reads.
+export function importTranspiles(
+    f: Parameters<typeof textsFor>[0], dialect: string|undefined): boolean {
+  return dialect === 'BIGQUERY' && !!f.importedExpression &&
+      transpilesFrom(f.importedDialect ?? '');
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -2006,10 +1979,6 @@ export interface CompletenessOptions extends CloudSqlLoad {
   // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
   // dialect is `dialect` or the caller cannot read it either.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
-  // The caller transpiles a field or metric whose only text is in a vendor
-  // dialect its translator reads into BigQuery SQL, so a BigQuery profile can
-  // run it. The rules that read references then read that text.
-  transpiled?: boolean;
 }
 
 /**
@@ -2269,9 +2238,6 @@ export function validateProfileCompleteness(
           `leave it out in 'fields_exclude'`);
     }
   }
-  // The texts this profile evaluates for a field or metric.
-  const profileTexts: typeof textsFor = (f, d) =>
-      evaluatedTexts(f, d, !!opts.transpiled);
   // Each field or metric, as "field 'Entity.field'" or "metric 'name'", with
   // a text this check cannot read that push reads in another dialect: an
   // ANSI_SQL text, which push reads in its own dialect. Push reads every
@@ -2291,7 +2257,7 @@ export function validateProfileCompleteness(
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
   if (dialect) {
-    const runs = (f: Field) => profileTexts(f, dialect).length > 0;
+    const runs = (f: Field) => textsFor(f, dialect).length > 0;
     for (const e of entities) {
       if (e.abstract || rejected.has(e.name)) continue;
       for (const f of seenOf.get(e.name)?.values() ?? []) {
@@ -2313,10 +2279,12 @@ export function validateProfileCompleteness(
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && !runs(m as Field)) {
+          const viaImport = importTranspiles(m as Field, dialect) ?
+              ` add one with '${IMPORT_TRANSPILE_COMMAND}',` : '';
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
               `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +
-              `one, or add it to 'metrics_exclude'`);
+              `one,${viaImport} or add it to 'metrics_exclude'`);
         }
       }
     }
@@ -2337,8 +2305,7 @@ export function validateProfileCompleteness(
         // inherited field is read in the form its declaring ancestor wrote it,
         // because inheritance strips the qualifier when it copies one down.
         for (const dep of fieldDependencies(
-                 profiled, e.name, f.name, unreadable, dialect,
-                 profileTexts, noteUnread)) {
+                 profiled, e.name, f.name, unreadable, dialect, noteUnread)) {
           const target = `${e.name}.${dep}`;
           if (excluded.has(target) || dangling.has(target)) {
             dangling.set(key, dangling.get(target) ?? target);
@@ -2362,7 +2329,7 @@ export function validateProfileCompleteness(
     for (const m of baseModel.metrics ?? []) {
       if (metricExcluded.has(m.name)) continue;
       const read: Array<ReadonlyArray<SqlColumn>> = [];
-      for (const text of profileTexts(m as Field, dialect)) {
+      for (const text of textsFor(m as Field, dialect)) {
         // A text with no SQL has nothing to read.
         if (noSqlReason(text.text, text.dialect) !== undefined) continue;
         const columns = columnReferences(text.text, text.dialect);
@@ -2591,20 +2558,19 @@ export function columnBinding(
 }
 
 // The fields of its own entity that `field` reads on `entityName`, from the
-// texts `texts` picks for a profile of `dialect` (textsFor unless pruning
-// passes prunedTexts) as written. The declaration read is the one
-// boundDeclaration gives, read with its entity's qualifier.
+// texts a profile of `dialect` evaluates (see textsFor) as written. The
+// declaration read is the one boundDeclaration gives, read with its entity's
+// qualifier.
 function fieldDependencies(
     model: SemanticModel, entityName: string, field: string,
     unreadable: Set<string>, dialect?: string,
-    texts: typeof textsFor = textsFor,
     onUnread?: (what: string, owner: Field,
                 text: {text: string; dialect: string}) => void): string[] {
   const bound = boundDeclaration(model, entityName, field);
   if (!bound) return [];
   const name = bound.owner;
   const deps = new Set<string>();
-  for (const text of texts(bound.field, dialect)) {
+  for (const text of textsFor(bound.field, dialect)) {
     // A text with no SQL has nothing to read.
     if (noSqlReason(text.text, text.dialect, name) !== undefined) continue;
     const columns = columnReferences(text.text, text.dialect);

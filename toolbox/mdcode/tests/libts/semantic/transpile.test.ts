@@ -11,7 +11,7 @@ import {describe, expect, spyOn, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import * as sqlParser from '../../../src/libts/semantic/sql_parser';
-import {SqlTranspiler, transpileModel, transpileModels, TranspileRequest,} from '../../../src/libts/semantic/transpile';
+import {SqlTranspiler, transpileModel, TranspileRequest,} from '../../../src/libts/semantic/transpile';
 
 // Builds a one-entity, one-metric model whose interesting fields/metric carry
 // only an imported (vendor) form, so the pass has something to fill. Extra
@@ -496,31 +496,4 @@ describe('transpileModel', () => {
           expect(out.entities[0].fields[0].stringForm).toBe(true);
         }
       });
-});
-
-describe('transpileModels', () => {
-  test(
-      'transpiles each model and prefixes warnings with the document',
-      async () => {
-        const {transpiler} = fakeTranspiler(() => 'IF(orders.s = 1, 1, 0)');
-        const {models, warnings} = await transpileModels(
-            [{document: 'sales.yaml', model: baseModel()}], {transpiler});
-
-        expect(models[0].document).toBe('sales.yaml');
-        expect(models[0].model.entities[0].fields[1].dialects).toEqual([
-          {dialect: 'BIGQUERY', expression: 'IF(orders.s = 1, 1, 0)'},
-        ]);
-        expect(
-            warnings.some(
-                w => w.startsWith('[sales.yaml] ') && w.includes('transpiled')))
-            .toBe(true);
-      });
-
-  test('does not mutate the input LoadedModel array', async () => {
-    const input = [{document: 'a.yaml', model: baseModel()}];
-    const snapshot = structuredClone(input);
-    const {transpiler} = fakeTranspiler(() => 'REWRITTEN');
-    await transpileModels(input, {transpiler});
-    expect(input).toEqual(snapshot);
-  });
 });

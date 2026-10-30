@@ -29,7 +29,6 @@
 //
 
 import {Field, Metric, SemanticModel, SqlDialect} from './ir';
-import {LoadedModel} from './loader';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
 
@@ -304,32 +303,6 @@ export async function transpileModel(
   }
 
   return {model: clone, warnings};
-}
-
-/**
- * Runs {@link transpileModel} across `models`, returning new `LoadedModel`s
- * (originals untouched) and all warnings prefixed with `[<document>]`.
- *
- * Convenience wrapper for the shared, document-tagged models a push loads once
- * (see `loadSemanticModels`), attributing each warning back to the originating
- * document name like the loader's own warnings.
- */
-export async function transpileModels(
-    models: LoadedModel[], opts: TranspileOptions = {}):
-    Promise<{models: LoadedModel[]; warnings: string[]}> {
-  // Models are independent, so map over them together; they share the single
-  // process-wide WASM engine instance (initialized once). The engine's
-  // transpile call is synchronous, so this does not run expressions in
-  // parallel -- it just avoids re-initializing the engine per model.
-  const results =
-      await Promise.all(models.map(({model}) => transpileModel(model, opts)));
-  const out: LoadedModel[] = [];
-  const warnings: string[] = [];
-  models.forEach(({document}, i) => {
-    out.push({document, model: results[i].model});
-    for (const w of results[i].warnings) warnings.push(`[${document}] ${w}`);
-  });
-  return {models: out, warnings};
 }
 
 function sameSet(a: string[], b: string[]): boolean {
