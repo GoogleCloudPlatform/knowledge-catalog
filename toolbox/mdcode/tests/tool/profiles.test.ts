@@ -902,7 +902,8 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
           name.split('.')[0]}' to a ${dialect} source`;
   // The end of the error for a field whose text kcmd import --transpile can
   // translate.
-  const HINT = "; give it one, or add one with 'kcmd import --transpile'.";
+  const HINT = "; give it one, or add one with 'kcmd import <file> " +
+      "--input first-party --flavor <ossie|google> --transpile'.";
   // Field amount, whose one text is `text` in `dialect`.
   const amount = (dialect: string, text: string) =>
       `{ name: amount, expression: { dialects: [{ dialect: ${dialect}, ` +
@@ -2519,8 +2520,9 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
         errors: [
           "[commerce.profile.prod.yaml] profile 'prod': metric " +
               "'positive_spend' has no expression for BIGQUERY or ANSI_SQL, " +
-              "and this profile's sources are BIGQUERY; give it one, or add " +
-              "it to 'metrics_exclude'",
+              "and this profile's sources are BIGQUERY; give it one, add " +
+              "one with 'kcmd import <file> --input first-party --flavor " +
+              "<ossie|google> --transpile', or add it to 'metrics_exclude'",
         ],
       });
     });

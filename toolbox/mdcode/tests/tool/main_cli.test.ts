@@ -156,6 +156,7 @@ describe('kcmd push --transpile', () => {
     expect(out).not.toContain('Unknown option');
     expect(out).toContain(
         "'--transpile' is no longer supported on 'kcmd push'; use 'kcmd import " +
-        "--transpile' to translate SQL dialects when importing a model.");
+        "<file> --input first-party --flavor <ossie|google> --transpile' to " +
+        "translate SQL dialects when importing a model.");
   }, 30000);  // Spawning a command takes longer than the default timeout.
 });

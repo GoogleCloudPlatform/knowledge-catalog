@@ -378,8 +378,8 @@ export function resolveModelDeployments(
 // Memoizes the parse per model object so the several callers within one push
 // (validation, source-project lookup, per-leg routing, each deploy leg) share a
 // single parse rather than re-running JSON.parse + the regexes once per reader.
-// Keyed by model identity: the IR object is stable through a push (the loader,
-// transpile, and inheritance passes each hand on a fixed set of objects) and
+// Keyed by model identity: the IR object is stable through a push (the loader
+// and inheritance passes each hand on a fixed set of objects) and
 // neither its deployments nor its customExtensions are mutated after loading.
 // A caller that narrows `deployments` builds a new model object. The returned
 // value is read-only by convention -- no caller mutates its arrays.

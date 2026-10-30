@@ -765,6 +765,15 @@ describe('pruneUnavailable drops what a binding cannot answer', () => {
     const {model, report} = pruneUnavailable(m, 'operational');
     expect(metricNames(model)).toContain('avg_lifetime_value');
     expect(report.droppedMetrics.map(d => d.name)).not.toContain('avg_lifetime_value');
+    // With only its Snowflake text, pruning reads nothing, so the metric is
+    // kept although that text reads the unbound lifetimeValue.
+    metric.dialects =
+        [{dialect: 'SNOWFLAKE', expression: 'AVG(Customer.lifetimeValue)'}];
+    metric.importedExpression = 'AVG(Customer.lifetimeValue)';
+    metric.importedDialect = 'SNOWFLAKE';
+    const vendorOnly = pruneUnavailable(m, 'operational');
+    expect(metricNames(vendorOnly.model)).toContain('avg_lifetime_value');
+    expect(vendorOnly.report.droppedMetrics).toEqual([]);
   });
 
   test('a metric whose SQL cannot be read is kept, with a warning', () => {

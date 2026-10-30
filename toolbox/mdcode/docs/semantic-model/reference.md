@@ -105,7 +105,7 @@ model's profile files there unwritten is refused.
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
 | `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. |
-| `--transpile` | Add a BigQuery translation beside SQL in another dialect. Off by default. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model file only. A profile's SQL stays as written. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
 ### profiles

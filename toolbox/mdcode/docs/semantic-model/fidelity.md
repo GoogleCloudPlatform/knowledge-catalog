@@ -95,8 +95,10 @@ agree on every structural row and differ only where a Spanner target has no
     list. `importedExpression` / `importedDialect` are not authored keys — the
     loader *derives* them from a non-canonical dialect entry (for example the
     MAQL or Snowflake form a metric was imported from). `kcmd import
-    --transpile` adds a `BIGQUERY` dialect entry translated from a vendor-only expression
-    or from an `ANSI_SQL` expression that double-quotes column names. A BigQuery
+    --transpile` adds a `BIGQUERY` dialect entry to a model file's field or
+    metric, translated from a vendor-only expression or from an `ANSI_SQL`
+    expression that double-quotes column names. It leaves a profile's
+    expressions as written. A BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with
     a warning, though push rejects such a field in the model file first. A
@@ -267,9 +269,11 @@ drops graph-statement `OPTIONS`, so the model's `description` / `ai_context` are
 not in the graph — the `description` and `ai_context.instructions` are carried
 into Knowledge Catalog instead. Of an entity's keys only one is emitted: its
 primary key, else its first unique key. The imported vendor SQL is never
-emitted. `kcmd import --transpile` adds a `BIGQUERY` entry for a vendor-only
-expression or an `ANSI_SQL` expression that double-quotes column names, and the
-graph builds each field and metric from its `BIGQUERY` entry, else its `ANSI_SQL` one. A field with none of these is left out of its node table with a warning,
+emitted. `kcmd import --transpile` adds a `BIGQUERY` entry to a model file's
+field or metric whose expression is vendor-only or an `ANSI_SQL` expression
+that double-quotes column names. It leaves a profile's expressions as written.
+The graph builds each field and metric from its `BIGQUERY` entry, else its
+`ANSI_SQL` one. A field with none of these is left out of its node table with a warning,
 though push rejects such a field in the model file first. A
 metric with none, or one that aggregates such a field, is skipped with a
 warning.

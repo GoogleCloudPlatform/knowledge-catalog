@@ -19,7 +19,7 @@ import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inherited
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
+import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -384,7 +384,7 @@ export function validateInlineDialects(
     for (const f of e.fields ?? []) {
       if (!isFieldBound(f) || textsFor(f, dialect).length) continue;
       const hint = importTranspiles(f, dialect) ?
-          `; give it one, or add one with 'kcmd import --transpile'` : '';
+          `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` : '';
       errors.push(
           `field '${e.name}.${f.name}' in model '${model.name}' (${
               document}) has no expression for ${dialect} or ANSI_SQL, and ` +
@@ -1667,8 +1667,8 @@ function validateBigQueryMetrics(
       errors.push(
           `${prefix} targets a BigQuery graph with only a '${
               metric.importedDialect ?? 'vendor'}' expression; supply a ` +
-          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd ` +
-          `import --transpile'.`);
+          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
+              IMPORT_TRANSPILE_COMMAND}'.`);
       continue;
     }
     // The generator reads the resolved BigQuery expression (`bqText`) with its

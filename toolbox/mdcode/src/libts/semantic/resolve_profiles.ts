@@ -1902,13 +1902,18 @@ export function textsFor(
   return text !== undefined ? [{text, dialect}] : [];
 }
 
+// The import command that adds BigQuery SQL to a model file. Push reads only
+// files written for kcmd, so `--input first-party` fits each of them.
+export const IMPORT_TRANSPILE_COMMAND =
+    'kcmd import <file> --input first-party --flavor <ossie|google> --transpile';
+
 // Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
-// with no text for `dialect`: one in a BigQuery model whose only text is an
-// imported one, in a dialect the translator reads.
+// with no text for `dialect`: true when `dialect` is BIGQUERY and its only
+// text is an imported one, in a dialect the translator reads.
 export function importTranspiles(
     f: Parameters<typeof textsFor>[0], dialect: string|undefined): boolean {
-  return dialect === 'BIGQUERY' && f.expression === undefined &&
-      !!f.importedExpression && transpilesFrom(f.importedDialect ?? '');
+  return dialect === 'BIGQUERY' && !!f.importedExpression &&
+      transpilesFrom(f.importedDialect ?? '');
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -2274,10 +2279,12 @@ export function validateProfileCompleteness(
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && !runs(m as Field)) {
+          const viaImport = importTranspiles(m as Field, dialect) ?
+              ` add one with '${IMPORT_TRANSPILE_COMMAND}',` : '';
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
               `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +
-              `one, or add it to 'metrics_exclude'`);
+              `one,${viaImport} or add it to 'metrics_exclude'`);
         }
       }
     }
