@@ -177,9 +177,9 @@ try {
 // The cleared match is what makes it safe to exit here, so test for that
 // rather than for the flag. cac serves `--version` only when no command
 // matched; with one matched it runs the action instead and leaves the match
-// in place, and since every action is async, `cli.parse()` has returned while
-// the action is still pending at its first await. Exiting on the flag alone
-// would kill `kcmd push --version` mid-write and report success.
+// in place, and since every action returns a promise, `cli.parse()` has
+// returned while the action is still pending at its first await. Exiting on
+// the flag alone would kill `kcmd push --version` mid-write and report success.
 //
 // It is not enough on its own, though. cac serves `--help` for a command it
 // never found, so a typo'd verb with `--help` on it arrives here cleared in
