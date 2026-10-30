@@ -95,7 +95,9 @@ kcmd import <file> --flavor <ossie|google>
 
 Imports a semantic model file into the flavor `--flavor` names. A file another
 product wrote is repaired, and each repair is reported as a warning. A file
-written for kcmd converts between flavors exactly or not at all. The
+written for kcmd converts between flavors exactly or not at all. Renaming a
+dialect such as `GOOGLE_SQL` or `bigquery`, and recasing a vanilla datatype
+such as `integer`, are repairs too. The
 `<model>.profile.<name>.yaml` files beside `<file>` go in with it. Nothing is
 written when the import reports an error. Import rewrites only the values it
 changes, and every other line of the file stays as written, with its comments,
