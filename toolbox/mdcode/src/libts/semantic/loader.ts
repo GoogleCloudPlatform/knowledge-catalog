@@ -1976,14 +1976,10 @@ function fallsBackToAnsi(
       dialects.some(d => d.dialect === FALLBACK_DIALECT);
 }
 
-// The warning an expression a table of the `preferred` dialect runs gives, or
-// undefined. With no text for `preferred`, an ANSI_SQL text gives the ANSI_SQL
-// note, and a warning naming `ctx` instead when the table is a BigQuery table
-// and the text double-quotes a name. With neither, the expression gives a
-// warning naming `ctx`, since its text needs transpilation. The string form is
-// an ANSI_SQL text the author meant for every engine, so it gives no note. Read
-// from the IR, so a profile's bindings are judged as a load judges a model
-// file's.
+// The warning `item` gives on a table of the `preferred` dialect, or undefined
+// when it has text in that dialect. Vendor-only text needs transpilation, and
+// ANSI_SQL text warns on BigQuery when it double-quotes a name, or else gives
+// the ANSI_SQL note when it is not the string form.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, ctx: string,
     preferred: string): string|undefined {
@@ -1993,8 +1989,6 @@ function expressionWarning(
     return undefined;
   }
   const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
-  // Standard SQL reads a double-quoted name as a name, and BigQuery reads it
-  // as a string.
   if (ansi && preferred.toUpperCase() === DEFAULT_DIALECT &&
       hasDoubleQuotedColumn(ansi.expression)) {
     return `${ctx}: its '${FALLBACK_DIALECT}' expression double-quotes a ` +
@@ -2011,10 +2005,8 @@ function expressionWarning(
              preferred}')`;
 }
 
-// Whether `entity`'s table runs SQL in `dialect`: its source names a table of
-// that dialect, or a lookup read that dialect for it
-// (LoadOptions.sourceDialects). An abstract entity, one with no source, and
-// one whose table's dialect the load does not know run none.
+// Whether `entity`'s table runs SQL in `dialect`. An abstract entity runs
+// none, and so does one whose table's dialect the load does not know.
 function runsDialect(
     entity: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>,
     dialect: string): boolean {
@@ -2033,10 +2025,10 @@ function fieldWarnings(
 }
 
 // The warning `metric`'s expression gives on the tables of the `reached`
-// entities and their subtypes, or on every entity's when it reaches none.
-// `entities` are resolved, so each lists every ancestor. On a table of the
-// `preferred` dialect it is expressionWarning's, and otherwise it names the
-// first table whose dialect has no text in the metric.
+// entities and their subtypes, taken from the resolved `entities`, or on every
+// table when it reaches none. On a table of the `preferred` dialect it is
+// expressionWarning's, and otherwise it names the first table whose dialect
+// has no text in the metric.
 function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
