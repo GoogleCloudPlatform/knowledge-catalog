@@ -131,8 +131,8 @@ describe('conversion, strict mode, and translation', () => {
       'biglake.googleapis.com/projects/acme/catalogs/c.1'
     ],
     [
-      'Google to vanilla', googleDoc(),
-      {flavor: 'ossie' as const, strict: true}, 'not supported yet'
+      'Google to vanilla without strict', googleDoc(),
+      {flavor: 'ossie' as const}, '--input first-party'
     ],
     [
       'GOOGLE block without strict', ossieDoc({
@@ -489,7 +489,59 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
   });
 });
 
-describe('first-party flavor conversion (vanilla -> Google)', () => {
+describe('first-party flavor conversion (vanilla <-> Google)', () => {
+  const googleModelYaml = `
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: retail
+    ai_context:
+      instructions: "Retail model"
+      synonyms: [commerce]
+      examples: ["total orders"]
+      custom:
+        owner: analytics
+    deployments:
+      - name: prod_bq
+        target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail
+        profile: prod
+    entities:
+      - name: orders
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        extends: [base_orders]
+        fields:
+          - name: order_id
+            expression: "orders.order_id"
+      - name: base_orders
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            datatype: Integer
+            expression:
+              dialects:
+                - dialect: BIGQUERY
+                  expression: "base_orders.order_id"
+    relationships:
+      - name: order_base
+        from: orders
+        to: base_orders
+        from_columns: [order_id]
+        to_columns: [order_id]
+        description: "Order to base"
+    metrics:
+      - name: total_orders
+        entity: orders
+        expression: "COUNT(*)"
+`;
+  const profileYaml = `
+name: prod
+entities:
+  - name: orders
+    source: ${BQ_TABLE}
+    primary_key: [order_id]
+`;
+
   test(
       'converts vanilla 0.2.0.dev0 with GOOGLE blocks and custom ai_context to Google flavor and profile files',
       async () => {
@@ -621,6 +673,94 @@ semantic_model:
         });
       });
 
+  test(
+      'converts Google-flavor 0.2.0.dev0/google with profile files and Google constructs to vanilla 0.2.0.dev0',
+      async () => {
+        const res = await importSemanticModelYaml(googleModelYaml, {
+          flavor: 'ossie',
+          strict: true,
+          profileFiles: [
+            {fileName: 'retail.profile.prod.yaml', content: profileYaml},
+          ],
+        });
+
+        expect(res.ok).toBe(true);
+        expect(res.errors).toEqual([]);
+        expect(res.files).toHaveLength(1);
+        expect(res.files[0].fileName).toBe('retail.yaml');
+        const parsedVanillaDoc = yaml.parse(res.files[0].content);
+        expect(parsedVanillaDoc.version).toBe('0.2.0.dev0');
+        expect(parsedVanillaDoc.semantic_model[0].entities).toBeUndefined();
+        expect(parsedVanillaDoc.semantic_model[0].ai_context.owner)
+            .toBe('analytics');
+        expect(parsedVanillaDoc.semantic_model[0].ai_context.custom)
+            .toBeUndefined();
+        const loaded = loadModels(res.files[0].content).models[0];
+        expect(loaded.entities[0].fields[0].dialects).toEqual([
+          {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
+        ]);
+        expect(loaded.entities[0].extends).toEqual(['base_orders']);
+        expect(loaded.relationships[0].description).toBe('Order to base');
+        expect(loaded.metrics[0].authoredEntity).toBe('orders');
+        expect(loaded.deployments?.[0].name).toBe('prod_bq');
+        expect(loaded.profiles?.map(p => p.name)).toEqual(['prod']);
+        expect(loaded.aiContext?.additionalProperties).toEqual({
+          owner: 'analytics',
+        });
+      });
+
+  test(
+      'reports all conversion gaps in a single run when converting to vanilla',
+      async () => {
+        const input = `
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: retail
+    entities:
+      - name: orders
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression: "orders.order_id"
+          - name: amount
+            datatype: Decimal
+      - name: base_entity
+        abstract: true
+      - name: unbound_entity
+        fields:
+          - name: id
+            expression: "unbound_entity.id"
+    relationships:
+      - name: rel_no_cols
+        from: orders
+        to: unbound_entity
+        description: "Has GOOGLE block description"
+    actions:
+      - name: act1
+        parameters:
+          - name: p1
+            type: String
+    constraints:
+      - name: con1
+        judgment: "Always valid"
+        on_violation: reject
+`;
+        const res = await importSemanticModelYaml(
+            input, {flavor: 'ossie', strict: true});
+
+        expect(res.ok).toBe(false);
+        expect(res.files).toEqual([]);
+        expect(res.errors).toEqual([
+          `Cannot convert 'retail' to version '0.2.0.dev0': action 'act1' is not supported in version '0.2.0.dev0'.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': constraint 'con1' is not supported in version '0.2.0.dev0'.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': field 'orders.amount' has no 'expression'.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': entity 'base_entity' is 'abstract', which version '0.2.0.dev0' does not support.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': entity 'unbound_entity' has no 'source'.`,
+          `Cannot convert 'retail' to version '0.2.0.dev0': relationship 'rel_no_cols' has no join columns ('from_columns' and 'to_columns').`,
+        ]);
+      });
+
   test.each([
     [
       'legacy deploymentTargets in vanilla GOOGLE block',
@@ -657,4 +797,105 @@ semantic_model:
        expect(res.files).toEqual([]);
        expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
      });
+
+  test.each([
+    [
+      'reserved default profile name',
+      [{fileName: 'retail.profile.default.yaml', content: 'name: default\n'}],
+      `'default' names the model's inline bindings`,
+    ],
+    [
+      'case-insensitive duplicate profile names',
+      [
+        {fileName: 'retail.profile.prod.yaml', content: 'name: prod\n'},
+        {fileName: 'PROD.yaml', content: 'name: PROD\n'},
+      ],
+      `duplicate profile name 'PROD'`,
+    ],
+    [
+      'mismatched profile name inside file',
+      [{fileName: '/dir/retail.profile.prod.yaml', content: 'name: staging\n'}],
+      `does not match its file's profile name 'prod'`,
+    ],
+    [
+      'nameless .yml profile file',
+      [{fileName: 'retail.profile.yml', content: 'name: ""\n'}],
+      `Profile name '' is not valid`,
+    ],
+  ])('refuses invalid profile file when converting to vanilla: %s',
+     async (_, profileFiles, expectedMsg) => {
+       const res = await importSemanticModelYaml(
+           googleDoc(), {flavor: 'ossie', strict: true, profileFiles});
+
+       expect(res.ok).toBe(false);
+       expect(res.files).toEqual([]);
+       expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
+     });
+
+  test(
+      'round-trips Google flavor to vanilla and back with equal loaded IR (wrapping short-form as ANSI_SQL) and preserves canonical files identically',
+      async () => {
+        const toVanilla = await importSemanticModelYaml(googleModelYaml, {
+          flavor: 'ossie',
+          strict: true,
+          profileFiles: [
+            {fileName: 'retail.profile.prod.yaml', content: profileYaml},
+          ],
+        });
+        const canonicalGoogle =
+            await importSemanticModelYaml(toVanilla.files[0].content, {
+              flavor: 'google',
+              strict: true,
+            });
+        const vanillaAgain =
+            await importSemanticModelYaml(canonicalGoogle.files[0].content, {
+              flavor: 'ossie',
+              strict: true,
+              profileFiles: canonicalGoogle.files.slice(1),
+            });
+        const roundTrippedCanonical =
+            await importSemanticModelYaml(vanillaAgain.files[0].content, {
+              flavor: 'google',
+              strict: true,
+            });
+
+        expect(toVanilla.ok).toBe(true);
+        expect(canonicalGoogle.ok).toBe(true);
+        const origIr = loadModels(googleModelYaml).models[0];
+        const roundTripIr =
+            loadModels(canonicalGoogle.files[0].content).models[0];
+        expect(origIr.entities[0].fields[0].stringForm).toBe(true);
+        expect(roundTripIr.entities[0].fields[0].stringForm).toBe(false);
+        expect(roundTripIr.entities[0].fields[0].dialects).toEqual([
+          {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
+        ]);
+        expect(origIr.metrics[0].stringForm).toBe(true);
+        expect(roundTripIr.metrics[0].stringForm).toBe(false);
+        expect(roundTripIr.metrics[0].dialects).toEqual([
+          {dialect: 'ANSI_SQL', expression: 'COUNT(*)'},
+        ]);
+        origIr.entities[0].fields[0].stringForm = false;
+        origIr.metrics[0].stringForm = false;
+        expect(roundTripIr).toEqual(origIr);
+        expect(loadProfileFile(canonicalGoogle.files[1].content, 'prod'))
+            .toEqual(loadProfileFile(profileYaml, 'prod'));
+        expect(roundTrippedCanonical.files).toEqual(canonicalGoogle.files);
+      });
+
+  test('ignores profileFiles when target flavor is google', async () => {
+    const googleRes = await importSemanticModelYaml(ossieDoc(), {
+      flavor: 'google',
+      strict: true,
+      profileFiles: [
+        {
+          fileName: 'retail.profile.default.yaml',
+          content: 'name: default\n',
+        },
+      ],
+    });
+
+    expect(googleRes.ok).toBe(true);
+    expect(googleRes.errors).toEqual([]);
+    expect(googleRes.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+  });
 });
