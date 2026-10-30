@@ -4004,6 +4004,20 @@ describe('applyProfile options', () => {
     expect(own.join('\n')).not.toContain("field 'orders.legacy'");
   });
 
+  test('a metric the profile excludes gives no warning under it', () => {
+    const model = base();
+    model.entities[0].dataSource = model.entities[0].authoredSource = SP('orders');
+    model.metrics.push({name: 'm', entity: 'orders',
+                        dialects: [{dialect: 'SPANNER', expression: 'SUM(orders.id)'}]});
+    const warned = (metricsExclude?: string[]) => {
+      const out: string[] = [];
+      applyProfile(model, {...rebind(BQ('orders2')), metricsExclude}, {warnings: out});
+      return out.filter(w => w.startsWith("metric 'm'"));
+    };
+    expect(warned()).toHaveLength(1);
+    expect(warned(['m'])).toEqual([]);
+  });
+
   test('the load dialect picks each field\'s text', () => {
     const applied =
         applyProfile(base(), rebind(SP('Orders')), {load: {dialect: 'SPANNER'}});

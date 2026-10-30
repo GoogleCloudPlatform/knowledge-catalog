@@ -2128,8 +2128,9 @@ export function inferMetricEntities(
 // Every warning a load gives about `model`'s entities and metrics, in the
 // order a load gives them: each concrete entity's missing key, each field's
 // expression warning, then each metric's expression warning and its warning
-// when it names no entity. A profile changes only these; a load's other
-// warnings, about actions, come after them.
+// when it names no entity. A metric a profile excludes gives none. A profile
+// changes only these; a load's other warnings, about actions, come after
+// them.
 export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT): string[] {
   const entities = model.entities ?? [];
@@ -2138,7 +2139,9 @@ export function entityAndMetricWarnings(
   out.push(...fieldWarnings(resolved, preferred));
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
+  const excluded = new Set(model.excludedMetrics);
   for (const m of model.metrics ?? []) {
+    if (excluded.has(m.name)) continue;
     const {referenced, warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
     const w = metricWarning(
