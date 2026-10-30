@@ -453,9 +453,9 @@ function validateInputDocument(
  * Qualifies a bare dot-separated table name `source` against `prefix` into a
  * GCP resource name when `prefix` supplies the missing hierarchy segments and
  * any overlapping segments agree, or returns `undefined` if `source` cannot be
- * qualified. Against an AlloyDB prefix, an unquoted segment agrees in any
- * letter case and is written in lower case, as PostgreSQL reads it. With
- * `ignoreCase`, every segment agrees in any letter case.
+ * qualified. Against an AlloyDB prefix, an unquoted segment is read in lower
+ * case, as PostgreSQL reads it. With `ignoreCase`, every segment agrees in any
+ * letter case.
  */
 function qualifyTableSource(
     source: string, prefix: ParsedSourcePrefix, ignoreCase = false): string|
@@ -477,19 +477,17 @@ function qualifyTableSource(
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
   // PostgreSQL folds only ASCII letters in a UTF-8 database.
   const lower = (t: string) => t.replace(/[A-Z]/g, c => c.toLowerCase());
-  const folds = prefix.base.startsWith('alloydb.googleapis.com/');
+  const foldsCase = prefix.base.startsWith('alloydb.googleapis.com/');
+  const read = (s: {text: string; quoted: boolean}) =>
+      foldsCase && !s.quoted ? lower(s.text) : s.text;
+  const agrees = (s: {text: string; quoted: boolean}, k: string) =>
+      read(s) === k || (ignoreCase && lower(s.text) === lower(k));
   const tail = prefix.known.slice(prefix.known.length - overlap);
-  if (tail.some(
-          (k, i) => segs[i].text !== k &&
-              !((ignoreCase || folds && !segs[i].quoted) &&
-                lower(segs[i].text) === lower(k)))) {
-    return undefined;
-  }
+  if (tail.some((k, i) => !agrees(segs[i], k))) return undefined;
 
   // 3. Append the remaining child container (if any) and table segment onto
   // `prefix.base` and verify the resulting resource name is accepted.
-  const rest =
-      segs.slice(overlap).map(s => folds && !s.quoted ? lower(s.text) : s.text);
+  const rest = segs.slice(overlap).map(read);
   const qualified = prefix.child ?
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
