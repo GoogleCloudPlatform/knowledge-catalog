@@ -954,6 +954,8 @@ describe('comments', () => {
       {google = false, firstParty = false, metrics}:
           {google?: boolean, firstParty?: boolean, metrics: string}) {
     const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
+    const owner =
+        google ? 'custom:\n        owner: analytics' : 'owner: analytics';
     const source = firstParty ? BQ_TABLE : 'orders';
     const datatype = firstParty ? 'Integer' : 'integer';
     const dialect = firstParty ? 'SNOWFLAKE' : 'snowflake';
@@ -975,13 +977,18 @@ semantic_model:
               dialects:
                 - dialect: ${dialect}  # as written
                   expression: orders.order_id
+    ai_context:
+      # prefer net revenue
+      instructions: Prefer net revenue
+      ${owner}
     metrics:  # every metric
 ${metrics}# end of model
 `;
   }
-  // Import removes the unanchored `row_count`.
+  // Import removes the unanchored `row_count`, which a blank line separates
+  // from the metric after it.
   const thirdParty = commentedModel({
-    metrics: `${ROW_COUNT}${
+    metrics: `${ROW_COUNT}\n${
         ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders\n`,
   });
   const vanilla = commentedModel({
@@ -1007,19 +1014,19 @@ ${metrics}# end of model
     const list = google ? 'entities' : 'datasets';
     return [
       `${HEADER}\n\nversion: "${version}" # format version\n`,
+      '      # prefer net revenue\n      instructions: Prefer net revenue\n',
       `  - name: retail\n    ${list}:\n      # one row per order\n`,
       '      # one row per order\n      - name: orders\n',
       `        source: ${source} # the orders table\n`,
       '          # the order key\n          - name: order_id\n',
       '            datatype: Integer # a whole number\n',
       '                - dialect: SNOWFLAKE # as written\n',
-      `    metrics:\n      # every metric\n${ORDER_COUNT}`,
+      `    metrics: # every metric\n${ORDER_COUNT}`,
       counts,
       '\n# end of model\n',
     ];
   }
-  const ABOVE =
-      '        expression:\n          # counts orders\n          dialects:';
+  const ABOVE = '        expression: # counts orders\n          dialects:';
   const INLINE = '        expression: COUNT(orders.order_id) # counts orders\n';
   const TRANSPILED =
       '# as written\n                  expression: orders.order_id\n                - dialect: BIGQUERY\n';

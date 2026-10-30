@@ -110,13 +110,47 @@ function updateMap(
 function updatePair(u: Update, pair: yaml.Pair, value: unknown): void {
   const prev = pair.value;
   const first = yaml.isCollection(prev) ? prev.items[0] : undefined;
+  if (yaml.isScalar(pair.key) && !pair.key.comment) {
+    moveKeyLineComment(pair, pair.key, value);
+  }
   pair.value = updateNode(u, value, prev);
-  // The library keeps the comment above a mapping's or list's first item on
-  // the collection, after any comment on the key's line. When that item goes,
-  // only the key's comment stays.
-  if (first !== undefined && yaml.isCollection(prev) && pair.value === prev &&
-      !(prev.items as unknown[]).includes(first)) {
-    prev.commentBefore = keyLineComment(pair);
+  // When the first item goes, a blank line kept before the new first item
+  // would print as a line of spaces under the key.
+  const next = yaml.isCollection(prev) ? prev.items[0] : undefined;
+  const owner = yaml.isPair(next) ? next.key : next;
+  if (pair.value === prev && next !== first && yaml.isNode(owner)) {
+    owner.spaceBefore = false;
+  }
+}
+
+/**
+ * Moves the comment on the line of `pair`'s key onto `key`, so it stays on
+ * that line. The library keeps it on the value: after a scalar, or on a block
+ * collection together with the comment above the first item, which moves onto
+ * that item so it goes or moves with it.
+ */
+function moveKeyLineComment(
+    pair: yaml.Pair, key: yaml.Scalar, value: unknown): void {
+  const prev = pair.value;
+  if (yaml.isCollection(prev)) {
+    const keyLine = keyLineComment(pair);
+    const first = prev.items[0];
+    const owner = yaml.isPair(first) ? first.key : first;
+    const before = prev.commentBefore;
+    if (prev.flow || !before || !yaml.isNode(owner) ||
+        !before.startsWith(keyLine ?? '')) {
+      return;
+    }
+    const above =
+        keyLine === undefined ? before : before.slice(keyLine.length + 1);
+    key.comment = keyLine;
+    owner.commentBefore =
+        [above, owner.commentBefore].filter(c => c).join('\n') || undefined;
+    prev.commentBefore = undefined;
+  } else if (yaml.isNode(prev) && isObject(value)) {
+    // A scalar that becomes a mapping or list.
+    key.comment = prev.comment;
+    prev.comment = undefined;
   }
 }
 
