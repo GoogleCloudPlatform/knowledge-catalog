@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {catalogNameParts, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -409,9 +409,9 @@ function validateInputDocument(
  * Qualifies a bare dot-separated table name `source` against `prefix` into a
  * GCP resource name when `prefix` supplies the missing hierarchy segments and
  * any overlapping segments agree, or returns `undefined` if `source` cannot be
- * qualified. Against an AlloyDB prefix, an unquoted segment agrees in any
- * letter case and is written in lower case, as PostgreSQL reads it. With
- * `ignoreCase`, every segment agrees in any letter case.
+ * qualified. Against an AlloyDB prefix, an unquoted segment is read in lower
+ * case, as PostgreSQL reads it. With `ignoreCase`, every segment agrees in any
+ * letter case.
  */
 function qualifyTableSource(
     source: string, prefix: ParsedSourcePrefix, ignoreCase = false): string|
@@ -432,33 +432,27 @@ function qualifyTableSource(
           !trimmed.slice(1, -1).includes('`') ?
       trimmed.slice(1, -1) :
       trimmed;
-  // catalogNameSegments drops a segment's backticks, so whether a segment is
-  // quoted is read from where it starts in `unwrapped`.
-  let at = 0;
-  const segs = catalogNameSegments(unwrapped).map(s => {
-    const backticked = unwrapped[at] === '`';
-    at += 1 + (backticked ? s.replaceAll('`', '``').length + 2 : s.length);
-    return {text: unquote(s), quoted: backticked || /^".+"$/.test(s)};
-  });
+  const segs = catalogNameParts(unwrapped).map(p => ({
+    text: unquote(p.text),
+    quoted: p.backticked || /^".+"$/.test(p.text),
+  }));
   if (!segs.length || segs.some(s => !s.text.length)) return undefined;
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
   // PostgreSQL folds only ASCII letters in a UTF-8 database.
   const lower = (t: string) => t.replace(/[A-Z]/g, c => c.toLowerCase());
-  const folds = prefix.base.startsWith('alloydb.googleapis.com/');
+  const foldsCase = prefix.base.startsWith('alloydb.googleapis.com/');
+  const read = (s: {text: string; quoted: boolean}) =>
+      foldsCase && !s.quoted ? lower(s.text) : s.text;
+  const agrees = (s: {text: string; quoted: boolean}, k: string) =>
+      read(s) === k || (ignoreCase && lower(s.text) === lower(k));
   const tail = prefix.known.slice(prefix.known.length - overlap);
-  if (tail.some(
-          (k, i) => segs[i].text !== k &&
-              !((ignoreCase || folds && !segs[i].quoted) &&
-                lower(segs[i].text) === lower(k)))) {
-    return undefined;
-  }
+  if (tail.some((k, i) => !agrees(segs[i], k))) return undefined;
 
   // 3. Append the remaining child container (if any) and table segment onto
   // `prefix.base` and verify the resulting resource name is accepted.
-  const rest =
-      segs.slice(overlap).map(s => folds && !s.quoted ? lower(s.text) : s.text);
+  const rest = segs.slice(overlap).map(read);
   const qualified = prefix.child ?
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;

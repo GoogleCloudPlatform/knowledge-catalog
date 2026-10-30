@@ -409,6 +409,8 @@ describe('sources', () => {
     ['AlloyDB, backticked table', 'PUBLIC.`Orders`', ALLOYDB, `${ALLOYDB}/tables/Orders`],
     ['AlloyDB, backticked schema', '`public`.ORDERS', ALLOYDB, `${ALLOYDB}/tables/orders`],
     ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
+    ['AlloyDB, non-ASCII letter', 'PUBLIC.ÄRGER', ALLOYDB, `${ALLOYDB}/tables/Ärger`],
+    ['AlloyDB, mixed-case prefix', 'sales.orders', `${ALLOYDB_DB}/schemas/Sales`, undefined],
     ['BigQuery', 'SALES.orders', BQ_PREFIX, undefined],
     ['Cloud SQL', 'PUBLIC.orders', CLOUDSQL_PREFIX, undefined],
   ])('matches letter case against a prefix: %s', async (_, bare, sourcePrefix, completed) => {
