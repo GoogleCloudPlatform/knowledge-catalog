@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
@@ -1975,14 +1975,15 @@ function fallsBackToAnsi(
       dialects.some(d => d.dialect === FALLBACK_DIALECT);
 }
 
-// The warning an expression gives under `preferred`, or undefined: the
-// ANSI_SQL note when it takes its ANSI_SQL text, and a warning naming `ctx`
-// when it has neither, so its text needs transpilation. The string form is an
-// ANSI_SQL text the author meant for every engine, so it gives none. Read from
-// the IR, so a profile's bindings are judged as a load judges a model file's.
+// The warning an expression a table of the `preferred` dialect runs gives, or
+// undefined: the ANSI_SQL note when it takes its ANSI_SQL text, and a warning
+// naming `ctx` when it has neither, so its text needs transpilation. The
+// string form is an ANSI_SQL text the author meant for every engine, so it
+// gives none. Read from the IR, so a profile's bindings are judged as a load
+// judges a model file's.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, ctx: string,
-    preferred: string = DEFAULT_DIALECT): string|undefined {
+    preferred: string): string|undefined {
   const dialects = item.dialects ?? [];
   if (item.stringForm || !dialects.length) return undefined;
   if (dialects.some(d => d.dialect === preferred.toUpperCase())) {
@@ -1994,6 +1995,41 @@ function expressionWarning(
              FALLBACK_DIALECT}' dialect; keeping the '${vendor?.dialect}' ` +
       `expression as imported_expression (needs transpilation to '${
              preferred}')`;
+}
+
+// Whether `entity`'s table runs SQL in `dialect`: its source names a table of
+// that dialect, or a lookup read that dialect for it
+// (LoadOptions.sourceDialects). An abstract entity, one with no source, and
+// one whose table's dialect the load does not know run none.
+function runsDialect(
+    entity: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>,
+    dialect: string): boolean {
+  return sourcesDialect({entities: [entity]}) === dialect.toUpperCase();
+}
+
+// The warning each field's expression gives, on each entity whose table runs
+// SQL in `preferred`. An inherited field is judged on each entity that
+// inherits it, and named after that entity.
+function fieldWarnings(model: SemanticModel, preferred: string): string[] {
+  return resolvedEntities(model)
+      .filter(e => runsDialect(e, preferred))
+      .flatMap(e => e.fields.map(
+          f => expressionWarning(f, `field '${e.name}.${f.name}'`, preferred)))
+      .filter((w): w is string => w !== undefined);
+}
+
+// The warning a metric's expression gives, when a table that runs SQL in
+// `preferred` runs it: that of an entity it reaches, its anchor or one its
+// expressions reference, or, when it reaches none, that of any entity in the
+// model.
+function metricWarning(
+    metric: Pick<Metric, 'name'|'dialects'|'stringForm'>,
+    reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
+    preferred: string): string|undefined {
+  const named = entities.filter(e => reached.includes(e.name));
+  return (named.length ? named : entities).some(e => runsDialect(e, preferred)) ?
+      expressionWarning(metric, `metric '${metric.name}'`, preferred) :
+      undefined;
 }
 
 // The warning a concrete entity with neither a primary key nor a unique key
@@ -2063,28 +2099,23 @@ export function inferMetricEntities(
 }
 
 // Every warning a load gives about `model`'s entities and metrics, in the
-// order a load gives them: a concrete entity's missing key and each field's
+// order a load gives them: each concrete entity's missing key, each field's
 // expression warning, then each metric's expression warning and its warning
 // when it names no entity. A profile changes only these; a load's other
 // warnings, about actions, come after them.
 export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT): string[] {
-  const out: string[] = [];
-  for (const e of model.entities ?? []) {
-    const kw = keyWarning(e);
-    if (kw) out.push(kw);
-    for (const f of e.fields) {
-      const w = expressionWarning(f, `field '${e.name}.${f.name}'`, preferred);
-      if (w) out.push(w);
-    }
-  }
-  const entityNames = (model.entities ?? []).map(e => e.name);
+  const entities = model.entities ?? [];
+  const out = entities.map(keyWarning).filter((w): w is string => !!w);
+  out.push(...fieldWarnings(model, preferred));
+  const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   for (const m of model.metrics ?? []) {
-    const w = expressionWarning(m, `metric '${m.name}'`, preferred);
-    if (w) out.push(w);
-    const {warning: mw} = inferMetricEntities(
+    const {referenced, warning: mw} = inferMetricEntities(
         m, entityNames, preferred, impliedDialect, model.version);
+    const w = metricWarning(
+        m, [m.authoredEntity, ...referenced], entities, preferred);
+    if (w) out.push(w);
     if (mw) out.push(mw);
   }
   return [...new Set(out)];
@@ -2176,10 +2207,14 @@ function convertModel(
       relationships.map(r => r.name), 'relationship name', `model '${m.name}'`,
       true);
 
+  // A field is judged on each entity that inherits it too, so its warning
+  // waits until every entity is read.
+  warnings.push(...fieldWarnings(
+      {name: m.name, entities, relationships, metrics: []}, dialect));
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(
-          mt, version, entityNames, warnings, dialect, impliedDialect));
+          mt, version, entities, warnings, dialect, impliedDialect));
   rejectDuplicateNames(
       metrics.map(mt => mt.name), 'metric name', `model '${m.name}'`, true);
 
@@ -2317,7 +2352,7 @@ function convertDataset(
       {name: ds.name, keys, uniqueKeys: ds.unique_keys, abstract: ds.abstract});
   if (kw) warnings.push(kw);
   const fields = (ds.fields ?? []).map(
-      f => convertField(f, ds.name, version, warnings, dialect));
+      f => convertField(f, ds.name, version, dialect));
   rejectDuplicateNames(
       fields.map(f => f.name), 'field name', `dataset '${ds.name}'`, true);
 
@@ -2478,7 +2513,7 @@ export function parseFieldBinding(
 
 function convertField(
     f: FieldDoc, entityName: string, version: FormatVersion,
-    warnings: string[], dialect: string): Field {
+    dialect: string): Field {
   rejectInvalidName('field', f.name, `dataset '${entityName}'`);
   // `label`, `dimension`, and AI-first annotations are carried structurally on
   // the IR (not folded into `description`) so an emitter can route each to its
@@ -2489,8 +2524,6 @@ function convertField(
   const field: Field = {name: f.name};
   if (f.expression !== undefined) {
     Object.assign(field, fieldExpression(f.expression, version, dialect, ctx));
-    const w = expressionWarning(field, ctx, dialect);
-    if (w) warnings.push(w);
   }
   // else: an unbound field. It carries meaning (label, description, AI context)
   // but names no physical column. A field is unbound exactly when it has no
@@ -2563,17 +2596,16 @@ function convertRelationship(
 }
 
 function convertMetric(
-    mt: MetricDoc, version: FormatVersion, entityNames: string[],
+    mt: MetricDoc, version: FormatVersion, entities: Entity[],
     warnings: string[], dialect: string, impliedDialect?: string): Metric {
   rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
+  const entityNames = entities.map(e => e.name);
   const block = readGoogleBlocks(mt.custom_extensions, version, 'metric', ctx);
   // The anchor the author wrote, natively or in a vanilla GOOGLE block.
   const authored = mt.entity ?? block.values.entity;
   const {dialects, stringForm, picked} =
       convertExpression(mt.expression, version, dialect, ctx);
-  const ew = expressionWarning({dialects, stringForm}, ctx, dialect);
-  if (ew) warnings.push(ew);
   // Infer referenced entities across all dialect entries of the metric.
   const {referenced, warning: mw} = inferMetricEntities(
       {
@@ -2585,6 +2617,10 @@ function convertMetric(
         dialects,
       },
       entityNames, dialect, impliedDialect, version);
+  const ew = metricWarning(
+      {name: mt.name, dialects, stringForm}, [authored, ...referenced],
+      entities, dialect);
+  if (ew) warnings.push(ew);
   if (mw) warnings.push(mw);
   const metric: Metric = {name: mt.name, dialects, stringForm};
   if (authored !== undefined) {
@@ -2967,6 +3003,8 @@ function convertExecutor(ex: ExecutorDoc): Executor {
 //   - When neither the target nor ANSI_SQL is present, `expression` is left
 //     unset and only `importedExpression` is populated; that is a genuine risk
 //     (needs transpilation) and is warned per field/metric, naming the dialect.
+// Both are reported only where a table of the target dialect runs the
+// expression (see fieldWarnings and metricWarning).
 interface PickedExpression {
   expression?: string;
   importedExpression?: string;
