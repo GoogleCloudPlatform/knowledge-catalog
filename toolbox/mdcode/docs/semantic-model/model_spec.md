@@ -696,8 +696,9 @@ A resource URI, the same name with a leading `//`, and a Knowledge Catalog name
 such as `bigquery:<p>.<d>.<t>` are rejected, and the error names the resource
 name to write. A table outside Google Cloud is written as the entry name of its
 Knowledge Catalog entry,
-`projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`. The entry of its
-schema, database or account is rejected.
+`projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`. An entry whose
+`fullyQualifiedName` names something other than a table or view, such as a
+schema, is rejected.
 [profiles.md](profiles.md#sources) lists every accepted store.
 Ossie requires `source` on every dataset; `kcmd` relaxes it to optional
 ([§4.2](#42-relaxations-looser-than-ossie)) so a purely logical model loads, but

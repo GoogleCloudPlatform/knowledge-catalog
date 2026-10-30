@@ -201,7 +201,7 @@ describe('sourceDialects of a third-party table', () => {
       ['databricks:volume:1234.main.retail.files',
        'databricks:<metastore>.<catalog>.<schema>.<table>'],
       ['mysql:host.sales', 'mysql:<host>.<schema>.<table>'],
-      ['postgresql:host.sales', 'postgresql:<host>.<database>.<schema>.<table>'],
+      ['postgresql:host.sales.public', 'postgresql:<host>.<database>.<schema>.<table>'],
       ['sqlserver:host.sales.dbo', 'sqlserver:<host>.<database>.<schema>.<table>'],
     ];
     for (const [fullyQualifiedName, form] of rows) {
