@@ -1998,9 +1998,9 @@ function expressionWarning(
   if (ansi && preferred.toUpperCase() === DEFAULT_DIALECT &&
       hasDoubleQuotedColumn(ansi.expression)) {
     return `${ctx}: its '${FALLBACK_DIALECT}' expression double-quotes a ` +
-        `name, which BigQuery reads as a string; give it a '${
-               DEFAULT_DIALECT}' expression, or add one with '${
-               IMPORT_TRANSPILE_COMMAND}'`;
+        `name, which BigQuery reads as a string; write a text value in ` +
+        `single quotes, or give it a '${DEFAULT_DIALECT}' expression; in a ` +
+        `model file, '${IMPORT_TRANSPILE_COMMAND}' adds one`;
   }
   if (item.stringForm) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
