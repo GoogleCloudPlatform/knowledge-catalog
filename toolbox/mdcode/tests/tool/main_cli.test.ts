@@ -70,9 +70,9 @@ describe('kcmd: --help and --version', () => {
   });
 
   // cac serves `--version` only when nothing matched. With a command matched it
-  // runs the action, and because every action is async `cli.parse()` returns
-  // while the action is still pending -- so exiting on the flag alone would
-  // kill the command here and report success.
+  // runs the action, and because every action returns a promise `cli.parse()`
+  // returns while the action is still pending -- so exiting on the flag alone
+  // would kill the command here and report success.
   for (const flag of ['--version', '-v']) {
     // Spawns `bun src/tool/main.ts`, which loads the whole CLI before it can
     // fail on the missing manifest. That is well past bun's 5s default.
@@ -147,6 +147,16 @@ describe('kcmd import', () => {
     expect(code).toBe(1);
     expect(out).toContain('--flavor is required');
   }, 30000);  // Spawning a command takes longer than the default timeout.
+
+  test('exits 0 when the command succeeds', () => {
+    const fixture = path.join(
+        process.cwd(), 'tests', 'libts', 'semantic', 'fixtures',
+        'measure_lowering.yaml');
+    const {code, out} =
+        run('import', fixture, '--flavor', 'ossie', '--out', 'out.yaml');
+    expect(code).toBe(0);
+    expect(out).toContain('wrote out.yaml');
+  }, 30000);
 });
 
 describe('kcmd push --transpile', () => {
