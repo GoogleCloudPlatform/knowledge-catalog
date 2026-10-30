@@ -28,6 +28,7 @@ const MISSING = err(
     'Knowledge Catalog, or fix the source.');
 const BQ = 'a BigQuery graph';
 const SPANNER = "Spanner database 'test-project/i/db'";
+const ALLOYDB_DB = "AlloyDB database 'test-project/us-central1/c/db'";
 // Why `target` cannot read Customer's table.
 const outside = (target: string) => `'${ENTRY}', which is not ${
     target === BQ ? 'a BigQuery or BigLake table' : 'a table in that database'}.`;
@@ -48,6 +49,22 @@ const DATABRICKS = {
   ...THIRD_PARTY,
   fields: [{name: 'key', expression: {dialects: [{dialect: 'DATABRICKS', expression: 'c_key'}]}}],
 };
+// A vanilla commerce.yaml whose GOOGLE block targets an AlloyDB database, with
+// Customer bound to `source`.
+const alloyDbModel = (source: string) => ({
+  'commerce.yaml': modelFile({google: {deploymentTargets: [ALLOYDB]}})
+                       .replace(bqTable('customer'), source),
+});
+// The AlloyDB target error of a plain push, which advises a catalog-only push
+// when `catalogOnly` is set.
+const alloyDbTarget = (catalogOnly: boolean) => err(
+    `model 'commerce' (commerce) target '${ALLOYDB}' is an AlloyDB database, ` +
+    'which a model runs against rather than deploys to; AlloyDB has no ' +
+    'property graph for a push to publish. Declare a BigQuery or Spanner ' +
+    "Graph target (list 'deployments' in a GOOGLE custom_extensions block on " +
+    "the model, or set version: '0.2.0.dev0/google' and use 'deployments:')" +
+    (catalogOnly ? ", or run 'kcmd push --no-profile' to publish to " +
+         'Knowledge Catalog only.' : '.'));
 
 scenarios('a third-party table', [
   {
@@ -61,7 +78,7 @@ scenarios('a third-party table', [
       {deployments: [{name: 'd', target: spannerGraph('g')}], code: 1,
        errors: [err(refused(SPANNER))], nothingWritten: true},
       {deployments: [{name: 'd', target: ALLOYDB}], code: 1,
-       errors: [err(refused("AlloyDB database 'test-project/us-central1/c/db'"))],
+       errors: [err(refused(ALLOYDB_DB))],
        nothingWritten: true},
       {
         deployments: [], flags: {deployment: false}, code: 0,
@@ -92,10 +109,14 @@ scenarios('a third-party table', [
     },
     {flags: {deployment: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
     {flags: {profile: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
-    {files: {'commerce.yaml': modelFile({google: {deploymentTargets: [ALLOYDB]}})
-                                  .replace(bqTable('customer'), ENTRY)},
-     flags: {profile: false}, code: 1, nothingWritten: true,
-     errors: [err(singlePhase("AlloyDB database 'test-project/us-central1/c/db'"))]}],
+    {files: alloyDbModel(ENTRY), flags: {profile: false}, code: 1,
+     nothingWritten: true, errors: [err(singlePhase(ALLOYDB_DB))]},
+    // A plain push also gives the AlloyDB target error. It advises a
+    // catalog-only push only when no third-party table makes that push fail.
+    {files: alloyDbModel(ENTRY), code: 1, nothingWritten: true,
+     errors: [alloyDbTarget(false), err(singlePhase(ALLOYDB_DB))]},
+    {files: alloyDbModel(bqTable('customer')), code: 1, nothingWritten: true,
+     errors: [alloyDbTarget(true)]}],
   },
   {
     name: 'a missing entry stops the push before anything is written, with or without --skip-source-check, and stops kcmd profiles',
