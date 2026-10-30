@@ -3297,6 +3297,17 @@ export async function importModel(
     const model = result.files[0].fileName.replace(YAML_FILE, '');
     targets = result.files.map(
         f => pulledFileTarget(layout, model, f.fileName, false));
+    // An entry group holds one model, so refuse to write beside another
+    // model's file. Re-importing the same model replaces its file.
+    const others = layout.modelDocuments()
+                       .map(d => layout.modelPath(d.name))
+                       .filter(p => p !== layout.modelPath(model));
+    if (others.length) {
+      return fail(
+          `the entry group already holds model file ${others.join(', ')}, ` +
+          `and an entry group holds one model; pass --out <path> to write ` +
+          `elsewhere, or import into another entry group's scope.`);
+    }
     // Refuse to leave behind a profile file this import does not write. Push
     // rejects one beside a vanilla model, and reads one beside a Google model
     // as that model's profile. A Google model file re-imported in place keeps

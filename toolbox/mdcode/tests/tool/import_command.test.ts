@@ -233,6 +233,19 @@ describe('kcmd import', () => {
     });
   });
 
+  test('an entry group holding another model\'s file is refused, naming it', async () => {
+    workspace();
+    write(path.join(GROUP, 'shop.yaml'), model());
+    write('retail.yaml', model());
+    expect(await importModel('retail.yaml', {flavor: 'ossie'})).toBe(1);
+    expect(errors).toEqual([
+      `Error: the entry group already holds model file ${path.join(GROUP, 'shop.yaml')}, and ` +
+          "an entry group holds one model; pass --out <path> to write elsewhere, or import " +
+          "into another entry group's scope.",
+    ]);
+    expect(filesIn(GROUP)).toEqual(['shop.yaml']);
+  });
+
   describe('a model with a profile, which gives two files', () => {
     const FILES = [
       {fileName: 'retail.yaml', content: 'model\n'},
