@@ -22,10 +22,11 @@
 //     preserved. The mechanism is injectable so tests run hermetically; the
 //     default adapter is the @polyglot-sql/sdk Rust/WASM engine, bundled into
 //     the tool -- there is no external runtime dependency to install.
-//   - Graceful degradation: if the engine fails to initialize, errors, or would
-//     alter which entities an expression references (the qualifier-preservation
-//     guard), the node is left as it is and a warning is emitted -- never a
-//     throw.
+//   - Graceful degradation: if the engine fails to initialize, errors, writes a
+//     date form BigQuery rejects that the adapter cannot repair (see "BigQuery
+//     repairs" below), or would alter which entities an expression references
+//     (the qualifier-preservation guard), the node is left as it is and a
+//     warning is emitted -- never a throw.
 //
 
 import {Field, Metric, SemanticModel, SqlDialect} from './ir';
@@ -398,7 +399,10 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
           error: `expected a single expression but got ${
               res.sql.length} statements`
         };
-      return {id: r.id, sql: res.sql[0]};
+      if (write !== 'bigquery') return {id: r.id, sql: res.sql[0]};
+      const repaired = repairForBigQuery(engine, res.sql[0]);
+      return 'error' in repaired ? {id: r.id, error: repaired.error} :
+                                   {id: r.id, sql: repaired.sql};
     } catch (err) {
       return {id: r.id, error: errMessage(err)};
     }
@@ -407,4 +411,149 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// --- BigQuery repairs ---------------------------------------------------------
+//
+// The engine (@polyglot-sql/sdk 0.9.1, and still 0.13.4) reads DATE_TRUNC,
+// DATE_PART and TO_CHAR as functions it does not know and writes them to
+// BigQuery as they were. It also keeps a PostgreSQL interval string such as
+// `INTERVAL '1 day'`, and T-SQL's YEAR, MONTH and DAY. BigQuery rejects each of
+// these, and the engine reports success. So the adapter reads the engine's
+// BigQuery output back, rewrites the forms it can translate, and refuses the
+// rest, so that no entry claims a translation BigQuery cannot run.
+
+// BigQuery's DATE_TRUNC part for each part name PostgreSQL, Snowflake and
+// Databricks take as a string. Their weeks start on Monday, as ISOWEEK does.
+const TRUNC_PARTS: Record<string, string> = {
+  microsecond: 'MICROSECOND',
+  millisecond: 'MILLISECOND',
+  second: 'SECOND',
+  minute: 'MINUTE',
+  hour: 'HOUR',
+  day: 'DAY',
+  week: 'ISOWEEK',
+  month: 'MONTH',
+  quarter: 'QUARTER',
+  year: 'YEAR',
+};
+
+// The engine's EXTRACT field for each DATE_PART part whose number BigQuery's
+// EXTRACT gives too. Left out: `second`, which PostgreSQL gives with its
+// fraction; `dow`, which PostgreSQL counts from 0; and `week`, which T-SQL's
+// DATEPART does not count as ISO weeks. Day of year is a custom field because
+// the engine writes its own `DayOfYear` field as `DOY`, which BigQuery rejects.
+const EXTRACT_FIELDS: Record<string, unknown> = {
+  year: 'Year',
+  quarter: 'Quarter',
+  month: 'Month',
+  day: 'Day',
+  hour: 'Hour',
+  minute: 'Minute',
+  doy: {Custom: 'DAYOFYEAR'},
+  dayofyear: {Custom: 'DAYOFYEAR'},
+  isoyear: {Custom: 'ISOYEAR'},
+};
+
+// The engine's interval unit for each unit a PostgreSQL interval string names.
+const INTERVAL_UNITS: Record<string, string> = {
+  second: 'Second',
+  minute: 'Minute',
+  hour: 'Hour',
+  day: 'Day',
+  week: 'Week',
+  month: 'Month',
+  year: 'Year',
+};
+
+// The engine's EXTRACT field for T-SQL's YEAR(d), MONTH(d) and DAY(d) nodes.
+const PART_NODES: Record<string, string> = {
+  year: 'Year',
+  month: 'Month',
+  day: 'Day',
+};
+
+// `sql`, the engine's BigQuery output, with the forms above rewritten, or an
+// error naming a form kcmd cannot translate. A text the engine cannot read
+// back is returned as it is; transpileModel's qualifier check reports it.
+function repairForBigQuery(engine: PolyglotEngine, sql: string):
+    {sql: string}|{error: string} {
+  const tree = sqlExpressionTree(sql, 'BIGQUERY');
+  if (!tree) return {sql};
+  let changed = false;
+  let refused: string|undefined;
+  const walk = (node: any): any => {
+    if (!node || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(walk);
+    const out: any = {};
+    for (const [k, v] of Object.entries(node)) out[k] = walk(v);
+    const repaired = repairNode(out);
+    if (typeof repaired === 'string') {
+      refused ??= repaired;
+      return out;
+    }
+    if (repaired === undefined) return out;
+    changed = true;
+    return repaired;
+  };
+  const result = walk(tree);
+  if (refused) return {error: `kcmd cannot translate ${refused} to BigQuery`};
+  if (!changed) return {sql};
+  const written = engine.generate([result], 'bigquery');
+  if (!written.success || written.sql?.length !== 1) {
+    return {error: written.error ?? 'the repaired SQL could not be written'};
+  }
+  return {sql: written.sql[0]};
+}
+
+// The node to put in place of `node`, a string naming a form kcmd cannot
+// translate, or undefined to keep `node`.
+function repairNode(node: any): unknown {
+  const fn = node.function;
+  if (fn) {
+    const name = String(fn.name).toUpperCase();
+    const args: any[] = fn.args ?? [];
+    if (name === 'TO_CHAR') return 'TO_CHAR';
+    // BigQuery's own DATE_TRUNC(d, MONTH) names its part last, unquoted.
+    if (name === 'DATE_TRUNC' && args.length === 2 &&
+        args[0].literal?.literal_type === 'string') {
+      const part = args[0].literal.value;
+      const bqPart = TRUNC_PARTS[part.toLowerCase()];
+      if (!bqPart) return `DATE_TRUNC with part '${part}'`;
+      return {function: {...fn, args: [args[1], {var: {this: bqPart}}]}};
+    }
+    if (name === 'DATE_PART') {
+      const part = args.length === 2 ? partName(args[0]) : undefined;
+      const field = part && EXTRACT_FIELDS[part.toLowerCase()];
+      if (!field) return `DATE_PART with part '${part ?? '?'}'`;
+      return {extract: {this: args[1], field}};
+    }
+    return undefined;
+  }
+  for (const [kind, field] of Object.entries(PART_NODES)) {
+    if (node[kind]?.this) return {extract: {this: node[kind].this, field}};
+  }
+  const interval = node.interval;
+  if (interval && interval.unit === null &&
+      interval.this?.literal?.literal_type === 'string') {
+    const text: string = interval.this.literal.value;
+    const [, amount, unit] = /^\s*([+-]?\d+)\s*([a-z]+?)s?\s*$/i.exec(text) ?? [];
+    const bqUnit = unit && INTERVAL_UNITS[unit.toLowerCase()];
+    if (!bqUnit) return `INTERVAL '${text}'`;
+    return {
+      interval: {
+        this: {literal: {literal_type: 'number', value: amount}},
+        unit: {type: 'simple', unit: bqUnit, use_plural: false},
+      },
+    };
+  }
+  return undefined;
+}
+
+// The part a DATE_PART names: a string, or a bare name as Snowflake and
+// T-SQL's DATEPART write it.
+function partName(arg: any): string|undefined {
+  if (arg.literal?.literal_type === 'string') return arg.literal.value;
+  if (arg.column && !arg.column.table) return arg.column.name?.name;
+  return arg.var?.this;
 }
