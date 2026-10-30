@@ -115,8 +115,8 @@ export function validatePushRequirements(
           `under 'deployments' in its GOOGLE custom_extensions block` :
           undefined;
       // When the model binds a third-party table, a graph target and a
-      // catalog-only push are refused too, so neither error below gives advice
-      // and the refusal beside it says why.
+      // catalog-only push are refused too, so neither error below gives advice.
+      // When the model names a target, the refusal beside it says why.
       const thirdParty = model.entities?.some(
           e => thirdPartyEntryOf(e.authoredSource ?? ''));
       if (deployInfo.uris.length !== 1) {
