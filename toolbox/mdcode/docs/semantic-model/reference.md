@@ -103,9 +103,10 @@ removes or moves elsewhere in the file, such as a key that goes into or out of
 a `GOOGLE` block. A profile file's comments are dropped when its contents move
 into the model file. Without `--out`, the files go into the scope's entry group
 folder, and an import that would leave one of the model's profile files there
-unwritten is refused. Without `--out`, an import is also refused when the entry
-group folder already holds another model's file, since an entry group holds
-one model.
+unwritten is refused. A Google model file re-imported in place with `--flavor
+google` is the exception, and keeps its profile files as they are. Without
+`--out`, an import is also refused when the entry group folder already holds
+another model's file, since an entry group holds one model.
 
 | Flag | Effect |
 |------|--------|

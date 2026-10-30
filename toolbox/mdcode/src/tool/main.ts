@@ -125,7 +125,7 @@ cli.command(
         'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d, or the Knowledge Catalog entry group projects/p/locations/l/entryGroups/g whose table entries complete them by fullyQualifiedName')
     .option(
         '--transpile',
-        'Add a BigQuery translation beside SQL in another dialect; off by default')
+        'Add a BigQuery translation beside SQL in another dialect, in the model file, its GOOGLE block profiles and the profile files the import writes; off by default')
     .option(
         '--out <path>',
         'A .yaml file to write the one output file to, or a directory to write each output file into; defaults to the semantic-model layout')
