@@ -135,9 +135,9 @@ describe('conversion, strict mode, and translation', () => {
       'biglake.googleapis.com/projects/acme/catalogs/c.1'
     ],
     [
-      'entry group sourcePrefix with no way to list it', ossieDoc(),
-      {sourcePrefix: 'projects/acme/locations/us/entryGroups/sf'},
-      'given no way to list its entries'
+      'system entry group sourcePrefix', ossieDoc(),
+      {sourcePrefix: 'projects/acme/locations/us/entryGroups/@bigquery'},
+      "names the system entry group '@bigquery', whose entries are Google Cloud tables"
     ],
     [
       'Google to vanilla without strict', googleDoc(),
