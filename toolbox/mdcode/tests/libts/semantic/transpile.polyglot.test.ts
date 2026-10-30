@@ -10,6 +10,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {polyglotTranspiler, transpileModel} from '../../../src/libts/semantic/transpile';
 
 // A model with one entity, `orders`, holding `fields`.
@@ -253,6 +254,25 @@ describe('polyglotTranspiler (transformations)', () => {
   ] as const)('writes %s %s as BigQuery runs it, or refuses it', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);
+  });
+
+  // A canary for the repairs above. It calls the engine directly, without
+  // the adapter, and expects the broken BigQuery it writes today. When an
+  // engine upgrade makes this fail, the engine translates that form itself:
+  // delete its repair from "BigQuery repairs" in transpile.ts, and its case
+  // here.
+  test('the engine still writes the forms the adapter repairs unchanged', async () => {
+    const engine = await loadSqlEngine();
+    const unchanged = [
+      ['postgresql', "DATE_TRUNC('month', d)", "DATE_TRUNC('month', d)"],
+      ['postgresql', "date_part('year', d)", "DATE_PART('year', d)"],
+      ['postgresql', "TO_CHAR(d, 'YYYY-MM')", "TO_CHAR(d, 'YYYY-MM')"],
+      ['postgresql', "d + INTERVAL '1 day'", "d + INTERVAL '1 day'"],
+      ['tsql', 'YEAR(d)', 'YEAR(d)'],
+    ];
+    expect(unchanged.map(([dialect, sql]) => [
+      dialect, sql, engine.transpile(sql, dialect, 'bigquery').sql?.[0],
+    ])).toEqual(unchanged);
   });
 
   test('leaves a field it refuses without a BIGQUERY entry, with a warning', async () => {
