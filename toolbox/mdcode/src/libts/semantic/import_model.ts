@@ -409,9 +409,12 @@ function validateInputDocument(
  * Qualifies a bare dot-separated table name `source` against `prefix` into a
  * GCP resource name when `prefix` supplies the missing hierarchy segments and
  * any overlapping segments agree, or returns `undefined` if `source` cannot be
- * qualified.
+ * qualified. Against an AlloyDB prefix, an unquoted segment agrees in any
+ * letter case and is written in lower case, as PostgreSQL reads it. With
+ * `ignoreCase`, every segment agrees in any letter case.
  */
-function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
+function qualifyTableSource(
+    source: string, prefix: ParsedSourcePrefix, ignoreCase = false): string|
     undefined {
   // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
   // query-valued sources with unquoted whitespace.
@@ -429,17 +432,33 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
           !trimmed.slice(1, -1).includes('`') ?
       trimmed.slice(1, -1) :
       trimmed;
-  const segs = catalogNameSegments(unwrapped).map(unquote);
-  if (!segs.length || segs.some(s => !s.length)) return undefined;
+  // catalogNameSegments drops a segment's backticks, so whether a segment is
+  // quoted is read from where it starts in `unwrapped`.
+  let at = 0;
+  const segs = catalogNameSegments(unwrapped).map(s => {
+    const backticked = unwrapped[at] === '`';
+    at += 1 + (backticked ? s.replaceAll('`', '``').length + 2 : s.length);
+    return {text: unquote(s), quoted: backticked || /^".+"$/.test(s)};
+  });
+  if (!segs.length || segs.some(s => !s.text.length)) return undefined;
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
+  // PostgreSQL folds only ASCII letters in a UTF-8 database.
+  const lower = (t: string) => t.replace(/[A-Z]/g, c => c.toLowerCase());
+  const folds = prefix.base.startsWith('alloydb.googleapis.com/');
   const tail = prefix.known.slice(prefix.known.length - overlap);
-  if (tail.some((k, i) => segs[i] !== k)) return undefined;
+  if (tail.some(
+          (k, i) => segs[i].text !== k &&
+              !((ignoreCase || folds && !segs[i].quoted) &&
+                lower(segs[i].text) === lower(k)))) {
+    return undefined;
+  }
 
   // 3. Append the remaining child container (if any) and table segment onto
   // `prefix.base` and verify the resulting resource name is accepted.
-  const rest = segs.slice(overlap);
+  const rest =
+      segs.slice(overlap).map(s => folds && !s.quoted ? lower(s.text) : s.text);
   const qualified = prefix.child ?
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
@@ -635,7 +654,14 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
       doc.modified = true;
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
-      doc.warnOrError(sourceWarning(dsLabel, trimmed));
+      const caseOnly = doc.sourcePrefix !== undefined &&
+          qualifyTableSource(trimmed, doc.sourcePrefix, true) !== undefined;
+      doc.warnOrError(
+          caseOnly ?
+              `${dsLabel}: source '${trimmed}' differs from ` +
+                  `'--source-prefix' only in letter case, so it is left as ` +
+                  `written; fix the case by hand.` :
+              sourceWarning(dsLabel, trimmed));
     }
   }
 
@@ -1094,6 +1120,9 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
         content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
     for (const raw of loaded.warnings) {
       const m = raw.match(LOADER_SOURCE_WARNING);
+      // The repair step has reported each source it left as written.
+      const reported = m && `${m[1]}: source '${m[2]}'`;
+      if (reported && doc.warnings.some(w => w.startsWith(reported))) continue;
       const w = m ? sourceWarning(m[1], m[2]) : raw;
       if (!doc.warnings.includes(w) && !doc.errors.includes(w)) {
         doc.warnings.push(w);

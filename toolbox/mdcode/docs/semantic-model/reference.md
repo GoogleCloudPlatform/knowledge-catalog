@@ -110,7 +110,7 @@ refused.
 |------|--------|
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
-| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. |
+| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. Against an AlloyDB prefix, a name's unquoted parts match in any letter case and are written in lower case, as PostgreSQL reads them. Against any other prefix, a name that differs from it only in letter case is left as written, with a warning. |
 | `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model file only. A profile's SQL stays as written. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
