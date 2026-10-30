@@ -4,12 +4,11 @@
 
 import * as yaml from 'yaml';
 
-/** A list item's identity: its `name`, `dialect` or `vendor_name`. */
-const ITEM_KEYS = ['name', 'dialect', 'vendor_name'];
+import {isRecord} from './loader';
 
 /**
- * Maps each object and array in `value`, a plain copy of `node`, to the node
- * it was copied from.
+ * Maps each object and array in `value` to the node it was copied from.
+ * `value` must be a plain copy of `node`.
  */
 export function linkNodes(
     value: unknown, node: unknown,
@@ -29,21 +28,15 @@ export function linkNodes(
 }
 
 /**
- * Changes `doc` in place so that it holds `value`, keeping a node wherever
- * its value survives, with its comments. The comments of a node that is not
- * kept go with it.
- *
- * An object or array in `value` keeps the node `links` maps it to. Any other
- * value keeps the node under the same key of a mapping, or the list item with
- * the same `name`, `dialect` or `vendor_name`, or else the same value. A list
- * item that `links` maps an object to is compared by that object, which may
- * have changed since it was copied. A key that `value` adds goes after the key
- * before it in `value`.
+ * Changes `doc` in place to hold `value`, keeping each node whose value
+ * survives with its comments, and moving a replaced node's comments onto its
+ * replacement. An object or array keeps the node `links` maps it to, and any
+ * other value keeps the node under the same key, or the list item with the
+ * same `name` or the same value.
  */
 export function updateDocument(
     doc: yaml.Document, value: unknown,
-    links: ReadonlyMap<object, yaml.Node> = new Map()): void {
-  // A node that an object of `value` links to is kept for that object only.
+    links: ReadonlyMap<object, yaml.Node>): void {
   const claimed = new Set<yaml.Node>();
   const claim = (v: unknown) => {
     if (!isObject(v)) return;
@@ -59,7 +52,9 @@ export function updateDocument(
 interface Update {
   doc: yaml.Document;
   links: ReadonlyMap<object, yaml.Node>;
-  /** The nodes that `links` gives an object of the new value. */
+  /**
+   * Nodes linked to an object of the new value. Only that object keeps them.
+   */
   claimed: ReadonlySet<unknown>;
   /** The reverse of `links`. */
   copies: ReadonlyMap<unknown, object>;
@@ -73,7 +68,7 @@ function updateNode(u: Update, value: unknown, prev: unknown): yaml.Node {
     out = updateSeq(u, value, yaml.isSeq(node) ? node : new yaml.YAMLSeq());
   } else if (isRecord(value)) {
     out = updateMap(u, value, yaml.isMap(node) ? node : new yaml.YAMLMap());
-  } else if (yaml.isScalar(node) && typeof node.value === typeof value) {
+  } else if (yaml.isScalar(node)) {
     node.value = value;
     out = node;
   } else {
@@ -84,7 +79,6 @@ function updateNode(u: Update, value: unknown, prev: unknown): yaml.Node {
   // replaces it.
   if (out !== node && yaml.isNode(node)) {
     const moved = !yaml.isCollection(node) && yaml.isCollection(out);
-    out.spaceBefore = node.spaceBefore;
     out.commentBefore = moved ?
         [node.commentBefore, node.comment].filter(c => c).join('\n') :
         node.commentBefore;
@@ -129,7 +123,7 @@ function updatePair(u: Update, pair: yaml.Pair, value: unknown): void {
 function updateSeq(
     u: Update, value: unknown[], node: yaml.YAMLSeq): yaml.YAMLSeq {
   const matched = value.map(v => isObject(v) ? u.links.get(v) : undefined);
-  const free = node.items.filter(n => !u.claimed.has(n)).map(n => {
+  const free = node.items.map(n => {
     const copy = u.copies.get(n) ?? (yaml.isNode(n) ? n.toJSON() : n);
     return {n, key: itemKey(copy)};
   });
@@ -156,18 +150,11 @@ function keyOf(pair: yaml.Pair): string {
 }
 
 function itemKey(value: unknown): string|undefined {
-  if (isRecord(value)) {
-    for (const k of ITEM_KEYS) {
-      if (typeof value[k] === 'string') return `${k}:${value[k]}`;
-    }
-  }
-  return JSON.stringify(value);
+  return isRecord(value) && typeof value.name === 'string' ?
+      `name:${value.name}` :
+      JSON.stringify(value);
 }
 
 function isObject(value: unknown): value is object {
   return typeof value === 'object' && value !== null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return isObject(value) && !Array.isArray(value);
 }
