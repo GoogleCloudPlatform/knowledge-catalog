@@ -168,6 +168,11 @@ describe('conversion, strict mode, and translation', () => {
       {flavor: 'google' as const, strict: true},
       `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
     ],
+    [
+      'lowercase Opaque in strict mode',
+      ossieDoc({extra: '            datatype: opaque\n'}), {strict: true},
+      `field 'orders.order_id': removed datatype 'opaque'.`
+    ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
     const res = await importSemanticModelYaml(input, opts);
 
@@ -181,7 +186,7 @@ describe('conversion, strict mode, and translation', () => {
       async () => {
         const raw = googleDoc({
           fieldExpr:
-              '{\n              dialects: [{dialect: SNOWFLAKE, expression: " orders.order_id "}]\n            }\n            datatype: integer',
+              '{\n              dialects: [{dialect: SNOWFLAKE, expression: " orders.order_id "}]\n            }',
           extra:
               '    metrics:\n      - name: total_orders\n        entity: orders\n        expression: \'COUNT("orders"."order_id")\'\n',
         });
@@ -471,6 +476,16 @@ describe('dialects and datatypes', () => {
         expect(fields[2].type).toBe('DateTimeTz');
         expect(fields[2].expression).toBeUndefined();
       });
+
+  test('canonicalizes a Google-flavor datatype and drops Opaque in strict mode', async () => {
+    const res = await importSemanticModelYaml(
+        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: Opaque\n            expression: amount\n'}),
+        {strict: true});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toContain('datatype: Integer');
+    expect(res.files[0].content).not.toContain('Opaque');
+  });
 
   test(
       'reports an error when a vanilla field or metric is left with no supported dialect',

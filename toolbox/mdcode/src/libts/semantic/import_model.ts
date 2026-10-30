@@ -466,19 +466,16 @@ function qualifyTableSource(
 }
 
 /**
- * Canonicalizes `obj.datatype` casing (e.g. `integer` -> `Integer`) and deletes
- * `Opaque` in any casing. Changing a value the input's flavor rejects is a
- * repair, so it warns, or is an error in strict mode. Strict mode leaves a
- * value the input's flavor accepts as written.
+ * Writes `obj.datatype` in its canonical casing, such as `Integer` for
+ * `integer`, and deletes `Opaque` in any casing. A change to a value the
+ * input's flavor rejects goes through `warnOrError`.
  */
 function normalizeDatatype(
     obj: Record<string, any>, label: string, doc: ImportDocument): void {
   if (typeof obj.datatype !== 'string') return;
   const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
   if (!res.ok) return;
-  const accepted = normalizeDataType(obj.datatype, doc.inputVersion).ok;
-  if (accepted && doc.strict) return;
-  if (!accepted) {
+  if (!normalizeDataType(obj.datatype, doc.inputVersion).ok) {
     doc.warnOrError(
         res.type === undefined ?
             `${label}: removed datatype '${obj.datatype}'.` :
