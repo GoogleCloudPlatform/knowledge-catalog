@@ -84,6 +84,11 @@ export interface SerializeResult {
 export interface SerializeOptions {
   logical?: boolean;
   compactFlow?: boolean;
+  /**
+   * The column at which a long string is folded onto the next line; 0 keeps
+   * every value on one line. Defaults to 80.
+   */
+  lineWidth?: number;
 }
 
 /**
@@ -214,9 +219,11 @@ export function serializeModel(
 // `'2001-12-14'`), so arbitrary values in `custom_extensions` or `ai_context`
 // round-trip across tools.
 function render(doc: Record<string, any>, opts: SerializeOptions): string {
-  return opts.compactFlow ?
-      renderCompact(doc) :
-      yaml.stringify(doc, {aliasDuplicateObjects: false, compat: 'yaml-1.1'});
+  return opts.compactFlow ? renderCompact(doc) : yaml.stringify(doc, {
+    aliasDuplicateObjects: false,
+    compat: 'yaml-1.1',
+    lineWidth: opts.lineWidth ?? 80,
+  });
 }
 
 // Renders "leaf" collections in flow style so the output matches the compact
