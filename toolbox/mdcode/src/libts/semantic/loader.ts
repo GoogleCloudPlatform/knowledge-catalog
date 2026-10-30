@@ -12,7 +12,7 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, expressionForDialect, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {applyProfileExclusions, DEFAULT_PROFILE, IMPORT_TRANSPILE_COMMAND, ProfileExclusion, profileSpecOf, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
@@ -2032,18 +2032,29 @@ function fieldWarnings(model: SemanticModel, preferred: string): string[] {
       .filter((w): w is string => w !== undefined);
 }
 
-// The warning a metric's expression gives, when a table that runs SQL in
-// `preferred` runs it: that of an entity it reaches, its anchor or one its
-// expressions reference, or, when it reaches none, that of any entity in the
-// model.
+// The warning `metric`'s expression gives on the tables of the `reached`
+// entities, or on every entity's when it reaches none. On a table of the
+// `preferred` dialect it is expressionWarning's, and otherwise it names the
+// first table whose dialect has no text in the metric.
 function metricWarning(
-    metric: Pick<Metric, 'name'|'dialects'|'stringForm'>,
+    metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
     preferred: string): string|undefined {
   const named = entities.filter(e => reached.includes(e.name));
-  return (named.length ? named : entities).some(e => runsDialect(e, preferred)) ?
-      expressionWarning(metric, `metric '${metric.name}'`, preferred) :
-      undefined;
+  const tables = named.length ? named : entities;
+  if (tables.some(e => runsDialect(e, preferred))) {
+    return expressionWarning(metric, `metric '${metric.name}'`, preferred);
+  }
+  for (const e of tables) {
+    const dialect = sourcesDialect({entities: [e]});
+    if (dialect &&
+        expressionForDialect(metric, dialect as SqlDialect) === undefined) {
+      return `metric '${metric.name}': no '${dialect}' or '${
+                 FALLBACK_DIALECT}' dialect, so the ${dialect} table of ` +
+          `entity '${e.name}' cannot run it`;
+    }
+  }
+  return undefined;
 }
 
 // The warning a concrete entity with neither a primary key nor a unique key
