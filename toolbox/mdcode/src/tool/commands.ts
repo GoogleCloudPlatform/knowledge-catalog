@@ -1105,8 +1105,9 @@ export async function push(options: PushOptions): Promise<number> {
     return printErrors(
         `'--transpile' is no longer supported on 'kcmd push'; use '${
             IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects when ` +
-        `importing a model. Import translates the model file only, so write ` +
-        `a profile's 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
+        `importing a model. Import translates the profile files beside a ` +
+        `Google model only when it converts the model to 'ossie'; otherwise ` +
+        `write their 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
   }
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);

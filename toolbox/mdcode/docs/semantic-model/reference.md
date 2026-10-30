@@ -112,7 +112,7 @@ one model.
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
 | `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. Against an AlloyDB prefix, a name's unquoted parts are read in lower case, as PostgreSQL reads them. A name that still differs from the prefix only in letter case is not completed, and import reports it. |
-| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model file only. A profile's SQL stays as written. Off by default. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model and in each profile the import writes. The import writes the profile files beside a Google model only when it converts the model to `ossie`; otherwise they keep their SQL, and the import warns about each field it leaves untranslated. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
 ### profiles

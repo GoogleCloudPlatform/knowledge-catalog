@@ -28,7 +28,7 @@
 //     throw.
 //
 
-import {Field, Metric, SemanticModel, SqlDialect} from './ir';
+import {Field, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
 
@@ -68,6 +68,12 @@ export interface TranspileResult {
   model: SemanticModel;
   warnings: string[];
 }
+
+// A field, metric or profile field binding: what `transpileModel` reads and
+// writes on one node.
+type TranspileNode = Pick<
+    Field, 'expression'|'dialects'|'stringForm'|'importedExpression'|
+    'importedDialect'>;
 
 // A pending rewrite: the imported expression to transpile plus a callback that
 // applies the resulting SQL to the (cloned) IR node.
@@ -156,7 +162,7 @@ function quotedNames(node: unknown): string[] {
  *   2. It has an `ANSI_SQL` text that double-quotes a column identifier and no
  *      `target` entry -> translate from `ANSI_SQL`.
  */
-function sourceToTranspile(node: Field|Metric, target: string):
+function sourceToTranspile(node: TranspileNode, target: string):
     {dialect: string; expression: string}|undefined {
   // Parsed models store per-dialect SQL expressions in `node.dialects`.
   if (node.dialects?.length) {
@@ -200,9 +206,20 @@ function sourceToTranspile(node: Field|Metric, target: string):
 }
 
 /**
- * Adds a translated `opts.target` dialect entry to every field or metric in
- * `model` whose only texts are in vendor dialects or whose `ANSI_SQL` text
- * double-quotes a column name, returning a cloned model plus diagnostics.
+ * Returns true if `transpileModel` would add a `BIGQUERY` entry to `node`.
+ *
+ * Reads SQL with the bundled parser, so the caller must have awaited
+ * `loadSqlEngine()`.
+ */
+export function needsTranspile(node: TranspileNode): boolean {
+  return sourceToTranspile(node, DEFAULT_TARGET) !== undefined;
+}
+
+/**
+ * Adds a translated `opts.target` dialect entry to every field, metric and
+ * profile field binding in `model` whose only texts are in vendor dialects or
+ * whose `ANSI_SQL` text double-quotes a column name, returning a cloned model
+ * plus diagnostics.
  *
  * The input model is never mutated. When no node needs transpilation, the clone
  * is returned unchanged and the transpiler is not invoked. The
@@ -222,7 +239,7 @@ export async function transpileModel(
 
   await loadSqlEngine();
   const pending: Pending[] = [];
-  const add = (node: Field|Metric, ctx: string) => {
+  const add = (node: TranspileNode, ctx: string) => {
     const source = sourceToTranspile(node, target);
     if (!source) return;
     const id = String(pending.length);
@@ -251,6 +268,13 @@ export async function transpileModel(
     }
   }
   for (const m of clone.metrics) add(m, `metric '${m.name}'`);
+  for (const p of clone.profiles ?? []) {
+    for (const pe of p.entities) {
+      for (const f of pe.fields ?? []) {
+        add(f, `profile '${p.name}': field '${pe.name}.${f.name}'`);
+      }
+    }
+  }
 
   if (!pending.length) return {model: clone, warnings};
 

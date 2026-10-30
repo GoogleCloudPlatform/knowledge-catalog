@@ -234,6 +234,67 @@ describe('conversion, strict mode, and translation', () => {
       });
 });
 
+// A profile field written only in Snowflake SQL gets a BIGQUERY entry in every
+// profile the import writes.
+describe('profile translation', () => {
+  const fieldExpr =
+      '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}';
+  const profile = (name: string, dialect: string, expression: string) => ({
+    name,
+    entities: [{
+      name: 'orders',
+      source: `${BQ_PREFIX}/tables/orders_${name}`,
+      fields: [{name: 'order_id', expression: {dialects: [{dialect, expression}]}}],
+    }],
+  });
+  const PROD = profile('prod', 'SNOWFLAKE', 'NVL(o.order_id, 0)');
+  const block = `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
+      JSON.stringify({profiles: [PROD]})}'\n`;
+  const prodFile = {fileName: 'retail.profile.prod.yaml', content: yaml.stringify(PROD)};
+  const strict = {strict: true, transpile: true};
+
+  // [label, input, options]
+  test.each([
+    ['a GOOGLE block profile, written back into the block', ossieDoc({fieldExpr, extra: block}),
+     {...strict, flavor: 'ossie' as const}],
+    ['a GOOGLE block profile, written as a profile file', ossieDoc({fieldExpr, extra: block}),
+     {...strict, flavor: 'google' as const}],
+    ['a profile file, written into the vanilla model file', googleDoc({fieldExpr}),
+     {...strict, flavor: 'ossie' as const, profileFiles: [prodFile]}],
+  ])('translates %s', async (_, input, opts) => {
+    const res = await importSemanticModelYaml(input, opts);
+    expect(res.errors).toEqual([]);
+    const written = res.files.length > 1 ?
+        loadProfileFile(res.files[1].content, 'prod') :
+        loadModels(res.files[0].content).models[0].profiles![0];
+    expect(written.entities[0].fields![0].dialects).toEqual([
+      {dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'},
+      {dialect: 'BIGQUERY', expression: 'COALESCE(o.order_id, 0)'},
+    ]);
+    expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual([
+      "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
+    ]);
+  });
+
+  // A profile file that needs no translation, or does not load, gets no warning.
+  test('warns about each profile file field a Google re-import leaves untranslated', async () => {
+    const res = await importSemanticModelYaml(googleDoc({fieldExpr}), {
+      ...strict, flavor: 'google', profileFiles: [
+        prodFile,
+        {fileName: 'retail.profile.dev.yaml',
+         content: yaml.stringify(profile('dev', 'BIGQUERY', 'o.order_id'))},
+        {fileName: 'retail.profile.qa.yaml', content: 'name: staging\n'},
+      ],
+    });
+    expect(res.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+    expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual([
+      "profile 'prod': field 'orders.order_id' is left untranslated because the " +
+          "import does not write 'retail.profile.prod.yaml'; add its 'BIGQUERY' " +
+          'expression to that file yourself.',
+    ]);
+  });
+});
+
 describe('vanilla output, extensions, and targets', () => {
   test(
       'wraps short-form expression, moves relationship description into GOOGLE block, and warns on unaccepted source',

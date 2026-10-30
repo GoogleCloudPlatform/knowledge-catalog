@@ -69,7 +69,7 @@ cli.command('push', 'Push catalog entries')
         'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
     .option(
         '--transpile',
-        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model file; write a profile\'s BIGQUERY or ANSI_SQL expressions yourself')
+        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model and the profiles it writes; it writes the profile files beside a Google model only when converting it to ossie')
     .option(
         '--profile [name]',
         'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml; a sibling <model>.profile.<name>.yaml, or a profile in a 0.2.0.dev0 model\'s GOOGLE block, deploys only through a deployment that names it); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings, for a model that lists no deployments and has no sibling profile file; mutually exclusive with --all-profiles and --no-profile; not accepted for a model that lists deployments; semantic-model push only')
