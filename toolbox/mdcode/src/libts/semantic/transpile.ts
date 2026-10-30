@@ -28,9 +28,19 @@
 //     throw.
 //
 
-import {Field, Metric, SemanticModel, SqlDialect} from './ir';
+import {Field, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
+
+/**
+ * Structural subset of `Field`, `Metric`, and a profile field binding
+ * (`NonNullable<ProfileEntityBinding['fields']>[number]`) carrying the SQL
+ * expression and dialect properties read and updated by `transpileModel`.
+ */
+type TranspilableNode = Pick<
+    Field,
+    'expression'|'dialects'|'stringForm'|'importedExpression'|
+    'importedDialect'>;
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -141,13 +151,14 @@ function quotedColumnCount(node: unknown): number {
  * Returns the source `{dialect, expression}` to translate into `target` for
  * `node`, or `undefined` when `node` should be left untouched.
  *
- * A field or metric is queued for translation in either of two cases:
+ * A field, profile field, or metric is queued for translation in either of two
+ * cases:
  *   1. Its only texts are in vendor dialects, with no `target` or `ANSI_SQL`
  *      entry -> translate from the vendor dialect.
  *   2. It has an `ANSI_SQL` text that double-quotes a column identifier and no
  *      `target` entry -> translate from `ANSI_SQL`.
  */
-function sourceToTranspile(node: Field|Metric, target: string):
+function sourceToTranspile(node: TranspilableNode, target: string):
     {dialect: string; expression: string}|undefined {
   // Parsed models store per-dialect SQL expressions in `node.dialects`.
   if (node.dialects?.length) {
@@ -191,9 +202,10 @@ function sourceToTranspile(node: Field|Metric, target: string):
 }
 
 /**
- * Adds a translated `opts.target` dialect entry to every field or metric in
- * `model` whose only texts are in vendor dialects or whose `ANSI_SQL` text
- * double-quotes a column name, returning a cloned model plus diagnostics.
+ * Adds a translated `opts.target` dialect entry to every field, profile field,
+ * or metric in `model` whose only texts are in vendor dialects or whose
+ * `ANSI_SQL` text double-quotes a column name, returning a cloned model plus
+ * diagnostics.
  *
  * The input model is never mutated. When no node needs transpilation, the clone
  * is returned unchanged and the transpiler is not invoked. The
@@ -213,7 +225,7 @@ export async function transpileModel(
 
   await loadSqlEngine();
   const pending: Pending[] = [];
-  const add = (node: Field|Metric, ctx: string) => {
+  const add = (node: TranspilableNode, ctx: string) => {
     const source = sourceToTranspile(node, target);
     if (!source) return;
     const id = String(pending.length);
@@ -242,6 +254,13 @@ export async function transpileModel(
     }
   }
   for (const m of clone.metrics) add(m, `metric '${m.name}'`);
+  for (const p of clone.profiles ?? []) {
+    for (const pe of p.entities) {
+      for (const pf of pe.fields ?? []) {
+        add(pf, `profile '${p.name}' field '${pe.name}.${pf.name}'`);
+      }
+    }
+  }
 
   if (!pending.length) return {model: clone, warnings};
 
