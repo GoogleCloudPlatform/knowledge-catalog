@@ -524,10 +524,15 @@ describe('sources completed from an entry group', () => {
       ({name: `projects/123/locations/us/entryGroups/sf/entries/${id}`, fullyQualifiedName});
   const ENTRIES = [
     entry('orders', 'snowflake:acme.retail.public.orders'),
+    // Ends in public.orders in another letter case, as Snowflake reads it.
+    entry('orders-upper', 'snowflake:acme.RETAIL.PUBLIC.ORDERS'),
     entry('items-a', 'snowflake:acme.retail.public.items'),
     entry('items-b', 'snowflake:acme.retail.sales.items'),
     entry('public', 'snowflake:acme.retail.public'),
     entry('dotted', 'snowflake:acme.retail.`my.schema`.t'),
+    entry('customers', 'snowflake:acme.RETAIL.PUBLIC.CUSTOMERS'),
+    entry('lines-a', 'snowflake:acme.RETAIL.PUBLIC.LINES'),
+    entry('lines-b', 'snowflake:acme.RETAIL.PUBLIC.Lines'),
   ];
   // Each [dataset, source] pair as a dataset of a vanilla model.
   const model = (...datasets: Array<[string, string]>) =>
@@ -547,26 +552,44 @@ describe('sources completed from an entry group', () => {
     return {calls, listEntries};
   };
   const input = model(
-      ['orders', 'public.orders'], ['quoted', `'"public"."orders"'`],
-      ['dotted', "'`my.schema`.t'"], ['items', 'items'], ['ghosts', 'public.ghosts']);
+      ['quoted', `'"public"."orders"'`], ['dotted', "'`my.schema`.t'"],
+      ['customers', 'public.customers'], ['orders', 'public.orders'], ['items', 'items'],
+      ['lines', 'public.lines'], ['ghosts', 'public.ghosts'],
+      ['quoted_lower', `'"public".customers'`], ['ticked_lower', "'`public`.customers'"]);
+  // Entry `id` as the import writes it, and its fullyQualifiedName.
+  const named = (id: string) => ({
+    name: `${GROUP}/entries/${id}`,
+    fqn: ENTRIES.find(e => e.name.endsWith(`/${id}`))!.fullyQualifiedName,
+  });
+  // The message for `source` of dataset `ds`, completed to entry `id`.
+  const rewrote = (ds: string, source: string, id: string) =>
+      `dataset '${ds}': rewrote bare source '${source}' to '${named(id).name}', ` +
+      `the entry whose fullyQualifiedName is '${named(id).fqn}'.`;
+  // The message for `source` of dataset `ds`, which no entry ends in.
+  const noEntry = (ds: string, source: string) =>
+      `dataset '${ds}': left bare source '${source}' as written, since no entry for ` +
+      `a table or view in entry group '${GROUP}' has a fullyQualifiedName that ends in ` +
+      "it. 'kcmd push' rejects the file until the source is the entry name of the " +
+      "table's Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
+  // The message for `source` of dataset `ds`, which the entries `ids` end in.
+  const several = (ds: string, source: string, ...ids: string[]) =>
+      `dataset '${ds}': left bare source '${source}' as written, since several entries in ` +
+      `entry group '${GROUP}' have a fullyQualifiedName that ends in it: ${
+          ids.map(id => `'${named(id).name}' (${named(id).fqn})`).join(', ')}. ` +
+      "'kcmd push' rejects the file until the source names one of them.";
   const completed = [
-    `dataset 'orders': rewrote bare source 'public.orders' to '${GROUP}/entries/orders', ` +
-        "the entry whose fullyQualifiedName is 'snowflake:acme.retail.public.orders'.",
-    `dataset 'quoted': rewrote bare source '"public"."orders"' to '${GROUP}/entries/orders', ` +
-        "the entry whose fullyQualifiedName is 'snowflake:acme.retail.public.orders'.",
-    `dataset 'dotted': rewrote bare source '\`my.schema\`.t' to '${GROUP}/entries/dotted', ` +
-        "the entry whose fullyQualifiedName is 'snowflake:acme.retail.`my.schema`.t'.",
+    rewrote('quoted', '"public"."orders"', 'orders'),
+    rewrote('dotted', '`my.schema`.t', 'dotted'),
+    rewrote('customers', 'public.customers', 'customers'),
   ];
   const left = [
-    "dataset 'items': left bare source 'items' as written, since several entries in " +
-        `entry group '${GROUP}' have a fullyQualifiedName that ends in it: '${
-            GROUP}/entries/items-a' (snowflake:acme.retail.public.items), '${
-            GROUP}/entries/items-b' (snowflake:acme.retail.sales.items). 'kcmd push' ` +
-        'rejects the file until the source names one of them.',
-    "dataset 'ghosts': left bare source 'public.ghosts' as written, since no entry for " +
-        `a table or view in entry group '${GROUP}' has a fullyQualifiedName that ends in ` +
-        "it. 'kcmd push' rejects the file until the source is the entry name of the " +
-        "table's Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.",
+    several('orders', 'public.orders', 'orders', 'orders-upper'),
+    several('items', 'items', 'items-a', 'items-b'),
+    several('lines', 'public.lines', 'lines-a', 'lines-b'),
+    noEntry('ghosts', 'public.ghosts'),
+    // A quoted part keeps its letter case.
+    noEntry('quoted_lower', '"public".customers'),
+    noEntry('ticked_lower', '`public`.customers'),
   ];
 
   // A completion is a warning in strict mode too; a name left as written is an
@@ -584,8 +607,9 @@ describe('sources completed from an entry group', () => {
        if (!strict) {
          expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
                     .models[0].entities.map(e => e.authoredSource))
-             .toEqual([`${GROUP}/entries/orders`, `${GROUP}/entries/orders`,
-                       `${GROUP}/entries/dotted`, 'items', 'public.ghosts']);
+             .toEqual([...['orders', 'dotted', 'customers'].map(id => named(id).name),
+                       'public.orders', 'items', 'public.lines', 'public.ghosts',
+                       '"public".customers', '`public`.customers']);
        }
      });
 

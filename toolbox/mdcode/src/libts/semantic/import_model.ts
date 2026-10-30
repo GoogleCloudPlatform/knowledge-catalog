@@ -570,9 +570,10 @@ async function listEntryTables(doc: ImportDocument): Promise<string|undefined> {
 }
 
 /**
- * Completes the bare table name `source` of `ds` from `doc.entryTables` with
- * the one entry whose fullyQualifiedName ends in its parts. Leaves a name no
- * entry or several entries end in as written, and reports it, naming the
+ * Completes the bare table name `source` of `ds` with the one entry in
+ * `doc.entryTables` whose fullyQualifiedName ends in its parts, an unquoted
+ * part in any letter case and a quoted part in its own case. Leaves a name no
+ * entry or several entries end in as written, and reports it with the
  * candidates.
  */
 function completeFromEntryGroup(
@@ -582,8 +583,10 @@ function completeFromEntryGroup(
   const group = doc.entryGroup!.base;
   // Compared from the end, so a name with more parts than an entry's matches
   // none.
-  const matches = doc.entryTables!.filter(
-      t => parts.every((p, i) => t.parts.at(i - parts.length) === p.text));
+  const matches = doc.entryTables!.filter(t => parts.every((p, i) => {
+    const e = t.parts.at(i - parts.length);
+    return p.quoted ? p.text === e : p.text.toLowerCase() === e?.toLowerCase();
+  }));
   if (matches.length === 1) {
     // The author asked for this rewrite with --source-prefix, so it is a
     // warning in strict mode too.
