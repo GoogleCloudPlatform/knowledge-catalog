@@ -1984,8 +1984,8 @@ export interface CompletenessOptions extends DialectLoad {
   // The profile is in a vanilla model's GOOGLE block. A field with only vendor
   // SQL then gets the hint to run `kcmd import --transpile`, which rewrites
   // the block with translated SQL. A Google model's profile file gets no such
-  // hint, since an import that keeps the model Google leaves the file as
-  // written.
+  // hint, since re-importing the model in place, where push reads it, leaves
+  // the file as written.
   googleBlock?: boolean;
 }
 

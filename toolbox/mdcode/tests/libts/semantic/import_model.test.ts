@@ -266,6 +266,8 @@ describe('profile translation', () => {
      {...strict, flavor: 'google' as const}],
     ['a profile file, written into the vanilla model file', googleDoc({fieldExpr}),
      {...strict, flavor: 'ossie' as const, profileFiles: [prodFile]}],
+    ['a profile file, written beside the Google model file', googleDoc({fieldExpr}),
+     {...strict, flavor: 'google' as const, profileFiles: [prodFile]}],
   ])('translates %s', async (_, input, opts) => {
     const res = await importSemanticModelYaml(input, opts);
     expect(res.errors).toEqual([]);
@@ -282,9 +284,9 @@ describe('profile translation', () => {
   });
 
   // A profile file that needs no translation, or does not load, gets no warning.
-  test('warns about each profile file field a Google re-import leaves untranslated', async () => {
+  test('warns about each profile file field a Google re-import in place leaves untranslated', async () => {
     const res = await importSemanticModelYaml(googleDoc({fieldExpr}), {
-      ...strict, flavor: 'google', profileFiles: [
+      ...strict, flavor: 'google', keepProfileFiles: true, profileFiles: [
         prodFile,
         {fileName: 'retail.profile.dev.yaml',
          content: yaml.stringify(profile('dev', 'BIGQUERY', 'o.order_id'))},

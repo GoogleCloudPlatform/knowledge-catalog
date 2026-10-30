@@ -1109,9 +1109,9 @@ export async function push(options: PushOptions): Promise<number> {
     return printErrors(
         `'--transpile' is no longer supported on 'kcmd push'; use '${
             IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects when ` +
-        `importing a model. Import translates the profile files beside a ` +
-        `Google model only when it converts the model to 'ossie'; otherwise ` +
-        `write their 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
+        `importing a model. Import translates the profile files it writes, ` +
+        `but a Google model re-imported in place keeps its profile files as ` +
+        `written; write their 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
   }
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -3259,19 +3259,24 @@ export async function importModel(
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
   // inside it.
-  const profileFiles =
-      profileFilesBeside(
-          path.dirname(file), path.basename(file).replace(YAML_FILE, ''))
-          .map(p => ({
-                 fileName: path.basename(p.path),
-                 content: fs.readFileSync(p.path, 'utf8'),
-               }));
+  const stem = path.basename(file).replace(YAML_FILE, '');
+  const profileFiles = profileFilesBeside(path.dirname(file), stem).map(p => ({
+    fileName: path.basename(p.path),
+    content: fs.readFileSync(p.path, 'utf8'),
+  }));
+  // Without --out the files go into the workspace. A Google model file
+  // re-imported there in place keeps its profile files as they are; any other
+  // Google-flavor import of a Google model writes them with the model.
+  const layout = options.out ? undefined : await workspaceLayout();
+  const keepProfileFiles = typeof layout === 'object' &&
+      path.resolve(file) === path.resolve(layout.modelPath(stem));
   const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
     flavor: flavor as 'ossie' | 'google',
     sourcePrefix: options.sourcePrefix,
     transpile: !!options.transpile,
     strict: input === 'first-party',
     profileFiles,
+    keepProfileFiles,
     // Called only for a --source-prefix that names an entry group, so an
     // import that reads no catalog needs no credentials.
     listEntries: (project, location, entryGroup) =>
@@ -3301,8 +3306,8 @@ export async function importModel(
       return {path: target, write: text => writeFileAt(target, text)};
     });
   } else {
-    const layout = await workspaceLayout();
-    if (typeof layout === 'string') return fail(layout);
+    // `layout` is set, since there is no --out.
+    if (typeof layout !== 'object') return fail(layout as string);
     // The engine's first file is the model file, `<model>.yaml`; the rest are
     // its profile files, which pull's mapping writes beside it.
     const model = result.files[0].fileName.replace(YAML_FILE, '');
