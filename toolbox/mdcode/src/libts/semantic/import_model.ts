@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -99,11 +99,21 @@ interface ImportDocument {
 const STANDARD_AI_CONTEXT_KEYS =
     new Set(['instructions', 'synonyms', 'examples']);
 
-const SOURCE_WARNING_SUFFIX = ' is not a valid GCP resource name.';
+// The loader's warning for a source it leaves as written.
+const LOADER_SOURCE_WARNING =
+    /^(.*?): source '(.*)' is not a valid GCP resource name\.$/s;
 
-const SOURCE_CLI_HINT =
-    `'kcmd push' rejects the file until it is repointed, or until ` +
-    `'kcmd import' runs again with '--source-prefix'.`;
+// The warning for `source`, which import leaves as written. A source in no
+// Google Cloud form may be a third-party table, so the warning says how to
+// write one.
+function sourceWarning(ctx: string, source: string): string {
+  return `${ctx}: source '${source}' is not a valid GCP resource name; ` +
+      `'kcmd push' rejects the file until it is repointed, or until ` +
+      `'kcmd import' runs again with '--source-prefix'.` +
+      (isGoogleCloudForm(source) ? '' :
+           ` A table outside Google Cloud is written as the entry name of ` +
+               `its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);
+}
 
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
 
@@ -594,8 +604,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
       doc.modified = true;
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
-      doc.warnOrError(`${dsLabel}: source '${trimmed}'${
-          SOURCE_WARNING_SUFFIX.slice(0, -1)}; ${SOURCE_CLI_HINT}`);
+      doc.warnOrError(sourceWarning(dsLabel, trimmed));
     }
   }
 
@@ -1018,9 +1027,8 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
     const loaded = loadModels(
         content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
     for (const raw of loaded.warnings) {
-      const w = raw.endsWith(SOURCE_WARNING_SUFFIX) ?
-          `${raw.slice(0, -1)}; ${SOURCE_CLI_HINT}` :
-          raw;
+      const m = raw.match(LOADER_SOURCE_WARNING);
+      const w = m ? sourceWarning(m[1], m[2]) : raw;
       if (!doc.warnings.includes(w) && !doc.errors.includes(w)) {
         doc.warnings.push(w);
       }

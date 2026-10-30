@@ -38,7 +38,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -1045,15 +1045,17 @@ export function loadProfileFile(
   return profileSpecOf(doc, profileName);
 }
 
-// The Cloud SQL dialects a command looked up before it loads
-// (LoadOptions.cloudSqlDialects).
-export type CloudSqlLoad = Pick<LoadOptions, 'cloudSqlDialects'>;
+// The source dialects a command looked up before it loads
+// (LoadOptions.sourceDialects). `sourceDatabases` holds the database each
+// third-party table's entry names, by entry name, for the one-database rule.
+export type DialectLoad = Pick<LoadOptions, 'sourceDialects'>&
+    {sourceDatabases?: ReadonlyMap<string, string>};
 
 /** How a profile's values are read, matching the load of the model. */
 export interface ApplyProfileOptions {
   // The preferred dialect the model was loaded with, which picks the text each
-  // field takes, and the Cloud SQL dialects it was given.
-  load?: Pick<LoadOptions, 'dialect'|'cloudSqlDialects'>;
+  // field takes, and the source dialects it was given.
+  load?: Pick<LoadOptions, 'dialect'|'sourceDialects'>;
   // Collects the warnings a load gives for the values the profile sets.
   // applyProfile only; the other functions return them.
   warnings?: string[];
@@ -1172,7 +1174,7 @@ export interface AppliedProfile {
  */
 function applyProfileToDocument(
     doc: {name: string; text: string}, profile: ProfileSpec,
-    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
       doc, (base, from) => applyProfileSpec(base, profile, {from, load}), load);
 }
@@ -1180,7 +1182,7 @@ function applyProfileToDocument(
 /** applyProfileToDocument for the profile file `text`. */
 function applyProfileFileToDocument(
     doc: {name: string; text: string}, text: string, profileName: string,
-    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   return applyToDocument(
       doc,
       (base, from) => applyProfileFile(base, text, profileName, {from, load}),
@@ -1192,7 +1194,7 @@ function applyToDocument(
     apply: (base: SemanticModel,
             from: {document: string; warnings: string[]}) =>
         {model: SemanticModel; warnings: string[]}|{error: string},
-    load: CloudSqlLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
+    load: DialectLoad): AppliedProfile|{error: string; stage: 'load'|'apply'} {
   const loaded = loadSemanticModels(
       [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
@@ -1264,7 +1266,7 @@ export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
  */
 export function profileForDocument(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
-    profileName: string, load: CloudSqlLoad = {}): DocumentProfile {
+    profileName: string, load: DialectLoad = {}): DocumentProfile {
   const chosen = profiles.find(p => p.name === profileName);
   if (!chosen) return {kind: 'missing', declared: profiles.map(p => p.name)};
   if ('spec' in chosen || isProfileFileForm(chosen.text)) {
@@ -1940,14 +1942,14 @@ export function sourcesDialect(model: {
 // A three-part dotted name, which is how the loader completes a legacy bare
 // name, names BigQuery.
 //
-// A Cloud SQL table written as its resource name implies the dialect its
-// catalog entry's type names, which a lookup read into `lookedUp`
-// (LoadOptions.cloudSqlDialects).
+// A Cloud SQL table written as its resource name, and a third-party table,
+// imply the dialect their catalog entry gives, which a lookup read into
+// `lookedUp` (LoadOptions.sourceDialects).
 function dialectOfSources(
     sources: Array<{source: string; lookedUp?: string}>): string|undefined {
   const dialects = new Set<string|undefined>(sources.map(({source, lookedUp}) => {
     const s = source.trim();
-    if (cloudSqlTableOf(s)) return lookedUp;
+    if (dialectLookupKey(s)) return lookedUp;
     const db = databaseOf(s) ??
         (/^[^./:\s`]+\.[^./:\s`]+\.[^./:\s`]+$/.test(s) ? 'bigquery' :
                                                          undefined);
@@ -1958,7 +1960,7 @@ function dialectOfSources(
 }
 
 /** What the caller of validateProfileCompleteness checks itself. */
-export interface CompletenessOptions extends CloudSqlLoad {
+export interface CompletenessOptions extends DialectLoad {
   // The caller checks the model the profile gives, as push does for the
   // profile it selects. The rules the caller's check covers are left out:
   // whether the hierarchy still resolves, what the profile's field
@@ -2025,7 +2027,7 @@ export function validateProfileCompleteness(
   const unknownAncestry = unresolvedEntities(baseModel);
   const {model: profiled, errors: unread} =
       applyBindings(
-          baseModel, profile, {load: {cloudSqlDialects: opts.cloudSqlDialects}});
+          baseModel, profile, {load: {sourceDialects: opts.sourceDialects}});
   errors.push(...unread.map(e => `${at}: ${e}`));
   const profiledError = inheritanceErrorOf(profiled);
   if (profiledError && !inheritanceErrorOf(baseModel) && !applied) {
@@ -2062,21 +2064,33 @@ export function validateProfileCompleteness(
       errors.push(`${at}: entity '${e.name}' has no source in this profile`);
       continue;
     }
-    // A source the loader's reader rejects is already reported. One that
-    // databaseOf cannot read names no database, so its entity's fields are
-    // not held to the dialect the other sources imply.
+    // A source the loader's reader rejects is already reported, and its
+    // entity keeps the model file's table and dialect. databaseOf still reads
+    // some rejected sources, such as one with a leading `//`. An entity whose
+    // source is rejected or names no database is left out of the one-database
+    // and dialect rules.
     const db = databaseOf(pe.source.trim());
-    if (!db) {
+    const profiledEntity = profiledByName.get(e.name);
+    if (!db || profiledEntity?.authoredSource !== pe.source.trim()) {
       rejected.add(e.name);
       continue;
     }
-    stated.push(
-        {source: pe.source, lookedUp: profiledByName.get(e.name)?.sourceDialect});
-    // One query reaches every database of a SQL Server instance.
-    const table = profiledByName.get(e.name)?.sourceDialect === 'SQLSERVER' &&
-        cloudSqlTableOf(pe.source);
-    const key = table ? table.resourceName.split('/databases/')[0] : db;
+    const lookedUp = profiledEntity.sourceDialect;
+    stated.push({source: pe.source, lookedUp});
+    // One query reaches every database of a SQL Server instance. A third-party
+    // table is in the database its entry's fullyQualifiedName names.
+    const table = lookedUp === 'SQLSERVER' && cloudSqlTableOf(pe.source);
+    const key = table ? table.resourceName.split('/databases/')[0] :
+        db !== 'thirdparty' ? db :
+        opts.sourceDatabases?.get(pe.source.trim()) ?? `thirdparty/${lookedUp}`;
     if (!databases.has(key)) databases.set(key, e.name);
+  }
+  // A third-party table whose entry names no database is in the database of
+  // the other tables of its system.
+  for (const [prefix, systemDialect] of DIALECT_OF_FQN_PREFIX) {
+    if ([...databases.keys()].some(k => k.startsWith(`${prefix}/`))) {
+      databases.delete(`thirdparty/${systemDialect}`);
+    }
   }
   if (databases.size > 1) {
     const named = [...databases.values()].map(n => `'${n}'`).join(', ');

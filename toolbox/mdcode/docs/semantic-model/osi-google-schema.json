@@ -191,7 +191,7 @@
     },
     "TableSource": {
       "type": "string",
-      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table.",
+      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @.",
       "anyOf": [
         {
           "title": "BigQuery table",
@@ -216,6 +216,10 @@
         {
           "title": "Cloud SQL for PostgreSQL or SQL Server table",
           "pattern": "^cloudsql\\.googleapis\\.com/projects/[^/]+/locations/[^/]+/instances/[^/]+/databases/[^/]+/schemas/[^/]+/tables/[^/]+$"
+        },
+        {
+          "title": "Table outside Google Cloud",
+          "pattern": "^projects/[^/]+/locations/[^/]+/entryGroups/[^/@][^/]*/entries/\\S+$"
         }
       ]
     },

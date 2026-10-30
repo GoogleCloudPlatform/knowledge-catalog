@@ -44,13 +44,13 @@ export interface LoadOptions {
   // excludes it, as applying a profile file does. The loaded model does not
   // mark them.
   excluded?: ReadonlyArray<ProfileExclusion>;
-  // The dialect of each Cloud SQL table written as its resource name, keyed by
-  // the resource name with no leading `//`, as cloudSqlDialects read them from
-  // the tables' Knowledge Catalog entries. A command looks them up before it
-  // loads. Without this map a Cloud SQL resource name implies no dialect: the
+  // The dialect of each Cloud SQL table written as its resource name and each
+  // third-party table, keyed as dialectLookupKey gives, as sourceDialects read
+  // them from the tables' Knowledge Catalog entries. A command looks them up
+  // before it loads. Without this map such a source implies no dialect: the
   // source names a table, not its engine, so the model implies none and every
   // expression text counts.
-  cloudSqlDialects?: ReadonlyMap<string, string>;
+  sourceDialects?: ReadonlyMap<string, string>;
   // Turns `parseSource`'s rejection of an unaccepted table source form into a
   // warning so a caller can load a document whose sources have not all been
   // repointed yet.
@@ -3010,7 +3010,8 @@ function pickDialect(
 interface ParsedSource {
   dataSource: string;
   authoredSource: string;
-  // The looked-up dialect of a Cloud SQL resource name, when the load has it.
+  // The looked-up dialect of a Cloud SQL or third-party table, when the load
+  // has it.
   sourceDialect?: string;
 }
 
@@ -3164,19 +3165,25 @@ function catalogNameResourceName(fqn: string): string|undefined {
 // character, such as a domain-scoped project, is wrapped in backticks, so the
 // dots and colons inside backticks do not split or fail. Returns [] when the
 // quoting is malformed (an unquoted colon, an unclosed backtick, text after a
-// closing backtick, or a backtick mid-segment outside quotes).
-export function catalogNameSegments(path: string): string[] {
+// closing backtick, or a backtick mid-segment outside quotes). With `colons`
+// set, an unquoted colon after the first backtick stays in its segment.
+// Dataplex reads a fullyQualifiedName that way: it splits the system and
+// subtype off at the colons before the first backtick, and keeps the rest as
+// the path.
+export function catalogNameSegments(path: string, colons = false): string[] {
   const out: string[] = [];
   let cur = '';
   let state: 'start'|'unquoted'|'quoted'|'after_quote' = 'start';
+  let colonOk = false;
   for (let i = 0; i < path.length; i++) {
     const ch = path[i];
     if (state === 'start') {
       if (ch === '`') {
         state = 'quoted';
+        colonOk = colons;
       } else if (ch === '.') {
         out.push('');
-      } else if (ch === ':') {
+      } else if (ch === ':' && !colonOk) {
         return [];
       } else {
         cur = ch;
@@ -3187,7 +3194,7 @@ export function catalogNameSegments(path: string): string[] {
         out.push(cur);
         cur = '';
         state = 'start';
-      } else if (ch === '`' || ch === ':') {
+      } else if (ch === '`' || (ch === ':' && !colonOk)) {
         return [];
       } else {
         cur += ch;
@@ -3241,17 +3248,18 @@ export function hasUnquotedWhitespace(source: string): boolean {
 // a query, a graph rather than a table, a catalog name under a prefix kcmd does
 // not accept, or one with the wrong number of segments. The result starts with
 // its system, which DIALECT_OF_SYSTEM maps to the dialect the source infers,
-// except for a Cloud SQL resource name (see dialectOfSources).
+// except for a source whose dialect is looked up (see dialectOfSources).
 //
 // A database is what a single query can reach: all of BigQuery, BigLake
 // included because BigQuery reads it; one Spanner, AlloyDB or Cloud SQL for
 // PostgreSQL database, or one Cloud SQL for MySQL or SQL Server instance. The
-// segment counts are those of the Knowledge Catalog FQN reference. A
-// third-party table is in no accepted form: the preview supports Google Cloud
-// tables only (see thirdPartySourceError). The shape of a Cloud SQL resource
-// name cannot tell a SQL Server table from a PostgreSQL one, so this keys it
-// on its database, and the one-database rule widens it to its instance once
-// the lookup names SQL Server.
+// segment counts are those of the Knowledge Catalog FQN reference. The shape
+// of a Cloud SQL resource name cannot tell a SQL Server table from a
+// PostgreSQL one, so this keys it on its database, and the one-database rule
+// widens it to its instance once the lookup names SQL Server. Every
+// third-party table gets the key `thirdparty`, which is no target's database.
+// The one-database rule puts it in the database its entry's
+// fullyQualifiedName names, or else with the other tables of its system.
 export function databaseOf(written: string): string|undefined {
   if (hasUnquotedWhitespace(written)) return undefined;
   const source = asResourceUri(written);
@@ -3271,6 +3279,7 @@ export function databaseOf(written: string): string|undefined {
   if (m) return `cloudsql_mysql/${m[1]}.${m[2]}.${m[3]}`;
   m = source.match(CLOUDSQL_SCHEMA_TABLE_URI);
   if (m) return `cloudsql/${m[1]}.${m[2]}.${m[3]}.${m[4]}`;
+  if (thirdPartyEntryOf(source)) return 'thirdparty';
   if (source.length > MAX_CATALOG_NAME_LENGTH) return undefined;
   m = source.match(/^([a-z_]+):(.+)$/);
   if (!m) return undefined;
@@ -3340,12 +3349,48 @@ export function sourceToDataSource(source: string): string {
   return value;
 }
 
-// The catalog name prefixes of third-party tables, and the shape of a
-// Knowledge Catalog entry name.
-const THIRD_PARTY_PREFIXES =
-    ['snowflake:', 'databricks:', 'mysql:', 'postgresql:'];
+// The dialect each fullyQualifiedName prefix of a third-party table gives.
+export const DIALECT_OF_FQN_PREFIX = new Map([
+  ['snowflake', 'SNOWFLAKE'], ['databricks', 'DATABRICKS'], ['mysql', 'MYSQL'],
+  ['postgresql', 'POSTGRES'], ['sqlserver', 'SQLSERVER'],
+]);
+// The shape of a Knowledge Catalog entry name.
 const ENTRY_NAME =
     /^projects\/[^/]+\/locations\/[^/]+\/entryGroups\/([^/]+)\/entries\/(.+)$/;
+// The entry name form, as messages show it.
+export const ENTRY_NAME_FORM =
+    'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>';
+
+// The Knowledge Catalog entry of a table outside Google Cloud. Its entry group
+// is not a system one. `name` is the entry name the source writes.
+export interface ThirdPartyEntry {
+  project: string;
+  location: string;
+  name: string;
+}
+
+// The third-party entry `source` names, or undefined when it names none.
+export function thirdPartyEntryOf(source: string): ThirdPartyEntry|undefined {
+  const name = source.trim();
+  const m = name.match(ENTRY_NAME);
+  if (!m || m[1].startsWith('@')) return undefined;
+  const [, project, , location] = name.split('/');
+  return {project, location, name};
+}
+
+// True when `entity` is written with a third-party table's entry name.
+export function bindsThirdPartyTable(
+    entity: {authoredSource?: string}): boolean {
+  return thirdPartyEntryOf(entity.authoredSource ?? '') !== undefined;
+}
+
+// The key LoadOptions.sourceDialects holds a source's dialect under: a Cloud
+// SQL table's resource name, or a third-party table's entry name. Undefined
+// for a source whose own name gives its dialect.
+export function dialectLookupKey(source: string): string|undefined {
+  return cloudSqlTableOf(source)?.resourceName ??
+      thirdPartyEntryOf(source)?.name;
+}
 
 // Why `source` is not accepted when it is a Knowledge Catalog entry name in a
 // system entry group, one whose id starts with `@`, such as `@bigquery`.
@@ -3393,18 +3438,26 @@ function unsupportedServiceSourceError(
       undefined;
 }
 
-// Why `source` is not accepted when it names a third-party table, in any form:
-// a catalog name under a third-party prefix, or a Knowledge Catalog entry name
-// outside a system entry group. Undefined for any other source. The preview
-// supports Google Cloud tables only.
-function thirdPartySourceError(source: string, ctx: string): string|undefined {
-  const entry = source.match(ENTRY_NAME);
-  const thirdParty = THIRD_PARTY_PREFIXES.some(p => source.startsWith(p)) ||
-      (entry !== null && !entry[1].startsWith('@'));
-  return thirdParty ?
+// True when `source` is in a Google Cloud form, accepted or not: a resource
+// name or resource URI, a catalog name of a Google Cloud system, or an entry
+// name in a system entry group.
+export function isGoogleCloudForm(source: string): boolean {
+  const system = source.match(/^([a-z_]+):/)?.[1];
+  return RESOURCE_NAME.test(source.replace(/^\/\//, '')) ||
+      [...CATALOG_NAME_FORMS.map(([p]) => p),
+       ...UNSUPPORTED_SERVICES.map(s => s.prefix)]
+          .some(p => p.startsWith(`${system}:`)) ||
+      !!source.match(ENTRY_NAME)?.[1].startsWith('@');
+}
+
+// Why `source` is not accepted when it is a catalog name under a third-party
+// prefix, such as `snowflake:acme.retail.public.orders`. Undefined for any
+// other source.
+function thirdPartyNameError(source: string, ctx: string): string|undefined {
+  return DIALECT_OF_FQN_PREFIX.has(source.match(/^([a-z]+):/)?.[1] ?? '') ?
       `Semantic model load error: ${ctx}: source '${source}' is a ` +
-          `third-party table; the preview supports Google Cloud tables ` +
-          `only: BigQuery, BigLake, Spanner, AlloyDB and Cloud SQL.` :
+          `Knowledge Catalog name; write the entry name of the table's ` +
+          `Knowledge Catalog entry instead, such as '${ENTRY_NAME_FORM}'.` :
       undefined;
 }
 
@@ -3428,11 +3481,10 @@ export function parseSource(
   }
 
   const problem = oldSourceForm(trimmed);
-  // The accepted form: a GCP resource name.
+  // The accepted forms: a GCP resource name, or a third-party entry name.
   if (problem === undefined && isAcceptedSource(trimmed)) {
-    const cloudSql = cloudSqlTableOf(trimmed);
-    const sourceDialect = cloudSql &&
-        opts.cloudSqlDialects?.get(cloudSql.resourceName);
+    const key = dialectLookupKey(trimmed);
+    const sourceDialect = key && opts.sourceDialects?.get(key);
     return {
       authoredSource: trimmed,
       dataSource: sourceToDataSource(trimmed),
@@ -3473,7 +3525,7 @@ export function parseSource(
 
   const unsupported = unsupportedServiceSourceError(trimmed, ctx) ??
       systemEntrySourceError(trimmed, ctx) ??
-      thirdPartySourceError(trimmed, ctx);
+      thirdPartyNameError(trimmed, ctx);
   if (unsupported) throw new SemanticModelError(unsupported);
 
   if (trimmed.length > MAX_CATALOG_NAME_LENGTH) {
@@ -3541,9 +3593,9 @@ export function parseSource(
       `'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
       `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
       `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
-      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'). The preview ` +
-      `supports Google Cloud tables only: BigQuery, BigLake, Spanner, ` +
-      `AlloyDB and Cloud SQL.`);
+      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'), ` +
+      `or, for a table outside Google Cloud, the entry name of its ` +
+      `Knowledge Catalog entry ('${ENTRY_NAME_FORM}').`);
 }
 
 export function unquote(part: string): string {

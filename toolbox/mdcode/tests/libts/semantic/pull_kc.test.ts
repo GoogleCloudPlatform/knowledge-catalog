@@ -1047,6 +1047,21 @@ semantic_model:
   test('a vanilla model pulled and pushed again gives what its push gave',
        () => roundTrip(VANILLA, {}));
 
+  test('a third-party table\'s entry name pulls back exactly as written, and ' +
+           'pushed again gives what its push gave',
+       async () => {
+         const entry = (t: string) =>
+             `projects/p/locations/us/entryGroups/sf/entries/acme.public.${t}`;
+         const {entries} = await roundTrip(
+             SHOP.replace(TABLE('orders'), entry('orders')),
+             {ops: PROFILES.ops.replace(TABLE('orders_ops'), entry('orders_ops'))});
+         const stored = entries.find(e => e.name.endsWith('/shop/entities/orders'))!
+                            .aspects![KEY('semantic-entity')].data!;
+         expect([stored.source, stored.profiles[0].source]).toEqual([
+           {resource: entry('orders')}, {resource: entry('orders_ops')},
+         ]);
+       });
+
   test(
       'each entry is read with the aspects of its type, and with the flag ' +
           'off links with the link type of the type project',

@@ -1950,6 +1950,11 @@ describe('completeness sees the model as the profile does', () => {
       primaryKey: ['id'], fields: [ID, column('email')], ...e,
     })),
   });
+  // The errors of a profile that binds customer to `a` and vip to `b`.
+  const errorsFor = (a: string, b = BQ('vip'), opts?: CompletenessOptions) =>
+      validateProfileCompleteness(model(true), spec([
+        {name: 'customer', source: a}, {name: 'vip', source: b},
+      ]), [], opts).join('\n');
 
   test('an exclusion on an ancestor leaves its descendants\' field in place', () => {
     // customer excludes email; vip still reads email from its own table.
@@ -1984,9 +1989,6 @@ describe('completeness sees the model as the profile does', () => {
   });
 
   test('only the accepted source forms are accepted', () => {
-    const errorsFor = (source: string) => validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source}, {name: 'vip', source: BQ('v')},
-    ])).join('\n');
     for (const bad of [
            'not_a_table', 'acme.raw.customer', 'custom:foo.bar', 'trino:c.s.t',
            'oracle:p.i.t', 'spanner:p.c.i.db', 'bigquery:p.d',
@@ -2012,11 +2014,6 @@ describe('completeness sees the model as the profile does', () => {
   // schema, and its database is its instance; a PostgreSQL or SQL Server table
   // has a schema, and its database is the one it names.
   test('Cloud SQL resource names classify by instance and database', () => {
-    const errorsFor = (a: string, b: string,
-                       cloudSqlDialects?: ReadonlyMap<string, string>) =>
-        validateProfileCompleteness(model(true), spec([
-          {name: 'customer', source: a}, {name: 'vip', source: b},
-        ]), [], {cloudSqlDialects}).join('\n');
     const inst = 'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst';
     // MySQL: one instance is one database, whatever its databases.
     expect(errorsFor(`${inst}/databases/sales/tables/c`, `${inst}/databases/crm/tables/v`))
@@ -2034,7 +2031,7 @@ describe('completeness sees the model as the profile does', () => {
       `${inst}/databases/db2/schemas/public/tables/v`,
     ] as const;
     const lookedUp = (dialect: string) =>
-        new Map(twoDatabases.map(s => [s, dialect]));
+        ({sourceDialects: new Map(twoDatabases.map(s => [s, dialect]))});
     expect(errorsFor(...twoDatabases)).toContain('more than one database');
     expect(errorsFor(...twoDatabases, lookedUp('POSTGRES')))
         .toContain('more than one database');
@@ -2066,23 +2063,38 @@ describe('completeness sees the model as the profile does', () => {
         .toBeUndefined();
   });
 
-  // A profile's rebinding is read as the model file's source is, so a
-  // third-party table is rejected there too, and counts as no database.
-  test('a profile that binds a third-party source is rejected', () => {
-    const errors = validateProfileCompleteness(model(true), spec([
-      {name: 'customer', source: 'snowflake:acct.db.public.c'},
-      {name: 'vip', source: BQ('vip')},
-    ])).join('\n');
+  // A profile's rebinding is read as the model file's source is, so a catalog
+  // name under a third-party prefix is rejected and counts as no database. A
+  // third-party table's database is the one its entry names, or its system's.
+  test('a profile that binds a third-party table', () => {
+    const entry = (g: string, t: string) => `projects/acme/locations/us/entryGroups/${g}/entries/${t}`;
+    const [sf, sf2, dbx] = [entry('sf', 'c'), entry('sf', 'v'), entry('dbx', 'v')];
+    const sourceDialects =
+        new Map([[sf, 'SNOWFLAKE'], [sf2, 'SNOWFLAKE'], [dbx, 'DATABRICKS']]);
+    // sf and sf2 in the Snowflake accounts `a` and `b`.
+    const accounts = (a: string, b: string) => ({
+      sourceDialects,
+      sourceDatabases: new Map([[sf, `snowflake/${a}`], [sf2, `snowflake/${b}`]]),
+    });
+    const errors = errorsFor('snowflake:acct.db.public.c');
     expect(errors).toContain(
-        "source 'snowflake:acct.db.public.c' is a third-party table; the " +
-        "preview supports Google Cloud tables only");
+        "source 'snowflake:acct.db.public.c' is a Knowledge Catalog name");
     expect(errors).not.toContain('more than one database');
+    for (const [vip, opts] of [
+      [BQ('vip'), {sourceDialects}], [dbx, {sourceDialects}], [sf2, accounts('a', 'b')],
+    ] as const) {
+      expect(errorsFor(sf, vip, opts)).toContain(
+          "binds entities in more than one database ('customer', 'vip')");
+    }
+    expect(errorsFor(sf, sf2, {sourceDialects})).toEqual('');
+    expect(errorsFor(sf, sf2, accounts('a', 'a'))).toEqual('');
+    expect(errorsFor(sf, sf2, {sourceDialects, sourceDatabases: new Map([[sf, 'snowflake/a']])})).toEqual('');
   });
 
-  // A source the loader's reader rejects is reported, and names no
-  // database. So its entity's fields are not held to the dialect of the
-  // profile's other sources, which its table may not have. The other
-  // entities' fields still are.
+  // A source the loader's reader rejects is reported, and its entity keeps
+  // the model file's table. So its entity's fields are not held to the
+  // dialect of the profile's other sources, which its table may not have.
+  // The other entities' fields still are.
   test('a profile source the reader rejects leaves its entity\'s fields out of the dialect rule', () => {
     const m = model(true);
     // email as a load gives it: a SNOWFLAKE text, kept in its list too.
@@ -2095,12 +2107,14 @@ describe('completeness sees the model as the profile does', () => {
     // Tables in one Cloud SQL for MySQL instance, as the lookup reads them.
     const mysql = (t: string) =>
         `cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/sales/tables/${t}`;
-    const cloudSqlDialects = new Map([mysql('c'), mysql('v')].map(t => [t, 'MYSQL']));
+    const sourceDialects = new Map([mysql('c'), mysql('v')].map(t => [t, 'MYSQL']));
     const errorsFor = (customer: string) => validateProfileCompleteness(m, spec([
       {name: 'customer', source: customer, fields: [ID]},
       {name: 'vip', source: mysql('v'), fields: [ID]},
-    ]), [], {cloudSqlDialects}).join('\n');
-    for (const rejected of ['snowflake:acct.db.public.c', 'acme.sales.c', '']) {
+    ]), [], {sourceDialects}).join('\n');
+    for (const rejected of [
+           'snowflake:acct.db.public.c', 'acme.sales.c', '', `//${mysql('c')}`,
+         ]) {
       const errors = errorsFor(rejected);
       expect({rejected, errors}).toEqual({
         rejected,
@@ -2110,6 +2124,10 @@ describe('completeness sees the model as the profile does', () => {
       expect(errors).toContain(
           "field 'vip.email' has no expression for MYSQL or ANSI_SQL");
     }
+    // A source with a leading '//' names a table, and the reader still
+    // rejects it as a resource URI.
+    expect(errorsFor(`//${mysql('c')}`)).toContain(
+        `source '//${mysql('c')}' is a resource URI`);
     // A source in the same instance gives the profile its dialect.
     expect(errorsFor(mysql('c'))).toContain(
         "field 'customer.email' has no expression for MYSQL or ANSI_SQL");
@@ -3031,14 +3049,14 @@ describe('profile completeness: dialects and struct paths', () => {
   test('a Cloud SQL resource name takes the dialect its catalog entry gave, and none without one', () => {
     const CS = 'cloudsql.googleapis.com/projects/p/locations/l/instances/ms/' +
         'databases/shop/schemas/sales/tables/orders';
-    const sqlServer = {cloudSqlDialects: new Map([[CS, 'SQLSERVER']])};
+    const sqlServer = {sourceDialects: new Map([[CS, 'SQLSERVER']])};
     expect(validateProfileCompleteness(bqOnly(), atSource(CS))).toEqual([]);
-    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: sqlServer.cloudSqlDialects})
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: sqlServer.sourceDialects})
                .join('\n'))
         .toContain("field 'orders.amount' has no expression for SQLSERVER or ANSI_SQL");
     // The dialects are per table: another table's does not count.
-    const other = {cloudSqlDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
-    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {cloudSqlDialects: other.cloudSqlDialects})).toEqual([]);
+    const other = {sourceDialects: new Map([[CS.replace('/ms/', '/other/'), 'SQLSERVER']])};
+    expect(validateProfileCompleteness(bqOnly(), atSource(CS), [], {sourceDialects: other.sourceDialects})).toEqual([]);
   });
 
   test('the loader and a profile record the looked-up dialect on the entity', () => {
@@ -3051,7 +3069,7 @@ describe('profile completeness: dialects and struct paths', () => {
         entities: [{name: 'orders', source, primary_key: ['id'], fields: [{name: 'id', expression: 'id'}]}],
       }],
     });
-    const opts = {cloudSqlDialects: new Map([[CS, 'MYSQL']])};
+    const opts = {sourceDialects: new Map([[CS, 'MYSQL']])};
     const [model] = fromDocument(doc(CS), opts).models;
     expect(model.entities[0].sourceDialect).toBe('MYSQL');
     expect(sourcesDialect(model)).toBe('MYSQL');
@@ -3739,7 +3757,7 @@ entities:
         'databases/shop/schemas/sales/tables/orders';
     const file = FILE.replace(`"${BQ('orders_prod')}"`, `"${CS}"`);
     const res = profileForDocument(DOC, [{name: 'prod', text: file}], 'prod', {
-      cloudSqlDialects: new Map([[CS, 'POSTGRES']]),
+      sourceDialects: new Map([[CS, 'POSTGRES']]),
     });
     if (res.kind !== 'file') throw new Error(JSON.stringify(res));
     expect(res.model.entities.find(e => e.name === 'orders')!.sourceDialect)
@@ -3749,7 +3767,7 @@ entities:
     const withCs = {name: 'sales', text: DOC.text.replace(`"${BQ('orders')}"`, `"${CS}"`)};
     expect(withCs.text).toContain(CS);
     const kept = profileForDocument(withCs, [{name: 'prod', text: 'name: prod\n'}], 'prod', {
-      cloudSqlDialects: new Map([[CS, 'POSTGRES']]),
+      sourceDialects: new Map([[CS, 'POSTGRES']]),
     });
     if (kept.kind !== 'file') throw new Error(JSON.stringify(kept));
     expect(kept.model.entities.find(e => e.name === 'orders')!.sourceDialect)

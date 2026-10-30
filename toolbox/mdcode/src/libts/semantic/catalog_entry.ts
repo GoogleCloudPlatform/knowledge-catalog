@@ -1,6 +1,5 @@
-// Reading a table's entry in its system entry group, which the Cloud SQL
-// dialect lookup and the source check share, so both read an entry, and the
-// answer, the same way.
+// Reading a table's Knowledge Catalog entry, which the dialect lookup and the
+// source check share, so both read an entry, and the answer, the same way.
 
 import type {ApiResult} from '../gcp/api';
 import {catalogContainer} from '../gcp/dataplex';
@@ -8,7 +7,10 @@ import {catalogContainer} from '../gcp/dataplex';
 // The one catalog call an entry read makes; `CatalogClient` provides it.
 export interface EntryLookup {
   lookupEntry(project: string, location: string, name: string):
-      Promise<ApiResult<{entryType?: string}>>;
+      Promise<ApiResult<{
+        entryType?: string; fullyQualifiedName?: string;
+        entrySource?: {system?: string};
+      }>>;
 }
 
 // What a read gave: its result; `unreadable`, when the service answered 403

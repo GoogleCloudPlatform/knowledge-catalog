@@ -57,7 +57,7 @@ cli.command('push', 'Push catalog entries')
     .option('--validate-only', 'Only validate changes without applying')
     .option(
         '--skip-source-check',
-        'Skip the check that every source names a table Knowledge Catalog knows about; a Cloud SQL source is still looked up for its dialect; semantic-model push only')
+        'Skip the check that every source names a table Knowledge Catalog knows about; a Cloud SQL or third-party source is still looked up for its dialect; semantic-model push only')
     .option(
         '--no-profile',
         'Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched; the graph is deployed by default for the default binding profile; not accepted for a model that lists deployments; semantic-model push only')

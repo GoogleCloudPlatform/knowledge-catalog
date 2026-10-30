@@ -48,6 +48,7 @@ export interface Entry {
   name: string;
   entryType: string;
   parentEntry?: string;
+  fullyQualifiedName?: string;
   createTime?: string;
   updateTime?: string;
   entrySource?: {

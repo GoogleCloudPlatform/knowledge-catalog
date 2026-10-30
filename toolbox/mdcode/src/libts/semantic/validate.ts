@@ -12,10 +12,10 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
+import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {bindsThirdPartyTable, databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -114,28 +114,32 @@ export function validatePushRequirements(
           model.deployments?.length ?
           `under 'deployments' in its GOOGLE custom_extensions block` :
           undefined;
+      // When the model binds a third-party table, a graph target and a
+      // catalog-only push are refused too, so neither error below gives advice.
+      // When the model names a target, the refusal beside it says why.
+      const thirdParty = model.entities?.some(bindsThirdPartyTable);
       if (deployInfo.uris.length !== 1) {
         errors.push(
             `model '${model.name}' (${document}) declares ${
                 deployInfo.uris
                     .length} deployments; push uses ` +
-            `exactly one deployment for now, with a BigQuery Graph or ` +
-            `Spanner Graph target${
-                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`);
+            `exactly one deployment for now${thirdParty ? '.' :
+            `, with a BigQuery Graph or Spanner Graph target${
+                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`}`);
       } else if (deployInfo.alloyDb.length) {
         // Parseable, supported, and for the other command. AlloyDB has no
         // property-graph DDL, so there is no graph here for a push to deploy
         // -- which makes this a deployment pointed at the wrong verb rather
         // than a URI to correct, and the message says which verb it is for.
+        const advice = thirdParty ? '' :
+            ` Declare a BigQuery or Spanner Graph target (${
+                where ?? DEPLOYMENTS_VERSION_HINT}), or run 'kcmd push ` +
+            `--no-profile' to publish to Knowledge Catalog only.`;
         errors.push(
             `model '${model.name}' (${document}) target '${
                 deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
             `model runs against rather than deploys to; AlloyDB has no ` +
-            `property graph for a push to publish. Declare a BigQuery or ` +
-            `Spanner Graph target (${
-                where ?? DEPLOYMENTS_VERSION_HINT}), or ` +
-            `run 'kcmd push --no-profile' to publish ` +
-            `to Knowledge Catalog only.`);
+            `property graph for a push to publish.${advice}`);
       }
     }
 
@@ -1758,20 +1762,7 @@ export function deploymentTableErrors(
     sourceOf = e => bound.get(e.name);
     bindings = `profile '${profile.name}'`;
   }
-  // The database the tables must be in, as databaseOf gives it, and how an
-  // error names the target and a table outside it.
-  const {engine, coordinates: c} = deployment;
-  let database = 'bigquery';
-  let target = 'a BigQuery graph';
-  let outside = 'which is not a BigQuery or BigLake table';
-  if (engine !== 'bigquery') {
-    const [system, name] = engine === 'spanner' ?
-        ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
-        ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
-    database = `${engine}/${name}`;
-    target = `${system} database '${name}'`;
-    outside = 'which is not a table in that database';
-  }
+  const {database, target, outside} = targetDatabase(deployment);
   const errors: string[] = [];
   for (const e of model.entities ?? []) {
     const source = sourceOf(e)?.trim();
@@ -1781,6 +1772,38 @@ export function deploymentTableErrors(
         `but ${bindings} binds entity '${e.name}' to '${source}', ${outside}.`);
   }
   return errors;
+}
+
+// The database the tables of a deployment target must be in, as databaseOf
+// gives it, and how an error names the target and a table outside it.
+function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
+  if (engine === 'bigquery') {
+    return {database: 'bigquery', target: 'a BigQuery graph',
+            outside: 'which is not a BigQuery or BigLake table'};
+  }
+  const [system, name] = engine === 'spanner' ?
+      ['Spanner', `${c.project}/${c.instance}/${c.database}`] :
+      ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
+  return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
+          outside: 'which is not a table in that database'};
+}
+
+// One error for each third-party table of `model` under each target its
+// GOOGLE block or legacy wrapper names. `model` has no deployments list.
+export function thirdPartyTargetErrors(
+    document: string, model: SemanticModel): string[] {
+  const {bigQuery, spanner, alloyDb} = googleDeploymentTargets(model);
+  const entities = (model.entities ?? []).filter(bindsThirdPartyTable);
+  return [
+    ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
+    ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),
+    ...alloyDb.map(coordinates => ({engine: 'alloydb' as const, coordinates})),
+  ].flatMap(t => {
+    const {target, outside} = targetDatabase(t);
+    return entities.map(
+        e => `model '${model.name}' (${document}) targets ${target}, but ` +
+            `binds entity '${e.name}' to '${e.authoredSource}', ${outside}.`);
+  });
 }
 
 

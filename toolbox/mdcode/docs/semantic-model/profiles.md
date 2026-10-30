@@ -78,16 +78,19 @@ written as its GCP resource name, with no leading `//`, such as
 name with a leading `//`) or a Knowledge Catalog name such as
 `bigquery:<p>.<d>.<t>` is rejected, and the error names the resource name to
 write. `kcmd pull` returns a model an older push stored that way as stored,
-and warns for each such value. The preview
-supports Google Cloud tables only, so a third-party table is rejected in every
-form: a Knowledge Catalog entry name, or a name under a prefix such as
-`snowflake:`, `databricks:table:`, `mysql:` or `postgresql:`. A Bigtable or
-Dataproc Metastore table is rejected too, since the preview does not support
-them yet. An entry name in a system entry group, such as `@bigquery`, is
-rejected with an error that says what to write instead. A bare table name, a
-query, and any other prefix are rejected. The source also fixes the profile's
-SQL dialect, so every field the profile binds needs an expression in that
-dialect or in `ANSI_SQL`.
+and warns for each such value. A table outside Google Cloud is written as
+the entry name of its Knowledge Catalog entry,
+`projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, and takes the
+dialect its entry records (see [Validation](reference.md#validation)). An
+entry whose `fullyQualifiedName` names something other than a table or view,
+such as a schema, is rejected. A name
+under a prefix such as `snowflake:` or `databricks:table:` is rejected. A
+Bigtable or Dataproc Metastore table is rejected too, since the preview does
+not support them yet. An entry name in a system entry group, such as
+`@bigquery`, is rejected with an error that says what to write instead. A bare
+table name, a query, and any other prefix are rejected. The source also fixes
+the profile's SQL dialect, so every field the profile binds needs an expression
+in that dialect or in `ANSI_SQL`.
 
 A Cloud SQL table's resource name is
 `cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>`
@@ -104,10 +107,14 @@ integration turned on (`gcloud sql instances patch <i>
 table. When the entry cannot be read, the command stops and says so.
 
 A profile's sources all sit in one database, meaning the system one query can
-reach: all of BigQuery, or one Spanner, AlloyDB or Cloud SQL for PostgreSQL
-database, or one Cloud SQL for MySQL or SQL Server instance. A profile moves an entity
-between stores by swapping its source and, when the two stores shape the data
-differently, the column each field reads.
+reach: all of BigQuery, one Spanner, AlloyDB or PostgreSQL database, one MySQL
+or SQL Server instance, one Snowflake account, or one Databricks metastore.
+These units are the same in Cloud SQL and outside it, but a Cloud SQL table and
+a table outside Cloud SQL are never in one database. `kcmd` reads a third-party
+table's database from its entry's `fullyQualifiedName`. When the entry has
+none, the table counts in one database with the other tables of its system. A
+profile moves an entity between stores by swapping its source and, when the
+two stores shape the data differently, the column each field reads.
 
 ## What a profile may change — the contract
 

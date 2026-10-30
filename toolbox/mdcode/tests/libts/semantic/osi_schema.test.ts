@@ -184,6 +184,7 @@ const SOURCE = {
   alloydb: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/orders',
   cloudsqlMysql: 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/orders',
   cloudsqlSchema: 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/orders',
+  thirdParty: 'projects/p/locations/l/entryGroups/sf/entries/acme.db.public.orders',
 };
 const TARGET = {
   bigquery: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
@@ -198,6 +199,7 @@ const BAD_SOURCE: Record<keyof typeof SOURCE, string> = {
   alloydb: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/tables/orders',
   cloudsqlMysql: 'cloudsql.googleapis.com/projects/p/instances/i/databases/db/tables/orders',
   cloudsqlSchema: 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/schemas/s/tables/orders',
+  thirdParty: 'projects/p/locations/l/entryGroups/@bigquery/entries/orders',
 };
 const BAD_TARGET: Record<keyof typeof TARGET, string> = {
   bigquery: 'bigquery.googleapis.com/projects/p/datasets/d/graphs/g',
