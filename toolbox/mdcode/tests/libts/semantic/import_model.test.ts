@@ -407,7 +407,7 @@ describe('sources', () => {
     ['AlloyDB database', 'Public.ORDERS', ALLOYDB_DB, `${ALLOYDB}/tables/orders`],
     ['AlloyDB, double-quoted table', 'PUBLIC."Orders"', ALLOYDB, `${ALLOYDB}/tables/Orders`],
     ['AlloyDB, backticked table', 'PUBLIC.`Orders`', ALLOYDB, `${ALLOYDB}/tables/Orders`],
-    ['AlloyDB, backticked schema', '`public`.ORDERS', ALLOYDB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB, backticked schema', '`Public`.ORDERS', ALLOYDB_DB, `${ALLOYDB_DB}/schemas/Public/tables/orders`],
     ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
     ['AlloyDB, non-ASCII letter', 'PUBLIC.ÄRGER', ALLOYDB, `${ALLOYDB}/tables/Ärger`],
     ['AlloyDB, mixed-case prefix', 'sales.orders', `${ALLOYDB_DB}/schemas/Sales`, undefined],

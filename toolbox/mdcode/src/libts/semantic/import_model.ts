@@ -1128,12 +1128,9 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
     // non-strict mode, deduplicating warnings already recorded.
     const loaded = loadModels(
         content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
-    for (const raw of loaded.warnings) {
-      const m = raw.match(LOADER_SOURCE_WARNING);
-      // The repair step has reported each source it left as written.
-      const reported = m && `${m[1]}: source '${m[2]}'`;
-      if (reported && doc.warnings.some(w => w.startsWith(reported))) continue;
-      const w = m ? sourceWarning(m[1], m[2]) : raw;
+    for (const w of loaded.warnings) {
+      // The repair step has reported each source the loader warns about.
+      if (LOADER_SOURCE_WARNING.test(w)) continue;
       if (!doc.warnings.includes(w) && !doc.errors.includes(w)) {
         doc.warnings.push(w);
       }
