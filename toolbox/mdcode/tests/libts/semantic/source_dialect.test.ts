@@ -160,6 +160,8 @@ describe('sourceDialects of a third-party table', () => {
       [fqn('mysql:`h:3306`.sa:les.orders'), 'MYSQL', 'mysql/h:3306'],
       [fqn('postgresql:`db.example.com`.sales.:public.orders'), 'POSTGRES',
        'postgresql/db.example.com/sales'],
+      // Dataplex keeps a line break inside a quoted name.
+      [fqn('mysql:`h`.s.`t\nx`'), 'MYSQL', 'mysql/h'],
       [system('Snowflake'), 'SNOWFLAKE'],
       [system('DATABRICKS'), 'DATABRICKS'],
       [system('mysql'), 'MYSQL'],

@@ -186,7 +186,7 @@ function databaseOfFqn(fqn: string): string|undefined {
   // stays in the path. A colon in an unquoted database, schema or table
   // name stays in its segment when it comes after the name's first backtick.
   const [, prefix, subtype, path] =
-      fqn.match(/^([a-z]+):(?:([a-z0-9_-]+):)?(.*)$/) ?? [];
+      fqn.match(/^([a-z]+):(?:([a-z0-9_-]+):)?(.*)$/s) ?? [];
   const parts = TABLE_FQN_PARTS.get(prefix ?? '');
   const seg = catalogNameSegments(path ?? '', true);
   const tableSubtype = subtype === undefined ||
