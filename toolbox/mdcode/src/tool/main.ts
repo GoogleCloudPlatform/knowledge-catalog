@@ -22,6 +22,9 @@ cli.command('init', 'Initialize a new catalog snapshot')
         '--semantic-model <id>',
         'Semantic model scope as <projectId>.<locationId>.<entryGroupId>')
     .option('--pull', 'Optionally pull catalog entries during initialization')
+    .option(
+        '--format <format>',
+        'How the workspace stores entries on disk, recorded in catalog.yaml for pull and push. Only `okf` (an OKF bundle under bundle/) is accepted; omit for the scope\'s default layout')
     .action(async (options) => {
       let exitCode = 1;
       try {
@@ -62,7 +65,8 @@ cli.command('push', 'Push catalog entries')
     .option(
         '--emit-expressions',
         'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
-    .option('--validate-only', 'Only validate changes without applying')
+    .option('--dry-run', 'Run every check and show what would change, without applying anything')
+    .option('--validate-only', 'Same as --dry-run')
     .option(
         '--skip-source-check',
         'Skip the check that every source names a table Knowledge Catalog knows about; a Cloud SQL source is still looked up for its dialect; semantic-model push only')
