@@ -1770,8 +1770,8 @@ export function deploymentTableErrors(
   return errors;
 }
 
-// The database the tables of a graph target must be in, as databaseOf gives
-// it, and how an error names the target and a table outside it.
+// The database the tables of a deployment target must be in, as databaseOf
+// gives it, and how an error names the target and a table outside it.
 function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
   if (engine === 'bigquery') {
     return {database: 'bigquery', target: 'a BigQuery graph',
@@ -1786,7 +1786,7 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
 
 // One error for each third-party table of `model` under each target its
 // GOOGLE block or legacy wrapper names. `model` has no deployments list.
-export function thirdPartyGraphErrors(
+export function thirdPartyTargetErrors(
     document: string, model: SemanticModel): string[] {
   const {bigQuery, spanner, alloyDb} = googleDeploymentTargets(model);
   const entities = (model.entities ?? [])

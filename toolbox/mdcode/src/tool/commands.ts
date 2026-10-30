@@ -31,7 +31,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, storeMessage, thirdPartyGraphErrors, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {deploymentTableErrors, inlineBindingWarnings, storeMessage, thirdPartyTargetErrors, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -964,7 +964,7 @@ async function prepareModels(
     // No target reads a third-party table, even on a catalog-only push,
     // since the catalog keeps the target.
     ...labeled(models).flatMap(
-        m => thirdPartyGraphErrors(m.document, m.model)),
+        m => thirdPartyTargetErrors(m.document, m.model)),
   ])];
   for (const w of new Set([...unprunedWarnings, ...pushWarnings])) {
     report.warning(w);
@@ -1976,7 +1976,7 @@ async function checkBeforeWrites(
           (everyByDoc.get(document) ?? []).flatMap(d => ofProfile(
               document, d.profile,
               ...deploymentTableErrors(document, model, d))) :
-          ofModel(document, ...thirdPartyGraphErrors(document, model)));
+          ofModel(document, ...thirdPartyTargetErrors(document, model)));
   if (tableErrors.length) return stop(tableErrors);
 
   const plans: DeploymentPlan[] = [];

@@ -28,7 +28,7 @@ const MISSING = err(
     'Knowledge Catalog, or fix the source.');
 const BQ = 'a BigQuery graph';
 const SPANNER = "Spanner database 'test-project/i/db'";
-// Why a graph that targets `target` cannot read Customer's table.
+// Why `target` cannot read Customer's table.
 const outside = (target: string) => `'${ENTRY}', which is not ${
     target === BQ ? 'a BigQuery or BigLake table' : 'a table in that database'}.`;
 // Push's refusal of deployment 'd', which targets `target`.
@@ -73,11 +73,11 @@ scenarios('a third-party table', [
     ],
   },
   {
-    // A model with no deployments list pushes in one phase, with the graph
-    // target of its GOOGLE block or of a legacy profile folder. A catalog-only
+    // A model with no deployments list pushes in one phase, with the target
+    // of its GOOGLE block or of a legacy profile folder. A catalog-only
     // push, in one phase or two, is refused too, since the catalog keeps the
     // GOOGLE block target.
-    name: 'a model with no deployments list is refused before anything is written when its GOOGLE block or legacy profile names a graph',
+    name: 'a model with no deployments list is refused before anything is written when its GOOGLE block or legacy profile names a graph or an AlloyDB database',
     files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g')]}})
                                  .replace(bqTable('customer'), ENTRY)},
     services: LOOKUP,
