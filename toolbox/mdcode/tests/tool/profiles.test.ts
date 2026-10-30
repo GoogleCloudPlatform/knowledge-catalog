@@ -3069,14 +3069,15 @@ semantic_model:
     // A named profile that keeps the field unchanged gets no error of its
     // own when push's own check names it. A profile that rebinds it or is on
     // another database, or whose field that check skips, keeps its own error.
-    // A profile file's error has no kcmd import hint.
+    // A profile file's error suggests kcmd import only when the field's SQL is
+    // the model file's.
     test('reports a model file field with only a vendor text once beside a named profile', async () => {
       // The error of profile 'prod' for field amount, with no text for the
-      // `dialect` of its sources.
-      const profileError = (dialect = 'BIGQUERY') =>
+      // `dialect` of its sources, ending in `hint`.
+      const profileError = (dialect = 'BIGQUERY', hint = '') =>
           "[commerce.profile.prod.yaml] profile 'prod': field " +
           `'purchase.amount' has no expression for ${dialect} or ANSI_SQL, ` +
-          `and this profile's sources are ${dialect}`;
+          `and this profile's sources are ${dialect}${hint}`;
       const hinted = modelNoText('purchase.amount') + HINT;
       const spannerProfile = profileFile('prod').replaceAll(
           BQ('prod', ''), `${SPANNER_DB}/tables/`);
@@ -3104,9 +3105,10 @@ semantic_model:
          [profileError('SPANNER'), hinted]],
         ['declared on the child, rebound on its parent', child, childProfile,
          [hinted]],
+        // The SQL is the model file's, which import translates.
         ['no source in the model file',
          commerce().replace(`        source: ${BQ('dev', 'purchase')}\n`, ''),
-         profileFile('prod'), [profileError()]],
+         profileFile('prod'), [profileError('BIGQUERY', HINT.slice(0, -1))]],
       ];
       for (const [label, model, profile, errors] of cases) {
         writeScope({
