@@ -137,7 +137,8 @@ describe('sourceDialects', () => {
 
 // A third-party table's entry gives its dialect by the prefix of its
 // fullyQualifiedName, or, with none, by its entrySource.system in any case.
-// The fullyQualifiedName also names the table's database.
+// The fullyQualifiedName also names the table's database, and must name a
+// table or view.
 describe('sourceDialects of a third-party table', () => {
   const dialectOf = async (result: object) =>
       sourceDialects([THIRD_PARTY_FILE], fakeCatalog({[THIRD_PARTY]: {status: 200, result}}).catalog);
@@ -151,10 +152,9 @@ describe('sourceDialects of a third-party table', () => {
       [fqn('databricks:table:1234.main.retail.orders'), 'DATABRICKS', 'databricks/1234'],
       [fqn('databricks:AB12.main.retail.orders'), 'DATABRICKS', 'databricks/AB12'],
       [fqn('databricks:view:1234.main.retail.orders_v'), 'DATABRICKS', 'databricks/1234'],
-      [fqn('mysql:HOST.sales.orders'), 'MYSQL', 'mysql/host'],
+      [fqn('mysql:`HOST:3306`.sales.orders'), 'MYSQL', 'mysql/host:3306'],
       [fqn('postgresql:`DB.example.com`.Sales.public.orders'), 'POSTGRES',
        'postgresql/db.example.com/Sales'],
-      [fqn('postgresql:host'), 'POSTGRES'],
       [fqn('sqlserver:HOST.sales.dbo.orders'), 'SQLSERVER', 'sqlserver/host'],
       [system('Snowflake'), 'SNOWFLAKE'],
       [system('DATABRICKS'), 'DATABRICKS'],
@@ -162,7 +162,8 @@ describe('sourceDialects of a third-party table', () => {
       [system('PostgreSQL'), 'POSTGRES'],
       [system('POSTGRES'), 'POSTGRES'],
       [system('SQLSERVER'), 'SQLSERVER'],
-      [{...fqn('snowflake:acme.orders'), ...system('DATABRICKS')}, 'SNOWFLAKE', 'snowflake/acme'],
+      [{...fqn('snowflake:acme.retail.public.orders'), ...system('DATABRICKS')}, 'SNOWFLAKE',
+       'snowflake/acme'],
     ];
     for (const [result, dialect, database] of rows) {
       expect({result, ...await dialectOf(result)}).toEqual({
@@ -189,6 +190,26 @@ describe('sourceDialects of a third-party table', () => {
         `of the entry's fullyQualifiedName (snowflake:, databricks:, mysql:, ` +
         `postgresql: or sqlserver:), or entrySource.system when there is no ` +
         `fullyQualifiedName.`,
+      ]});
+    }
+  });
+
+  test('an entry whose fullyQualifiedName names no table or view is rejected, naming the entry', async () => {
+    const rows: Array<[string, string]> = [
+      ['snowflake:acme.retail.public', 'snowflake:<account>.<database>.<schema>.<table>'],
+      ['databricks:1234.main.retail', 'databricks:<metastore>.<catalog>.<schema>.<table>'],
+      ['databricks:volume:1234.main.retail.files',
+       'databricks:<metastore>.<catalog>.<schema>.<table>'],
+      ['mysql:host.sales', 'mysql:<host>.<schema>.<table>'],
+      ['postgresql:host.sales', 'postgresql:<host>.<database>.<schema>.<table>'],
+      ['sqlserver:host.sales.dbo', 'sqlserver:<host>.<database>.<schema>.<table>'],
+    ];
+    for (const [fullyQualifiedName, form] of rows) {
+      expect(await dialectOf({fullyQualifiedName})).toEqual({dialects: new Map(), databases: new Map(), errors: [
+        `source '${THIRD_PARTY}': its Knowledge Catalog entry has ` +
+        `fullyQualifiedName '${fullyQualifiedName}', which names no table or ` +
+        `view. A table's fullyQualifiedName has the form ${form}. Write the ` +
+        `entry name of the table's own entry.`,
       ]});
     }
   });

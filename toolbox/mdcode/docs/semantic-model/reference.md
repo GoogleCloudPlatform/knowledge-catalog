@@ -695,7 +695,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   gives `SQLSERVER`. An entry with no `fullyQualifiedName` gives the dialect
   of its `entrySource.system`, in any letter case: `SNOWFLAKE`, `DATABRICKS`,
   `MYSQL`, `POSTGRESQL` or `POSTGRES`, or `SQLSERVER`. A missing entry, or one
-  that gives no dialect, stops the command before anything is written. A field
+  that gives no dialect, stops the command before anything is written. So does
+  an entry whose `fullyQualifiedName` names something other than a table or
+  view, such as the schema `snowflake:acme.retail.public`. A field
   the model file binds to the table then needs SQL in that dialect or in
   `ANSI_SQL`. So does every field and metric of a profile whose sources fix
   that dialect. *(live — needs read access to the entry)*

@@ -11,7 +11,9 @@
 // A third-party table's entry names its system twice: in the prefix of its
 // fullyQualifiedName, which Dataplex checks, and in entrySource.system, which
 // is free text. So the prefix decides, and the system only when the entry has
-// no fullyQualifiedName.
+// no fullyQualifiedName. Dataplex also checks the rest of the
+// fullyQualifiedName, so its parts say whether the entry is a table's or, for
+// example, a schema's.
 //
 // This is the only place kcmd makes a network call to learn a dialect. A
 // command looks every such source up once, before it loads the model, and
@@ -37,11 +39,21 @@ const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
 const DIALECT_OF_ENTRY_SYSTEM =
     new Map([...DIALECT_OF_FQN_PREFIX, ['postgres', 'POSTGRES']]);
 
+// The parts of a table's fullyQualifiedName after each prefix, as Dataplex
+// reads it. A view's name has the same parts as a table's.
+const TABLE_FQN_PARTS = new Map([
+  ['snowflake', ['account', 'database', 'schema', 'table']],
+  ['databricks', ['metastore', 'catalog', 'schema', 'table']],
+  ['mysql', ['host', 'schema', 'table']],
+  ['postgresql', ['host', 'database', 'schema', 'table']],
+  ['sqlserver', ['host', 'database', 'schema', 'table']],
+]);
+
 export interface SourceDialects {
   // Each source, keyed as dialectLookupKey gives, and its dialect.
   dialects: Map<string, string>;
-  // Each third-party table whose entry's fullyQualifiedName names its
-  // database, keyed by entry name, and that database (see databaseOfFqn).
+  // Each third-party table whose entry has a fullyQualifiedName, keyed by
+  // entry name, and the database that name gives (see databaseOfFqn).
   databases: Map<string, string>;
   // One message per source whose dialect could not be read.
   errors: string[];
@@ -115,7 +127,8 @@ async function cloudSqlDialect(
 }
 
 // The dialect of a third-party table, by its entry's fullyQualifiedName or
-// entrySource.system, and the database the fullyQualifiedName names.
+// entrySource.system, and the database the fullyQualifiedName names. An entry
+// whose fullyQualifiedName names no table or view is rejected.
 async function thirdPartyDialect(
     catalog: EntryLookup,
     {project, location, name}: ThirdPartyEntry): Promise<Dialect> {
@@ -134,10 +147,21 @@ async function thirdPartyDialect(
   }
   const {fullyQualifiedName: fqn, entrySource} = res.result;
   const system = entrySource?.system;
-  const dialect = fqn ?
-      DIALECT_OF_FQN_PREFIX.get(fqn.match(/^([a-z]+):/)?.[1] ?? '') :
-      DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
-  if (dialect) return {dialect, database: fqn && databaseOfFqn(fqn)};
+  const prefix = fqn?.match(/^([a-z]+):/)?.[1] ?? '';
+  const dialect = fqn ? DIALECT_OF_FQN_PREFIX.get(prefix) :
+                        DIALECT_OF_ENTRY_SYSTEM.get(system?.toLowerCase() ?? '');
+  if (dialect && fqn) {
+    const database = databaseOfFqn(fqn);
+    if (database) return {dialect, database};
+    const parts = TABLE_FQN_PARTS.get(prefix)!.map(p => `<${p}>`).join('.');
+    return {
+      error: `${at}: its Knowledge Catalog entry has fullyQualifiedName ` +
+          `'${fqn}', which names no table or view. A table's ` +
+          `fullyQualifiedName has the form ${prefix}:${parts}. Write the ` +
+          `entry name of the table's own entry.`,
+    };
+  }
+  if (dialect) return {dialect};
   const has = fqn ? `fullyQualifiedName '${fqn}'` :
       system ? `entrySource.system '${system}' and no fullyQualifiedName` :
                'neither a fullyQualifiedName nor an entrySource.system';
@@ -150,17 +174,24 @@ async function thirdPartyDialect(
   };
 }
 
-// The database a third-party table's fullyQualifiedName `fqn` names: a
-// Snowflake account, a MySQL or SQL Server host, or a PostgreSQL host and
-// database, each account and host in lower case, or a Databricks metastore.
-// Undefined unless every segment is set and one follows the database's, as in
-// a table's name.
+// The database the fullyQualifiedName `fqn` of a third-party table or view
+// names: a Snowflake account, a MySQL or SQL Server host, a PostgreSQL host
+// and database, or a Databricks metastore. Each account and host is in lower
+// case. Undefined when `fqn` names no table or view. Such a name has another
+// number of parts than TABLE_FQN_PARTS gives, or a subtype, such as the
+// `routine:` of a routine. Dataplex reads a `databricks:table:` or
+// `databricks:view:` name as the same table as the `databricks:` name.
 function databaseOfFqn(fqn: string): string|undefined {
-  const [, prefix, path] =
-      fqn.match(/^([a-z]+):(?:(?:table|view):)?(.*)$/) ?? [];
+  // The subtype holds no backtick, so a colon inside a quoted host and port
+  // stays in the path.
+  const [, prefix, subtype, path] =
+      fqn.match(/^([a-z]+):(?:([a-z0-9_-]+):)?(.*)$/) ?? [];
+  const parts = TABLE_FQN_PARTS.get(prefix ?? '');
   const seg = catalogNameSegments(path ?? '');
+  const tableSubtype = subtype === undefined ||
+      (prefix === 'databricks' && (subtype === 'table' || subtype === 'view'));
+  if (!parts || !tableSubtype || seg.length !== parts.length) return undefined;
   const n = prefix === 'postgresql' ? 2 : 1;
-  if (seg.length <= n || seg.includes('')) return undefined;
   // A Snowflake account and a host name ignore letter case.
   if (prefix !== 'databricks') seg[0] = seg[0].toLowerCase();
   return [prefix, ...seg.slice(0, n)].join('/');

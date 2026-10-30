@@ -81,7 +81,8 @@ write. `kcmd pull` returns a model an older push stored that way as stored,
 and warns for each such value. A table outside Google Cloud is written as
 the entry name of its Knowledge Catalog entry,
 `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, and takes the
-dialect its entry records (see [Validation](reference.md#validation)). A name
+dialect its entry records (see [Validation](reference.md#validation)). The
+entry of its schema, database or account is rejected. A name
 under a prefix such as `snowflake:` or `databricks:table:` is rejected. A
 Bigtable or Dataproc Metastore table is rejected too, since the preview does
 not support them yet. An entry name in a system entry group, such as
