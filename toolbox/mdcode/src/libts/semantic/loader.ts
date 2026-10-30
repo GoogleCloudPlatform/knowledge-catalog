@@ -3165,19 +3165,25 @@ function catalogNameResourceName(fqn: string): string|undefined {
 // character, such as a domain-scoped project, is wrapped in backticks, so the
 // dots and colons inside backticks do not split or fail. Returns [] when the
 // quoting is malformed (an unquoted colon, an unclosed backtick, text after a
-// closing backtick, or a backtick mid-segment outside quotes).
-export function catalogNameSegments(path: string): string[] {
+// closing backtick, or a backtick mid-segment outside quotes). With `colons`
+// set, an unquoted colon after the first backtick stays in its segment.
+// Dataplex reads a fullyQualifiedName that way: it splits the system and
+// subtype off at the colons before the first backtick, and keeps the rest as
+// the path.
+export function catalogNameSegments(path: string, colons = false): string[] {
   const out: string[] = [];
   let cur = '';
   let state: 'start'|'unquoted'|'quoted'|'after_quote' = 'start';
+  let colonOk = false;
   for (let i = 0; i < path.length; i++) {
     const ch = path[i];
     if (state === 'start') {
       if (ch === '`') {
         state = 'quoted';
+        colonOk = colons;
       } else if (ch === '.') {
         out.push('');
-      } else if (ch === ':') {
+      } else if (ch === ':' && !colonOk) {
         return [];
       } else {
         cur = ch;
@@ -3188,7 +3194,7 @@ export function catalogNameSegments(path: string): string[] {
         out.push(cur);
         cur = '';
         state = 'start';
-      } else if (ch === '`' || ch === ':') {
+      } else if (ch === '`' || (ch === ':' && !colonOk)) {
         return [];
       } else {
         cur += ch;

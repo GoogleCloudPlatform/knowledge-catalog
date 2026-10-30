@@ -156,6 +156,10 @@ describe('sourceDialects of a third-party table', () => {
       [fqn('postgresql:`DB.example.com`.Sales.public.orders'), 'POSTGRES',
        'postgresql/db.example.com/Sales'],
       [fqn('sqlserver:HOST.sales.dbo.orders'), 'SQLSERVER', 'sqlserver/host'],
+      // Dataplex keeps a colon after the name's first backtick.
+      [fqn('mysql:`h:3306`.sa:les.orders'), 'MYSQL', 'mysql/h:3306'],
+      [fqn('postgresql:`db.example.com`.sales.:public.orders'), 'POSTGRES',
+       'postgresql/db.example.com/sales'],
       [system('Snowflake'), 'SNOWFLAKE'],
       [system('DATABRICKS'), 'DATABRICKS'],
       [system('mysql'), 'MYSQL'],
@@ -202,6 +206,10 @@ describe('sourceDialects of a third-party table', () => {
        'databricks:<metastore>.<catalog>.<schema>.<table>'],
       ['mysql:host.sales', 'mysql:<host>.<schema>.<table>'],
       ['postgresql:host.sales.public', 'postgresql:<host>.<database>.<schema>.<table>'],
+      // Dataplex reads `pg.internal` as a subtype, since no backtick comes
+      // before the colon.
+      ['postgresql:pg.internal:5432.public.orders',
+       'postgresql:<host>.<database>.<schema>.<table>'],
       ['sqlserver:host.sales.dbo', 'sqlserver:<host>.<database>.<schema>.<table>'],
     ];
     for (const [fullyQualifiedName, form] of rows) {

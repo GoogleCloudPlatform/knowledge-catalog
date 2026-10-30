@@ -183,11 +183,12 @@ async function thirdPartyDialect(
 // `databricks:view:` name as the same table as the `databricks:` name.
 function databaseOfFqn(fqn: string): string|undefined {
   // The subtype holds no backtick, so a colon inside a quoted host and port
-  // stays in the path.
+  // stays in the path. A colon in an unquoted database, schema or table
+  // name stays in its segment when it comes after the name's first backtick.
   const [, prefix, subtype, path] =
       fqn.match(/^([a-z]+):(?:([a-z0-9_-]+):)?(.*)$/) ?? [];
   const parts = TABLE_FQN_PARTS.get(prefix ?? '');
-  const seg = catalogNameSegments(path ?? '');
+  const seg = catalogNameSegments(path ?? '', true);
   const tableSubtype = subtype === undefined ||
       (prefix === 'databricks' && (subtype === 'table' || subtype === 'view'));
   if (!parts || !tableSubtype || seg.length !== parts.length) return undefined;
