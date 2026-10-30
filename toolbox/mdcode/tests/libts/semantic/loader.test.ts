@@ -194,6 +194,85 @@ describe('per-dialect expressions collapse to a single string', () => {
 });
 
 
+describe('expression warnings judge each expression on the table that runs it', () => {
+  const BQ = 'bigquery.googleapis.com/projects/p/datasets/d/tables/t';
+  const LAKE = 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t';
+  const SPANNER = 'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t';
+  const ALLOY = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/t';
+  const MYSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/t';
+  const PG = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/t';
+  // The table a lookup has not read, as in `kcmd import`.
+  const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
+  const opts: LoadOptions = {
+    bindingOptional: true,
+    warnUnacceptedSource: true,
+    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES']]),
+  };
+  const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
+      ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
+  // The field and metric warnings of a model whose entity 't' reads `source`,
+  // with a field 'f' and a metric 'm' whose texts each read column x.
+  const warned = (source: string|undefined, dialects: Array<[string, string]>|string) => {
+    const sql = (text: (x: string) => string) => typeof dialects === 'string' ?
+        text(dialects) :
+        {dialects: dialects.map(([dialect, x]) => ({dialect, expression: text(x)}))};
+    return fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
+      name: 'shop',
+      entities: [entity('t', source, [{name: 'f', expression: sql(x => x)}])],
+      metrics: [{name: 'm', entity: 't', expression: sql(x => `SUM(${x})`)}],
+    }]}, opts).warnings.filter(w => /^(field|metric|note)/.test(w));
+  };
+  // A warning for field 'f', then the same for metric 'm'.
+  const both = (text: string) => [`field 't.f': ${text}`, `metric 'm': ${text}`];
+  const vendor = (dialect: string) => both(
+      `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
+      `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
+  const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
+      'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
+      'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
+      'BIGQUERY-specific SQL)'];
+
+  test.each([
+    ['a BigQuery table, Snowflake text', BQ, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
+    ['a BigLake table, Snowflake text', LAKE, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
+    ['a Spanner table, Spanner text', SPANNER, [['SPANNER', 'x']], []],
+    ['a Spanner table, Snowflake text', SPANNER, [['SNOWFLAKE', 'x']], []],
+    ['an AlloyDB table, AlloyDB text', ALLOY, [['ALLOYDB', 'x']], []],
+    ['a Cloud SQL for MySQL table, MySQL text', MYSQL, [['MYSQL', 'x']], []],
+    ['a Cloud SQL for PostgreSQL table, PostgreSQL text', PG, [['POSTGRES', 'x']], []],
+    ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
+    ['an entity with no source, Snowflake text', undefined, [['SNOWFLAKE', 'x']], []],
+    ['a source in no accepted form, Snowflake text', 'orders', [['SNOWFLAKE', 'x']], []],
+    ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
+    ['a Spanner table, ANSI_SQL text', SPANNER, [['ANSI_SQL', 'x']], []],
+  ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(
+      '%s', (_, source, dialects, expected) => {
+        expect(warned(source, dialects)).toEqual(expected);
+      });
+
+  // An inherited field is judged on the table of each entity that inherits
+  // it, and a metric on the tables of the entities it reaches, or on any
+  // table of the model when it reaches none.
+  test('an inherited field and a metric are judged on the tables that run them', () => {
+    const {warnings} = fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
+      name: 'shop',
+      entities: [
+        entity('p', SPANNER, [{name: 'f', expression: expr('x', 'SPANNER')}]),
+        entity('c', BQ, [], {extends: ['p']}),
+        entity('o', SPANNER, []),
+      ],
+      metrics: [{name: 'm', entity: 'o', expression: expr('SUM(o.x)', 'SPANNER')},
+                {name: 'n', expression: expr('COUNT(*)', 'SPANNER')}],
+    }]});
+    expect(warnings).toEqual([
+      vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
+      vendor('SPANNER')[1].replace("'m'", "'n'"),
+      "metric 'n': expression references no known entity; it may not be placeable downstream",
+    ]);
+  });
+});
+
+
 describe('relationships map onto the direct-FK IR convention', () => {
   const { models } = fromDocument({ version: '0.2.0.dev0',
     semantic_model: [{
