@@ -124,10 +124,7 @@ describe('kcmd import', () => {
       const call = spyOn(engine, 'importSemanticModelYaml');
       expect(await importModel('retail.yaml', {...options, out: 'out'})).toBe(0);
       expect(call.mock.calls).toEqual(
-          [[model(), {
-            ...expected, profileFiles: [], keepProfileFiles: false,
-            listEntries: expect.any(Function),
-          }]]);
+          [[model(), {...expected, profileFiles: [], listEntries: expect.any(Function)}]]);
     });
   }
 
@@ -250,6 +247,13 @@ describe('kcmd import', () => {
         `# The prod tables.\nname: prod\nentities:\n  - name: orders\n` +
         `    source: ${PREFIX}/tables/orders_prod\n    fields:\n      - name: order_id\n` +
         '        expression: {dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}\n';
+    // PROFILE translated by --transpile. The rest of the file keeps its text,
+    // its comment included.
+    const TRANSLATED = PROFILE.replace(
+        ' {dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}\n',
+        '\n          dialects:\n            - dialect: SNOWFLAKE\n' +
+            '              expression: NVL(order_id, 0)\n            - dialect: BIGQUERY\n' +
+            '              expression: COALESCE(order_id, 0)\n');
     const setUp = () => {
       workspace();
       write(MODEL_FILE, google);
@@ -264,18 +268,13 @@ describe('kcmd import', () => {
       expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(google);
     });
 
-    test('re-imported as Google flavor in place keeps its profile file', async () => {
+    test('re-imported as Google flavor in place with --transpile translates its profile file', async () => {
       setUp();
       expect(await importModel(MODEL_FILE, {flavor: 'google', input: 'first-party', transpile: true}))
           .toBe(0);
       expect(errors).toEqual([]);
       expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
-      expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(PROFILE);
-      expect(warnings).toEqual([
-        "Warning: profile 'prod': field 'orders.order_id' is left untranslated because the " +
-            "import does not write 'retail.profile.prod.yaml'; add its 'BIGQUERY' expression " +
-            'to that file yourself.',
-      ]);
+      expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(TRANSLATED);
     });
 
     // Under the model's name, which the input file's name need not be.
@@ -302,13 +301,8 @@ describe('kcmd import', () => {
         'retail.profile.dev.yaml', 'retail.profile.prod.yaml', 'retail.profile.qa.yaml',
         'retail.yaml',
       ]);
-      // The rest of the file keeps its text, its comment included.
       expect(fs.readFileSync(path.join(dir, 'out', 'retail.profile.prod.yaml'), 'utf8'))
-          .toBe(PROFILE.replace(
-              ' {dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}\n',
-              '\n          dialects:\n            - dialect: SNOWFLAKE\n' +
-                  '              expression: NVL(order_id, 0)\n            - dialect: BIGQUERY\n' +
-                  '              expression: COALESCE(order_id, 0)\n'));
+          .toBe(TRANSLATED);
       expect(['dev', 'qa'].map(
                  p => fs.readFileSync(path.join(dir, 'out', `retail.profile.${p}.yaml`), 'utf8')))
           .toEqual(['name:  dev\nentities:\n  - name: orders\n', 'name: staging\n']);

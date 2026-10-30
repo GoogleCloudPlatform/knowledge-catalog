@@ -1981,13 +1981,6 @@ export interface CompletenessOptions extends DialectLoad {
   // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
   // dialect is `dialect` or the caller cannot read it either.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
-  // The profile is in a vanilla model's GOOGLE block. A field with only vendor
-  // SQL then gets the hint to run `kcmd import --transpile`, which rewrites
-  // the block with translated SQL. A field of a Google model's profile file
-  // gets the hint only when its SQL is the model file's, since re-importing
-  // the model in place, where push reads it, leaves the profile file as
-  // written.
-  googleBlock?: boolean;
 }
 
 /**
@@ -2284,15 +2277,12 @@ export function validateProfileCompleteness(
       for (const f of seenOf.get(e.name)?.values() ?? []) {
         // validateInlineDialects reports a field inherited unchanged.
         const asInModelFile = fieldsOf.get(e.name)?.get(f.name);
-        const inherited = !!asInModelFile &&
+        const reported = !!asInModelFile &&
             JSON.stringify(expressionSources(f)) ===
-                JSON.stringify(expressionSources(asInModelFile));
-        const reported =
-            inherited && sourcesDialect({entities: [e]}) === dialect;
+                JSON.stringify(expressionSources(asInModelFile)) &&
+            sourcesDialect({entities: [e]}) === dialect;
         if (isFieldBound(f) && !runs(f) && !reported) {
-          // Import translates the model file on every path.
-          const viaImport = (opts.googleBlock || inherited) &&
-                  importTranspiles(f, dialect) ?
+          const viaImport = importTranspiles(f, dialect) ?
               `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` :
               '';
           errors.push(

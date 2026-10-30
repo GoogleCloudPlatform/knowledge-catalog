@@ -12,7 +12,7 @@ import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './res
 import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
-import {needsTranspile, transpileModel} from './transpile';
+import {transpileModel} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, updateDocument} from './yaml_update';
 
@@ -45,19 +45,10 @@ export interface ImportSemanticModelOptions {
   strict?: boolean;
   /**
    * Sibling `<model>.profile.<name>.yaml` files located beside the input file.
-   * Converting a Google-flavor model to vanilla (`'ossie'`) writes them into
-   * the model file. A Google-flavor import of a Google-flavor model returns
-   * them after the model file, under its model's name. Any other import, or
-   * one with `keepProfileFiles`, leaves them out, and with `transpile` warns
-   * about each field binding in them it would translate.
+   * A conversion to vanilla writes them into the model file, and a
+   * Google-flavor import of a Google-flavor model writes them beside it.
    */
   profileFiles?: SerializedFile[];
-  /**
-   * When true, a Google-flavor import of a Google-flavor model leaves
-   * `profileFiles` out. Set for an import that rewrites its input file in
-   * place, whose profile files stay as they are.
-   */
-  keepProfileFiles?: boolean;
 }
 
 /** The one catalog call import makes. */
@@ -1009,13 +1000,11 @@ async function transpileDocument(
     if (!(err instanceof SemanticModelError)) throw err;
     return profileFiles;
   }
-  const syncNode =
-      (rawNode: Record<string, any>,
-       irDialects: Array<{dialect: string; expression: string}>|undefined) => {
-        const changed = syncDialects(rawNode, irDialects);
-        if (changed) doc.modified = true;
-        return changed;
-      };
+  const syncNode = (...args: Parameters<typeof syncDialects>) => {
+    const changed = syncDialects(...args);
+    if (changed) doc.modified = true;
+    return changed;
+  };
   // Each of `profileFiles` as loaded, or undefined for one that does not
   // load. That one is written as it is, since push reports it.
   const loaded = profileFiles.map(pf => {
@@ -1108,34 +1097,6 @@ function withDialects(content: string, profile: ProfileSpec): string {
     }
   }));
   return changed ? ydoc.toString({lineWidth: 0}) : content;
-}
-
-/**
- * Warns about each field binding in `profileFiles` that `transpileModel` would
- * translate, for profile files the import reads but does not write. A file that
- * does not load is skipped, since push reports it.
- */
-function warnUntranslatedProfileFiles(
-    profileFiles: SerializedFile[]|undefined, doc: ImportDocument): void {
-  for (const pf of profileFiles ?? []) {
-    let profile: ProfileSpec;
-    try {
-      profile = loadProfileFile(pf.content, parseProfileName(pf.fileName));
-    } catch (err) {
-      if (!(err instanceof SemanticModelError)) throw err;
-      continue;
-    }
-    for (const pe of profile.entities) {
-      for (const f of pe.fields ?? []) {
-        if (!needsTranspile(f)) continue;
-        doc.warnings.push(
-            `profile '${profile.name}': field '${pe.name}.${f.name}' is left ` +
-            `untranslated because the import does not write '${
-                pf.fileName}'; add its 'BIGQUERY' expression to that file ` +
-            `yourself.`);
-      }
-    }
-  }
 }
 
 /**
@@ -1445,21 +1406,17 @@ export async function importSemanticModelYaml(
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
   // a Google-flavor import of a Google-flavor model writes them beside it.
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
-  const carried = doc.inputVersion === GOOGLE_VERSION &&
-      doc.targetVersion === GOOGLE_VERSION && !opts.keepProfileFiles;
+  const googleToGoogle = doc.inputVersion === GOOGLE_VERSION &&
+      doc.targetVersion === GOOGLE_VERSION;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
       await generateAdaptedFiles(
           doc, rawYaml, !!opts.transpile,
-          carried ? opts.profileFiles ?? [] : []);
+          googleToGoogle ? opts.profileFiles ?? [] : []);
 
   // 4. Validate the primary output document and return the result.
   if (files.length > 0 && doc.errors.length === 0) {
     validateOutputDocument(files[0].content, doc);
-  }
-  if (opts.transpile && !carried &&
-      !(shouldConvert && doc.targetVersion === OSSIE_VERSION)) {
-    warnUntranslatedProfileFiles(opts.profileFiles, doc);
   }
   return {
     ok: doc.errors.length === 0,

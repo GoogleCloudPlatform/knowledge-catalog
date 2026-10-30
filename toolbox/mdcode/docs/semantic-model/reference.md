@@ -103,17 +103,16 @@ removes or moves elsewhere in the file, such as a key that goes into or out of
 a `GOOGLE` block. A profile file's comments are dropped when its contents move
 into the model file. Without `--out`, the files go into the scope's entry group
 folder, and an import that would leave one of the model's profile files there
-unwritten is refused. A Google model file re-imported in place with `--flavor
-google` is the exception, and keeps its profile files as they are. Without
-`--out`, an import is also refused when the entry group folder already holds
-another model's file, since an entry group holds one model.
+unwritten is refused. Without `--out`, an import is also refused when the entry
+group folder already holds another model's file, since an entry group holds
+one model.
 
 | Flag | Effect |
 |------|--------|
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
 | `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`, or the name of a Knowledge Catalog entry group, `projects/<p>/locations/<l>/entryGroups/<g>`. Against an AlloyDB prefix, a name's unquoted parts are read in lower case, as PostgreSQL reads them. A name that still differs from the prefix only in letter case is not completed, and import reports it. For an entry group, the import lists its entries once and writes the name of the one entry whose `fullyQualifiedName` ends in the bare name, such as `snowflake:acme.retail.public.orders` for `public.orders`. A name that no entry or several entries end in stays as written, and the import reports it with the candidates. Listing the entries needs read access to the entry group. |
-| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model and in each profile the import writes. A Google model re-imported in place keeps its profile files as written, and the import warns about each field it leaves untranslated in them. Off by default. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model and in each profile the import writes. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
 ### profiles

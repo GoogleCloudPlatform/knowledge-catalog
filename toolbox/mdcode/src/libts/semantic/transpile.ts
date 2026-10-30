@@ -206,16 +206,6 @@ function sourceToTranspile(node: TranspileNode, target: string):
 }
 
 /**
- * Returns true if `transpileModel` would add a `BIGQUERY` entry to `node`.
- *
- * Reads SQL with the bundled parser, so the caller must have awaited
- * `loadSqlEngine()`.
- */
-export function needsTranspile(node: TranspileNode): boolean {
-  return sourceToTranspile(node, DEFAULT_TARGET) !== undefined;
-}
-
-/**
  * Adds a translated `opts.target` dialect entry to every field, metric and
  * profile field binding in `model` whose only texts are in vendor dialects or
  * whose `ANSI_SQL` text double-quotes a column name, returning a cloned model

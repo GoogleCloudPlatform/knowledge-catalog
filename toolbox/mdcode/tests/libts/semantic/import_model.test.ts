@@ -244,15 +244,17 @@ describe('conversion, strict mode, and translation', () => {
 describe('profile translation', () => {
   const fieldExpr =
       '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}';
-  const profile = (name: string, dialect: string, expression: string) => ({
-    name,
+  const PROD = {
+    name: 'prod',
     entities: [{
       name: 'orders',
-      source: `${BQ_PREFIX}/tables/orders_${name}`,
-      fields: [{name: 'order_id', expression: {dialects: [{dialect, expression}]}}],
+      source: `${BQ_PREFIX}/tables/orders_prod`,
+      fields: [{
+        name: 'order_id',
+        expression: {dialects: [{dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'}]},
+      }],
     }],
-  });
-  const PROD = profile('prod', 'SNOWFLAKE', 'NVL(o.order_id, 0)');
+  };
   const block = `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
       JSON.stringify({profiles: [PROD]})}'\n`;
   const prodFile = {fileName: 'retail.profile.prod.yaml', content: yaml.stringify(PROD)};
@@ -280,24 +282,6 @@ describe('profile translation', () => {
     ]);
     expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual([
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
-    ]);
-  });
-
-  // A profile file that needs no translation, or does not load, gets no warning.
-  test('warns about each profile file field a Google re-import in place leaves untranslated', async () => {
-    const res = await importSemanticModelYaml(googleDoc({fieldExpr}), {
-      ...strict, flavor: 'google', keepProfileFiles: true, profileFiles: [
-        prodFile,
-        {fileName: 'retail.profile.dev.yaml',
-         content: yaml.stringify(profile('dev', 'BIGQUERY', 'o.order_id'))},
-        {fileName: 'retail.profile.qa.yaml', content: 'name: staging\n'},
-      ],
-    });
-    expect(res.files.map(f => f.fileName)).toEqual(['retail.yaml']);
-    expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual([
-      "profile 'prod': field 'orders.order_id' is left untranslated because the " +
-          "import does not write 'retail.profile.prod.yaml'; add its 'BIGQUERY' " +
-          'expression to that file yourself.',
     ]);
   });
 });
