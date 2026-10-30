@@ -2309,7 +2309,7 @@ function convertDataset(
   // dataSource) and no key -- both are meaningless for a class never
   // materialized. Only a concrete entity is parsed/warned for those.
   const parsedSource = ds.source !== undefined ?
-      parseSource(ds.source, opts, ctxLabel, warnings) :
+      parseSource(ds.source, opts, ctxLabel, warnings, /* importHint= */ true) :
       undefined;
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
@@ -3410,10 +3410,13 @@ function thirdPartySourceError(source: string, ctx: string): string|undefined {
 
 // Reads an entity's `source` into the dotted name the generators use and the
 // source as written. Throws on a form the loader does not accept. A profile
-// file's sources are read here too, so they follow the same rules.
+// file's sources are read here too, so they follow the same rules. With
+// `importHint`, for a model file's source, a bare table name's error also
+// names `kcmd import`, which completes a model file's bare names but not a
+// profile file's.
 export function parseSource(
     source: string, opts: LoadOptions, ctx: string,
-    warnings?: string[]): ParsedSource {
+    warnings?: string[], importHint = false): ParsedSource {
   const trimmed = source.trim();
 
   if (hasUnquotedWhitespace(trimmed)) {
@@ -3501,10 +3504,13 @@ export function parseSource(
       };
     }
     // A name with an empty segment, or with more than four, gets the general
-    // error below. Both bare-name messages below also name the command that
-    // completes bare names from a database the author names.
-    const viaImport = `\nOr run 'kcmd import <file> --source-prefix <prefix>' ` +
-        `to complete each bare table name from the database <prefix> names.`;
+    // error below. With `importHint`, both bare-name messages below also name
+    // the command that completes a model file's bare names.
+    const viaImport = importHint ?
+        `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
+            `--source-prefix <prefix>' to complete each bare table name ` +
+            `from the database that <prefix> names.` :
+        '';
     if (segs.length <= 4 && segs.every(s => s.length > 0)) {
       if (segs.length === 4) {
         throw new SemanticModelError(

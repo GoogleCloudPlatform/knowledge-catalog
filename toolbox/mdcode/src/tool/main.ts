@@ -152,7 +152,7 @@ cli.command(
        'Import a semantic model file, repairing a third-party file or converting a first-party one, into the flavor --flavor names')
     .option(
         '--input <who>',
-        'Who wrote the file: third-party, another product, whose problems import repairs and reports (default); or first-party, a file written for kcmd, which converts exactly or not at all')
+        'Who wrote the file: third-party, a file another product wrote (default), or first-party, a file written for kcmd')
     .option('--flavor <flavor>', 'Flavor to write: ossie or google; required')
     .option(
         '--source-prefix <prefix>',

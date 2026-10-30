@@ -1583,6 +1583,9 @@ describe('profile completeness: sources, keys, relationships and inheritance', (
                                   base().entities[1]]});
     expect(validateProfileCompleteness(irModel(), bare).join('\n'))
         .toContain("bare table name 'acme.prod.customer' is not a valid source");
+    // kcmd import completes a model file's bare names, not a profile's.
+    expect(validateProfileCompleteness(irModel(), bare).join('\n'))
+        .not.toContain('kcmd import');
     const unknown = base({entities: [{...base().entities[0], source: '//trino.example.com/x'},
                                      base().entities[1]]});
     expect(validateProfileCompleteness(irModel(), unknown).join('\n'))

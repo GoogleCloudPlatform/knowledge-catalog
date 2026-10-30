@@ -86,6 +86,28 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
 | `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. With `KC_V2_ASPECTS=1`, it also deletes a local profile file or overview sidecar the pull did not write. |
 
+### import
+
+```bash
+kcmd import <file> --flavor <ossie|google>
+```
+
+Imports a semantic model file into the flavor `--flavor` names. A file another
+product wrote is repaired, and each repair is reported as a warning. A file
+written for kcmd converts between flavors exactly or not at all. The
+`<model>.profile.<name>.yaml` files beside `<file>` go in with it. Nothing is
+written when the import reports an error. Without `--out`, the files go into
+the scope's entry group folder, and an import that would leave one of the
+model's profile files there unwritten is refused.
+
+| Flag | Effect |
+|------|--------|
+| `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
+| `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
+| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect. Off by default. |
+| `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
+
 ### profiles
 
 ```bash

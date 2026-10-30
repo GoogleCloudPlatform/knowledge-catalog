@@ -1,5 +1,5 @@
 // Tests for `kcmd import` (importModel in src/tool/commands.ts, b/568397111).
-// The import engine is the real one on main, so its answers are faithful; a
+// The import engine is the real one, so its answers are faithful; a
 // spy that calls through checks what the command passes it. A case that needs
 // more than one output file stubs the engine with the shape serializeModelFiles
 // gives a model with a profile: `<model>.yaml` and `<model>.profile.<name>.yaml`.
@@ -159,16 +159,78 @@ describe('kcmd import', () => {
     });
   }
 
-  test('without --out, needs a semantic-model workspace and writes nothing otherwise', async () => {
-    // An entry group scope, whose snapshot would load its entries from the
-    // catalog; the command reads only its source type.
-    spyOn(kcmd.CatalogSnapshot, 'fromPath')
-        .mockResolvedValue({manifest: {source: {type: Sources.ENTRYGROUP}}} as any);
-    write('retail.yaml', model());
-    expect(await importModel('retail.yaml', {flavor: 'ossie'})).toBe(1);
-    expect(errors).toEqual([expect.stringContaining(
-        'Error: this catalog is not a semantic-model scope')]);
-    expect(filesIn()).toEqual(['retail.yaml']);
+  // [label, the workspace, the error]
+  const NO_LAYOUT: Array<[string, () => void, string]> = [
+    ['no catalog.yaml', () => {},
+     'Error: there is no catalog.yaml in this directory, so there is no model ' +
+         'layout to write into. Pass --out <path> to write the file directly.'],
+    ['a scope that is not a semantic model', () => {
+       // An entry group scope, whose snapshot would load its entries from the
+       // catalog; the command reads only its source type.
+       write('catalog.yaml', 'scope: entryGroup.test-project.us.sales\n');
+       spyOn(kcmd.CatalogSnapshot, 'fromPath')
+           .mockResolvedValue({manifest: {source: {type: Sources.ENTRYGROUP}}} as any);
+     }, 'Error: this catalog is not a semantic-model scope'],
+  ];
+  for (const [label, setUp, error] of NO_LAYOUT) {
+    test(`without --out, ${label} is refused and nothing is written`, async () => {
+      setUp();
+      write('retail.yaml', model());
+      const before = filesIn();
+      expect(await importModel('retail.yaml', {flavor: 'ossie'})).toBe(1);
+      expect(errors).toEqual([expect.stringContaining(error)]);
+      expect(filesIn()).toEqual(before);
+    });
+  }
+
+  // A vanilla model with a GOOGLE block converts only as a first-party file,
+  // and the bare source it asks --source-prefix to complete is a warning
+  // there too.
+  test('a first-party file\'s bare source is completed from --source-prefix, with a warning', async () => {
+    const vanilla = model('orders') +
+        "    custom_extensions:\n      - vendor_name: GOOGLE\n" +
+        `        data: '{"profiles": [{"name": "prod", "entities": [{"name": "orders", "source": "${
+            PREFIX}/tables/orders_prod"}]}]}'\n`;
+    write('retail.yaml', vanilla);
+    expect(await importModel('retail.yaml', {
+      flavor: 'ossie', input: 'first-party', sourcePrefix: PREFIX, out: 'out',
+    })).toBe(0);
+    expect(errors).toEqual([]);
+    expect(warnings).toEqual([
+      `Warning: dataset 'orders': rewrote bare source 'orders' to '${PREFIX}/tables/orders'.`,
+    ]);
+    expect(fs.readFileSync(path.join(dir, 'out', 'retail.yaml'), 'utf8'))
+        .toContain(`source: ${PREFIX}/tables/orders\n`);
+  });
+
+  // A profile file the import does not write would stay beside the model:
+  // push rejects it beside a vanilla model, and reads it beside a Google one.
+  describe('a model with a profile file in the workspace', () => {
+    const MODEL_FILE = path.join(GROUP, 'retail.yaml');
+    const PROFILE_FILE = path.join(GROUP, 'retail.profile.prod.yaml');
+    const google = model().replace('version: "0.2.0.dev0"', 'version: "0.2.0.dev0/google"')
+                       .replace('    datasets:\n', '    entities:\n');
+    const setUp = () => {
+      workspace();
+      write(MODEL_FILE, google);
+      write(PROFILE_FILE,
+            `name: prod\nentities:\n  - name: orders\n    source: ${PREFIX}/tables/orders_prod\n`);
+    };
+
+    test('converted to vanilla in place is refused, naming the profile file', async () => {
+      setUp();
+      expect(await importModel(MODEL_FILE, {flavor: 'ossie', input: 'first-party'})).toBe(1);
+      expect(errors).toEqual([expect.stringContaining(
+          `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
+      expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(google);
+    });
+
+    test('re-imported as Google flavor in place keeps its profile file', async () => {
+      setUp();
+      expect(await importModel(MODEL_FILE, {flavor: 'google', input: 'first-party'})).toBe(0);
+      expect(errors).toEqual([]);
+      expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
+    });
   });
 
   describe('a model with a profile, which gives two files', () => {
@@ -178,6 +240,21 @@ describe('kcmd import', () => {
     ];
     const stub = () => spyOn(engine, 'importSemanticModelYaml')
                            .mockResolvedValue({ok: true, files: FILES, warnings: [], errors: []});
+
+    test('a file with no place in the layout is refused, and nothing is written', async () => {
+      workspace();
+      write('retail.yaml', model());
+      spyOn(engine, 'importSemanticModelYaml').mockResolvedValue({
+        ok: true, warnings: [], errors: [],
+        files: [FILES[0], {fileName: 'retail.overview.md', content: 'overview\n'}],
+      });
+      expect(await importModel('retail.yaml', {flavor: 'google'})).toBe(1);
+      expect(errors).toEqual([
+        "Error: the import gives 'retail.overview.md', which has no place in the " +
+            'semantic-model layout.',
+      ]);
+      expect(filesIn(GROUP)).toEqual([]);
+    });
 
     test('--out naming a file is refused, and nothing is written', async () => {
       write('retail.yaml', model());

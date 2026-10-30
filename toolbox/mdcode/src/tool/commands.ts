@@ -3319,6 +3319,23 @@ export async function importModel(
     const model = result.files[0].fileName.replace(YAML_FILE, '');
     targets = result.files.map(
         f => pulledFileTarget(layout, model, f.fileName, false));
+    // Refuse to leave behind a profile file this import does not write. Push
+    // rejects one beside a vanilla model, and reads one beside a Google model
+    // as that model's profile. A Google model file re-imported in place keeps
+    // its profile files.
+    const inPlace = flavor === 'google' && result.files.length === 1 &&
+        path.resolve(file) === path.resolve(layout.modelPath(model));
+    if (!inPlace) {
+      const kept = new Set(targets.map(t => t && path.resolve(t.path)));
+      const left = layout.localProfileFiles(model).map(p => p.path).filter(
+          p => !kept.has(path.resolve(p)));
+      if (left.length) {
+        return fail(
+            `the import does not write ${left.join(', ')}, which would stay ` +
+            `beside the model; pass --out <path> to write elsewhere, or ` +
+            `first remove any the model no longer uses.`);
+      }
+    }
   }
   const unplaced = result.files.filter((_, i) => !targets[i]);
   if (unplaced.length) {
@@ -3355,6 +3372,10 @@ function writeFileAt(file: string, text: string): void {
 // and `kcmd import` write without --out, or the error for a workspace that
 // has none.
 async function workspaceLayout(): Promise<SemanticModelLayout|string> {
+  if (!fs.existsSync('catalog.yaml')) {
+    return `there is no catalog.yaml in this directory, so there is no model ` +
+        `layout to write into. Pass --out <path> to write the file directly.`;
+  }
   const snapshot =
       await kcmd.CatalogSnapshot.fromPath('.', context.ApiContext.default());
   if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {

@@ -3353,8 +3353,9 @@ describe('strict entity sources', () => {
     })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
 
     // Each bare-name message also names the command that completes bare names.
-    const VIA_IMPORT = "Or run 'kcmd import <file> --source-prefix <prefix>' " +
-        'to complete each bare table name from the database <prefix> names.';
+    const VIA_IMPORT = "Or run 'kcmd import <file> --flavor <ossie|google> " +
+        "--source-prefix <prefix>' to complete each bare table name from the " +
+        'database that <prefix> names.';
     // 2. Bare table names (1-, 2-, and 3-part). The hint shows the GCP
     // resource name, filling in what the name gives.
     for (const [bare, hint] of [
