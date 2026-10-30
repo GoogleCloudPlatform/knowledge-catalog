@@ -944,12 +944,15 @@ semantic_model:
 describe('comments', () => {
   const HEADER =
       '# Copyright 2026 Example Corp. Licensed under the Apache License, Version 2.0.';
+  const ROW_COUNT =
+      '      # rows in any table\n      - name: row_count\n        expression: COUNT(*)\n';
   const ORDER_COUNT = '      # orders placed\n      - name: order_count\n';
 
   // A model file with a comment on each part import may change. A
-  // third-party file needs repairs, one of them removing the unanchored
-  // `row_count`; a first-party file converts with none.
-  function commented(google: boolean, firstParty: boolean, metrics: string) {
+  // third-party file needs repairs; a first-party file converts with none.
+  function commentedModel(
+      {google = false, firstParty = false, metrics}:
+          {google?: boolean, firstParty?: boolean, metrics: string}) {
     const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
     const source = firstParty ? BQ_TABLE : 'orders';
     const datatype = firstParty ? 'Integer' : 'integer';
@@ -976,22 +979,30 @@ semantic_model:
 ${metrics}# end of model
 `;
   }
-  const thirdParty = commented(false, false, `      # rows in any table
-      - name: row_count
-        expression: COUNT(*)
-${ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders
-`);
-  const vanilla =
-      commented(false, true, `${ORDER_COUNT}        expression:  # counts orders
+  // Import removes the unanchored `row_count`.
+  const thirdParty = commentedModel({
+    metrics: `${ROW_COUNT}${
+        ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders\n`,
+  });
+  const vanilla = commentedModel({
+    firstParty: true,
+    metrics: `${ORDER_COUNT}        expression:  # counts orders
           dialects: [{dialect: ANSI_SQL, expression: COUNT(orders.order_id)}]
         custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]
-`);
-  const google = commented(true, true, `${ORDER_COUNT}        entity: orders
+`,
+  });
+  const google = commentedModel({
+    google: true,
+    firstParty: true,
+    metrics: `${ORDER_COUNT}        entity: orders
         expression: COUNT(orders.order_id)  # counts orders
-`);
+`,
+  });
 
   // The text that shows each comment in place in an output file.
-  function kept(google: boolean, source: string, counts: string): string[] {
+  function expectedComments({google = false, source, counts}: {
+    google?: boolean, source: string, counts: string
+  }): string[] {
     const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
     const list = google ? 'entities' : 'datasets';
     return [
@@ -1016,27 +1027,34 @@ ${ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders
   test.each([
     [
       'third-party repairs and a removed metric', thirdParty, {},
-      kept(false, 'orders', ABOVE)
+      expectedComments({source: 'orders', counts: ABOVE})
     ],
     [
       'a source completed from --source-prefix', thirdParty,
-      {sourcePrefix: BQ_PREFIX}, kept(false, BQ_TABLE, ABOVE)
+      {sourcePrefix: BQ_PREFIX},
+      expectedComments({source: BQ_TABLE, counts: ABOVE})
     ],
     [
       'a BIGQUERY entry added by --transpile', thirdParty, {transpile: true},
-      [...kept(false, 'orders', ABOVE), TRANSPILED]
+      [...expectedComments({source: 'orders', counts: ABOVE}), TRANSPILED]
     ],
     [
       'a third-party file written in the Google flavor', thirdParty,
-      {flavor: 'google' as const}, kept(true, 'orders', INLINE)
+      {flavor: 'google' as const},
+      expectedComments({google: true, source: 'orders', counts: INLINE})
     ],
     [
       'a conversion from vanilla to Google', vanilla,
-      {flavor: 'google' as const, strict: true}, kept(true, BQ_TABLE, ABOVE)
+      {flavor: 'google' as const, strict: true}, expectedComments({
+        google: true,
+        source: BQ_TABLE,
+        counts: `      - name: order_count\n        entity: orders\n${ABOVE}`,
+      })
     ],
     [
       'a conversion from Google to vanilla', google,
-      {flavor: 'ossie' as const, strict: true}, kept(false, BQ_TABLE, ABOVE)
+      {flavor: 'ossie' as const, strict: true},
+      expectedComments({source: BQ_TABLE, counts: ABOVE})
     ],
   ])('keeps comments in place through %s', async (_, input, opts, lines) => {
     const res = await importSemanticModelYaml(input, opts);
@@ -1044,6 +1062,13 @@ ${ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders
     expect(res.errors).toEqual([]);
     for (const line of lines) expect(res.files[0].content).toContain(line);
     expect(res.files[0].content).not.toContain('# rows in any table');
+  });
+
+  test('drops the metrics key when import removes every metric', async () => {
+    const res =
+        await importSemanticModelYaml(commentedModel({metrics: ROW_COUNT}));
+
+    expect(res.files[0].content).not.toContain('metrics');
   });
 
   test('keeps every comment of the Apache Ossie TPC-DS example', async () => {

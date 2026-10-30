@@ -219,7 +219,7 @@ function parseImportDocument(
   let parsedDoc: unknown;
   try {
     if (document.errors.length > 0) throw document.errors[0];
-    parsedDoc = document.toJS(YAML_OPTIONS);
+    parsedDoc = document.toJS();
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
         err?.message ?? err}`;
@@ -991,12 +991,10 @@ async function generateConvertedFiles(
     if (doc.errors.length > 0) return [];
   }
 
-  // 4. Switch `model.version` to `doc.targetVersion` and serialize the output
-  // file(s) with `serializeModelFiles`. The model file is the input document
-  // changed to hold the serialized model, which keeps the input's comments
-  // wherever an entity, field, metric, relationship or key maps one to one.
-  // It quotes strings a YAML 1.1 reader would misread, as the serializer does.
-  // Every file keeps each value on one line.
+  // 4. Switch `model.version` to `doc.targetVersion` and serialize the files
+  // with `serializeModelFiles`, each value on one line. The model file is
+  // written into the input document to keep its comments, with the
+  // serializer's YAML 1.1 quoting.
   model.version = doc.targetVersion;
   const serialized = serializeModelFiles(model, {lineWidth: 0});
   doc.warnings.push(...serialized.warnings);
