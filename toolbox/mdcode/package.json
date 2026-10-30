@@ -1,19 +1,32 @@
 {
-  "name": "kcmd",
+  "name": "@google-cloud/kcmd",
   "version": "0.1.0",
   "description": "Google Knowledge Catalog Metadata as Code Library, CLI and MCP Server",
-  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GoogleCloudPlatform/knowledge-catalog.git",
+    "directory": "toolbox/mdcode"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "main": "./build/ts/kcmd/index.js",
   "bin": {
-    "kcmd": "./dist/kcmd"
+    "kcmd": "./build/ts/kcmd/cli.js"
   },
   "types": "./build/ts/kcmd/index.d.ts",
   "exports": {
     ".": "./build/ts/kcmd/index.js"
   },
+  "files": [
+    "build/ts/kcmd/",
+    "README.md"
+  ],
   "scripts": {
     "build:libts": "npx tsc -p src/libts/tsconfig.json",
+    "build:cli": "npx bun build --target=node --format=cjs --packages=external --banner=\"#!/usr/bin/env node\" --outfile build/ts/kcmd/cli.js src/tool/main.ts && node -e \"require('fs').chmodSync('build/ts/kcmd/cli.js', 0o755)\"",
     "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
-    "build": "npm run build:libts && npm run build:tool",
+    "build": "npm run build:libts && npm run build:cli && npm run build:tool",
     "compile": "npx tsc --noEmit",
     "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/",
     "test:semantic": "npx bun test ./tests/libts/semantic/",
@@ -23,8 +36,8 @@
     "x:mcp": "npx @modelcontextprotocol/inspector dist/kcmd mcp"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Google LLC",
+  "license": "Apache-2.0",
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

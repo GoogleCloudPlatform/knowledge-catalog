@@ -3,7 +3,7 @@
 
 import * as fs from 'node:fs';
 import * as adk from '@google/adk';
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 import { createAgent } from './agent.js';
 import { loadMcpTools, loadSkills } from '../tools';
 

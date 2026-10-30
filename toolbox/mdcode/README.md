@@ -95,14 +95,14 @@ links:
 
 ### Library
 
-You can use the `kcmd` library to programmatically interact with the catalog metadata.
+You can use the `@google-cloud/kcmd` library to programmatically interact with the catalog metadata.
 
 ```bash
-npm install kcmd
+npm install @google-cloud/kcmd
 ```
 
 ```typescript
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 
 // Creating a catalog manifest from scratch
 const manifest = new kcmd.CatalogManifest(...);
@@ -143,6 +143,9 @@ kcmd init --bigquery-dataset <projectId>.<datasetId1> --bigquery-dataset <projec
 
 # Initialize a new catalog snapshot for a custom EntryGroup
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
+
+# Initialize an Open Knowledge Format (OKF v0.2) bundle for a custom EntryGroup
+kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format=okf
 
 # Initialize a new catalog snapshot for a locally-authored Semantic Model.
 # The scope names the EntryGroup the model belongs to; the model is authored as
