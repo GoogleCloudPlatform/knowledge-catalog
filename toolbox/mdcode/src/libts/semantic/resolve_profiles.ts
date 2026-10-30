@@ -1981,6 +1981,12 @@ export interface CompletenessOptions extends DialectLoad {
   // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
   // dialect is `dialect` or the caller cannot read it either.
   ownSqlOnly?: {dialect?: string; rebound?: string[]};
+  // The profile is in a vanilla model's GOOGLE block. A field with only vendor
+  // SQL then gets the hint to run `kcmd import --transpile`, which rewrites
+  // the block with translated SQL. A Google model's profile file gets no such
+  // hint, since an import that keeps the model Google leaves the file as
+  // written.
+  googleBlock?: boolean;
 }
 
 /**
@@ -2282,10 +2288,13 @@ export function validateProfileCompleteness(
                 JSON.stringify(expressionSources(asInModelFile)) &&
             sourcesDialect({entities: [e]}) === dialect;
         if (isFieldBound(f) && !runs(f) && !reported) {
+          const viaImport = opts.googleBlock && importTranspiles(f, dialect) ?
+              `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` :
+              '';
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}`);
+                  dialect}${viaImport}`);
         }
       }
     }

@@ -702,17 +702,20 @@ function namedProfileErrors(
     // reads it. declared() lists the profile files too, so only its block
     // profiles are taken from it. A block profile is already read. Its actions
     // are dropped, as loadProfileFile skips a profile file's.
-    let named: Array<{name: string; label: string; read: () => ProfileSpec}>;
+    let named: Array<
+        {name: string; label: string; block: boolean; read: () => ProfileSpec}>;
     try {
       named = [
         ...profileDocs(d.name).filter(p => !isLegacyWrapper(p.text)).map(p => ({
           name: p.name,
           label: p.fileName,
+          block: false,
           read: () => loadProfileFile(p.text, p.name, {skipActions: true}),
         })),
         ...declared(d).flatMap(p => 'spec' in p ? [{
           name: p.name,
           label: d.name,
+          block: true,
           read: () => {
             const {actions: _, ...spec} = p.spec;
             return spec;
@@ -780,6 +783,7 @@ function namedProfileErrors(
           ...validateProfileCompleteness(logical, spec, profileWarnings, {
             ...pushChecks(d, p.name),
             ownSqlOnly,
+            googleBlock: p.block,
             ...load,
           }).map(tag));
       warnings.push(...profileWarnings.map(at));
