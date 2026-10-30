@@ -785,8 +785,9 @@ function retiredPushFlagErrors(options: PushOptions): string[] {
       retired(
           '--transpile',
           `; use '${IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects ` +
-              `when importing a model. Import translates the model file ` +
-              `only, so write a profile's 'BIGQUERY' or 'ANSI_SQL' ` +
+              `when importing a model. Import translates the profile files ` +
+              `beside a Google model only when it converts the model to ` +
+              `'ossie'; otherwise write their 'BIGQUERY' or 'ANSI_SQL' ` +
               `expressions yourself`),
     ],
     [

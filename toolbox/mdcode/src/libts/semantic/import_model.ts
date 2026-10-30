@@ -11,7 +11,7 @@ import {SerializedFile} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
-import {transpileModel} from './transpile';
+import {needsTranspile, transpileModel} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -34,8 +34,10 @@ export interface ImportSemanticModelOptions {
    */
   strict?: boolean;
   /**
-   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
-   * used when converting a Google-flavor model to vanilla (`'ossie'`).
+   * Sibling `<model>.profile.<name>.yaml` files located beside the input file.
+   * Converting a Google-flavor model to vanilla (`'ossie'`) writes them into
+   * the model file. Any other import leaves them out, and with `transpile`
+   * warns about each field binding in them it would translate.
    */
   profileFiles?: SerializedFile[];
   /**
@@ -1136,7 +1138,8 @@ function moveConstructs(
 /**
  * Loads `doc.root` into the `SemanticModel` IR, runs `transpileModel` to
  * translate vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, and
- * writes any newly added `BIGQUERY` dialect entries back onto `doc`.
+ * writes any newly added `BIGQUERY` dialect entries back onto `doc`, including
+ * the field bindings of the profiles in the model's `GOOGLE` blocks.
  */
 async function transpileDocument(doc: ImportDocument): Promise<void> {
   let preLoaded: ReturnType<typeof fromDocument>;
@@ -1148,7 +1151,7 @@ async function transpileDocument(doc: ImportDocument): Promise<void> {
     return;
   }
   // Writes `irDialects` back onto `rawNode.expression` when `transpileModel`
-  // appended a new dialect entry (e.g. `BIGQUERY`).
+  // appended a new dialect entry (e.g. `BIGQUERY`), and returns whether it did.
   const syncNode =
       (rawNode: Record<string, any>,
        irDialects: Array<{dialect: string; expression: string}>|undefined) => {
@@ -1161,7 +1164,9 @@ async function transpileDocument(doc: ImportDocument): Promise<void> {
                 d => ({dialect: d.dialect, expression: d.expression})),
           };
           doc.modified = true;
+          return true;
         }
+        return false;
       };
   for (const m of preLoaded.models) {
     const transpiled = await transpileModel(m);
@@ -1175,6 +1180,51 @@ async function transpileDocument(doc: ImportDocument): Promise<void> {
     for (const mt of doc.metrics) {
       syncNode(
           mt, transpiled.model.metrics.find(x => x.name === mt.name)?.dialects);
+    }
+    // A profile in a GOOGLE block is JSON text, so a block whose profiles
+    // gained an entry is written back as JSON.
+    for (const block of asRecords(doc.model.custom_extensions)) {
+      const data = parseGoogleBlocks([block])[0];
+      let changed = false;
+      for (const p of asRecords(data?.profiles)) {
+        const irProfile = transpiled.model.profiles?.find(x => x.name === p.name);
+        for (const pe of asRecords(p.entities)) {
+          const irEntity = irProfile?.entities.find(x => x.name === pe.name);
+          for (const f of asRecords(pe.fields)) {
+            const irField = irEntity?.fields?.find(x => x.name === f.name);
+            changed = syncNode(f, irField?.dialects) || changed;
+          }
+        }
+      }
+      if (changed) block.data = JSON.stringify(data);
+    }
+  }
+}
+
+/**
+ * Warns about each field binding in `profileFiles` that `transpileModel` would
+ * translate, for profile files the import reads but does not write. A file that
+ * does not load is skipped, since push reports it.
+ */
+function warnUntranslatedProfileFiles(
+    profileFiles: SerializedFile[]|undefined, doc: ImportDocument): void {
+  for (const pf of profileFiles ?? []) {
+    let profile: ProfileSpec;
+    try {
+      profile = loadProfileFile(pf.content, parseProfileName(pf.fileName));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      continue;
+    }
+    for (const pe of profile.entities) {
+      for (const f of pe.fields ?? []) {
+        if (!needsTranspile(f)) continue;
+        doc.warnings.push(
+            `profile '${profile.name}': field '${pe.name}.${f.name}' is left ` +
+            `untranslated because the import does not write '${
+                pf.fileName}'; add its 'BIGQUERY' expression to that file ` +
+            `yourself.`);
+      }
     }
   }
 }
@@ -1433,7 +1483,8 @@ export async function importSemanticModelYaml(
   // 2. Run third-party repairs (which record errors in `strict` mode).
   repairDocument(doc);
 
-  // 3. Generate the converted or adapted output file(s).
+  // 3. Generate the converted or adapted output file(s). Only a conversion to
+  // `0.2.0.dev0` writes the sibling profile files, inside the model file.
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
@@ -1442,6 +1493,10 @@ export async function importSemanticModelYaml(
   // 4. Validate the primary output document and return the result.
   if (files.length > 0 && doc.errors.length === 0) {
     validateOutputDocument(files[0].content, doc);
+  }
+  if (opts.transpile &&
+      !(shouldConvert && doc.targetVersion === OSSIE_VERSION)) {
+    warnUntranslatedProfileFiles(opts.profileFiles, doc);
   }
   return {
     ok: doc.errors.length === 0,
