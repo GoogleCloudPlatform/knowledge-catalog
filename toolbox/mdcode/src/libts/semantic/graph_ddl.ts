@@ -35,9 +35,10 @@ export interface GenerateResult {
 export interface MetricPlacementInput {
   // Every entity of the inheritance-resolved model, abstract and skipped too.
   entityByName: ReadonlyMap<string, Entity>;
-  // Entities that form no node table (abstract, no KEY).
+  // Entities that form no node table (abstract, extended by another entity,
+  // or no KEY).
   skipped: ReadonlySet<string>;
-  // Entities some node-forming entity extends.
+  // Entities another entity extends. None of them forms a node table.
   ancestorsUsed: ReadonlySet<string>;
 }
 
@@ -82,9 +83,11 @@ export interface GraphEngine {
  * does not create them. Returns the DDL plus any warnings collected while
  * mapping the IR (e.g. metrics that could not be placed on a single table).
  *
- * Throws when the model yields no valid node table -- it declares no entities,
- * or every entity lacks a KEY -- since a property graph with an empty NODE
- * TABLES block is invalid DDL that the engine would reject.
+ * Only a concrete leaf, an entity that is not abstract and that no other entity
+ * extends, forms a node table. Throws when the model yields no valid node table
+ * -- it declares no entities, every entity is abstract or extended by another,
+ * or every leaf lacks a KEY -- since a property graph with an empty NODE TABLES
+ * block is invalid DDL that the engine would reject.
  */
 export function generateGraphDdl(
     model: SemanticModel, engine: GraphEngine): GenerateResult {
@@ -122,13 +125,17 @@ export function generateGraphDdl(
         `the ${engine.name} push deploys none of them.`);
   }
 
-  // An abstract entity is conceptual: it has no physical table and produces no
-  // NODE TABLE, surviving only as a LABEL on its concrete descendants (whose
-  // node tables carry its flattened fields). Collect the abstract names so the
-  // node-table filter drops them while label emission still sees them.
+  // Only a concrete leaf forms a node table: an entity that is not abstract
+  // and that no other entity extends. An abstract entity has no table. A
+  // parent's label already reaches every row of its descendants' tables, so a
+  // node table of its own would add its rows to that label as well. Either
+  // kind survives only as a LABEL on its descendants' node tables, which carry
+  // its flattened fields. resolveInheritance expanded each `extends` to the
+  // full ancestor set, so the parents are exactly the names some `extends`
+  // lists.
   const abstractNames =
       new Set(entities.filter(e => e.abstract).map(e => e.name));
-
+  const parentNames = new Set(entities.flatMap(e => e.extends ?? []));
 
   // A graph node table requires a non-empty KEY: the entity's primary key, else
   // its first unique key (nodeKey). An entity with neither cannot form a valid
@@ -137,10 +144,9 @@ export function generateGraphDdl(
   // records the resulting structural drop.
   const skipped = new Set<string>();
   const validEntities = entities.filter(entity => {
-    // An abstract entity is intentionally table-less: skip its node table (it
-    // still contributes LABELs to descendants) without warning -- unlike a
-    // missing KEY, this is by design, not a defect.
-    if (abstractNames.has(entity.name)) {
+    // An abstract entity or a parent has no node table by design, not for a
+    // defect, so skip it without a warning. A parent needs no KEY.
+    if (abstractNames.has(entity.name) || parentNames.has(entity.name)) {
       skipped.add(entity.name);
       return false;
     }
@@ -153,34 +159,33 @@ export function generateGraphDdl(
     return false;
   });
 
-  // The ancestors carried by a table-emitting entity. Two uses. First, measure
-  // placement: an engine's measure may be allowed only on a LEAF type -- one
-  // that no *table-emitting* entity extends (see the BigQuery engine).
-  // Building this from validEntities (not all entities) is deliberate: an
-  // abstract or empty-KEY subtype emits no table, so it does not duplicate its
-  // parent's label and must not mark the parent non-leaf. Second, the orphan
-  // check below: an abstract class that is no concrete entity's ancestor
-  // produces no graph element at all, so warn and drop it rather than let it
-  // vanish silently.
-  const ancestorsUsed = new Set<string>();
-  for (const entity of validEntities) {
-    for (const a of entity.extends ?? []) ancestorsUsed.add(a);
-  }
-  for (const name of abstractNames) {
-    if (!ancestorsUsed.has(name)) {
+  // The ancestors some node table carries as labels. An abstract entity or a
+  // parent that none of them carries produces no graph element at all, so warn
+  // rather than let it vanish silently: its only descendants are abstract or
+  // were skipped for an empty KEY.
+  const labelled = new Set(validEntities.flatMap(e => e.extends ?? []));
+  for (const {name} of entities) {
+    if (labelled.has(name)) continue;
+    if (abstractNames.has(name)) {
       warnings.push(
           `abstract entity '${name}' is not a supertype of any concrete ` +
           `entity; it has no table and no descendant to label, so it produces ` +
+          `no graph element`);
+    } else if (parentNames.has(name)) {
+      warnings.push(
+          `entity '${name}' is extended by another entity, so it has no node ` +
+          `table, and no entity with a node table extends it, so it produces ` +
           `no graph element`);
     }
   }
 
   // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
   // ()` block is invalid DDL under any circumstance. When no entity can form a
-  // node — the model declares none, every one is abstract (a table-less
-  // supertype forms no node), or every one was skipped for an empty KEY — fail
-  // loudly rather than emit a graph the engine would reject. The collected skip
-  // reasons ride along in the error so the caller sees why each entity dropped.
+  // node — the model declares none, every one is abstract or extended by
+  // another (neither forms a node), or every leaf was skipped for an empty KEY
+  // — fail loudly rather than emit a graph the engine would reject. The
+  // collected skip reasons ride along in the error so the caller sees why each
+  // entity dropped.
   if (!validEntities.length) {
     let reason: string;
     if (!entities.length) {
@@ -188,9 +193,13 @@ export function generateGraphDdl(
     } else if (entities.every(e => e.abstract)) {
       reason =
           'every entity is abstract (a table-less supertype forms no node table)';
+    } else if (entities.every(
+                   e => abstractNames.has(e.name) || parentNames.has(e.name))) {
+      reason = 'every entity is abstract or extended by another entity (only ' +
+          'a concrete leaf forms a node table)';
     } else {
-      reason =
-          'every entity was skipped because it has no primary key (a graph node requires a KEY)';
+      reason = `every ${parentNames.size ? 'concrete leaf ' : ''}entity was ` +
+          'skipped because it has no primary key (a graph node requires a KEY)';
     }
     throw new Error(
         `cannot generate a property graph: ${reason}; a graph requires at ` +
@@ -203,39 +212,35 @@ export function generateGraphDdl(
   // never render.
   const entityByName = new Map(entities.map(e => [e.name, e]));
   const measurePropertiesByEntity = engine.placeMetrics(
-      metrics, {entityByName, skipped, ancestorsUsed}, warnings);
+      metrics, {entityByName, skipped, ancestorsUsed: parentNames}, warnings);
 
-  // A subclass's `LABEL <ancestor>` block lists that ancestor's own (flattened)
-  // signature, so the label renderer must reach every LABEL CARRIER by name:
-  // node-forming entities plus abstract (table-less) supertypes, which have no
-  // node table but still contribute a label signature. A concrete entity
-  // dropped for an empty KEY is deliberately excluded -- it was reported as a
-  // structural defect, so it must not silently reappear as a shared label on a
-  // subclass (which would contradict the drop and expose a half-defined class);
-  // a subclass extending it drops that LABEL with a warning (see
-  // renderNodeTable).
-  const labelByName =
-      new Map(entities.filter(e => e.abstract || !skipped.has(e.name))
-                  .map(e => [e.name, e]));
-
-  // A field one node table leaves out because this engine has no SQL for it
-  // is left out of each abstract ancestor's label on every table too, so the
-  // label lists the same properties everywhere it appears.
-  const leftOutUnder = new Map<string, Set<string>>();
-  for (const e of validEntities) {
-    for (const f of e.fields) {
-      if (!hasOnlyOtherEnginesSql(f, engine)) continue;
-      for (const a of e.extends ?? []) {
-        leftOutUnder.set(a, (leftOutUnder.get(a) ?? new Set()).add(f.name));
-      }
-    }
+  // The properties under each ancestor's label: of the fields the ancestor
+  // declares or inherits, those that every node table below it binds with SQL
+  // for this engine. Every table that carries a label must declare the same
+  // properties under it, by name and type, so a field that one leaf leaves out
+  // (its profile excludes it, or this engine has no SQL for it) is left out of
+  // that label on every leaf, while each leaf's DEFAULT LABEL keeps all it
+  // binds. Each leaf reads the properties from its own binding: the engines
+  // match a shared label by property name and type, not by column. The type
+  // comes from the field's datatype, which the ancestor defines, so the leaves
+  // agree on it.
+  const ancestorProperties = new Map<string, string[]>();
+  for (const name of labelled) {
+    const leaves = validEntities.filter(e => e.extends?.includes(name));
+    ancestorProperties.set(
+        name,
+        declaredOrInherited(name, model, entityByName)
+            .filter(
+                field => leaves.every(
+                    leaf => leaf.fields.some(
+                        f => f.name === field &&
+                            engine.fieldExpression(f) !== undefined))));
   }
 
   const nodeTables = validEntities.map(
       entity => renderNodeTable(
           entity, measurePropertiesByEntity.get(entity.name) ?? [],
-          labelByName, leftOutUnder, ancestorsUsed.has(entity.name), engine,
-          warnings));
+          ancestorProperties, engine, warnings));
 
   const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
   const edgeTables =
@@ -270,79 +275,29 @@ export function generateGraphDdl(
   return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
 }
 
+// The names of the fields entity `name` declares or inherits: its own, then
+// each ancestor's, nearest first, as resolveInheritance orders them. They are
+// read from the model as declared, before resolution, because resolution
+// leaves off the fields a profile excludes on the entity itself, and an
+// exclusion on an entity with no node table excludes nothing from the graph.
+function declaredOrInherited(
+    name: string, declared: SemanticModel,
+    resolvedByName: ReadonlyMap<string, Entity>): string[] {
+  const own = new Map((declared.entities ?? []).map(e => [e.name, e.fields]));
+  const names = new Set<string>();
+  for (const e of [name, ...(resolvedByName.get(name)?.extends ?? [])]) {
+    for (const f of own.get(e) ?? []) names.add(f.name);
+  }
+  return [...names];
+}
+
 
 function renderNodeTable(
     entity: Entity, measureProperties: string[],
-    labelByName: Map<string, Entity>,
-    leftOutUnder: Map<string, Set<string>>, isSupertype: boolean,
-    engine: GraphEngine, warnings: string[]): string {
+    ancestorProperties: Map<string, string[]>, engine: GraphEngine,
+    warnings: string[]): string {
   const table =
       engine.table(entity.dataSource, warnings, `entity '${entity.name}'`);
-
-  // Canonical rendering of every inherited property: its supertype's OWN
-  // definition, keyed by property name (nearest ancestor wins, matching field
-  // flattening). A property that appears under a label shared across element
-  // tables must have one identical definition everywhere it appears, so the
-  // supertype is authoritative -- both this node's DEFAULT LABEL and its
-  // `LABEL <ancestor>` blocks render an inherited property exactly as the
-  // supertype's node table does. resolveInheritance localizes the inherited
-  // copies on this entity, so in a well-formed hierarchy `renderOwn` below is a
-  // no-op; the map's real job is to catch and neutralize a genuine override.
-  const inheritedRender = new Map<string, string>();
-  const inheritedCore = new Map<string, string>();
-  for (const ancestorName of entity.extends ?? []) {
-    const ancestor = labelByName.get(ancestorName);
-    // Skip an ABSTRACT ancestor: it has no table and no binding of its own, so
-    // it cannot be authoritative for an inherited property's rendering. This
-    // subtype's own binding is the canonical one (e.g. `c_name AS name`), so we
-    // leave the inherited names out of this map and let `renderOwn` render them
-    // straight from this table. A concrete ancestor keeps its authority.
-    if (!ancestor || ancestor.abstract) continue;
-    for (const f of ancestor.fields) {
-      // The ancestor's node table leaves out a field this engine has no SQL
-      // for, so there is no rendering to defer to.
-      if (engine.fieldExpression(f) === undefined) continue;
-      if (!inheritedRender.has(f.name)) {
-        inheritedRender.set(
-            f.name, renderFieldProperty(f, ancestor.name, engine));
-        inheritedCore.set(
-            f.name, renderFieldPropertyCore(f, ancestor.name, engine));
-      }
-    }
-  }
-  // Renders one of this entity's own fields, deferring to the supertype's
-  // canonical definition for any inherited name. A subclass CANNOT give an
-  // inherited property a different definition -- BigQuery requires one
-  // definition per property under a shared label -- so a divergent override is
-  // warned and dropped in favor of the supertype's, keeping the DDL valid. The
-  // warning distinguishes a STRUCTURAL remap (a different column/expression --
-  // the property is genuinely rebound) from a METADATA-only refinement (same
-  // column, different description/synonyms) so it states precisely what the
-  // subclass loses, rather than mislabeling an added description as a redefined
-  // column.
-  const renderOwn = (f: Field): string => {
-    const own = renderFieldProperty(f, entity.name, engine);
-    const canonical = inheritedRender.get(f.name);
-    if (canonical === undefined) return own;  // not inherited: render as-is
-    if (canonical === own) return canonical;  // identical: nothing to warn
-    if (renderFieldPropertyCore(f, entity.name, engine) !==
-        inheritedCore.get(f.name)) {
-      warnings.push(
-          `entity '${entity.name}' remaps inherited property '${
-              f.name}' to a different column/expression than its supertype; ` +
-          `${engine.name} allows only one definition per property under a ` +
-          `shared label, so the supertype's is used and the subclass's ` +
-          `remapping is dropped`);
-    } else {
-      warnings.push(
-          `entity '${entity.name}' overrides the description/synonyms of ` +
-          `inherited property '${
-              f.name}'; under a shared label every binding ` +
-          `must declare it identically, so the supertype's metadata is used ` +
-          `and the subclass's is dropped`);
-    }
-    return canonical;
-  };
 
   // Order: declared fields, then the engine's measure properties (any operand
   // properties synthesized for measures, then the measures themselves, which
@@ -362,16 +317,20 @@ function renderNodeTable(
         isFieldBound(f) ?
             `entity '${entity.name}': field '${f.name}' has no '${
                 engine.dialect}' or 'ANSI_SQL' expression; omitted from the ` +
-                (inheritedRender.has(f.name) ?
-                     `node table's own label, and the supertype's label keeps ` +
-                         `the supertype's definition` :
-                     `node table`) :
+                `node table` :
             `entity '${entity.name}': field '${f.name}' has no column under ` +
                 `this binding; omitted from the node table (bind it, or ` +
                 `govern the logical model in Knowledge Catalog instead)`);
     return false;
   });
-  const properties = [...boundFields.map(renderOwn), ...measureProperties];
+  // Each field renders from this entity's own binding, keyed by name, and the
+  // DEFAULT LABEL and every `LABEL <ancestor>` block read that one rendering. A
+  // field this entity restates reads its own column; one it does not restate
+  // carries the binding of the nearest ancestor that gives one, which
+  // resolveInheritance localized to this table.
+  const rendered = new Map(
+      boundFields.map(f => [f.name, renderFieldProperty(f, entity.name, engine)]));
+  const properties = [...rendered.values(), ...measureProperties];
 
   const lines = [
     line(1, `${table} AS ${quoteIfReserved(entity.name)}`),
@@ -382,92 +341,30 @@ function renderNodeTable(
                 nodeKey(entity), engine, warnings, `entity '${entity.name}'`)
                 .join(', ')})`),
   ];
-  // Element-table description and synonyms attach to the node's DEFAULT LABEL
-  // -- UNLESS this entity is a supertype whose label is shared by subclass
-  // tables. BigQuery forbids a label that carries an OPTIONS clause from being
-  // bound to more than one element table (verified live -- "the label ... is
-  // defined with OPTIONS clause in one of the element tables and cannot be
-  // bound to another element table"), so a shared supertype label must be
-  // options-free; its description/synonyms are dropped (with a warning). The
-  // rule is BigQuery's, but it applies to any engine whose elementOptions
-  // returns a clause.
-  let labelOpts = engine.elementOptions(entity.description, entity.aiContext);
-  if (isSupertype && labelOpts) {
-    warnings.push(
-        `entity '${entity.name}' is a supertype in a class hierarchy; its ` +
-        `description/synonyms are dropped from the shared '${entity.name}' ` +
-        `label (${
-            engine.name} forbids OPTIONS on a label bound by multiple tables)`);
-    labelOpts = undefined;
-  }
-  // A node participating in the hierarchy -- as a subclass (it declares
-  // ancestor LABELs) or as a shared supertype (a subclass binds its label) --
-  // must use an EXPLICIT `DEFAULT LABEL`: BigQuery rejects a bare (implicit
-  // default) PROPERTIES clause immediately followed by explicit LABEL clauses
-  // (verified live -- "Expected \")\" ... but got keyword LABEL"), and the
-  // validated shared-label shape is `DEFAULT LABEL PROPERTIES(...)`. A node
-  // outside any hierarchy keeps the implicit form so existing output is
-  // byte-for-byte unchanged.
-  const hasAncestors = !!(entity.extends && entity.extends.length);
-  if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
+  // A node that declares ancestor LABELs must use an EXPLICIT `DEFAULT LABEL`:
+  // BigQuery rejects a bare (implicit default) PROPERTIES clause immediately
+  // followed by explicit LABEL clauses (verified live -- "Expected \")\" ...
+  // but got keyword LABEL"), and the validated shared-label shape is `DEFAULT
+  // LABEL PROPERTIES(...)`. A node outside any hierarchy keeps the implicit
+  // form. Only a leaf has a node table, so no other table shares this node's
+  // own label, and its description and synonyms stay on it.
+  if (entity.extends?.length) lines.push(line(2, 'DEFAULT LABEL'));
+  const labelOpts = engine.elementOptions(entity.description, entity.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
   lines.push(...propertiesClause(
       properties, entity.fields.some(f => hasOnlyOtherEnginesSql(f, engine))));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
-  // expanded `extends` to the full ancestor set), each re-listing that
-  // ancestor's properties so `MATCH (:Ancestor)` also matches this subclass
-  // node. The block is rendered straight from the ANCESTOR's own fields with
-  // the ancestor as qualifier, so it is byte-for-byte identical to the
-  // ancestor's own DEFAULT LABEL -- the exact match BigQuery requires for a
-  // property shared across the element tables that bind a label ("same set of
-  // property declarations under the same label"). This node's DEFAULT LABEL
-  // renders the same inherited names via `renderOwn`, which also defers to the
-  // ancestor, so the label is consistent within this table too.
+  // expanded `extends` to the full ancestor set), so `MATCH (:Ancestor)` also
+  // matches this node. Each lists the properties every leaf under that
+  // ancestor binds (see generateGraphDdl), read from this table's renderings.
+  // When the leaves share none, the label lists NO PROPERTIES, since a label
+  // with no properties clause exposes every column of its table.
   for (const ancestorName of entity.extends ?? []) {
-    const ancestor = labelByName.get(ancestorName);
-    if (!ancestor) {
-      // The ancestor exists in the model (an unknown parent hard-fails in
-      // resolveInheritance, so it never reaches here) but is not a label
-      // carrier -- it was dropped for an
-      // empty KEY. Its fields still flattened onto this node (they render as
-      // own properties above); it just forms no queryable label, so omit the
-      // LABEL and say so rather than reference a class reported as gone.
-      warnings.push(
-          `entity '${entity.name}' extends '${ancestorName}', which has no ` +
-          `node table and is not abstract (it was dropped, e.g. for an empty ` +
-          `KEY); the '${ancestorName}' label is omitted from '${entity.name}'`);
-      continue;
-    }
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
-    let signature: string[];
-    let anyLeftOut = false;
-    if (ancestor.abstract) {
-      // Render each inherited field from THIS subtype's own binding, keyed by
-      // the abstract ancestor's field names. Skip any the subtype leaves
-      // unbound so the block matches the DEFAULT LABEL (which lists only bound
-      // fields); a profile that binds the subtype but not an inherited field
-      // simply does not expose that property under the shared label.
-      signature = [];
-      for (const af of ancestor.fields) {
-        if (leftOutUnder.get(ancestorName)?.has(af.name)) {
-          anyLeftOut = true;
-          continue;
-        }
-        const child = boundFields.find(cf => cf.name === af.name);
-        if (child) {
-          signature.push(renderFieldProperty(child, entity.name, engine));
-        }
-      }
-    } else {
-      // Only the fields the ancestor's own node table lists.
-      signature =
-          ancestor.fields.filter(f => engine.fieldExpression(f) !== undefined)
-              .map(f => renderFieldProperty(f, ancestor.name, engine));
-      anyLeftOut =
-          ancestor.fields.some(f => hasOnlyOtherEnginesSql(f, engine));
-    }
-    lines.push(...propertiesClause(signature, anyLeftOut));
+    const signature = (ancestorProperties.get(ancestorName) ?? [])
+                          .map(name => rendered.get(name)!);
+    lines.push(...propertiesClause(signature, true));
   }
   return lines.join('\n');
 }
@@ -499,11 +396,7 @@ function renderFieldProperty(
 
 // Renders just the STRUCTURAL core of a field property -- the bare column, or
 // `<expr> AS <name>` when the field maps a non-trivial expression -- with no
-// trailing OPTIONS. This is the part BigQuery requires to be byte-for-byte
-// identical across every element table binding a shared label; metadata
-// (OPTIONS) is compared separately so a subclass's metadata-only refinement is
-// reported distinctly from a structural remap (see renderNodeTable's
-// renderOwn). This is also the single place a field expression is lowered to
+// trailing OPTIONS. This is the single place a field expression is lowered to
 // its table-local form: the resolve-inheritance pass first rewrites an
 // inherited field's expression into the child's frame (localizeInheritedField),
 // then this strips the entity's own qualifier -- one normalization, in one

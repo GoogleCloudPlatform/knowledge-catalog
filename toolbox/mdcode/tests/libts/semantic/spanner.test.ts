@@ -464,8 +464,9 @@ test('a field reads its SPANNER text, else its ANSI_SQL text, without comments',
 
 describe('rules the Spanner graph shares with the BigQuery graph', () => {
   // Customer inherits `email` from the concrete parent Person and maps it to
-  // another column. Under the shared `Person` label the parent's column wins.
-  test('a subtype that remaps an inherited column gets its parent\'s', () => {
+  // another column. Person is a parent, so it has no node table, and Customer
+  // reads its own column under its own label and under `Person`.
+  test('a subtype that remaps an inherited column keeps its own', () => {
     const model = modelOf('people', [
       entity('Person', 'Person', ['id'], {id: 'id', email: 'email'}),
       entity('Customer', 'Customer', ['id'], {id: 'id', email: 'contact_email'},
@@ -473,36 +474,195 @@ describe('rules the Spanner graph shares with the BigQuery graph', () => {
     ]);
     for (const [engine, generate, q] of ENGINES) {
       const {ddl, warnings} = generate(model);
-      expect(ddl).toBe(`\
+      expect(ddl, engine).toBe(`\
 CREATE OR REPLACE PROPERTY GRAPH ${q}people${q}
 NODE TABLES (
-  ${q}Person${q} AS Person
-    KEY(id)
-    DEFAULT LABEL
-    PROPERTIES(
-      id,
-      email
-    ),
   ${q}Customer${q} AS Customer
     KEY(id)
     DEFAULT LABEL
     PROPERTIES(
       id,
-      email
+      contact_email AS email
     )
     LABEL Person
     PROPERTIES(
       id,
+      contact_email AS email
+    )
+);
+`);
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  // Only a concrete leaf, an entity that is not abstract and that no other
+  // entity extends, forms a node table. A match on `customer` would otherwise
+  // return the parent's own rows as well as its subtypes'.
+  test('a concrete entity that another extends gets no node table, and its label rides on its descendants', () => {
+    const model = modelOf('shop', [
+      entity('customer', 'Customer', ['id'],
+             {id: 'id', name: 'full_name', email: 'email'}),
+      entity('vip_customer', 'VipCustomer', ['id'], {id: 'id', tier: 'tier'},
+             {extends: ['customer']}),
+      entity('gold_customer', 'GoldCustomer', ['id'], {id: 'id', perk: 'perk'},
+             {extends: ['vip_customer']}),
+    ]);
+    for (const [engine, generate, q] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}shop${q}
+NODE TABLES (
+  ${q}GoldCustomer${q} AS gold_customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id,
+      perk,
+      tier,
+      full_name AS name,
+      email
+    )
+    LABEL vip_customer
+    PROPERTIES(
+      id,
+      tier,
+      full_name AS name,
+      email
+    )
+    LABEL customer
+    PROPERTIES(
+      id,
+      full_name AS name,
       email
     )
 );
 `);
-      expect(warnings).toEqual([
-        `entity 'Customer' remaps inherited property 'email' to a different ` +
-            `column/expression than its supertype; ${engine} allows only ` +
-            `one definition per property under a shared label, so the ` +
-            `supertype's is used and the subclass's remapping is dropped`,
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  // A parent whose only descendants form no node table has no table to carry
+  // its label. With no leaf table at all there is no graph.
+  test('a concrete parent with no descendant node table produces no graph element', () => {
+    const noKey = (e: string) => `entity '${e}': empty KEY (no primary key); ` +
+        `node table skipped, as a graph node requires a KEY`;
+    const customer = entity('customer', 'Customer', ['id'], {id: 'id'});
+    const vip = entity('vip_customer', 'VipCustomer', [], {tier: 'tier'},
+                       {extends: ['customer']});
+    const orders = entity('orders', 'Orders', ['id'], {id: 'id'});
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(modelOf('shop', [customer, vip, orders]));
+      expect(ddl, engine).not.toContain('Customer');
+      expect(warnings, engine).toEqual([
+        noKey('vip_customer'),
+        `entity 'customer' is extended by another entity, so it has no node ` +
+            `table, and no entity with a node table extends it, so it ` +
+            `produces no graph element`,
       ]);
+      expect(() => generate(modelOf('shop', [customer, vip])), engine)
+          .toThrow('cannot generate a property graph: every concrete leaf ' +
+                   'entity was skipped because it has no primary key');
+      expect(() => generate(modelOf('shop', [
+        customer,
+        entity('promo', '', [], {}, {abstract: true, extends: ['customer']}),
+      ])), engine)
+          .toThrow('cannot generate a property graph: every entity is ' +
+                   'abstract or extended by another entity (only a concrete ' +
+                   'leaf forms a node table)');
+    }
+  });
+
+  // BigQuery requires every table that carries a label to declare the same
+  // properties under it. A live test with two leaves under `customer`, one
+  // leaving out `email`, failed with "The label 'customer' is defined with
+  // different property declarations". The label now carries only the fields
+  // both leaves bind, and each leaf reads them from its own columns.
+  test('an ancestor label carries the same properties on every leaf, without one a leaf excludes', () => {
+    const model = modelOf('shop', [
+      entity('customer', 'Customer', ['id'],
+             {id: 'id', name: 'full_name', email: 'email'}),
+      entity('retail_customer', 'RetailCustomer', ['id'],
+             {id: 'id', name: 'shopper_name'}, {extends: ['customer']}),
+      entity('wholesale_customer', 'WholesaleCustomer', ['id'],
+             {id: 'id', name: 'company_name', terms: 'payment_terms'},
+             {extends: ['customer'], excludedFields: ['email']}),
+    ]);
+    for (const [engine, generate, q] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}shop${q}
+NODE TABLES (
+  ${q}RetailCustomer${q} AS retail_customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id,
+      shopper_name AS name,
+      email
+    )
+    LABEL customer
+    PROPERTIES(
+      id,
+      shopper_name AS name
+    ),
+  ${q}WholesaleCustomer${q} AS wholesale_customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id,
+      company_name AS name,
+      payment_terms AS terms
+    )
+    LABEL customer
+    PROPERTIES(
+      id,
+      company_name AS name
+    )
+);
+`);
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  test('leaves that share none of an ancestor\'s fields carry its label with NO PROPERTIES', () => {
+    const model = modelOf('contacts', [
+      entity('contact', 'Contact', ['id'], {phone: 'phone', email: 'email'}),
+      entity('caller', 'Caller', ['caller_id'], {caller_id: 'caller_id'},
+             {extends: ['contact'], excludedFields: ['email']}),
+      entity('mailer', 'Mailer', ['mailer_id'], {mailer_id: 'mailer_id'},
+             {extends: ['contact'], excludedFields: ['phone']}),
+    ]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect([...ddl.matchAll(/LABEL contact\s+(.*)/g)].map(m => m[1]), engine)
+          .toEqual(['NO PROPERTIES,', 'NO PROPERTIES']);
+      expect(ddl, engine).toContain('PROPERTIES(\n      caller_id,\n      phone\n    )');
+      expect(ddl, engine).toContain('PROPERTIES(\n      mailer_id,\n      email\n    )');
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  // With no sibling to agree with, the label keeps every inherited field the
+  // leaf binds, here all but the one it excludes.
+  test('a leaf alone under a concrete ancestor keeps every bound inherited field under its label', () => {
+    const model = modelOf('shop', [
+      entity('customer', 'Customer', ['id'],
+             {id: 'id', name: 'full_name', email: 'email', phone: 'phone'}),
+      entity('vip_customer', 'VipCustomer', ['id'], {id: 'id', tier: 'tier'},
+             {extends: ['customer'], excludedFields: ['phone']}),
+    ]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toContain(`\
+    LABEL customer
+    PROPERTIES(
+      id,
+      full_name AS name,
+      email
+    )
+);
+`);
+      expect(warnings, engine).toEqual([]);
     }
   });
 
@@ -591,10 +751,6 @@ NODE TABLES (
       s_email AS email
     )
     LABEL Party
-    NO PROPERTIES,
-  ${q}Person${q} AS Person
-    KEY(person_id)
-    DEFAULT LABEL
     NO PROPERTIES,
   ${q}Employee${q} AS Employee
     KEY(person_id)
@@ -936,7 +1092,7 @@ describe('a comment in a field expression', () => {
     };
     const {ddl, warnings} = generateSpannerPropertyGraph(inherited);
     expect(ddl).not.toContain('base.second');
-    expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(3);
+    expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(2);
     expect(warnings).toEqual([]);
   });
 });
