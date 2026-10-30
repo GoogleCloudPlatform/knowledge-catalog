@@ -2020,16 +2020,41 @@ semantic_model:
       });
 
       // The model file's error names the text to fix, so a block profile that
-      // inherits the field unchanged gets no error of its own.
+      // inherits the field unchanged gets no error of its own. One that
+      // rebinds it, or is on another database, gets its own error. On
+      // BigQuery that error suggests kcmd import --transpile, which rewrites
+      // the block.
       test('reports a model file field with only a vendor text once', async () => {
-        const withAmount = (deploy?: string) => vanilla([complete('prod')], {deploy})
-            .replace('expression: p_id}]}\n',
-                     p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`);
+        const withAmount = (profile: object, deploy?: string) =>
+            vanilla([profile], {deploy})
+                .replace('expression: p_id}]}\n',
+                         p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`);
         const error = modelNoText('purchase.amount') + HINT;
-        writeScope({'commerce.yaml': withAmount('prod')});
+        writeScope({'commerce.yaml': withAmount(complete('prod'), 'prod')});
         expect(await pushResult()).toEqual({code: 1, errors: [error]});
-        writeScope({'commerce.yaml': withAmount()});
-        await expectReport({default: [error], prod: []});
+        // Profile prod's error for amount on `dialect`, ending in `hint`.
+        const blockError = (dialect: string, hint = '') =>
+            "[commerce] profile 'prod': field 'purchase.amount' has no " +
+            `expression for ${dialect} or ANSI_SQL, and this profile's ` +
+            `sources are ${dialect}${hint}`;
+        const rebound = complete('prod');
+        rebound.entities[1].fields.push({
+          name: 'amount',
+          expression: {dialects: [{dialect: 'SNOWFLAKE', expression: '"amount -"'}]},
+        } as any);
+        const onSpanner = {
+          ...complete('prod'),
+          entities: complete('prod').entities.map(
+              e => ({...e, source: `${SPANNER_DB}/tables/${e.name}`})),
+        };
+        for (const [label, profile, prod] of [
+               ['inherited', complete('prod'), []],
+               ['rebound', rebound, [blockError('BIGQUERY', HINT.slice(0, -1))]],
+               ['on Spanner', onSpanner, [blockError('SPANNER')]],
+             ] as const) {
+          writeScope({'commerce.yaml': withAmount(profile)});
+          await expectReport({default: [error], prod: [...prod]}, label);
+        }
       });
 
       // Push's own checks cover part of the profile it applies, so the
@@ -2353,6 +2378,7 @@ semantic_model:
     // A named profile that keeps the field unchanged gets no error of its
     // own when push's own check names it. A profile that rebinds it or is on
     // another database, or whose field that check skips, keeps its own error.
+    // A profile file's error has no kcmd import hint.
     test('reports a model file field with only a vendor text once beside a named profile', async () => {
       // The error of profile 'prod' for field amount, with no text for the
       // `dialect` of its sources.
