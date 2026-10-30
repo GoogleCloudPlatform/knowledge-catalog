@@ -211,8 +211,10 @@ describe('expression warnings judge each expression on the table that runs it', 
   const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
       ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
   // The field and metric warnings of a model whose entity 't' reads `source`,
-  // with a field 'f' and a metric 'm' whose texts each read column x.
-  const warned = (source: string|undefined, dialects: Array<[string, string]>|string) => {
+  // with a field 'f' and a metric 'm' whose texts each read column x, loaded
+  // preferring `dialect`.
+  const warned = (source: string|undefined, dialects: Array<[string, string]>|string,
+                  dialect?: string) => {
     const sql = (text: (x: string) => string) => typeof dialects === 'string' ?
         text(dialects) :
         {dialects: dialects.map(([dialect, x]) => ({dialect, expression: text(x)}))};
@@ -220,13 +222,17 @@ describe('expression warnings judge each expression on the table that runs it', 
       name: 'shop',
       entities: [entity('t', source, [{name: 'f', expression: sql(x => x)}])],
       metrics: [{name: 'm', entity: 't', expression: sql(x => `SUM(${x})`)}],
-    }]}, opts).warnings.filter(w => /^(field|metric|note)/.test(w));
+    }]}, {...opts, dialect}).warnings.filter(w => /^(field|metric|note)/.test(w));
   };
   // A warning for field 'f', then the same for metric 'm'.
   const both = (text: string) => [`field 't.f': ${text}`, `metric 'm': ${text}`];
   const vendor = (dialect: string) => both(
       `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
       `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
+  const quoted = both(
+      `its 'ANSI_SQL' expression double-quotes a name, which BigQuery reads ` +
+      `as a string; give it a 'BIGQUERY' expression, or add one with 'kcmd ` +
+      `import <file> --input first-party --flavor <ossie|google> --transpile'`);
   const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
       'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
       'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
@@ -245,10 +251,23 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a source in no accepted form, Snowflake text', 'orders', [['SNOWFLAKE', 'x']], []],
     ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
     ['a Spanner table, ANSI_SQL text', SPANNER, [['ANSI_SQL', 'x']], []],
+    ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
+    ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
+    ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
+     [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
+    ['a Cloud SQL for PostgreSQL table, a double-quoted name in ANSI_SQL', PG,
+     [['ANSI_SQL', '"x"']], []],
   ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(
       '%s', (_, source, dialects, expected) => {
         expect(warned(source, dialects)).toEqual(expected);
       });
+
+  // The double-quoted name warning is about BigQuery, so a load that prefers
+  // another dialect gives that dialect's note.
+  test('a load preferring Spanner gives no double-quoted name warning', () => {
+    expect(warned(SPANNER, [['ANSI_SQL', '"x"']], 'SPANNER'))
+        .toEqual([note[0].replaceAll('BIGQUERY', 'SPANNER')]);
+  });
 
   // An inherited field is judged on the table of each entity that inherits
   // it, and a metric on the tables of the entities it reaches, or on any
