@@ -2091,10 +2091,10 @@ describe('completeness sees the model as the profile does', () => {
     expect(errorsFor(sf, sf2, {sourceDialects, sourceDatabases: new Map([[sf, 'snowflake/a']])})).toEqual('');
   });
 
-  // A source the loader's reader rejects is reported, and names no
-  // database. So its entity's fields are not held to the dialect of the
-  // profile's other sources, which its table may not have. The other
-  // entities' fields still are.
+  // A source the loader's reader rejects is reported, and its entity keeps
+  // the model file's table. So its entity's fields are not held to the
+  // dialect of the profile's other sources, which its table may not have.
+  // The other entities' fields still are.
   test('a profile source the reader rejects leaves its entity\'s fields out of the dialect rule', () => {
     const m = model(true);
     // email as a load gives it: a SNOWFLAKE text, kept in its list too.

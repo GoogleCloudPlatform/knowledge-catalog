@@ -2067,8 +2067,8 @@ export function validateProfileCompleteness(
     // A source the loader's reader rejects is already reported, and its
     // entity keeps the model file's table and dialect. databaseOf still reads
     // some rejected sources, such as one with a leading `//`. An entity whose
-    // source is rejected or names no database is left out of the dialect
-    // rule, so its fields are not held to the dialect the other sources imply.
+    // source is rejected or names no database is left out of the one-database
+    // and dialect rules.
     const db = databaseOf(pe.source.trim());
     const profiledEntity = profiledByName.get(e.name);
     if (!db || profiledEntity?.authoredSource !== pe.source.trim()) {
