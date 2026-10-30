@@ -448,13 +448,23 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
 
 /**
  * Canonicalizes `obj.datatype` casing (e.g. `integer` -> `Integer`) and deletes
- * `Opaque` in any casing.
+ * `Opaque` in any casing. Changing a value the input's flavor rejects is a
+ * repair, so it warns, or is an error in strict mode. Strict mode leaves a
+ * value the input's flavor accepts as written.
  */
 function normalizeDatatype(
-    obj: Record<string, any>, doc: ImportDocument): void {
+    obj: Record<string, any>, label: string, doc: ImportDocument): void {
   if (typeof obj.datatype !== 'string') return;
   const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
   if (!res.ok) return;
+  const accepted = normalizeDataType(obj.datatype, doc.inputVersion).ok;
+  if (accepted && doc.strict) return;
+  if (!accepted) {
+    doc.warnOrError(
+        res.type === undefined ?
+            `${label}: removed datatype '${obj.datatype}'.` :
+            `${label}: rewrote datatype '${obj.datatype}' to '${res.type}'.`);
+  }
   if (res.type === undefined) {
     delete obj.datatype;
     doc.modified = true;
@@ -487,6 +497,8 @@ function normalizeExpressionDialects(
         (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
     if (mapped !== undefined) {
       if (entry.dialect !== mapped) {
+        doc.warnOrError(
+            `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`);
         entry.dialect = mapped;
         doc.modified = true;
       }
@@ -569,7 +581,7 @@ function truncateDescription(
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument): void {
   const fLabel = `field '${dsName}.${f.name}'`;
-  normalizeDatatype(f, doc);
+  normalizeDatatype(f, fLabel, doc);
   if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
     if (doc.targetVersion === OSSIE_VERSION) {
       doc.errors.push(
@@ -644,7 +656,7 @@ function repairMetric(
     mt: Record<string, any>, entityNames: string[],
     impliedDialect: string|undefined, doc: ImportDocument): boolean {
   const mtLabel = `metric '${mt.name}'`;
-  normalizeDatatype(mt, doc);
+  normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
     doc.errors.push(
         `${mtLabel}: no supported SQL dialect remains in 'expression'.`);

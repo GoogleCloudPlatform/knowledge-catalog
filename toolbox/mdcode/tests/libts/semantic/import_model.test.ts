@@ -151,6 +151,23 @@ describe('conversion, strict mode, and translation', () => {
       'loader error in Check step (blank SQL)', googleDoc({fieldExpr: '"   "'}),
       {}, 'blank'
     ],
+    [
+      'dialect alias in strict mode',
+      googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'),
+      {strict: true},
+      `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`
+    ],
+    [
+      'lowercase dialect in strict mode',
+      googleDoc().replace('dialect: BIGQUERY', 'dialect: bigquery'),
+      {strict: true}, `rewrote dialect 'bigquery' to 'BIGQUERY'.`
+    ],
+    [
+      'vanilla datatype in another casing in strict mode',
+      ossieDoc({extra: '            datatype: integer\n'}),
+      {flavor: 'google' as const, strict: true},
+      `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
+    ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
     const res = await importSemanticModelYaml(input, opts);
 
@@ -164,7 +181,7 @@ describe('conversion, strict mode, and translation', () => {
       async () => {
         const raw = googleDoc({
           fieldExpr:
-              '{\n              dialects: [{dialect: SNOWFLAKE, expression: " orders.order_id "}]\n            }',
+              '{\n              dialects: [{dialect: SNOWFLAKE, expression: " orders.order_id "}]\n            }\n            datatype: integer',
           extra:
               '    metrics:\n      - name: total_orders\n        entity: orders\n        expression: \'COUNT("orders"."order_id")\'\n',
         });
@@ -407,6 +424,10 @@ describe('dialects and datatypes', () => {
             {flavor: 'google'});
 
         expect(res.ok).toBe(true);
+        expect(res.warnings).toEqual(expect.arrayContaining([
+          `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`,
+          `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`,
+        ]));
         const fields =
             loadModels(res.files[0].content).models[0].entities[0].fields;
         expect(fields[0].type).toBe('Integer');
