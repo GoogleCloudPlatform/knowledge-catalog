@@ -27,7 +27,10 @@ export interface ImportSemanticModelOptions {
   sourcePrefix?: string;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
-  /** When true, treats any third-party repair warning as a hard error. */
+  /**
+   * When true, treats any third-party repair warning as a hard error, except
+   * completing a bare table source from `sourcePrefix`.
+   */
   strict?: boolean;
   /**
    * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
@@ -583,7 +586,9 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         doc.modified = true;
       }
     } else if (qualified !== undefined) {
-      doc.warnOrError(
+      // The author asked for this rewrite with --source-prefix, so it is a
+      // warning in strict mode too.
+      doc.warnings.push(
           `${dsLabel}: rewrote bare source '${trimmed}' to '${qualified}'.`);
       ds.source = qualified;
       doc.modified = true;

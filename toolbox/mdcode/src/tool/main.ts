@@ -148,6 +148,35 @@ cli.command(
 
 
 cli.command(
+       'import <file>',
+       'Import a semantic model file, repairing a third-party file or converting a first-party one, into the flavor --flavor names')
+    .option(
+        '--input <who>',
+        'Who wrote the file: third-party, a file another product wrote (default), or first-party, a file written for kcmd')
+    .option('--flavor <flavor>', 'Flavor to write: ossie or google; required')
+    .option(
+        '--source-prefix <prefix>',
+        'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d')
+    .option(
+        '--transpile',
+        'Add a BigQuery translation beside SQL in another dialect; off by default')
+    .option(
+        '--out <path>',
+        'A .yaml file to write the one output file to, or a directory to write each output file into; defaults to the semantic-model layout')
+    .action(async (file, options) => {
+      let exitCode = 1;
+      try {
+        exitCode = await commands.importModel(file, options);
+      } catch (err: any) {
+        console.error('Error:', err.message || err);
+        exitCode = 1;
+      }
+
+      process.exit(exitCode);
+    });
+
+
+cli.command(
        'skills-generate',
        'Write each model in the scope out as an Agent Skill: a SKILL.md an agent loads, with one reference file per action')
     .option(

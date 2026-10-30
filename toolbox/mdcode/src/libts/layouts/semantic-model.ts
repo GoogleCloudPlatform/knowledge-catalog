@@ -31,6 +31,28 @@ const PROFILE_FILE = /^(.+)\.profile\.([^.]+)\.yaml$/;
 // profile name has a dot, which is never a model either.
 const ANY_PROFILE_FILE = /\.profile\.(.*\.)?yaml$/;
 
+// The model and profile a `<model>.profile.<name>.yaml` file name names, or
+// undefined when `fileName` is not one.
+function profileFileName(fileName: string):
+    {model: string; profile: string}|undefined {
+  const m = fileName.match(PROFILE_FILE);
+  return m ? {model: m[1], profile: m[2]} : undefined;
+}
+
+// Each `<model>.profile.<name>.yaml` in `dir`, by profile name.
+export function profileFilesBeside(dir: string, model: string):
+    {name: string; path: string}[] {
+  if (!fs.existsSync(dir)) return [];
+  const out: {name: string; path: string}[] = [];
+  for (const f of fs.readdirSync(dir)) {
+    const named = profileFileName(f);
+    if (named?.model === model) {
+      out.push({name: named.profile, path: path.join(dir, f)});
+    }
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 // The suffix of an entry's overview sidecar.
 const OVERVIEW_SIDECAR = '.overview.md';
 
@@ -373,15 +395,7 @@ export class SemanticModelLayout implements CatalogLayout {
   }
 
   private _siblingProfilePaths(model: string): {name: string; path: string}[] {
-    if (!this._entryGroup) return [];
-    const dir = this._groupDir();
-    if (!fs.existsSync(dir)) return [];
-    const out: {name: string; path: string}[] = [];
-    for (const f of fs.readdirSync(dir)) {
-      const m = f.match(PROFILE_FILE);
-      if (m && m[1] === model) out.push({name: m[2], path: path.join(dir, f)});
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
+    return this._entryGroup ? profileFilesBeside(this._groupDir(), model) : [];
   }
 
   // `<model>.profiles/*.yaml`, each named by its file basename. A model name

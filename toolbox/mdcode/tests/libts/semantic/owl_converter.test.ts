@@ -13,12 +13,13 @@
 //   3. each mapped construct behaves as documented.
 // The scope is exactly the user guide; richer OWL is out of scope by design.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as yaml from 'yaml';
 
+import {ApiContext} from '../../../src/libts/gcp/context';
 import {convertOwlToOsi} from '../../../src/libts/semantic/converters/owl/convert';
 import {isTimeDimension} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
@@ -1053,5 +1054,30 @@ describe('the owl import handler writes only a model that loads', () => {
     const ok = path.join(dir, 'retail_v2.ttl');
     fs.writeFileSync(ok, readFixture('sales.owl.ttl'));
     expect(await owl('import', ok, {out})).toBe(0);
+  });
+});
+
+
+describe('the owl import handler writes into the workspace without --out', () => {
+  test('a semantic-model workspace gets the model in its entry group folder', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'owl-workspace-'));
+    const cwd = process.cwd();
+    fs.writeFileSync(
+        path.join(dir, 'catalog.yaml'), 'scope: semantic-model.test-project.us.sales\n');
+    fs.writeFileSync(path.join(dir, 'sales.owl.ttl'), readFixture('sales.owl.ttl'));
+    spyOn(ApiContext, 'default')
+        .mockReturnValue(new ApiContext('test-project', 'us', 'test-token'));
+    spyOn(console, 'log').mockImplementation(() => {});
+    process.chdir(dir);
+    try {
+      expect(await owl('import', 'sales.owl.ttl', {})).toBe(0);
+      const written = path.join('catalog', 'EntryGroups', 'sales', 'sales.yaml');
+      expect(loadModels(fs.readFileSync(written, 'utf8'), {bindingOptional: true})
+                 .models[0].name).toBe('sales');
+    } finally {
+      process.chdir(cwd);
+      mock.restore();
+      fs.rmSync(dir, {recursive: true, force: true});
+    }
   });
 });

@@ -134,3 +134,17 @@ describe('kcmd: --help and --version', () => {
     expect(out).not.toContain('Unknown command');
   });
 });
+
+describe('kcmd import', () => {
+  test('is registered with its flags, and reaches the command', () => {
+    const help = run('import', '--help');
+    expect(help.code).toBe(0);
+    for (const flag of ['--input', '--flavor', '--source-prefix', '--transpile', '--out']) {
+      expect(help.out).toContain(flag);
+    }
+    // The command itself refuses a missing --flavor, so cac passed it the file.
+    const {code, out} = run('import', 'model.yaml');
+    expect(code).toBe(1);
+    expect(out).toContain('--flavor is required');
+  }, 30000);  // Spawning a command takes longer than the default timeout.
+});
