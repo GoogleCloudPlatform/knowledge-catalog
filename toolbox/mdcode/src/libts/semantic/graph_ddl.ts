@@ -488,8 +488,9 @@ function hasOnlyOtherEnginesSql(field: Field, engine: GraphEngine): boolean {
 // Renders a field as a graph property: a bare column when the expression is
 // just the column, else `<expr> AS <name>`. Attaches the engine's metadata
 // clause (label, temporal role, description, AI-first annotations) after it
-// per the `derived_property` rule. A field with no expression is exposed as a
-// bare column under its name.
+// per the `derived_property` rule. A node table leaves out a field with no
+// expression, with a warning. An association edge exposes it as a bare column
+// under its name.
 function renderFieldProperty(
     field: Field, entity: string, engine: GraphEngine): string {
   const core = renderFieldPropertyCore(field, entity, engine);
