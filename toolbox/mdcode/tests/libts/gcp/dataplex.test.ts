@@ -436,3 +436,24 @@ describe('entrySource.resource on a read', () => {
          lookup.mockRestore();
        });
 });
+
+// With GCP_LOG set, a request is logged as its method and URL, with its body
+// on the next line.
+test('GCP_LOG logs each request as its method and URL', async () => {
+  const client = new CatalogClient(CTX);
+  spyOn(client as any, '_requestCore')
+      .mockImplementation(async () => new Response('{}'));
+  const lines: unknown[][] = [];
+  const log = spyOn(console, 'log').mockImplementation((...a) => lines.push(a));
+  process.env.GCP_LOG = '1';
+  await client.getEntryGroup('proj', 'us', 'g');
+  await (client as any)._post('projects/proj/x', {a: 1});
+  delete process.env.GCP_LOG;
+  log.mockRestore();
+  const v1 = 'https://dataplex.googleapis.com/v1/projects/proj';
+  // Each request line is followed by its response's.
+  expect(lines.filter((_, i) => i % 2 === 0)).toEqual([
+    [`[GCP_LOG] GET ${v1}/locations/us/entryGroups/g`, ''],
+    [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
+  ]);
+});

@@ -173,7 +173,7 @@ export class ApiClient {
         delayMs = Math.min(delayMs * 2, TRANSIENT_DELAY_CAP_MS);
       }
 
-      this._context.log(`${method} ${url}{body ? '\n' : ''}`, body);
+      this._context.log(`${method} ${url}${body ? '\n' : ''}`, body);
 
       response = await this._requestCore(url, { method, body });
       if (response.status === 401) {
