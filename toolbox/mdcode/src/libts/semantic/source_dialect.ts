@@ -175,12 +175,10 @@ async function thirdPartyDialect(
 }
 
 // The prefix of the fullyQualifiedName `fqn` of a third-party table or view,
-// and the parts after it, unquoted, such as `snowflake` and ['acme', 'retail',
-// 'public', 'orders'] for `snowflake:acme.retail.public.orders`. Undefined
-// when `fqn` names no table or view. Such a name has another number of parts
-// than TABLE_FQN_PARTS gives, or a subtype, such as the `routine:` of a
-// routine. Dataplex reads a `databricks:table:` or `databricks:view:` name as
-// the same table as the `databricks:` name.
+// and its unquoted parts, such as `snowflake` and ['acme', 'retail', 'public',
+// 'orders'] for `snowflake:acme.retail.public.orders`. Undefined when `fqn`
+// has another number of parts than TABLE_FQN_PARTS gives, or a subtype other
+// than Databricks' `table:` and `view:`.
 export function tableFqnParts(fqn: string):
     {prefix: string; parts: string[]}|undefined {
   // The subtype holds no backtick, so a colon inside a quoted host and port
