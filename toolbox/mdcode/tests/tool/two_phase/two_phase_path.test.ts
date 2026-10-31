@@ -102,7 +102,7 @@ scenarios('the two-phase push path', [
   {
     // cac gives `true` for an absent flag that has a negated form, and for a
     // bare `--profile`.
-    name: 'a model with no deployments list publishes the model file as written, with its profile files, and deploys nothing, with no flags, profile: true or deployment: true, beside a sibling profile file or none',
+    name: 'a model with no deployments list publishes the model file as written, with its profile files, and deploys nothing, with no flags, profile: true or deployment: true, beside a sibling profile file or none, and --force only adds a warning that it has no effect',
     profiles: {prod: boundTo('prod')},
     ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
     then: [
@@ -111,6 +111,11 @@ scenarios('the two-phase push path', [
         ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
       },
       {profiles: {}, ...published(undefined, ['commerce.yaml'])},
+      {
+        flags: {force: true},
+        ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
+        warnings: ['Warning: --force has no effect; ignoring it.'],
+      },
     ],
   },
   {

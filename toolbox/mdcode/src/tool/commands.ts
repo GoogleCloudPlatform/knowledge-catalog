@@ -85,11 +85,7 @@ export function kcV2Aspects(): boolean {
 
 
 export interface PushOptions {
-  // Generic push flag for non-semantic-model (CatalogSync) scopes;
-  // forwarded to CatalogSync.push. The semantic-model legs ignore it.
-  // The catch-all "force the push" toggle -- distinct from
-  // `forceRemove` below, which specifically authorizes deleting models
-  // this push no longer includes.
+  // `--force`. Nothing reads it, so push warns that it has no effect.
   force?: boolean;
   // Run every validation check and report pass/fail, but write nothing
   // to any destination (a dry run). Applies to both push paths.
@@ -100,8 +96,6 @@ export interface PushOptions {
   // Delete Knowledge Catalog models already in the entry group that this push
   // does not include (a removed or renamed model). Without it, an unrecognized
   // model in the group fails the push. Semantic-model KC push only.
-  // Unlike `force` above, this authorizes a destructive delete rather
-  // than overriding a conflict.
   forceRemove?: boolean;
   // Skip the check that every source names a table with a Knowledge Catalog
   // entry. The lookup of a Cloud SQL or third-party table's entry, which push
@@ -989,6 +983,9 @@ export async function push(options: PushOptions): Promise<number> {
   }
 
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  if (options.force) {
+    console.warn('Warning: --force has no effect; ignoring it.');
+  }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout
