@@ -2161,8 +2161,8 @@ semantic_model:
       expect(console.warn).not.toHaveBeenCalled();
     });
 
-    // A push that fails this check prints no pruning note. An AlloyDB
-    // deployment reads a metric's ALLOYDB or ANSI_SQL text.
+    // A push that fails this check prints nothing about what pruning leaves
+    // out. An AlloyDB deployment reads a metric's ALLOYDB or ANSI_SQL text.
     test('rejects a deployment whose metric reads a field with no expression, as its engine reads the metric', async () => {
       // The error for `metric` reading `field`, which has no expression if
       // `direct` and otherwise reads a field with none.

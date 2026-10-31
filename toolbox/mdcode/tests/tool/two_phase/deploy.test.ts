@@ -442,7 +442,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
   },
   {
     // The model file binds no table, and g1's profile leaves field ltv unbound.
-    name: 'prints no pruning note when a later deployment fails a local check, and names the profile in the note once every check passes',
+    name: 'prints no pruning note when a later deployment fails a local check, and prints the note once every check passes',
     deployments: [{name: 'g1', profile: 'prod'}, {name: 'g2', profile: 'p2'}],
     entities: [{...WITH_LTV, source: undefined}],
     profiles: {

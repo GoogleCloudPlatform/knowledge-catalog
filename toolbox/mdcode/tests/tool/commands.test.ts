@@ -2449,7 +2449,7 @@ ${deployments.map(d => `      - { name: ${d}, target: "${BQ}/propertyGraphs/${d}
       `Warning: field 'customer.ltv' in model 'commerce' (commerce, ${at}) ` +
       'has no expression, so the graph omits it.';
 
-  test('a pruned push that fails a source check gives its pruning note', async () => {
+  test('a pruned push that fails a source check still warns about the field it leaves out', async () => {
     writeModel(ltvUnbound(['g']));
     spyOn(validateMod, 'validateBigQueryDataSources')
         .mockResolvedValue(['the table is gone']);
