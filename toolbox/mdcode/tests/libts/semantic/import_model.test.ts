@@ -1,6 +1,8 @@
 // Tests for the semantic model import engine (import_model.ts).
 
 import {describe, expect, test} from 'bun:test';
+import {readFileSync} from 'fs';
+import {join} from 'path';
 import * as yaml from 'yaml';
 
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
@@ -102,7 +104,7 @@ describe('conversion, strict mode, and translation', () => {
             {flavor: 'google', sourcePrefix: BQ_PREFIX});
 
         expect(res.ok).toBe(true);
-        expect(res.files[0].content).toContain('version: 0.2.0.dev0/google');
+        expect(res.files[0].content).toContain('version: "0.2.0.dev0/google"');
         expect(res.files[0].content).toContain('entities:');
         const loaded = loadModels(res.files[0].content);
         expect(loaded.models[0].aiContext?.additionalProperties).toEqual({
@@ -526,6 +528,7 @@ semantic_model:
       examples: ["total orders"]
       custom:
         owner: analytics
+        flag: "yes"
     deployments:
       - name: prod_bq
         target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail
@@ -560,12 +563,17 @@ semantic_model:
         entity: orders
         expression: "COUNT(*)"
 `;
+  const longSql =
+      `CASE WHEN orders.order_id > 0 THEN 'known order' ELSE 'unknown order' END`;
   const profileYaml = `
 name: prod
 entities:
   - name: orders
     source: ${BQ_TABLE}
     primary_key: [order_id]
+    fields:
+      - name: order_id
+        expression: {dialects: [{dialect: BIGQUERY, expression: "${longSql}"}]}
 `;
 
   test(
@@ -721,6 +729,8 @@ semantic_model:
             .toBe('analytics');
         expect(parsedVanillaDoc.semantic_model[0].ai_context.custom)
             .toBeUndefined();
+        // A YAML 1.1 reader would read a plain `yes` as true.
+        expect(res.files[0].content).toContain('flag: "yes"');
         const loaded = loadModels(res.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
           {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
@@ -732,6 +742,7 @@ semantic_model:
         expect(loaded.profiles?.map(p => p.name)).toEqual(['prod']);
         expect(loaded.aiContext?.additionalProperties).toEqual({
           owner: 'analytics',
+          flag: 'yes',
         });
       });
 
@@ -906,6 +917,10 @@ semantic_model:
         expect(loadProfileFile(canonicalGoogle.files[1].content, 'prod'))
             .toEqual(loadProfileFile(profileYaml, 'prod'));
         expect(roundTrippedCanonical.files).toEqual(canonicalGoogle.files);
+        // Long SQL stays on one line in the GOOGLE block and the profile file.
+        expect(toVanilla.files[0].content).toContain(longSql);
+        expect(canonicalGoogle.files[1].content)
+            .toContain(`expression: ${longSql}\n`);
       });
 
   test('ignores profileFiles when target flavor is google', async () => {
@@ -923,5 +938,198 @@ semantic_model:
     expect(googleRes.ok).toBe(true);
     expect(googleRes.errors).toEqual([]);
     expect(googleRes.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+  });
+});
+
+describe('comments', () => {
+  const HEADER =
+      '# Copyright 2026 Example Corp. Licensed under the Apache License, Version 2.0.';
+  const ROW_COUNT =
+      '      # rows in any table\n      - name: row_count\n        expression: COUNT(*)\n';
+  const ORDER_COUNT = '      # orders placed\n      - name: order_count\n';
+
+  // A model file with a comment on each part import may change. A
+  // third-party file needs repairs; a first-party file converts with none.
+  function commentedModel(
+      {google = false, firstParty = false, metrics}:
+          {google?: boolean, firstParty?: boolean, metrics: string}) {
+    const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
+    const owner =
+        google ? 'custom:\n        owner: analytics' : 'owner: analytics';
+    const source = firstParty ? BQ_TABLE : 'orders';
+    const datatype = firstParty ? 'Integer' : 'integer';
+    const dialect = firstParty ? 'SNOWFLAKE' : 'snowflake';
+    return `${HEADER}
+
+version: "${version}"  # format version
+semantic_model:
+  - name: retail
+    ${google ? 'entities' : 'datasets'}:
+      # one row per order
+      - name: orders
+        source: ${source}  # the orders table
+        primary_key: [order_id]
+        fields:
+          # the order key
+          - name: order_id
+            datatype: ${datatype}  # a whole number
+            expression:
+              dialects:
+                - dialect: ${dialect}  # as written
+                  expression: orders.order_id
+    ai_context:
+      # prefer net revenue
+      instructions: Prefer net revenue
+      ${owner}
+    metrics:  # every metric
+${metrics}# end of model
+`;
+  }
+  // Import removes the unanchored `row_count`, which a blank line separates
+  // from the metric after it.
+  const thirdParty = commentedModel({
+    metrics: `${ROW_COUNT}\n${
+        ORDER_COUNT}        expression: COUNT(orders.order_id)  # counts orders\n`,
+  });
+  const vanilla = commentedModel({
+    firstParty: true,
+    metrics: `${ORDER_COUNT}        expression:  # counts orders
+          dialects: [{dialect: ANSI_SQL, expression: COUNT(orders.order_id)}]
+        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]
+`,
+  });
+  const google = commentedModel({
+    google: true,
+    firstParty: true,
+    metrics: `${ORDER_COUNT}        entity: orders
+        expression: COUNT(orders.order_id)  # counts orders
+`,
+  });
+
+  // The text that shows each comment in place in an output file.
+  function expectedComments({google = false, source, counts}: {
+    google?: boolean, source: string, counts: string
+  }): string[] {
+    const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
+    const list = google ? 'entities' : 'datasets';
+    return [
+      `${HEADER}\n\nversion: "${version}" # format version\n`,
+      '      # prefer net revenue\n      instructions: Prefer net revenue\n',
+      `  - name: retail\n    ${list}:\n      # one row per order\n`,
+      '      # one row per order\n      - name: orders\n',
+      `        source: ${source} # the orders table\n`,
+      '          # the order key\n          - name: order_id\n',
+      '            datatype: Integer # a whole number\n',
+      '                - dialect: SNOWFLAKE # as written\n',
+      `    metrics: # every metric\n${ORDER_COUNT}`,
+      counts,
+      '\n# end of model\n',
+    ];
+  }
+  const ABOVE = '        expression: # counts orders\n          dialects:';
+  const INLINE = '        expression: COUNT(orders.order_id) # counts orders\n';
+  const TRANSPILED =
+      '# as written\n                  expression: orders.order_id\n                - dialect: BIGQUERY\n';
+
+  test.each([
+    [
+      'third-party repairs and a removed metric', thirdParty, {},
+      expectedComments({source: 'orders', counts: ABOVE})
+    ],
+    [
+      'a source completed from --source-prefix', thirdParty,
+      {sourcePrefix: BQ_PREFIX},
+      expectedComments({source: BQ_TABLE, counts: ABOVE})
+    ],
+    [
+      'a BIGQUERY entry added by --transpile', thirdParty, {transpile: true},
+      [...expectedComments({source: 'orders', counts: ABOVE}), TRANSPILED]
+    ],
+    [
+      'a third-party file written in the Google flavor', thirdParty,
+      {flavor: 'google' as const},
+      expectedComments({google: true, source: 'orders', counts: INLINE})
+    ],
+    [
+      'a conversion from vanilla to Google', vanilla,
+      {flavor: 'google' as const, strict: true}, expectedComments({
+        google: true,
+        source: BQ_TABLE,
+        counts: `      - name: order_count\n        entity: orders\n${ABOVE}`,
+      })
+    ],
+    [
+      'a conversion from Google to vanilla', google,
+      {flavor: 'ossie' as const, strict: true},
+      expectedComments({source: BQ_TABLE, counts: ABOVE})
+    ],
+    [
+      'a metric whose first key import removes', commentedModel({
+        metrics: ORDER_COUNT.replace(
+                     '- name', '- datatype: Opaque\n\n        name') +
+            '        expression: COUNT(orders.order_id)\n',
+      }),
+      {}, [`    metrics: # every metric\n${ORDER_COUNT}`]
+    ],
+  ])('keeps comments in place through %s', async (_, input, opts, lines) => {
+    const res = await importSemanticModelYaml(input, opts);
+
+    expect(res.errors).toEqual([]);
+    for (const line of lines) expect(res.files[0].content).toContain(line);
+    expect(res.files[0].content).not.toContain('# rows in any table');
+  });
+
+  test('drops the metrics key when import removes every metric', async () => {
+    const res =
+        await importSemanticModelYaml(commentedModel({metrics: ROW_COUNT}));
+
+    expect(res.files[0].content).not.toContain('metrics');
+  });
+
+  test('writes a changed CRLF file with LF line endings only', async () => {
+    const input =
+        thirdParty
+            .replace(
+                '# the order key', '# the order key\n          # second line')
+            .replace(/\n/g, '\r\n');
+
+    const res = await importSemanticModelYaml(input);
+
+    expect(res.files[0].content)
+        .toContain('# the order key\n          # second line\n');
+    expect(res.files[0].content).not.toContain('\r');
+  });
+
+  test('writes a changed JSON file as block YAML', async () => {
+    const json = JSON.stringify(yaml.parse(thirdParty), null, 2);
+
+    const res = await importSemanticModelYaml(json);
+
+    expect(res.files[0].content)
+        .toContain('\n    datasets:\n      - name: orders\n');
+  });
+
+  test('keeps every comment of the Apache Ossie TPC-DS example', async () => {
+    const raw = readFileSync(
+        join(__dirname, 'fixtures/ossie/tpcds_semantic_model.yaml'), 'utf8');
+    // Every comment the parser finds in `text`, in order.
+    const comments = (text: string) => {
+      const doc = yaml.parseDocument(text);
+      const found: Array<string|null|undefined> = [doc.commentBefore];
+      yaml.visit(
+          doc, {Node: (_, n) => void found.push(n.commentBefore, n.comment)});
+      return [...found, doc.comment].filter(c => c);
+    };
+
+    const instructions = raw.split('\n').find(l => l.includes('instructions'));
+
+    const res = await importSemanticModelYaml(raw);
+
+    expect(res.files[0].content).not.toContain('customer_lifetime_value');
+    expect(comments(res.files[0].content)).toEqual(comments(raw));
+    expect(res.files[0].content)
+        .toContain(
+            '        primary_key: [ss_item_sk, ss_ticket_number] # Composite primary key\n');
+    expect(res.files[0].content).toContain(`${instructions}\n`);
   });
 });

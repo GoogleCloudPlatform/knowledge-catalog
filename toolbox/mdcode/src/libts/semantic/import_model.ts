@@ -13,6 +13,7 @@ import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
+import {linkNodes, updateDocument} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
 export interface ImportSemanticModelOptions {
@@ -66,6 +67,15 @@ interface ParsedSourcePrefix {
 
 /** Mutable representation of a semantic model document during import. */
 interface ImportDocument {
+  /**
+   * The parsed input. Import writes a changed file by changing it in place to
+   * hold the output, which keeps the input's comments.
+   */
+  document: yaml.Document.Parsed;
+  /**
+   * Maps each object and array in `root` to the node of `document` it copies.
+   */
+  links: Map<object, yaml.Node>;
   /** Deep-copied root YAML document object. */
   root: Record<string, any>;
   /** First semantic model entry (`root.semantic_model[0]`). */
@@ -202,10 +212,17 @@ function adaptAiContext(ai: Record<string, unknown>): void {
 function parseImportDocument(
     rawYaml: string, opts: ImportSemanticModelOptions): ImportDocument|string {
   // 1. Parse raw YAML with strict YAML 1.2 options (`YAML_OPTIONS`) so syntax
-  // errors and duplicate keys are caught immediately.
+  // errors and duplicate keys are caught immediately. The parser's tokens tell
+  // a comment on a key's line from one above the first item under it. Line
+  // endings are read as LF, because the library keeps the carriage returns
+  // of a comment of several lines and a changed file would mix the two.
+  const document = yaml.parseDocument(
+      rawYaml.replaceAll('\r\n', '\n'),
+      {...YAML_OPTIONS, keepSourceTokens: true});
   let parsedDoc: unknown;
   try {
-    parsedDoc = yaml.parse(rawYaml, YAML_OPTIONS);
+    if (document.errors.length > 0) throw document.errors[0];
+    parsedDoc = document.toJS();
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
         err?.message ?? err}`;
@@ -266,6 +283,8 @@ function parseImportDocument(
   const warnings: string[] = [];
   const errors: string[] = [];
   return {
+    document,
+    links: linkNodes(root, document.contents),
     root,
     model,
     datasets: asRecords(model.entities ?? model.datasets),
@@ -975,12 +994,18 @@ async function generateConvertedFiles(
     if (doc.errors.length > 0) return [];
   }
 
-  // 4. Switch `model.version` to `doc.targetVersion` and serialize the output
-  // file(s) with `serializeModelFiles`.
+  // 4. Switch `model.version` to `doc.targetVersion` and serialize the files
+  // with `serializeModelFiles`, each value on one line. The model file is
+  // written into the input document to keep its comments, with the
+  // serializer's YAML 1.1 quoting.
   model.version = doc.targetVersion;
-  const serialized = serializeModelFiles(model);
+  const serialized = serializeModelFiles(model, {lineWidth: 0});
   doc.warnings.push(...serialized.warnings);
-  return serialized.files;
+  const [modelFile, ...profiles] = serialized.files;
+  doc.document.setSchema('1.2', {...YAML_OPTIONS, compat: 'yaml-1.1'});
+  const content =
+      writeDocument(doc, yaml.parse(modelFile.content, YAML_OPTIONS));
+  return [{...modelFile, content}, ...profiles];
 }
 
 /**
@@ -1006,11 +1031,40 @@ async function generateAdaptedFiles(
     await transpileDocument(doc);
   }
 
-  // 3. Serialize `doc.root` when modified or preserve `rawYaml` verbatim when
-  // unmodified.
-  const content =
-      doc.modified ? yaml.stringify(doc.root, {lineWidth: 0}) : rawYaml;
+  // 3. Write `doc.root` into the input document when modified or preserve
+  // `rawYaml` verbatim when unmodified.
+  const content = doc.modified ? writeDocument(doc, doc.root) : rawYaml;
   return [{fileName: `${doc.model.name}.yaml`, content}];
+}
+
+/**
+ * Changes the input document in place to hold `root` and returns its text.
+ * What survives from the input keeps its comments, quoting and key order, and
+ * long SQL stays on one line.
+ */
+function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
+  // The vanilla flavor lists a model's entities under `datasets:` and the
+  // Google flavor under `entities:`. Renaming the key keeps the comments of
+  // the list and of every entity in it.
+  const node = doc.document.getIn(['semantic_model', 0]);
+  const model = asRecords(root.semantic_model)[0] ?? {};
+  for (const pair of yaml.isMap(node) ? node.items : []) {
+    if (!yaml.isScalar(pair.key)) continue;
+    const from = String(pair.key.value);
+    const to = from === 'datasets' ? 'entities' :
+        from === 'entities'        ? 'datasets' :
+                                     undefined;
+    if (to && to in model && !(from in model)) pair.key.value = to;
+  }
+  updateDocument(doc.document, root, doc.links);
+  // A JSON file is one flow mapping. It is written as block YAML, as before.
+  if (yaml.isMap(doc.document.contents) && doc.document.contents.flow) {
+    yaml.visit(doc.document, {
+      Collection: (_, n) => void (n.flow = false),
+      Scalar: (_, n) => void delete n.type,
+    });
+  }
+  return doc.document.toString({lineWidth: 0, flowCollectionPadding: false});
 }
 
 /**
