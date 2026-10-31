@@ -80,8 +80,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
             keys: ['student_id'],
             fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
+              {name: 'student_id', expression: 'student_id'},
+              {name: 'name', expression: 'name'}
             ]
           },
           {
@@ -89,8 +89,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
             keys: ['course_id'],
             fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
+              {name: 'course_id', expression: 'course_id'},
+              {name: 'title', expression: 'title'}
             ]
           },
         ],
@@ -106,7 +106,7 @@ describe(
               destinationColumns: ['course_id'],
               fields: [{
                 name: 'grade',
-                expression: 'enrollment.grade',
+                expression: 'grade',
                 description: 'Letter grade'
               }]
             }
@@ -147,7 +147,7 @@ describe('graph naming', () => {
       name: 'orders',
       dataSource: 'proj.ds.orders',
       keys: ['id'],
-      fields: [{name: 'id', expression: 'orders.id'}]
+      fields: [{name: 'id', expression: 'id'}]
     }],
   });
 
@@ -198,7 +198,7 @@ describe('bare table mapping', () => {
       name: 'orders',
       dataSource: source,
       keys: ['id'],
-      fields: [{name: 'id', expression: 'orders.id'}]
+      fields: [{name: 'id', expression: 'id'}]
     }],
   });
 
@@ -356,7 +356,7 @@ describe('degenerate inputs', () => {
           name: 'good',
           dataSource: 'ds.good',
           keys: ['id'],
-          fields: [{name: 'id', expression: 'good.id'}]
+          fields: [{name: 'id', expression: 'id'}]
         },
         {name: 'bad', dataSource: 'ds.bad', keys: [], fields: []},
       ],
@@ -381,13 +381,13 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
         name: 'Order',
         dataSource: 'proj.ds.orders',
         keys: ['order'],
-        fields: [{name: 'order', expression: 'Order.order'}],
+        fields: [{name: 'order', expression: '`order`'}],
       },
       {
         name: 'Group',
         dataSource: 'proj.ds.groups',
         keys: ['id'],
-        fields: [{name: 'id', expression: 'Group.id'}],
+        fields: [{name: 'id', expression: 'id'}],
       },
     ],
     relationships: [{
@@ -868,7 +868,7 @@ describe('a comment in a field expression', () => {
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
-        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'notes', expression: '/* free text */ notes'},
         {name: 'status', expression: 'status # open or closed'},
         {name: 'code', expression: "CONCAT('--', code)"},
       ],
@@ -897,15 +897,16 @@ describe('a comment in a field expression', () => {
         keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
-          {name: 'amount', expression: 'orders/* in cents */.amount'},
-          {name: 'select', expression: 'orders. /* a keyword */ select'},
+          {name: 'amount', expression: 'orders/* in cents */.amount_cents'},
+          {name: 'select', expression: 'orders. /* a keyword */ group'},
         ],
       }],
     };
     const {ddl, warnings} = generateSpannerPropertyGraph(dotted);
     expect(ddl).toContain('KEY(order_id)');
     expect(ddl).toContain(
-        '      order_id AS id,\n      amount,\n      `select`\n');
+        '      order_id AS id,\n      amount_cents AS amount,\n' +
+        '      `group` AS `select`\n');
     expect(warnings).toEqual([]);
   });
 
@@ -938,5 +939,150 @@ describe('a comment in a field expression', () => {
     expect(ddl).not.toContain('base.second');
     expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(3);
     expect(warnings).toEqual([]);
+  });
+});
+
+describe('a field expression that names a sibling field', () => {
+  // An `orders` entity keyed on `id`, with `fields` after the key.
+  const ordersWith = (fields: Field[]): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'Orders',
+      keys: ['id'],
+      fields: [{name: 'id', expression: 'order_id'}, ...fields],
+    }],
+  });
+
+  test('reads the columns its siblings are bound to', () => {
+    const {ddl, warnings} = generateSpannerPropertyGraph(ordersWith([
+      {name: 'gross', expression: 'g_amt'},
+      {name: 'discount', expression: 'd_amt'},
+      {name: 'net', expression: 'orders.gross - orders.discount'},
+    ]));
+    expect(ddl).toContain(
+        '      g_amt AS gross,\n' +
+        '      d_amt AS discount,\n' +
+        '      g_amt - d_amt AS net\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('reads a sibling\'s expression in parentheses, through a chain of siblings', () => {
+    const {ddl} = generateSpannerPropertyGraph(ordersWith([
+      {name: 'a', expression: 'x + y'},
+      {name: 'b', expression: 'orders.a * 2'},
+      {name: 'c', expression: 'orders.b + orders.a'},
+    ]));
+    expect(ddl).toContain(
+        '      x + y AS a,\n' +
+        '      (x + y) * 2 AS b,\n' +
+        '      ((x + y) * 2) + (x + y) AS c\n');
+  });
+
+  test('leaves an expression as written but for the siblings it names', () => {
+    const {ddl} = generateSpannerPropertyGraph(ordersWith([
+      {name: 'nm', expression: 'full_name'},
+      {name: 'tag', expression: 'lower(full_name) || "!"'},
+      {name: 'shout', expression: 'lower(orders.nm) || "!"'},
+    ]));
+    expect(ddl).toContain('      lower(full_name) || "!" AS tag,\n');
+    expect(ddl).toContain('      lower(full_name) || "!" AS shout\n');
+  });
+
+  // A SQL parser would write `DAYOFWEEK` as `DOW` and `DAYOFYEAR` as `DOY`,
+  // which Spanner does not read.
+  test('keeps date parts and intervals as written around a sibling it reads', () => {
+    const {ddl} = generateSpannerPropertyGraph(ordersWith([
+      {name: 'd', expression: 'order_date'},
+      {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
+      {name: 'doy', expression: 'EXTRACT(DAYOFYEAR FROM orders.d)'},
+      {name: 'due', expression: 'DATE_ADD(orders.d, INTERVAL 30 DAY)'},
+    ]));
+    expect(ddl).toContain(
+        '      EXTRACT(DAYOFWEEK FROM order_date) AS dow,\n' +
+        '      EXTRACT(DAYOFYEAR FROM order_date) AS doy,\n' +
+        '      DATE_ADD(order_date, INTERVAL 30 DAY) AS due\n');
+  });
+
+  test('leaves an expression as written when each sibling it names is bound to the column of its name', () => {
+    const {ddl} = generateSpannerPropertyGraph(ordersWith([
+      {name: 'd', expression: 'd'},
+      {name: 'nm', expression: 'nm'},
+      {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
+      {name: 'tag', expression: 'lower(orders.nm) || "!"'},
+    ]));
+    expect(ddl).toContain(
+        '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
+        '      lower(nm) || "!" AS tag\n');
+  });
+
+  // A field whose supertype's expression names only its siblings carries over
+  // to a subtype, which reads it from its own binding of those siblings. That
+  // matches the supertype's rendering, so there is no remap to warn about.
+  test('an inherited field that names its siblings renders as its supertype\'s, without a warning', () => {
+    const {ddl, warnings} = generateSpannerPropertyGraph({
+      name: 'm',
+      relationships: [],
+      metrics: [],
+      entities: [
+        {
+          name: 'party',
+          dataSource: 'Party',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'gross', expression: 'g_amt'},
+            {name: 'discount', expression: 'd_amt'},
+            {name: 'net', expression: 'party.gross - party.discount'},
+          ],
+        },
+        {
+          name: 'customer',
+          dataSource: 'Customer',
+          keys: ['id'],
+          extends: ['party'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'gross', expression: 'g_amt'},
+            {name: 'discount', expression: 'd_amt'},
+          ],
+        },
+      ],
+    });
+    // Party's default label, customer's, and customer's `party` label.
+    expect(ddl.match(/\bg_amt - d_amt AS net\n/g)).toHaveLength(3);
+    expect(warnings).toEqual([]);
+  });
+
+  test('two fields that name each other are rejected', () => {
+    expect(() => generateSpannerPropertyGraph(ordersWith([
+             {name: 'a', expression: 'orders.b + 1'},
+             {name: 'b', expression: 'orders.a - 1'},
+           ])))
+        .toThrow(`field 'orders.a' names itself through 'orders.b'`);
+    expect(() => generateSpannerPropertyGraph(ordersWith([
+             {name: 'total', expression: 'orders.total * 2'},
+           ])))
+        .toThrow(`field 'orders.total' names itself;`);
+  });
+
+  test('a field whose sibling has no Spanner SQL is left out, with a warning that names the sibling', () => {
+    const {ddl, warnings} = generateSpannerPropertyGraph(ordersWith([
+      {name: 'gross', dialects: [{dialect: 'BIGQUERY', expression: 'g_amt'}]},
+      {name: 'net', expression: 'orders.gross - 1'},
+      {name: 'twice', expression: 'orders.net * 2'},
+    ]));
+    expect(ddl).not.toMatch(/AS (gross|net|twice)/);
+    expect(warnings).toEqual([
+      `entity 'orders': field 'gross' has no 'SPANNER' or 'ANSI_SQL' ` +
+          `expression; omitted from the node table`,
+      `entity 'orders': field 'net' reads field 'gross', which has no ` +
+          `'SPANNER' or 'ANSI_SQL' expression; omitted from the node table`,
+      `entity 'orders': field 'twice' reads field 'net', which reads field ` +
+          `'gross', which has no 'SPANNER' or 'ANSI_SQL' expression; ` +
+          `omitted from the node table`,
+    ]);
   });
 });

@@ -28,10 +28,10 @@ semantic_model:
         fields:
           - name: o_orderkey
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.o_orderkey }]
+              dialects: [{ dialect: BIGQUERY, expression: o_orderkey }]
           - name: status
             expression:
-              dialects: [{ dialect: BIGQUERY, expression: orders.status }]
+              dialects: [{ dialect: BIGQUERY, expression: status }]
     metrics:
       - name: total_amount
         expression:

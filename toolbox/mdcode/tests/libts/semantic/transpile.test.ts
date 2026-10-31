@@ -180,8 +180,8 @@ describe('transpileModel', () => {
           'qualifier (no false reject)',
       async () => {
         // The imported Snowflake form double-quotes the qualifier
-        // (`"orders".amt`); blankStringLiterals treats double-quotes as a
-        // string literal, so an input-vs-output guard would see the qualifier
+        // (`"orders".amt`); BigQuery SQL reads double quotes as a string
+        // literal, so an input-vs-output guard would see the qualifier
         // vanish and wrongly reject a perfectly good rewrite. The guard now
         // checks the output against itself, so the valid GoogleSQL is accepted.
         const model: SemanticModel = {

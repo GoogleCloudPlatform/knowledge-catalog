@@ -21,6 +21,7 @@
 //     verbatim, never re-qualified from options).
 //   - which SQL each field and metric emits, case by case, such as a dialect
 //     list with no `expression` beside it.
+//   - how the SQL parser reads a metric's entity and aggregate, case by case.
 // Plus a structural invariant guard that parses generated DDL and asserts the
 // shape BigQuery enforces for measures, run over the loaded fixtures.
 //
@@ -30,7 +31,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {GenerateOptions, generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
-import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Field, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
@@ -72,8 +73,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
             keys: ['student_id'],
             fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
+              {name: 'student_id', expression: 'student_id'},
+              {name: 'name', expression: 'name'}
             ]
           },
           {
@@ -81,8 +82,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
             keys: ['course_id'],
             fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
+              {name: 'course_id', expression: 'course_id'},
+              {name: 'title', expression: 'title'}
             ]
           },
         ],
@@ -98,7 +99,7 @@ describe(
               destinationColumns: ['course_id'],
               fields: [{
                 name: 'grade',
-                expression: 'enrollment.grade',
+                expression: 'grade',
                 description: 'Letter grade'
               }]
             }
@@ -133,7 +134,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
       name: 'orders',
       dataSource: 'orders',
       keys: ['o_orderkey'],
-      fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+      fields: [{name: 'o_orderkey', expression: 'o_orderkey'}]
     }],
   });
 
@@ -270,7 +271,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
           dataSource: 'order_items',
           keys: ['order_item_id'],
           fields: [
-            {name: 'order_item_id', expression: 'order_items.order_item_id'}
+            {name: 'order_item_id', expression: 'order_item_id'}
           ],
         });
         model.metrics = [{
@@ -298,7 +299,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
           dataSource: 'order_items',
           keys: ['order_item_id'],
           fields: [
-            {name: 'order_item_id', expression: 'order_items.order_item_id'}
+            {name: 'order_item_id', expression: 'order_item_id'}
           ],
         });
         model.metrics = [{
@@ -337,7 +338,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
   test(
       'a backtick-quoted operand with an embedded comma is one operand, not a multi-arg call',
       () => {
-        // The operand scanner tracks backticks, so a column like `weird,name`
+        // The SQL parser reads a column like `weird,name` as one name, so it
         // is not mistaken for two aggregate arguments and dropped.
         const model = orders();
         model.metrics = [{
@@ -361,7 +362,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
           name: 'customer',
           dataSource: 'customer',
           keys: ['c_id'],
-          fields: [{name: 'c_id', expression: 'customer.c_id'}],
+          fields: [{name: 'c_id', expression: 'c_id'}],
         });
         model.metrics = [{
           name: 'cust_amount',
@@ -374,6 +375,84 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         expect(ddl).toContain('customer.amount AS cust_amount_input');
         expect(ddl).toContain('MEASURE(SUM(cust_amount_input)) AS cust_amount');
       });
+});
+
+describe('the SQL parser reads a metric\'s entity and aggregate', () => {
+  // orders, keyed on its column, with a field bound to another column.
+  const model = (...metrics: SemanticModel['metrics']): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics,
+    entities: [
+      {
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['o_id'],
+        fields: [
+          {name: 'o_id', expression: 'o_id'},
+          {name: 'buyer', expression: 'customer_id'},
+          {name: 'url', expression: 'url'},
+        ],
+      },
+      {
+        name: 'NET',
+        dataSource: 'p.d.net',
+        keys: ['n_id'],
+        fields: [{name: 'n_id', expression: 'n_id'}],
+      },
+    ],
+  });
+
+  test('COUNT(DISTINCT(x)) lowers to a valid measure', () => {
+    // The parentheses are the operand's, so the measure counts distinct
+    // buyers. Read with patterns, the operand was `DISTINCT(buyer)`, which
+    // gave the input property `DISTINCT(buyer) AS buyers_input` and the
+    // measure `COUNT(buyers_input)`, which BigQuery rejects.
+    const {ddl, warnings} = generatePropertyGraph(model(
+        {name: 'buyers', expression: 'COUNT(DISTINCT(orders.buyer))'},
+        {name: 'sites', expression: 'COUNT(DISTINCT (orders.url || orders.o_id))'},
+    ), GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT buyer)) AS buyers');
+    expect(ddl).toContain('url || o_id AS sites_input');
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT sites_input)) AS sites');
+    expect(ddl).not.toContain('DISTINCT(');
+  });
+
+  test('ALL is the default, so it lowers to the plain aggregate', () => {
+    // Read with patterns, it gave the input property `ALL o_id AS ...`.
+    const {ddl, warnings} = generatePropertyGraph(
+        model({name: 'orders_seen', expression: 'COUNT(ALL orders.o_id)'}),
+        GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('MEASURE(COUNT(o_id)) AS orders_seen');
+  });
+
+  test('a function namespace named like an entity is not that entity', () => {
+    // Read with patterns, `NET.` made the metric span NET and orders.
+    const {ddl, warnings} = generatePropertyGraph(model(
+        {name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))'},
+    ), GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('NET.HOST(url) AS hosts_input');
+    expect(ddl).toContain('MEASURE(COUNT(DISTINCT hosts_input)) AS hosts');
+  });
+
+  test('a qualifier the parser reserves as a keyword still places the measure', () => {
+    const {ddl, warnings} = generatePropertyGraph({
+      name: 'm',
+      relationships: [],
+      metrics: [{name: 'total_days', expression: 'SUM(Date.days)'}],
+      entities: [{
+        name: 'Date',
+        dataSource: 'p.d.dates',
+        keys: ['d_id'],
+        fields: [{name: 'd_id', expression: 'd_id'}],
+      }],
+    }, GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain('MEASURE(SUM(days)) AS total_days');
+  });
 });
 
 
@@ -462,7 +541,7 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             name: 'e',
             dataSource: 't',
             keys: ['id'],
-            fields: [{name: 'id', expression: 'e.id'}]
+            fields: [{name: 'id', expression: 'id'}]
           }],
         };
         const {ddl} = generatePropertyGraph(
@@ -506,7 +585,7 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             name: 'e',
             dataSource: 't',
             keys: ['id'],
-            fields: [{name: 'id', expression: 'e.id'}]
+            fields: [{name: 'id', expression: 'id'}]
           }],
         };
         const {ddl} =
@@ -526,7 +605,7 @@ describe('degenerate inputs and GenerateOptions behavior', () => {
             name: 'order_items',
             dataSource: 'acme.sales.order items',
             keys: ['id'],
-            fields: [{name: 'id', expression: 'order_items.id'}]
+            fields: [{name: 'id', expression: 'id'}]
           }],
         };
         const {ddl, warnings} = generatePropertyGraph(model);
@@ -599,10 +678,10 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
           examples: ['how many orders?'],
         },
         fields: [
-          {name: 'o_orderkey', expression: 'orders.o_orderkey'},
+          {name: 'o_orderkey', expression: 'o_orderkey'},
           {
             name: 'amount',
-            expression: 'orders.amount',
+            expression: 'amount',
             label: 'Order amount',
             aiContext: {synonyms: ['total', 'value']},
           },
@@ -612,7 +691,7 @@ describe('descriptive metadata: structured synonyms vs folded description', () =
         name: 'customers',
         dataSource: 'customers',
         keys: ['c_custkey'],
-        fields: [{name: 'c_custkey', expression: 'customers.c_custkey'}],
+        fields: [{name: 'c_custkey', expression: 'c_custkey'}],
       },
     ],
     relationships: [{
@@ -790,7 +869,7 @@ describe(
             name: 'orders',
             dataSource: 'orders',
             keys: ['o_orderkey'],
-            fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+            fields: [{name: 'o_orderkey', expression: 'o_orderkey'}]
           }],
           metrics:
               [{name: 'n_orders', expression: 'COUNT(*)', entity: 'orders'}],
@@ -973,6 +1052,9 @@ describe('supertype shared-label constraints (inheritance)', () => {
     // shared and a MEASURE binds cleanly.
     model.metrics =
         [{name: 'total_customers', expression: 'COUNT(Customer.id)'}];
+    // A field with no column is left out of the node table, and a measure over
+    // it is skipped, so bind the one it counts.
+    model.entities[1].fields = [{name: 'id', expression: 'id'}, {name: 'tier'}];
     const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
     expect(ddl).toContain('AS total_customers');
     expect(warnings.some(w => w.includes('total_customers'))).toBe(false);
@@ -1010,7 +1092,7 @@ describe('inherited property rendering (shared-label consistency)', () => {
         // property.
         const model = base([{name: 'id', expression: 'id'}], [
           {name: 'id', expression: 'id'},
-          {name: 'email', expression: 'Person.email'}
+          {name: 'email', expression: 'email'}
         ]);
         const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
         expect(ddl).not.toContain('Person.email');
@@ -1140,13 +1222,13 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
         name: 'Order',
         dataSource: 'proj.ds.orders',
         keys: ['order'],
-        fields: [{name: 'order', expression: 'Order.order'}],
+        fields: [{name: 'order', expression: '`order`'}],
       },
       {
         name: 'Group',
         dataSource: 'proj.ds.groups',
         keys: ['id'],
-        fields: [{name: 'id', expression: 'Group.id'}],
+        fields: [{name: 'id', expression: 'id'}],
       },
     ],
     relationships: [{
@@ -1188,7 +1270,7 @@ describe('a comment in a field expression', () => {
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
-        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'notes', expression: '/* free text */ notes'},
         {name: 'status', expression: 'status # open or closed'},
         {name: 'code', expression: "CONCAT('--', code)"},
       ],
@@ -1287,16 +1369,16 @@ describe('a comment in a field expression', () => {
         keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
-          {name: 'amount', expression: 'orders/* in cents */.amount'},
-          {name: 'select', expression: 'orders. /* a keyword */ select'},
+          {name: 'amount', expression: 'orders/* in cents */.amount_cents'},
+          {name: 'select', expression: 'orders. /* a keyword */ group'},
         ],
       }],
     };
     const {ddl, warnings} = generatePropertyGraph(dotted, GEN_OPTS);
     expect(ddl).toContain('KEY(order_id)');
     expect(ddl).toContain(
-        '      order_id AS id,\n      amount,\n      `select`,\n' +
-        '      MEASURE(SUM(amount)) AS revenue\n');
+        '      order_id AS id,\n      amount_cents AS amount,\n' +
+        '      `group` AS `select`,\n      MEASURE(SUM(amount)) AS revenue\n');
     expect(warnings).toEqual([]);
   });
 
@@ -1346,7 +1428,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       name: 'orders',
       dataSource: 'orders',
       keys: ['o_orderkey'],
-      fields: [{name: 'o_orderkey', expression: 'orders.o_orderkey'}]
+      fields: [{name: 'o_orderkey', expression: 'o_orderkey'}]
     }],
   });
 
@@ -1460,7 +1542,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           keys: ['id'],
           extends: ['party'],
           fields: [
-            {name: 'id', expression: 'person.id'},
+            {name: 'id', expression: 'id'},
             {
               name: 'nm',
               dialects: [{dialect: 'BIGQUERY', expression: 'person.full_name'}],
@@ -1485,7 +1567,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           dataSource: 'p.d.person',
           keys: ['id'],
           fields: [
-            {name: 'id', expression: 'person.id'},
+            {name: 'id', expression: 'id'},
             {name: 'nick', ...snowflakeOnly()},
           ],
         },
@@ -1494,7 +1576,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           dataSource: 'p.d.customer',
           keys: ['id'],
           extends: ['person'],
-          fields: [{name: 'id', expression: 'customer.id'}],
+          fields: [{name: 'id', expression: 'id'}],
         },
       ],
     };
@@ -1516,7 +1598,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       keys: ['id'],
       extends: ['party'],
       fields: [
-        {name: 'id', expression: `${name}.id`},
+        {name: 'id', expression: 'id'},
         {name: 'nm', expression: `${name}.${name}_nm`},
         {name: 'code', ...code},
       ],
@@ -1586,7 +1668,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
       name: 'parts',
       dataSource: 'parts',
       keys: ['p_partkey'],
-      fields: [{name: 'p_partkey', expression: 'parts.p_partkey'}],
+      fields: [{name: 'p_partkey', expression: 'p_partkey'}],
     });
     model.relationships = [{
       name: 'contains',
@@ -1618,8 +1700,8 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           dataSource: 'p.d.person',
           keys: ['id'],
           fields: [
-            {name: 'id', expression: 'person.id'},
-            {name: 'nick', expression: 'person.nick'},
+            {name: 'id', expression: 'id'},
+            {name: 'nick', expression: 'nick'},
           ],
         },
         {
@@ -1628,7 +1710,7 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
           keys: ['id'],
           extends: ['person'],
           fields: [
-            {name: 'id', expression: 'customer.id'},
+            {name: 'id', expression: 'id'},
             {name: 'nick', ...snowflakeOnly()},
           ],
         },
@@ -1640,5 +1722,405 @@ describe('each field and metric emits BigQuery\'s own SQL', () => {
         `entity 'customer': field 'nick' has no 'BIGQUERY' or 'ANSI_SQL' ` +
         `expression; omitted from the node table's own label, and the ` +
         `supertype's label keeps the supertype's definition`);
+  });
+});
+
+describe('a field expression that names a sibling field', () => {
+  // An `orders` entity keyed on `id`, with `fields` after the key.
+  const ordersWith = (fields: Field[]): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics: [],
+    entities: [{
+      name: 'orders',
+      dataSource: 'p.d.orders',
+      keys: ['id'],
+      fields: [{name: 'id', expression: 'order_id'}, ...fields],
+    }],
+  });
+
+  test('reads the columns its siblings are bound to', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        ordersWith([
+          {name: 'gross', expression: 'g_amt'},
+          {name: 'discount', expression: 'd_amt'},
+          {name: 'net', expression: 'orders.gross - orders.discount'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      g_amt AS gross,\n' +
+        '      d_amt AS discount,\n' +
+        '      g_amt - d_amt AS net\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('reads a sibling\'s expression in parentheses, through a chain of siblings', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'a', expression: 'x + y'},
+          {name: 'b', expression: 'orders.a * 2'},
+          {name: 'c', expression: 'orders.b + orders.a'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      x + y AS a,\n' +
+        '      (x + y) * 2 AS b,\n' +
+        '      ((x + y) * 2) + (x + y) AS c\n');
+  });
+
+  test('leaves an expression as written but for the siblings it names', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'nm', expression: 'full_name'},
+          {name: 'tag', expression: 'lower(full_name) || "!"'},
+          {name: 'shout', expression: 'lower(orders.nm) || "!"'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain('      lower(full_name) || "!" AS tag,\n');
+    expect(ddl).toContain('      lower(full_name) || "!" AS shout\n');
+  });
+
+  // A SQL parser would write `DAYOFWEEK` as `DOW` and `DAYOFYEAR` as `DOY`,
+  // which BigQuery does not read.
+  test('keeps date parts and intervals as written around a sibling it reads', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'd', expression: 'order_date'},
+          {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
+          {name: 'doy', expression: 'EXTRACT(DAYOFYEAR FROM orders.d)'},
+          {name: 'due', expression: 'DATE_ADD(orders.d, INTERVAL 30 DAY)'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      EXTRACT(DAYOFWEEK FROM order_date) AS dow,\n' +
+        '      EXTRACT(DAYOFYEAR FROM order_date) AS doy,\n' +
+        '      DATE_ADD(order_date, INTERVAL 30 DAY) AS due\n');
+  });
+
+  test('leaves an expression as written when each sibling it names is bound to the column of its name', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'd', expression: 'd'},
+          {name: 'nm', expression: 'nm'},
+          {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
+          {name: 'tag', expression: 'lower(orders.nm) || "!"'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
+        '      lower(nm) || "!" AS tag\n');
+  });
+
+  // A field whose supertype's expression names only its siblings carries over
+  // to a subtype, which reads it from its own binding of those siblings. That
+  // matches the supertype's rendering, so there is no remap to warn about.
+  test('an inherited field that names its siblings renders as its supertype\'s, without a warning', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [
+            {
+              name: 'party',
+              dataSource: 'p.d.party',
+              keys: ['id'],
+              fields: [
+                {name: 'id', expression: 'id'},
+                {name: 'gross', expression: 'g_amt'},
+                {name: 'discount', expression: 'd_amt'},
+                {name: 'net', expression: 'party.gross - party.discount'},
+              ],
+            },
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: ['id'],
+              extends: ['party'],
+              fields: [
+                {name: 'id', expression: 'id'},
+                {name: 'gross', expression: 'g_amt'},
+                {name: 'discount', expression: 'd_amt'},
+              ],
+            },
+          ],
+        },
+        GEN_OPTS);
+    // Party's default label, customer's, and customer's `party` label.
+    expect(ddl.match(/\bg_amt - d_amt AS net\n/g)).toHaveLength(3);
+    expect(warnings).toEqual([]);
+  });
+
+  test('two fields that name each other are rejected', () => {
+    expect(() => generatePropertyGraph(
+               ordersWith([
+                 {name: 'a', expression: 'orders.b + 1'},
+                 {name: 'b', expression: 'orders.a - 1'},
+               ]),
+               GEN_OPTS))
+        .toThrow(`field 'orders.a' names itself through 'orders.b'`);
+    expect(() => generatePropertyGraph(
+               ordersWith([{name: 'total', expression: 'orders.total * 2'}]),
+               GEN_OPTS))
+        .toThrow(`field 'orders.total' names itself;`);
+  });
+
+  test('a field whose sibling has no BigQuery SQL is left out, with a warning that names the sibling', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        ordersWith([
+          {name: 'gross', dialects: [{dialect: 'SPANNER', expression: 'g_amt'}]},
+          {name: 'net', expression: 'orders.gross - 1'},
+          {name: 'twice', expression: 'orders.net * 2'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).not.toMatch(/AS (gross|net|twice)/);
+    expect(warnings).toEqual([
+      `entity 'orders': field 'gross' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+          `expression; omitted from the node table`,
+      `entity 'orders': field 'net' reads field 'gross', which has no ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression; omitted from the node table`,
+      `entity 'orders': field 'twice' reads field 'net', which reads field ` +
+          `'gross', which has no 'BIGQUERY' or 'ANSI_SQL' expression; ` +
+          `omitted from the node table`,
+    ]);
+  });
+
+  test('an association field reads its siblings under the relationship name', () => {
+    const model: SemanticModel = {
+      name: 'm',
+      metrics: [],
+      entities: [
+        {
+          name: 'students',
+          dataSource: 'p.d.students',
+          keys: ['sid'],
+          fields: [{name: 'sid', expression: 'sid'}],
+        },
+        {
+          name: 'courses',
+          dataSource: 'p.d.courses',
+          keys: ['cid'],
+          fields: [{name: 'cid', expression: 'cid'}],
+        },
+      ],
+      relationships: [{
+        name: 'enrollment',
+        source: {entity: 'students', columns: []},
+        destination: {entity: 'courses', columns: []},
+        association: {
+          dataSource: 'p.d.enrollments',
+          keys: ['eid'],
+          sourceColumns: ['sid'],
+          destinationColumns: ['cid'],
+          fields: [
+            {name: 'grade', expression: 'letter'},
+            {name: 'passed', expression: 'enrollment.grade <> \'F\''},
+            {
+              name: 'late',
+              dialects: [{dialect: 'SNOWFLAKE', expression: 'x'}],
+              importedExpression: 'x',
+              importedDialect: 'SNOWFLAKE',
+            },
+            {name: 'on_time', expression: 'NOT enrollment.late'},
+          ],
+        },
+      }],
+    };
+    const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+    expect(ddl).toContain(
+        '    PROPERTIES(\n' +
+        '      letter AS grade,\n' +
+        '      letter <> \'F\' AS passed\n' +
+        '    )\n');
+    expect(warnings).toContain(
+        `relationship 'enrollment': field 'on_time' reads field 'late', ` +
+        `which has no 'BIGQUERY' or 'ANSI_SQL' expression; omitted from the ` +
+        `edge table`);
+  });
+});
+
+
+describe('a metric operand that names a field', () => {
+  // A `purchase` entity keyed on `id`, with `fields` after the key, and
+  // `metrics`.
+  const purchaseWith = (fields: Field[], metrics: Metric[]): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics,
+    entities: [{
+      name: 'purchase',
+      dataSource: 'p.d.purchase',
+      keys: ['purchase_id'],
+      fields: [{name: 'id', expression: 'purchase_id'}, ...fields],
+    }],
+  });
+
+  test('aggregates that field, not a field bound to the column of its name', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [
+              {name: 'amount', expression: 'amount_usd'},
+              {name: 'amount_local', expression: 'amount'},
+            ],
+            [{name: 'total_amount', expression: 'SUM(purchase.amount)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount_usd AS amount,\n' +
+        '      amount AS amount_local,\n' +
+        '      MEASURE(SUM(amount)) AS total_amount\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('COUNT(*) counts the key column, not the column named like the field that reads it', () => {
+    // The key names column `purchase_id`, which field `id` reads, while
+    // `legacy_id` reads column `id`.
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [{name: 'legacy_id', expression: 'id'}],
+            [{name: 'n', entity: 'purchase', expression: 'COUNT(*)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain('    KEY(purchase_id)\n');
+    expect(ddl).toContain(
+        '      id AS legacy_id,\n' +
+        '      MEASURE(COUNT(id)) AS n\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('reads the field through its SQL inside an expression', () => {
+    const lowered = (operand: string) => generatePropertyGraph(
+        purchaseWith(
+            [{name: 'amount', expression: 'amt'}],
+            [{name: 'm', entity: 'purchase', expression: `SUM(${operand})`}]),
+        GEN_OPTS);
+    expect(lowered('purchase.amount * 2').ddl).toContain(
+        '      amt * 2 AS m_input,\n' +
+        '      MEASURE(SUM(m_input)) AS m\n');
+    expect(lowered('purchase.amount.x').ddl).toContain(
+        '      amt.x AS m_input,\n' +
+        '      MEASURE(SUM(m_input)) AS m\n');
+    // Each of these is the field itself. `purchase . amount` places through
+    // the metric's entity: placement does not read it as naming `purchase`.
+    for (const operand of
+             ['purchase.`amount`', '(purchase.amount)', 'purchase . amount']) {
+      const {ddl, warnings} = lowered(operand);
+      expect(ddl).toContain(
+          '      amt AS amount,\n' +
+          '      MEASURE(SUM(amount)) AS m\n');
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  test('reuses a field only when its SQL on the table is the operand\'s', () => {
+    // `dbl` doubles the column `amount`, not the field `amount`, which reads
+    // `amt`. `twice` doubles `amt`.
+    const {ddl} = generatePropertyGraph(
+        purchaseWith(
+            [
+              {name: 'amount', expression: 'amt'},
+              {name: 'dbl', expression: 'amount * 2'},
+            ],
+            [{name: 'm', expression: 'SUM(purchase.amount * 2)'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      amount * 2 AS dbl,\n' +
+        '      amt * 2 AS m_input,\n' +
+        '      MEASURE(SUM(m_input)) AS m\n');
+    const reused = generatePropertyGraph(
+        purchaseWith(
+            [
+              {name: 'amount', expression: 'amt'},
+              {name: 'twice', expression: 'amt * 2'},
+            ],
+            [{name: 'm', expression: 'SUM(purchase.amount * 2)'}]),
+        GEN_OPTS);
+    expect(reused.ddl).toContain(
+        '      amt * 2 AS twice,\n' +
+        '      MEASURE(SUM(twice)) AS m\n');
+  });
+
+  test('a metric named like a property an earlier metric added reaches the graph, in either order', () => {
+    const doubled: Metric = {name: 'm', expression: 'SUM(purchase.amount * 2)'};
+    const input: Metric = {name: 'm_input', expression: 'SUM(purchase.amount)'};
+    for (const metrics of [[doubled, input], [input, doubled]]) {
+      const {ddl, warnings} = generatePropertyGraph(
+          purchaseWith([{name: 'amount', expression: 'amt'}], metrics),
+          GEN_OPTS);
+      expect(ddl).toContain('      amt * 2 AS m_input_2,\n');
+      expect(ddl).toContain('      MEASURE(SUM(m_input_2)) AS m');
+      expect(ddl).toContain('      MEASURE(SUM(amount)) AS m_input');
+      expect(warnings).toEqual([]);
+    }
+    // COUNT(*) exposes a key column that no field names. A metric may have
+    // that column's name.
+    const count: Metric =
+        {name: 'n', entity: 'purchase', expression: 'COUNT(*)'};
+    const code: Metric = {name: 'code', expression: 'MAX(purchase.id)'};
+    for (const metrics of [[count, code], [code, count]]) {
+      const model = purchaseWith([], metrics);
+      model.entities[0].keys = ['code'];
+      const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
+      expect(ddl).toContain('      code AS n_input,\n');
+      expect(ddl).toContain('      MEASURE(COUNT(n_input)) AS n');
+      expect(ddl).toContain('      MEASURE(MAX(id)) AS code');
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  test('a keyword operand is SQL, not a column', () => {
+    for (const [expression, property, measure] of [
+           ['COUNT(TRUE)', 'TRUE AS m_input', 'COUNT(m_input)'],
+           ['SUM(NULL)', 'NULL AS m_input', 'SUM(m_input)'],
+           ['MAX(CURRENT_DATE)', 'CURRENT_DATE AS m_input', 'MAX(m_input)'],
+    ]) {
+      const {ddl, warnings} = generatePropertyGraph(
+          purchaseWith([], [{name: 'm', entity: 'purchase', expression}]),
+          GEN_OPTS);
+      expect(ddl).toContain(
+          `      ${property},\n` +
+          `      MEASURE(${measure}) AS m\n`);
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  test('COUNT(DISTINCT(x)) counts the distinct values of the field', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [{name: 'buyer', expression: 'buyer_id'}],
+            [{name: 'buyers', expression: 'COUNT(DISTINCT(purchase.buyer))'}]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      buyer_id AS buyer,\n' +
+        '      MEASURE(COUNT(DISTINCT buyer)) AS buyers\n');
+    expect(warnings).toEqual([]);
+  });
+
+  test('an operand that reads a field the node table leaves out skips the metric, with a warning that names the field', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        purchaseWith(
+            [
+              {
+                name: 'amount',
+                dialects: [{dialect: 'SPANNER', expression: 'amt'}],
+              },
+              {name: 'net', expression: 'purchase.amount - 1'},
+              {name: 'memo'},
+            ],
+            [
+              {name: 'doubled', expression: 'SUM(purchase.amount * 2)'},
+              {name: 'total_net', expression: 'SUM(purchase.net)'},
+              {name: 'memos', expression: 'COUNT(purchase.memo)'},
+            ]),
+        GEN_OPTS);
+    expect(ddl).not.toMatch(/MEASURE|_input/);
+    expect(warnings).toContain(
+        `metric 'doubled' reads field 'amount', which has no 'BIGQUERY' or ` +
+        `'ANSI_SQL' expression; skipped (nothing to emit as a MEASURE)`);
+    expect(warnings).toContain(
+        `metric 'total_net' aggregates field 'net', which reads field ` +
+        `'amount', which has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped ` +
+        `(nothing to emit as a MEASURE)`);
+    expect(warnings).toContain(
+        `metric 'memos' aggregates field 'memo', which has no column under ` +
+        `this binding; skipped (nothing to emit as a MEASURE)`);
   });
 });

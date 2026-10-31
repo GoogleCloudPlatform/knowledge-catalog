@@ -57,10 +57,10 @@ describe('each engine difference comes from the engine', () => {
         keys: ['order_id'],
         description: 'One row per order',
         fields: [
-          {name: 'order_id', expression: 'orders.order_id'},
-          {name: 'amount', expression: 'orders.amount', description: 'Total'},
-          {name: 'customer_id', expression: 'orders.customer_id'},
-          {name: 'notes', expression: 'orders.notes'},
+          {name: 'order_id', expression: 'order_id'},
+          {name: 'amount', expression: 'amount', description: 'Total'},
+          {name: 'customer_id', expression: 'customer_id'},
+          {name: 'notes', expression: 'notes'},
           {name: 'memo'},
         ],
       },
@@ -167,13 +167,13 @@ EDGE TABLES (
                keys: ['order_id'],
                description: 'One row per order',
                fields: [
-                 {name: 'order_id', expression: 'orders.order_id'},
+                 {name: 'order_id', expression: 'order_id'},
                  {
                    name: 'amount',
-                   expression: 'orders.amount',
+                   expression: 'amount',
                    description: 'Total'
                  },
-                 {name: 'customer_id', expression: 'orders.customer_id'},
+                 {name: 'customer_id', expression: 'customer_id'},
                ],
              },
              {
@@ -276,14 +276,14 @@ NODE TABLES (
           name: 'keyless',
           dataSource: 'p.d.keyless',
           keys: [],
-          fields: [{name: 'x', expression: 'keyless.x'}],
+          fields: [{name: 'x', expression: 'x'}],
         },
         {
           name: 'vip',
           dataSource: 'p.d.vip',
           keys: ['customer_id'],
           extends: ['party'],
-          fields: [{name: 'customer_id', expression: 'vip.customer_id'}],
+          fields: [{name: 'customer_id', expression: 'customer_id'}],
         },
       ],
     };

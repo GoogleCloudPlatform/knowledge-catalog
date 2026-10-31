@@ -13,16 +13,16 @@ import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
-import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
+import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {bindsThirdPartyTable, databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
-import {SqlColumn, withoutComments} from './sql_parser';
+import {SqlColumn} from './sql_parser';
 
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
@@ -175,7 +175,7 @@ export function validatePushRequirements(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
         flaggedMetrics, opts.liftedExclusions));
     if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
-      errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
+      errors.push(...measurePlacementErrors(model, document, flaggedMetrics));
     }
 
     // An action reaches Knowledge Catalog only, so its checks are
@@ -344,7 +344,7 @@ function profiled(model: SemanticModel, profile: ProfileSpec):
 }
 
 // Why `metric` cannot be a BigQuery measure, or undefined when it can. Leaves
-// out a metric that validateBigQueryMetrics or the inheritance rules report:
+// out a metric that measurePlacementErrors or the inheritance rules report:
 // one that reads several entities or none, or one on an abstract or extended
 // entity.
 function measureProblem(
@@ -354,15 +354,10 @@ function measureProblem(
   const columns = columnsForSource(text, 'BIGQUERY');
   if (!columns) return undefined;
   const entities = model.entities ?? [];
-  const names = entities.map(e => e.name);
-  // Read `text` (from `expressionForDialect(metric, 'BIGQUERY')`), the SQL the
-  // BigQuery graph runs.
-  const matched =
-      referencedEntityNames(withoutComments(text, 'BIGQUERY'), names);
-  if (matched.length > 1 || !matched.length && !metric.entity) return undefined;
-  const reached = entitiesReached(columns, names);
-  const name = reached.length > 1 ? undefined : reached[0] ?? metric.entity;
-  const entity = entities.find(e => e.name === name);
+  const placed =
+      measureEntities(text, entities.map(e => e.name), metric.entity);
+  if (placed.length !== 1) return undefined;
+  const entity = entities.find(e => e.name === placed[0]);
   if (!entity || entity.abstract ||
       entities.some(e => e.extends?.includes(entity.name))) {
     return undefined;
@@ -375,6 +370,55 @@ function measureProblem(
         `or unique key, so the graph has no node table for it`;
   }
   return undefined;
+}
+
+// The BigQuery graph's rules for placing each metric of `model` as a measure,
+// one message per metric that breaks them, skipping each one in
+// `alreadyFlagged`, which validateExpressionReferences has reported. The
+// generator (`bigquery.ts`) places a measure on the one entity whose
+// qualifier its BigQuery SQL writes before a column, or on its anchor when the
+// SQL writes none (see measureEntities), and skips a metric that has no
+// BigQuery or ANSI_SQL text. validateExpressionReferences reads every dialect
+// entry together and lets an authored anchor settle SQL that reads two
+// entities, so it does not catch each metric the generator would skip.
+function measurePlacementErrors(
+    model: SemanticModel, document: string,
+    alreadyFlagged: ReadonlySet<string>): string[] {
+  const errors: string[] = [];
+  const entityNames = (model.entities ?? []).map(e => e.name);
+  for (const metric of model.metrics ?? []) {
+    if (alreadyFlagged.has(metric.name)) continue;
+    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
+    // The text BigQuery runs: its `BIGQUERY` entry, else its `ANSI_SQL` one,
+    // else `expression` for a metric held without a dialect list.
+    const bqText = expressionForDialect(metric, 'BIGQUERY');
+    if (bqText === undefined && metric.importedExpression !== undefined) {
+      errors.push(
+          `${prefix} targets a BigQuery graph with only a '${
+              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
+          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
+              IMPORT_TRANSPILE_COMMAND}'.`);
+      continue;
+    }
+    const placed =
+        measureEntities(bqText ?? '', entityNames, metric.entity);
+    if (placed.length > 1) {
+      errors.push(
+          `${prefix} targets a BigQuery graph and its BigQuery SQL reads ` +
+          `several entities (${placed.join(', ')}); a BigQuery measure ` +
+          `belongs to one entity's node table, so scope its expression to ` +
+          `one entity.`);
+    } else if (placed.length === 0) {
+      const anchor = model.version === OSSIE_VERSION ?
+          `'entity' in a GOOGLE custom_extensions block on the metric` :
+          `top-level 'entity'`;
+      errors.push(
+          `${prefix} targets a BigQuery graph but does not resolve to a ` +
+          `single entity; the BigQuery generator places a measure on the ` +
+          `entity its BigQuery SQL reads, or on ${anchor}.`);
+    }
+  }
+  return errors;
 }
 
 // Checks that each bound field of the model file has a text for the dialect
@@ -1394,6 +1438,95 @@ function fieldNoSqlErrors(
   return errors;
 }
 
+// The errors for the fields of `entity` that name themselves, directly or
+// through other fields of `entity`. The graph renders a field that names a
+// sibling as `<entity>.<field>` from that sibling's own SQL, so a field that
+// reaches itself that way has no SQL to render. A field expression that writes
+// its own column as `<entity>.<field>` names itself too: write the bare column
+// instead. Each dialect is read on its own, from the text an engine of that
+// dialect renders (its entry, else the ANSI_SQL one), so two texts that no one
+// engine reads together do not form a cycle.
+//
+// `resolved` is `entity` with the fields it inherits, which name its fields
+// as the graph renders them (see resolve_inheritance.localizeInheritedField),
+// so a field can reach itself through one it inherits. A cycle is reported on
+// an entity only when a field on it is bound there, so one an ancestor forms on
+// its own is reported on that ancestor alone.
+function selfReferenceErrors(
+    entity: Entity, resolved: Entity, model: SemanticModel, document: string,
+    impliedDialect: string|undefined): string[] {
+  const own = entity.fields ?? [];
+  const inherited = resolved.fields ?? [];
+  // A field a profile excludes is left off `resolved`, but still checked.
+  const fields = [
+    ...inherited,
+    ...own.filter(f => !inherited.some(r => r.name === f.name)),
+  ];
+  const bound = new Set(own.filter(f => isFieldBound(f)).map(f => f.name));
+  const names = new Set(fields.map(f => f.name));
+  const dialects = new Set<string>(['ANSI_SQL']);
+  for (const f of fields) {
+    for (const d of f.dialects ?? []) dialects.add(d.dialect);
+    if (f.importedDialect) dialects.add(f.importedDialect);
+  }
+  const errors = new Set<string>();
+  for (const dialect of dialects) {
+    // The fields of `entity` each field names, in this dialect.
+    const reads = new Map<string, string[]>();
+    for (const f of fields) {
+      const text = expressionForDialect(f, dialect as SqlDialect);
+      if (text === undefined ||
+          noSqlReason(text, dialect, entity.name) !== undefined) {
+        continue;
+      }
+      const columns = columnsForSource(text, dialect, impliedDialect) ?? [];
+      reads.set(
+          f.name, fieldsReadOn(columns, entity.name).filter(n => names.has(n)));
+    }
+    for (const f of fields) {
+      const through = pathBack(f.name, reads);
+      if (!through || ![f.name, ...through].some(n => bound.has(n))) continue;
+      errors.add(
+          `field '${entity.name}.${f.name}' in model '${model.name}' (${
+              document}) names itself` +
+          (through.length ?
+               ` through ${
+                   through.map(n => `'${entity.name}.${n}'`).join(', ')}` :
+               '') +
+          `; a field expression may name other fields of its entity, but ` +
+          `not itself, directly or through other fields.`);
+    }
+  }
+  return [...errors];
+}
+
+// The shortest run of other fields through which `start` reaches itself in
+// `reads`, empty when it names itself directly, or undefined when it does not
+// reach itself.
+function pathBack(
+    start: string, reads: ReadonlyMap<string, string[]>): string[]|undefined {
+  const via = new Map<string, string[]>();
+  const queue: string[] = [];
+  for (const next of reads.get(start) ?? []) {
+    if (next === start) return [];
+    if (!via.has(next)) {
+      via.set(next, [next]);
+      queue.push(next);
+    }
+  }
+  while (queue.length) {
+    const name = queue.shift()!;
+    for (const next of reads.get(name) ?? []) {
+      if (next === start) return via.get(name);
+      if (!via.has(next)) {
+        via.set(next, [...via.get(name)!, next]);
+        queue.push(next);
+      }
+    }
+  }
+  return undefined;
+}
+
 // The error for a metric with no SQL, or undefined. A metric is rejected when
 // none of its texts holds SQL, with or without an anchor, since the graph
 // would drop it. It is also rejected when any one of its texts holds none, as
@@ -1436,6 +1569,9 @@ function metricNoSqlError(
 //     1. Reject any reference to an entity other than E.
 //     2. For references to E itself, every field named must be declared or
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
+//     3. Reject a field that names itself, directly or through other fields of
+//        E, declared or inherited, since the graph renders a field that names
+//        a sibling from that sibling's SQL (see selfReferenceErrors).
 //
 // Exported so `commands.ts` can also run it on the unpruned model before
 // `pruneUnavailable` drops unbound fields and metrics on a graph push. When
@@ -1459,6 +1595,13 @@ export function validateExpressionReferences(
       continue;
     }
     const entityNames = [...fieldsByEntity.keys()];
+    // Each entity's fields as the graph renders them (see selfReferenceErrors).
+    const resolvedByName = new Map(
+        (ifResolvable(
+             () => resolveInheritance(model, undefined, {requalify: true})
+                       .model.entities) ??
+         model.entities ?? [])
+            .map(e => [e.name, e]));
     const impliedDialect = sourcesDialect(model);
     const addUnreadableWarning =
         (what: string, total: number, unreadDialects: string[]) => {
@@ -1524,6 +1667,9 @@ export function validateExpressionReferences(
           }
         }
       }
+      errors.push(...selfReferenceErrors(
+          entity, resolvedByName.get(entity.name) ?? entity, model, document,
+          impliedDialect));
     }
 
     for (const metric of model.metrics ?? []) {
@@ -1644,60 +1790,6 @@ export function validateExpressionReferences(
         }
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);
-    }
-  }
-  return errors;
-}
-
-// Temporary BigQuery-only metric check, until the BigQuery generator places
-// measures with the SQL parser. Rejects a metric that the generator
-// (`bigquery.ts`) would skip: one with only another engine's SQL, which the
-// generator does not emit, or one it drops because its regex
-// (`referencedEntityNames`) disagrees with the parser or because
-// `metric.entity` is unset. Reports only metrics that
-// `validateExpressionReferences` has not already flagged.
-function validateBigQueryMetrics(
-    model: SemanticModel, document: string,
-    alreadyFlagged: ReadonlySet<string>): string[] {
-  const errors: string[] = [];
-  const entityNames = (model.entities ?? []).map(e => e.name);
-  for (const metric of model.metrics ?? []) {
-    if (alreadyFlagged.has(metric.name)) continue;
-    const prefix = `metric '${metric.name}' in model '${model.name}' (${document})`;
-    // The text BigQuery runs: its `BIGQUERY` entry, else its `ANSI_SQL` one,
-    // else `expression` for a metric held without a dialect list.
-    const bqText = expressionForDialect(metric, 'BIGQUERY');
-    if (bqText === undefined && metric.importedExpression !== undefined) {
-      errors.push(
-          `${prefix} targets a BigQuery graph with only a '${
-              metric.importedDialect ?? 'vendor'}' expression; supply a ` +
-          `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
-              IMPORT_TRANSPILE_COMMAND}'.`);
-      continue;
-    }
-    // The generator reads the resolved BigQuery expression (`bqText`) with its
-    // comments removed.
-    const expr =
-        withoutComments(bqText ?? metric.importedExpression ?? '', 'BIGQUERY');
-    let referenced = referencedEntityNames(expr, entityNames);
-    if (referenced.length === 0 && metric.entity) {
-      referenced = [metric.entity];
-    }
-    if (referenced.length > 1) {
-      errors.push(
-          `${prefix} targets a BigQuery graph and references multiple ` +
-          `entities (${referenced.join(', ')}); the BigQuery generator ` +
-          `reads every '<entity>.' outside comments as a qualifier, ` +
-          `including a function namespace such as 'NET.', so remove the ` +
-          `extra '<entity>.' match or scope its expression to one entity.`);
-    } else if (referenced.length === 0) {
-      const anchor = model.version === OSSIE_VERSION ?
-          `'entity' in a GOOGLE custom_extensions block on the metric` :
-          `top-level 'entity'`;
-      errors.push(
-          `${prefix} targets a BigQuery graph but does not resolve to a ` +
-          `single entity; the BigQuery generator reads '<entity>.' ` +
-          `qualifiers in the expression or ${anchor}.`);
     }
   }
   return errors;

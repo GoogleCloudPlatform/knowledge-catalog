@@ -1924,8 +1924,8 @@ describe('field and metric expression references', () => {
               [loaded(model({version, entities, metrics: [metric]}, [googleExt([BQ_TARGET])]))])
               .join('\n');
 
-      // A function namespace matching an entity name trips the BQ regex. A comment naming a second entity
-      // passes on every push, because the generator reads the expression without its comments.
+      // A comment naming a second entity passes on every push, because the generator reads the
+      // expression without its comments.
       const commentMetric: Metric = {
         name: 'rev', expression: 'SUM(orders.net_amount) -- customer.id', entity: 'orders',
       };
@@ -1941,11 +1941,29 @@ describe('field and metric expression references', () => {
       const netEntity: Entity = {
         name: 'NET', dataSource: 'p.d.net', keys: ['id'], fields: [{name: 'id', expression: 'n_id'}],
       };
+      // A function namespace that matches an entity name reads no entity, as the SQL parser reads
+      // it, so the generator places the metric on orders and the push passes.
       expect(bqPush([orders(), netEntity], {
         name: 'hosts', expression: 'COUNT(DISTINCT NET.HOST(orders.url))', entity: 'orders',
-      })).toContain(
-          "references multiple entities (NET, orders); the BigQuery generator reads every '<entity>.' " +
-          "outside comments as a qualifier, including a function namespace such as 'NET.'");
+      })).toBe('');
+
+      // An anchor settles SQL that reads two entities for the reference rules, but a BigQuery measure
+      // belongs to one entity's table, so only a BigQuery graph push rejects it.
+      const twoEntities: Metric = {
+        name: 'mixed', expression: 'SUM(orders.net_amount + customer.amount)',
+        entity: 'orders', authoredEntity: 'orders',
+      };
+      expect(bqPush([orders(), customer()], twoEntities)).toContain(
+          "metric 'mixed' in model 'm' (doc) targets a BigQuery graph and its BigQuery SQL reads " +
+          "several entities (orders, customer); a BigQuery measure belongs to one entity's node " +
+          'table, so scope its expression to one entity.');
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [orders(), customer()], metrics: [twoEntities]}, [googleExt([BQ_TARGET])]))],
+                 {targetOptional: true}))
+          .toEqual([]);
+      expect(validatePushRequirements(
+                 [loaded(model({entities: [orders(), customer()], metrics: [twoEntities]}, [googleExt([SPANNER_TARGET])]))]))
+          .toEqual([]);
 
       // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` set
       // from the block, so a KC-only push and a BigQuery graph push both accept it.
@@ -2015,8 +2033,8 @@ semantic_model:
 ${metricBlock}`).models[0];
       expect(validatePushRequirements([loaded(vanilla(''))])).toContain(
           "metric 'n' in model 'sales' (doc) targets a BigQuery graph but does not resolve to a " +
-          "single entity; the BigQuery generator reads '<entity>.' qualifiers in the expression " +
-          "or 'entity' in a GOOGLE custom_extensions block on the metric.");
+          'single entity; the BigQuery generator places a measure on the entity its BigQuery SQL ' +
+          "reads, or on 'entity' in a GOOGLE custom_extensions block on the metric.");
       // The block anchor the error offers places the metric.
       expect(validatePushRequirements([loaded(vanilla(`        custom_extensions:
           - vendor_name: GOOGLE
@@ -2692,6 +2710,131 @@ ${extraMetric}`;
           ]);
       expect(warnings).toEqual([]);
     });
+
+    // The graph renders a field that names a sibling from the sibling's SQL,
+    // so a field that names itself, directly or through siblings, has none.
+    test('rejects a field that names itself, directly or through sibling fields, in any dialect', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'a', expression: 'orders.b + 1'},
+            {name: 'b', expression: 'orders.a - 1'},
+            {name: 'total', expression: 'orders.total * 2'},
+            {
+              name: 'c',
+              expression: 'o_c',
+              dialects: [{dialect: 'BIGQUERY', expression: 'orders.c + 1'}],
+            },
+          ],
+        }],
+      });
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true});
+      expect(errors).toEqual([
+        "field 'orders.a' in model 'm' (doc) names itself through " +
+            "'orders.b'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+        "field 'orders.b' in model 'm' (doc) names itself through " +
+            "'orders.a'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+        "field 'orders.total' in model 'm' (doc) names itself; a field " +
+            'expression may name other fields of its entity, but not ' +
+            'itself, directly or through other fields.',
+        "field 'orders.c' in model 'm' (doc) names itself; a field " +
+            'expression may name other fields of its entity, but not ' +
+            'itself, directly or through other fields.',
+      ]);
+    });
+
+    // The cycle is in the subtype's own binding, so it is the subtype's error;
+    // a cycle the supertype holds alone is reported on the supertype only.
+    test('rejects a field that names itself through a field it inherits, on the entity that binds it', () => {
+      const m = model({
+        entities: [
+          {
+            name: 'party',
+            dataSource: 'p.d.party',
+            keys: ['id'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'a', expression: 'party.b + 1'},
+              {name: 'b', expression: 'b'},
+              {name: 'total', expression: 'party.total * 2'},
+            ],
+          },
+          {
+            name: 'customer',
+            dataSource: 'p.d.customer',
+            keys: ['id'],
+            extends: ['party'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'b', expression: 'customer.a - 1'},
+            ],
+          },
+        ],
+      });
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true});
+      expect(errors).toEqual([
+        "field 'party.total' in model 'm' (doc) names itself; a field " +
+            'expression may name other fields of its entity, but not ' +
+            'itself, directly or through other fields.',
+        "field 'customer.b' in model 'm' (doc) names itself through " +
+            "'customer.a'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+        "field 'customer.a' in model 'm' (doc) names itself through " +
+            "'customer.b'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+      ]);
+    });
+
+    test('accepts an inherited field that names its supertype\'s siblings', () => {
+      const m = model({
+        entities: [
+          {
+            name: 'party',
+            dataSource: 'p.d.party',
+            keys: ['id'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'gross', expression: 'g_amt'},
+              {name: 'net', expression: 'party.gross - 1'},
+            ],
+          },
+          {
+            name: 'customer',
+            dataSource: 'p.d.customer',
+            keys: ['id'],
+            extends: ['party'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'gross', expression: 'g_amt'},
+            ],
+          },
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    });
+
+    test('accepts a chain of fields that name their siblings', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          fields: [
+            ...orders().fields,
+            {name: 'a', expression: 'x + y'},
+            {name: 'b', expression: 'orders.a * 2'},
+            {name: 'c', expression: 'orders.b + orders.a + orders.net_amount'},
+          ],
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    });
   });
 
   describe('across dialects', () => {
@@ -3146,23 +3289,31 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     // Each metric is reported once.
     test('leaves a metric another check reports to it', () => {
       // The rule that a metric resolves to exactly one entity: two entities,
-      // as the parser or that rule's patterns read them, or two that no
-      // relationship connects, so that pruning drops the metric first.
+      // or two that no relationship connects, so that pruning drops the
+      // metric first.
       const two =
           onBigQuery(anchored('SUM(purchase.amount + customer.c_id) / 2'));
-      const safe = onBigQuery(anchored('safe.divide(SUM(purchase.amount), 2)'));
-      safe.entities.push({...safe.entities[0], name: 'safe'});
       const apart =
           onBigQuery(anchored('SUM(purchase.amount * shop.c_id) / 2'));
       apart.entities.push({...apart.entities[0], name: 'shop'});
-      for (const [m, read] of [[two, 'purchase, customer'], [safe, 'safe, purchase'],
+      for (const [m, read] of [[two, 'purchase, customer'],
                                [apart, 'purchase, shop']] as const) {
         expect(check(m)).toEqual([]);
         expect(validatePushRequirements([loaded(m, 'commerce')])
                    .filter(e => e.includes("metric 'm'")))
             .toEqual([expect.stringContaining(
-                `references multiple entities (${read})`)]);
+                `its BigQuery SQL reads several entities (${read})`)]);
       }
+      // A function namespace named like an entity reads no entity, so that
+      // rule passes the metric, and this one reports it.
+      const safe = onBigQuery(anchored('safe.divide(SUM(purchase.amount), 2)'));
+      safe.entities.push({...safe.entities[0], name: 'safe'});
+      expect(check(safe)).toEqual([
+        MEASURE('it is not SUM, AVG, COUNT, MIN or MAX over one operand'),
+      ]);
+      expect(validatePushRequirements([loaded(safe, 'commerce')])
+                 .filter(e => e.includes("metric 'm'")))
+          .toEqual([]);
       // The reference rules: a field the entity does not declare.
       expect(bigQuery(anchored('SUM(purchase.amt) / 2'))).toEqual([]);
       // The binding rule: a field with no expression.

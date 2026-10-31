@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, requalified, singleAggregate, withoutQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -311,27 +311,143 @@ describe('entitiesReached', () => {
   });
 });
 
-describe('referencedEntityNames', () => {
+describe('measureEntities', () => {
   test('matches only the start of a dotted chain, never a struct subfield', () => {
     const entities = ['orders', 'shipping_address', 'customer'];
-    expect(referencedEntityNames('orders.shipping_address.city', entities))
+    expect(measureEntities('orders.shipping_address.city', entities))
         .toEqual(['orders']);
-    expect(referencedEntityNames('`orders`.`shipping_address`.city', entities))
+    expect(measureEntities('`orders`.`shipping_address`.city', entities))
         .toEqual(['orders']);
-    expect(referencedEntityNames('orders.`shipping_address`.city', entities))
+    expect(measureEntities('orders.`shipping_address`.city', entities))
         .toEqual(['orders']);
-    expect(referencedEntityNames("'orders.customer.id'", entities)).toEqual([]);
+    expect(measureEntities("'orders.customer.id'", entities)).toEqual([]);
+  });
+
+  test('reads the entities the SQL parser reads, in the order written', () => {
+    const entities = ['orders', 'customer', 'NET', 'Date'];
+    expect(measureEntities(
+               'SUM(customer.a + orders.b + customer.c)', entities))
+        .toEqual(['customer', 'orders']);
+    // A function namespace, a comment and a string literal of any quoting
+    // read no entity.
+    expect(measureEntities('COUNT(DISTINCT NET.HOST(orders.url))', entities))
+        .toEqual(['orders']);
+    expect(measureEntities('SUM(orders.amount) -- customer.id', entities))
+        .toEqual(['orders']);
+    expect(measureEntities(
+               "SUM(IF(orders.s = '''customer.x''', 1, 0))", entities))
+        .toEqual(['orders']);
+    // A qualifier the parser reserves as a keyword still reads.
+    expect(measureEntities('SUM(Date.days)', entities)).toEqual(['Date']);
+    expect(measureEntities('SUM(orders.amount * Date.factor)', entities))
+        .toEqual(['orders', 'Date']);
+  });
+
+  test('falls back to the anchor only when the SQL reads no entity', () => {
+    expect(measureEntities('COUNT(*)', ['orders'], 'orders'))
+        .toEqual(['orders']);
+    expect(measureEntities('COUNT(*)', ['orders'])).toEqual([]);
+    expect(measureEntities('SUM(customer.id)', ['orders', 'customer'],
+                           'orders'))
+        .toEqual(['customer']);
   });
 });
 
-describe('stripQualifier', () => {
+describe('withoutQualifier', () => {
   test('strips only the leading entity qualifier and preserves a struct field of the same name', () => {
-    expect(stripQualifier('orders.orders.id', 'orders')).toBe('orders.id');
-    expect(stripQualifier('`orders`.`orders`.id', 'orders'))
+    expect(withoutQualifier('orders.orders.id', 'orders')).toBe('orders.id');
+    expect(withoutQualifier('`orders`.`orders`.id', 'orders'))
         .toBe('`orders`.id');
   });
+
+  test('keeps the rest of the text as written', () => {
+    expect(withoutQualifier('IF(orders.a > 0, orders.b, NULL)', 'orders'))
+        .toBe('IF(a > 0, b, NULL)');
+    expect(withoutQualifier("REGEXP_CONTAINS(orders.s, r'^a')", 'orders'))
+        .toBe("REGEXP_CONTAINS(s, r'^a')");
+    expect(withoutQualifier('customer_orders.x + orders.y', 'orders'))
+        .toBe('customer_orders.x + y');
+    expect(withoutQualifier('amount', 'orders')).toBe('amount');
+  });
+
+  test('leaves a string literal, a comment and a function namespace alone', () => {
+    expect(withoutQualifier("CONCAT(orders.a, 'orders.b')", 'orders'))
+        .toBe("CONCAT(a, 'orders.b')");
+    expect(withoutQualifier("orders.a || '''orders.b'''", 'orders'))
+        .toBe("a || '''orders.b'''");
+    expect(withoutQualifier('SUM(orders.amount) -- orders.x', 'orders'))
+        .toBe('SUM(amount) -- orders.x');
+    expect(withoutQualifier('NET.HOST(NET.url)', 'NET')).toBe('NET.HOST(url)');
+  });
+
+  test('reads the qualifier as the dialect quotes it, and one the parser reserves', () => {
+    expect(withoutQualifier('Date.days * 2', 'Date')).toBe('days * 2');
+    expect(withoutQualifier('Order.id', 'Order')).toBe('id');
+    // BigQuery reads a double-quoted name as a string, PostgreSQL as a name.
+    expect(withoutQualifier('"orders".amount', 'orders'))
+        .toBe('"orders".amount');
+    expect(withoutQualifier('"orders".amount', 'orders', 'POSTGRES'))
+        .toBe('amount');
+  });
+
+  test('strips every qualifier of SQL the parser cannot read', () => {
+    expect(withoutQualifier('orders.', 'orders')).toBe('');
+    expect(withoutQualifier('orders.a orders.b', 'orders')).toBe('a b');
+  });
 });
 
+describe('withoutQualifier with replacements', () => {
+  test('puts each replacement in place of its column and its qualifier, and leaves the rest as written', () => {
+    const sql = new Map([['d', 'order_date'], ['n', '(x + 1)']]);
+    expect(withoutQualifier(
+               'EXTRACT(DAYOFWEEK FROM orders.d) + orders.n * orders.m',
+               'orders', undefined, sql))
+        .toBe('EXTRACT(DAYOFWEEK FROM order_date) + (x + 1) * m');
+    expect(withoutQualifier('`orders`.`n`.f || "orders.n"', 'orders',
+                            undefined, sql))
+        .toBe('(x + 1).f || "orders.n"');
+  });
+});
+
+describe('requalified', () => {
+  test('renames the qualifier and leaves the rest as written', () => {
+    expect(requalified("Person.a || 'Person.b' || Person.Person.c", 'Person',
+                       'Customer'))
+        .toBe("Customer.a || 'Person.b' || Customer.Person.c");
+    expect(requalified('People.a + Person', 'Person', 'Customer'))
+        .toBe('People.a + Person');
+  });
+
+  test('keeps the qualifier\'s quotes as the dialect reads them', () => {
+    expect(requalified('`Person`.a', 'Person', 'Customer'))
+        .toBe('`Customer`.a');
+    expect(requalified('"Person".a', 'Person', 'Customer'))
+        .toBe('"Person".a');
+    expect(requalified('"Person".a', 'Person', 'Customer', 'POSTGRES'))
+        .toBe('"Customer".a');
+  });
+});
+
+describe('singleAggregate', () => {
+  test('gives the function, the operand and DISTINCT as written', () => {
+    const agg = (text: string) => singleAggregate(text, 'BIGQUERY');
+    expect(agg('COUNT(DISTINCT(orders.id))'))
+        .toEqual({fn: 'COUNT', operand: 'orders.id', distinct: true});
+    expect(agg('count(distinct `orders`.id)'))
+        .toEqual({fn: 'count', operand: '`orders`.id', distinct: true});
+    expect(agg('SUM(ALL o.amount)'))
+        .toEqual({fn: 'SUM', operand: 'o.amount', distinct: false});
+    expect(agg('(SUM((o.amount * o.qty))) -- net'))
+        .toEqual({fn: 'SUM', operand: 'o.amount * o.qty', distinct: false});
+    expect(agg('COUNT(DISTINCT (o.a + o.b))'))
+        .toEqual({fn: 'COUNT', operand: 'o.a + o.b', distinct: true});
+    expect(agg('MAX(SAFE.DIVIDE(o.a, o.b))'))
+        .toEqual({fn: 'MAX', operand: 'SAFE.DIVIDE(o.a, o.b)', distinct: false});
+    expect(agg('COUNT(*)'))
+        .toEqual({fn: 'COUNT', operand: '*', distinct: false});
+    expect(agg('SUM(o.amount) / 2')).toBeUndefined();
+  });
+});
 describe('isSingleAggregate', () => {
   test('reads one of the five aggregates over one operand, and nothing else', () => {
     const read = (text: string, dialect = 'BIGQUERY') =>
@@ -356,7 +472,7 @@ describe('isSingleAggregate', () => {
            'SUM(o.amount ORDER BY o.id)', 'SUM(o.amount IGNORE NULLS)',
            'MAX(o.amount HAVING MAX o.id)', 'SUM(MAX(o.amount))',
            'SUM(SUM(o.amount) OVER ())', 'SUM((SELECT 1))', 'COUNT((*))',
-           'SUM(((o.a, o.b)))', 'SUM(', '  ',
+           'SUM(((o.a, o.b)))', 'SUM(', '  ', 'SUM(o.amount);',
          ]) {
       expect(read(text)).toEqual({text, single: false});
     }

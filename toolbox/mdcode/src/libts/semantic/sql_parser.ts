@@ -22,10 +22,14 @@ export interface PolyglotEngine {
       {success: boolean; tokens?: SqlToken[]; error?: string};
 }
 
-// A token the engine reads, as the engine returns it. `span` counts Unicode
-// code points from the start of the text, end exclusive. The comments the
-// tokenizer skipped are attached to the token after them or before them.
-interface SqlToken {
+// A token the engine reads, as the engine returns it. `token_type` is the
+// engine's kind, such as `VAR`, `QUOTED_IDENTIFIER`, `DOT` or `STRING`. `text`
+// is the token as written, except that a quoted identifier or a string literal
+// gives what is inside its quotes. `span` counts Unicode code points from the
+// start of the text, end exclusive. The comments the tokenizer skipped are
+// attached to the token after them or before them.
+export interface SqlToken {
+  token_type: string;
   text: string;
   span: {start: number; end: number};
   comments: string[];
@@ -100,6 +104,27 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
   collectColumns(tree, columns, new Set(),
                  PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic');
   return columns;
+}
+
+// The column `expression` is, read in `dialect`, when it is one column and
+// nothing else, perhaps in parentheses: `orders.amount`, `` (`order`) `` or
+// `amount`, but not a struct path such as `orders.address.city` or any other
+// expression. Undefined otherwise, or when the engine cannot read it. Throws
+// when the engine is not loaded.
+export function soleColumn(expression: string, dialect: string): SqlColumn|
+    undefined {
+  let tree = sqlExpressionTree(expression, dialect);
+  const kind = (node: any) =>
+      node && Object.keys(node).length === 1 ? Object.keys(node)[0] : undefined;
+  while (kind(tree) === 'paren') tree = tree.paren.this;
+  // `Time.hour` reads as a field of a column named `Time` (see
+  // collectColumns), so a dot on a column with no qualifier is one too.
+  const isColumn = kind(tree) === 'column' ||
+      (kind(tree) === 'dot' && kind(tree.dot.this) === 'column' &&
+       !tree.dot.this.column.table);
+  if (!isColumn) return undefined;
+  const columns = sqlColumns(expression, dialect);
+  return columns?.length === 1 ? columns[0] : undefined;
 }
 
 // The engine's tree of `expression` read as one expression in `dialect`, or
@@ -360,7 +385,7 @@ function isNamePath(node: unknown): boolean {
 
 // The tokens of `expression` in `dialect`, or undefined when the engine cannot
 // tokenize it. Throws when the engine is not loaded.
-function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
+export function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
   if (!loadedEngine) {
     throw new Error(
         'the SQL parser is not loaded; call loadSqlEngine() first');
