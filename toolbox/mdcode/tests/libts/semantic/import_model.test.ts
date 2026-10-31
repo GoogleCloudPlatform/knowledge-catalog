@@ -244,6 +244,9 @@ describe('conversion, strict mode, and translation', () => {
 describe('profile translation', () => {
   const fieldExpr =
       '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}';
+  // Its Snowflake text spans two lines, which a profile file writes as a
+  // block scalar.
+  const SNOWFLAKE = 'NVL(o.order_id, 0)\n  + NVL(o.order_id, 1) + NVL(o.order_id, 2)';
   const PROD = {
     name: 'prod',
     entities: [{
@@ -251,7 +254,7 @@ describe('profile translation', () => {
       source: `${BQ_PREFIX}/tables/orders_prod`,
       fields: [{
         name: 'order_id',
-        expression: {dialects: [{dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'}]},
+        expression: {dialects: [{dialect: 'SNOWFLAKE', expression: SNOWFLAKE}]},
       }],
     }],
   };
@@ -277,12 +280,24 @@ describe('profile translation', () => {
         loadProfileFile(res.files[1].content, 'prod') :
         loadModels(res.files[0].content).models[0].profiles![0];
     expect(written.entities[0].fields![0].dialects).toEqual([
-      {dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'},
-      {dialect: 'BIGQUERY', expression: 'COALESCE(o.order_id, 0)'},
+      {dialect: 'SNOWFLAKE', expression: SNOWFLAKE},
+      {
+        dialect: 'BIGQUERY',
+        expression: 'COALESCE(o.order_id, 0) + COALESCE(o.order_id, 1) + COALESCE(o.order_id, 2)',
+      },
     ]);
     expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual([
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
     ]);
+  });
+
+  test('reports a profile file it writes that does not parse', async () => {
+    const res = await importSemanticModelYaml(googleDoc(), {
+      flavor: 'google',
+      profileFiles: [{fileName: 'retail.profile.prod.yaml', content: 'name: [prod\n'}],
+    });
+    expect(res.errors).toEqual([expect.stringContaining(
+        "the import writes 'retail.profile.prod.yaml', which does not parse: ")]);
   });
 });
 

@@ -1099,11 +1099,18 @@ function withDialects(content: string, profile: ProfileSpec): string {
     (entry.contents as yaml.YAMLMap).flow = true;
     // The node's range can end in whitespace, which stays.
     const written = content.slice(start, end);
+    // Each string is double-quoted with its line breaks escaped, so the
+    // mapping stays on the one line it starts on.
+    const oneLine = entry.toString({
+      lineWidth: 0,
+      defaultStringType: 'QUOTE_DOUBLE',
+      defaultKeyType: 'PLAIN',
+      doubleQuotedMinMultiLineLength: Infinity,
+    });
     edits.push({
       start,
       end,
-      text: entry.toString({lineWidth: 0}).trimEnd() +
-          written.slice(written.trimEnd().length),
+      text: oneLine.trimEnd() + written.slice(written.trimEnd().length),
     });
   }));
   // Applied from the end of the file, so each edit's offsets still hold.
@@ -1427,9 +1434,17 @@ export async function importSemanticModelYaml(
           doc, rawYaml, !!opts.transpile,
           googleToGoogle ? opts.profileFiles ?? [] : []);
 
-  // 4. Validate the primary output document and return the result.
+  // 4. Validate the primary output document, check that each profile file
+  // the import writes parses, and return the result.
   if (files.length > 0 && doc.errors.length === 0) {
     validateOutputDocument(files[0].content, doc);
+  }
+  for (const f of files.slice(1)) {
+    const [problem] = yaml.parseDocument(f.content, YAML_OPTIONS).errors;
+    if (problem) {
+      doc.errors.push(`the import writes '${f.fileName}', which does not ` +
+                      `parse: ${problem.message}`);
+    }
   }
   return {
     ok: doc.errors.length === 0,
