@@ -2958,59 +2958,14 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     });
   });
 
-  // A graph's node and edge tables share one set of names, and on BigQuery a
-  // measure's name differs from every property's.
-  describe('names a graph holds once', () => {
-    const IN = (engine: string, problem: string) =>
-        `model 'commerce' (commerce) deployment '${engine.toLowerCase()}' ` +
-        `targets ${engine}, where ${problem}`;
-
-    test('rejects an entity and a relationship named alike ignoring case on a BigQuery or Spanner graph', () => {
-      const m = commerce({
-        deployments: BQ + deployment('spanner') + deployment('alloydb'),
-      });
-      m.relationships[0].name = 'Customer';
-      expect(check(m)).toEqual(['BigQuery', 'Spanner'].map(
-          engine => IN(engine,
-                       "entity 'customer' and relationship 'Customer' cannot " +
-                           'both name a table: node and edge tables share ' +
-                           'one set of names, compared ignoring case; ' +
-                           'rename one.')));
-    });
-
-    // A field of the metric's own entity is left to another check. A field
-    // the deployment leaves unbound, or one of an entity with no key, is not
-    // in the graph.
-    test('rejects on BigQuery a metric named like a field of another entity', () => {
-      const named = (name: string, customerKeys = ['c_id']) => {
-        const m = commerce({
-          deployments: BQ,
-          metric: `{ name: ${name}, entity: purchase, expression: ` +
-              '"SUM(purchase.amount)" }',
-        });
-        m.entities[0].keys = customerKeys;
-        return check(m);
-      };
-      expect(named('C_ID')).toEqual([IN(
-          'BigQuery',
-          "metric 'C_ID' cannot share its name with field 'customer.c_id': " +
-              "a measure's name differs from every property's in the " +
-              'graph, compared ignoring case; rename one.')]);
-      for (const [name, keys] of [['Amount'], ['c_name'], ['C_ID', []]] as
-           Array<[string, string[]?]>) {
-        expect({name, errors: named(name, keys)}).toEqual({name, errors: []});
-      }
-    });
-  });
-
-  // BigQuery limits the OPTIONS of each label and property kcmd writes one
-  // for. A description counts what kcmd adds to it.
-  describe('BigQuery OPTIONS', () => {
+  // The names a BigQuery or Spanner graph holds once, and the OPTIONS BigQuery
+  // limits on each label and property kcmd writes.
+  describe('graph names and BigQuery OPTIONS', () => {
     const x = (n: number) => 'x'.repeat(n);
     const synonyms = (n: number) => [...Array(n).keys()].map(String);
     // The errors of the model with metric revenue on `deployments`, after
     // `change`.
-    const optionErrors =
+    const errorsAfter =
         (change: (m: SemanticModel) => void, deployments = BQ) => {
           const m = commerce({
             deployments,
@@ -3020,19 +2975,62 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           change(m);
           return check(m);
         };
-    const IN = (problem: string, deployment = 'bigquery') =>
+    const IN = (problem: string, engine = 'BigQuery',
+                deployment = engine.toLowerCase()) =>
         `model 'commerce' (commerce) deployment '${deployment}' targets ` +
-        `BigQuery, where ${problem}`;
+        `${engine}, where ${problem}`;
     const NINE = "field 'purchase.amount' has 9 synonyms; a label or " +
         'property holds at most 8.';
 
-    test('rejects a description past 1024 characters with what kcmd adds to it', () => {
-      // 1001 characters and an instruction, or 1012 and an example, give 1025.
-      const instructed = {
-        description: x(1001),
-        aiContext: {instructions: 'Exclude test accounts.'},
-      };
-      expect(optionErrors(m => {
+    test('rejects an entity and a relationship named alike ignoring case on a BigQuery or Spanner graph', () => {
+      expect(errorsAfter(m => m.relationships[0].name = 'Customer',
+                          BQ + deployment('spanner') + deployment('alloydb')))
+          .toEqual(['BigQuery', 'Spanner'].map(
+              engine => IN("entity 'customer' and relationship 'Customer' " +
+                               'cannot both name a table: node and edge ' +
+                               'tables share one set of names, compared ' +
+                               'ignoring case; rename one.',
+                           engine)));
+    });
+
+    // A field of the metric's own entity is left to another check. A field
+    // the deployment leaves unbound, or one of an entity with no key, is not
+    // in the graph.
+    test('rejects on BigQuery a metric named like a field of another entity', () => {
+      const named = (name: string, customerKeys = ['c_id']) =>
+          errorsAfter(m => {
+            m.metrics![0].name = name;
+            m.entities[0].keys = customerKeys;
+          });
+      expect(named('C_ID')).toEqual([IN(
+          "metric 'C_ID' cannot share its name with field 'customer.c_id': " +
+          "a measure's name differs from every property's in the graph, " +
+          'compared ignoring case; rename one.')]);
+      for (const [name, keys] of [['Amount'], ['c_name'], ['C_ID', []]] as
+           Array<[string, string[]?]>) {
+        expect({name, errors: named(name, keys)}).toEqual({name, errors: []});
+      }
+    });
+
+    // With the catalog check's errors after the graph checks'.
+    const withCatalog = (change: (m: SemanticModel) => void) => {
+      let model: SemanticModel;
+      const errors = errorsAfter(m => change(model = m));
+      return [
+        ...errors, ...validatePushRequirements([loaded(model!, 'commerce')]),
+      ];
+    };
+    const LONG = (what: string, n = 1025) => IN(
+        `the description kcmd writes for ${what} is ${n} characters long; ` +
+        "a label or property's description holds at most 1024.");
+    // 1001 characters and an instruction, or 1012 and an example, give 1025.
+    const instructed = {
+      description: x(1001),
+      aiContext: {instructions: 'Exclude test accounts.'},
+    };
+    const timeField = {dimension: {isTime: true}, description: x(1000)};
+    test.each<[string, (m: SemanticModel) => void, string[]]>([
+      ['past 1024 characters with what kcmd adds', m => {
         Object.assign(m.entities[0], instructed);
         Object.assign(
             m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
@@ -3040,16 +3038,32 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
             m.relationships[0],
             {description: x(1012), aiContext: {examples: ['a']}});
         Object.assign(m.metrics![0], instructed);
-      })).toEqual([
+      }, [
         "entity 'customer'", "field 'purchase.amount'",
         "relationship 'placed_by'", "metric 'revenue'",
-      ].map(what => IN(`the description kcmd writes for ${what} is 1025 ` +
-                       "characters long; a label or property's description " +
-                       'holds at most 1024.')));
-    });
+      ].map(what => LONG(what))],
+      ['of 1001 characters with no instruction', m => {
+        m.entities[0].description = x(1001);
+      }, []],
+      ['of a field with a label and a time role', m => {
+        Object.assign(m.entities[1].fields[1], {...timeField, label: 'Amount'});
+      }, [LONG("field 'purchase.amount'")]],
+      ['of a field with a time role and no label', m => {
+        Object.assign(m.entities[1].fields[1], timeField);
+      }, []],
+      ['of 2001 characters, which Knowledge Catalog rejects too', m => {
+        m.entities[0].description = x(2001);
+      }, [
+        LONG("entity 'customer'", 2001),
+        "model 'commerce' (commerce): the description of entity 'customer' " +
+            "is 2001 characters long; a Knowledge Catalog entry's " +
+            'description holds at most 2000.',
+      ]],
+    ])('a description %s', (_, change, errors) =>
+        expect(withCatalog(change)).toEqual(errors));
 
     test('rejects too many, too long, empty, repeated and self-naming synonyms', () => {
-      expect(optionErrors(m => {
+      expect(errorsAfter(m => {
         m.entities[0].aiContext = {synonyms: ['Customer']};
         m.entities[1].fields[1].aiContext = {synonyms: synonyms(9)};
         m.relationships[0].aiContext = {synonyms: ['Placed_By']};
@@ -3074,7 +3088,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     // An abstract entity has no node table, a label another entity extends
     // carries no OPTIONS, and a field with no BigQuery text is left out.
     test('passes values at the limits and elements the graph writes no OPTIONS for', () => {
-      expect(optionErrors(m => {
+      expect(errorsAfter(m => {
         m.relationships[0].description = x(1024);
         m.entities[1].fields[1].aiContext = {synonyms: synonyms(8)};
         m.metrics![0].aiContext = {synonyms: [x(300)]};
@@ -3098,12 +3112,12 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           entities: [{name: 'purchase', fieldsExclude: ['amount']}],
         }];
       };
-      expect(optionErrors(nine, '')).toEqual([]);
-      expect(optionErrors(nine, deployment('spanner'))).toEqual([]);
-      expect(optionErrors(
+      expect(errorsAfter(nine, '')).toEqual([]);
+      expect(errorsAfter(nine, deployment('spanner'))).toEqual([]);
+      expect(errorsAfter(
                  nine, deployment('bigquery', 'ops') +
                      `      - name: dev\n        target: ${BQ_TARGET}2\n`))
-          .toEqual([IN(NINE, 'dev')]);
+          .toEqual([IN(NINE, 'BigQuery', 'dev')]);
     });
   });
 });
