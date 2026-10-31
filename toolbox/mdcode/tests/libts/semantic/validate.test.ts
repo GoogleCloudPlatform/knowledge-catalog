@@ -2957,6 +2957,51 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       expect(check(m)).toEqual([]);
     });
   });
+
+  // A graph's node and edge tables share one set of names, and on BigQuery a
+  // measure's name differs from every property's.
+  describe('names a graph holds once', () => {
+    const IN = (engine: string, problem: string) =>
+        `model 'commerce' (commerce) deployment '${engine.toLowerCase()}' ` +
+        `targets ${engine}, where ${problem}`;
+
+    test('rejects an entity and a relationship named alike ignoring case on a BigQuery or Spanner graph', () => {
+      const m = commerce({
+        deployments: BQ + deployment('spanner') + deployment('alloydb'),
+      });
+      m.relationships[0].name = 'Customer';
+      expect(check(m)).toEqual(['BigQuery', 'Spanner'].map(
+          engine => IN(engine,
+                       "entity 'customer' and relationship 'Customer' cannot " +
+                           'both name a table: node and edge tables share ' +
+                           'one set of names, compared ignoring case; ' +
+                           'rename one.')));
+    });
+
+    // A field of the metric's own entity is left to another check. A field
+    // the deployment leaves unbound, or one of an entity with no key, is not
+    // in the graph.
+    test('rejects on BigQuery a metric named like a field of another entity', () => {
+      const named = (name: string, customerKeys = ['c_id']) => {
+        const m = commerce({
+          deployments: BQ,
+          metric: `{ name: ${name}, entity: purchase, expression: ` +
+              '"SUM(purchase.amount)" }',
+        });
+        m.entities[0].keys = customerKeys;
+        return check(m);
+      };
+      expect(named('C_ID')).toEqual([IN(
+          'BigQuery',
+          "metric 'C_ID' cannot share its name with field 'customer.c_id': " +
+              "a measure's name differs from every property's in the " +
+              'graph, compared ignoring case; rename one.')]);
+      for (const [name, keys] of [['Amount'], ['c_name'], ['C_ID', []]] as
+           Array<[string, string[]?]>) {
+        expect({name, errors: named(name, keys)}).toEqual({name, errors: []});
+      }
+    });
+  });
 });
 
 describe('validateInlineDialects', () => {

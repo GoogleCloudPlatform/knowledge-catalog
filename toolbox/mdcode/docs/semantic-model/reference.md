@@ -670,7 +670,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deployment deploys no metric. A BigQuery deployment turns each metric into a
   measure, so each metric must be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over
   one operand, and the entity it belongs to needs a primary key or a unique
-  key. The measure rule skips a metric that has only a vendor text.
+  key. The measure rule skips a metric that has only a vendor text. A
+  BigQuery or Spanner graph cannot hold an entity and a relationship whose
+  names match ignoring case. A BigQuery graph also cannot hold a metric named
+  like a field of another entity, ignoring case.
   A deployment that names a profile is held to the measure rule under that
   profile, with the keys it states, except for the metrics it leaves
   unavailable. On Spanner, that profile must leave every metric unavailable.

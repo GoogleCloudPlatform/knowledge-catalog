@@ -199,6 +199,9 @@ export function validateDeployments(
         model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
     if (!bound) continue;
     const available = bound.model.metrics ?? [];
+    if (engine === 'bigquery' || engine === 'spanner') {
+      for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
+    }
     if (named) {
       if (engine === 'spanner' && available.length) {
         add(d.name,
@@ -398,6 +401,41 @@ function metricFieldCollisionError(
              document}) collides with field '${match}' on entity '${
              owner}'; metrics and fields on the same entity share a ` +
       `namespace.`;
+}
+
+// The names a graph on `engine` cannot hold in `model`, each as the end of a
+// sentence about a deployment. Node and edge tables share one set of names,
+// and on BigQuery a measure's name differs from every property's, which only
+// an entity with a key has. Both compare names ignoring case. A metric named
+// like a field of its own entity is left to metricFieldCollisionError.
+function graphNameProblems(
+    model: SemanticModel, engine: 'bigquery'|'spanner'): string[] {
+  const at = `targets ${engine === 'bigquery' ? 'BigQuery' : 'Spanner'}, where`;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const problems: string[] = [];
+  for (const r of model.relationships ?? []) {
+    const e = model.entities?.find(e => same(e.name, r.name));
+    if (!e) continue;
+    problems.push(
+        `${at} entity '${e.name}' and relationship '${r.name}' cannot both ` +
+        `name a table: node and edge tables share one set of names, ` +
+        `compared ignoring case; rename one.`);
+  }
+  if (engine === 'spanner') return problems;
+  const tables =
+      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
+  for (const m of model.metrics ?? []) {
+    for (const e of tables) {
+      const f = e.name !== (m.authoredEntity ?? m.entity) &&
+          e.fields.find(f => same(f.name, m.name));
+      if (!f) continue;
+      problems.push(
+          `${at} metric '${m.name}' cannot share its name with field '${
+              e.name}.${f.name}': a measure's name differs from every ` +
+          `property's in the graph, compared ignoring case; rename one.`);
+    }
+  }
+  return problems;
 }
 
 // The error for a reference whose qualifier matches one of `entityNames` only
