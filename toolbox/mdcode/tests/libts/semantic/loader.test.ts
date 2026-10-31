@@ -232,8 +232,8 @@ describe('expression warnings judge each expression on the table that runs it', 
   const quoted = both(
       `BigQuery reads "x" in its 'ANSI_SQL' expression as text; if you meant ` +
       `a column, give it a 'BIGQUERY' expression without the double quotes; ` +
-      `in a model file, 'kcmd import <file> --input first-party --flavor ` +
-      `<ossie|google> --transpile' adds one`);
+      `'kcmd import <file> --input first-party --flavor <ossie|google> ` +
+      `--transpile' adds one`);
   const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
       'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
       'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +

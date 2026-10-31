@@ -1007,7 +1007,7 @@ async function transpileDocument(
     return changed;
   };
   // Each of `profileFiles` as loaded, or undefined for one that does not
-  // load. That one is written as it is, since push reports it.
+  // load. One that parses is written as it is, since push reports it.
   const loaded = profileFiles.map(pf => {
     try {
       return loadProfileFile(

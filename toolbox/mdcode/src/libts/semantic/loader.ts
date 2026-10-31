@@ -1995,7 +1995,7 @@ function expressionWarning(
                doubleQuotedName(ansi.expression)}" in its '${
                FALLBACK_DIALECT}' expression as text; if you meant a column, ` +
         `give it a '${DEFAULT_DIALECT}' expression without the double ` +
-        `quotes; in a model file, '${IMPORT_TRANSPILE_COMMAND}' adds one`;
+        `quotes; '${IMPORT_TRANSPILE_COMMAND}' adds one`;
   }
   if (item.stringForm) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
