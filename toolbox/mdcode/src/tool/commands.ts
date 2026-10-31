@@ -1134,11 +1134,10 @@ async function pushInTwoPhases(
         plan, ctx, source.project ?? ctx.project, locationWarnings);
     if (errors.length) break;
   }
-  // A push that deploys reads each dataset's location again and prints the
-  // same warning with the graph.
-  if (errors.length || options.validateOnly) {
-    for (const w of new Set(locationWarnings)) console.warn(`Warning: ${w}`);
-  }
+  // Every warning about a graph prints before the first write, and phase 2
+  // does not print it again.
+  const printed = new Set(locationWarnings);
+  for (const w of printed) console.warn(`Warning: ${w}`);
   if (errors.length) return fail(...errors);
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
@@ -1152,6 +1151,10 @@ async function pushInTwoPhases(
           options);
     }
     return reportCatalogResult(preflight.result!, options);
+  }
+  for (const w of plans.flatMap(p => p.generated?.warnings ?? [])) {
+    console.warn(`Warning: ${w}`);
+    printed.add(w);
   }
   console.log('Pushing semantic model (Knowledge Catalog)...');
   const published =
@@ -1169,8 +1172,8 @@ async function pushInTwoPhases(
       continue;
     }
     const code = deployment.engine === 'bigquery' ?
-        await pushBigQuery([model], ctx, options) :
-        await pushSpanner([model], ctx, options);
+        await pushBigQuery([model], ctx, options, printed) :
+        await pushSpanner([model], ctx, options, printed);
     if (code !== 0) return code;
   }
   return 0;
@@ -1822,11 +1825,14 @@ async function sqlParserError(): Promise<string|undefined> {
 }
 
 
-// Prints a graph leg's warnings, and under --print its DDL.
+// Prints a graph leg's warnings, less those in `printed`, and under --print
+// its DDL.
 function printGraph(
     engine: 'BigQuery'|'Spanner', result: {warnings: string[]; ddl: string[]},
-    options: PushOptions): void {
-  for (const w of result.warnings) console.warn(`Warning: ${w}`);
+    options: PushOptions, printed?: ReadonlySet<string>): void {
+  for (const w of result.warnings) {
+    if (!printed?.has(w)) console.warn(`Warning: ${w}`);
+  }
   if (!options.print) return;
   console.log(`-- ${engine} Graph --`);
   for (const block of result.ddl) console.log(`${block}\n`);
@@ -1836,13 +1842,13 @@ function printGraph(
 // Deploys the semantic model's BigQuery Graph leg (over the pre-loaded models)
 // and prints the result. Returns a process exit code (0 on success).
 async function pushBigQuery(
-    models: LoadedModel[], ctx: context.ApiContext,
-    options: PushOptions): Promise<number> {
+    models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
+    printed?: ReadonlySet<string>): Promise<number> {
   console.log(
       options.validateOnly ? 'Validating semantic model for BigQuery Graph...' :
                              'Pushing semantic model (BigQuery Graph)...');
   const result = await deploy.deployBigQuery(models, ctx, options);
-  printGraph('BigQuery', result, options);
+  printGraph('BigQuery', result, options, printed);
 
   if (!result.success) {
     console.error('Error pushing semantic model to BigQuery:', result.details);
@@ -1859,13 +1865,13 @@ async function pushBigQuery(
 // and prints the result. Sibling to pushBigQuery. Returns a process exit code
 // (0 on success).
 async function pushSpanner(
-    models: LoadedModel[], ctx: context.ApiContext,
-    options: PushOptions): Promise<number> {
+    models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
+    printed?: ReadonlySet<string>): Promise<number> {
   console.log(
       options.validateOnly ? 'Validating semantic model for Spanner Graph...' :
                              'Pushing semantic model (Spanner Graph)...');
   const result = await deploySpannerLeg.deploySpanner(models, ctx, options);
-  printGraph('Spanner', result, options);
+  printGraph('Spanner', result, options, printed);
 
   if (!result.success) {
     console.error('Error pushing semantic model to Spanner:', result.details);

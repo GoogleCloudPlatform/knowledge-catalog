@@ -52,7 +52,8 @@ A model that lists `deployments:`, and a push with `--deployment` or
 `--no-deployment`, run in two phases. So does a push of a model with a sibling
 profile file, without `--profile`, `--all-profiles` or `--no-profile`. The first
 runs every check, for Knowledge Catalog and for each deployment, and writes
-nothing. The second publishes the model to Knowledge Catalog, then deploys each
+nothing. It also prints each graph's warnings, such as a metric the graph leaves
+out. The second publishes the model to Knowledge Catalog, then deploys each
 deployment in order with the profile it names. An AlloyDB deployment deploys no
 graph. The first phase dry-runs each BigQuery graph's DDL. Spanner cannot check
 a graph's DDL without running it, so a Spanner deployment whose DDL Spanner

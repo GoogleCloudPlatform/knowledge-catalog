@@ -385,7 +385,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       // A push that deploys prints them once too.
       {warnings: ['Warning: ddl warning g1', 'Warning: ddl warning g2']},
       // A dataset whose location cannot be read prints that warning once,
-      // and a push that deploys prints it with each graph.
+      // and a push that deploys prints every warning before it writes.
       {
         flags: {validateOnly: true, ...SKIP},
         services: DENIED,
@@ -399,8 +399,11 @@ scenarios('how push deploys each deployment in order, and what it prints', [
         services: DENIED,
         warnings: [
           NO_LOCATION('test-project'), 'Warning: ddl warning g1',
-          NO_LOCATION('test-project'), 'Warning: ddl warning g2',
+          'Warning: ddl warning g2',
         ],
+        check: r => expect(r.printed.indexOf(
+                               'Pushing semantic model (Knowledge Catalog)...'))
+                        .toBe(r.printed.indexOf('Warning: ddl warning g2') + 1),
       },
     ],
   },
@@ -412,6 +415,10 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       "Warning: metric 'broken' in model 'commerce' (commerce): kcmd could " +
           'not read its SQL, so the fields it reads were not checked.',
       "Note: profile 'default' leaves 1 field(s) unbound.",
+      ...['g1', 'g2'].map(g => `Warning: [commerce -> ${g}] metric 'broken' ` +
+          "expression 'SUM((x' is not a single supported aggregate (SUM, " +
+          'AVG, COUNT, MIN, MAX) over one operand; skipped (cannot be a ' +
+          'single MEASURE)'),
     ],
   },
   {
