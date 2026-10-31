@@ -485,6 +485,16 @@ scenarios('how push deploys each deployment in order, and what it prints', [
           "'top', and action 'refund' unavailable.",
     ],
     then: [{
+      metrics:
+          [{name: 'total', entity: 'Customer', expression: 'SUM(Customer.ltv)'}],
+      flags: {validateOnly: true},
+      warnings: [
+        has('1 action(s) published as semantic-action entries'),
+        "Note: model 'commerce' (commerce, deployment 'g1') excludes fields " +
+            "'Customer.ltv' and 'Customer.ltv2'. It leaves metric 'total' and " +
+            "action 'refund' unavailable.",
+      ],
+    }, {
       deployments: ['g'],
       metrics: undefined,
       warnings: [

@@ -633,7 +633,7 @@ function pruningLines(
   const unavailable = [
     named('metric', r.droppedMetrics.map(m => m.name)),
     named('action', r.droppedActions.map(a => a.name)),
-  ].filter(n => n).join(', and ');
+  ].filter(n => n).join(r.droppedMetrics.length > 1 ? ', and ' : ' and ');
   const note = [
     excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
     unavailable && `leaves ${unavailable} unavailable.`,
@@ -1423,7 +1423,6 @@ async function deploymentPlan(
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
-  // An AlloyDB database holds no graph.
   leftOut.push(...pruningLines(
       report, model.name, label,
       deployment.engine === 'alloydb' ? 'it is unavailable there' : undefined));
