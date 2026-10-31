@@ -98,7 +98,10 @@ agree on every structural row and differ only where a Spanner target has no
     --transpile` adds a `BIGQUERY` dialect entry to a model file's field or
     metric, translated from a vendor-only expression or from an `ANSI_SQL`
     expression that double-quotes column names. It leaves a profile's
-    expressions as written. A BigQuery
+    expressions as written. Without the translation, kcmd warns about either
+    kind of text on a BigQuery table. On a table in another database, it warns
+    only about a metric with no text that table runs. When a profile binds
+    that table, push rejects the metric instead. A BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with
     a warning, though push rejects such a field in the model file first. A

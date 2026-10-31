@@ -10,7 +10,7 @@ import * as YAML from 'yaml';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, pushed, scenarios, Scope, SNOWFLAKE_METRIC, writeScope} from './harness';
+import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, pushed, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const legacy = (model: string, entities?: object[], actions?: object[]) =>
@@ -66,11 +66,32 @@ scenarios('push --no-deployment', [
   },
   {
     // Push translates nothing; kcmd import --transpile does.
-    name: 'a vendor-only metric reaches Knowledge Catalog as written, with the loader\'s warning',
-    metrics: [SNOWFLAKE_METRIC],
+    name: 'a vendor-only metric and an ANSI_SQL metric that double-quotes a name reach Knowledge Catalog as written, each with the loader\'s warning',
+    metrics: [SNOWFLAKE_METRIC, {
+      name: 'quoted_keys', entity: 'Customer',
+      expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("key")'}]},
+    }],
     flags: {validateOnly: true},
     code: 0,
-    warnings: [has('needs transpilation')],
+    warnings: [
+      has('needs transpilation'),
+      has("metric 'quoted_keys': BigQuery reads \"key\" in its 'ANSI_SQL' expression as text"),
+    ],
+    then: [{
+      // Push checks no model-file metric against a Spanner table's dialect,
+      // so the load's warning is the only message.
+      entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
+      metrics: [SNOWFLAKE_METRIC],
+      code: 0,
+      warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
+    }, {
+      // Under a profile on Spanner, push's error is the only message.
+      profiles: {ops: {entities: {Customer: {...CUSTOMER, source: SPANNER_CUSTOMER}}}},
+      metrics: [SNOWFLAKE_METRIC],
+      flags: {deployment: undefined, validateOnly: true, profile: 'ops'},
+      code: 1,
+      warnings: [],
+    }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),

@@ -3983,27 +3983,39 @@ describe('applyProfile options', () => {
     }]}],
   });
 
-  test('warnings name what the profile\'s own values give, in the load dialect', () => {
-    // The empty key warns. The load's dialect picked each field's text, so it
-    // judges the Spanner-only text, whatever system the sources are in.
+  test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
+    // The empty key warns. A Spanner table runs the Spanner-only text, and a
+    // BigQuery table needs it translated.
     const onSpanner: string[] = [];
     applyProfile(base(), rebind(SP('Orders')), {warnings: onSpanner});
     expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
-    expect(onSpanner.join('\n')).toContain(
+    expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
+    const onBigQuery: string[] = [];
+    applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
+    expect(onBigQuery.join('\n')).toContain(
         "field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect");
-    const loadedForSpanner: string[] = [];
-    applyProfile(
-        base(), rebind(SP('Orders')),
-        {warnings: loadedForSpanner, load: {dialect: 'SPANNER'}});
-    expect(loadedForSpanner.join('\n')).not.toContain("field 'orders.amount'");
     // A warning the model gave already is the model's, not the profile's.
     const withOwn = base();
     withOwn.entities[0].fields.push(
         {name: 'legacy', dialects: [{dialect: 'SPANNER', expression: 'x'}]} as any);
     const own: string[] = [];
-    applyProfile(withOwn, rebind(SP('Orders')), {warnings: own});
+    applyProfile(withOwn, rebind(BQ('orders2')), {warnings: own});
     expect(own.join('\n')).toContain("field 'orders.amount'");
     expect(own.join('\n')).not.toContain("field 'orders.legacy'");
+  });
+
+  test('a metric the profile excludes gives no warning under it', () => {
+    const model = base();
+    model.entities[0].dataSource = model.entities[0].authoredSource = SP('orders');
+    model.metrics.push({name: 'm', entity: 'orders',
+                        dialects: [{dialect: 'SPANNER', expression: 'SUM(orders.id)'}]});
+    const warned = (metricsExclude?: string[]) => {
+      const out: string[] = [];
+      applyProfile(model, {...rebind(BQ('orders2')), metricsExclude}, {warnings: out});
+      return out.filter(w => w.startsWith("metric 'm'"));
+    };
+    expect(warned()).toHaveLength(1);
+    expect(warned(['m'])).toEqual([]);
   });
 
   test('the load dialect picks each field\'s text', () => {
@@ -5094,10 +5106,10 @@ semantic_model:
     expect(dialect).toBeGreaterThan(noEntity);
   });
 
-  // Push, `kcmd profiles` and the runtime judge the applied model in the
-  // load's dialect, which picked the text the model holds: under a Spanner
-  // profile, a SPANNER-only metric warns as the model file's load does.
-  test('the callers judge warnings in the load dialect', () => {
+  // Push, `kcmd profiles` and the runtime judge the applied model on the
+  // profile's tables: a SPANNER-only metric warns on the model file's
+  // BigQuery tables, and not under a profile that binds Spanner tables.
+  test('the callers judge warnings on the profile\'s tables', () => {
     const SP = (t: string) => `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
     const res = profileForDocument(DOC, [{name: 'sp', text: `name: sp
 entities:
@@ -5110,7 +5122,7 @@ entities:
     const loaded = loadSemanticModels([DOC], {defaultProject: 'acme', bindingOptional: true});
     const own = loaded.warnings.filter(w => w.includes("metric 'spanner_total'"));
     expect(own.length).toBe(1);
-    expect(res.warnings.filter(w => w.includes("metric 'spanner_total'"))).toEqual(own);
+    expect(res.warnings.filter(w => w.includes("metric 'spanner_total'"))).toEqual([]);
   });
 
   // With two sources the readers reject, the error names the first.

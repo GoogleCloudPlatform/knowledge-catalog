@@ -283,7 +283,7 @@ A field or metric `expression` is either a bare SQL string or the per-dialect
 form:
 
 ```yaml
-expression: SUM(orders.net_amount)        # shorthand: dialect BIGQUERY
+expression: SUM(orders.net_amount)        # shorthand: dialect ANSI_SQL
 
 expression:                               # explicit per-dialect
   dialects:

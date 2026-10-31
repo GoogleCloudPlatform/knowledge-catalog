@@ -1089,8 +1089,8 @@ export function applyProfile(
   if ('error' in res) throw new SemanticModelError(res.error);
   if (opts.warnings) {
     // With no `from`, these are the applied model's entity and metric
-    // warnings, judged in the load dialect as the callers judge them. Keep
-    // those the model did not give already.
+    // warnings, judged on its tables in the load dialect, as the callers
+    // judge them. Keep those the model did not give already.
     const before = new Set(entityAndMetricWarnings(
         model, opts.load?.dialect ?? DEFAULT_DIALECT));
     opts.warnings.push(...res.warnings.filter(w => !before.has(w)));
@@ -1349,7 +1349,7 @@ export function profileSourceMessage(entity: string): string {
 // entityAndMetricWarnings, which builds them with the helpers the load uses,
 // then the model file's other load warnings, about actions, which a profile
 // does not change. That is the order a load gives them. The applied model is
-// judged in the load's dialect, which picked the text each field holds.
+// judged on its own tables, in the load's dialect.
 function warningsAfterProfile(
     model: SemanticModel, applied: SemanticModel,
     opts: Omit<ApplyProfileOptions, 'warnings'>): string[] {
@@ -1360,7 +1360,7 @@ function warningsAfterProfile(
       new Set(entityAndMetricWarnings(model, preferred).map(w => prefix + w));
   const kept = (from?.warnings ?? []).filter(w => !before.has(w));
   const after =
-      entityAndMetricWarnings(applied, preferred).map(w => prefix + w);
+      entityAndMetricWarnings(applied, preferred, true).map(w => prefix + w);
   return [...new Set([...after, ...kept])];
 }
 
