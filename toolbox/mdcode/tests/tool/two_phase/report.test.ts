@@ -31,6 +31,10 @@ const PROD = {
 const UNKNOWN_ACTION =
     [{name: 'nothing', executor: {sql: {statements: ['SELECT 1']}}}];
 
+const WRONG_CASE = "[commerce.profile.staging.yaml] profile 'staging': field " +
+    "'customer.c_id': 'Purchase.p_id' uses qualifier 'Purchase', which " +
+    "differs in case from entity 'purchase'; entity names are case-sensitive.";
+
 const SHARED = {...MODEL, deployments: [graph('prod')], code: 1,
                 flags: {validateOnly: true}};
 
@@ -167,6 +171,17 @@ scenarios('kcmd profiles reports what push rejects', [
         rejects: [has(part)],
         report: {code: 1, rejects},
       })),
+  {
+    name: 'rejects a wrong-case qualifier in a profile file that push does not apply, also under --no-deployment',
+    profiles: {staging: {...PROD, entities: {
+      ...boundIn('staging'),
+      customer: {...boundIn('staging').customer,
+                 fields: [{name: 'c_id', expression: 'Purchase.p_id'}]},
+    }}},
+    rejects: [WRONG_CASE],
+    then: [{flags: {deployment: false}, code: 1, rejects: [WRONG_CASE]}],
+    report: {code: 1, rejects: {staging: [pushed()]}},
+  },
   {
     name: 'prints only push\'s error for two models when one lists deployments',
     deployments: [graph('prod', 'prod')],

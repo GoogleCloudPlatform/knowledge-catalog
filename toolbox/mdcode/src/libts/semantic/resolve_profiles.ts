@@ -39,6 +39,7 @@ import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -2073,6 +2074,9 @@ export function validateProfileCompleteness(
                     other}'; a field expression reads only its own entity`);
           }
         }
+        errors.push(...new Set(columns.flatMap(
+            c => qualifierCaseError(`${at}: field '${pe.name}.${pf.name}'`, c,
+                                    entities.map(x => x.name)) ?? [])));
         for (const ref of fieldsReadOn(columns, pe.name)) {
           if (!known.has(ref) && !unknownAncestry.has(pe.name)) {
             errors.push(

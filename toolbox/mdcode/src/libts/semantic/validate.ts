@@ -17,7 +17,7 @@ import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, Spa
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
-import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
@@ -502,18 +502,6 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
   for (const r of model.relationships ?? []) element('relationship', r);
   for (const m of model.metrics ?? []) element('metric', m);
   return problems.map(p => `targets BigQuery, where ${p}`);
-}
-
-// The error for a reference whose qualifier matches one of `entityNames` only
-// when case is ignored, or undefined. `where` names the field or metric.
-function qualifierCaseError(
-    where: string, col: SqlColumn, entityNames: string[]): string|undefined {
-  const q = col.qualifier;
-  if (q === undefined || entityNames.includes(q)) return undefined;
-  const entity = entityNames.find(n => n.toLowerCase() === q.toLowerCase());
-  return entity &&
-      `${where}: '${q}.${col.name}' uses qualifier '${q}', which differs in ` +
-      `case from entity '${entity}'; entity names are case-sensitive.`;
 }
 
 // Static, target-independent checks for a model's actions. Returns one message
