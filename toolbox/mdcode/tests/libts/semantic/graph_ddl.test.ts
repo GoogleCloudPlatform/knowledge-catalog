@@ -134,7 +134,8 @@ EDGE TABLES (
     KEY(order_id)
     SOURCE KEY(order_id) REFERENCES orders(order_id)
     DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
-    <options Who placed it>,
+    <options Who placed it>
+    NO PROPERTIES,
   <table p.d.gifts> AS gifted_to
     KEY(gift_id)
     SOURCE KEY(order_id) REFERENCES orders(order_id)
@@ -147,6 +148,7 @@ EDGE TABLES (
     KEY(customer_id)
     SOURCE KEY(customer_id) REFERENCES ghost(customer_id)
     DESTINATION KEY(customer_id) REFERENCES customers(customer_id)
+    NO PROPERTIES
 );
 `);
        });

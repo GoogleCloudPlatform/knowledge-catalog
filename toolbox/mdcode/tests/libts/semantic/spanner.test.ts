@@ -618,6 +618,135 @@ EDGE TABLES (
 `);
     }
   });
+
+  // An element with nothing to list for any other reason gets NO PROPERTIES
+  // too. Without the clause, the engine exposes every column of the table,
+  // including one a profile leaves out.
+  describe('nothing to expose', () => {
+    // A profile excludes both of Orders' fields, and Calendar declares none.
+    test('a node table with no fields left gets NO PROPERTIES', () => {
+      const model = modelOf('shop', [
+        entity('Orders', 'Orders', ['order_id'],
+               {order_id: 'order_id', ssn: 'ssn'},
+               {excludedFields: ['order_id', 'ssn']}),
+        entity('Calendar', 'Calendar', ['day'], {}),
+      ]);
+      for (const [engine, generate, q] of ENGINES) {
+        const {ddl, warnings} = generate(model);
+        expect(ddl, engine).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}shop${q}
+NODE TABLES (
+  ${q}Orders${q} AS Orders
+    KEY(order_id)
+    NO PROPERTIES,
+  ${q}Calendar${q} AS Calendar
+    KEY(day)
+    NO PROPERTIES
+);
+`);
+        expect(warnings, engine).toEqual([]);
+      }
+    });
+
+    // A profile excludes `email` on both leaves, so the Party label has
+    // nothing to list on either.
+    test('a label with nothing to list gets NO PROPERTIES', () => {
+      const model = modelOf('parties', [
+        entity('Party', '', [], {email: {}}, {abstract: true}),
+        entity('Customer', 'Customer', ['id'], {id: 'id', email: 'c_email'},
+               {extends: ['Party'], excludedFields: ['email']}),
+        entity('Supplier', 'Supplier', ['id'], {id: 'id', email: 's_email'},
+               {extends: ['Party'], excludedFields: ['email']}),
+      ]);
+      for (const [engine, generate, q] of ENGINES) {
+        const {ddl, warnings} = generate(model);
+        expect(ddl, engine).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}parties${q}
+NODE TABLES (
+  ${q}Customer${q} AS Customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id
+    )
+    LABEL Party
+    NO PROPERTIES,
+  ${q}Supplier${q} AS Supplier
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id
+    )
+    LABEL Party
+    NO PROPERTIES
+);
+`);
+        expect(warnings, engine).toEqual([]);
+      }
+    });
+
+    // A foreign-key edge declares no fields of its own, and this association
+    // table declares none. BigQuery writes the edge's description ahead of the
+    // clause, and Spanner writes none.
+    test('an edge with no properties gets NO PROPERTIES', () => {
+      const model = modelOf('sales', [
+        entity('Orders', 'Orders', ['id'],
+               {id: 'id', customer_id: 'customer_id', total: 'total'}),
+        entity('Customer', 'Customer', ['id'], {id: 'id'}),
+      ], {relationships: [
+        {
+          name: 'placed_by',
+          source: {entity: 'Orders', columns: ['customer_id']},
+          destination: {entity: 'Customer', columns: ['id']},
+          description: 'Who placed the order',
+        },
+        {
+          name: 'gifted_to',
+          source: {entity: 'Orders', columns: ['id']},
+          destination: {entity: 'Customer', columns: ['id']},
+          association: {dataSource: 'Gifts', keys: ['gift_id'],
+                        sourceColumns: ['order_id'],
+                        destinationColumns: ['customer_id'], fields: []},
+        },
+      ]});
+      for (const [engine, generate, q] of ENGINES) {
+        const options = engine === 'BigQuery' ?
+            '    OPTIONS(description="Who placed the order")\n' :
+            '';
+        const {ddl, warnings} = generate(model);
+        expect(ddl, engine).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}sales${q}
+NODE TABLES (
+  ${q}Orders${q} AS Orders
+    KEY(id)
+    PROPERTIES(
+      id,
+      customer_id,
+      total
+    ),
+  ${q}Customer${q} AS Customer
+    KEY(id)
+    PROPERTIES(
+      id
+    )
+)
+EDGE TABLES (
+  ${q}Orders${q} AS placed_by
+    KEY(id)
+    SOURCE KEY(id) REFERENCES Orders(id)
+    DESTINATION KEY(customer_id) REFERENCES Customer(id)
+${options}    NO PROPERTIES,
+  ${q}Gifts${q} AS gifted_to
+    KEY(gift_id)
+    SOURCE KEY(order_id) REFERENCES Orders(id)
+    DESTINATION KEY(customer_id) REFERENCES Customer(id)
+    NO PROPERTIES
+);
+`);
+        expect(warnings, engine).toEqual([]);
+      }
+    });
+  });
 });
 
 
