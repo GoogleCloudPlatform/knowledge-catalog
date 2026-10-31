@@ -85,9 +85,7 @@ export function nameProblem(kind: NameKind, name: string): string|undefined {
 // relationship's.
 export const MAX_ENTRY_DESCRIPTION = 2000;
 
-// BigQuery's limits on the OPTIONS of a graph label or property: the most
-// characters its description may have, the most synonyms, and the most
-// characters in one synonym.
+// BigQuery's limits on the OPTIONS of a graph label or property.
 export const MAX_BIGQUERY_DESCRIPTION = 1024;
-export const MAX_BIGQUERY_SYNONYMS = 8;
-export const MAX_BIGQUERY_SYNONYM = 300;
+export const MAX_BIGQUERY_SYNONYM_COUNT = 8;
+export const MAX_BIGQUERY_SYNONYM_LENGTH = 300;

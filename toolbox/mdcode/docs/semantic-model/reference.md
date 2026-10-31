@@ -674,9 +674,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   BigQuery or Spanner graph cannot hold an entity and a relationship whose
   names match ignoring case. A BigQuery graph also cannot hold a metric named
   like a field of another entity, ignoring case. BigQuery limits the options
-  kcmd writes on each label and property, too. The description, with the
-  instructions, examples and field label kcmd adds to it, holds at most 1,024
-  characters. An element holds at most eight synonyms of one to 300
+  kcmd writes on each label and property, too. The description holds at most
+  1,024 characters, counting the instructions, examples and field label kcmd
+  adds to it. An element holds at most eight synonyms of one to 300
   characters each. No two of them may match ignoring case, and none may match
   the element's own name.
   A deployment that names a profile is held to the measure rule under that

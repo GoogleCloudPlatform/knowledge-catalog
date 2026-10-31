@@ -17,7 +17,7 @@ import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, Spa
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
-import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM, MAX_BIGQUERY_SYNONYMS, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
@@ -405,11 +405,9 @@ function metricFieldCollisionError(
       `namespace.`;
 }
 
-// The names a graph on `engine` cannot hold in `model`, each as the end of a
-// sentence about a deployment. Node and edge tables share one set of names,
-// and on BigQuery a measure's name differs from every property's, which only
-// an entity with a key has. Both compare names ignoring case. A metric named
-// like a field of its own entity is left to metricFieldCollisionError.
+// The names a graph on `engine` cannot hold in `model`, compared ignoring
+// case, each as the end of a sentence about a deployment. A metric named like
+// a field of its own entity is left to metricFieldCollisionError.
 function graphNameProblems(
     model: SemanticModel, engine: 'bigquery'|'spanner'): string[] {
   const at = `targets ${engine === 'bigquery' ? 'BigQuery' : 'Spanner'}, where`;
@@ -427,9 +425,9 @@ function graphNameProblems(
   const tables =
       resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
   for (const m of model.metrics ?? []) {
-    for (const e of tables) {
-      const f = e.name !== (m.authoredEntity ?? m.entity) &&
-          e.fields.find(f => same(f.name, m.name));
+    const owner = m.authoredEntity ?? m.entity;
+    for (const e of tables.filter(e => e.name !== owner)) {
+      const f = e.fields.find(f => same(f.name, m.name));
       if (!f) continue;
       problems.push(
           `${at} metric '${m.name}' cannot share its name with field '${
@@ -441,16 +439,10 @@ function graphNameProblems(
 }
 
 // What a BigQuery graph rejects in the OPTIONS kcmd writes for `model`, each
-// as the end of a sentence about a deployment: a description or synonyms past
-// BigQuery's limits, two synonyms that differ only in case, and a synonym that
-// is the element's own name. It reads the elements the graph writes OPTIONS
-// for: the label of each entity with a node table, unless another such entity
-// extends it, each property of those tables, each relationship's edge label,
-// and each metric.
+// as the end of a sentence about a deployment. It reads only the labels and
+// properties the generator writes OPTIONS for.
 function bigQueryOptionProblems(model: SemanticModel): string[] {
   const problems: string[] = [];
-  // Checks the element of kind `kind` named `name`, a field of `entity` when
-  // given, with the description kcmd writes for it and its synonyms.
   const check =
       (kind: string, name: string, description: string|undefined,
        synonyms: string[] = [], entity?: string) => {
@@ -462,29 +454,28 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
               `property's description holds at most ${
                   MAX_BIGQUERY_DESCRIPTION}.`);
         }
-        if (synonyms.length > MAX_BIGQUERY_SYNONYMS) {
+        if (synonyms.length > MAX_BIGQUERY_SYNONYM_COUNT) {
           problems.push(
               `${what} has ${synonyms.length} synonyms; a label or property ` +
-              `holds at most ${MAX_BIGQUERY_SYNONYMS}.`);
+              `holds at most ${MAX_BIGQUERY_SYNONYM_COUNT}.`);
         }
-        // Each synonym by its lower-case form.
-        const seen = new Map<string, string>();
+        const firstByLower = new Map<string, string>();
         for (const s of synonyms) {
           const lower = s.toLowerCase();
           if (!s) problems.push(`${what} has an empty synonym; remove it.`);
-          if (s.length > MAX_BIGQUERY_SYNONYM) {
+          if (s.length > MAX_BIGQUERY_SYNONYM_LENGTH) {
             problems.push(
                 `a synonym of ${what} is ${s.length} characters long; a ` +
-                `synonym holds at most ${MAX_BIGQUERY_SYNONYM}.`);
+                `synonym holds at most ${MAX_BIGQUERY_SYNONYM_LENGTH}.`);
           }
           if (lower === name.toLowerCase()) {
             problems.push(
                 `${what} has the synonym '${s}', which BigQuery treats as ` +
                 `the ${kind}'s own name; remove it.`);
           }
-          const first = seen.get(lower);
+          const first = firstByLower.get(lower);
           if (first === undefined) {
-            seen.set(lower, s);
+            firstByLower.set(lower, s);
           } else {
             problems.push(
                 `${what} has the synonyms '${first}' and '${s}', which ` +
@@ -492,31 +483,24 @@ function bigQueryOptionProblems(model: SemanticModel): string[] {
           }
         }
       };
+  const element =
+      (kind: string, x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
+          check(
+              kind, x.name, elementDescription(x.description, x.aiContext),
+              x.aiContext?.synonyms);
   const tables =
       resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
   const extended = new Set(tables.flatMap(e => e.extends ?? []));
   for (const e of tables) {
-    if (!extended.has(e.name)) {
-      check(
-          'entity', e.name, elementDescription(e.description, e.aiContext),
-          e.aiContext?.synonyms);
-    }
+    if (!extended.has(e.name)) element('entity', e);
     for (const f of e.fields) {
       if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
       check(
           'field', f.name, fieldDescription(f), f.aiContext?.synonyms, e.name);
     }
   }
-  for (const r of model.relationships ?? []) {
-    check(
-        'relationship', r.name, elementDescription(r.description, r.aiContext),
-        r.aiContext?.synonyms);
-  }
-  for (const m of model.metrics ?? []) {
-    check(
-        'metric', m.name, elementDescription(m.description, m.aiContext),
-        m.aiContext?.synonyms);
-  }
+  for (const r of model.relationships ?? []) element('relationship', r);
+  for (const m of model.metrics ?? []) element('metric', m);
   return problems.map(p => `targets BigQuery, where ${p}`);
 }
 
