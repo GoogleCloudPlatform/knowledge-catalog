@@ -186,6 +186,10 @@ const failedDeploy = when(
     {success: false, details: 'boom', ddl: [], warnings: []});
 
 const WITH_LTV = {...CUSTOMER, fields: [...CUSTOMER.fields, {name: 'ltv'}]};
+const LTV2 = {name: 'ltv2', expression: 'Customer.ltv * 2'};
+const ONE_ACTION = "Warning: [commerce] model 'commerce': 1 action(s) " +
+    'published as semantic-action entries (Knowledge Catalog is the only ' +
+    'system an action reaches).';
 const NO_LTV = {
   entities: {
     Customer: {
@@ -414,7 +418,9 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     warnings: [
       "Warning: metric 'broken' in model 'commerce' (commerce): kcmd could " +
           'not read its SQL, so the fields it reads were not checked.',
-      "Note: profile 'default' leaves 1 field(s) unbound.",
+      ...['g1', 'g2'].map(g => "Warning: field 'Customer.ltv' in model " +
+          `'commerce' (commerce, deployment '${g}') has no expression, so the ` +
+          'graph omits it.'),
       ...['g1', 'g2'].map(g => `Warning: [commerce -> ${g}] metric 'broken' ` +
           "expression 'SUM((x' is not a single supported aggregate (SUM, " +
           'AVG, COUNT, MIN, MAX) over one operand; skipped (cannot be a ' +
@@ -439,7 +445,45 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       flags: {deployment: ['g1']},
       code: 0,
       warnings: [has("unbound 'default' profile"),
-                 "Note: profile 'prod' leaves 1 field(s) unbound."],
+                 "Note: model 'commerce' (commerce, deployment 'g1') " +
+                     "excludes field 'Customer.ltv'."],
+    }],
+  },
+  {
+    name: 'names in a note what a profile excludes and leaves unavailable, and in a warning each field the model file leaves unbound or that reads one',
+    deployments: [{name: 'g1', profile: 'prod'}],
+    entities: [{...WITH_LTV, fields: [...WITH_LTV.fields, LTV2]}],
+    metrics: ['total', 'top'].map(
+        name => ({name, entity: 'Customer', expression: 'SUM(Customer.ltv)'})),
+    actions: [{name: 'refund'}],
+    profiles: {
+      prod: {
+        entities: {Customer: {
+          ...NO_LTV.entities.Customer, fields_exclude: ['ltv', 'ltv2'],
+        }},
+        metrics_exclude: '*',
+      },
+    },
+    flags: {validateOnly: true},
+    warnings: [
+      ONE_ACTION,
+      "Note: model 'commerce' (commerce, deployment 'g1') excludes fields " +
+          "'Customer.ltv' and 'Customer.ltv2' and leaves metrics 'total' and " +
+          "'top' and action 'refund' unavailable.",
+    ],
+    then: [{
+      deployments: ['g'],
+      metrics: undefined,
+      warnings: [
+        ...[
+          ['ltv', 'has no expression'],
+          ['ltv2', 'reads Customer.ltv, which is unavailable'],
+        ].map(([field, why]) => `Warning: field 'Customer.${field}' in model ` +
+                  `'commerce' (commerce, deployment 'g') ${why}, so the ` +
+                  'graph omits it.'),
+        "Note: model 'commerce' (commerce, deployment 'g') leaves action " +
+            "'refund' unavailable.",
+      ],
     }],
   },
   {

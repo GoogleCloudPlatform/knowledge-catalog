@@ -546,9 +546,10 @@ writes nothing.
   exception: its statements are checked for shape but never sent anywhere, so
   nothing confirms the names in them. See
   [statements use your database names](actions.md#statements-use-your-database-names).
-- **Availability summary** — push resolves the dependency graph and prints, per
-  profile, how many fields the binding leaves unbound and how many metrics and
-  actions that makes unavailable. Entities and relationships stay available,
+- **Availability summary** — push resolves the dependency graph and prints a
+  warning naming each field the binding leaves without an expression, and each
+  field that reads one. A note names the fields the profile excludes and the
+  metrics and actions left unavailable. Entities and relationships stay available,
   since their key and join columns are physical columns rather than fields. `kcmd profiles` lists each one with the reason that stops
   it, so withheld coverage is stated rather than discovered later. Actions are
   listed apart, under `cannot run:` rather than `cannot answer:`: an action a

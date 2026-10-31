@@ -295,7 +295,8 @@ semantic_model:
     expect(messages(warn).split('\n')).toEqual([
       "Warning: field 'Customer.odd' in model 'commerce' (commerce): kcmd " +
           'could not read its SQL, so the fields it reads were not checked.',
-      "Note: profile 'bq' leaves 1 field(s) unbound.",
+      "Note: model 'commerce' (commerce, deployment 'bq') excludes field " +
+          "'Customer.ltv'.",
     ]);
   });
 });
@@ -2443,6 +2444,11 @@ ${deployments.map(d => `      - { name: ${d}, target: "${BQ}/propertyGraphs/${d}
           - { name: ltv }
 `;
 
+  // The warning that `at`, a profile or a deployment, leaves field ltv out.
+  const LTV_OMITTED = (at: string) =>
+      `Warning: field 'customer.ltv' in model 'commerce' (commerce, ${at}) ` +
+      'has no expression, so the graph omits it.';
+
   test('a pruned push that fails a source check gives its pruning note', async () => {
     writeModel(ltvUnbound(['g']));
     spyOn(validateMod, 'validateBigQueryDataSources')
@@ -2451,8 +2457,7 @@ ${deployments.map(d => `      - { name: ${d}, target: "${BQ}/propertyGraphs/${d}
         {success: true, deployed: 0, ddl: [], warnings: []} as any);
     expect(await push({validateOnly: true})).toBe(1);
     expect(prints(console.error)).toEqual(['Error: the table is gone']);
-    expect(prints(console.warn))
-        .toEqual(["Note: profile 'default' leaves 1 field(s) unbound."]);
+    expect(prints(console.warn)).toEqual([LTV_OMITTED("deployment 'g'")]);
     expect(bqSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -2488,7 +2493,10 @@ entities:
                '122918 bytes, and one aspect holds at most 122880.',
          ]);
          expect(prints(console.warn))
-             .toEqual(["Note: profile 'staging' leaves 1 field(s) unbound."]);
+             .toEqual([
+               "Note: model 'commerce' (commerce, deployment 'staging') " +
+                   "excludes field 'customer.ltv'.",
+             ]);
          // Each push generates the graph offline; neither deploys it.
          expect(bqSpy.mock.calls.map(c => c[2])).toEqual([
            {validateOnly: true}, {validateOnly: true},

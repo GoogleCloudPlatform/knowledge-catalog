@@ -26,7 +26,7 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, r
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, loadProfileFile, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
@@ -615,23 +615,38 @@ function namedProfileErrors(
   return errors;
 }
 
-// What a pruned profile leaves unavailable, or undefined when it leaves
-// nothing. It counts fields, metrics and actions, since pruning never removes
-// an entity or a relationship.
-function pruningNote(r: AvailabilityReport): string|undefined {
-  const dropped = r.droppedMetrics.length + r.droppedActions.length;
-  if (!r.unboundFields.length && !r.droppedFields.length && !dropped) {
-    return undefined;
-  }
-  return `profile '${r.profile}' leaves ${
-             r.unboundFields.length} field(s) unbound` +
-      (r.droppedFields.length ?
-           `; ${r.droppedFields.length} field(s) that read them unavailable` :
-           '') +
-      (dropped ? `; ${r.droppedMetrics.length} metric(s) and ${
-                     r.droppedActions.length} action(s) unavailable` :
-                 '') +
-      '.';
+// The lines push prints on what pruning leaves out of model `model`, whose
+// document `at` also names the profile or the deployment: a warning for each
+// field with no expression and each field that reads an unavailable one, then
+// a note naming the fields the profile excludes and the metrics and actions
+// left unavailable. Pruning never removes an entity or a relationship.
+function pruningLines(
+    r: AvailabilityReport, model: string, at: string): string[] {
+  const where = `model '${model}' (${at})`;
+  const excluded = new Set(r.excludedFields);
+  const omits = (field: string, why: string) =>
+      `Warning: field '${field}' in ${where} ${why}, so the graph omits it.`;
+  const lines = [
+    ...r.unboundFields.filter(f => !excluded.has(f))
+        .map(f => omits(f, 'has no expression')),
+    ...r.droppedFields.map(d => omits(d.name, d.reason)),
+  ];
+  // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
+  const named = (kind: string, names: string[]) => names.length ?
+      `${plural(names.length, kind, `${kind}s`)} ${
+          listed(names.map(n => `'${n}'`))}` :
+      '';
+  const fields = named('field', [...excluded]);
+  const unavailable = [
+    named('metric', r.droppedMetrics.map(m => m.name)),
+    named('action', r.droppedActions.map(a => a.name)),
+  ].filter(n => n).join(' and ');
+  const parts = [
+    fields && `excludes ${fields}`,
+    unavailable && `leaves ${unavailable} unavailable`,
+  ].filter(p => p);
+  if (parts.length) lines.push(`Note: ${where} ${parts.join(' and ')}.`);
+  return lines;
 }
 
 // Warns about each model whose model file is not named after it, when push
@@ -1105,7 +1120,7 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
-  const {plans, kcModels, fileCopies, notes, overviews} = checked;
+  const {plans, kcModels, fileCopies, leftOut, overviews} = checked;
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
   if (fileCopies.length) {
@@ -1126,7 +1141,7 @@ async function pushInTwoPhases(
   }
   // The local checks and the catalog preflight have passed, so what pruning
   // leaves out is worth reading now.
-  for (const n of new Set(notes)) console.warn(`Note: ${n}`);
+  for (const line of leftOut) console.warn(line);
   const locationWarnings: string[] = [];
   let errors: string[] = [];
   for (const plan of plans) {
@@ -1187,7 +1202,7 @@ async function pushInTwoPhases(
 async function checkBeforeWrites(
     options: PushOptions, scope: TwoPhaseScope, quiet = false): Promise<{
   plans: DeploymentPlan[]; kcModels: LoadedModel[]; fileCopies: FileCopy[];
-  notes: string[];
+  leftOut: string[];
   overviews?: Map<string, OverviewSidecar>;
 }|{errors: LocalCheckError[]}> {
   const {ctx, layout, source, docs, profileDocs, load} = scope;
@@ -1321,12 +1336,11 @@ async function checkBeforeWrites(
   if (tableErrors.length) return stop(tableErrors);
 
   const plans: DeploymentPlan[] = [];
-  const notes: string[] = [];
+  const leftOut: string[] = [];
   for (const base of models) {
     for (const deployment of selectedByDoc.get(base.document) ?? []) {
       const plan = await deploymentPlan(
-          base, profileDocs(base.document), deployment, ctx, warn,
-          notes);
+          base, profileDocs(base.document), deployment, ctx, warn, leftOut);
       if ('errors' in plan) {
         return stop(
             ofProfile(base.document, deployment.profile, ...plan.errors));
@@ -1334,7 +1348,7 @@ async function checkBeforeWrites(
       plans.push(plan);
     }
   }
-  return {plans, kcModels: models, fileCopies, notes, overviews};
+  return {plans, kcModels: models, fileCopies, leftOut, overviews};
 }
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
@@ -1370,7 +1384,7 @@ async function deploymentPlan(
     base: LoadedModel, files: ReturnType<ProfileDocs>,
     deployment: ResolvedDeployment, ctx: context.ApiContext,
     warn: (w: string) => void,
-    notes: string[]): Promise<DeploymentPlan|{errors: string[]}> {
+    leftOut: string[]): Promise<DeploymentPlan|{errors: string[]}> {
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
   const fail = (...errors: string[]) => ({errors});
@@ -1414,8 +1428,7 @@ async function deploymentPlan(
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
-  const note = pruningNote(report);
-  if (note) notes.push(note);
+  leftOut.push(...pruningLines(report, model.name, label));
   // Keeps only this deployment, so every reader sees its target alone.
   const narrowed: LoadedModel = {
     document: checked.document,
@@ -1564,11 +1577,9 @@ function printProfileReport(model: SemanticModel, name: string): void {
   }
 
   const withheld: string[] = [];
-  const excludedHere = new Set((model.entities ?? []).flatMap(
-      e => (e.excludedFields ?? []).map(f => `${e.name}.${f}`)));
+  const excluded = new Set(report.excludedFields);
   for (const f of report.unboundFields) {
-    withheld.push(
-        `field ${f} (${excludedHere.has(f) ? 'excluded' : 'unbound'})`);
+    withheld.push(`field ${f} (${excluded.has(f) ? 'excluded' : 'unbound'})`);
   }
   for (const d of report.droppedFields) {
     withheld.push(`field ${d.name} (${d.reason})`);
