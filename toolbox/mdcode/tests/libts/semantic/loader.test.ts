@@ -280,12 +280,14 @@ describe('expression warnings judge each expression on the table that runs it', 
         entity('o', SPANNER, []),
       ],
       metrics: [{name: 'm', entity: 'o', expression: expr('SUM(o.x)', 'SPANNER')},
-                {name: 'n', expression: expr('COUNT(*)', 'SPANNER')}],
+                {name: 'n', expression: expr('COUNT(*)', 'SPANNER')},
+                {name: 'r', entity: 'o', expression: expr('SUM(o.x) - SUM(p.x)', 'SNOWFLAKE')}],
     }]});
     expect(warnings).toEqual([
       vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
       vendor('SPANNER')[1].replace("'m'", "'n'"),
       "metric 'n': expression references no known entity; it may not be placeable downstream",
+      "metric 'r': no 'SPANNER' or 'ANSI_SQL' dialect, so the SPANNER table of entity 'o' cannot run it",
     ]);
   });
 });

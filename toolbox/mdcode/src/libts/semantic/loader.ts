@@ -2026,14 +2026,16 @@ function fieldWarnings(model: SemanticModel, preferred: string): string[] {
 }
 
 // The warning `metric`'s expression gives on the tables of the `reached`
-// entities, or on every table when it reaches none. On a table of the
-// `preferred` dialect it is expressionWarning's, and otherwise it names the
-// first table whose dialect has no text in the metric, unless `profiled`.
+// entities, in that order, or on every table when it reaches none. On a table
+// of the `preferred` dialect it is expressionWarning's, and otherwise it names
+// the first table whose dialect has no text in the metric, unless `profiled`.
 function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
     preferred: string, profiled: boolean): string|undefined {
-  const named = entities.filter(e => reached.includes(e.name));
+  const named =
+      entities.filter(e => reached.includes(e.name))
+          .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
   const tables = named.length ? named : entities;
   if (tables.some(e => runsDialect(e, preferred))) {
     return expressionWarning(metric, `metric '${metric.name}'`, preferred);
