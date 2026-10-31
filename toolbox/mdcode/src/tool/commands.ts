@@ -85,7 +85,7 @@ export function kcV2Aspects(): boolean {
 
 
 export interface PushOptions {
-  // `--force`. Nothing reads it, so push warns that it has no effect.
+  // `--force`, which has no effect beyond a warning.
   force?: boolean;
   // Run every validation check and report pass/fail, but write nothing
   // to any destination (a dry run). Applies to both push paths.
@@ -998,9 +998,7 @@ export async function push(options: PushOptions): Promise<number> {
   }
 
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
-  if (options.force) {
-    console.warn('Warning: --force has no effect; ignoring it.');
-  }
+  if (options.force) console.warn('Warning: --force has no effect.');
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout

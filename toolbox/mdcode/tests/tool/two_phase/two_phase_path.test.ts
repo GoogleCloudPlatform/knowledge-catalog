@@ -114,7 +114,7 @@ scenarios('the two-phase push path', [
       {
         flags: {force: true},
         ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
-        warnings: ['Warning: --force has no effect; ignoring it.'],
+        warnings: ['Warning: --force has no effect.'],
       },
     ],
   },
