@@ -633,16 +633,16 @@ function pruningLines(
   const unavailable = [
     named('metric', r.droppedMetrics.map(m => m.name)),
     named('action', r.droppedActions.map(a => a.name)),
-  ].filter(n => n).join(' and ');
+  ].filter(n => n).join(', and ');
   const note = [
-    excluded.size ? `excludes ${named('field', [...excluded])}` : '',
-    unavailable && `leaves ${unavailable} unavailable`,
-  ].filter(p => p).join(' and ');
+    excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
+    unavailable && `leaves ${unavailable} unavailable.`,
+  ].filter(p => p).join(' It ');
   return [
     ...r.unboundFields.filter(f => !excluded.has(f))
         .map(f => omits(f, 'has no expression')),
     ...r.droppedFields.map(d => omits(d.name, d.reason)),
-    ...note ? [`Note: ${where} ${note}.`] : [],
+    ...note ? [`Note: ${where} ${note}`] : [],
   ];
 }
 

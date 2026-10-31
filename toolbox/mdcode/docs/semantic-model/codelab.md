@@ -818,7 +818,7 @@ kcmd push --profile operational --no-kc --print
 ```
 
 ```
-Note: model 'sales' (sales, profile 'operational') excludes field 'orders.net_amount' and leaves metric 'revenue' unavailable.
+Note: model 'sales' (sales, profile 'operational') excludes field 'orders.net_amount'. It leaves metric 'revenue' unavailable.
 Pushing semantic model (Spanner Graph)...
 -- Spanner Graph --
 -- spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/graphs/sales

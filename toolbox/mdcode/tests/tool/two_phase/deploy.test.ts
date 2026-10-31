@@ -481,8 +481,8 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     warnings: [
       has('1 action(s) published as semantic-action entries'),
       "Note: model 'commerce' (commerce, deployment 'g1') excludes fields " +
-          "'Customer.ltv' and 'Customer.ltv2' and leaves metrics 'total' and " +
-          "'top' and action 'refund' unavailable.",
+          "'Customer.ltv' and 'Customer.ltv2'. It leaves metrics 'total' and " +
+          "'top', and action 'refund' unavailable.",
     ],
     then: [{
       deployments: ['g'],
