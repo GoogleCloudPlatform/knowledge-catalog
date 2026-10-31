@@ -342,6 +342,16 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     }],
   },
   {
+    name: 'an AlloyDB deployment says a field it leaves out is unavailable there',
+    deployments: [{name: 'ad', target: ALLOYDB}],
+    entities: [{
+      ...WITH_LTV, source: `${ALLOYDB}/schemas/public/tables/customer`,
+    }],
+    flags: {validateOnly: true},
+    warnings: ["Warning: field 'Customer.ltv' in model 'commerce' (commerce, " +
+               "deployment 'ad') has no expression, so it is unavailable there."],
+  },
+  {
     name: 'an AlloyDB deployment deploys no graph and prints a note naming it, under its own header, and under --validate-only prints nothing',
     deployments: [
       {name: 'bq', target: bqGraph('g')},

@@ -616,13 +616,15 @@ function namedProfileErrors(
 }
 
 // The warnings and the note push prints on what pruning leaves out of model
-// `model`. `at` names its document and the profile or the deployment.
+// `model`. `at` names its document and the profile or the deployment, and
+// `outcome` what becomes of a field left out.
 function pruningLines(
-    r: AvailabilityReport, model: string, at: string): string[] {
+    r: AvailabilityReport, model: string, at: string,
+    outcome = 'the graph omits it'): string[] {
   const where = `model '${model}' (${at})`;
   const excluded = new Set(r.excludedFields);
   const omits = (field: string, why: string) =>
-      `Warning: field '${field}' in ${where} ${why}, so the graph omits it.`;
+      `Warning: field '${field}' in ${where} ${why}, so ${outcome}.`;
   // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
   const named = (kind: string, names: string[]) => names.length ?
       `${plural(names.length, kind, `${kind}s`)} ${
@@ -1421,7 +1423,10 @@ async function deploymentPlan(
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
-  leftOut.push(...pruningLines(report, model.name, label));
+  // An AlloyDB database holds no graph.
+  leftOut.push(...pruningLines(
+      report, model.name, label,
+      deployment.engine === 'alloydb' ? 'it is unavailable there' : undefined));
   // Keeps only this deployment, so every reader sees its target alone.
   const narrowed: LoadedModel = {
     document: checked.document,
