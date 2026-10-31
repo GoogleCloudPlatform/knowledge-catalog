@@ -3317,7 +3317,8 @@ export async function importModel(
     // rejects one beside a vanilla model, and reads one beside a Google model
     // as that model's profile. A Google model file re-imported in place with
     // no sibling profile file for the import to write keeps its other ones.
-    const inPlace = flavor === 'google' && result.files.length === 1 &&
+    const inPlace = profileFiles.length === 0 && flavor === 'google' &&
+        result.files.length === 1 &&
         path.resolve(file) === path.resolve(layout.modelPath(model));
     if (!inPlace) {
       const kept = new Set(targets.map(t => t && path.resolve(t.path)));

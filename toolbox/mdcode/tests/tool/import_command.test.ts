@@ -260,13 +260,20 @@ describe('kcmd import', () => {
       write(PROFILE_FILE, PROFILE);
     };
 
-    test('converted to vanilla in place is refused, naming the profile file', async () => {
-      setUp();
-      expect(await importModel(MODEL_FILE, {flavor: 'ossie', input: 'first-party'})).toBe(1);
-      expect(errors).toEqual([expect.stringContaining(
-          `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
-      expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(google);
-    });
+    // [label, the model file, --flavor]
+    for (const [label, text, flavor] of [
+      ['a Google model converted to vanilla', google, 'ossie'],
+      ['a vanilla model converted to Google', model(), 'google'],
+    ]) {
+      test(`${label} in place is refused, naming the profile file`, async () => {
+        setUp();
+        write(MODEL_FILE, text);
+        expect(await importModel(MODEL_FILE, {flavor, input: 'first-party'})).toBe(1);
+        expect(errors).toEqual([expect.stringContaining(
+            `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
+        expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(text);
+      });
+    }
 
     test('re-imported as Google flavor in place with --transpile translates its profile file', async () => {
       setUp();
