@@ -1664,6 +1664,11 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
         `${where} sets 'version'; a profile file takes its version from the ` +
         `model file beside it, so remove the line`);
   }
+  if (doc.datasets !== undefined) {
+    throw new SemanticModelError(
+        `${where} lists its bindings under 'datasets'; a profile lists them ` +
+        `under 'entities'`);
+  }
   // The profile's own name is checked against the file name below.
   requireKeys(doc, PROFILE_FILE_KEYS, where, false);
   if (doc.name !== profileName) {
