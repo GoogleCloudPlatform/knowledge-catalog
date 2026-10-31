@@ -98,24 +98,26 @@ function updateMap(
     updatePair(u, pairs[i], v);
     at = i;
   }
+  dropSpaceBefore(pairs, node.items[0]);
   node.items = pairs;
   return node;
 }
 
 function updatePair(u: Update, pair: yaml.Pair, value: unknown): void {
-  const prev = pair.value;
-  const first = yaml.isCollection(prev) ? prev.items[0] : undefined;
   if (yaml.isScalar(pair.key)) {
     moveKeyLineComment(pair, pair.key, value);
   }
-  pair.value = updateNode(u, value, prev);
-  // When the first item goes, a blank line kept before the new first item
-  // would print as a line of spaces under the key.
-  const next = yaml.isCollection(prev) ? prev.items[0] : undefined;
-  const owner = yaml.isPair(next) ? next.key : next;
-  if (next !== first && yaml.isNode(owner)) {
-    owner.spaceBefore = false;
-  }
+  pair.value = updateNode(u, value, pair.value);
+}
+
+/**
+ * Clears the blank line before `items[0]` when it takes the place of `first`.
+ * That blank line would print as a line of spaces under the key, or put a
+ * list item's first key on the line after its `- `.
+ */
+function dropSpaceBefore(items: readonly unknown[], first: unknown): void {
+  const owner = yaml.isPair(items[0]) ? items[0].key : items[0];
+  if (items[0] !== first && yaml.isNode(owner)) owner.spaceBefore = false;
 }
 
 /**
@@ -157,7 +159,9 @@ function updateSeq(
     const j = free.findIndex(f => f.key === itemKey(v));
     if (j >= 0) matched[i] = free.splice(j, 1)[0].n as yaml.Node;
   });
-  node.items = value.map((v, i) => updateNode(u, v, matched[i]));
+  const items = value.map((v, i) => updateNode(u, v, matched[i]));
+  dropSpaceBefore(items, node.items[0]);
+  node.items = items;
   return node;
 }
 

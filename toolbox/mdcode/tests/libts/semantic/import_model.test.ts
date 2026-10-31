@@ -1063,6 +1063,14 @@ ${metrics}# end of model
       {flavor: 'ossie' as const, strict: true},
       expectedComments({source: BQ_TABLE, counts: ABOVE})
     ],
+    [
+      'a metric whose first key import removes', commentedModel({
+        metrics: ORDER_COUNT.replace(
+                     '- name', '- datatype: Opaque\n\n        name') +
+            '        expression: COUNT(orders.order_id)\n',
+      }),
+      {}, [`    metrics: # every metric\n${ORDER_COUNT}`]
+    ],
   ])('keeps comments in place through %s', async (_, input, opts, lines) => {
     const res = await importSemanticModelYaml(input, opts);
 
