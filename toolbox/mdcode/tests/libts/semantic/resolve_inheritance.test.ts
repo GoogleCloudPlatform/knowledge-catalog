@@ -306,6 +306,76 @@ describe('inherited-expression localization', () => {
 });
 
 
+describe('inherited-expression requalifying', () => {
+  // With `requalify`, an inherited expression names on its subtype the fields
+  // it names on its supertype, so a sibling reference still reads as one.
+  test('the supertype\'s qualifier becomes the subtype\'s', () => {
+    const m = model([
+      entity('Person', [], undefined, {
+        fields: [
+          {name: 'first', expression: 'first'},
+          {name: 'full', expression: "Person.first || ' ' || Person.last"},
+        ],
+      }),
+      entity('Customer', ['id'], ['Person']),
+    ]);
+    const full = (r: SemanticModel) =>
+        entityOf(r, 'Customer').fields.find(f => f.name === 'full')!.expression;
+    expect(full(resolveInheritance(m, undefined, {requalify: true}).model))
+        .toBe("Customer.first || ' ' || Customer.last");
+    // Without it, the qualifier comes off.
+    expect(full(resolveInheritance(m).model)).toBe("first || ' ' || last");
+    // The supertype's own copy is unchanged.
+    expect(entityOf(resolveInheritance(m, undefined, {requalify: true}).model,
+                    'Person')
+               .fields.find(f => f.name === 'full')!.expression)
+        .toBe("Person.first || ' ' || Person.last");
+  });
+
+  test('a quoted qualifier keeps its quotes, and each text is read in its own dialect', () => {
+    const text = 'LOWER("Person".email)';
+    const {model: r} = resolveInheritance(
+        model([
+          entity('Person', [], undefined, {
+            fields: [{
+              name: 'email',
+              importedExpression: text,
+              importedDialect: 'POSTGRES',
+              dialects: [
+                {dialect: 'POSTGRES', expression: text},
+                {dialect: 'BIGQUERY',
+                 expression: 'CONCAT(`Person`.email, "Person.")'},
+              ],
+            }],
+          }),
+          entity('Customer', ['id'], ['Person']),
+        ]),
+        undefined, {requalify: true});
+    const email = entityOf(r, 'Customer').fields.find(f => f.name === 'email')!;
+    expect(email.importedExpression).toBe('LOWER("Customer".email)');
+    expect(email.dialects).toEqual([
+      {dialect: 'POSTGRES', expression: 'LOWER("Customer".email)'},
+      {dialect: 'BIGQUERY', expression: 'CONCAT(`Customer`.email, "Person.")'},
+    ]);
+  });
+
+  test('a grandchild takes its own name, not its parent\'s', () => {
+    const {model: r} = resolveInheritance(
+        model([
+          entity('Party', [], undefined, {
+            fields: [{name: 'net', expression: 'Party.gross - 1'}],
+          }),
+          entity('Person', [], ['Party']),
+          entity('Customer', ['id'], ['Person']),
+        ]),
+        undefined, {requalify: true});
+    const net = (name: string) =>
+        entityOf(r, name).fields.find(f => f.name === 'net')!.expression;
+    expect(net('Person')).toBe('Person.gross - 1');
+    expect(net('Customer')).toBe('Customer.gross - 1');
+  });
+});
+
 describe('a field inherited from more than one ancestor', () => {
   test('two unrelated ancestors declaring one field is a hard error', () => {
     expect(() => resolveInheritance(model([

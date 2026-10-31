@@ -26,7 +26,7 @@ import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationshi
 import {resolveInheritance} from './resolve_inheritance';
 import {columnReferences, isColumnName, withoutQualifier} from './sql_expr_utils';
 import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
-import {rewriteColumns, sqlExpressionTree} from './sql_parser';
+import {sqlExpressionTree} from './sql_parser';
 
 export interface GenerateResult {
   ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
@@ -108,8 +108,10 @@ export function generateGraphDdl(
   // flattens each subclass's inherited fields down and expands `extends` to the
   // full transitive ancestor set, so labels and property signatures can be read
   // straight off the resolved model. Only the graph legs run this; the KC push
-  // consumes the raw model, so its output is unaffected.
-  const resolved = resolveInheritance(model);
+  // consumes the raw model, so its output is unaffected. An inherited field
+  // that names a field of its ancestor names the subtype's field of that name,
+  // and renders from its SQL (see fieldSql).
+  const resolved = resolveInheritance(model, undefined, {requalify: true});
   warnings.push(...resolved.warnings);
 
   // The IR requires entities/relationships/metrics, but be defensive against a
@@ -543,13 +545,11 @@ type FieldSql = {sql: string}|{noSql: true}|{through: string[]};
 // engine's (fieldExpression), and a field may name a sibling field in it as
 // `<owner>.<field>` (Model Spec 3.5.3). Each sibling it names is replaced with
 // that sibling's own SQL for the engine, in parentheses unless that SQL is a
-// lone column, by rewriting the parsed expression and generating SQL from it.
-// Both engines' SQL is read as BigQuery's. An expression that names no sibling
-// only loses the owner's qualifier, so it stays as written, as does one whose
-// siblings are each bound to the column of their own name, and one the parser
-// cannot rewrite. Throws when the field names itself, directly or
-// through its siblings, since no SQL can render it; push validation rejects
-// such a model first (validateExpressionReferences).
+// lone column, and every other column loses the owner's qualifier; the rest
+// of the text stays as written. Both engines' SQL is read as BigQuery's.
+// Throws when the field names itself, directly or through its siblings, since
+// no SQL can render it; push validation rejects such a model first
+// (validateExpressionReferences).
 function fieldSql(
     field: Field, owner: FieldOwner, engine: GraphEngine,
     path: readonly string[] = []): FieldSql {
@@ -579,24 +579,17 @@ function siblingsRead(
               c => c.qualifier === owner.name &&
                   owner.fields.some(f => f.name === c.name))
           .map(c => c.name));
-  const local = withoutQualifier(expr, owner.name);
   const replacements = new Map<string, string>();
   for (const name of named) {
     const sibling = read(name);
     if ('noSql' in sibling) return {through: [name]};
     if ('through' in sibling) return {through: [name, ...sibling.through]};
+    // A sibling bound to the column of its own name reads the same either way.
     if (sibling.sql !== name) {
       replacements.set(name, parenthesized(sibling.sql));
     }
   }
-  // A sibling bound to the column of its own name reads the same either way,
-  // and the stripped text keeps the expression as written.
-  if (!replacements.size) return {sql: local};
-  const rewritten = rewriteColumns(
-      expr, 'BIGQUERY',
-      c => c.qualifier === owner.name ? replacements.get(c.name) : undefined,
-      owner.name);
-  return {sql: rewritten ?? local};
+  return {sql: withoutQualifier(expr, owner.name, undefined, replacements)};
 }
 
 // The error for a field that names itself: `cycle` starts at that field and
