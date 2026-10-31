@@ -3002,6 +3002,110 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       }
     });
   });
+
+  // BigQuery limits the OPTIONS of each label and property kcmd writes one
+  // for. A description counts what kcmd adds to it.
+  describe('BigQuery OPTIONS', () => {
+    const x = (n: number) => 'x'.repeat(n);
+    const synonyms = (n: number) => [...Array(n).keys()].map(String);
+    // The errors of the model with metric revenue on `deployments`, after
+    // `change`.
+    const optionErrors =
+        (change: (m: SemanticModel) => void, deployments = BQ) => {
+          const m = commerce({
+            deployments,
+            metric: '{ name: revenue, entity: purchase, expression: ' +
+                '"SUM(purchase.amount)" }',
+          });
+          change(m);
+          return check(m);
+        };
+    const IN = (problem: string, deployment = 'bigquery') =>
+        `model 'commerce' (commerce) deployment '${deployment}' targets ` +
+        `BigQuery, where ${problem}`;
+    const NINE = "field 'purchase.amount' has 9 synonyms; a label or " +
+        'property holds at most 8.';
+
+    test('rejects a description past 1024 characters with what kcmd adds to it', () => {
+      // 1001 characters and an instruction, or 1012 and an example, give 1025.
+      const instructed = {
+        description: x(1001),
+        aiContext: {instructions: 'Exclude test accounts.'},
+      };
+      expect(optionErrors(m => {
+        Object.assign(m.entities[0], instructed);
+        Object.assign(
+            m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
+        Object.assign(
+            m.relationships[0],
+            {description: x(1012), aiContext: {examples: ['a']}});
+        Object.assign(m.metrics![0], instructed);
+      })).toEqual([
+        "entity 'customer'", "field 'purchase.amount'",
+        "relationship 'placed_by'", "metric 'revenue'",
+      ].map(what => IN(`the description kcmd writes for ${what} is 1025 ` +
+                       "characters long; a label or property's description " +
+                       'holds at most 1024.')));
+    });
+
+    test('rejects too many, too long, empty, repeated and self-naming synonyms', () => {
+      expect(optionErrors(m => {
+        m.entities[0].aiContext = {synonyms: ['Customer']};
+        m.entities[1].fields[1].aiContext = {synonyms: synonyms(9)};
+        m.relationships[0].aiContext = {synonyms: ['Placed_By']};
+        m.metrics![0].aiContext =
+            {synonyms: [x(301), '', 'sales', 'Revenue', 'SALES']};
+      })).toEqual([
+        "entity 'customer' has the synonym 'Customer', which BigQuery treats " +
+            "as the entity's own name; remove it.",
+        NINE,
+        "relationship 'placed_by' has the synonym 'Placed_By', which " +
+            "BigQuery treats as the relationship's own name; remove it.",
+        "a synonym of metric 'revenue' is 301 characters long; a synonym " +
+            'holds at most 300.',
+        "metric 'revenue' has an empty synonym; remove it.",
+        "metric 'revenue' has the synonym 'Revenue', which BigQuery treats " +
+            "as the metric's own name; remove it.",
+        "metric 'revenue' has the synonyms 'sales' and 'SALES', which " +
+            'BigQuery treats as one; remove one.',
+      ].map(p => IN(p)));
+    });
+
+    // An abstract entity has no node table, a label another entity extends
+    // carries no OPTIONS, and a field with no BigQuery text is left out.
+    test('passes values at the limits and elements the graph writes no OPTIONS for', () => {
+      expect(optionErrors(m => {
+        m.relationships[0].description = x(1024);
+        m.entities[1].fields[1].aiContext = {synonyms: synonyms(8)};
+        m.metrics![0].aiContext = {synonyms: [x(300)]};
+        m.entities.push({
+          name: 'party', abstract: true, dataSource: '', keys: [], fields: [],
+          description: x(2000),
+        }, {...m.entities[0], name: 'vip', extends: ['customer']});
+        m.entities[0].description = x(2000);
+        m.entities[1].fields.push({
+          name: 'sf', dialects: [{dialect: 'SNOWFLAKE', expression: 'x'}],
+          aiContext: {synonyms: synonyms(9)},
+        });
+      })).toEqual([]);
+    });
+
+    test('checks only BigQuery deployments, each without the fields its profile excludes', () => {
+      const nine = (m: SemanticModel) => {
+        m.entities[1].fields[1].aiContext = {synonyms: synonyms(9)};
+        m.profiles = [{
+          name: 'ops', relationships: [],
+          entities: [{name: 'purchase', fieldsExclude: ['amount']}],
+        }];
+      };
+      expect(optionErrors(nine, '')).toEqual([]);
+      expect(optionErrors(nine, deployment('spanner'))).toEqual([]);
+      expect(optionErrors(
+                 nine, deployment('bigquery', 'ops') +
+                     `      - name: dev\n        target: ${BQ_TARGET}2\n`))
+          .toEqual([IN(NINE, 'dev')]);
+    });
+  });
 });
 
 describe('validateInlineDialects', () => {

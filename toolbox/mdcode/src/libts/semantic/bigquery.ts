@@ -540,8 +540,8 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
 // BigQuery's PropertyGraph{Label,Property}Options carry a structured `synonyms`
 // array, so they are emitted as their own option (see optionsClause and the
 // call sites).
-function elementDescription(description?: string, ai?: AiContext): string|
-    undefined {
+export function elementDescription(
+    description?: string, ai?: AiContext): string|undefined {
   return composeText([
     description,
     ai?.instructions,
@@ -553,7 +553,7 @@ function elementDescription(description?: string, ai?: AiContext): string|
 // which lead the composed text (matching the authored order) ahead of its
 // description and instructions/examples. Synonyms are emitted structurally, as
 // for elementDescription.
-function fieldDescription(field: Field): string|undefined {
+export function fieldDescription(field: Field): string|undefined {
   return composeText([
     field.label,
     isTimeDimension(field) ? 'Time dimension.' : undefined,
