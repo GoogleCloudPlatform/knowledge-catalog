@@ -3004,8 +3004,8 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
           });
       expect(named('C_ID')).toEqual([IN(
           "metric 'C_ID' cannot share its name with field 'customer.c_id': " +
-          "a measure's name differs from every property's in the graph, " +
-          'compared ignoring case; rename one.')]);
+          "a measure's name must differ from every property name in the " +
+          'graph, compared ignoring case; rename one.')]);
       for (const [name, keys] of [['Amount'], ['c_name'], ['C_ID', []]] as
            Array<[string, string[]?]>) {
         expect({name, errors: named(name, keys)}).toEqual({name, errors: []});

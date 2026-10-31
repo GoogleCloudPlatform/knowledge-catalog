@@ -431,8 +431,8 @@ function graphNameProblems(
       if (!f) continue;
       problems.push(
           `${at} metric '${m.name}' cannot share its name with field '${
-              e.name}.${f.name}': a measure's name differs from every ` +
-          `property's in the graph, compared ignoring case; rename one.`);
+              e.name}.${f.name}': a measure's name must differ from every ` +
+          `property name in the graph, compared ignoring case; rename one.`);
     }
   }
   return problems;
