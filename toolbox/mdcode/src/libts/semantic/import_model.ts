@@ -1010,7 +1010,8 @@ async function transpileDocument(
   // load. That one is written as it is, since push reports it.
   const loaded = profileFiles.map(pf => {
     try {
-      return loadProfileFile(pf.content, parseProfileName(pf.fileName));
+      return loadProfileFile(
+          pf.content, parseProfileName(pf.fileName), {skipActions: true});
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return undefined;

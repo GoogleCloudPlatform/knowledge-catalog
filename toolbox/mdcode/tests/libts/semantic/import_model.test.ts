@@ -261,6 +261,12 @@ describe('profile translation', () => {
   const block = `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
       JSON.stringify({profiles: [PROD]})}'\n`;
   const prodFile = {fileName: 'retail.profile.prod.yaml', content: yaml.stringify(PROD)};
+  // Push reads a profile file without its actions, so a malformed one does not
+  // stop translation.
+  const withActions = {
+    ...prodFile,
+    content: yaml.stringify({...PROD, actions: [{drop: {target: 'x'}}]}),
+  };
   const strict = {strict: true, transpile: true};
 
   // [label, input, options]
@@ -273,11 +279,13 @@ describe('profile translation', () => {
      {...strict, flavor: 'ossie' as const, profileFiles: [prodFile]}],
     ['a profile file, written beside the Google model file', googleDoc({fieldExpr}),
      {...strict, flavor: 'google' as const, profileFiles: [prodFile]}],
+    ['a profile file with a malformed action', googleDoc({fieldExpr}),
+     {...strict, flavor: 'google' as const, profileFiles: [withActions]}],
   ])('translates %s', async (_, input, opts) => {
     const res = await importSemanticModelYaml(input, opts);
     expect(res.errors).toEqual([]);
     const written = res.files.length > 1 ?
-        loadProfileFile(res.files[1].content, 'prod') :
+        loadProfileFile(res.files[1].content, 'prod', {skipActions: true}) :
         loadModels(res.files[0].content).models[0].profiles![0];
     expect(written.entities[0].fields![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: SNOWFLAKE},
