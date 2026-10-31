@@ -1446,10 +1446,23 @@ function fieldNoSqlErrors(
 // instead. Each dialect is read on its own, from the text an engine of that
 // dialect renders (its entry, else the ANSI_SQL one), so two texts that no one
 // engine reads together do not form a cycle.
+//
+// `resolved` is `entity` with the fields it inherits, which name its fields
+// as the graph renders them (see resolve_inheritance.localizeInheritedField),
+// so a field can reach itself through one it inherits. A cycle is reported on
+// an entity only when a field on it is bound there, so one an ancestor forms on
+// its own is reported on that ancestor alone.
 function selfReferenceErrors(
-    entity: Entity, model: SemanticModel, document: string,
+    entity: Entity, resolved: Entity, model: SemanticModel, document: string,
     impliedDialect: string|undefined): string[] {
-  const fields = entity.fields ?? [];
+  const own = entity.fields ?? [];
+  const inherited = resolved.fields ?? [];
+  // A field a profile excludes is left off `resolved`, but still checked.
+  const fields = [
+    ...inherited,
+    ...own.filter(f => !inherited.some(r => r.name === f.name)),
+  ];
+  const bound = new Set(own.filter(f => isFieldBound(f)).map(f => f.name));
   const names = new Set(fields.map(f => f.name));
   const dialects = new Set<string>(['ANSI_SQL']);
   for (const f of fields) {
@@ -1472,7 +1485,7 @@ function selfReferenceErrors(
     }
     for (const f of fields) {
       const through = pathBack(f.name, reads);
-      if (!through) continue;
+      if (!through || ![f.name, ...through].some(n => bound.has(n))) continue;
       errors.add(
           `field '${entity.name}.${f.name}' in model '${model.name}' (${
               document}) names itself` +
@@ -1557,8 +1570,8 @@ function metricNoSqlError(
 //     2. For references to E itself, every field named must be declared or
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
 //     3. Reject a field that names itself, directly or through other fields of
-//        E, since the graph renders a field that names a sibling from that
-//        sibling's SQL (see selfReferenceErrors).
+//        E, declared or inherited, since the graph renders a field that names
+//        a sibling from that sibling's SQL (see selfReferenceErrors).
 //
 // Exported so `commands.ts` can also run it on the unpruned model before
 // `pruneUnavailable` drops unbound fields and metrics on a graph push. When
@@ -1582,6 +1595,13 @@ export function validateExpressionReferences(
       continue;
     }
     const entityNames = [...fieldsByEntity.keys()];
+    // Each entity's fields as the graph renders them (see selfReferenceErrors).
+    const resolvedByName = new Map(
+        (ifResolvable(
+             () => resolveInheritance(model, undefined, {requalify: true})
+                       .model.entities) ??
+         model.entities ?? [])
+            .map(e => [e.name, e]));
     const impliedDialect = sourcesDialect(model);
     const addUnreadableWarning =
         (what: string, total: number, unreadDialects: string[]) => {
@@ -1647,8 +1667,9 @@ export function validateExpressionReferences(
           }
         }
       }
-      errors.push(
-          ...selfReferenceErrors(entity, model, document, impliedDialect));
+      errors.push(...selfReferenceErrors(
+          entity, resolvedByName.get(entity.name) ?? entity, model, document,
+          impliedDialect));
     }
 
     for (const metric of model.metrics ?? []) {

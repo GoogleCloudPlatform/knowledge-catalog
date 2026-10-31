@@ -37,7 +37,7 @@
 // resolve to it, and an exact redeclaration of an inherited field rebinds it.
 
 import {Entity, Field, FIELD_BINDING_KEYS, FIELD_DEFINITION_KEYS, isFieldBound, SemanticModel} from './ir';
-import {sqlWithoutComments, withoutQualifier} from './sql_expr_utils';
+import {requalified, sqlWithoutComments, withoutQualifier} from './sql_expr_utils';
 
 /**
  * Why inheritance cannot be resolved. `unknown-parent` can be a pruning
@@ -57,6 +57,13 @@ export interface ResolveResult {
   // Nothing produces a warning today: every problem resolution can find is an
   // error, and throws. Kept so callers that print warnings need not change.
   warnings: string[];
+}
+
+export interface ResolveOptions {
+  // Rename the ancestor's qualifier in an inherited expression to the
+  // inheriting entity's, rather than remove it, so the expression still names
+  // the fields it names on the ancestor (see localizeInheritedField).
+  requalify?: boolean;
 }
 
 /**
@@ -118,13 +125,16 @@ export function declaredConceptFields(model: SemanticModel):
  * inheritance and no exclusions resolves to an equivalent model.
  * `targetDialect` is the SQL that an inherited field's target text and its
  * ANSI_SQL entries are read in to find their comments. It is BigQuery unless
- * given, as the graph generators read the target text.
+ * given, as the graph generators read the target text. With
+ * `options.requalify`, an inherited expression keeps naming the fields it
+ * names on its ancestor, under the inheriting entity's qualifier.
  *
  * Reading an inherited field's SQL needs the SQL parser, so call
  * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
  */
 export function resolveInheritance(
-    model: SemanticModel, targetDialect?: string): ResolveResult {
+    model: SemanticModel, targetDialect?: string,
+    options: ResolveOptions = {}): ResolveResult {
   const clone: SemanticModel = structuredClone(model);
   const warnings: string[] = [];
   const entities = clone.entities ?? [];
@@ -186,7 +196,9 @@ export function resolveInheritance(
 
     // Own fields first, then every inherited field, each merged down its
     // declaring chain. A subtype's redeclaration of an inherited field merges
-    // over that chain too, contributing only its binding.
+    // over that chain too, contributing only its binding. With `requalify`,
+    // each inherited expression names this entity's fields.
+    const into = options.requalify ? entity.name : undefined;
     const seenField = new Set<string>();
     const flattened: Field[] = [];
     for (const f of ownFields.get(entity.name) ?? []) {
@@ -206,16 +218,16 @@ export function resolveInheritance(
       flattened.push(
           chain ? mergeBinding(
                       mergeChain(
-                          f.name, chain, ownFields, ancestorsOf,
-                          targetDialect),
+                          f.name, chain, ownFields, ancestorsOf, targetDialect,
+                          into),
                       f) :
                   f);
     }
     for (const [name, chain] of declarers) {
       if (seenField.has(name)) continue;
       seenField.add(name);
-      flattened.push(
-          mergeChain(name, chain, ownFields, ancestorsOf, targetDialect));
+      flattened.push(mergeChain(
+          name, chain, ownFields, ancestorsOf, targetDialect, into));
     }
     // A field the binding profile excludes on this entity is left off it.
     // Descendants read the snapshot of declared fields, so they still inherit
@@ -249,26 +261,37 @@ export function resolveInheritance(
 // tables (e.g. BigQuery's shared labels) would see two different definitions of
 // the same property and reject the graph.
 //
+// Given `into`, the descendant, the ancestor's qualifier is renamed to `into`'s
+// instead. `<Ancestor>.x` names the ancestor's field `x` (Model Spec 3.5.3),
+// and the graph renders such a name from that field's own SQL, so inherited it
+// must name the descendant's `x`, which may bind another column; stripped, it
+// would read a column `x` the descendant's table may not have. The graph
+// generators, and the checks that guard them, ask for this.
+//
 // This composes with (does not duplicate) the emitter's own qualifier
 // stripping: this pass normalizes an inherited expression INTO the child's
 // frame once here, and the emitter's table-local renderer then strips the
-// child's own qualifier uniformly for every field (see
-// graph_ddl.renderFieldPropertyCore). Both route through the same
-// `withoutQualifier` primitive, which reads the SQL with the parser; they
-// differ only in which qualifier they remove.
+// child's own qualifier uniformly for every field, reading each sibling it
+// names (see graph_ddl.renderFieldPropertyCore). Both find the qualifier with
+// the SQL parser (see sql_expr_utils.qualifiersIn).
 //
 // The text comes out without its comments, and the rest stays as written. The
 // target text is read in `targetDialect`, BigQuery unless given, and so are
 // the ANSI_SQL entries, which a database of that dialect runs as its own SQL.
 // The imported text is read in its imported dialect, and every other dialect
 // entry in its own, so a quoted qualifier (`"Person".name` in PostgreSQL) is
-// removed as that dialect quotes it. A vendor entry that holds the same text
-// as the target does not change how the target is read.
+// found as that dialect quotes it; renamed, it keeps its quotes. A vendor
+// entry that holds the same text as the target does not change how the target
+// is read.
 function localizeInheritedField(
-    field: Field, ancestor: string, targetDialect?: string): Field {
+    field: Field, ancestor: string, targetDialect?: string,
+    into?: string): Field {
   const clone = structuredClone(field);
-  const local = (text: string, dialect?: string) =>
-      withoutQualifier(sqlWithoutComments(text, dialect), ancestor, dialect);
+  const local = (text: string, dialect?: string) => {
+    const bare = sqlWithoutComments(text, dialect);
+    return into === undefined ? withoutQualifier(bare, ancestor, dialect) :
+                                requalified(bare, ancestor, into, dialect);
+  };
   if (clone.expression !== undefined) {
     clone.expression = local(clone.expression, targetDialect);
   }
@@ -312,15 +335,16 @@ function mergeBinding(base: Field, over: Field): Field {
 // the chain is sorted by how many ancestors each member has; requireOneChain
 // has already checked that every member descends from the next. Every
 // expression is localized to the declaring ancestor's frame first, its target
-// text read in `targetDialect`.
+// text read in `targetDialect`, and moved onto `into` when given.
 function mergeChain(
     name: string, chain: string[], ownFields: Map<string, Field[]>,
-    ancestorsOf: Map<string, string[]>, targetDialect?: string): Field {
+    ancestorsOf: Map<string, string[]>, targetDialect?: string,
+    into?: string): Field {
   const depth = (n: string) => (ancestorsOf.get(n) ?? []).length;
   let merged: Field|undefined;
   for (const anc of [...chain].sort((a, b) => depth(a) - depth(b))) {
     const own = (ownFields.get(anc) ?? []).find(f => f.name === name)!;
-    const local = localizeInheritedField(own, anc, targetDialect);
+    const local = localizeInheritedField(own, anc, targetDialect, into);
     merged = merged ? mergeBinding(merged, local) : local;
   }
   return merged!;

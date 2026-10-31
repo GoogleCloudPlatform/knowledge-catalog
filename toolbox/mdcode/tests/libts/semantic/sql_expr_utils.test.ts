@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, singleAggregate, withoutQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, requalified, singleAggregate, withoutQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -393,6 +393,38 @@ describe('withoutQualifier', () => {
   test('strips every qualifier of SQL the parser cannot read', () => {
     expect(withoutQualifier('orders.', 'orders')).toBe('');
     expect(withoutQualifier('orders.a orders.b', 'orders')).toBe('a b');
+  });
+});
+
+describe('withoutQualifier with replacements', () => {
+  test('puts each replacement in place of its column and its qualifier, and leaves the rest as written', () => {
+    const sql = new Map([['d', 'order_date'], ['n', '(x + 1)']]);
+    expect(withoutQualifier(
+               'EXTRACT(DAYOFWEEK FROM orders.d) + orders.n * orders.m',
+               'orders', undefined, sql))
+        .toBe('EXTRACT(DAYOFWEEK FROM order_date) + (x + 1) * m');
+    expect(withoutQualifier('`orders`.`n`.f || "orders.n"', 'orders',
+                            undefined, sql))
+        .toBe('(x + 1).f || "orders.n"');
+  });
+});
+
+describe('requalified', () => {
+  test('renames the qualifier and leaves the rest as written', () => {
+    expect(requalified("Person.a || 'Person.b' || Person.Person.c", 'Person',
+                       'Customer'))
+        .toBe("Customer.a || 'Person.b' || Customer.Person.c");
+    expect(requalified('People.a + Person', 'Person', 'Customer'))
+        .toBe('People.a + Person');
+  });
+
+  test('keeps the qualifier\'s quotes as the dialect reads them', () => {
+    expect(requalified('`Person`.a', 'Person', 'Customer'))
+        .toBe('`Customer`.a');
+    expect(requalified('"Person".a', 'Person', 'Customer'))
+        .toBe('"Person".a');
+    expect(requalified('"Person".a', 'Person', 'Customer', 'POSTGRES'))
+        .toBe('"Customer".a');
   });
 });
 

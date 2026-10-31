@@ -1768,9 +1768,7 @@ describe('a field expression that names a sibling field', () => {
         '      ((x + y) * 2) + (x + y) AS c\n');
   });
 
-  // An expression that names a sibling is generated again from its parsed
-  // form, so its SQL is rewritten in the parser's style.
-  test('leaves an expression that names no sibling as written', () => {
+  test('leaves an expression as written but for the siblings it names', () => {
     const {ddl} = generatePropertyGraph(
         ordersWith([
           {name: 'nm', expression: 'full_name'},
@@ -1779,10 +1777,26 @@ describe('a field expression that names a sibling field', () => {
         ]),
         GEN_OPTS);
     expect(ddl).toContain('      lower(full_name) || "!" AS tag,\n');
-    expect(ddl).toContain('      LOWER(full_name) || \'!\' AS shout\n');
+    expect(ddl).toContain('      lower(full_name) || "!" AS shout\n');
   });
 
-  // The parser would write `DAYOFWEEK` as `DOW`, which BigQuery does not read.
+  // A SQL parser would write `DAYOFWEEK` as `DOW` and `DAYOFYEAR` as `DOY`,
+  // which BigQuery does not read.
+  test('keeps date parts and intervals as written around a sibling it reads', () => {
+    const {ddl} = generatePropertyGraph(
+        ordersWith([
+          {name: 'd', expression: 'order_date'},
+          {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
+          {name: 'doy', expression: 'EXTRACT(DAYOFYEAR FROM orders.d)'},
+          {name: 'due', expression: 'DATE_ADD(orders.d, INTERVAL 30 DAY)'},
+        ]),
+        GEN_OPTS);
+    expect(ddl).toContain(
+        '      EXTRACT(DAYOFWEEK FROM order_date) AS dow,\n' +
+        '      EXTRACT(DAYOFYEAR FROM order_date) AS doy,\n' +
+        '      DATE_ADD(order_date, INTERVAL 30 DAY) AS due\n');
+  });
+
   test('leaves an expression as written when each sibling it names is bound to the column of its name', () => {
     const {ddl} = generatePropertyGraph(
         ordersWith([
@@ -1795,6 +1809,46 @@ describe('a field expression that names a sibling field', () => {
     expect(ddl).toContain(
         '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
         '      lower(nm) || "!" AS tag\n');
+  });
+
+  // A field whose supertype's expression names only its siblings carries over
+  // to a subtype, which reads it from its own binding of those siblings. That
+  // matches the supertype's rendering, so there is no remap to warn about.
+  test('an inherited field that names its siblings renders as its supertype\'s, without a warning', () => {
+    const {ddl, warnings} = generatePropertyGraph(
+        {
+          name: 'm',
+          relationships: [],
+          metrics: [],
+          entities: [
+            {
+              name: 'party',
+              dataSource: 'p.d.party',
+              keys: ['id'],
+              fields: [
+                {name: 'id', expression: 'id'},
+                {name: 'gross', expression: 'g_amt'},
+                {name: 'discount', expression: 'd_amt'},
+                {name: 'net', expression: 'party.gross - party.discount'},
+              ],
+            },
+            {
+              name: 'customer',
+              dataSource: 'p.d.customer',
+              keys: ['id'],
+              extends: ['party'],
+              fields: [
+                {name: 'id', expression: 'id'},
+                {name: 'gross', expression: 'g_amt'},
+                {name: 'discount', expression: 'd_amt'},
+              ],
+            },
+          ],
+        },
+        GEN_OPTS);
+    // Party's default label, customer's, and customer's `party` label.
+    expect(ddl.match(/\bg_amt - d_amt AS net\n/g)).toHaveLength(3);
+    expect(warnings).toEqual([]);
   });
 
   test('two fields that name each other are rejected', () => {

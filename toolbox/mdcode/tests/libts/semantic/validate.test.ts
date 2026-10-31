@@ -2748,6 +2748,78 @@ ${extraMetric}`;
       ]);
     });
 
+    // The cycle is in the subtype's own binding, so it is the subtype's error;
+    // a cycle the supertype holds alone is reported on the supertype only.
+    test('rejects a field that names itself through a field it inherits, on the entity that binds it', () => {
+      const m = model({
+        entities: [
+          {
+            name: 'party',
+            dataSource: 'p.d.party',
+            keys: ['id'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'a', expression: 'party.b + 1'},
+              {name: 'b', expression: 'b'},
+              {name: 'total', expression: 'party.total * 2'},
+            ],
+          },
+          {
+            name: 'customer',
+            dataSource: 'p.d.customer',
+            keys: ['id'],
+            extends: ['party'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'b', expression: 'customer.a - 1'},
+            ],
+          },
+        ],
+      });
+      const errors = validatePushRequirements(
+          [loaded(m)], {targetOptional: true});
+      expect(errors).toEqual([
+        "field 'party.total' in model 'm' (doc) names itself; a field " +
+            'expression may name other fields of its entity, but not ' +
+            'itself, directly or through other fields.',
+        "field 'customer.b' in model 'm' (doc) names itself through " +
+            "'customer.a'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+        "field 'customer.a' in model 'm' (doc) names itself through " +
+            "'customer.b'; a field expression may name other fields of its " +
+            'entity, but not itself, directly or through other fields.',
+      ]);
+    });
+
+    test('accepts an inherited field that names its supertype\'s siblings', () => {
+      const m = model({
+        entities: [
+          {
+            name: 'party',
+            dataSource: 'p.d.party',
+            keys: ['id'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'gross', expression: 'g_amt'},
+              {name: 'net', expression: 'party.gross - 1'},
+            ],
+          },
+          {
+            name: 'customer',
+            dataSource: 'p.d.customer',
+            keys: ['id'],
+            extends: ['party'],
+            fields: [
+              {name: 'id', expression: 'id'},
+              {name: 'gross', expression: 'g_amt'},
+            ],
+          },
+        ],
+      });
+      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+          .toEqual([]);
+    });
+
     test('accepts a chain of fields that name their siblings', () => {
       const m = model({
         entities: [{

@@ -6,7 +6,8 @@
 // entity references across dialects for the loader, validator, profile checks,
 // pull reader, and transpiler. The graph generators read them with the parser
 // too: `measureEntities` places a measure, `singleAggregate` finds its
-// aggregate, and `withoutQualifier` makes an expression table-local.
+// aggregate, `withoutQualifier` makes an expression table-local, and
+// `requalified` moves an inherited expression onto the entity inheriting it.
 //
 
 import {Field, fieldBinding} from './ir';
@@ -63,24 +64,59 @@ function qualifiersIn(
 }
 
 // `expression` without each `<qualifier>.` it writes before a column (see
-// qualifiersIn), so it reads the columns of the qualifier's own table. The
-// rest of the text stays as written. The text is read in `dialect`; an
-// ANSI_SQL text, or one with no dialect, is read as BigQuery, as the graph
-// generators read it. Returns `expression` itself when it writes no such
-// qualifier or the engine cannot tokenize it.
+// qualifiersIn), so it reads the columns of the qualifier's own table. A
+// `<qualifier>.<column>` whose column `replacements` holds is replaced, whole,
+// by the SQL it maps to, as given. The rest of the text stays as written. The
+// text is read in `dialect`; an ANSI_SQL text, or one with no dialect, is read
+// as BigQuery, as the graph generators read it. Returns `expression` itself
+// when it writes no such qualifier or the engine cannot tokenize it.
 export function withoutQualifier(
-    expression: string, qualifier: string, dialect?: string): string {
+    expression: string, qualifier: string, dialect?: string,
+    replacements?: ReadonlyMap<string, string>): string {
   const read =
       qualifiersIn(expression, new Set([qualifier]), graphReading(dialect));
+  if (!read?.at.length) return expression;
+  const {tokens, at} = read;
+  const chars = Array.from(expression);
+  const written = (t: SqlToken) =>
+      t.token_type === 'QUOTED_IDENTIFIER' ?
+      t.text :
+      chars.slice(t.span.start, t.span.end).join('');
+  let out = '';
+  let end = 0;
+  for (const i of at) {
+    out += chars.slice(end, tokens[i].span.start).join('');
+    const column = tokens[i + 2];
+    const replacement = column && replacements?.get(written(column));
+    if (replacement !== undefined) {
+      out += replacement;
+      end = column.span.end;
+    } else {
+      // The qualifier, its dot, and what lies between the dot and the column.
+      end = column?.span.start ?? tokens[i + 1].span.end;
+    }
+  }
+  return out + chars.slice(end).join('');
+}
+
+// `expression` with each `<from>.` qualifier it writes before a column (see
+// qualifiersIn) renamed `<to>.`, quoted as it was written. The rest of the
+// text stays as written. The text is read in `dialect`, as withoutQualifier
+// reads it. Returns `expression` itself when it writes no such qualifier or
+// the engine cannot tokenize it.
+export function requalified(
+    expression: string, from: string, to: string, dialect?: string): string {
+  const read = qualifiersIn(expression, new Set([from]), graphReading(dialect));
   if (!read?.at.length) return expression;
   const {tokens, at} = read;
   const chars = Array.from(expression);
   let out = '';
   let end = 0;
   for (const i of at) {
-    out += chars.slice(end, tokens[i].span.start).join('');
-    // The qualifier, its dot, and what lies between the dot and the column.
-    end = tokens[i + 2]?.span.start ?? tokens[i + 1].span.end;
+    const {start, end: after} = tokens[i].span;
+    out += chars.slice(end, start).join('') +
+        chars.slice(start, after).join('').replace(from, () => to);
+    end = after;
   }
   return out + chars.slice(end).join('');
 }
