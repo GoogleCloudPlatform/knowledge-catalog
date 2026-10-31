@@ -400,6 +400,18 @@ function metricFieldCollisionError(
       `namespace.`;
 }
 
+// The error for a reference whose qualifier matches one of `entityNames` only
+// when case is ignored, or undefined. `where` names the field or metric.
+function qualifierCaseError(
+    where: string, col: SqlColumn, entityNames: string[]): string|undefined {
+  const q = col.qualifier;
+  if (q === undefined || entityNames.includes(q)) return undefined;
+  const entity = entityNames.find(n => n.toLowerCase() === q.toLowerCase());
+  return entity &&
+      `${where}: '${q}.${col.name}' uses qualifier '${q}', which differs in ` +
+      `case from entity '${entity}'; entity names are case-sensitive.`;
+}
+
 // Static, target-independent checks for a model's actions. Returns one message
 // per violation. What can be statically wrong once the model has parsed:
 //   - a parameter projects from a concept the model does not declare, or a
@@ -1425,6 +1437,10 @@ export function validateExpressionReferences(
                 `table.`);
           }
         }
+        const where = `field '${entity.name}.${field.name}' in model '${
+            model.name}' (${document})`;
+        errors.push(...new Set(allColumns.flatMap(
+            c => qualifierCaseError(where, c, entityNames) ?? [])));
         if (!fieldsPruned) {
           for (const ref of fieldsReadOn(allColumns, entity.name)) {
             if (!knownFields.has(ref)) {
@@ -1538,22 +1554,13 @@ export function validateExpressionReferences(
                   document}): '${token}' must be written as ` +
               `'entity.field'; a metric reads fields, never columns.`);
         } else {
-          const sameNameOtherCase = entityNames.find(
-              n => n.toLowerCase() === col.qualifier!.toLowerCase());
-          if (sameNameOtherCase) {
-            errors.push(
-                `metric '${metric.name}' in model '${model.name}' (${
-                    document}): '${token}' uses qualifier '${
-                    col.qualifier}', which differs in case from entity '${
-                    sameNameOtherCase}'; entity names are case-sensitive.`);
-          } else {
-            errors.push(
-                `metric '${metric.name}' in model '${model.name}' (${
-                    document}): '${token}' has qualifier '${
-                    col.qualifier}', which is not a declared entity in ` +
-                `model '${model.name}'; write 'entity.field' starting with ` +
-                `a declared entity.`);
-          }
+          const where =
+              `metric '${metric.name}' in model '${model.name}' (${document})`;
+          errors.push(
+              qualifierCaseError(where, col, entityNames) ??
+              `${where}: '${token}' has qualifier '${col.qualifier}', which ` +
+                  `is not a declared entity in model '${model.name}'; write ` +
+                  `'entity.field' starting with a declared entity.`);
         }
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);

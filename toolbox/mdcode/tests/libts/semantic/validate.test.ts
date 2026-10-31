@@ -1797,19 +1797,22 @@ ${metricBlock}`).models[0];
             ]);
       }
 
+      // A field gets the same message.
       const caseMismatch = model({
-        entities: [orders()],
+        entities: [{
+          ...orders(),
+          fields: [...orders().fields, {name: 'net', expression: 'Orders.net_amount'}],
+        }],
         metrics: [{
           name: 'net_revenue',
           expression: 'SUM(Orders.net_amount)',
         }],
       });
       expect(validatePushRequirements([loaded(caseMismatch)]))
-          .toEqual([
-            "metric 'net_revenue' in model 'm' (doc): 'Orders.net_amount' " +
-            "uses qualifier 'Orders', which differs in case from entity " +
-            "'orders'; entity names are case-sensitive.",
-          ]);
+          .toEqual(["field 'orders.net'", "metric 'net_revenue'"].map(
+              what => `${what} in model 'm' (doc): 'Orders.net_amount' ` +
+                  "uses qualifier 'Orders', which differs in case from " +
+                  "entity 'orders'; entity names are case-sensitive."));
     });
 
     test('accepts function names, date parts, leading date units, NET.HOST namespaces, UNNEST/subquery/lambda bindings, and COUNT(*)', () => {
