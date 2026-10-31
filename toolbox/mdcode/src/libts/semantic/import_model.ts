@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {catalogNameParts, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -406,13 +406,11 @@ function validateInputDocument(
 }
 
 /**
- * Qualifies a bare dot-separated table name `source` against `prefix` into a
- * GCP resource name when `prefix` supplies the missing hierarchy segments and
- * any overlapping segments agree, or returns `undefined` if `source` cannot be
- * qualified.
+ * The segments of a bare dot-separated table name `source`, each unquoted and
+ * marked when it was quoted, or `undefined` when `source` is not a bare name.
  */
-function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
-    undefined {
+function bareNameSegments(source: string, prefix: ParsedSourcePrefix):
+    Array<{text: string; quoted: boolean}>|undefined {
   // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
   // query-valued sources with unquoted whitespace.
   const trimmed = source.trim();
@@ -421,25 +419,50 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
     return undefined;
   }
 
-  // 2. Split the bare dot-separated table reference into unquoted segments
-  // (unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first) and
-  // verify that any leading segments overlapping `prefix.known` match.
+  // 2. Split the bare dot-separated table reference into unquoted segments,
+  // unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first.
   const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
           trimmed.startsWith('`') && trimmed.endsWith('`') &&
           !trimmed.slice(1, -1).includes('`') ?
       trimmed.slice(1, -1) :
       trimmed;
-  const segs = catalogNameSegments(unwrapped).map(unquote);
-  if (!segs.length || segs.some(s => !s.length)) return undefined;
+  const segs = catalogNameParts(unwrapped).map(p => ({
+    text: unquote(p.text),
+    quoted: p.backticked || /^".+"$/.test(p.text),
+  }));
+  return segs.length && segs.every(s => s.text.length) ? segs : undefined;
+}
+
+/**
+ * Qualifies a bare dot-separated table name `source` against `prefix` into a
+ * GCP resource name when `prefix` supplies the missing hierarchy segments and
+ * any overlapping segments agree, or returns `undefined` if `source` cannot be
+ * qualified. Against an AlloyDB prefix, an unquoted segment is read in lower
+ * case, as PostgreSQL reads it. With `ignoreCase`, every segment agrees in any
+ * letter case.
+ */
+function qualifyTableSource(
+    source: string, prefix: ParsedSourcePrefix, ignoreCase = false): string|
+    undefined {
+  // Verify that any leading segments overlapping `prefix.known` match.
+  const segs = bareNameSegments(source, prefix);
+  if (!segs) return undefined;
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
+  // PostgreSQL folds only ASCII letters in a UTF-8 database.
+  const lower = (t: string) => t.replace(/[A-Z]/g, c => c.toLowerCase());
+  const foldsCase = prefix.base.startsWith('alloydb.googleapis.com/');
+  const read = (s: {text: string; quoted: boolean}) =>
+      foldsCase && !s.quoted ? lower(s.text) : s.text;
+  const agrees = (s: {text: string; quoted: boolean}, k: string) =>
+      read(s) === k || (ignoreCase && lower(s.text) === lower(k));
   const tail = prefix.known.slice(prefix.known.length - overlap);
-  if (tail.some((k, i) => segs[i] !== k)) return undefined;
+  if (tail.some((k, i) => !agrees(segs[i], k))) return undefined;
 
-  // 3. Append the remaining child container (if any) and table segment onto
+  // Append the remaining child container (if any) and table segment onto
   // `prefix.base` and verify the resulting resource name is accepted.
-  const rest = segs.slice(overlap);
+  const rest = segs.slice(overlap).map(read);
   const qualified = prefix.child ?
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
@@ -447,14 +470,21 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
 }
 
 /**
- * Canonicalizes `obj.datatype` casing (e.g. `integer` -> `Integer`) and deletes
- * `Opaque` in any casing.
+ * Writes `obj.datatype` in its canonical casing, such as `Integer` for
+ * `integer`, and deletes `Opaque` in any casing. A change to a value the
+ * input's flavor rejects goes through `warnOrError`.
  */
 function normalizeDatatype(
-    obj: Record<string, any>, doc: ImportDocument): void {
+    obj: Record<string, any>, label: string, doc: ImportDocument): void {
   if (typeof obj.datatype !== 'string') return;
   const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
   if (!res.ok) return;
+  if (!normalizeDataType(obj.datatype, doc.inputVersion).ok) {
+    doc.warnOrError(
+        res.type === undefined ?
+            `${label}: removed datatype '${obj.datatype}'.` :
+            `${label}: rewrote datatype '${obj.datatype}' to '${res.type}'.`);
+  }
   if (res.type === undefined) {
     delete obj.datatype;
     doc.modified = true;
@@ -487,6 +517,8 @@ function normalizeExpressionDialects(
         (ALLOWED_DIALECT_SET.has(upper) ? (upper as SqlDialect) : undefined);
     if (mapped !== undefined) {
       if (entry.dialect !== mapped) {
+        doc.warnOrError(
+            `${label}: rewrote dialect '${entry.dialect}' to '${mapped}'.`);
         entry.dialect = mapped;
         doc.modified = true;
       }
@@ -569,7 +601,7 @@ function truncateDescription(
 function repairField(
     f: Record<string, any>, dsName: string, doc: ImportDocument): void {
   const fLabel = `field '${dsName}.${f.name}'`;
-  normalizeDatatype(f, doc);
+  normalizeDatatype(f, fLabel, doc);
   if (normalizeExpressionDialects(f, fLabel, doc) === 'empty') {
     if (doc.targetVersion === OSSIE_VERSION) {
       doc.errors.push(
@@ -623,7 +655,23 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
       doc.modified = true;
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
-      doc.warnOrError(sourceWarning(dsLabel, trimmed));
+      // Why a prefix that nearly fits the name cannot complete it.
+      const p = doc.sourcePrefix;
+      let why: string|undefined;
+      if (p && qualifyTableSource(trimmed, p, true) !== undefined) {
+        why = `differs from '--source-prefix' only in letter case, so ` +
+            `import cannot complete it; correct the letter case of the ` +
+            `source or of '--source-prefix'.`;
+      } else if (p?.child && bareNameSegments(trimmed, p)?.length === 1) {
+        // The container it lacks: a dataset, namespace or schema.
+        const lacks = p.child.slice(0, -1);
+        why = `names no ${lacks}, and neither does '--source-prefix', so ` +
+            `import cannot complete it; add the ${lacks} to the source or to ` +
+            `'--source-prefix'.`;
+      }
+      doc.warnOrError(
+          why ? `${dsLabel}: source '${trimmed}' ${why}` :
+                sourceWarning(dsLabel, trimmed));
     }
   }
 
@@ -644,7 +692,7 @@ function repairMetric(
     mt: Record<string, any>, entityNames: string[],
     impliedDialect: string|undefined, doc: ImportDocument): boolean {
   const mtLabel = `metric '${mt.name}'`;
-  normalizeDatatype(mt, doc);
+  normalizeDatatype(mt, mtLabel, doc);
   if (normalizeExpressionDialects(mt, mtLabel, doc) === 'empty') {
     doc.errors.push(
         `${mtLabel}: no supported SQL dialect remains in 'expression'.`);
@@ -1080,9 +1128,9 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
     // non-strict mode, deduplicating warnings already recorded.
     const loaded = loadModels(
         content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
-    for (const raw of loaded.warnings) {
-      const m = raw.match(LOADER_SOURCE_WARNING);
-      const w = m ? sourceWarning(m[1], m[2]) : raw;
+    for (const w of loaded.warnings) {
+      // The repair step has reported each source the loader warns about.
+      if (LOADER_SOURCE_WARNING.test(w)) continue;
       if (!doc.warnings.includes(w) && !doc.errors.includes(w)) {
         doc.warnings.push(w);
       }

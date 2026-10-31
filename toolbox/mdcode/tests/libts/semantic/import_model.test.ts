@@ -13,6 +13,8 @@ const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
 const CLOUDSQL_PREFIX =
     'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
+const ALLOYDB_DB =
+    'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/c1/databases/analytics';
 
 /**
  * Builds a minimal valid `0.2.0.dev0` (vanilla Ossie) YAML fixture with
@@ -150,6 +152,28 @@ describe('conversion, strict mode, and translation', () => {
     [
       'loader error in Check step (blank SQL)', googleDoc({fieldExpr: '"   "'}),
       {}, 'blank'
+    ],
+    [
+      'dialect alias in strict mode',
+      googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'),
+      {strict: true},
+      `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`
+    ],
+    [
+      'vanilla datatype in another casing in strict mode',
+      ossieDoc({extra: '            datatype: integer\n'}),
+      {flavor: 'google' as const, strict: true},
+      `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
+    ],
+    [
+      'one-part name against an AlloyDB database prefix in strict mode',
+      googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
+      `dataset 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
+    ],
+    [
+      'lowercase Opaque in strict mode',
+      ossieDoc({extra: '            datatype: opaque\n'}), {strict: true},
+      `field 'orders.order_id': removed datatype 'opaque'.`
     ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
     const res = await importSemanticModelYaml(input, opts);
@@ -375,6 +399,31 @@ describe('sources', () => {
             .toBe(true);
       });
 
+  const ALLOYDB = `${ALLOYDB_DB}/schemas/public`;
+  // [label, bare name, prefix, the source it completes to, or undefined when
+  // it differs from the prefix only in letter case]
+  test.each([
+    ['AlloyDB, unquoted', 'ANALYTICS.PUBLIC.ORDERS', ALLOYDB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB database', 'Public.ORDERS', ALLOYDB_DB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB, double-quoted table', 'PUBLIC."Orders"', ALLOYDB, `${ALLOYDB}/tables/Orders`],
+    ['AlloyDB, backticked table', 'PUBLIC.`Orders`', ALLOYDB, `${ALLOYDB}/tables/Orders`],
+    ['AlloyDB, backticked schema', '`Public`.ORDERS', ALLOYDB_DB, `${ALLOYDB_DB}/schemas/Public/tables/orders`],
+    ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
+    ['AlloyDB, non-ASCII letter', 'PUBLIC.ÄRGER', ALLOYDB, `${ALLOYDB}/tables/Ärger`],
+    ['AlloyDB, mixed-case prefix', 'sales.orders', `${ALLOYDB_DB}/schemas/Sales`, undefined],
+    ['BigQuery', 'SALES.orders', BQ_PREFIX, undefined],
+    ['Cloud SQL', 'PUBLIC.orders', CLOUDSQL_PREFIX, undefined],
+  ])('matches letter case against a prefix: %s', async (_, bare, sourcePrefix, completed) => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: `'${bare}'`}), {sourcePrefix});
+
+    expect(res.warnings).toEqual([
+      completed ?
+          `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.` :
+          `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so import cannot complete it; correct the letter case of the source or of '--source-prefix'.`,
+    ]);
+  });
+
   test(
       'removes a query-valued source in Google output and rejects it in vanilla output',
       async () => {
@@ -407,6 +456,10 @@ describe('dialects and datatypes', () => {
             {flavor: 'google'});
 
         expect(res.ok).toBe(true);
+        expect(res.warnings).toEqual(expect.arrayContaining([
+          `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`,
+          `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`,
+        ]));
         const fields =
             loadModels(res.files[0].content).models[0].entities[0].fields;
         expect(fields[0].type).toBe('Integer');
@@ -420,6 +473,16 @@ describe('dialects and datatypes', () => {
         expect(fields[2].type).toBe('DateTimeTz');
         expect(fields[2].expression).toBeUndefined();
       });
+
+  test('canonicalizes a Google-flavor datatype and drops Opaque in strict mode', async () => {
+    const res = await importSemanticModelYaml(
+        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: Opaque\n            expression: amount\n'}),
+        {strict: true});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toContain('datatype: Integer');
+    expect(res.files[0].content).not.toContain('Opaque');
+  });
 
   test(
       'reports an error when a vanilla field or metric is left with no supported dialect',

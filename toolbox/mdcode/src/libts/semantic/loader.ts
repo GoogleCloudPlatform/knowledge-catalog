@@ -3235,7 +3235,14 @@ function catalogNameResourceName(fqn: string): string|undefined {
 // subtype off at the colons before the first backtick, and keeps the rest as
 // the path.
 export function catalogNameSegments(path: string, colons = false): string[] {
-  const out: string[] = [];
+  return catalogNameParts(path, colons).map(p => p.text);
+}
+
+// The segments `catalogNameSegments` gives, each with whether backticks wrap
+// it.
+export function catalogNameParts(path: string, colons = false):
+    Array<{text: string; backticked: boolean}> {
+  const out: Array<{text: string; backticked: boolean}> = [];
   let cur = '';
   let state: 'start'|'unquoted'|'quoted'|'after_quote' = 'start';
   let colonOk = false;
@@ -3246,7 +3253,7 @@ export function catalogNameSegments(path: string, colons = false): string[] {
         state = 'quoted';
         colonOk = colons;
       } else if (ch === '.') {
-        out.push('');
+        out.push({text: '', backticked: false});
       } else if (ch === ':' && !colonOk) {
         return [];
       } else {
@@ -3255,7 +3262,7 @@ export function catalogNameSegments(path: string, colons = false): string[] {
       }
     } else if (state === 'unquoted') {
       if (ch === '.') {
-        out.push(cur);
+        out.push({text: cur, backticked: false});
         cur = '';
         state = 'start';
       } else if (ch === '`' || (ch === ':' && !colonOk)) {
@@ -3277,7 +3284,7 @@ export function catalogNameSegments(path: string, colons = false): string[] {
       }
     } else {
       if (ch === '.') {
-        out.push(cur);
+        out.push({text: cur, backticked: true});
         cur = '';
         state = 'start';
       } else {
@@ -3286,7 +3293,7 @@ export function catalogNameSegments(path: string, colons = false): string[] {
     }
   }
   if (state === 'quoted') return [];
-  out.push(cur);
+  out.push({text: cur, backticked: state === 'after_quote'});
   return out;
 }
 

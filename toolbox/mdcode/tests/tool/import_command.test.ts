@@ -160,7 +160,7 @@ describe('kcmd import', () => {
   }
 
   // [label, the workspace, the error]
-  const NO_LAYOUT: Array<[string, () => void, string]> = [
+  const REFUSED_WITHOUT_OUT: Array<[string, () => void, string]> = [
     ['no catalog.yaml', () => {},
      'Error: there is no catalog.yaml in this directory, so there is no model ' +
          'layout to write into. Pass --out <path> to write the file directly.'],
@@ -171,8 +171,14 @@ describe('kcmd import', () => {
        spyOn(kcmd.CatalogSnapshot, 'fromPath')
            .mockResolvedValue({manifest: {source: {type: Sources.ENTRYGROUP}}} as any);
      }, 'Error: this catalog is not a semantic-model scope'],
+    ['an entry group that holds another model', () => {
+       workspace();
+       write(path.join(GROUP, 'shop.yaml'), model().replace('name: retail', 'name: shop'));
+     }, `Error: the entry group already holds another model's file (${path.join(GROUP, 'shop.yaml')}), ` +
+         'and an entry group holds one model; remove it if this model replaces it, pass ' +
+         "--out <path> to write elsewhere, or import into another entry group's scope."],
   ];
-  for (const [label, setUp, error] of NO_LAYOUT) {
+  for (const [label, setUp, error] of REFUSED_WITHOUT_OUT) {
     test(`without --out, ${label} is refused and nothing is written`, async () => {
       setUp();
       write('retail.yaml', model());
