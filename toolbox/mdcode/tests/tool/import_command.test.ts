@@ -262,8 +262,8 @@ describe('kcmd import', () => {
     // PROFILE translated by --transpile. Only the expression changes.
     const TRANSLATED = PROFILE.replace(
         'dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]',
-        '{ dialects: [ { dialect: SNOWFLAKE, expression: "NVL(order_id, 0)" }, ' +
-            '{ dialect: BIGQUERY, expression: "COALESCE(order_id, 0)" } ] }');
+        '{ dialects: [ { dialect: "SNOWFLAKE", expression: "NVL(order_id, 0)" }, ' +
+            '{ dialect: "BIGQUERY", expression: "COALESCE(order_id, 0)" } ] }');
     // Writes the model and its profile file as `<stem>.yaml` and
     // `<stem>.profile.prod.yaml`.
     const setUp = (stem = 'retail') => {
