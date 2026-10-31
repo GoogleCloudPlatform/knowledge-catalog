@@ -2048,10 +2048,10 @@ export function validateProfileCompleteness(
     const known = fieldsOf.get(pe.name)!;
     // A profile field's expression may be anything the model file's could be:
     // its own table's columns and its own entity's fields, never another
-    // entity's fields.
+    // entity's fields, with each qualifier in its entity's case.
     // A name after a dot is a struct path segment, such as `customer` in
     // `details.customer.id`, and reads no entity.
-    // These two rules check every text the profile wrote, since each must be a
+    // These rules check every text the profile wrote, since each must be a
     // valid field expression wherever it runs; the dependency rules below read
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
     // as the profile's own SQL.
