@@ -1105,8 +1105,7 @@ export async function push(options: PushOptions): Promise<number> {
     return printErrors(
         `'--transpile' is no longer supported on 'kcmd push'; use '${
             IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects when ` +
-        `importing a model. Import translates the model file only, so write ` +
-        `a profile's 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
+        `importing a model, in the model and each profile the import writes.`);
   }
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
@@ -3215,7 +3214,8 @@ export interface ImportCommandOptions {
   // which flavor its owner wants.
   flavor?: string;
   // The GCP resource name of the database whose tables complete each bare
-  // table name.
+  // table name, or the name of the Knowledge Catalog entry group whose table
+  // entries complete them.
   sourcePrefix?: string;
   // Add a BigQuery translation beside SQL in another dialect.
   transpile?: boolean;
@@ -3266,6 +3266,11 @@ export async function importModel(
     transpile: !!options.transpile,
     strict: input === 'first-party',
     profileFiles,
+    // Called only for a --source-prefix that names an entry group, so an
+    // import that reads no catalog needs no credentials.
+    listEntries: (project, location, entryGroup) =>
+        new dataplex.CatalogClient(context.ApiContext.default())
+            .listEntries(project, location, entryGroup),
   });
   for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);
@@ -3310,9 +3315,10 @@ export async function importModel(
     }
     // Refuse to leave behind a profile file this import does not write. Push
     // rejects one beside a vanilla model, and reads one beside a Google model
-    // as that model's profile. A Google model file re-imported in place keeps
-    // its profile files.
-    const inPlace = flavor === 'google' && result.files.length === 1 &&
+    // as that model's profile. A Google model file re-imported in place with
+    // no sibling profile file for the import to write keeps its other ones.
+    const inPlace = profileFiles.length === 0 && flavor === 'google' &&
+        result.files.length === 1 &&
         path.resolve(file) === path.resolve(layout.modelPath(model));
     if (!inPlace) {
       const kept = new Set(targets.map(t => t && path.resolve(t.path)));

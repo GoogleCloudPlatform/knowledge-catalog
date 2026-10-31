@@ -904,6 +904,8 @@ ${target ? `    deployment_target: ${GRAPH}\n` : ''}\
   // translate.
   const HINT = "; give it one, or add one with 'kcmd import <file> " +
       "--input first-party --flavor <ossie|google> --transpile'.";
+  // The same hint at the end of a profile's error, which has no closing period.
+  const PROFILE_HINT = HINT.slice(0, -1);
   // Field amount, whose one text is `text` in `dialect`.
   const amount = (dialect: string, text: string) =>
       `{ name: amount, expression: { dialects: [{ dialect: ${dialect}, ` +
@@ -2699,15 +2701,39 @@ semantic_model:
       });
 
       // The model file's error names the text to fix, so a block profile that
-      // inherits the field unchanged gets no error of its own.
+      // inherits the field unchanged gets no error of its own. One that
+      // rebinds it, or is on another database, gets its own error. On
+      // BigQuery that error suggests kcmd import --transpile, which rewrites
+      // the block.
       test('reports a model file field with only a vendor text once', async () => {
-        writeScope({
-          'commerce.yaml': vanilla([complete('prod')]).replace(
-              'expression: p_id}]}\n',
-              p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`),
-        });
         const error = modelNoText('purchase.amount') + HINT;
-        await expectPushes({default: [error], prod: [error]});
+        // Profile prod's error for amount on `dialect`, ending in `hint`.
+        const blockError = (dialect: string, hint = '') =>
+            "[commerce] profile 'prod': field 'purchase.amount' has no " +
+            `expression for ${dialect} or ANSI_SQL, and this profile's ` +
+            `sources are ${dialect}${hint}`;
+        const rebound = complete('prod');
+        rebound.entities[1].fields.push({
+          name: 'amount',
+          expression: {dialects: [{dialect: 'SNOWFLAKE', expression: '"amount -"'}]},
+        } as any);
+        const onSpanner = {
+          ...complete('prod'),
+          entities: complete('prod').entities.map(
+              e => ({...e, source: `${SPANNER_DB}/tables/${e.name}`})),
+        };
+        for (const [label, profile, errors] of [
+               ['inherited', complete('prod'), [error]],
+               ['rebound', rebound, [blockError('BIGQUERY', PROFILE_HINT), error]],
+               ['on Spanner', onSpanner, [blockError('SPANNER'), error]],
+             ] as const) {
+          writeScope({
+            'commerce.yaml': vanilla([profile]).replace(
+                'expression: p_id}]}\n',
+                p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`),
+          });
+          await expectPushes({default: [...errors], prod: [...errors]}, label);
+        }
       });
 
       // Push's own checks cover part of the profile it applies, so the
@@ -3047,11 +3073,11 @@ semantic_model:
     // another database, or whose field that check skips, keeps its own error.
     test('reports a model file field with only a vendor text once beside a named profile', async () => {
       // The error of profile 'prod' for field amount, with no text for the
-      // `dialect` of its sources.
-      const profileError = (dialect = 'BIGQUERY') =>
+      // `dialect` of its sources, ending in `hint`.
+      const profileError = (dialect = 'BIGQUERY', hint = '') =>
           "[commerce.profile.prod.yaml] profile 'prod': field " +
           `'purchase.amount' has no expression for ${dialect} or ANSI_SQL, ` +
-          `and this profile's sources are ${dialect}`;
+          `and this profile's sources are ${dialect}${hint}`;
       const hinted = modelNoText('purchase.amount') + HINT;
       const spannerProfile = profileFile('prod').replaceAll(
           BQ('prod', ''), `${SPANNER_DB}/tables/`);
@@ -3074,14 +3100,14 @@ semantic_model:
       const cases: Array<[label: string, model: string, profile: string,
                           errors: string[]]> = [
         ['inherited', commerce(), profileFile('prod'), [hinted]],
-        ['rebound', commerce(), rebound, [profileError(), hinted]],
+        ['rebound', commerce(), rebound, [profileError('BIGQUERY', PROFILE_HINT), hinted]],
         ['on Spanner', commerce(), spannerProfile,
          [profileError('SPANNER'), hinted]],
         ['declared on the child, rebound on its parent', child, childProfile,
          [hinted]],
         ['no source in the model file',
          commerce().replace(`        source: ${BQ('dev', 'purchase')}\n`, ''),
-         profileFile('prod'), [profileError()]],
+         profileFile('prod'), [profileError('BIGQUERY', PROFILE_HINT)]],
       ];
       for (const [label, model, profile, errors] of cases) {
         writeScope({

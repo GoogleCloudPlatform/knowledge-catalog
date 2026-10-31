@@ -98,21 +98,23 @@ a dialect such as `GOOGLE_SQL` or `bigquery` is a repair, and so is recasing a
 vanilla datatype such as `integer`. A file written for kcmd converts between
 flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
 `<file>` go in with it. Nothing is written when the import reports an error.
-The written file keeps the input's comments, except those on anything import
-removes or moves elsewhere in the file, such as a key that goes into or out of
-a `GOOGLE` block. A profile file's comments are dropped when its contents move
-into the model file. Without `--out`, the files go into the scope's entry group
-folder, and an import that would leave one of the model's profile files there
-unwritten is refused. Without `--out`, an import is also refused when the entry
-group folder already holds another model's file, since an entry group holds
-one model.
+The written model file keeps the input's comments, except those on anything
+import removes or moves elsewhere in the file, such as a key that goes into or
+out of a `GOOGLE` block. A profile file written beside the model keeps its
+text, except that each expression `--transpile` translates is rewritten on one
+line without its comments. A profile file's comments are dropped when its
+contents move into the model file. Without `--out`, the files go into the
+scope's entry group folder, and an import that would leave one of the model's
+profile files there unwritten is refused. Without `--out`, an import is also
+refused when the entry group folder already holds another model's file, since
+an entry group holds one model.
 
 | Flag | Effect |
 |------|--------|
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
-| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. Against an AlloyDB prefix, a name's unquoted parts are read in lower case, as PostgreSQL reads them. A name that still differs from the prefix only in letter case is not completed, and import reports it. |
-| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model file only. A profile's SQL stays as written. Off by default. |
+| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`, or the name of a Knowledge Catalog entry group, `projects/<p>/locations/<l>/entryGroups/<g>`. Against an AlloyDB prefix, a name's unquoted parts are read in lower case, as PostgreSQL reads them. A name that still differs from a database prefix only in letter case is not completed, and import reports it. For an entry group, the import writes the entry name of the one table entry whose `fullyQualifiedName` ends in the bare name. An unquoted part of the name matches in any letter case, and a quoted part only in its own case. For example, `public.orders` becomes the name of the entry for `snowflake:acme.RETAIL.PUBLIC.ORDERS`. A name that no entry or several entries end in stays as written and is reported. Listing the entries needs read access to the entry group. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model and in each profile the import writes. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
 ### profiles

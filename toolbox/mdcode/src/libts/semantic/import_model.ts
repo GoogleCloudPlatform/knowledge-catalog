@@ -9,6 +9,7 @@ import {catalogNameParts, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_V
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
+import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
@@ -23,9 +24,16 @@ export interface ImportSemanticModelOptions {
   flavor?: 'ossie'|'google';
   /**
    * First-party GCP container resource name used to qualify bare table
-   * sources.
+   * sources, or the name of a Knowledge Catalog entry group
+   * (`projects/<p>/locations/<l>/entryGroups/<g>`) whose table entries complete
+   * them by their fullyQualifiedName.
    */
   sourcePrefix?: string;
+  /**
+   * Lists every entry of an entry group, as `CatalogClient.listEntries` does.
+   * Required when `sourcePrefix` names an entry group.
+   */
+  listEntries?: EntryLister;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -34,11 +42,17 @@ export interface ImportSemanticModelOptions {
    */
   strict?: boolean;
   /**
-   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
-   * used when converting a Google-flavor model to vanilla (`'ossie'`).
+   * Sibling `<model>.profile.<name>.yaml` files located beside the input file.
+   * A conversion to vanilla writes them into the model file, and a
+   * Google-flavor import of a Google-flavor model writes them beside it.
    */
   profileFiles?: SerializedFile[];
 }
+
+/** The one catalog call import makes. */
+export type EntryLister =
+    (project: string, location: string, entryGroup: string) =>
+        AsyncIterable<{name: string; fullyQualifiedName?: string}>;
 
 /** Result of importing a semantic model YAML document. */
 export interface ImportSemanticModelResult {
@@ -63,6 +77,25 @@ interface ParsedSourcePrefix {
   base: string;
   known: string[];
   child?: string;
+}
+
+/** A `--source-prefix` that names a Knowledge Catalog entry group. */
+interface EntryGroupPrefix {
+  /** The entry group's name, as written. */
+  base: string;
+  project: string;
+  location: string;
+  group: string;
+  list: EntryLister;
+}
+
+/** An entry of the `--source-prefix` entry group that names a table or view. */
+interface TableEntry {
+  /** The entry's name, under the entry group as `--source-prefix` writes it. */
+  name: string;
+  fullyQualifiedName: string;
+  /** The parts of `fullyQualifiedName` after its prefix, unquoted. */
+  parts: string[];
 }
 
 /** Mutable representation of a semantic model document during import. */
@@ -94,6 +127,13 @@ interface ImportDocument {
   targetVersion: FormatVersion;
   /** Validated `--source-prefix` container resource name, if supplied. */
   sourcePrefix?: ParsedSourcePrefix;
+  /** The `--source-prefix` entry group, if it names one. */
+  entryGroup?: EntryGroupPrefix;
+  /**
+   * The table entries of `entryGroup`, listed when a dataset's source is a
+   * bare table name.
+   */
+  entryTables?: TableEntry[];
   /** Whether strict mode (`--input first-party`) is active. */
   strict: boolean;
   /** True when any mutations have been applied to `root`. */
@@ -161,6 +201,12 @@ const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{re: RegExp; child?: string}> = [
     re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
   },
 ];
+
+// An entry group a `--source-prefix` names. A system entry group, such as
+// `@bigquery`, is refused, since its entries are Google Cloud tables, which a
+// source names by resource name.
+const ENTRY_GROUP_PREFIX =
+    /^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)$/;
 
 /** Filters an unknown array down to its plain-object elements. */
 function asRecords(v: unknown): Record<string, any>[] {
@@ -242,20 +288,39 @@ function parseImportDocument(
     }
   }
 
-  // 3. Validate `opts.sourcePrefix` against the 8 supported first-party GCP
-  // container resource name patterns before doing any document work.
+  // 3. Validate `opts.sourcePrefix` against the 9 supported first-party GCP
+  // container resource name patterns, or as an entry group, before doing any
+  // document work.
   let sourcePrefix: ParsedSourcePrefix|undefined;
+  let entryGroup: EntryGroupPrefix|undefined;
   if (opts.sourcePrefix !== undefined) {
     const base = opts.sourcePrefix.trim();
     const match = SOURCE_PREFIX_PATTERNS.map(p => ({m: base.match(p.re), p}))
                       .find(x => x.m !== null);
-    if (!match?.m) {
+    const group = base.match(ENTRY_GROUP_PREFIX);
+    if (match?.m) {
+      sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
+    } else if (group?.[3].startsWith('@')) {
+      return `sourcePrefix '${opts.sourcePrefix}' names the system entry ` +
+          `group '${group[3]}', whose entries are Google Cloud tables. Pass ` +
+          `the GCP resource name of their database instead, such as ` +
+          `'bigquery.googleapis.com/projects/<p>/datasets/<d>'.`;
+    } else if (group) {
+      entryGroup = {
+        base,
+        project: group[1],
+        location: group[2],
+        group: group[3],
+        list: opts.listEntries!,
+      };
+    } else {
       return `Invalid sourcePrefix '${opts.sourcePrefix}'; expected the GCP ` +
           `resource name of a BigQuery project or dataset, a BigLake ` +
           `catalog or namespace, a Spanner database, an AlloyDB database ` +
-          `or schema, or a Cloud SQL database or schema (with no leading '//').`;
+          `or schema, or a Cloud SQL database or schema (with no leading ` +
+          `'//'), or the name of a Knowledge Catalog entry group ` +
+          `('projects/<p>/locations/<l>/entryGroups/<g>').`;
     }
-    sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
   }
 
   // 4. Reject a document written for kcmd when `strict` is false: one with a
@@ -293,6 +358,7 @@ function parseImportDocument(
     inputVersion,
     targetVersion,
     sourcePrefix,
+    entryGroup,
     strict,
     modified: false,
     warnings,
@@ -409,7 +475,7 @@ function validateInputDocument(
  * The segments of a bare dot-separated table name `source`, each unquoted and
  * marked when it was quoted, or `undefined` when `source` is not a bare name.
  */
-function bareNameSegments(source: string, prefix: ParsedSourcePrefix):
+function bareNameSegments(source: string, prefix?: ParsedSourcePrefix):
     Array<{text: string; quoted: boolean}>|undefined {
   // 1. Reject empty strings, already-slashed or colon-prefixed sources, and
   // query-valued sources with unquoted whitespace.
@@ -421,7 +487,7 @@ function bareNameSegments(source: string, prefix: ParsedSourcePrefix):
 
   // 2. Split the bare dot-separated table reference into unquoted segments,
   // unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first.
-  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
+  const unwrapped = prefix?.base.startsWith('bigquery.googleapis.com/') &&
           trimmed.startsWith('`') && trimmed.endsWith('`') &&
           !trimmed.slice(1, -1).includes('`') ?
       trimmed.slice(1, -1) :
@@ -467,6 +533,86 @@ function qualifyTableSource(
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
   return isAcceptedSource(qualified) ? qualified : undefined;
+}
+
+/**
+ * Phase 2b (Catalog read): When `doc.entryGroup` is set and a dataset's
+ * source is a bare table name, lists the entry group's entries once into
+ * `doc.entryTables`, keeping those whose fullyQualifiedName names a table or
+ * view. Returns the error when the list fails.
+ */
+async function listEntryTables(doc: ImportDocument): Promise<string|undefined> {
+  const group = doc.entryGroup;
+  if (!group ||
+      !doc.datasets.some(
+          ds => typeof ds.source === 'string' && bareNameSegments(ds.source))) {
+    return undefined;
+  }
+  const tables: TableEntry[] = [];
+  try {
+    for await (const e of group.list(
+                   group.project, group.location, group.group)) {
+      const fqn = e.fullyQualifiedName ?? '';
+      const table = tableFqnParts(fqn);
+      if (!table) continue;
+      tables.push({
+        name: `${group.base}${e.name.slice(e.name.indexOf('/entries/'))}`,
+        fullyQualifiedName: fqn,
+        parts: table.parts,
+      });
+    }
+  } catch (err: any) {
+    return `Could not list the entries of entry group '${group.base}' to ` +
+        `complete bare table names: ${err?.message ?? err}`;
+  }
+  doc.entryTables = tables;
+  return undefined;
+}
+
+/**
+ * Completes the bare table name `source` of `ds` with the one entry in
+ * `doc.entryTables` whose fullyQualifiedName ends in its parts, an unquoted
+ * part in any letter case and a quoted part in its own case. Leaves a name no
+ * entry or several entries end in as written, and reports it with the
+ * candidates.
+ */
+function completeFromEntryGroup(
+    ds: Record<string, any>, source: string,
+    parts: Array<{text: string; quoted: boolean}>, doc: ImportDocument): void {
+  const dsLabel = `dataset '${ds.name}'`;
+  const group = doc.entryGroup!.base;
+  // Compared from the end, so a name with more parts than an entry's matches
+  // none.
+  const matches = doc.entryTables!.filter(t => parts.every((p, i) => {
+    const e = t.parts.at(i - parts.length);
+    return p.quoted ? p.text === e : p.text.toLowerCase() === e?.toLowerCase();
+  }));
+  if (matches.length === 1) {
+    // The author asked for this rewrite with --source-prefix, so it is a
+    // warning in strict mode too.
+    const [m] = matches;
+    doc.warnings.push(
+        `${dsLabel}: rewrote bare source '${source}' to '${m.name}', the ` +
+        `entry whose fullyQualifiedName is '${m.fullyQualifiedName}'.`);
+    ds.source = m.name;
+    doc.modified = true;
+    return;
+  }
+  const left = `${dsLabel}: left bare source '${source}' as written, since `;
+  if (matches.length) {
+    const names =
+        matches.map(m => `'${m.name}' (${m.fullyQualifiedName})`).join(', ');
+    doc.warnOrError(
+        `${left}several entries in entry group '${group}' have a ` +
+        `fullyQualifiedName that ends in it: ${names}. 'kcmd push' rejects ` +
+        `the file until the source names one of them.`);
+  } else {
+    doc.warnOrError(
+        `${left}no entry for a table or view in entry group '${group}' has ` +
+        `a fullyQualifiedName that ends in it. 'kcmd push' rejects the file ` +
+        `until the source is the entry name of the table's Knowledge ` +
+        `Catalog entry, '${ENTRY_NAME_FORM}'.`);
+  }
 }
 
 /**
@@ -620,19 +766,22 @@ function repairField(
 
 /**
  * Repairs a dataset's `source` (removing query-valued sources, qualifying bare
- * table names against `doc.sourcePrefix`, and warning on unaccepted sources),
- * truncates its `description`, and repairs each of its `fields`.
+ * table names against `doc.sourcePrefix` or completing them from
+ * `doc.entryTables`, and warning on unaccepted sources), truncates its
+ * `description`, and repairs each of its `fields`.
  */
 function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 1. Repair or diagnose `ds.source`: remove query-valued sources (in the
-  // Google version), qualify bare table names against `doc.sourcePrefix`, or
-  // warn on unaccepted source formats.
+  // Google version), qualify bare table names against `doc.sourcePrefix` or
+  // complete them from `doc.entryTables`, or warn on unaccepted source
+  // formats.
   const dsLabel = `dataset '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
     const qualified = doc.sourcePrefix ?
         qualifyTableSource(trimmed, doc.sourcePrefix) :
         undefined;
+    const parts = doc.entryTables ? bareNameSegments(trimmed) : undefined;
     if (hasUnquotedWhitespace(trimmed)) {
       if (doc.targetVersion === OSSIE_VERSION) {
         doc.errors.push(
@@ -653,6 +802,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
           `${dsLabel}: rewrote bare source '${trimmed}' to '${qualified}'.`);
       ds.source = qualified;
       doc.modified = true;
+    } else if (parts) {
+      completeFromEntryGroup(ds, trimmed, parts, doc);
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
       // Why a prefix that nearly fits the name cannot complete it.
@@ -838,36 +989,48 @@ function adaptToOssieVersion(doc: ImportDocument): void {
 /**
  * Loads `doc.root` into the `SemanticModel` IR, runs `transpileModel` to
  * translate vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, and
- * writes any newly added `BIGQUERY` dialect entries back onto `doc`.
+ * writes any newly added `BIGQUERY` dialect entries back onto `doc`, including
+ * the field bindings of the profiles in the model's `GOOGLE` blocks. Translates
+ * the model's `profileFiles` the same way and returns them.
  */
-async function transpileDocument(doc: ImportDocument): Promise<void> {
+async function transpileDocument(
+    doc: ImportDocument,
+    profileFiles: SerializedFile[]): Promise<SerializedFile[]> {
   let preLoaded: ReturnType<typeof fromDocument>;
   try {
     preLoaded = fromDocument(
         doc.root, {bindingOptional: true, warnUnacceptedSource: true});
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
-    return;
+    return profileFiles;
   }
-  // Writes `irDialects` back onto `rawNode.expression` when `transpileModel`
-  // appended a new dialect entry (e.g. `BIGQUERY`).
-  const syncNode =
-      (rawNode: Record<string, any>,
-       irDialects: Array<{dialect: string; expression: string}>|undefined) => {
-        const prevCount = typeof rawNode.expression === 'string' ?
-            1 :
-            asRecords(rawNode.expression?.dialects).length;
-        if (prevCount > 0 && irDialects && irDialects.length > prevCount) {
-          rawNode.expression = {
-            dialects: irDialects.map(
-                d => ({dialect: d.dialect, expression: d.expression})),
-          };
-          doc.modified = true;
-        }
-      };
+  const syncNode = (...args: Parameters<typeof syncDialects>) => {
+    const changed = syncDialects(...args);
+    if (changed) doc.modified = true;
+    return changed;
+  };
+  // Each of `profileFiles` as loaded, or undefined for one that does not
+  // load. One that parses is written as it is, since push reports it.
+  const loaded = profileFiles.map(pf => {
+    try {
+      return loadProfileFile(
+          pf.content, parseProfileName(pf.fileName), {skipActions: true});
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return undefined;
+    }
+  });
+  let translatedFiles = profileFiles;
   for (const m of preLoaded.models) {
-    const transpiled = await transpileModel(m);
+    const transpiled = await transpileModel({
+      ...m,
+      profiles: [...(m.profiles ?? []), ...loaded.filter(p => p !== undefined)],
+    });
     doc.warnings.push(...transpiled.warnings);
+    translatedFiles = profileFiles.map((pf, i) => {
+      const p = transpiled.model.profiles?.find(t => t.name === loaded[i]?.name);
+      return p ? {...pf, content: withDialects(pf.content, p)} : pf;
+    });
     for (const ds of doc.datasets) {
       const irEntity = transpiled.model.entities.find(e => e.name === ds.name);
       for (const f of asRecords(ds.fields)) {
@@ -878,7 +1041,86 @@ async function transpileDocument(doc: ImportDocument): Promise<void> {
       syncNode(
           mt, transpiled.model.metrics.find(x => x.name === mt.name)?.dialects);
     }
+    // A profile in a GOOGLE block is JSON text, so a block whose profiles
+    // gained an entry is written back as JSON.
+    for (const block of asRecords(doc.model.custom_extensions)) {
+      const data = parseGoogleBlocks([block])[0];
+      let changed = false;
+      for (const p of asRecords(data?.profiles)) {
+        const irProfile = transpiled.model.profiles?.find(x => x.name === p.name);
+        for (const pe of asRecords(p.entities)) {
+          const irEntity = irProfile?.entities.find(x => x.name === pe.name);
+          for (const f of asRecords(pe.fields)) {
+            const irField = irEntity?.fields?.find(x => x.name === f.name);
+            changed = syncNode(f, irField?.dialects) || changed;
+          }
+        }
+      }
+      if (changed) block.data = JSON.stringify(data);
+    }
   }
+  return translatedFiles;
+}
+
+/**
+ * Writes `irDialects` onto `rawNode.expression` when `transpileModel` appended
+ * a dialect entry, such as `BIGQUERY`, and returns whether it did.
+ */
+function syncDialects(
+    rawNode: Record<string, any>,
+    irDialects: Array<{dialect: string; expression: string}>|undefined):
+    boolean {
+  const prevCount = typeof rawNode.expression === 'string' ?
+      1 :
+      asRecords(rawNode.expression?.dialects).length;
+  if (prevCount > 0 && irDialects && irDialects.length > prevCount) {
+    rawNode.expression = {
+      dialects: irDialects.map(
+          d => ({dialect: d.dialect, expression: d.expression})),
+    };
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Returns the profile file `content` with each expression that gained a dialect
+ * entry in the translated `profile` rewritten in place as one flow mapping.
+ * Every other character of the file stays as written.
+ */
+function withDialects(content: string, profile: ProfileSpec): string {
+  const ydoc = yaml.parseDocument(content, YAML_OPTIONS);
+  const root = ydoc.toJS();
+  const edits: Array<{start: number; end: number; text: string}> = [];
+  // The profile lists its entities and fields in the file's order.
+  profile.entities.forEach((pe, i) => (pe.fields ?? []).forEach((f, j) => {
+    const raw = root.entities[i].fields[j];
+    if (!syncDialects(raw, f.dialects)) return;
+    const node =
+        ydoc.getIn(['entities', i, 'fields', j, 'expression'], true) as yaml.Node;
+    const [start, end] = node.range!;
+    const entry = new yaml.Document(raw.expression);
+    (entry.contents as yaml.YAMLMap).flow = true;
+    // The node's range can end in whitespace, which stays.
+    const written = content.slice(start, end);
+    // Each string is double-quoted with its line breaks escaped, so the
+    // mapping stays on the one line it starts on.
+    const oneLine = entry.toString({
+      lineWidth: 0,
+      defaultStringType: 'QUOTE_DOUBLE',
+      defaultKeyType: 'PLAIN',
+      doubleQuotedMinMultiLineLength: Infinity,
+    });
+    edits.push({
+      start,
+      end,
+      text: oneLine.trimEnd() + written.slice(written.trimEnd().length),
+    });
+  }));
+  // Applied from the end of the file, so each edit's offsets still hold.
+  return edits.reverse().reduce(
+      (out, {start, end, text}) => out.slice(0, start) + text + out.slice(end),
+      content);
 }
 
 /**
@@ -1026,20 +1268,21 @@ async function generateConvertedFiles(
   let model = loadSemanticModel(doc);
   if (!model) return [];
 
-  // 2. When `opts.transpile` is enabled, translate vendor or double-quoted
-  // `ANSI_SQL` expressions to `BIGQUERY`.
-  if (opts.transpile) {
-    const transpiled = await transpileModel(model);
-    model = transpiled.model;
-    doc.warnings.push(...transpiled.warnings);
-  }
-
-  // 3. When converting to `0.2.0.dev0`, load sibling profile files and verify
+  // 2. When converting to `0.2.0.dev0`, load sibling profile files and verify
   // the model has no conversion gaps.
   if (doc.targetVersion === OSSIE_VERSION) {
     attachProfileFiles(model, opts.profileFiles, doc);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
+  }
+
+  // 3. When `opts.transpile` is enabled, translate vendor or double-quoted
+  // `ANSI_SQL` expressions to `BIGQUERY`, in the model and in every profile
+  // the output carries.
+  if (opts.transpile) {
+    const transpiled = await transpileModel(model);
+    model = transpiled.model;
+    doc.warnings.push(...transpiled.warnings);
   }
 
   // 4. Switch `model.version` to `doc.targetVersion` and serialize the files
@@ -1059,11 +1302,12 @@ async function generateConvertedFiles(
 /**
  * Phase 4 (Adapt): Adapts `doc` in place to its target version
  * (`adaptToGoogleVersion` or `adaptToOssieVersion`), optionally transpiles
- * expressions via `transpileDocument`, and returns the adapted output file.
+ * expressions via `transpileDocument`, and returns the adapted output file,
+ * followed by `profileFiles` under the model's name.
  */
 async function generateAdaptedFiles(
-    doc: ImportDocument, rawYaml: string,
-    transpile: boolean): Promise<SerializedFile[]> {
+    doc: ImportDocument, rawYaml: string, transpile: boolean,
+    profileFiles: SerializedFile[]): Promise<SerializedFile[]> {
   // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
   // or `0.2.0.dev0`).
   if (doc.inputVersion === OSSIE_VERSION &&
@@ -1074,15 +1318,20 @@ async function generateAdaptedFiles(
   }
 
   // 2. When `transpile` is enabled and no prior errors occurred, translate
-  // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`.
+  // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, in the model
+  // and in `profileFiles`.
+  let profiles = profileFiles.map(pf => ({
+    fileName: `${doc.model.name}.profile.${parseProfileName(pf.fileName)}.yaml`,
+    content: pf.content,
+  }));
   if (transpile && doc.errors.length === 0) {
-    await transpileDocument(doc);
+    profiles = await transpileDocument(doc, profiles);
   }
 
   // 3. Write `doc.root` into the input document when modified or preserve
   // `rawYaml` verbatim when unmodified.
   const content = doc.modified ? writeDocument(doc, doc.root) : rawYaml;
-  return [{fileName: `${doc.model.name}.yaml`, content}];
+  return [{fileName: `${doc.model.name}.yaml`, content}, ...profiles];
 }
 
 /**
@@ -1164,18 +1413,42 @@ export async function importSemanticModelYaml(
   }
   validateInputDocument(doc, opts.profileFiles);
 
-  // 2. Run third-party repairs (which record errors in `strict` mode).
+  // 2. Read the `--source-prefix` entry group, if needed, and run third-party
+  // repairs (which record errors in `strict` mode).
+  const listError = await listEntryTables(doc);
+  if (listError) {
+    return {
+      ok: false,
+      files: [],
+      warnings: doc.warnings,
+      errors: [...doc.errors, listError],
+    };
+  }
   repairDocument(doc);
 
-  // 3. Generate the converted or adapted output file(s).
+  // 3. Generate the converted or adapted output file(s). A conversion to
+  // `0.2.0.dev0` writes the sibling profile files inside the model file, and
+  // a Google-flavor import of a Google-flavor model writes them beside it.
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
+  const googleToGoogle = doc.inputVersion === GOOGLE_VERSION &&
+      doc.targetVersion === GOOGLE_VERSION;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
-      await generateAdaptedFiles(doc, rawYaml, !!opts.transpile);
+      await generateAdaptedFiles(
+          doc, rawYaml, !!opts.transpile,
+          googleToGoogle ? opts.profileFiles ?? [] : []);
 
-  // 4. Validate the primary output document and return the result.
+  // 4. Validate the primary output document, check that each profile file
+  // the import writes parses, and return the result.
   if (files.length > 0 && doc.errors.length === 0) {
     validateOutputDocument(files[0].content, doc);
+  }
+  for (const f of files.slice(1)) {
+    const [problem] = yaml.parseDocument(f.content, YAML_OPTIONS).errors;
+    if (problem) {
+      doc.errors.push(`the import writes '${f.fileName}', which does not ` +
+                      `parse: ${problem.message}`);
+    }
   }
   return {
     ok: doc.errors.length === 0,

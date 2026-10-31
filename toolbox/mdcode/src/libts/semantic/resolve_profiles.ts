@@ -2282,10 +2282,13 @@ export function validateProfileCompleteness(
                 JSON.stringify(expressionSources(asInModelFile)) &&
             sourcesDialect({entities: [e]}) === dialect;
         if (isFieldBound(f) && !runs(f) && !reported) {
+          const viaImport = importTranspiles(f, dialect) ?
+              `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` :
+              '';
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}`);
+                  dialect}${viaImport}`);
         }
       }
     }

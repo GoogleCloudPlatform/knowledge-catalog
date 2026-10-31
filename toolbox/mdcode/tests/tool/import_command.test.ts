@@ -1,8 +1,9 @@
 // Tests for `kcmd import` (importModel in src/tool/commands.ts, b/568397111).
 // The import engine is the real one, so its answers are faithful; a
-// spy that calls through checks what the command passes it. A case that needs
-// more than one output file stubs the engine with the shape serializeModelFiles
-// gives a model with a profile: `<model>.yaml` and `<model>.profile.<name>.yaml`.
+// spy that calls through checks what the command passes it. Some cases that
+// need more than one output file stub the engine with the shape
+// serializeModelFiles gives a model with a profile: `<model>.yaml` and
+// `<model>.profile.<name>.yaml`.
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -11,6 +12,7 @@ import * as path from 'node:path';
 
 import * as kcmd from '../../src/libts';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import * as engine from '../../src/libts/semantic/import_model';
 import {Sources} from '../../src/libts/source';
 import {ImportCommandOptions, importModel} from '../../src/tool/commands';
@@ -121,7 +123,8 @@ describe('kcmd import', () => {
       write('retail.yaml', model());
       const call = spyOn(engine, 'importSemanticModelYaml');
       expect(await importModel('retail.yaml', {...options, out: 'out'})).toBe(0);
-      expect(call.mock.calls).toEqual([[model(), {...expected, profileFiles: []}]]);
+      expect(call.mock.calls).toEqual(
+          [[model(), {...expected, profileFiles: [], listEntries: expect.any(Function)}]]);
     });
   }
 
@@ -209,6 +212,29 @@ describe('kcmd import', () => {
         .toContain(`source: ${PREFIX}/tables/orders\n`);
   });
 
+  // The command lists the entry group with the Dataplex client, which follows
+  // each page.
+  test('completes a bare name from an entry on a later page of the --source-prefix entry group', async () => {
+    const group = 'projects/acme/locations/us/entryGroups/sf';
+    const page = (id: string, nextPageToken?: string) => ({
+      status: 200,
+      result: {
+        entries: [{name: `${group}/entries/${id}`, entryType: 'type',
+                   fullyQualifiedName: `snowflake:acme.retail.public.${id}`}],
+        nextPageToken,
+      },
+    });
+    const get = spyOn(CatalogClient.prototype as any, '_get').mockImplementation(
+        async (_: string, params: any) => params.pageToken ? page('orders') : page('items', 'T'));
+    write('retail.yaml', model('public.orders'));
+    expect(await importModel('retail.yaml', {flavor: 'ossie', sourcePrefix: group, out: 'out'}))
+        .toBe(0);
+    expect(get.mock.calls.map(([name, params]: any) => [name, params.pageToken]))
+        .toEqual([[`${group}/entries`, undefined], [`${group}/entries`, 'T']]);
+    expect(fs.readFileSync(path.join(dir, 'out', 'retail.yaml'), 'utf8'))
+        .toContain(`source: ${group}/entries/orders\n`);
+  });
+
   // A profile file the import does not write would stay beside the model:
   // push rejects it beside a vanilla model, and reads it beside a Google one.
   describe('a model with a profile file in the workspace', () => {
@@ -216,26 +242,77 @@ describe('kcmd import', () => {
     const PROFILE_FILE = path.join(GROUP, 'retail.profile.prod.yaml');
     const google = model().replace('version: "0.2.0.dev0"', 'version: "0.2.0.dev0/google"')
                        .replace('    datasets:\n', '    entities:\n');
+    // Profile prod, whose field order_id has only Snowflake SQL.
+    const PROFILE =
+        `# The prod tables.\nname: prod\nentities:\n  - name: orders\n` +
+        `    source: ${PREFIX}/tables/orders_prod     # the prod copy\n` +
+        '    fields:\n      - name: order_id\n        expression:\n' +
+        '          dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]\n' +
+        '    primary_key: [order_id]     # same key\n';
+    // PROFILE translated by --transpile. Only the expression changes.
+    const TRANSLATED = PROFILE.replace(
+        'dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]',
+        '{ dialects: [ { dialect: "SNOWFLAKE", expression: "NVL(order_id, 0)" }, ' +
+            '{ dialect: "BIGQUERY", expression: "COALESCE(order_id, 0)" } ] }');
     const setUp = () => {
       workspace();
       write(MODEL_FILE, google);
-      write(PROFILE_FILE,
-            `name: prod\nentities:\n  - name: orders\n    source: ${PREFIX}/tables/orders_prod\n`);
+      write(PROFILE_FILE, PROFILE);
     };
 
-    test('converted to vanilla in place is refused, naming the profile file', async () => {
-      setUp();
-      expect(await importModel(MODEL_FILE, {flavor: 'ossie', input: 'first-party'})).toBe(1);
-      expect(errors).toEqual([expect.stringContaining(
-          `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
-      expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(google);
-    });
+    // [label, the model file, --flavor]
+    for (const [label, text, flavor] of [
+      ['a Google model converted to vanilla', google, 'ossie'],
+      ['a vanilla model converted to Google', model(), 'google'],
+    ]) {
+      test(`${label} in place is refused, naming the profile file`, async () => {
+        setUp();
+        write(MODEL_FILE, text);
+        expect(await importModel(MODEL_FILE, {flavor, input: 'first-party'})).toBe(1);
+        expect(errors).toEqual([expect.stringContaining(
+            `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
+        expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(text);
+      });
+    }
 
-    test('re-imported as Google flavor in place keeps its profile file', async () => {
+    test('re-imported as Google flavor in place with --transpile translates its profile file', async () => {
       setUp();
-      expect(await importModel(MODEL_FILE, {flavor: 'google', input: 'first-party'})).toBe(0);
+      expect(await importModel(MODEL_FILE, {flavor: 'google', input: 'first-party', transpile: true}))
+          .toBe(0);
       expect(errors).toEqual([]);
       expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
+      expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(TRANSLATED);
+    });
+
+    // Under the model's name, which the input file's name need not be.
+    test('imported as Google flavor from another folder brings its profile file', async () => {
+      workspace();
+      write('in/sales.yaml', google);
+      write('in/sales.profile.prod.yaml', PROFILE);
+      expect(await importModel('in/sales.yaml', {flavor: 'google', input: 'first-party'})).toBe(0);
+      expect(errors).toEqual([]);
+      expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
+      expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(PROFILE);
+    });
+
+    test('imported as Google flavor to --out with --transpile brings its profile files translated', async () => {
+      write('in/retail.yaml', google);
+      write('in/retail.profile.prod.yaml', PROFILE);
+      // Written as they are: dev gains no entry, and qa does not load.
+      write('in/retail.profile.dev.yaml', 'name:  dev\nentities:\n  - name: orders\n');
+      write('in/retail.profile.qa.yaml', 'name: staging\n');
+      expect(await importModel('in/retail.yaml', {
+        flavor: 'google', input: 'first-party', transpile: true, out: 'out',
+      })).toBe(0);
+      expect(filesIn('out')).toEqual([
+        'retail.profile.dev.yaml', 'retail.profile.prod.yaml', 'retail.profile.qa.yaml',
+        'retail.yaml',
+      ]);
+      expect(fs.readFileSync(path.join(dir, 'out', 'retail.profile.prod.yaml'), 'utf8'))
+          .toBe(TRANSLATED);
+      expect(['dev', 'qa'].map(
+                 p => fs.readFileSync(path.join(dir, 'out', `retail.profile.${p}.yaml`), 'utf8')))
+          .toEqual(['name:  dev\nentities:\n  - name: orders\n', 'name: staging\n']);
     });
   });
 

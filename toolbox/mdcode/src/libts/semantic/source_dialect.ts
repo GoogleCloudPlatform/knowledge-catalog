@@ -174,14 +174,13 @@ async function thirdPartyDialect(
   };
 }
 
-// The database the fullyQualifiedName `fqn` of a third-party table or view
-// names: a Snowflake account, a MySQL or SQL Server host, a PostgreSQL host
-// and database, or a Databricks metastore. Each account and host is in lower
-// case. Undefined when `fqn` names no table or view. Such a name has another
-// number of parts than TABLE_FQN_PARTS gives, or a subtype, such as the
-// `routine:` of a routine. Dataplex reads a `databricks:table:` or
-// `databricks:view:` name as the same table as the `databricks:` name.
-function databaseOfFqn(fqn: string): string|undefined {
+// The prefix of the fullyQualifiedName `fqn` of a third-party table or view,
+// and its unquoted parts, such as `snowflake` and ['acme', 'retail', 'public',
+// 'orders'] for `snowflake:acme.retail.public.orders`. Undefined when `fqn`
+// has another number of parts than TABLE_FQN_PARTS gives, or a subtype other
+// than Databricks' `table:` and `view:`.
+export function tableFqnParts(fqn: string):
+    {prefix: string; parts: string[]}|undefined {
   // The subtype holds no backtick, so a colon inside a quoted host and port
   // stays in the path. A colon in an unquoted database, schema or table
   // name stays in its segment when it comes after the name's first backtick.
@@ -192,10 +191,21 @@ function databaseOfFqn(fqn: string): string|undefined {
   const tableSubtype = subtype === undefined ||
       (prefix === 'databricks' && (subtype === 'table' || subtype === 'view'));
   if (!parts || !tableSubtype || seg.length !== parts.length) return undefined;
+  return {prefix, parts: seg};
+}
+
+// The database the fullyQualifiedName `fqn` of a third-party table or view
+// names: a Snowflake account, a MySQL or SQL Server host, a PostgreSQL host
+// and database, or a Databricks metastore. Each account and host is in lower
+// case. Undefined when `fqn` names no table or view.
+function databaseOfFqn(fqn: string): string|undefined {
+  const table = tableFqnParts(fqn);
+  if (!table) return undefined;
+  const {prefix, parts} = table;
   const n = prefix === 'postgresql' ? 2 : 1;
   // A Snowflake account and a host name ignore letter case.
-  if (prefix !== 'databricks') seg[0] = seg[0].toLowerCase();
-  return [prefix, ...seg.slice(0, n)].join('/');
+  if (prefix !== 'databricks') parts[0] = parts[0].toLowerCase();
+  return [prefix, ...parts.slice(0, n)].join('/');
 }
 
 // Every Cloud SQL table and third-party entry the model and profile files
