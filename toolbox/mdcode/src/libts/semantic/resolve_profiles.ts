@@ -623,8 +623,7 @@ function findLogicalSqlExecutor(models: any[]):
 export interface AvailabilityReport {
   profile: string;
   unboundFields: string[];  // "Entity.field"
-  // The unbound fields the profile excludes, as "Entity.field".
-  excludedFields: string[];
+  excludedFields: string[];  // The unbound fields the profile excludes.
   // No pruning rule drops an entity or a relationship, so droppedEntities and
   // droppedRelationships are always empty (see the file header).
   droppedEntities: {name: string; reason: string}[];

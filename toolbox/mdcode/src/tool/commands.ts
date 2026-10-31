@@ -615,38 +615,33 @@ function namedProfileErrors(
   return errors;
 }
 
-// The lines push prints on what pruning leaves out of model `model`, whose
-// document `at` also names the profile or the deployment: a warning for each
-// field with no expression and each field that reads an unavailable one, then
-// a note naming the fields the profile excludes and the metrics and actions
-// left unavailable. Pruning never removes an entity or a relationship.
+// The warnings and the note push prints on what pruning leaves out of model
+// `model`. `at` names its document and the profile or the deployment.
 function pruningLines(
     r: AvailabilityReport, model: string, at: string): string[] {
   const where = `model '${model}' (${at})`;
   const excluded = new Set(r.excludedFields);
   const omits = (field: string, why: string) =>
       `Warning: field '${field}' in ${where} ${why}, so the graph omits it.`;
-  const lines = [
-    ...r.unboundFields.filter(f => !excluded.has(f))
-        .map(f => omits(f, 'has no expression')),
-    ...r.droppedFields.map(d => omits(d.name, d.reason)),
-  ];
   // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
   const named = (kind: string, names: string[]) => names.length ?
       `${plural(names.length, kind, `${kind}s`)} ${
           listed(names.map(n => `'${n}'`))}` :
       '';
-  const fields = named('field', [...excluded]);
   const unavailable = [
     named('metric', r.droppedMetrics.map(m => m.name)),
     named('action', r.droppedActions.map(a => a.name)),
   ].filter(n => n).join(' and ');
-  const parts = [
-    fields && `excludes ${fields}`,
+  const note = [
+    excluded.size ? `excludes ${named('field', [...excluded])}` : '',
     unavailable && `leaves ${unavailable} unavailable`,
-  ].filter(p => p);
-  if (parts.length) lines.push(`Note: ${where} ${parts.join(' and ')}.`);
-  return lines;
+  ].filter(p => p).join(' and ');
+  return [
+    ...r.unboundFields.filter(f => !excluded.has(f))
+        .map(f => omits(f, 'has no expression')),
+    ...r.droppedFields.map(d => omits(d.name, d.reason)),
+    ...note ? [`Note: ${where} ${note}.`] : [],
+  ];
 }
 
 // Warns about each model whose model file is not named after it, when push

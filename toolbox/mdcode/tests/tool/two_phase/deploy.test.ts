@@ -187,9 +187,10 @@ const failedDeploy = when(
 
 const WITH_LTV = {...CUSTOMER, fields: [...CUSTOMER.fields, {name: 'ltv'}]};
 const LTV2 = {name: 'ltv2', expression: 'Customer.ltv * 2'};
-const ONE_ACTION = "Warning: [commerce] model 'commerce': 1 action(s) " +
-    'published as semantic-action entries (Knowledge Catalog is the only ' +
-    'system an action reaches).';
+// The warning that deployment `d` leaves field `field` out of its graph.
+const OMITTED = (field: string, d: string, why = 'has no expression') =>
+    `Warning: field 'Customer.${field}' in model 'commerce' (commerce, ` +
+    `deployment '${d}') ${why}, so the graph omits it.`;
 const NO_LTV = {
   entities: {
     Customer: {
@@ -418,9 +419,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     warnings: [
       "Warning: metric 'broken' in model 'commerce' (commerce): kcmd could " +
           'not read its SQL, so the fields it reads were not checked.',
-      ...['g1', 'g2'].map(g => "Warning: field 'Customer.ltv' in model " +
-          `'commerce' (commerce, deployment '${g}') has no expression, so the ` +
-          'graph omits it.'),
+      ...['g1', 'g2'].map(g => OMITTED('ltv', g)),
       ...['g1', 'g2'].map(g => `Warning: [commerce -> ${g}] metric 'broken' ` +
           "expression 'SUM((x' is not a single supported aggregate (SUM, " +
           'AVG, COUNT, MIN, MAX) over one operand; skipped (cannot be a ' +
@@ -466,7 +465,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     },
     flags: {validateOnly: true},
     warnings: [
-      ONE_ACTION,
+      has('1 action(s) published as semantic-action entries'),
       "Note: model 'commerce' (commerce, deployment 'g1') excludes fields " +
           "'Customer.ltv' and 'Customer.ltv2' and leaves metrics 'total' and " +
           "'top' and action 'refund' unavailable.",
@@ -475,12 +474,8 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       deployments: ['g'],
       metrics: undefined,
       warnings: [
-        ...[
-          ['ltv', 'has no expression'],
-          ['ltv2', 'reads Customer.ltv, which is unavailable'],
-        ].map(([field, why]) => `Warning: field 'Customer.${field}' in model ` +
-                  `'commerce' (commerce, deployment 'g') ${why}, so the ` +
-                  'graph omits it.'),
+        OMITTED('ltv', 'g'),
+        OMITTED('ltv2', 'g', 'reads Customer.ltv, which is unavailable'),
         "Note: model 'commerce' (commerce, deployment 'g') leaves action " +
             "'refund' unavailable.",
       ],
