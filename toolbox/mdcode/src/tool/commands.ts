@@ -1160,7 +1160,7 @@ async function pushInTwoPhases(
     }
     return reportCatalogResult(preflight.result!, options);
   }
-  for (const w of plans.flatMap(p => p.generated?.warnings ?? [])) {
+  for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
     console.warn(`Warning: ${w}`);
     printed.add(w);
   }

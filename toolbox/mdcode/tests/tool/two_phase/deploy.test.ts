@@ -413,17 +413,21 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
-    name: 'prints once a pruning note that two deployments give, and a warning the catalog\'s model gave',
+    // Both deployments deploy a graph named g, in datasets d and s.
+    name: 'warns once per deployment about a field it leaves out, and prints once a warning the catalog\'s model gave and one both graphs give',
+    deployments: [
+      {name: 'g1', target: bqGraph('g')},
+      {name: 'g2', target: bqGraph('g', 's')},
+    ],
     entities: [WITH_LTV],
     metrics: [{name: 'broken', entity: 'Customer', expression: 'SUM((x'}],
     warnings: [
       "Warning: metric 'broken' in model 'commerce' (commerce): kcmd could " +
           'not read its SQL, so the fields it reads were not checked.',
       ...['g1', 'g2'].map(g => OMITTED('ltv', g)),
-      ...['g1', 'g2'].map(g => `Warning: [commerce -> ${g}] metric 'broken' ` +
-          "expression 'SUM((x' is not a single supported aggregate (SUM, " +
-          'AVG, COUNT, MIN, MAX) over one operand; skipped (cannot be a ' +
-          'single MEASURE)'),
+      "Warning: [commerce -> g] metric 'broken' expression 'SUM((x' is not " +
+          'a single supported aggregate (SUM, AVG, COUNT, MIN, MAX) over one ' +
+          'operand; skipped (cannot be a single MEASURE)',
     ],
   },
   {
