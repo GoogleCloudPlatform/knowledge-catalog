@@ -1464,7 +1464,8 @@ function metricNoSqlError(
 //        fields on one entity share a namespace. This runs before pruning, so
 //        a graph push catches it even when pruning drops either side.
 //   - For each field on each entity E:
-//     1. Reject any reference to an entity other than E.
+//     1. Reject any reference to an entity other than E, and a qualifier that
+//        differs only in case from a declared entity.
 //     2. For references to E itself, every field named must be declared or
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
 //
