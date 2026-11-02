@@ -35,8 +35,8 @@ export interface LoadOptions {
   // abstract+source contradiction stays enforced regardless.
   bindingOptional?: boolean;
   // Temporary opt-in for existing test fixtures and legacy profile files while
-  // they are migrated (b/568184815, b/568186042): accepts bare table names, the
-  // legacy instance-based AlloyDB URI, and the legacy `deployment_target:` key.
+  // they are migrated (b/568184815, b/568186042): accepts bare table names and
+  // the legacy `deployment_target:` key.
   allowLegacyBareSource?: boolean;
   // The fields and metrics a legacy `semantic_model:` profile wrapper
   // excludes, which the text merged from it cannot say. The check that each
@@ -1414,8 +1414,9 @@ function readGoogleBlocks(
     for (const [key, value] of Object.entries(data)) {
       if (level === 'model' && key === 'deploymentTargets') {
         throw error(
-            `'${key}' is no longer supported; use 'deployments:' inside the ` +
-            `${GOOGLE_VENDOR} block instead.`);
+            `'${key}' is no longer supported; use 'deployments' inside the ` +
+            `${block} instead, for example ` +
+            `{"deployments": [{"name": "default", "target": "<target>"}]}.`);
       }
       if (level === 'dataset' && key === 'abstract') {
         throw error(
@@ -3482,20 +3483,11 @@ export function parseSource(
     throw new SemanticModelError(`Semantic model load error: ${ctx}: source '${
         trimmed}' is ${problem}.`);
   }
-  const name = asResourceName(trimmed);
-
-  // Legacy instance-based AlloyDB name: accepted under opt-in, written as a
-  // resource name; otherwise, and in any spelling, reported with the
+  // Legacy instance-based AlloyDB name: reported in any spelling with the
   // cluster-based name to write.
   const legacyAlloy =
       asResourceUri(trimmed).match(LEGACY_ALLOYDB_INSTANCE_URI);
   if (legacyAlloy) {
-    if (opts.allowLegacyBareSource && name === trimmed) {
-      return {
-        authoredSource: trimmed,
-        dataSource: asResourceUri(trimmed),
-      };
-    }
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source '${trimmed}' uses the ` +
         `legacy instance-based AlloyDB URI. An AlloyDB database belongs to ` +

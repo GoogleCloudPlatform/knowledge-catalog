@@ -1888,7 +1888,8 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
   test("a model's deploymentTargets fails, naming deployments as its replacement", () => {
     expect(() => load(VANILLA, atLevel('model', google({ deploymentTargets: [G] })))).toThrow(
       "Semantic model load error: model 'm': 'deploymentTargets' is no longer supported; use " +
-      "'deployments:' inside the GOOGLE block instead.");
+      "'deployments' inside the GOOGLE custom_extensions block instead, for example " +
+      '{"deployments": [{"name": "default", "target": "<target>"}]}.');
   });
 
   test('a value the Google flavor rejects for the same key fails', () => {
@@ -3239,7 +3240,7 @@ describe('strict entity sources', () => {
     })).toThrow(/is not a valid table reference/);
   });
 
-  test('the instance-based AlloyDB name is rejected with a migration hint by default and loads when allowLegacyBareSource is set', () => {
+  test('the instance-based AlloyDB name is rejected with a migration hint in any spelling, under allowLegacyBareSource too', () => {
     const legacy =
         'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/instances/inst/databases/db/tables/orders';
     const doc = {
@@ -3251,19 +3252,16 @@ describe('strict entity sources', () => {
         "cluster and a table to a schema in it; write 'alloydb.googleapis.com/projects/acme/" +
         "locations/us-central1/clusters/cl/databases/db/schemas/<schema>/tables/orders'.");
 
-    // Under the flag it loads, with the `dataSource` the runtime reads as a URI.
-    const { models } = load(GOOGLE, doc, { allowLegacyBareSource: true });
-    expect(models[0].entities[0].authoredSource).toBe(legacy);
-    expect(models[0].entities[0].dataSource).toBe(`//${legacy}`);
-    expect(writtenSource(models[0].entities[0])).toBe(legacy);
-
-    // Written as a resource URI, it gets the same message, under the flag too.
+    // Written as a name or a resource URI, it gets the same message, under the
+    // flag too.
     const uriDoc = {
       name: 'm',
       datasets: [{ name: 'orders', source: `//${legacy}`, primary_key: ['id'], fields: [] }],
     };
-    for (const opts of [{}, { allowLegacyBareSource: true }]) {
-      expect(() => load(GOOGLE, uriDoc, opts)).toThrow('uses the legacy instance-based AlloyDB URI');
+    for (const d of [doc, uriDoc]) {
+      for (const opts of [{}, { allowLegacyBareSource: true }]) {
+        expect(() => load(GOOGLE, d, opts)).toThrow('uses the legacy instance-based AlloyDB URI');
+      }
     }
   });
 

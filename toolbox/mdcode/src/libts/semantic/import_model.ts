@@ -1022,8 +1022,7 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
       }
     }
 
-    // 2. Validate every deployment target on the loaded model (across both
-    // `m.deployments` and `GOOGLE`-block `deploymentTargets`) using
+    // 2. Validate every deployment target on the loaded model using
     // `validateDeploymentTargets`.
     for (const m of loaded.models) {
       validateDeploymentTargets(m, doc);

@@ -793,7 +793,7 @@ semantic_model:
 `,
       }),
       {flavor: 'google' as const, strict: true},
-      `model 'retail': 'deploymentTargets' is no longer supported; use 'deployments:' inside the GOOGLE block instead.`,
+      `model 'retail': 'deploymentTargets' is no longer supported; use 'deployments' inside the GOOGLE custom_extensions block instead, for example {"deployments": [{"name": "default", "target": "<target>"}]}.`,
     ],
     [
       'non-JSON YAML alias in GOOGLE block data',

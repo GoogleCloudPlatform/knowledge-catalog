@@ -464,8 +464,7 @@ reads the document ([§6](#6-the-extension-mechanism)).
   graph in one store — as a first-class model-level (or profile-level) key, accepted
   under `0.2.0.dev0/google`. Under vanilla Ossie there is no native key; the
   model's deployments are written as a `GOOGLE` `custom_extensions` block carrying
-  `{"deployments": [{"name": "…", "target": "…"}]}`, and the older
-  `{"deploymentTargets": ["…"]}` form is still read
+  `{"deployments": [{"name": "…", "target": "…"}]}`
   ([§6](#6-the-extension-mechanism)). Grammar in [§7](#7-the-binding-layer).
 
 - **`actions` (extended profile only).** Model-level write operations, the
@@ -623,8 +622,7 @@ An Ossie-only tool treats a `GOOGLE` block as a vendor extension it does
 not recognize and passes it through unchanged — so a vanilla `kcmd` model is still
 a valid Ossie document, and stripping the `GOOGLE` blocks yields plain Ossie. A
 model's deployments ride here as a `GOOGLE` block carrying
-`{"deployments": [{"name": "…", "target": "…"}]}`. The older form,
-`{"deploymentTargets": ["…"]}`, is still read. The native keys (`entities`,
+`{"deployments": [{"name": "…", "target": "…"}]}`. The native keys (`entities`,
 `deployments`, `deployment_target`, `profiles`, `extends`, `abstract`, metric
 `entity`, relationship `description`) are **not accepted** under vanilla — each
 is rejected with a message naming the `GOOGLE` `custom_extensions` block or
@@ -640,9 +638,9 @@ own tools emit: readable, but no longer a vanilla-Ossie document.
 **Converting between the two** is the `version` plus a mechanical fold between
 vanilla `GOOGLE` blocks and `/google` native keys or profile files:
 
-- **Model `GOOGLE` block:** `{"profiles": […], "deployments": […]}` (plus legacy
-  `deploymentTargets` on read) folds to `<model>.profile.<name>.yaml` sidecar
-  files and a native `deployments:` key under `/google`, and back.
+- **Model `GOOGLE` block:** `{"profiles": […], "deployments": […]}` folds to
+  `<model>.profile.<name>.yaml` sidecar files and a native `deployments:` key
+  under `/google`, and back.
 - **Dataset `GOOGLE` block:** `{"extends": ["…"]}` folds to `extends:` on the
   entity, and back.
 - **Relationship `GOOGLE` block:** `{"description": "…"}` folds to

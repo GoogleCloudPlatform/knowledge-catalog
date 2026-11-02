@@ -200,8 +200,6 @@ describe('a model that declares more than one deployment target', () => {
          expect('error' in store).toBe(true);
          if (!('error' in store)) return;
          expect(store.error).toContain('2 Spanner deployment targets');
-         expect(store.error)
-             .toContain("in its GOOGLE block's 'deploymentTargets'");
          expect(store.error).toContain('the runtime uses exactly one deployment for now.');
        });
 
@@ -216,8 +214,6 @@ describe('a model that declares more than one deployment target', () => {
     if (!('error' in store)) return;
     expect(store.error).toContain('1 Spanner and 1 AlloyDB');
     expect(store.error).toContain('two operational backends');
-    expect(store.error)
-        .toContain("in its GOOGLE block's 'deploymentTargets'");
     expect(store.error).toContain('the runtime uses exactly one deployment for now.');
   });
 
@@ -237,36 +233,8 @@ describe('a model that declares more than one deployment target', () => {
     expect(store.error).toContain('2 BigQuery deployment targets');
   });
 
-  // A target listed twice in a GOOGLE block is a duplicate, which every push
-  // refuses.
-  test('one Spanner graph listed twice is a duplicate target', () => {
-    const store = resolveStore(targets(
-        [`${DB}/graphs/g`, `${DB}/graphs/g`],
-        `${DB}/tables/Customer`));
-    expect('error' in store && store.error)
-        .toContain(`declares duplicate deployment target '${DB}/graphs/g'`);
-  });
-
-  test('one AlloyDB URI listed twice is a duplicate target', () => {
-    const store = resolveStore(targets([PG, PG], PG_TABLE));
-    expect('error' in store && store.error)
-        .toContain(`declares duplicate deployment target '${PG}'`);
-  });
-
-  // A vanilla model whose GOOGLE block lists 'deploymentTargets' is told about
-  // that key, and how to list a deployment in the block.
-  test('a GOOGLE block with no target names the block', () => {
-    expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
-      error: "Model 'm' declares no deployment target in its GOOGLE block's " +
-          "'deploymentTargets', so there is no store to run against. In a " +
-          "GOOGLE custom_extensions block on the model, declare a " +
-          "deployment in 'deployments' whose target names a database.",
-    });
-  });
-
-  // The loader removes a GOOGLE block that lists no 'deploymentTargets', so a
-  // vanilla model with no target and no such block is told about
-  // 'deployments'.
+  // The loader removes every GOOGLE block, so a vanilla model with no target is
+  // told about 'deployments'.
   test('a vanilla model with no deploymentTargets block is told about deployments', () => {
     const none = {...targets([], `${DB}/tables/Customer`), customExtensions: undefined};
     expect(resolveStore(none)).toEqual({
@@ -620,15 +588,6 @@ describe('an AlloyDB source', () => {
         `${CLUSTER}/databases/other/schemas/public/tables/customer`));
     expect('error' in store && store.error)
         .toContain("'Customer' to " + `${CLUSTER}/databases/other`);
-  });
-
-  // The loader still reads the legacy instance-based name under
-  // allowLegacyBareSource, but it names no table of an AlloyDB database.
-  test('written as a legacy instance-based name, is not a table in the store', () => {
-    const legacy = `${CLUSTER}/instances/any/databases/d/tables/customer`;
-    const store = resolveStore(alloyModel(`${CLUSTER}/databases/d`, legacy));
-    expect('error' in store && store.error)
-        .toContain(`'Customer' to ${legacy}, which is not a table in this store`);
   });
 });
 

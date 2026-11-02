@@ -169,15 +169,13 @@ function strayBindings(model: SemanticModel, store: ChosenStore): string[] {
  * `named` is set when the model's deployments name a target and still no
  * store results, so a caller that runs against the store fails. `rejected` is
  * set with it when the deployments give no store whatever the model is used
- * for: a target in no accepted form in any deployment, a target listed twice,
- * a GOOGLE block whose data is not valid JSON, or several targets for the
- * profile. `named` alone means the model binds a table outside its Spanner or
- * AlloyDB store.
+ * for: a target in no accepted form in any deployment, a GOOGLE block whose
+ * data is not valid JSON, or several targets for the profile. `named` alone
+ * means the model binds a table outside its Spanner or AlloyDB store.
  *
  * Neither is set when the profile names no store, unless a target is in no
- * accepted form or listed twice, or a GOOGLE block is not valid JSON. Neither
- * is set either when a BigQuery model binds a table outside the graph's
- * dataset.
+ * accepted form, or a GOOGLE block is not valid JSON. Neither is set either
+ * when a BigQuery model binds a table outside the graph's dataset.
  */
 export interface StoreError {
   error: string;
@@ -200,18 +198,16 @@ export interface StoreError {
  * `deployment_target` key, which the loader names `default`, so that a
  * message names the key instead.
  *
- * Fails seven ways:
+ * Fails six ways:
  *
  * 1. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
- * 2. A target is listed twice. Push refuses that on every push, so this fails
- *    the store under every profile.
- * 3. A target names no supported destination. Push checks the target of every
+ * 2. A target names no supported destination. Push checks the target of every
  *    deployment, so this fails the store under every profile.
- * 4. No deployment uses the profile.
- * 5. There are several targets and no single operational one, so which store
+ * 3. No deployment uses the profile.
+ * 4. There are several targets and no single operational one, so which store
  *    is meant is ambiguous.
- * 6. There is no target, so there is nothing to run against.
- * 7. The model binds a table outside the store. For a Spanner or AlloyDB
+ * 5. There is no target, so there is nothing to run against.
+ * 6. The model binds a table outside the store. For a Spanner or AlloyDB
  *    store, a write would land in the wrong place, and the error is named. A
  *    BigQuery graph may read tables in any dataset, so
  *    for a BigQuery store the error is not named.
@@ -232,30 +228,11 @@ export function resolveStore(
   }
 
   // The loader reads a vanilla model's `deployments` out of its GOOGLE block,
-  // and rejects the older `deploymentTargets`, so only a model built in memory
-  // keeps a GOOGLE block that lists targets. A message names that key only for
-  // such a block, and names the block's `deployments` for a vanilla model that
-  // lists them, as push does.
+  // so a message names the block's `deployments`, as push does.
   const vanilla = model.version === OSSIE_VERSION;
-  const inGoogleBlock = vanilla && model.deployments === undefined &&
-      (model.customExtensions ?? []).some(e => e.vendorName === 'GOOGLE');
-  const where = inGoogleBlock ? `its GOOGLE block's 'deploymentTargets'` :
-      vanilla && model.deployments ? `its GOOGLE block's 'deployments'` :
-                                     `'deployments'`;
-
-  // Every push refuses a target listed twice, even beside one that gives a
-  // store. The loader refuses a repeat in `deployments`, so a repeat here is
-  // in a GOOGLE block.
-  const repeated = all.uris.find((uri, i) => all.uris.indexOf(uri) < i);
-  if (repeated !== undefined) {
-    return {
-      error: `Model '${model.name}' declares duplicate deployment target '${
-                 repeated}' in ${where}; each deployment must target a ` +
-          `distinct resource.`,
-      named: true,
-      rejected: true,
-    };
-  }
+  const where = vanilla && model.deployments ?
+      `its GOOGLE block's 'deployments'` :
+      `'deployments'`;
 
   // A target in no accepted form is reported, alone or beside one that gives
   // a store, whichever profile its deployment is for.

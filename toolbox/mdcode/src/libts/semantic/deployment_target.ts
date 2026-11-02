@@ -397,10 +397,10 @@ export function googleBlockTargets(
 }
 
 // Deployments for targets whose names are not known: a pull reads only the
-// targets back from the catalog, and a vanilla model lists only targets in
-// its GOOGLE block. One target is `default`; several are `deployment_1`,
-// `deployment_2`, and so on. Targets are trimmed, and blank ones dropped. A
-// repeated target is dropped too, so the list loads as a `deployments:` list.
+// targets back from the catalog. One target is `default`; several are
+// `deployment_1`, `deployment_2`, and so on. Targets are trimmed, and blank
+// ones dropped. A repeated target is dropped too, so the list loads as a
+// `deployments:` list.
 export function unnamedDeployments(targets: readonly string[]):
     Array<{name: string; target: string}> {
   const seen = new Set<string>();
