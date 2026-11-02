@@ -561,7 +561,8 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     flags: {validateOnly: true},
     warnings: [
       ...['pa', 'pb'].map(unreadScore),
-      has("Warning: [commerce] note: no 'BIGQUERY' dialect"),
+      ...['pa', 'pb'].map(
+          p => has(`Warning: profile '${p}': [commerce] note: no 'BIGQUERY' dialect`)),
     ],
     then: [{
       profiles: {

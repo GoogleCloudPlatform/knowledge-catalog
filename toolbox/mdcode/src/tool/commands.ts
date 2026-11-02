@@ -1430,7 +1430,9 @@ async function deploymentPlan(
       if (!(err instanceof SemanticModelError)) throw err;
       return fail(`${at}: ${err.message}`);
     }
-    for (const w of warnings) warn(`[${document}] ${w}`);
+    for (const w of warnings) {
+      warn(`profile '${deployment.profile}': [${document}] ${w}`);
+    }
   }
   // Messages name the deployment.
   const label = `${document}, deployment '${deployment.name}'`;

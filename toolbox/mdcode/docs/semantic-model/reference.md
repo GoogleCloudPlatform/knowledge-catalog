@@ -53,9 +53,9 @@ A model that lists `deployments:`, and a push with `--deployment` or
 profile file, without `--profile`, `--all-profiles` or `--no-profile`. The first
 runs every check, for Knowledge Catalog and for each deployment, and writes
 nothing. It also prints each graph's warnings, such as a metric the graph leaves
-out. Knowledge Catalog receives every profile, so the first phase also prints
-the load warnings of each profile that no selected deployment applies, each
-prefixed with `profile '<name>':`.
+out. Knowledge Catalog receives every profile, so the first phase prints the
+load warnings of each profile, whether or not a selected deployment applies it,
+each prefixed with `profile '<name>':`.
 The second publishes the model to Knowledge Catalog, then deploys each
 deployment in order with the profile it names. An AlloyDB deployment deploys no
 graph. The first phase dry-runs each BigQuery graph's DDL. Spanner cannot check

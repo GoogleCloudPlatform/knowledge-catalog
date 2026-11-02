@@ -110,7 +110,7 @@ scenarios('push --no-deployment', [
     // Knowledge Catalog receives every profile file, applied or not. The
     // model file and profile dev give the same ANSI_SQL note, which prints
     // once.
-    name: 'prints the warnings of a profile file no selected deployment applies, labelled with its name, and those of an applied one once, and none for a profile push rejects',
+    name: 'prints the warnings of each profile file once, labelled with its name, whether or not a selected deployment applies it, and none for a profile push rejects',
     deployments: [{name: 'g', profile: 'prod'}, {name: 'h', profile: 'dev'}],
     entities: [keyAt(bqTable('customer'), 'c_key')],
     profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', '"c_key"')},
@@ -120,12 +120,26 @@ scenarios('push --no-deployment', [
     then: [{flags: {deployment: 'h', validateOnly: true}, code: 0,
             warnings: [NOTE, quotedKey("profile 'prod': ")]},
            {flags: {deployment: 'g', validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey('')]},
+            warnings: [NOTE, quotedKey("profile 'prod': ")]},
            // Push's error for the Snowflake-only key is prod's only message.
            {profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', 'c_key', 'SNOWFLAKE')},
             flags: {validateOnly: true}, code: 1, warnings: [NOTE],
             rejects: [has("field 'Customer.key' has no expression for BIGQUERY or ANSI_SQL")]}],
     report: {code: 0},
+  },
+  {
+    // The model file binds no table, so only the profiles warn about metric
+    // m, deployment d's dev among them.
+    name: 'a warning that an applied and an unapplied profile both give prints once for each, under its name',
+    deployments: [{name: 'd', profile: 'dev'}],
+    entities: [{...CUSTOMER, source: undefined}],
+    metrics: [{name: 'm', entity: 'Customer',
+               expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'COUNT("key")'}]}}],
+    profiles: {dev: boundTo('dev'), prod: PROD},
+    flags: {deployment: undefined, validateOnly: true},
+    code: 0,
+    warnings: [has("unbound 'default' profile"), ...['prod', 'dev'].map(p => has(
+        `Warning: profile '${p}': [commerce] metric 'm': BigQuery reads "key"`))],
   },
   {
     name: '--validate-only --print prints the catalog plan first',
