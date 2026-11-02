@@ -3779,10 +3779,10 @@ export function parseSource(
     // With `importHint`, the example also names the command that completes a
     // model file's bare names.
     const viaImport = importHint ?
-        `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
-            `--source-prefix <prefix>' to complete each bare table name ` +
-            `from the database or Knowledge Catalog entry group that ` +
-            `<prefix> names.` :
+        `\nOr run 'kcmd import <file> --input first-party --flavor ` +
+            `<ossie|google> --source-prefix <prefix>' to complete each bare ` +
+            `table name from the database or Knowledge Catalog entry group ` +
+            `that <prefix> names.` :
         '';
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and

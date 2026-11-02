@@ -3499,7 +3499,7 @@ describe('strict entity sources', () => {
       .toThrow('looks like a SQL query');
 
     // Each bare-name message also names the command that completes bare names.
-    const VIA_IMPORT = "Or run 'kcmd import <file> --flavor <ossie|google> " +
+    const VIA_IMPORT = "Or run 'kcmd import <file> --input first-party --flavor <ossie|google> " +
         "--source-prefix <prefix>' to complete each bare table name from the " +
         'database or Knowledge Catalog entry group that <prefix> names.';
     // 2. Bare table names (1-, 2-, and 3-part). The hint shows the GCP

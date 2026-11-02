@@ -1406,14 +1406,15 @@ async function transpileDocument(
 }
 
 // Whether `profile` is a BigQuery profile of `model`, by the rule push's import
-// hint uses: each accepted source it states for a concrete entity of `model`
-// is a BigQuery or BigLake table, and it states at least one.
+// hint uses: each source push accepts that it states for a concrete entity of
+// `model` is a BigQuery or BigLake table, and it states at least one.
 function isBigQueryProfile(profile: ProfileSpec, model: SemanticModel): boolean {
   const concrete =
       new Set(model.entities.filter(e => !e.abstract).map(e => e.name));
   const entities = profile.entities.flatMap(
-      ({name, source}) => concrete.has(name) && isAcceptedSource(source) ?
-          [{authoredSource: source, dataSource: source!}] :
+      ({name, source}) => concrete.has(name) && source !== undefined &&
+              sourceError(source, '') === undefined ?
+          [{authoredSource: source, dataSource: source}] :
           []);
   return sourcesDialect({entities}) === 'BIGQUERY';
 }

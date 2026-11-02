@@ -336,6 +336,13 @@ describe('profile translation', () => {
      {...google, profileFiles: [fileOf(prodOn(sfEntry))]}, false],
     ['skips a Spanner GOOGLE block profile, written as a profile file',
      ossieDoc({fieldExpr, extra: blockOf(prodOn(SPANNER_TABLE))}), google, false],
+    // Push reads neither a resource URI nor a catalog name, so neither counts.
+    // Under --input first-party, import refuses such a source.
+    ['translates a third-party profile file on BigQuery and a Spanner resource URI',
+     googleDoc({fieldExpr, extra: `      - name: items\n        source: ${BQ_TABLE}\n`}),
+     {...google, strict: false, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, {name: 'items', source: `//${SPANNER_TABLE}`}]})]}, true],
+    ['skips a third-party profile file on a BigQuery catalog name', googleDoc({fieldExpr}),
+     {...google, strict: false, profileFiles: [fileOf(prodOn('bigquery:acme.sales.orders_prod'))]}, false],
   ])('%s', async (_, input, opts, translated) => {
     const res = await importSemanticModelYaml(input, opts);
     expect(res.errors).toEqual([]);
@@ -349,7 +356,7 @@ describe('profile translation', () => {
     expect(written.entities[0].fields![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: SNOWFLAKE}, ...translated ? [bigQuery] : [],
     ]);
-    expect(res.warnings.filter(w => w.startsWith("profile 'prod'"))).toEqual(translated ? [
+    expect(res.warnings.filter(w => w.startsWith("profile 'prod': field"))).toEqual(translated ? [
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
     ] : []);
   });
