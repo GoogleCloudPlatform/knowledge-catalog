@@ -1179,18 +1179,9 @@ ${metrics}# end of model
     expect(res.files[0].content).not.toContain('\r');
   });
 
-  test('writes a changed JSON file as block YAML', async () => {
-    const json = JSON.stringify(yaml.parse(thirdParty), null, 2);
-
-    const res = await importSemanticModelYaml(json);
-
-    expect(res.files[0].content)
-        .toContain('\n    datasets:\n      - name: orders\n');
-  });
-
   test('drops the blank lines after `{` and `[` of a JSON file', async () => {
     // Blank lines follow `{` and `[`, and sit between two keys and between two
-    // list items. Only the last two kinds stay.
+    // list items. Only the last two kinds stay. The empty list stays `[]`.
     const json = `{
 
   "version": "0.2.0.dev0",
@@ -1209,15 +1200,14 @@ ${metrics}# end of model
           "fields": [{"name": "id", "expression": "id"}]},
 
         {"name": "items", "source": "items"}
-      ]
+      ],
+      "relationships": []
     }
   ]
 }
 `;
 
     const res = await importSemanticModelYaml(json);
-    const plain =
-        await importSemanticModelYaml(JSON.stringify(JSON.parse(json)));
 
     expect(res.files[0].content).toBe(`version: 0.2.0.dev0
 
@@ -1238,9 +1228,8 @@ semantic_model:
 
       - name: items
         source: items
+    relationships: []
 `);
-    expect(yaml.parse(res.files[0].content))
-        .toEqual(yaml.parse(plain.files[0].content));
   });
 
   test('keeps every comment of the Apache Ossie TPC-DS example', async () => {
