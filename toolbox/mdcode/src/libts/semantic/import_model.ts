@@ -1122,9 +1122,16 @@ function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
   }
   updateDocument(doc.document, root, doc.links);
   // A JSON file is one flow mapping. It is written as block YAML, as before.
+  // A blank line before a collection's first item is dropped. It would print
+  // as an empty first line, a line of spaces, or a `- ` alone on its line.
   if (yaml.isMap(doc.document.contents) && doc.document.contents.flow) {
     yaml.visit(doc.document, {
-      Collection: (_, n) => void (n.flow = false),
+      Collection: (_, n) => {
+        n.flow = false;
+        const first = n.items[0];
+        const owner = yaml.isPair(first) ? first.key : first;
+        if (yaml.isNode(owner)) owner.spaceBefore = false;
+      },
       Scalar: (_, n) => void delete n.type,
     });
   }

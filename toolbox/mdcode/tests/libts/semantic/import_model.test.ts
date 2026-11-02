@@ -1188,6 +1188,61 @@ ${metrics}# end of model
         .toContain('\n    datasets:\n      - name: orders\n');
   });
 
+  test('drops the blank lines after `{` and `[` of a JSON file', async () => {
+    // Blank lines follow `{` and `[`, and sit between two keys and between two
+    // list items. Only the last two kinds stay.
+    const json = `{
+
+  "version": "0.2.0.dev0",
+
+  "semantic_model": [
+
+    {
+
+      "name": "retail",
+      "datasets": [
+
+        {"name": "orders", "source": "orders", "primary_key": [
+
+          "id"],
+
+          "fields": [{"name": "id", "expression": "id"}]},
+
+        {"name": "items", "source": "items"}
+      ]
+    }
+  ]
+}
+`;
+
+    const res = await importSemanticModelYaml(json);
+    const plain =
+        await importSemanticModelYaml(JSON.stringify(JSON.parse(json)));
+
+    expect(res.files[0].content).toBe(`version: 0.2.0.dev0
+
+semantic_model:
+  - name: retail
+    datasets:
+      - name: orders
+        source: orders
+        primary_key:
+          - id
+
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+
+      - name: items
+        source: items
+`);
+    expect(yaml.parse(res.files[0].content))
+        .toEqual(yaml.parse(plain.files[0].content));
+  });
+
   test('keeps every comment of the Apache Ossie TPC-DS example', async () => {
     const raw = readFileSync(
         join(__dirname, 'fixtures/ossie/tpcds_semantic_model.yaml'), 'utf8');
