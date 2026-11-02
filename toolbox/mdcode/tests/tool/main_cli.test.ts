@@ -12,6 +12,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import pkg from '../../package.json';
+
 // bun test runs from the package root; fail loudly rather than silently
 // spawning nothing if that ever stops being true.
 const MAIN = path.join(process.cwd(), 'src', 'tool', 'main.ts');
@@ -32,6 +34,7 @@ function run(...args: string[]): {code: number; out: string} {
   const p = Bun.spawnSync({
     cmd: ['bun', MAIN, ...args],
     cwd,
+    env: {...process.env, CLOUDSDK_CONFIG: cwd},
     stdout: 'pipe',
     stderr: 'pipe',
   });
@@ -59,7 +62,7 @@ describe('kcmd: --help and --version', () => {
     const {code, out} = run('--version');
     expect(code).toBe(0);
     expect(usageBlocks(out)).toBe(0);
-    expect(out).toContain('kcmd/');
+    expect(out).toContain(`kcmd/${pkg.version}`);
   });
 
   test('`--help` on a command succeeds and prints that command', () => {

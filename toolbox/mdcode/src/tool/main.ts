@@ -3,8 +3,13 @@
 
 import * as cac from 'cac';
 
+import pkg from '../../package.json';
 import * as commands from './commands';
 import * as mcp from './mcp';
+
+declare const __KCMD_COMMIT__: string|undefined;
+const BUILD_COMMIT =
+    typeof __KCMD_COMMIT__ === 'string' && __KCMD_COMMIT__ ? `+${__KCMD_COMMIT__}` : '';
 
 
 // Runs a command and exits with the code it gives. An exception prints as an
@@ -19,7 +24,7 @@ async function run(command: () => Promise<number>): Promise<void> {
   process.exit(exitCode);
 }
 
-const cli = cac.cac('kcmd').version('1.0.0').help();
+const cli = cac.cac('kcmd').version(`${pkg.version}${BUILD_COMMIT}`).help();
 cli.command('init', 'Initialize a new catalog snapshot')
     .option(
         '--entry-group <id>',

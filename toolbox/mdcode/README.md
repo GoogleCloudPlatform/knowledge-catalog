@@ -95,14 +95,14 @@ links:
 
 ### Library
 
-You can use the `kcmd` library to programmatically interact with the catalog metadata.
+You can use the `@google-cloud/kcmd` library to programmatically interact with the catalog metadata.
 
 ```bash
-npm install kcmd
+npm install @google-cloud/kcmd
 ```
 
 ```typescript
-import * as kcmd from 'kcmd';
+import * as kcmd from '@google-cloud/kcmd';
 
 // Creating a catalog manifest from scratch
 const manifest = new kcmd.CatalogManifest(...);
