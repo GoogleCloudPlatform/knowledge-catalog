@@ -27,13 +27,13 @@ const PG_TABLE = `${PG}/schemas/public/tables/customer`;
 function model(body: string): SemanticModel {
   const loaded = loadModels(
       `version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: m\n${body}`,
-      {bindingOptional: true, allowLegacyBareSource: true});
+      {bindingOptional: true});
   return loaded.models[0];
 }
 
 function bound(target: string, source: string): SemanticModel {
   return model(
-      `    deployment_target: ${target}\n` +
+      `    deployments:\n      - {name: default, target: "${target}"}\n` +
       `    entities:\n` +
       `      - name: Customer\n` +
       `        primary_key: [id]\n` +
@@ -140,7 +140,7 @@ describe('a binding that disagrees with the target', () => {
     // The statements report that themselves, naming the table they could not
     // find; refusing here would refuse a logical model for being logical.
     const store = resolveStore(model(
-        `    deployment_target: ${DB}/graphs/g\n` +
+        `    deployments:\n      - {name: default, target: "${DB}/graphs/g"}\n` +
         `    entities:\n` +
         `      - name: Customer\n` +
         `        primary_key: [id]\n` +

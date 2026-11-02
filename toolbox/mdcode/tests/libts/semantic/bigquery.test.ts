@@ -42,11 +42,7 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // capture.
 function loadFixture(fixture: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  const {models} = loadModels(text, {
-    defaultProject: 'sqlgen-testing',
-    defaultDataset: 'demo',
-    allowLegacyBareSource: true,
-  });
+  const {models} = loadModels(text);
   return models[0];
 }
 const GEN_OPTS: GenerateOptions = {

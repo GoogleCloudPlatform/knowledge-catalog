@@ -201,9 +201,8 @@ semantic_model:
     expect(written).not.toContain('custom_extensions');
 
     // The rebuilt file (whose fields came back unbound because the default push
-    // omits `emitExpressions`) loads without allowLegacyBareSource and
-    // preserves deployment targets in declaration order and the source as
-    // written.
+    // omits `emitExpressions`) loads and preserves deployment targets in
+    // declaration order and the source as written.
     const loaded = loadModels(written);
     expect(loaded.models).toHaveLength(1);
     const m = loaded.models[0];

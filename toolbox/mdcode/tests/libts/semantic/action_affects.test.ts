@@ -88,8 +88,7 @@ function withAffects(affects: any[]|undefined, version = '0.2.0.dev0/google') {
             ...(affects ? {affects} : {}),
           }],
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 
@@ -524,7 +523,7 @@ describe('affects survives every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text, {allowLegacyBareSource: true}).models[0];
+    return loadModels(text).models[0];
   })();
 
   const EXPECTED = [
@@ -543,8 +542,7 @@ describe('affects survives every round trip', () => {
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
-    expect(
-        loadModels(yaml, {allowLegacyBareSource: true}).models[0].actions![0].affects)
+    expect(loadModels(yaml).models[0].actions![0].affects)
         .toEqual(EXPECTED as any);
   });
 
@@ -553,9 +551,7 @@ describe('affects survives every round trip', () => {
     // record with nothing but a concept comes back as a bare name. Reloading
     // and re-emitting therefore has to change nothing more.
     const once = serializeModel(model).yaml;
-    const twice =
-        serializeModel(loadModels(once, {allowLegacyBareSource: true}).models[0])
-            .yaml;
+    const twice = serializeModel(loadModels(once).models[0]).yaml;
     expect(twice).toBe(once);
   });
 

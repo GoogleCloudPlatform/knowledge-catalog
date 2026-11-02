@@ -1436,9 +1436,7 @@ export function importHint(
 // The dialect a model's sources imply: that of the one database every concrete
 // entity reads from, or undefined when they name several, or a source names
 // none. It is null when every source is a table whose dialect no lookup read
-// (see dialectOfSources). A legacy bare name, which the loader completes into
-// `project.dataset.table` in `dataSource`, names BigQuery however many parts it
-// was written with.
+// (see dialectOfSources).
 export function sourcesDialect(model: {
   entities?: ReadonlyArray<
       Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>;
@@ -1455,8 +1453,7 @@ export function sourcesDialect(model: {
 // The dialect every one of `sources` implies, or undefined when one names no
 // database in an accepted form or two imply different dialects. Two databases
 // of one system, such as two AlloyDB databases, imply that system's dialect.
-// A three-part dotted name, which is how the loader completes a legacy bare
-// name, names BigQuery.
+// A three-part dotted name names BigQuery.
 //
 // A Cloud SQL table written as its resource name, a third-party table and a
 // Spanner table imply the dialect a lookup gave in `lookedUp`

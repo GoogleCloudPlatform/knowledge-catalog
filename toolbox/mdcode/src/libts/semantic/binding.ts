@@ -64,10 +64,10 @@ export function spannerTable(
 
 // A resource URI (`//host/...`) or any `scheme://...` URI, as opposed to a bare
 // or dotted table reference. The loader gives the IR a BigQuery or BigLake
-// table, or a legacy bare name, as its dotted name, a Spanner, AlloyDB or Cloud
-// SQL table as its resource URI, with the leading `//`, and a third-party table
-// as its entry name (see `parseSource` and `sourceToDataSource`). It rejects
-// any `scheme://` source, so only a hand-built IR reaches that arm.
+// table as its dotted name, a Spanner, AlloyDB or Cloud SQL table as its
+// resource URI, with the leading `//`, and a third-party table as its entry
+// name (see `parseSource` and `sourceToDataSource`). It rejects any `scheme://`
+// source, so only a hand-built IR reaches that arm.
 function isResourceUri(source: string): boolean {
   return source.startsWith('//') || /^[a-z][\w+.-]*:\/\//i.test(source);
 }

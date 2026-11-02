@@ -63,8 +63,7 @@ function withTwoActions(guardOnFirst: string[]|undefined, constraints: any[]) {
           ],
           constraints,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 // One entity, one action, and whatever constraints a test needs. `guards` is
@@ -95,8 +94,7 @@ function withGuards(
           }],
           constraints,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 
@@ -148,8 +146,7 @@ describe('loader parses an action\'s guards', () => {
                       guards: ['C'],
                     }],
                   }],
-                },
-                {allowLegacyBareSource: true}))
+                }))
             .toThrow(/actions/);
       });
 });
@@ -225,7 +222,7 @@ describe('guards survive every round trip', () => {
   const model = (() => {
     const text = fs.readFileSync(
         path.join(FIXTURES, 'actions_place_order.yaml'), 'utf8');
-    return loadModels(text, {allowLegacyBareSource: true}).models[0];
+    return loadModels(text).models[0];
   })();
 
   test(
@@ -240,9 +237,7 @@ describe('guards survive every round trip', () => {
 
   test('OSI serialize -> reload', () => {
     const {yaml} = serializeModel(model);
-    expect(
-        loadModels(yaml, {allowLegacyBareSource: true}).models[0].actions![0].guards)
-        .toEqual([
+    expect(loadModels(yaml).models[0].actions![0].guards).toEqual([
           'OrderWithinCustomerCredit'
         ]);
   });

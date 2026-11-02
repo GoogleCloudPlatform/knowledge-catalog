@@ -519,10 +519,11 @@ NODE TABLES (
       entity('party', '', [], {}, {abstract: true}),
     ], {metrics: [{name: 'revenue', entity: 'orders',
                    expression: 'SUM(orders.amount)'}]});
-    const [loaded] = loadModels(
-        fs.readFileSync(path.join(FIXTURES, 'lineitem_databricks_ext.yaml'),
-                        'utf8'),
-        {allowLegacyBareSource: true}).models;
+    const [loaded] =
+        loadModels(
+            fs.readFileSync(
+                path.join(FIXTURES, 'lineitem_databricks_ext.yaml'), 'utf8'))
+            .models;
     const lineitem = {
       ...loaded,
       entities: loaded.entities.map(e => ({...e, uniqueKeys: undefined})),

@@ -1037,7 +1037,7 @@ async function checkBeforeWrites(
   leftOut: string[];
   overviews?: Map<string, OverviewSidecar>;
 }|{errors: LocalCheckError[]}> {
-  const {ctx, layout, source, docs, profileDocs, load} = scope;
+  const {layout, source, docs, profileDocs, load} = scope;
   const stop = (errors: LocalCheckError[]) => ({errors});
   const fail = (...errors: string[]) => stop(errors.map(error => ({error})));
   // Prints each warning once.
@@ -1056,13 +1056,11 @@ async function checkBeforeWrites(
   }
   const noDeployment = deploymentFlags(options.deployment).negated;
 
-  const defaultProject = source.project ?? ctx.project;
   // A model file may leave every source to its profile files, so a source is
   // required only once a deployment's profile is applied. The checks below
   // reject a field its table cannot run, so the load does not warn about it.
   const loaded = loadSemanticModels(
-      docs,
-      {defaultProject, bindingOptional: true, ...load, fieldTextChecked: true});
+      docs, {bindingOptional: true, ...load, fieldTextChecked: true});
   if (loaded.error) return fail(loaded.error);
   for (const w of loaded.warnings) warn(w);
   if (selected && !loaded.models.length) {
@@ -1311,7 +1309,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
     }
     failed = true;
   };
-  const defaultProject = source.project ?? ctx.project;
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
   // Source dialects are looked up once, as push does.
@@ -1326,8 +1323,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // Prints the warnings push gives about the model file's own bindings in
   // `doc`, unless the model file does not load on its own.
   const warnInline = (doc: {name: string; text: string}, named: boolean) => {
-    const loaded =
-        loadSemanticModels([doc], {defaultProject, bindingOptional: true});
+    const loaded = loadSemanticModels([doc], {bindingOptional: true});
     if (loaded.error) return;
     for (const w of inlineBindingWarnings(
              loaded.models[0].model, doc.name, named)) {

@@ -200,7 +200,6 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   const appliedByDoc = new Map<string, SemanticModel>();
   // The warnings applying each profile gave.
   const fileWarnings = new Map<string, string[]>();
-  const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
       inline.push({name: doc.name, text: doc.text});
@@ -220,8 +219,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     appliedByDoc.set(doc.name, res.model);
   }
 
-  const loaded = loadSemanticModels(
-      inline, {defaultProject, bindingOptional: true, ...load});
+  const loaded = loadSemanticModels(inline, {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error};
   // In the order of the documents, as one load of them all gives. The load
   // prefixes each warning with its document's name.

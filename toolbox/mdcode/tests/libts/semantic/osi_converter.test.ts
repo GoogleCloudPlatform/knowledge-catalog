@@ -28,7 +28,7 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 
 function loadFixture(name: string): SemanticModel[] {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text, {allowLegacyBareSource: true}).models;
+  return loadModels(text).models;
 }
 
 
@@ -56,7 +56,7 @@ describe('loader <-> serialize round trip is IR-stable', () => {
       for (const model of original) {
         const {yaml: text, warnings} = serializeModel(model);
         expect(warnings).toEqual([]);
-        const reloaded = loadModels(text, {allowLegacyBareSource: true}).models;
+        const reloaded = loadModels(text).models;
         expect(reloaded).toHaveLength(1);
         expect(reloaded[0]).toEqual(model);
       }
@@ -250,7 +250,7 @@ describe('expression + datatype + dimension mapping', () => {
     const typed = model.entities.flatMap(e => e.fields).find(f => f.type);
     expect(typed).toBeDefined();
     const {yaml: text} = serializeModel(model);
-    const reloaded = loadModels(text, {allowLegacyBareSource: true}).models[0];
+    const reloaded = loadModels(text).models[0];
     const back = reloaded.entities.flatMap(e => e.fields)
                      .find(f => f.name === typed!.name)!;
     expect(back.type).toBe(typed!.type);
@@ -261,8 +261,14 @@ describe('expression + datatype + dimension mapping', () => {
         Field = {name: 'ship_date', expression: 'e.ship_date', dimension: {}};
     const model: SemanticModel = {
       name: 'm',
-      entities:
-          [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: [field]}],
+      entities: [{
+        name: 'e',
+        dataSource: 'p.d.t',
+        authoredSource:
+            'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
+        keys: ['k'],
+        fields: [field],
+      }],
       relationships: [],
       metrics: [],
     };
@@ -270,9 +276,7 @@ describe('expression + datatype + dimension mapping', () => {
     const fieldDoc = doc.semantic_model[0].entities[0].fields[0];
     expect(fieldDoc.dimension).toEqual({});
     // And it reloads back to a dimension field.
-    const reloaded =
-        loadModels(serializeModel(model).yaml, {allowLegacyBareSource: true})
-            .models[0];
+    const reloaded = loadModels(serializeModel(model).yaml).models[0];
     expect(reloaded.entities[0].fields[0].dimension).toEqual({});
   });
 
@@ -310,6 +314,8 @@ describe('expression + datatype + dimension mapping', () => {
       entities: [{
         name: 'orders',
         dataSource: 'p.d.t',
+        authoredSource:
+            'bigquery.googleapis.com/projects/p/datasets/d/tables/t',
         keys: ['k'],
         fields: [{name: 'amt', expression: 'orders.amt'}],
       }],
@@ -320,9 +326,7 @@ describe('expression + datatype + dimension mapping', () => {
         (modelDocument(model) as any).semantic_model[0].metrics[0];
     expect(metricDoc).not.toHaveProperty('entity');
     // The loader re-derives it on reload.
-    const reloaded =
-        loadModels(serializeModel(model).yaml, {allowLegacyBareSource: true})
-            .models[0];
+    const reloaded = loadModels(serializeModel(model).yaml).models[0];
     expect(reloaded.metrics[0].entity).toBe('orders');
   });
 });
@@ -585,20 +589,13 @@ describe('golden OSI document: each corpus fixture serializes to its exact YAML'
              // `semantic-constraint` types.
              'actions_place_order.yaml',
            ];
-           // Same load defaults as the KC e2e/pull goldens, so the OSI golden
-           // and the pull golden are directly comparable.
-           const LOAD = {
-             defaultProject: 'sqlgen-testing',
-             defaultDataset: 'demo',
-             allowLegacyBareSource: true,
-           };
            const osiGoldenPath = (fixture: string) =>
                path.join(FIXTURES, fixture.replace(/\.yaml$/, '.osi.golden.yaml'));
 
            for (const fixture of CORPUS) {
              test(fixture, () => {
                const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-               const models = loadModels(text, LOAD).models;
+               const models = loadModels(text).models;
                const actual = models.map(m => serializeModel(m).yaml).join('---\n');
                const golden = osiGoldenPath(fixture);
                if (process.env.UPDATE_GOLDENS) {

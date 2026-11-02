@@ -26,7 +26,7 @@ const OPTS = {
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
-  return loadModels(text, {allowLegacyBareSource: true}).models[0];
+  return loadModels(text).models[0];
 }
 
 const ACTIONS_DOC =
@@ -83,8 +83,7 @@ function withActions(actions: any[], over: any = {}) {
           actions,
           ...over,
         }],
-      },
-      {allowLegacyBareSource: true});
+      });
 }
 
 const MCP = {
@@ -193,8 +192,7 @@ describe('loader parses actions', () => {
                   ],
                 }],
               }],
-            },
-            {allowLegacyBareSource: true});
+            });
         const [a, b] = models[0].actions![0].parameters;
         expect(a.label).toBe('Account number');
         expect(a.aiContext).toEqual({synonyms: ['acct']});
@@ -351,8 +349,7 @@ describe('loader parses actions', () => {
               parameters: [{concept: 'customer', field: 'notes'}],
             }],
           }],
-        },
-        {allowLegacyBareSource: true});
+        });
     expect(models[0].actions![0].parameters[0]).toEqual({
       name: 'notes',
       type: 'String',
@@ -373,8 +370,7 @@ describe('loader parses actions', () => {
             datasets:
                 [{name: 'c', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/c', primary_key: ['id'], fields: []}]
           }],
-        },
-        {allowLegacyBareSource: true});
+        });
     expect(models[0].actions).toBeUndefined();
   });
 
@@ -974,8 +970,7 @@ describe('actions projecting concepts the push does not publish', () => {
                   parameters: [{name: 'who', concept: 'party', field: 'partyId'}],
                 }],
               }],
-            },
-            {allowLegacyBareSource: true});
+            });
         // Resolved against the ontology, which includes abstract entities.
         expect(models[0].actions![0].parameters[0].type).toBe('String');
 
@@ -1479,7 +1474,7 @@ describe('a projection the catalog cannot give back', () => {
     // would keep passing while the doc drifted, which is the one failure this
     // test exists to catch.
     const docYaml = yamlFenceFromActionsDoc('## 1. Declare the action');
-    const loaded = loadModels(docYaml, {allowLegacyBareSource: true});
+    const loaded = loadModels(docYaml);
     expect(loaded.warnings).toEqual([]);
     const model = loaded.models[0];
     // The doc writes `source` in the one-key form and `target` in the two-key
@@ -1539,10 +1534,7 @@ describe('a projection the catalog cannot give back', () => {
     expect(docYaml).toContain('field: Account.accountId');
     expect(docYaml).toContain('concept: Account');
     const [source, target] =
-        loadModels(docYaml, {allowLegacyBareSource: true})
-            .models[0]
-            .actions![0]
-            .parameters;
+        loadModels(docYaml).models[0].actions![0].parameters;
     expect([source.concept, source.field, source.type])
         .toEqual([target.concept, target.field, target.type]);
   });
