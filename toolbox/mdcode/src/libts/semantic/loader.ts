@@ -1965,32 +1965,12 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   DATABRICKS: 'Databricks',
 };
 
-// A field or metric as a warning names it in `ctx`. A metric reads each field
-// as `entity.field`, and `entity` is the one it belongs to when known. A field
-// reads the columns of entity `entity`'s table.
+// A field or metric as a warning names it in `ctx`. A metric reads fields as
+// `entity.field`, and `entity` is the entity it belongs to when known.
 interface Subject {
   ctx: string;
   metric: boolean;
-  entity?: string;
-}
-
-// The name of a double-quoted column reference in `text` that the plain
-// advice would leave unreadable, and how to write it. A metric's unqualified
-// name must be written as `entity.field`. A field's name qualified by its own
-// entity must be written alone, since kcmd reads `entity.name` as a field.
-function quotedReferenceFix(text: string, {metric, entity}: Subject):
-    {token: string; meant: string; as: string}|undefined {
-  for (const {name, qualifier} of doubleQuotedColumns(text)) {
-    if (metric && qualifier === undefined && !nameProblem('field', name)) {
-      return {token: name, meant: `field '${name}'`,
-              as: `${entity ?? '<entity>'}.${name}`};
-    }
-    if (!metric && qualifier !== undefined && qualifier === entity) {
-      const token = text.includes(`"${qualifier}"`) ? qualifier : name;
-      return {token, meant: `column '${name}'`, as: name};
-    }
-  }
-  return undefined;
+  entity?: Pick<Entity, 'name'|'fields'>;
 }
 
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
@@ -2008,21 +1988,27 @@ function expressionWarning(
   const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
   const database = DOUBLE_QUOTES_AS_TEXT[dialect];
   if (ansi && database && hasDoubleQuotedColumn(ansi.expression)) {
-    const reads = (token?: string) => `${ctx}: ${database} reads "${
-        token}" in its '${FALLBACK_DIALECT}' expression as text; `;
-    const fix = quotedReferenceFix(ansi.expression, subject);
-    if (fix) {
-      return reads(fix.token) +
-          `if you meant ${fix.meant}, give it a '${dialect}' expression ` +
-          `that writes it as '${fix.as}'`;
+    const token = doubleQuotedName(ansi.expression);
+    const reads = `${ctx}: ${database} reads "${token}" in its '${
+        FALLBACK_DIALECT}' expression as text; `;
+    const {metric, entity} = subject;
+    if (metric) {
+      const field = entity?.fields.some(f => f.name === token) ?
+          `${entity.name}.${token}` :
+          '<entity>.<field>';
+      return reads + `if you meant a field, give it a '${dialect}' ` +
+          `expression that names it as '${field}'`;
     }
-    // Import adds only BigQuery text, and only outside a profile.
-    const hint = dialect === DEFAULT_DIALECT ?
+    // Import adds only BigQuery text, only outside a profile, and keeps each
+    // qualifier, which push reads as an entity.
+    const hint = dialect === DEFAULT_DIALECT &&
+            doubleQuotedColumns(ansi.expression)
+                .every(c => c.qualifier === undefined) ?
         `; outside a profile, '${IMPORT_TRANSPILE_COMMAND}' adds one` :
         '';
-    return reads(doubleQuotedName(ansi.expression)) +
-        `if you meant a column, give it a '${dialect}' expression without ` +
-        `the double quotes${hint}`;
+    return reads + `if you meant a column or a field, give it a '${
+               dialect}' expression that names a column alone, in backticks ` +
+        `if it needs quoting, and a field as '<entity>.<field>'${hint}`;
   }
   if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
@@ -2066,9 +2052,8 @@ function fieldWarnings(
     model: SemanticModel, preferred: string, profiled: boolean): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
-               f, {ctx: `field '${e.name}.${f.name}'`, metric: false,
-                   entity: e.name},
-               table, e.name, preferred, profiled))
+               f, {ctx: `field '${e.name}.${f.name}'`, metric: false}, table,
+               e.name, preferred, profiled))
       .filter((w): w is string => w !== undefined);
 }
 
@@ -2083,7 +2068,7 @@ function metricWarning(
   const subject = {
     ctx: `metric '${metric.name}'`,
     metric: true,
-    entity: reached.find(r => r !== undefined),
+    entity: entities.find(e => e.name === reached.find(r => r !== undefined)),
   };
   const named =
       entities.filter(e => reached.includes(e.name))

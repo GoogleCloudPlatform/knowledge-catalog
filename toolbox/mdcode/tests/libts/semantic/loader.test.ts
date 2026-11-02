@@ -232,16 +232,18 @@ describe('expression warnings judge each expression on the table that runs it', 
   const vendor = (dialect: string) => both(
       `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
       `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
-  const readsX = (database: string) =>
-      `${database} reads "x" in its 'ANSI_SQL' expression as text; `;
-  // The double-quote warning on a table of `dialect`, in `database`. Field 'f'
-  // gets the plain advice, and metric 'm', whose "x" names no entity, the
-  // advice to write 't.x'.
-  const quotedIn = (database: string, dialect: string, hint = '') => [
-    `field 't.f': ${readsX(database)}if you meant a column, give it a '${
-        dialect}' expression without the double quotes${hint}`,
-    `metric 'm': ${readsX(database)}if you meant field 'x', give it a '${
-        dialect}' expression that writes it as 't.x'`,
+  const readsX = (database: string, token = 'x') =>
+      `${database} reads "${token}" in its 'ANSI_SQL' expression as text; `;
+  // The double-quote warning on a table of `dialect`, in `database`, about
+  // `token`. Entity 't' has no field of that name, so metric 'm' gets the
+  // placeholder.
+  const quotedIn = (
+      database: string, dialect: string, hint = '', token = 'x') => [
+    `field 't.f': ${readsX(database, token)}if you meant a column or a field, ` +
+        `give it a '${dialect}' expression that names a column alone, in ` +
+        `backticks if it needs quoting, and a field as '<entity>.<field>'${hint}`,
+    `metric 'm': ${readsX(database, token)}if you meant a field, give it a '${
+        dialect}' expression that names it as '<entity>.<field>'`,
   ];
   // The warning that the `table` table, which may run `dialects`, has no text
   // to run.
@@ -288,13 +290,20 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
     ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
-    ['a BigQuery table, a double-quoted name its entity qualifies', BQ,
-     [['ANSI_SQL', '"t"."x"']], [
-       `field 't.f': ${readsX('BigQuery').replace('"x"', '"t"')}if you meant ` +
-           `column 'x', give it a 'BIGQUERY' expression that writes it as 'x'`,
-       `metric 'm': ${readsX('BigQuery').replace('"x"', '"t"')}if you meant a ` +
-           `column, give it a 'BIGQUERY' expression without the double ` +
-           `quotes${IMPORT_HINT}`,
+    // Import keeps a qualifier, so a qualified name gets no import hint.
+    ['a BigQuery table, a double-quoted qualified name', BQ, [['ANSI_SQL', '"t"."x"']],
+     quotedIn('BigQuery', 'BIGQUERY', '', 't')],
+    ['a BigQuery table, a double-quoted qualifier', BQ, [['ANSI_SQL', '"t".x']],
+     quotedIn('BigQuery', 'BIGQUERY', '', 't')],
+    ['a BigQuery table, a double-quoted name with a qualifier', BQ, [['ANSI_SQL', 't."x"']],
+     quotedIn('BigQuery', 'BIGQUERY')],
+    ['a BigQuery table, a double-quoted name beside a backticked qualified one', BQ,
+     [['ANSI_SQL', 'CONCAT("x", `t`.`y`)']], quoted],
+    ['a BigQuery table, a double-quoted name of a field of the metric\'s entity', BQ,
+     [['ANSI_SQL', '"f"']], [
+       quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f')[0],
+       `metric 'm': ${readsX('BigQuery', 'f')}if you meant a field, give it a ` +
+           `'BIGQUERY' expression that names it as 't.f'`,
      ]],
     ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
      [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
