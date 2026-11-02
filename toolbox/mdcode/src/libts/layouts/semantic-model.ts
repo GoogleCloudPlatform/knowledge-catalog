@@ -159,27 +159,12 @@ export class SemanticModelLayout implements CatalogLayout {
     return docs;
   }
 
-  // The binding-profile files beside a model, by profile name: sibling
-  // `<model>.profile.<name>.yaml` files in the model's EntryGroup dir. When a
-  // model has none, the older `<model>.profiles/*.yaml` directory is read
-  // instead, until the fixtures and the demo move to sibling files. A vanilla
-  // model must have neither.
-  profilePaths(model: string): {name: string; path: string}[] {
-    const siblings = this._siblingProfilePaths(model);
-    if (!siblings.length) return this._flavorCheckedLegacyProfilePaths(model);
-    if (this._modelHeader(model).version === VANILLA_VERSION) {
-      throw new Error(
-          vanillaSiblingError(path.basename(siblings[0].path), model));
-    }
-    return siblings;
-  }
-
   // Every local profile file of a model, for pull to find the ones the
   // catalog did not return: each sibling file whose name is a valid profile
   // name, with that name, then each file in the older `<model>.profiles/`
-  // directory. Unlike profilePaths it applies no flavor check, and sibling
-  // files do not hide the older directory. A sibling file with an invalid
-  // profile name is left out; push rejects it, naming it.
+  // directory, which push no longer reads. It applies no flavor check. A
+  // sibling file with an invalid profile name is left out; push rejects it,
+  // naming it.
   localProfileFiles(model: string): {path: string; profileName?: string}[] {
     return [
       ...this._siblingProfilePaths(model)
@@ -225,8 +210,7 @@ export class SemanticModelLayout implements CatalogLayout {
   //     writes a profile back to the file its name implies;
   //   - `default` names the model's inline bindings, so no profile may use it;
   //   - a vanilla `0.2.0.dev0` model keeps its profiles in its GOOGLE block, so
-  //     it must have no sibling profile files and no `<model>.profiles/`
-  //     directory;
+  //     it must have no sibling profile files;
   //   - the files are named after the model, so the model file must declare
   //     that name, which `pull` uses to name both.
   profileDocuments(model: string):
@@ -256,11 +240,7 @@ export class SemanticModelLayout implements CatalogLayout {
           `hyphens.`);
     }
     const siblings = this._siblingProfilePaths(model);
-    if (!siblings.length) {
-      return this._flavorCheckedLegacyProfilePaths(model).map(
-          ({name, path: p}) =>
-              ({name, text: fs.readFileSync(p, 'utf8'), path: p}));
-    }
+    if (!siblings.length) return [];
     const modelFile = `${model}.yaml`;
     const header = this._modelHeader(model);
     if (header.name !== undefined && header.name !== model) {
@@ -361,7 +341,8 @@ export class SemanticModelLayout implements CatalogLayout {
     if (fs.existsSync(localPath)) fs.rmSync(localPath);
   }
 
-  // Profile files with no model beside them, for push to report: any
+  // Profile files with no model beside them, for push, `kcmd profiles` and
+  // `kcmd skills-generate` to reject: any
   // `<prefix>.profile.<name>.yaml`, or nameless `<prefix>.profile.yaml`, where
   // `<prefix>.yaml` does not exist.
   orphanProfilePaths(): string[] {
@@ -377,8 +358,8 @@ export class SemanticModelLayout implements CatalogLayout {
         .map(f => path.join(dir, f));
   }
 
-  // The older `<model>.profiles/` directories in the EntryGroup dir, which the
-  // fixture migration replaces with sibling files.
+  // The older `<model>.profiles/` directories in the EntryGroup dir, which
+  // push, `kcmd profiles` and `kcmd skills-generate` reject.
   legacyProfileDirs(): string[] {
     const dir = this._entryGroup ? this._groupDir() : undefined;
     if (!dir || !fs.existsSync(dir)) return [];
@@ -401,7 +382,8 @@ export class SemanticModelLayout implements CatalogLayout {
     return this._entryGroup ? profileFilesBeside(this._groupDir(), model) : [];
   }
 
-  // `<model>.profiles/*.yaml`, each named by its file basename. A model name
+  // `<model>.profiles/*.yaml`, each named by its file basename, for pull to
+  // find the stale ones (see localProfileFiles). A model name
   // that pull read from the catalog may hold a path separator, and with it a
   // `..` segment, so such a name has no directory here.
   private _legacyProfilePaths(model: string): {name: string; path: string}[] {
@@ -416,22 +398,6 @@ export class SemanticModelLayout implements CatalogLayout {
           {name: path.basename(entry, '.yaml'), path: path.join(dir, entry)});
     }
     return out.sort((a, b) => a.name.localeCompare(b.name));
-  }
-
-  // The older `<model>.profiles/*.yaml` files of a model. A vanilla model keeps
-  // its profiles in its GOOGLE block, so it must have no such directory, just
-  // as it must have no sibling profile files.
-  private _flavorCheckedLegacyProfilePaths(model: string):
-      {name: string; path: string}[] {
-    const legacy = this._legacyProfilePaths(model);
-    if (legacy.length && this._modelHeader(model).version === VANILLA_VERSION) {
-      throw new Error(
-          `Profile directory '${model}.profiles/' sits beside ` +
-          `'${model}.yaml', which is a ${VANILLA_VERSION} document; profile ` +
-          `files are Google-flavor only, and a ${VANILLA_VERSION} model ` +
-          `keeps its profiles in its GOOGLE block.`);
-    }
-    return legacy;
   }
 
   // The `version` and model `name` a model document declares, each undefined

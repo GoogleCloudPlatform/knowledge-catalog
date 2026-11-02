@@ -493,21 +493,6 @@ describe('the store a profile uses', () => {
     expect(store.kind).toBe('spanner');
   });
 
-  // A legacy wrapper merged into a model with no deployments has no target.
-  test('a legacy wrapper over a model with no deployments has no store', () => {
-    const noTarget: SemanticModel = {
-      ...deployed(`      - {name: x, target: "${SPANNER_GRAPH}"}\n`),
-      deployments: undefined,
-      customExtensions: undefined,
-    };
-    expect(resolveStore(noTarget, 'prod', {legacyWrapper: true}))
-        .toEqual({
-          error: "Model 'm' declares no deployment target in 'deployments', " +
-              'so there is no store to run against. Declare a deployment in ' +
-              "'deployments' whose target names a database.",
-        });
-  });
-
   // An empty list names no deployment, the same as no list.
   test('an empty deployments list gives no store to a named profile', () => {
     const emptyDeployments: SemanticModel = {...threeProfiles, deployments: []};
@@ -516,43 +501,6 @@ describe('the store a profile uses', () => {
           error: "binding profile 'prod' is a named profile, which names no " +
               'deployment target, so there is no database to run it against',
         });
-  });
-
-  // A legacy wrapper is merged into the model file, and push deploys it to
-  // the model file's deployments when none names it.
-  test('a legacy wrapper no deployment names takes the unprofiled ones', () => {
-    const twoProfiles = deployed(
-        `      - {name: bq_prod, target: "${BQ_GRAPH}", profile: analytical}\n` +
-            `      - {name: spanner_prod, target: "${SPANNER_GRAPH}"}\n`,
-        `${DB}/tables/Customer`);
-    const store = resolveStore(twoProfiles, 'staging', {legacyWrapper: true});
-    if ('error' in store) throw new Error(store.error);
-    expect(store.name).toBe('projects/p/instances/i/databases/d');
-    expect('error' in resolveStore(twoProfiles, 'staging')).toBe(true);
-    // A deployment that names the wrapper is its own; this one is BigQuery.
-    const analytical =
-        resolveStore(twoProfiles, 'analytical', {legacyWrapper: true});
-    expect('error' in analytical && analytical.error)
-        .toContain('deployment target is projects/p/datasets/s');
-  });
-
-  // A blank `deployment_target` names no target, as push reads it, so the
-  // loader makes no deployment of it.
-  test('an empty deployment_target names no target', () => {
-    for (const blank of ['""', '"   "']) {
-      const store = resolveStore(
-          model(
-              `    deployment_target: ${blank}\n` +
-              `    entities:\n` +
-              `      - name: Customer\n` +
-              `        primary_key: [id]\n` +
-              `        fields:\n` +
-              `          - {name: id, datatype: Integer}\n`),
-          'prod', {legacyWrapper: true});
-      expect(store).toEqual({
-        error: expect.stringContaining('declares no deployment target'),
-      });
-    }
   });
 });
 

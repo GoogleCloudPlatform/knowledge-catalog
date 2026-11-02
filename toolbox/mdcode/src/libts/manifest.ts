@@ -27,9 +27,6 @@ const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
   // The workspace layout, when it is not the scope's own (see above).
   layout: z.string().optional(),
-  // The binding profile a bare `kcmd push` uses when --profile is omitted
-  // (semantic-model scope). Omitted means the inline 'default' binding.
-  default_profile: z.string().optional(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -110,8 +107,6 @@ export class CatalogManifest {
   readonly source: CatalogSource;
   readonly snapshotConfig?: SnapshotConfig;
   readonly publishingConfig?: PublishingConfig;
-  // The default binding profile for a semantic-model scope (see the schema).
-  readonly defaultProfile?: string;
   // The workspace layout, when it is not the scope's own (see the schema).
   readonly layout?: WorkspaceLayout;
 
@@ -119,13 +114,11 @@ export class CatalogManifest {
     source: CatalogSource,
     snapshotConfig?: SnapshotConfig,
     publishingConfig?: PublishingConfig,
-    defaultProfile?: string,
     layout?: WorkspaceLayout
   ) {
     this.source = source;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
-    this.defaultProfile = defaultProfile;
     this.layout = layout;
   }
 
@@ -158,7 +151,6 @@ export class CatalogManifest {
     return new CatalogManifest(
       source,
       aspects.length ? { aspects } : undefined,
-      undefined,
       undefined,
       layout,
     );
@@ -281,8 +273,7 @@ export class CatalogManifest {
       }
     }
 
-    return new CatalogManifest(
-        source, snapshot, publishing, result.data.default_profile, layout);
+    return new CatalogManifest(source, snapshot, publishing, layout);
   }
 
   save(path: string): void {
@@ -298,7 +289,6 @@ export class CatalogManifest {
     const data: any = {
       scope: scope,
       layout: this.layout ?? undefined,
-      default_profile: this.defaultProfile ?? undefined,
       snapshot: this.snapshotConfig ?? undefined,
       publishing: this.publishingConfig ?? undefined
     };

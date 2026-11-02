@@ -22,22 +22,21 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {googleBlockTargets, googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
+import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {isGoogleVendor, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, setsAKeyTwice, writtenSource} from '../libts/semantic/loader';
+import {LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfile, applyProfileExclusions, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, isLegacyWrapper, isProfileFileForm, loadProfileFile, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, unknownProfileMessage, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
+import {applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, loadProfileFile, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
-import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
+import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -132,84 +131,6 @@ export interface PushOptions {
   // false for `--no-deployment`, in order. Outside a list, false is
   // `--no-deployment` alone and true is neither flag. Semantic-model push only.
   deployment?: string|boolean|Array<string|boolean>;
-}
-
-
-// Whether a model document's text declares a graph deployment target, without
-// a full strict load. True when the model names one via the `deployments:` list
-// (or the legacy `deployment_target:` key), or a GOOGLE custom_extension
-// `deployments` or `deploymentTargets` list. `kcmd profiles` reads it to load
-// a legacy `semantic_model:` wrapper's merged text: one with no target needs no
-// sources. It also returns true when the
-// YAML does not parse, or when the data string of a GOOGLE block on the model
-// is not a JSON object, sets a key twice, or holds a `deployments` or
-// `deploymentTargets` value that is not a list. The strict load then reports
-// the problem. A block whose data is not a string is skipped, and the load
-// rejects it.
-export function declaresGraphTarget(text: string): boolean {
-  const models = parsedModels(text);
-  if (!models) return true;  // let the strict loader report the parse error
-  for (const m of models) {
-    if (typeof m?.deployment_target === 'string' &&
-        m.deployment_target.trim()) {
-      return true;
-    }
-    if (Array.isArray(m?.deployments) && m.deployments.length > 0) {
-      return true;
-    }
-    for (const json of googleData(m)) {
-      // The rule every other reader uses: a blank target names nothing, and
-      // a non-string one is a target in no accepted form, which the target
-      // checks reject.
-      let data: unknown;
-      try {
-        if (googleBlockTargets([{vendorName: 'GOOGLE', data: json}], '')
-                .length) {
-          return true;
-        }
-        data = JSON.parse(json);
-      } catch {
-        return true;  // malformed GOOGLE data: strict load will name it
-      }
-      if (data === null || typeof data !== 'object' || Array.isArray(data)) {
-        return true;  // not a JSON object: strict load will name it
-      }
-      // JSON.parse keeps the last of a repeated key, so an earlier value may
-      // list a target. The strict load rejects the repeat.
-      if (setsAKeyTwice(json)) return true;
-      const {deployments, deploymentTargets} =
-          data as {deployments?: unknown; deploymentTargets?: unknown};
-      if (deploymentTargets !== undefined &&
-          !Array.isArray(deploymentTargets)) {
-        return true;
-      }
-      if (Array.isArray(deployments) ? deployments.length > 0 :
-                                       deployments !== undefined) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-// The `semantic_model` entries of a model document's text, or undefined when
-// the YAML does not parse.
-function parsedModels(text: string): any[]|undefined {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return Array.isArray(doc?.semantic_model) ? doc.semantic_model : [];
-  } catch {
-    return undefined;
-  }
-}
-
-// The data strings of a parsed model's GOOGLE blocks. A block whose data is
-// not a string is left out.
-function googleData(m: any): string[] {
-  const exts = Array.isArray(m?.custom_extensions) ? m.custom_extensions : [];
-  return exts.filter((ext: any) => isGoogleVendor(ext?.vendor_name))
-      .map((ext: any) => ext.data)
-      .filter((data: unknown) => typeof data === 'string');
 }
 
 
@@ -331,7 +252,7 @@ export async function init(options: InitOptions): Promise<number> {
   }
 
   // Re-running init for the same scope leaves catalog.yaml as it was, so
-  // default_profile, every other key and the comments are kept. Init for
+  // every key and the comments are kept. Init for
   // another scope writes a new file.
   const prior = fs.existsSync('catalog.yaml') ?
       fs.readFileSync('catalog.yaml', 'utf8') :
@@ -422,7 +343,40 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 }
 
 
-export {isProfileFileForm};
+// The error for each legacy profile form in the scope of `snapshot`, every one
+// found: `default_profile` in catalog.yaml, a `<model>.profiles/` directory,
+// and a profile file with no model file beside it. Push, `kcmd profiles` and
+// `kcmd skills-generate` refuse a scope that has any, before they read a model.
+// Pull and init still work in such a scope, so neither the manifest load nor
+// the layout rejects them. A scope that is not a semantic-model scope gives
+// none, since each command reports that itself.
+function legacyProfileFormErrors(snapshot: kcmd.CatalogSnapshot): string[] {
+  if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) return [];
+  const layout = snapshot.layout as SemanticModelLayout;
+  const errors: string[] = [];
+  // The manifest load drops a key its schema does not have, so the key is
+  // read from the file. The load has parsed the file as a mapping already.
+  const manifest = yaml.parse(
+      fs.readFileSync(path.join(snapshot.basePath, 'catalog.yaml'), 'utf8'));
+  if ('default_profile' in manifest) {
+    errors.push(
+        `'default_profile' in catalog.yaml is no longer supported; specify ` +
+        `'profile:' on each entry under 'deployments:' in your model YAML.`);
+  }
+  for (const dir of layout.legacyProfileDirs()) {
+    const model = path.basename(dir).slice(0, -'.profiles'.length);
+    errors.push(
+        `Legacy profile directory '${model}.profiles/' is no longer ` +
+        `supported; rename profile files to '${model}.profile.<name>.yaml' ` +
+        `beside '${model}.yaml'.`);
+  }
+  for (const orphan of layout.orphanProfilePaths()) {
+    const file = path.basename(orphan);
+    const model = file.slice(0, file.indexOf('.profile.'));
+    errors.push(`Profile file '${file}' has no '${model}.yaml' beside it.`);
+  }
+  return errors;
+}
 
 // Gives a model's profile files as layout.profileDocuments does, each with
 // the file name push gives it (see fileNameOf).
@@ -586,9 +540,8 @@ interface LocalCheckError {
 // on its own for completeness. An error about a profile file names that file,
 // and one about a block profile names the model document.
 // A model's profiles are checked against its model file as loaded on its own,
-// which `baseByDoc` holds. A
-// legacy `semantic_model:` wrapper, and a file under the reserved name
-// 'default', which no push deploys, are not read here. Push also checks the
+// which `baseByDoc` holds. A file under the reserved name 'default', which no
+// push deploys, is not read here. Push also checks the
 // keys and join columns of the model file and of each named profile. The
 // warnings go to `warnings`.
 function namedProfileErrors(
@@ -605,7 +558,7 @@ function namedProfileErrors(
     let named: Array<{name: string; label: string; read: () => ProfileSpec}>;
     try {
       named = [
-        ...profileDocs(d.name).filter(p => !isLegacyWrapper(p.text)).map(p => ({
+        ...profileDocs(d.name).map(p => ({
           name: p.name,
           label: p.fileName,
           read: () => loadProfileFile(p.text, p.name, {skipActions: true}),
@@ -1040,6 +993,8 @@ export async function push(options: PushOptions): Promise<number> {
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout
     // (see createLayout), so this cast is safe.
+    const legacy = legacyProfileFormErrors(snapshot);
+    if (legacy.length) return printErrors(...legacy);
     const layout = snapshot.layout as SemanticModelLayout;
     const source = snapshot.manifest.source as SemanticModelSource;
     const layoutDocs = layout.modelDocuments();
@@ -1047,14 +1002,8 @@ export async function push(options: PushOptions): Promise<number> {
     // Reading a GOOGLE block profile checks its field bindings for SQL, which
     // needs the SQL parser.
     if (!await sqlParserReady()) return 1;
-    return pushInTwoPhases(options, {
-      ctx,
-      layout,
-      source,
-      docs: layoutDocs,
-      profileDocs,
-      defaultProfile: snapshot.manifest.defaultProfile,
-    });
+    return pushInTwoPhases(
+        options, {ctx, layout, source, docs: layoutDocs, profileDocs});
   }
 
   // These flags only take effect on a semantic-model push; on a regular
@@ -1132,8 +1081,6 @@ interface TwoPhaseScope {
   source: SemanticModelSource;
   docs: {name: string; text: string}[];
   profileDocs: ProfileDocs;
-  // The default_profile catalog.yaml names, if any.
-  defaultProfile?: string;
   load: DialectLoad;
 }
 
@@ -1288,7 +1235,7 @@ async function checkBeforeWrites(
     if ('errors' in model) return stop(model.errors);
     models.push(model);
   }
-  // Every profile each model declares, legacy wrappers included.
+  // Every profile each model declares.
   const declaredBy = declaredProfilesReader(profileDocs);
   const declaredNames = (document: string) =>
       declaredBy(docs.find(d => d.name === document)!).map(p => p.name);
@@ -1325,11 +1272,6 @@ async function checkBeforeWrites(
     everyByDoc.set(document, every.deployments);
     selectedByDoc.set(document, resolved.deployments);
   }
-  const byDefault = defaultProfileCheck(
-      scope, models, declaredBy, [...selectedByDoc.values()].flat(),
-      defaultProject);
-  if ('errors' in byDefault) return stop(byDefault.errors);
-  if (byDefault.warning) warn(byDefault.warning);
 
   // Every named profile is checked on its own against the model file, and so
   // are the model file's own bindings and each deployment. The catalog's model
@@ -1396,9 +1338,9 @@ async function checkBeforeWrites(
 }
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
-// their actions or a legacy `semantic_model:` wrapper. Returns the error of the
-// first profile file that breaks a file rule. A profile file that does not load
-// is left out, for namedProfileErrors to report.
+// their actions. Returns the error of the first profile file that breaks a
+// file rule. A profile file that does not load is left out, for
+// namedProfileErrors to report.
 function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
     LoadedModel|{errors: LocalCheckError[]} {
   const {document, model} = base;
@@ -1412,7 +1354,6 @@ function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
   const reserved = reservedProfileNameError(document, files);
   if (reserved) return {errors: [{error: reserved, document}]};
   for (const p of files) {
-    if (isLegacyWrapper(p.text)) continue;
     try {
       profiles.push(loadProfileFile(p.text, p.name, {skipActions: true}));
     } catch (err) {
@@ -1420,66 +1361,6 @@ function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
     }
   }
   return {document, model: profiles.length ? {...model, profiles} : model};
-}
-
-// Checks a default_profile other than 'default': each model declares it, and
-// it applies with its actions, as the runtime applies it. Gives a warning when
-// no deployment uses it or a selected deployment names no profile.
-function defaultProfileCheck(
-    scope: TwoPhaseScope, models: LoadedModel[], declaredBy: DeclaredProfiles,
-    selected: ResolvedDeployment[],
-    defaultProject: string): {errors: LocalCheckError[]}|{warning?: string} {
-  const {defaultProfile, docs, profileDocs, load} = scope;
-  if (defaultProfile === undefined || defaultProfile === DEFAULT_PROFILE ||
-      !models.length) {
-    return {};
-  }
-  for (const {document} of models) {
-    const fails = (errors: string[], profile?: string) =>
-        ({errors: errors.map(error => ({error, document, profile}))});
-    const doc = docs.find(d => d.name === document)!;
-    const res = profileForDocument(doc, declaredBy(doc), defaultProfile, load);
-    if (res.kind === 'missing') {
-      return fails(
-          [unknownProfileMessage(defaultProfile, document, res.declared)]);
-    }
-    if (res.kind === 'error') {
-      const error = profileErrorMessage(
-          document, res, defaultProfile, profileDocs(document));
-      return fails([error], defaultProfile);
-    }
-    let applied = res.kind === 'file' ? res.model : undefined;
-    if (res.kind === 'wrapper') {
-      const merged = loadSemanticModels(
-          [{name: document, text: res.text, allowLegacyBareSource: true}],
-          {defaultProject, bindingOptional: true, ...load});
-      if (merged.error) return fails([merged.error], defaultProfile);
-      applied = merged.models[0].model;
-    }
-    // Push checks the actions of the profile the runtime applies.
-    if (applied) {
-      const errors = validateActions(
-          applied, `${document}, profile '${defaultProfile}'`, false, true);
-      if (errors.length) return fails(errors, defaultProfile);
-    }
-  }
-  const used = models.some(
-      ({model}) =>
-          (model.deployments ?? []).some(d => d.profile === defaultProfile));
-  const unnamed = selected.filter(d => d.profile === DEFAULT_PROFILE)
-                      .map(d => `'${d.name}'`);
-  const n = unnamed.length;
-  const ownBindings = n ?
-      ` ${plural(n, 'Deployment', 'Deployments')} ${unnamed.join(', ')} ` +
-          `${plural(n, 'uses', 'use')} the model file's own bindings.` :
-      '';
-  if (used && !ownBindings) return {};
-  return {
-    warning: `catalog.yaml sets default_profile '${defaultProfile}', which ` +
-        `chooses no binding on this push: Knowledge Catalog receives the ` +
-        `model file as written, and each deployment uses the profile it ` +
-        `names.${ownBindings}`,
-  };
 }
 
 // Builds and checks the model `deployment` deploys from `base`, reading its
@@ -1502,14 +1383,9 @@ async function deploymentPlan(
   }
   let applied = model;
   if (deployment.profile !== DEFAULT_PROFILE) {
-    // A declared profile that `model.profiles` lacks is a legacy wrapper.
-    let spec = model.profiles?.find(p => p.name === deployment.profile);
-    if (!spec) {
-      return fail(
-          `${at} names profile '${deployment.profile}', which is in the ` +
-          `legacy 'semantic_model:' form; a deployment can use only a ` +
-          `profile file.`);
-    }
+    // checkBeforeWrites has checked that the model declares the profile and
+    // that its file loads, so `model.profiles` holds it.
+    let spec = model.profiles!.find(p => p.name === deployment.profile)!;
     const file = files.find(p => p.name === deployment.profile);
     const warnings: string[] = [];
     try {
@@ -1636,8 +1512,8 @@ export interface ProfilesOptions {
 // that picks, here as everywhere else.
 //
 // Returns a process exit code (0 on success).
-async function printStore(options: ProfilesOptions): Promise<number> {
-  const ctx = context.ApiContext.default();
+async function printStore(
+    options: ProfilesOptions, ctx: context.ApiContext): Promise<number> {
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
 
@@ -1665,12 +1541,11 @@ async function printStore(options: ProfilesOptions): Promise<number> {
 // Prints a profile's report under its header: the deployment target, the
 // source each entity binds to, and what the profile cannot answer or cannot
 // run.
-function printProfileReport(
-    model: SemanticModel, name: string, fileForm: boolean): void {
+function printProfileReport(model: SemanticModel, name: string): void {
   // The targets the profile's deployments name, as --print-store reads them.
   let targets: string[] = [];
   try {
-    targets = profileTargets(model, name, {legacyWrapper: !fileForm});
+    targets = profileTargets(model, name);
   } catch {
     // A GOOGLE block that is not valid JSON is a push-time error; here just
     // show none rather than abort the listing.
@@ -1679,8 +1554,9 @@ function printProfileReport(
   const {report} = pruneUnavailable(
       model, name,
       pruningDialect({...model, deployments: unnamedDeployments(targets)}));
-  const none = fileForm ? '(none; no deployment names this profile)' : '(none)';
-  console.log(`    target: ${targets.length ? targets.join(', ') : none}`);
+  console.log(`    target: ${
+      targets.length ? targets.join(', ') :
+                       '(none; no deployment names this profile)'}`);
   console.log('    sources:');
   for (const e of model.entities ?? []) {
     console.log(`      ${e.name} -> ${writtenSource(e) || '(unbound)'}`);
@@ -1728,7 +1604,12 @@ function printProfileReport(
 // call is push's Cloud SQL dialect lookup. Returns a process exit code (0 on
 // success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
-  if (options.printStore) return await printStore(options);
+  ensureManifestExists('.');
+  const ctx = context.ApiContext.default();
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const legacy = legacyProfileFormErrors(snapshot);
+  if (legacy.length) return printErrors(...legacy);
+  if (options.printStore) return await printStore(options, ctx);
 
   // `--profile` narrows the report to one profile; anything that is not a name
   // (a bare `--profile`, `--no-profile`) narrows nothing, the same read every
@@ -1736,9 +1617,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const only =
       typeof options.profile === 'string' ? options.profile : undefined;
 
-  ensureManifestExists('.');
-  const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
   if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {
     console.error(
         'Error: `kcmd profiles` applies only to a semantic-model scope.');
@@ -1746,7 +1624,6 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   }
   const layout = snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
-  const defaultProfile = snapshot.manifest.defaultProfile;
   if (!await sqlParserReady()) return 1;
 
   const docs = layout.modelDocuments();
@@ -1801,7 +1678,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   // The errors of a plain push's local checks, each reported under the model
   // and profile it belongs to.
   const checked = await checkBeforeWrites(
-      {}, {ctx, layout, source, docs, profileDocs, defaultProfile, load}, true);
+      {}, {ctx, layout, source, docs, profileDocs, load}, true);
   const pushErrors = 'errors' in checked ? checked.errors : [];
   // With KC_V2_ASPECTS on, push prints the emitter's warnings and checks
   // every aspect's size once the local checks pass, before any write.
@@ -1900,39 +1777,11 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
         for (const w of res.warnings) {
           console.warn(`  profile '${name}': warning: ${w}`);
         }
-        if (res.kind === 'file') {
-          model = res.model;
-        } else {
-          // Loaded as push loads it: a legacy wrapper may still carry
-          // `deployment_target:` and bare sources, and one with no graph
-          // target needs no sources. Push reports a load that fails.
-          const loaded = loadSemanticModels(
-              [{
-                name: doc.name,
-                text: res.text,
-                allowLegacyBareSource: true,
-                excluded: res.excluded,
-              }],
-              {
-                defaultProject,
-                bindingOptional: !declaresGraphTarget(res.text),
-                ...load,
-              });
-          for (const w of loaded.warnings) {
-            console.warn(`  profile '${name}': warning: ${w}`);
-          }
-          if (!loaded.error) {
-            model =
-                applyProfileExclusions(loaded.models[0].model, res.excluded);
-          } else {
-            applyError = loaded.error;
-          }
-        }
+        model = res.model;
       }
-      const marker = name === defaultProfile ? ' (default)' : '';
-      console.log(`  profile '${name}'${marker}`);
+      console.log(`  profile '${name}'`);
       if (model) {
-        printProfileReport(model, name, res.kind === 'file');
+        printProfileReport(model, name);
       } else if (applyError !== undefined && !pushErrors.length) {
         // Push accepts a profile it does not apply, such as one no deployment
         // uses. When push gives no error, say why nothing is shown.
@@ -2709,6 +2558,9 @@ export interface SkillsGenerateOptions {
 export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     Promise<number> {
   const ctx = context.ApiContext.default();
+  const legacy =
+      legacyProfileFormErrors(await kcmd.CatalogSnapshot.fromPath('.', ctx));
+  if (legacy.length) return printErrors(...legacy);
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
   // `--name` names one skill, so a scope of several models is refused before

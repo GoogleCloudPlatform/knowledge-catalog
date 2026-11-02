@@ -216,17 +216,6 @@ export function googleBlockTargetError(
       target);
 }
 
-/**
- * Why the target in a `deployment_target` key is not accepted. The loader
- * turns the key into a deployment named `default`, which the author did not
- * write.
- */
-export function deploymentTargetKeyError(
-    model: SemanticModel, target: string): string {
-  return targetError(
-      `Model '${model.name}' sets 'deployment_target' to '${target}'`, target);
-}
-
 // The Dataplex name of a Spanner graph `target` names with `propertyGraphs`,
 // or undefined for any other target.
 function spannerGraphName(target: string): string|undefined {

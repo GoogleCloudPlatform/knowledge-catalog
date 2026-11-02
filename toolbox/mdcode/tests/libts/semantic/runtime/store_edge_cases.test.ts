@@ -49,17 +49,12 @@ function vanilla(data: string): SemanticModel {
 
 describe('deployments and the profiles they name', () => {
   // `profile: default` names the model file's own bindings, so resolveStore
-  // uses it for `default`, and so does a legacy wrapper that falls back to
-  // those bindings.
-  test('a deployment naming default is the model file\'s for a legacy wrapper too',
-       () => {
-         const m = deployed(
-             `      - {name: prod, target: "${SPANNER_GRAPH}", profile: default}\n`);
-         const byDefault = resolveStore(m, 'default');
-         expect('error' in byDefault).toBe(false);
-         const wrapped = resolveStore(m, 'staging', {legacyWrapper: true});
-         expect(wrapped).toEqual(byDefault);
-       });
+  // uses it for `default`.
+  test('a deployment naming default is the model file\'s', () => {
+    const m = deployed(
+        `      - {name: prod, target: "${SPANNER_GRAPH}", profile: default}\n`);
+    expect('error' in resolveStore(m, 'default')).toBe(false);
+  });
 
   // A deployment whose profile no profile file declares would be used by no
   // profile. Push refuses the deployment, and so does the runtime.
@@ -73,19 +68,15 @@ describe('deployments and the profiles they name', () => {
     expect(undeclaredProfileError('m.yaml', m, ['prdo'])).toBeUndefined();
   });
 
-  // The legacy wrapper fallback uses the deployments for `default`, and the
-  // ambiguity message says they are default's.
-  test('the ambiguity message under a legacy wrapper names whose deployments they are',
-       () => {
-         const m = deployed(
-             `      - {name: a, target: "${SPANNER_GRAPH}"}\n` +
-             `      - {name: b, target: "${DB}2/graphs/g"}\n`);
-         const store = resolveStore(m, 'staging', {legacyWrapper: true});
-         expect('error' in store && store.error)
-             .not.toContain("for profile 'staging' (a, b)");
-         expect('error' in store && store.error)
-             .toContain("in 'deployments' for profile 'default' (a, b)");
-       });
+  // The ambiguity message says whose deployments they are.
+  test('the ambiguity message names whose deployments they are', () => {
+    const m = deployed(
+        `      - {name: a, target: "${SPANNER_GRAPH}"}\n` +
+        `      - {name: b, target: "${DB}2/graphs/g"}\n`);
+    const store = resolveStore(m, 'default');
+    expect('error' in store && store.error)
+        .toContain("in 'deployments' for profile 'default' (a, b)");
+  });
 });
 
 

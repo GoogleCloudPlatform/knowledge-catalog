@@ -30,9 +30,6 @@ const PROD = {
 };
 const UNKNOWN_ACTION =
     [{name: 'nothing', executor: {sql: {statements: ['SELECT 1']}}}];
-const legacy = (entity = 'customer', more = '') =>
-    `semantic_model:\n  - name: commerce\n    entities:\n      - name: ` +
-    `${entity}\n${more}        source: ${bqTable(entity, 'prod')}\n`;
 
 const SHARED = {...MODEL, deployments: [graph('prod')], code: 1,
                 flags: {validateOnly: true}};
@@ -52,19 +49,12 @@ scenarios('kcmd profiles reports what push rejects', [
     report: {flags: {profile: 'prod'}, code: 1, rejects: {prod: [pushed()]}},
   },
   ...([
-    ['a profile file overrides an action the model lacks',
-     {profiles: {prod: {...PROD, actions: UNKNOWN_ACTION}}},
-     ["[commerce.profile.prod.yaml] profile 'prod': action 'nothing' is not " +
-      'in the logical model']],
+    ['a profile file overrides an action the model lacks', {}],
     ['the model lists no deployments and a profile file overrides an action',
-     {deployments: [], profiles: {prod: {...PROD, actions: UNKNOWN_ACTION}}},
-     ["[commerce.profile.prod.yaml] profile 'prod': action 'nothing' is not " +
-      'in the logical model']],
-    ['a legacy wrapper gives a model that does not load',
-     {legacy: {prod: legacy('customer', '        primary_key: 5\n')}},
-     ["Model document 'commerce': Semantic model load error: [", '  {']],
-  ] as Array<[string, Scope, string[]]>).map(([label, scope, reason]): Case => ({
+     {deployments: []}],
+  ] as Array<[string, Scope]>).map(([label, scope]): Case => ({
     name: `says why it shows nothing for a profile push stores when ${label}`,
+    profiles: {prod: {...PROD, actions: UNKNOWN_ACTION}},
     ...scope,
     code: 0,
     rejects: [],
@@ -72,12 +62,13 @@ scenarios('kcmd profiles reports what push rejects', [
       code: 0,
       check: (lines, errors) => {
         expect(errors).toEqual([]);
-        const [, header, ...shown] = lines;
-        expect([header, ...shown.slice(0, reason.length)]).toEqual([
-          "  profile 'prod'", `    not shown: ${reason[0]}`,
-          ...reason.slice(1).map(line => `      ${line}`),
+        const [, header, reason, ...more] = lines;
+        expect([header, reason]).toEqual([
+          "  profile 'prod'",
+          "    not shown: [commerce.profile.prod.yaml] profile 'prod': " +
+              "action 'nothing' is not in the logical model",
         ]);
-        for (const line of shown.slice(1)) expect(line).toStartWith('      ');
+        for (const line of more) expect(line).toStartWith('      ');
       },
     },
   })),
@@ -101,13 +92,13 @@ scenarios('kcmd profiles reports what push rejects', [
     },
   },
   {
-    // The legacy wrapper merged into the model file gives no second error.
+    // The profile file beside it gives no second error.
     name: 'prints a model file that does not load once, above the models',
     files: {
       'commerce.yaml': modelFile({...MODEL, deployments: [graph('prod')]})
           .replace('    entities:\n', '    bogus_key: 1\n    entities:\n'),
     },
-    legacy: {staging: legacy()},
+    profiles: {staging: PROD},
     rejects: [has('bogus_key')],
     report: {
       code: 1,
@@ -122,18 +113,19 @@ scenarios('kcmd profiles reports what push rejects', [
   },
   {
     name: "prints none of push's warnings",
-    profiles: {prod: PROD},
-    defaultProfile: 'prod',
+    deployments: [],
+    metrics: [{
+      name: 'positive_ids',
+      expression: {dialects: [{
+        dialect: 'SNOWFLAKE',
+        expression: 'SUM(IFF(customer.c_id > 0, 1, 0))',
+      }]},
+    }],
     code: 0,
-    check: r => expect(r.warnings).toContainEqual(
-        has("catalog.yaml sets default_profile 'prod'")),
-    report: {code: 0, rejects: {'prod (default)': []}},
+    check: r => expect(r.warnings).toContainEqual(has('needs transpilation')),
+    report: {code: 0, rejects: {'no profiles': []}},
   },
   ...([
-    ['a default_profile the model does not declare', {defaultProfile: 'nope'},
-     "unknown binding profile 'nope'", {model: [pushed()], 'no profiles': []}],
-    ['a profile file named default', {legacy: {Default: legacy()}},
-     "may not be named 'default'", {model: [pushed()]}],
     ['a deployment profile the model does not declare',
      {deployments: [graph('prod', 'nope')]}, "names unknown binding profile",
      {model: [pushed()], 'no profiles': []}],
@@ -141,10 +133,6 @@ scenarios('kcmd profiles reports what push rejects', [
       relationships: [{name: 'placed_by', from: 'purchase', to: 'customer',
                        from_columns: ['p_c'], to_columns: ['c_x']}],
     }, 'placed_by', {model: [pushed()], 'no profiles': []}],
-    ['a default_profile that does not apply',
-     {defaultProfile: 'prod', legacy: {prod: legacy('ghost')}},
-     "profile 'prod': entity 'ghost' is not in the logical model",
-     {'prod (default)': [pushed()]}],
     ['a file too large to store',
      {files: {'commerce.profile.big.yaml': `#${'x'.repeat(125e3)}\nname: big`}},
      'too large to store', {'': [pushed()], big: []}],

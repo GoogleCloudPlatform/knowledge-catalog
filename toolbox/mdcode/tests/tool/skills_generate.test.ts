@@ -284,54 +284,6 @@ ${deployments}    entities:
         .toContain("declares no deployment without a 'profile'");
   });
 
-  // A legacy wrapper that names no `deployment_target` keeps the model file's
-  // `deployments:` list. It takes the deployment that names it, and otherwise
-  // the ones that name no profile, which is where push deploys it.
-  test('a legacy wrapper with no target takes the deployments push uses',
-       async () => {
-         const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
-         fs.mkdirSync(path.join(eg, 'commerce.profiles'), {recursive: true});
-         // A deployment may name only a profile the model declares.
-         for (const name of ['prod', 'analytical', 'operational']) {
-           fs.writeFileSync(
-               path.join(eg, 'commerce.profiles', `${name}.yaml`),
-               `semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-`);
-         }
-         const withSpanner = (profileLine: string) => logical(
-             `      - name: bq_prod\n` +
-                 `        target: ${BQ}/propertyGraphs/commerce\n` +
-                 `        profile: analytical\n` +
-                 `      - name: spanner_prod\n` +
-                 `        target: ${SPANNER_DB}/graphs/commerce\n` +
-                 profileLine,
-             `${SPANNER_DB}/tables/Orders`);
-
-         writeModel('commerce.yaml', withSpanner(''));
-         const unnamed = await runtimeFor('prod');
-         expect(unnamed.store && storeLine(unnamed.store))
-             .toBe('acme-ops/prod/commerce');
-
-         writeModel('commerce.yaml', withSpanner('        profile: prod\n'));
-         const named = await runtimeFor('prod');
-         expect(named.store && storeLine(named.store))
-             .toBe('acme-ops/prod/commerce');
-
-         writeModel(
-             'commerce.yaml', withSpanner('        profile: operational\n'));
-         const none = await runtimeFor('prod');
-         expect(none.store).toBeUndefined();
-         expect(none.storeError)
-             .toBe(
-                 "legacy binding profile 'prod' names no 'deployment_target', " +
-                 "and every deployment in 'deployments' names another profile, " +
-                 'so there is no database to run it against');
-       });
-
   test('default with one deployment takes it', async () => {
     writeModel(
         'commerce.yaml',

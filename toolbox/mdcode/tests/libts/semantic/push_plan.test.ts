@@ -1,9 +1,7 @@
 // Tests the semantic-model push/pull/profiles planning
-// (src/tool/commands.ts): how a model document's deployment target is detected
-// (declaresGraphTarget), how a profile file is told apart from a legacy
-// wrapper, how deployment-level `profile:` guards behave across `kcmd push`, `kcmd
-// profiles`, and `createSemanticRuntimes`, and how `kcmd pull` reconstructs
-// loadable `.yaml` files from Knowledge Catalog resources.
+// (src/tool/commands.ts): how deployment-level `profile:` guards behave across
+// `kcmd push`, `kcmd profiles`, and `createSemanticRuntimes`, and how `kcmd
+// pull` reconstructs loadable `.yaml` files from Knowledge Catalog resources.
 //
 // The deploy legs themselves are covered end to end elsewhere
 // (deploy_bigquery.test.ts, deploy_spanner.test.ts,
@@ -23,178 +21,9 @@ import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
-import {declaresGraphTarget, isProfileFileForm, profiles, pull, push} from '../../../src/tool/commands';
+import {profiles, pull, push} from '../../../src/tool/commands';
 
-describe('declaresGraphTarget', () => {
-  const withSugar = `
-version: 0.2.0.dev0/google
-semantic_model:
-  - name: sales
-    deployment_target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
-`;
-  const withDeployments = `
-version: 0.2.0.dev0/google
-semantic_model:
-  - name: sales
-    deployments:
-      - name: prod
-        target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
-`;
-  const withExtension = `
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: google
-        data: '{"deploymentTargets":["spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g"]}'
-`;
-  const logicalOnly = `
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    datasets:
-      - name: orders
-`;
-
-  test('detects the deployment_target sugar', () => {
-    expect(declaresGraphTarget(withSugar)).toBe(true);
-  });
-
-  test('detects a file whose only target is in deployments:', () => {
-    expect(declaresGraphTarget(withDeployments)).toBe(true);
-  });
-
-  test('detects a GOOGLE custom_extension deploymentTargets list', () => {
-    expect(declaresGraphTarget(withExtension)).toBe(true);
-  });
-
-  test('detects a GOOGLE custom_extension deployments list, unless it is empty', () => {
-    const vanilla = (deployments: object[]) => `
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '${JSON.stringify({deployments})}'
-`;
-    expect(declaresGraphTarget(vanilla([{
-      name: 'prod',
-      target: 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g',
-    }]))).toBe(true);
-    expect(declaresGraphTarget(vanilla([]))).toBe(false);
-  });
-
-  test('a purely logical model declares no graph target', () => {
-    expect(declaresGraphTarget(logicalOnly)).toBe(false);
-  });
-
-  test('an empty deployment_target string is not a target', () => {
-    expect(declaresGraphTarget(`
-version: 0.2.0.dev0/google
-semantic_model:
-  - name: sales
-    deployment_target: '   '
-`)).toBe(false);
-  });
-
-  test('an empty deployments list is not a target', () => {
-    expect(declaresGraphTarget(`
-version: 0.2.0.dev0/google
-semantic_model:
-  - name: sales
-    deployments: []
-`)).toBe(false);
-  });
-
-  test('a GOOGLE block whose targets are all blank is not a target', () => {
-    for (const list of ['["  "]', '[""]']) {
-      expect(declaresGraphTarget(`
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets":${list}}'
-`)).toBe(false);
-    }
-  });
-
-  // A non-string entry is a target in no accepted form, so the push goes to
-  // the target checks, which reject it.
-  test('a GOOGLE block with a non-string target declares a target', () => {
-    expect(declaresGraphTarget(`
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets":[7]}'
-`)).toBe(true);
-  });
-
-  test('a non-GOOGLE extension is ignored', () => {
-    expect(declaresGraphTarget(`
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: ACME
-        data: '{"deploymentTargets":["//x"]}'
-`)).toBe(false);
-  });
-
-  test('unparseable YAML resolves to true so the strict load reports it', () => {
-    expect(declaresGraphTarget(': : not valid : yaml :')).toBe(true);
-  });
-
-  test('malformed GOOGLE data resolves to true so the strict load reports it',
-       () => {
-         expect(declaresGraphTarget(`
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: 'not json'
-`)).toBe(true);
-       });
-
-  const withData = (data: string) => `
-version: 0.2.0.dev0
-semantic_model:
-  - name: sales
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '${data}'
-`;
-
-  test('GOOGLE data the strict load rejects resolves to true', () => {
-    for (const data of [
-           '[]',
-           'null',
-           '"x"',
-           '{"deployments": null}',
-           '{"deployments": "bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
-           '{"deploymentTargets": null}',
-           '{"deploymentTargets": "bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}',
-           '{"deployments": [{"name": "a", "target": "bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"}], "deployments": []}',
-           '{"deploymentTargets": ["bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g"], "deploymentTargets": []}',
-         ]) {
-      expect(declaresGraphTarget(withData(data))).toBe(true);
-    }
-  });
-});
-
-
-describe('a profile file', () => {
-  test('the profile file form is told apart from the legacy wrapper', () => {
-    expect(isProfileFileForm('name: prod\nentities: []\n')).toBe(true);
-    expect(isProfileFileForm('version: x\nsemantic_model: []\n')).toBe(false);
-  });
-});
-
-
-describe('push, legacy profiles, and pull fallback (b/567743508)', () => {
+describe('push, profiles and pull', () => {
   const CTX = new ApiContext('test-project', 'us', 'test-token');
   let dir = '';
   let cwd = '';
@@ -325,38 +154,6 @@ semantic_model:
         "entry group 'sales_eg' would receive 2 models, but only one model " +
         'per entry group is supported');
     expect(errors).not.toContain('spanner_binding');
-  });
-
-  test('a legacy profile file carrying deployment_target and a bare source still merges and loads', async () => {
-    const eg = setupWorkspace();
-    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
-
-    fs.mkdirSync(path.join(eg, 'sales.profiles'), {recursive: true});
-    fs.writeFileSync(path.join(eg, 'sales.yaml'), `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    datasets:
-      - name: orders
-        primary_key: [id]
-        fields:
-          - { name: id }
-`);
-    fs.writeFileSync(path.join(eg, 'sales.profiles', 'bq.yaml'), `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    deployment_target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
-    datasets:
-      - name: orders
-        source: p.d.orders
-        fields:
-          - { name: id, expression: id }
-`);
-
-    const code = await profiles({profile: 'bq'});
-    expect(code).toBe(0);
-    const out = logSpy.mock.calls.map(c => c.join(' ')).join('\n');
-    expect(out).toContain('bq');
-    expect(out).toContain('p.d.orders');
   });
 
   test('pull reconstructs deployments in declaration order, warns that deployment names were not recovered, and round-trips each store\'s source cleanly (one database per model)', async () => {

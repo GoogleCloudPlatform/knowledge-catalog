@@ -81,9 +81,6 @@ export interface Scope {
   google?: object;
   // Profile files commerce.profile.<name>.yaml, by name.
   profiles?: Record<string, Profile>;
-  // Legacy profile files commerce.profiles/<name>.yaml, by name.
-  legacy?: Record<string, string>;
-  defaultProfile?: string;
   // Other files of the entry group by path, such as a second model file.
   files?: Record<string, string>;
   noModel?: boolean;
@@ -124,8 +121,7 @@ export function profileFile(name: string, p: Profile): string {
 export function writeScope(dir: string, s: Scope): void {
   fs.writeFileSync(
       path.join(dir, 'catalog.yaml'),
-      'scope: semantic-model.test-project.us.commerce_eg\n' +
-          (s.defaultProfile ? `default_profile: ${s.defaultProfile}\n` : ''));
+      'scope: semantic-model.test-project.us.commerce_eg\n');
   const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
   fs.rmSync(eg, {recursive: true, force: true});
   fs.mkdirSync(eg, {recursive: true});
@@ -133,8 +129,6 @@ export function writeScope(dir: string, s: Scope): void {
     ...(s.noModel ? {} : {'commerce.yaml': modelFile(s)}),
     ...Object.fromEntries(Object.entries(s.profiles ?? {}).map(
         ([n, p]) => [`commerce.profile.${n}.yaml`, profileFile(n, p)])),
-    ...Object.fromEntries(Object.entries(s.legacy ?? {}).map(
-        ([n, text]) => [`commerce.profiles/${n}.yaml`, text])),
     ...s.files,
   };
   for (const [name, text] of Object.entries(files)) {
@@ -260,9 +254,9 @@ export const refused = (flags: commands.PushOptions, error: unknown) =>
     ({flags, code: 1, errors: [error], noNetwork: true});
 
 // A `kcmd profiles` run and its outcome. A section's key is its profile's name,
-// with ' (default)' for default_profile's, or 'default' for the inline
-// bindings, 'no profiles', 'model' above a model's profiles or '' above the
-// first model, and a second model's keys start with its name and a colon.
+// or 'default' for the inline bindings, 'no profiles', 'model' above a model's
+// profiles or '' above the first model, and a second model's keys start with
+// its name and a colon.
 export interface ReportStep {
   flags?: commands.ProfilesOptions;
   code: number;
@@ -363,8 +357,7 @@ function sectionKey(line: string): string|undefined {
           "inline 'default' binding.") {
     return 'no profiles';
   }
-  const m = /^  profile '([^']+)'( \(default\))?(:.*)?$/.exec(line);
-  return m ? m[1] + (m[2] ?? '') : undefined;
+  return /^  profile '([^']+)'(:.*)?$/.exec(line)?.[1];
 }
 
 // Checks a report against what `step` expects. `out` is what it printed.

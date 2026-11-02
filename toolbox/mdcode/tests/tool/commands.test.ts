@@ -345,7 +345,7 @@ describe('a catalog-only push with a sibling profile file', () => {
   const setup = (entities: string) => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
-        'scope: semantic-model.test-project.us.commerce_eg\ndefault_profile: prod\n');
+        'scope: semantic-model.test-project.us.commerce_eg\n');
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
@@ -1107,30 +1107,6 @@ describe('the file copy round trip', () => {
 
 
 describe('the file copy across pushes and layouts', () => {
-  test('a legacy profiles directory comes back byte for byte', async () => {
-    const legacy = `# A legacy wrapper.
-semantic_model:
-  - name: commerce
-    entities:
-      - name: Customer
-        source: bigquery.googleapis.com/projects/test-project/datasets/prod/tables/customer
-`;
-    writeRoundTripWorkspace();
-    fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-    const legacyPath = path.join(entryGroupDir(), 'commerce.profiles', 'prod.yaml');
-    fs.mkdirSync(path.dirname(legacyPath));
-    fs.writeFileSync(legacyPath, legacy);
-    const {entries} = fakeCatalog();
-
-    expect(await push({deployment: false})).toBe(0);
-    expect(Object.keys(storedCopies(entries)).sort())
-        .toEqual(['commerce.profiles/prod.yaml', 'commerce.yaml']);
-
-    fs.rmSync(path.dirname(legacyPath), {recursive: true});
-    expect(await pull()).toBe(0);
-    expect(fs.readFileSync(legacyPath, 'utf8')).toBe(legacy);
-  });
-
   test('a re-push updates a changed copy and deletes a removed one',
        async () => {
          writeRoundTripWorkspace();
@@ -1233,18 +1209,87 @@ semantic_model:
 });
 
 
+// What a pull of the round-trip workspace's model returns: the model, and the
+// stored copies `rawFiles`.
+const COMMERCE: SemanticModel =
+    {name: 'commerce', entities: [], relationships: [], metrics: []};
+const MODEL_COPY = {fileName: 'commerce.yaml', content: ROUND_TRIP_MODEL};
+const PROD_COPY = {
+  fileName: 'commerce.profile.prod.yaml',
+  content: ROUND_TRIP_PROFILE,
+};
+const pulled = (rawFiles: {fileName: string; content: string}[]) =>
+    spyOn(pullKc, 'pullKnowledgeCatalog')
+        .mockResolvedValue({models: [COMMERCE], rawFiles, warnings: []});
+const local = (name: string) => path.join(entryGroupDir(), name);
+
+
+// Push, `kcmd profiles` and `kcmd skills-generate` refuse each legacy profile
+// form before they read a model, and name every one found. Pull still works
+// beside them, so an author can pull before moving to the current forms.
+describe('the legacy profile forms', () => {
+  const forms: Array<[string, () => void, string[]]> = [
+    [
+      'default_profile in catalog.yaml',
+      () => fs.appendFileSync('catalog.yaml', 'default_profile: prod\n'),
+      [`'default_profile' in catalog.yaml is no longer supported; specify ` +
+       `'profile:' on each entry under 'deployments:' in your model YAML.`],
+    ],
+    [
+      'a <model>.profiles/ directory',
+      () => {
+        fs.mkdirSync(local('commerce.profiles'));
+        fs.writeFileSync(local('commerce.profiles/prod.yaml'), PROD_PROFILE);
+      },
+      [`Legacy profile directory 'commerce.profiles/' is no longer ` +
+       `supported; rename profile files to 'commerce.profile.<name>.yaml' ` +
+       `beside 'commerce.yaml'.`],
+    ],
+    [
+      'a profile file with no model file',
+      () => fs.writeFileSync(local('gone.profile.prod.yaml'), PROD_PROFILE),
+      [`Profile file 'gone.profile.prod.yaml' has no 'gone.yaml' beside it.`],
+    ],
+    [
+      'a nameless profile file with no model file',
+      () => fs.writeFileSync(local('gone.profile.yaml'), PROD_PROFILE),
+      [`Profile file 'gone.profile.yaml' has no 'gone.yaml' beside it.`],
+    ],
+  ];
+  const commands: Array<() => Promise<number>> = [
+    () => push({validateOnly: true}),
+    () => profiles({profile: 'prod'}),
+    () => profiles({printStore: true, profile: 'prod'}),
+    () => skillsGenerate({profile: 'prod'}),
+  ];
+
+  for (const [form, setup, errors] of [
+         ...forms,
+         [
+           'every form at once', () => forms.forEach(([, s]) => s()),
+           forms.flatMap(([, , e]) => e)
+         ] as const,
+       ]) {
+    test(`${form} stops push, profiles and skills-generate, not pull`,
+         async () => {
+           writeRoundTripWorkspace();
+           setup();
+           const errorSpy =
+               spyOn(console, 'error').mockImplementation(() => {});
+           for (const run of commands) {
+             errorSpy.mockClear();
+             expect(await run()).toBe(1);
+             expect(errorSpy.mock.calls.map(c => c.join(' ')))
+                 .toEqual(errors.map(e => `Error: ${e}`));
+           }
+           pulled([MODEL_COPY, PROD_COPY]);
+           expect(await pull()).toBe(0);
+         });
+  }
+});
+
+
 describe('pull with stored file copies', () => {
-  const COMMERCE: SemanticModel =
-      {name: 'commerce', entities: [], relationships: [], metrics: []};
-  const MODEL_COPY = {fileName: 'commerce.yaml', content: ROUND_TRIP_MODEL};
-  const PROD_COPY = {
-    fileName: 'commerce.profile.prod.yaml',
-    content: ROUND_TRIP_PROFILE,
-  };
-  const pulled = (rawFiles: {fileName: string; content: string}[]) =>
-      spyOn(pullKc, 'pullKnowledgeCatalog')
-          .mockResolvedValue({models: [COMMERCE], rawFiles, warnings: []});
-  const local = (name: string) => path.join(entryGroupDir(), name);
   // How a message names a local file: relative to the workspace.
   const shown = (name: string) =>
       path.join('catalog', 'EntryGroups', 'commerce_eg', name);
@@ -1361,8 +1406,24 @@ describe('pull with stored file copies', () => {
          expect(fs.readFileSync(local('commerce.yaml'), 'utf8')).toBe(vanilla);
        });
 
-  // Push ignores the older directory once sibling files exist, so a file
-  // left there is stale too. The dry run reads the disk before any write and
+  // A push before the older directory was refused stored its files under
+  // it. Pull still writes them back byte for byte, so the author can move
+  // them to sibling files.
+  test('a stored copy from the older profile directory comes back byte for byte',
+       async () => {
+         writeRoundTripWorkspace();
+         const legacy = {
+           fileName: 'commerce.profiles/old.yaml',
+           content: 'semantic_model:\n  - name: commerce\n',
+         };
+         pulled([MODEL_COPY, PROD_COPY, legacy]);
+
+         expect(await pull()).toBe(0);
+         expect(fs.readFileSync(local(legacy.fileName), 'utf8'))
+             .toBe(legacy.content);
+       });
+
+  // Push refuses the older directory, so a file left there is stale too. The dry run reads the disk before any write and
   // the real run after, and both report the same removal.
   test('a profile file left in the older directory is removed by a dry run ' +
            'and a real run alike',
@@ -1560,8 +1621,8 @@ describe('pull with stored file copies', () => {
     expect(remove.mock.calls).toEqual([['commerce', 'dev']]);
   });
 
-  // Push ignores the older directory once sibling files exist, but the file
-  // is still kept, so the warning names it too.
+  // Push refuses the older directory, but pull keeps the file, so the
+  // warning names it too.
   test('with no copies, the kept files include the older profile directory',
        async () => {
          withStaleProfile();
@@ -1793,42 +1854,22 @@ describe('push checks each file before anything is stored', () => {
     expect(storedCopies(entries)['commerce.profile.prod.yaml']).toBe(profile);
   });
 
-  // The size and entry id checks need only the copies, so they run before
-  // the graph leg too.
-  for (const [label, setup, error] of [
-         [
-           'a file over the size limit',
-           () => fs.appendFileSync(
-               path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
-               `# ${'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`),
-           'file \'commerce.profile.prod.yaml\' is too large to store',
-         ],
-         [
-           'two file names that map to one entry id',
-           () => {
-             fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-             const legacy = path.join(entryGroupDir(), 'commerce.profiles');
-             fs.mkdirSync(legacy);
-             for (const name of ['a b.yaml', 'a_b.yaml']) {
-               fs.writeFileSync(path.join(legacy, name), 'semantic_model: []\n');
-             }
-           },
-           'both map to one entry id',
-         ],
-       ] as const) {
-    test(`a graph push with ${label} deploys no graph`, async () => {
-      writeRoundTripWorkspace();
-      setup();
-      const {create} = fakeCatalog();
-      const deployed = mockBigQuery();
-      const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+  // The size check needs only the copies, so it runs before the graph leg
+  // too.
+  test('a graph push with a file over the size limit deploys no graph',
+       async () => {
+         writeRoundTripWorkspace(
+             `${ROUND_TRIP_PROFILE}# ${'x'.repeat(kc.MAX_ASPECT_DATA_BYTES)}\n`);
+         const {create} = fakeCatalog();
+         const deployed = mockBigQuery();
+         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
 
-      expect(await push({})).toBe(1);
-      expect(messages(errorSpy)).toContain(error);
-      expect(deployed).not.toHaveBeenCalled();
-      expect(create).not.toHaveBeenCalled();
-    });
-  }
+         expect(await push({})).toBe(1);
+         expect(messages(errorSpy))
+             .toContain('file \'commerce.profile.prod.yaml\' is too large to store');
+         expect(deployed).not.toHaveBeenCalled();
+         expect(create).not.toHaveBeenCalled();
+       });
 
   test('a --validate-only push of a file over the size limit fails',
        async () => {
@@ -1842,26 +1883,6 @@ describe('push checks each file before anything is stored', () => {
              .toContain(
                  'file \'commerce.profile.prod.yaml\' is too large to store ' +
                  'in Knowledge Catalog');
-       });
-
-  test('two profile files whose names map to one entry id fail the push',
-       async () => {
-         writeRoundTripWorkspace();
-         fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-         const legacy = path.join(entryGroupDir(), 'commerce.profiles');
-         fs.mkdirSync(legacy);
-         fs.writeFileSync(path.join(legacy, 'a b.yaml'), 'semantic_model: []\n');
-         fs.writeFileSync(path.join(legacy, 'a_b.yaml'), 'semantic_model: []\n');
-         const {create} = fakeCatalog();
-         const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-
-         expect(await push({deployment: false})).toBe(1);
-         expect(messages(errorSpy))
-             .toContain(
-                 'Error: files \'commerce.profiles/a b.yaml\' and ' +
-                 '\'commerce.profiles/a_b.yaml\' both map to one entry id; ' +
-                 'rename one of them');
-         expect(create).not.toHaveBeenCalled();
        });
 
   // The catalog takes one model per entry group, so push stores no copy then.
@@ -2629,25 +2650,6 @@ semantic_model:
         'could not parse input: Excessive alias count');
   });
 
-  // Push reserves the name 'default' in any letter case.
-  test('a push refuses a legacy profile named Default', async () => {
-    const eg = writeModel(MODEL_YAML);
-    fs.mkdirSync(path.join(eg, 'commerce.profiles'));
-    fs.writeFileSync(path.join(eg, 'commerce.profiles', 'Default.yaml'), `semantic_model:
-  - name: commerce
-    entities:
-      - name: Customer
-        source: ${BQ}/tables/customer
-`);
-    mockKc();
-    expect(await push({validateOnly: true})).toBe(1);
-    expect(prints(console.error)).toEqual([
-      "Error: [commerce] a binding profile may not be named 'default' -- " +
-          "that name refers to the model's inline bindings. Rename the " +
-          'profile.',
-    ]);
-  });
-
   // The model file binds no table, so a deployment names the profile.
   for (const [what, deployments] of [
     ['a push with no deployments', ''],
@@ -2689,10 +2691,10 @@ describe('a vanilla model\'s profiles in its GOOGLE block', () => {
   }]});
   const prod = (source: string) =>
       JSON.stringify({profiles: [binding('prod', source)]});
-  function writeModel(block: string, catalogExtra = ''): void {
+  function writeModel(block: string): void {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
-        'scope: semantic-model.test-project.us.commerce_eg\n' + catalogExtra);
+        'scope: semantic-model.test-project.us.commerce_eg\n');
     const eg = path.join(dir, 'catalog', 'EntryGroups', 'commerce_eg');
     fs.mkdirSync(eg, {recursive: true});
     fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0"
@@ -3224,7 +3226,7 @@ semantic_model:
         .toBeLessThan(report.indexOf("  profile 'prod'"));
   });
 
-  test('the runtime applies one, under --profile or default_profile', async () => {
+  test('the runtime applies one under --profile', async () => {
     writeModel(prod(PROD_SOURCE));
     const named = await createSemanticRuntimes(
         {ctx: CTX, profile: 'prod', onWarning: () => {}});
@@ -3233,14 +3235,6 @@ semantic_model:
         .toBe('test-project.prod.customer');
     expect(named[0].storeError)
         .toBe(`${NO_TARGET}, so there is no database to run it against`);
-
-    writeModel(prod(PROD_SOURCE), 'default_profile: prod\n');
-    const byDefault =
-        await createSemanticRuntimes({ctx: CTX, onWarning: () => {}});
-    if ('error' in byDefault) throw new Error(byDefault.error);
-    expect(byDefault[0].profile).toBe('prod');
-    expect(byDefault[0].model.entities[0].dataSource)
-        .toBe('test-project.prod.customer');
   });
 
   test('kcmd profiles --print-store and skills-generate find one', async () => {
