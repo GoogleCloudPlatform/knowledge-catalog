@@ -292,9 +292,9 @@ describe('profile translation', () => {
     }],
   });
   const PROD = prodOn(`${BQ_PREFIX}/tables/orders_prod`);
-  const blockOf = (profile: object) =>
+  const blockOf = (...profiles: object[]) =>
       `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
-          JSON.stringify({profiles: [profile]})}'\n`;
+          JSON.stringify({profiles})}'\n`;
   const fileOf = (profile: object) =>
       ({fileName: 'retail.profile.prod.yaml', content: yaml.stringify(profile)});
   const block = blockOf(PROD);
@@ -316,14 +316,14 @@ describe('profile translation', () => {
   test.each([
     ['translates a GOOGLE block profile, written back into the block',
      ossieDoc({extra: block}), ossie, true],
+    ['translates each GOOGLE block profile, written back into the block',
+     ossieDoc({extra: blockOf({...PROD, name: 'dev'}, PROD)}), ossie, true],
     ['translates a GOOGLE block profile, written as a profile file',
      ossieDoc({fieldExpr, extra: block}), google, true],
     ['translates a profile file, written into the vanilla model file', googleDoc({fieldExpr}),
      {...ossie, profileFiles: [prodFile]}, true],
-    ['translates a profile file, written beside the Google model file',
-     googleDoc({fieldExpr}), {...google, profileFiles: [prodFile]}, true],
-    ['translates a profile file with a malformed action', googleDoc({fieldExpr}),
-     {...google, profileFiles: [withActions]}, true],
+    ['translates a profile file with a malformed action, written beside the Google model file',
+     googleDoc({fieldExpr}), {...google, profileFiles: [withActions]}, true],
     ['translates a BigLake profile file', googleDoc({fieldExpr}),
      {...google, profileFiles: [fileOf(prodOn(bigLake))]}, true],
     ['skips a Snowflake profile file', googleDoc({fieldExpr}),
@@ -335,7 +335,7 @@ describe('profile translation', () => {
     expect(res.errors).toEqual([]);
     const written = res.files.length > 1 ?
         loadProfileFile(res.files[1].content, 'prod', {skipActions: true}) :
-        loadModels(res.files[0].content).models[0].profiles![0];
+        loadModels(res.files[0].content).models[0].profiles!.find(p => p.name === 'prod')!;
     const bigQuery = {
       dialect: 'BIGQUERY' as const,
       expression: 'COALESCE(o.order_id, 0) + COALESCE(o.order_id, 1) + COALESCE(o.order_id, 2)',
@@ -343,7 +343,7 @@ describe('profile translation', () => {
     expect(written.entities[0].fields![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: SNOWFLAKE}, ...translated ? [bigQuery] : [],
     ]);
-    expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual(translated ? [
+    expect(res.warnings.filter(w => w.startsWith("profile 'prod'"))).toEqual(translated ? [
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
     ] : []);
   });
@@ -378,6 +378,9 @@ describe('profile translation', () => {
   const SINGLE = "'CONCAT(orders.total, '' x'')'";
   // The start of an expression whose dialects list has a comment of two lines.
   const COMMENTED = '\n          # Snowflake only,\n          # for now\n          dialects:';
+  // A blank line after every line, and a comment inside a flow expression.
+  const BLANKS = profileFile('orders.total', ` {\n          dialects: [  # Snowflake only\n` +
+      `            ${SF}\n          ]\n        }`).replaceAll('\n', '\n\n');
   // The texts of each field of orders in profile file `text`.
   const texts = (text: string) =>
       loadProfileFile(text, 'prod').entities[1].fields!.map(f => f.dialects);
@@ -389,47 +392,17 @@ describe('profile translation', () => {
      profileFile('>-\n          orders.total + 1', `${BLOCK}
             - dialect: BIGQUERY
               expression: COALESCE(order_id, 0)`)],
-    ['a single-quoted string', profileFile(SINGLE, ` {dialects: [${SF}]}`),
-     profileFile(SINGLE, ` {dialects: [${SF}, ${BQ}]}`)],
     ['a double-quoted string with a line break',
      profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`, ` {dialects: [${SF}]}`),
      profileFile(`"CONCAT(orders.total, 'a long enough text')\n\n          \\  || 'x'"`,
                  ` {dialects: [${SF}, ${BQ}]}`)],
-    ['a blank line at each position and a comment inside a flow expression',
-     profileFile('orders.total', ` {\n          dialects: [  # Snowflake only\n            ${SF}\n` +
-                                     '          ]\n        }').replaceAll('\n', '\n\n'), `\
-name: prod
-
-entities:
-
-  - name: items
-
-    source: ${BQ_PREFIX}/tables/items_prod
-
-  - name: orders
-
-    fields: # bound fields
-      - name: total
-
-        expression: orders.total
-
-      - name: order_id
-
-        expression:
-          {
-
-            dialects:
-              [
-                # Snowflake only
-
-                ${SF},
-                ${BQ}
-              ]
-          }
-`],
-    ['CRLF line endings',
-     profileFile('orders.total', `${COMMENTED} [${SF}]`).replaceAll('\n', '\r\n'),
-     profileFile('orders.total', `${COMMENTED} [${SF}, ${BQ}]`)],
+    ['a blank line at each position and a comment inside a flow expression', BLANKS,
+     BLANKS.replace('# bound fields\n\n', '# bound fields\n').replace(/ \{[^]*/,
+         '\n          {\n\n            dialects:\n              [\n                # Snowflake only\n\n' +
+         `                ${SF},\n                ${BQ}\n              ]\n          }\n`)],
+    ['CRLF line endings and a single-quoted string',
+     profileFile(SINGLE, `${COMMENTED} [${SF}]`).replaceAll('\n', '\r\n'),
+     profileFile(SINGLE, `${COMMENTED} [${SF}, ${BQ}]`)],
   ])('writes a profile file with %s as it writes the model file', async (_, input, output) => {
     const res = await importSemanticModelYaml(model, {
       ...google, profileFiles: [{fileName: 'retail.profile.prod.yaml', content: input}],

@@ -1307,7 +1307,7 @@ async function transpileDocument(
     if (syncDialects(...args)) doc.modified = true;
   };
   // Each of `profileFiles` as loaded, or undefined for one that does not
-  // load. One that parses is written as it is, since push reports it.
+  // load. That one is written as it is when it parses, since push reports it.
   const loaded = profileFiles.map(pf => {
     try {
       return loadProfileFile(
@@ -1344,9 +1344,10 @@ async function transpileDocument(
     // gained an entry is written back as JSON.
     for (const block of asRecords(doc.model.custom_extensions)) {
       const data = parseGoogleBlocks([block])[0];
-      const changed = asRecords(data?.profiles)
-                          .map(p => syncProfile(p, profile(p.name)))
-                          .includes(true);
+      let changed = false;
+      for (const p of asRecords(data?.profiles)) {
+        changed = syncProfile(p, profile(p.name)) || changed;
+      }
       if (changed) {
         block.data = JSON.stringify(data);
         doc.modified = true;
