@@ -115,7 +115,9 @@ function stubClient(
                    } as any);
   const lookup =
       spyOn(CatalogClient.prototype, 'lookupEntry')
-          .mockImplementation(async (p, l, name, types = [], paths) => {
+          .mockImplementation(async (p, l, name, opts = {}) => {
+            const types = opts.aspects ?? [];
+            const paths = opts.paths;
             if (name === lookupFail) return err(500, 'boom');
             const e = byName.get(name);
             if (!e) return err(404, 'not found');
@@ -185,7 +187,7 @@ describe('pullKnowledgeCatalog: happy path', () => {
             entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
         const call =
             lookup.mock.calls.find((c: any[]) => c[2] === entityEntry.name)!;
-        const aspectTypes: string[] = call[3];
+        const aspectTypes: string[] = call[3]?.aspects ?? [];
         expect(
             aspectTypes.some(t => t.endsWith('/aspectTypes/semantic-entity')))
             .toBe(true);
@@ -409,7 +411,7 @@ describe('pullKnowledgeCatalog: file copies', () => {
     // the custom type lives.
     const copy = entries.find(isCopy)!;
     const call = lookup.mock.calls.find((c: any[]) => c[2] === copy.name)!;
-    expect(call[3]).toEqual(
+    expect(call[3]?.aspects).toEqual(
         ['projects/dest/locations/global/aspectTypes/semantic-model-file']);
   });
 
@@ -1078,7 +1080,7 @@ semantic_model:
           lookup.mockClear();
           await pullKnowledgeCatalog(cat, {...opts, v2Aspects});
           const read = new Map<string, string[]>(
-              lookup.mock.calls.map((c: any[]) => [entryIdOf(c[2]), c[3]]));
+              lookup.mock.calls.map((c: any[]) => [entryIdOf(c[2]), c[3]?.aspects ?? []]));
           return [
             'shop', 'shop/entities/orders', 'shop/metrics/revenue',
             'shop/relationships/customer_orders'
@@ -1140,7 +1142,7 @@ semantic_model:
         const serve = lookup.getMockImplementation();
         let inFlight = 0, peak = 0;
         lookup.mockImplementation(async (...args: any[]) => {
-          const one = args[3].length === 1;
+          const one = args[3]?.aspects?.length === 1;
           if (one) peak = Math.max(peak, ++inFlight);
           const res = await serve(...args);
           if (one) inFlight--;

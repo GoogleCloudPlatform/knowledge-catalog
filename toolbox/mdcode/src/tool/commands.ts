@@ -12,6 +12,7 @@ import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
+import {OkfLayout} from '../libts/layouts/okf';
 import {fileNameOf, formatOverviewSidecar, OverviewSidecar, profileFilesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
@@ -36,6 +37,20 @@ import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
+
+// `--format` selects an alternate on-disk format. Only `okf` exists; anything
+// else throws rather than falling back to the default layout, which would
+// write a tree the caller did not ask for. main.ts turns the throw into
+// `Error: <message>` and exit 1, as it does for every other command failure.
+export const OKF_FORMAT = 'okf';
+
+function okfSelected(options: {format?: string}, command: string): boolean {
+  if (options.format === undefined) return false;
+  if (options.format === OKF_FORMAT) return true;
+  throw new Error(
+      `unknown --format '${options.format}' for kcmd ${command}. ` +
+      `Only '${OKF_FORMAT}' is supported.`);
+}
 
 export interface InitOptions {
   entryGroup?: string;
@@ -64,6 +79,8 @@ interface CatalogOnlyCounts {
 }
 
 export interface PushOptions {
+  // Alternate on-disk format; only `okf`. Omitted means the default layout.
+  format?: string;
   // Generic push flag for non-semantic-model (CatalogSync) scopes;
   // forwarded to CatalogSync.push. The semantic-model legs ignore it.
   // The catch-all "force the push" toggle -- distinct from
@@ -355,10 +372,13 @@ function scopeOf(text: string): string|undefined {
 
 
 export interface PullOptions {
+  // Alternate on-disk format; only `okf`. Omitted means the default layout.
+  format?: string;
   // Reconstruct + report only; never writes a file. Mirrors push
   // --validate-only.
   dryRun?: boolean;
-  // Authorize replacing a differently-named local model with the catalog's.
+  // Authorize replacing a differently-named local model with the catalog's, or
+  // removing stale OKF concept files no longer in Knowledge Catalog.
   // Without it, a pull whose catalog model id differs from the local model on
   // disk fails rather than leave two models in the entry group. Mirrors the
   // push flag of the same name.
@@ -374,9 +394,25 @@ function ensureManifestExists(basePath = '.'): void {
 }
 
 export async function pull(options: PullOptions = {}): Promise<number> {
+  const okf = okfSelected(options, 'pull');
   ensureManifestExists('.');
+
   const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const snapshot = await kcmd.CatalogSnapshot.fromPath(
+      '.', ctx, okf ? {layout: kcmd.Layouts.OKF} : undefined);
+
+  if (snapshot.layout instanceof OkfLayout) {
+    const catalog = new dataplex.CatalogClient(ctx);
+    const sync = new kcmd.CatalogSync(catalog, snapshot);
+    const result = await sync.pull({
+      dryRun: options.dryRun,
+      forceRemove: options.forceRemove,
+    });
+    if (!result.success) {
+      throw new Error(result.details || 'Error pulling OKF bundle');
+    }
+    return 0;
+  }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     return await pullSemanticModel(ctx, snapshot, options);
@@ -1109,6 +1145,8 @@ async function generateOffline(
 }
 
 export async function push(options: PushOptions): Promise<number> {
+  const okf = okfSelected(options, 'push');
+
   if (options.transpile) {
     return printErrors(
         `'--transpile' is no longer supported on 'kcmd push'; use '${
@@ -1118,7 +1156,22 @@ export async function push(options: PushOptions): Promise<number> {
   }
   ensureManifestExists('.');
   const ctx = context.ApiContext.default();
-  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const snapshot = await kcmd.CatalogSnapshot.fromPath(
+      '.', ctx, okf ? {layout: kcmd.Layouts.OKF} : undefined);
+
+  if (snapshot.layout instanceof OkfLayout) {
+    const catalog = new dataplex.CatalogClient(ctx);
+    const sync = new kcmd.CatalogSync(catalog, snapshot);
+    const result = await sync.push({
+      force: options.force,
+      validateOnly: options.validateOnly,
+    });
+    if (!result.success) {
+      if (result.details) console.error(result.details);
+      return 1;
+    }
+    return 0;
+  }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout

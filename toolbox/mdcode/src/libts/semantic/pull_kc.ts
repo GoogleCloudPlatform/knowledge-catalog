@@ -219,7 +219,8 @@ async function fetchEntry(
     cat: CatalogClient, opts: KcPullOptions, entry: Entry,
     aspectTypes: string[], paths?: string[]): Promise<Entry> {
   const res = await cat.lookupEntry(
-      opts.project, opts.location, entry.name, aspectTypes, paths);
+      opts.project, opts.location, entry.name,
+      {aspects: aspectTypes, paths});
   if (res.status !== 200 || !res.result) {
     throw new Error(`failed to fetch entry '${entry.name}' (status ${
         res.status}); pull aborted`);

@@ -29,6 +29,29 @@ export interface Operation {
   name?: string;
   done?: boolean;
   error?: { code?: number; message?: string; };
+  // BatchChangeMetadata reports per-change failures keyed by the change's
+  // 0-based index in the request.
+  metadata?: {
+    failedRequests?: Record<string, { code?: number; message?: string; }>;
+  };
+}
+
+// One element of a BatchChangeMetadata request. Exactly one arm is set.
+export interface MetadataChange {
+  createEntryRequest?: { parent: string; entryId: string; entry: Entry; };
+  updateEntryRequest?: {
+    entry: Entry;
+    updateMask: string;
+    aspectKeys: string[];
+    deleteMissingAspects: boolean;
+  };
+  deleteEntryRequest?: { name: string; };
+}
+
+export interface LookupEntryOptions {
+  aspects?: string[];
+  paths?: string[];
+  view?: 'BASIC' | 'CUSTOM' | 'ALL';
 }
 
 // Renders a finished operation's failure as a message, or returns undefined
@@ -149,17 +172,17 @@ export class CatalogClient extends api.ApiClient {
     return res;
   }
 
-  // With `aspects`, `paths` keeps only the aspects at those paths. The path ''
-  // is the entry itself, and `Schema.<field>` is a field.
+  // With `opts.aspects`, `opts.paths` keeps only the aspects at those paths.
+  // The path '' is the entry itself, and `Schema.<field>` is a field. Passing
+  // `{view: 'ALL'}` reads every aspect without naming aspect types.
   async lookupEntry(project: string, location: string, name: string,
-                    aspects?: string[],
-                    paths?: string[]): Promise<api.ApiResult<Entry>> {
+                    opts: LookupEntryOptions = {}): Promise<api.ApiResult<Entry>> {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
-    const params: Record<string, any> = { entry: name, view: 'BASIC' };
-    if (aspects && aspects.length) {
+    const params: Record<string, any> = { entry: name, view: opts.view ?? 'BASIC' };
+    if (opts.view !== 'ALL' && opts.aspects && opts.aspects.length) {
       params.view = 'CUSTOM';
-      params.aspectTypes = aspects;
-      params.paths = paths;
+      params.aspectTypes = opts.aspects;
+      params.paths = opts.paths;
     }
 
     const res = await this._get<Entry>(container, params);
@@ -287,6 +310,17 @@ export class CatalogClient extends api.ApiClient {
     return await this._delete<Entry>(name);
   }
 
+  // Applies up to 250 entry changes to one entry group in a single call, and
+  // returns the LRO to poll. Per-change failures arrive in the operation's
+  // metadata rather than as a non-200.
+  async batchChangeMetadata(project: string, location: string,
+                            entryGroup: string, changes: MetadataChange[]):
+      Promise<api.ApiResult<Operation>> {
+    const name = catalogContainer(project, location, entryGroup);
+    return await this._post<Operation>(`${name}:batchChangeMetadata`,
+                                       { name, changes });
+  }
+
   async createEntryGroup(project: string, location: string, 
                          entryGroupId: string, entryGroup?: EntryGroup): Promise<api.ApiResult<EntryGroup>> {
     const parent = catalogContainer(project, location);
@@ -336,22 +370,19 @@ export class CatalogClient extends api.ApiClient {
   }
 
   // Fetches a long-running operation by the resource name the call that started
-  // it returned.
+  // it returned. Disables per-call _get retry so poll loops control backoff.
   async getOperation(operationName: string): Promise<api.ApiResult<Operation>> {
-    return await this._get<Operation>(operationName);
+    return await this._get<Operation>(operationName, undefined, { retry: false });
   }
 
-  // Polls a long-running operation until it finishes, and returns a message
-  // describing the failure when it fails or does not finish in time. Creating a
-  // type is asynchronous, so a caller that skips this races the server: an
-  // entry type that names an aspect type the server cannot see yet is rejected
-  // with `The following aspect types do not exist`.
-  async awaitOperation(op: Operation|undefined, what: string,
-                       timeoutMs = 120000): Promise<string|undefined> {
-    // A response that carries no operation name is already the final resource,
-    // which is what a synchronous implementation of the same call returns.
-    if (!op || !op.name) return undefined;
-    if (op.done) return operationFailure(op, what);
+  // Polls a long-running operation until it finishes, returning both the final
+  // operation (for callers that inspect `metadata.failedRequests`) and any
+  // failure message.
+  async pollOperation(op: Operation|undefined, what: string,
+                      timeoutMs = 120000):
+      Promise<{ operation?: Operation; error?: string }> {
+    if (!op || !op.name) return { operation: op };
+    if (op.done) return { operation: op, error: operationFailure(op, what) };
 
     const deadline = Date.now() + timeoutMs;
     let delayMs = 500;
@@ -365,12 +396,29 @@ export class CatalogClient extends api.ApiClient {
       // a throttle is worth another attempt.
       if (polled.status >= 400 && polled.status < 500 &&
           polled.status !== 429) {
-        return `${what}: reading ${op.name}: ${polled.message || polled.status}`;
+        return {
+          error: `${what}: reading ${op.name}: ${polled.message || polled.status}`
+        };
       }
       if (polled.status !== 200 || !polled.result) continue;
-      if (polled.result.done) return operationFailure(polled.result, what);
+      if (polled.result.done) {
+        return {
+          operation: polled.result,
+          error: operationFailure(polled.result, what)
+        };
+      }
     }
-    return `${what}: timed out after ${timeoutMs}ms waiting for ${op.name}`;
+    return { error: `${what}: timed out after ${timeoutMs}ms waiting for ${op.name}` };
+  }
+
+  // Polls a long-running operation until it finishes, and returns a message
+  // describing the failure when it fails or does not finish in time. Creating a
+  // type is asynchronous, so a caller that skips this races the server: an
+  // entry type that names an aspect type the server cannot see yet is rejected
+  // with `The following aspect types do not exist`.
+  async awaitOperation(op: Operation|undefined, what: string,
+                       timeoutMs = 120000): Promise<string|undefined> {
+    return (await this.pollOperation(op, what, timeoutMs)).error;
   }
 
   async createEntryLink(project: string, location: string, entryGroup: string,

@@ -119,11 +119,16 @@ export class CatalogClientMock extends gcp.CatalogClient {
     return { status: 404, message: 'Not found' };
   }
 
-  async lookupEntry(project: string, location: string, name: string, aspects?: string[]): Promise<gcp.ApiResult<gcp.Entry>> {
+  async lookupEntry(project: string, location: string, name: string,
+                    opts: gcp.LookupEntryOptions = {}): Promise<gcp.ApiResult<gcp.Entry>> {
+    const aspects = opts.aspects;
     this.lookupAspectTypes = aspects;
     const entry = this.mockEntries.find(e => e.name == name);
     if (!entry) {
       return { status: 404, message: 'Not found' };
+    }
+    if (opts.view === 'ALL') {
+      return { status: 200, result: { ...entry } };
     }
     // As Dataplex does: only the aspects of the requested types, none when no type is requested.
     const kept = Object.entries(entry.aspects ?? {})
