@@ -50,6 +50,9 @@ export interface LoadOptions {
   // warning so a caller can load a document whose sources have not all been
   // repointed yet.
   warnUnacceptedSource?: boolean;
+  // The caller rejects a field its own table cannot run, as push does for a
+  // model file, so the load gives no warning for it.
+  fieldTextChecked?: boolean;
 }
 
 export interface LoadResult {
@@ -2239,7 +2242,8 @@ function convertModel(
   // A field is judged on each entity that inherits it too, so its warning
   // waits until every entity is read.
   warnings.push(...fieldWarnings(
-      {name: m.name, entities, relationships, metrics: []}, dialect, false));
+      {name: m.name, entities, relationships, metrics: []}, dialect,
+      !!opts.fieldTextChecked));
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(

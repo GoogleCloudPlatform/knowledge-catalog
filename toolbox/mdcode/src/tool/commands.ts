@@ -1225,9 +1225,11 @@ async function checkBeforeWrites(
 
   const defaultProject = source.project ?? ctx.project;
   // A model file may leave every source to its profile files, so a source is
-  // required only once a deployment's profile is applied.
+  // required only once a deployment's profile is applied. The checks below
+  // reject a field its table cannot run, so the load does not warn about it.
   const loaded = loadSemanticModels(
-      docs, {defaultProject, bindingOptional: true, ...load});
+      docs,
+      {defaultProject, bindingOptional: true, ...load, fieldTextChecked: true});
   if (loaded.error) return fail(loaded.error);
   for (const w of loaded.warnings) warn(w);
   if (selected && !loaded.models.length) {

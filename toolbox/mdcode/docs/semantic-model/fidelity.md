@@ -103,8 +103,9 @@ agree on every structural row and differ only where a Spanner target has no
     a double-quoted name as text, so kcmd warns about that kind on their
     tables.
     On a table in another database, it warns about a field or metric with no
-    text that table runs, and push also rejects such a field. When a profile
-    binds that table, push rejects the field or metric instead. `kcmd import`
+    text that table runs. Push rejects such a field in the model file with an
+    error in place of the warning. When a profile binds that table, push
+    rejects the field or metric instead. `kcmd import`
     does not look up a Cloud SQL or third-party table's dialect, so it warns
     there only about a field or metric with no text in any of that system's
     dialects. A BigQuery

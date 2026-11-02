@@ -95,6 +95,14 @@ scenarios('push --no-deployment', [
       code: 0,
       warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
     }, {
+      // Push rejects a model-file field its Spanner table cannot run, with
+      // no warning beside the error, on both push paths.
+      entities: [keyAt(SPANNER_CUSTOMER, 'c_key', 'BIGQUERY')], metrics: [],
+      code: 1, warnings: [],
+    }, {
+      entities: [keyAt(SPANNER_CUSTOMER, 'c_key', 'BIGQUERY')], metrics: [],
+      flags: {deployment: undefined, validateOnly: true}, code: 1, warnings: [],
+    }, {
       // Under a profile on Spanner, push's errors are the only messages.
       profiles: {ops: {entities: {Customer: keyAt(SPANNER_CUSTOMER, 'c_key', 'SNOWFLAKE')}}},
       metrics: [SNOWFLAKE_METRIC],
