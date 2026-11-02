@@ -1308,6 +1308,21 @@ async function checkBeforeWrites(
     const named =
         declaredNames(document).some(n => n.toLowerCase() !== DEFAULT_PROFILE);
     profileWarnings.push(...inlineBindingWarnings(model, document, named));
+    // A named profile that no selected deployment applies still goes to
+    // Knowledge Catalog, so its load warnings print here, labelled as `kcmd
+    // profiles` labels them. A warning the model file's load gave prints once,
+    // above. A selected deployment prints its own profile's warnings.
+    const doc = docs.find(d => d.name === document)!;
+    const applied = selectedByDoc.get(document)!.map(d => d.profile);
+    const declared = declaredBy(doc);
+    for (const {name} of declared) {
+      if (applied.includes(name)) continue;
+      const res = profileForDocument(doc, declared, name, load);
+      if (res.kind !== 'file') continue;
+      profileWarnings.push(
+          ...res.warnings.filter(w => !loaded.warnings.includes(w))
+              .map(w => `profile '${name}': ${w}`));
+    }
   }
   const kcWarnings: string[] = [];
   const kcErrors = models.flatMap(
