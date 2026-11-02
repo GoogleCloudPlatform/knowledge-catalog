@@ -3149,14 +3149,14 @@ const CLOUDSQL_SCHEMA_TABLE_URI =
 const QUOTE = /["`]/;
 
 // A Cloud SQL table written as its resource name or resource URI: its
-// project, location and instance, its resource name with no leading `//`,
-// which is also the id of its catalog entry in the `@cloudsql` entry group,
-// and whether it sits in a schema, as only a MySQL table does not.
+// project, location and instance, and its resource name with no leading `//`,
+// which is also the id of its catalog entry in the `@cloudsql` entry group.
 export interface CloudSqlTable {
   project: string;
   location: string;
   instance: string;
   resourceName: string;
+  // False for a MySQL table, whose name has no schema.
   inSchema: boolean;
 }
 

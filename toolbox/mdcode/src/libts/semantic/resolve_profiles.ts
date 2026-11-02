@@ -1308,9 +1308,9 @@ export function tableDialects(
   return undefined;
 }
 
-// Each field of each entity whose table tableDialects gives, with that table.
-// An inherited field is listed on each entity that inherits it. With
-// `withUnread`, unread Cloud SQL and third-party tables are listed too.
+// Each field of each entity whose table `tableDialects(entity, withUnread)`
+// gives, with that table. An inherited field is listed on each entity that
+// inherits it.
 export function fieldsOnTables(model: SemanticModel, withUnread = false):
     Array<{entity: Entity; field: Field; table: TableDialects}> {
   return resolvedEntities(model).flatMap(entity => {
