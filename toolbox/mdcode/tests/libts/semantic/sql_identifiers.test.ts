@@ -5,7 +5,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {isReservedKeyword, quoteIdentifier, quoteIfReserved} from '../../../src/libts/semantic/sql_identifiers';
+import {isReservedKeyword, leadingDmlVerb, quoteIdentifier, quoteIfReserved} from '../../../src/libts/semantic/sql_identifiers';
 
 describe('isReservedKeyword', () => {
   test('recognizes reserved keywords case-insensitively', () => {
@@ -92,3 +92,33 @@ describe('pins to the authoritative GoogleSQL reserved set (not the transpiler)'
              for (const n of MUST_STAY_BARE) expect(quoteIfReserved(n)).toBe(n);
            });
          });
+
+
+describe('leadingDmlVerb', () => {
+  test('reads the verb past both line-comment forms', () => {
+    // GoogleSQL takes `#` as well as `--`, and action DML runs against
+    // Spanner. A `#` comment mentioning another verb used to hand that verb
+    // back, which costs in the expensive direction: the INSERT exemption is
+    // lost and a legitimate zero-row INSERT is refused.
+    expect(leadingDmlVerb('# update the audit trail\nINSERT INTO t VALUES (1)'))
+        .toBe('INSERT');
+    expect(leadingDmlVerb('-- update the audit trail\nINSERT INTO t VALUES (1)'))
+        .toBe('INSERT');
+  });
+
+  test('reads past a block comment and a CTE', () => {
+    expect(leadingDmlVerb('/* delete later */ UPDATE t SET a = 1'))
+        .toBe('UPDATE');
+    expect(leadingDmlVerb('WITH x AS (SELECT 1) UPDATE t SET a = 1'))
+        .toBe('UPDATE');
+  });
+
+  test('a quoted literal is not a verb', () => {
+    expect(leadingDmlVerb("UPDATE t SET note = 'DELETE'")).toBe('UPDATE');
+  });
+
+  test('a statement holding no DML verb reads as none', () => {
+    expect(leadingDmlVerb('SELECT * FROM t')).toBe('');
+    expect(leadingDmlVerb('# nothing here')).toBe('');
+  });
+});

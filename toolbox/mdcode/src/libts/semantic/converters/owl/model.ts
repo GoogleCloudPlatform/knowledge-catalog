@@ -28,9 +28,10 @@
 // guide.
 
 /**
- * Per-term annotations carried verbatim on any class or property -- links to
+ * Per-term annotations parsed from any class or property -- links to
  * related/defining resources and lifecycle metadata. None has a native OSI
- * home, so all ride along as custom extensions (see to_ir.commonTerms). Shared
+ * home, and the importer is import-only, so none is carried into the model:
+ * they are dropped (the earlier custom-extension carriage was removed). Shared
  * by OwlClass, OwlDatatypeProperty, and OwlObjectProperty.
  */
 export interface OwlCommonAnnotations {

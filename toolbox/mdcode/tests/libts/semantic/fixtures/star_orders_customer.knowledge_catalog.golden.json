@@ -12,7 +12,7 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
           "data": {
             "deploymentTargets": [
-              "//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
+              "bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"
             ]
           }
         },
@@ -39,7 +39,7 @@
           "data": {
             "source": {
               "resources": [
-                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders"
+                "bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders"
               ]
             }
           }
@@ -95,7 +95,7 @@
           "data": {
             "source": {
               "resources": [
-                "//bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer"
+                "bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer"
               ]
             }
           }
@@ -204,7 +204,5 @@
       }
     }
   ],
-  "warnings": [
-    "relationship 'orders_to_customer': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'orders-to-customer'), not 'orders_to_customer'."
-  ]
+  "warnings": []
 }

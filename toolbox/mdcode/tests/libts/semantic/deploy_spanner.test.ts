@@ -20,7 +20,8 @@ const CTX = new ApiContext('test-project', 'us', 'test-token');
 
 function models(
     docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(docs, {defaultProject});
+  const r = loadSemanticModels(
+      docs, {defaultProject, allowLegacyBareSource: true});
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -28,9 +29,9 @@ function models(
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 const SPANNER_URI =
-    '//spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/sales_graph';
+    'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/sales_graph';
 const BQ_URI =
-    '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
+    'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
 
 const OSSIE = fs.readFileSync(
     path.join(FIXTURES, 'sales_spanner_graph_target.yaml'), 'utf8');
@@ -71,8 +72,20 @@ describe('spannerGraphTargets', () => {
     expect(malformed).toEqual([]);
   });
 
-  test('an unsupported URI is collected as malformed', () => {
-    const bad = '//alloydb.googleapis.com/projects/p/whatever';
+  // Same for the other recognized destination. An AlloyDB target is a store to
+  // run against rather than a graph to deploy, so the Spanner leg passes over
+  // it -- and it is not a typo, so it must not be reported as one either.
+  test('an AlloyDB target is not a Spanner target, and not malformed', () => {
+    const pg =
+        'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
+    const {targets, malformed} = spannerGraphTargets(
+        modelWithExtension(JSON.stringify({deploymentTargets: [pg]})));
+    expect(targets).toEqual([]);
+    expect(malformed).toEqual([]);
+  });
+
+  test('an unsupported target is collected as malformed', () => {
+    const bad = 'cloudsql.googleapis.com/projects/p/whatever';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [bad]})));
     expect(targets).toEqual([]);
@@ -81,7 +94,7 @@ describe('spannerGraphTargets', () => {
 
   test('rejects a graph name with an injection character', () => {
     const evil =
-        '//spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/propertyGraphs/g`;DROP';
+        'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/g`;DROP';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
     expect(targets).toEqual([]);
@@ -103,7 +116,7 @@ describe('deploySpanner', () => {
 
       const ddl = res.ddl.join('\n');
       expect(ddl).toContain('CREATE OR REPLACE PROPERTY GRAPH sales_graph');
-      // Bare table name, not the three-part BigQuery source.
+      // The node table is the last segment of the source.
       expect(ddl).toContain('Orders AS orders');
       // The metric is dropped (Spanner has no MEASURE).
       expect(res.warnings.some(w => w.includes('total_revenue'))).toBe(true);
@@ -204,14 +217,23 @@ describe('deploySpanner', () => {
         }
       });
 
-  test('a model with no Spanner target fails clearly', async () => {
-    // A BigQuery-only model handed to the Spanner leg has nothing to deploy;
-    // commands.ts routes such models away, so this is the direct-call guard.
+  // A BigQuery-only model handed to the Spanner leg has nothing to deploy, and
+  // a target that does not parse is named with the form to write; commands.ts
+  // routes such models away, so this is the direct-call guard.
+  test('a model with no Spanner target, or one that does not parse, fails clearly', async () => {
     const bqDoc = fs.readFileSync(
         path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
-    const res = await deploySpanner(
-        models([{name: 'sales', text: bqDoc}]), CTX, {validateOnly: true});
-    expect(res.success).toBe(false);
-    expect(res.details).toContain('no Spanner Graph deploymentTarget');
+    const typo = 'spanner.googleapis.com/projects/demo/instance/i/databases/d/graphs/g';
+    for (const [text, details] of [
+      [bqDoc, 'no Spanner Graph deploymentTarget'],
+      [bqDoc.replace(/deployment_target: \S+/, `deployment_target: ${typo}`),
+       `could not be parsed: ${typo}. Expected spanner.googleapis.com/` +
+           `projects/<p>/instances/<i>/databases/<db>/graphs/<g>.`],
+    ]) {
+      const res = await deploySpanner(
+          models([{name: 'sales', text}]), CTX, {validateOnly: true});
+      expect(res.success).toBe(false);
+      expect(res.details).toContain(details);
+    }
   });
 });

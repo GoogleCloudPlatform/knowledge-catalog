@@ -61,7 +61,7 @@ relationships between them, and the metric:
 
 ```bash
 cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     description: Orders, line items, and customers for the codelab
@@ -247,11 +247,11 @@ cat /tmp/sales_osi.yaml
 ```
 
 ```yaml
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
     description: Imported from OWL ontology http://example.com/sales#
-    datasets:
+    entities:
       - name: orders
         primary_key: [order_id]
         description: A customer order
@@ -278,9 +278,9 @@ semantic_model:
 
 This is the hand-authored `sales` model above, reproduced from the ontology: the
 same three entities, the same fields and datatypes, the same primary keys, and
-the same two relationships. (The importer writes entities under `datasets:`, the
-original spelling of the `entities:` key this codelab uses — the two are
-interchangeable.)
+the same two relationships. (The importer emits the extended profile — `entities:`
+under `version: 0.2.0.dev0/google` — the same spelling this codelab's hand-authored
+model uses.)
 
 Two things from the hand-authored model are missing, and both are inherent —
 an ontology has no way to state either:
@@ -324,27 +324,20 @@ A bare `kcmd push` governs the logical model in Knowledge Catalog.
 
 ```
 Validating semantic model for Knowledge Catalog...
-Warning: [sales] relationship 'placed_by': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'placed-by'), not 'placed_by'.
-Warning: [sales] relationship 'part_of': Knowledge Catalog stores the name only in the normalized link id, so a pull returns it lowercased/hyphenated (e.g. 'part-of'), not 'part_of'.
 -- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
-  5 entries:
+  6 entries:
     - sales (semantic-model)
     - sales.entities.orders (semantic-entity)
     - sales.entities.customer (semantic-entity)
     - sales.entities.lineitem (semantic-entity)
     - sales.metrics.revenue (semantic-metric)
+    - sales.files.sales.yaml (semantic-model-file)
   2 schema-join links:
     - sales-placed-by
     - sales-part-of
 Validation complete; no changes applied.
 ```
-
-The two warnings are informational, and every Knowledge Catalog push repeats
-them: relationship names come back from a `kcmd pull` lowercased and hyphenated
-(`placed-by`), because Knowledge Catalog keeps the name only in the
-normalized link id. Nothing is wrong — the graph itself keeps the authored
-`placed_by`.
 
 ### Write the entries (available later)
 
@@ -356,15 +349,15 @@ kcmd push
 
 ```
 Pushing semantic model (Knowledge Catalog)...
-Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
+Wrote 6 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 ```
 
 Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
 discoverable, access-controlled, and the single definition the rest of your work
-reads from. `kcmd pull` reconstructs the model YAML from these entries, confirming
-the round-trip. Physical bindings can be governed here too, alongside the logical
-model.
+reads from. `kcmd pull` returns the model YAML push stored with these entries,
+confirming the round-trip. Physical bindings can be governed here too, alongside
+the logical model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See
@@ -390,37 +383,44 @@ column each field maps to, and the BigQuery graph to deploy to. The
 ```bash
 # BigQuery deployment target, named by the profile's deployment_target key.
 BQ_DS=projects/$PROJECT/datasets/$DATASET
-TARGET=//bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
+TARGET=bigquery.googleapis.com/$BQ_DS/propertyGraphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: $TARGET
     entities:
       - name: orders
-        source: $PROJECT.$DATASET.orders
+        source: bigquery.googleapis.com/$BQ_DS/tables/orders
+        primary_key: [o_orderkey]
         fields:
           - { name: order_id,    expression: o_orderkey }
           - { name: customer_id, expression: o_custkey }
           - { name: net_amount,  expression: net_amount }
       - name: customer
-        source: $PROJECT.$DATASET.customer
+        source: bigquery.googleapis.com/$BQ_DS/tables/customer
+        primary_key: [c_custkey]
         fields:
           - { name: customer_id, expression: c_custkey }
           - { name: name,        expression: c_name }
       - name: lineitem
-        source: $PROJECT.$DATASET.lineitem
+        source: bigquery.googleapis.com/$BQ_DS/tables/lineitem
+        primary_key: [l_linekey]
         fields:
           - { name: line_id,  expression: l_linekey }
           - { name: order_id, expression: l_orderkey }
+    relationships:
+      - { name: placed_by, from_columns: [o_custkey],  to_columns: [c_custkey] }
+      - { name: part_of,   from_columns: [l_orderkey], to_columns: [o_orderkey] }
 YAML
 ```
 
-The binding restates no relationship, no metric, and no grain — those are logical
-and live once in the model. It carries only bindings: each entity's table and
-each field's column. Make it the default so a bare `kcmd push` selects it (the
+The binding carries only bindings, in this store's column names: each entity's
+table and key columns, each field's column, and each relationship's join
+columns. The relationships, the metric and the grain themselves are logical and
+live once in the model. Make it the default so a bare `kcmd push` selects it (the
 rest of this step relies on this):
 
 ```bash
@@ -436,11 +436,11 @@ echo 'default_profile: analytical' >> catalog.yaml
 > ```yaml
 > semantic_model:
 >   - name: sales
->     deployment_target: //bigquery.googleapis.com/.../propertyGraphs/sales
+>     deployment_target: bigquery.googleapis.com/.../propertyGraphs/sales
 >     entities:
 >       - name: orders
->         source: $PROJECT.$DATASET.orders
->         primary_key: [order_id]
+>         source: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
+>         primary_key: [o_orderkey]
 >         fields:
 >           - { name: order_id, datatype: Integer, expression: o_orderkey }
 >           # ...
@@ -451,8 +451,9 @@ echo 'default_profile: analytical' >> catalog.yaml
 
 ### Inspect the binding profile
 
-`kcmd profiles` lists the model's binding profiles and reports what each one can
-answer. Run it to confirm the binding before you deploy:
+`kcmd profiles` lists the model's binding profiles, reports what each one can
+answer, and prints any error push would give for it. Run it to confirm the
+binding before you deploy:
 
 ```bash
 kcmd profiles
@@ -461,11 +462,11 @@ kcmd profiles
 ```
 Model 'sales' ($DATASET):
   profile 'analytical' (default)
-    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    target: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
     sources:
-      orders -> $PROJECT.$DATASET.orders
-      customer -> $PROJECT.$DATASET.customer
-      lineitem -> $PROJECT.$DATASET.lineitem
+      orders -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
+      customer -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/customer
+      lineitem -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/lineitem
     cannot answer: nothing withheld.
 ```
 
@@ -528,7 +529,7 @@ fully qualified names):
 ```sql
 Pushing semantic model (BigQuery Graph)...
 -- BigQuery Graph --
--- //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
+-- bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
 CREATE OR REPLACE PROPERTY GRAPH `$PROJECT.$DATASET.$GRAPH`
 NODE TABLES (
   `$PROJECT.$DATASET.orders` AS orders
@@ -696,38 +697,47 @@ into the same `sales.profiles/` directory:
 ```bash
 export SPANNER_INSTANCE="${SPANNER_INSTANCE:-<your-spanner-instance>}"   # a Spanner ENTERPRISE-edition instance
 export SPANNER_DB="${SPANNER_DB:-<your-googlesql-database>}"
-SPANNER_TARGET=//spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/$GRAPH
+SPANNER_DB_NAME=projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB
+SPANNER_TARGET=spanner.googleapis.com/$SPANNER_DB_NAME/graphs/$GRAPH
 
 mkdir -p catalog/EntryGroups/$DATASET/sales.profiles
 cat > catalog/EntryGroups/$DATASET/sales.profiles/operational.yaml <<YAML
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     deployment_target: $SPANNER_TARGET
     entities:
       - name: orders
-        source: Orders                       # a bare table in the Spanner database
+        source: spanner.googleapis.com/$SPANNER_DB_NAME/tables/Orders
+        primary_key: [OrderId]
         fields:
           - { name: order_id,    expression: OrderId }
           - { name: customer_id, expression: CustomerId }
-          - { name: net_amount,  unbound: true }   # the operational store has no settled total
+        fields_exclude: [net_amount]         # the operational store has no settled total
       - name: customer
-        source: Customers
+        source: spanner.googleapis.com/$SPANNER_DB_NAME/tables/Customers
+        primary_key: [CustomerId]
         fields:
           - { name: customer_id, expression: CustomerId }
           - { name: name,        expression: FullName }
       - name: lineitem
-        source: LineItems
+        source: spanner.googleapis.com/$SPANNER_DB_NAME/tables/LineItems
+        primary_key: [LineId]
         fields:
           - { name: line_id,  expression: LineId }
           - { name: order_id, expression: OrderId }
+    relationships:
+      - { name: placed_by, from_columns: [CustomerId], to_columns: [CustomerId] }
+      - { name: part_of,   from_columns: [OrderId],    to_columns: [OrderId] }
+    metrics_exclude: "*"                     # Spanner Graph has no measures
 YAML
 ```
 
-The profile restates no relationship, no metric, no label, and no grain — those
-are logical and live once in the model. It carries only bindings: each entity's
-Spanner table, each field's Spanner column, and the one field the store does not
-have.
+The profile carries only bindings, in Spanner's column names: each entity's
+table and key columns, each field's column, and each relationship's join
+columns. It also excludes the one field the store does not have, and every
+metric. The relationships, the metric, the labels and the grain themselves are
+logical and live once in the model.
 
 ### Inspect the binding profiles
 
@@ -741,33 +751,34 @@ kcmd profiles
 ```
 Model 'sales' ($DATASET):
   profile 'analytical' (default)
-    target: //bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
+    target: bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/sales
     sources:
-      orders -> $PROJECT.$DATASET.orders
-      customer -> $PROJECT.$DATASET.customer
-      lineitem -> $PROJECT.$DATASET.lineitem
+      orders -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/orders
+      customer -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/customer
+      lineitem -> bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/tables/lineitem
     cannot answer: nothing withheld.
   profile 'operational'
-    target: //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
+    target: spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/graphs/sales
     sources:
-      orders -> $PROJECT.Orders
-      customer -> $PROJECT.Customers
-      lineitem -> $PROJECT.LineItems
+      orders -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Orders
+      customer -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/Customers
+      lineitem -> spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/tables/LineItems
     cannot answer:
-      field orders.net_amount (unbound)
-      metric revenue (field orders.net_amount is unbound)
+      field orders.net_amount (excluded)
+      metric revenue (excluded)
 ```
 
 Both profiles now show side by side: `analytical` binds every field, so it
-withholds nothing; `operational` leaves `net_amount` unbound. (`kcmd profiles`
-resolves each source against your project for display — the `analytical` sources
-are fully qualified, and each `operational` bare table such as `Orders` is shown
-project-prefixed; the Spanner graph itself references the bare `Orders`.)
+withholds nothing; `operational` excludes `net_amount`, and every metric. (`kcmd profiles`
+shows each source as its resource name; the Spanner graph itself references the
+bare `Orders`.)
 
-`revenue` is `SUM(orders.net_amount)`, and the operational store does not bind
-`net_amount`, so the profile reports `revenue` as unavailable there — computed
-from the bindings rather than declared. The `analytical` profile binds `net_amount`, so
-the same metric is available under the binding step 3 used. One model; each store
+`revenue` is `SUM(orders.net_amount)`. The operational profile excludes
+`net_amount`, and a metric that reaches an excluded field has to be excluded
+too. The profile also deploys to Spanner, whose graphs have no measures, so it
+excludes every metric with `metrics_exclude: "*"`, which covers `revenue`. The
+`analytical` profile binds `net_amount`, so the same metric is available under
+the binding step 3 used. One model; each store
 answers the part of it that its data can back.
 
 ### Create the tables
@@ -792,7 +803,8 @@ gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
 
 > **Why the tables come before the Spanner push.** Deploying the Spanner graph
 > applies the DDL through the `updateDatabaseDdl` long-running operation; it does
-> not create or pre-check the tables. So the tables must exist first.
+> not create the tables, and for a model like this one — which declares no
+> actions — it does not read them either. So the tables must exist first.
 
 ### Deploy the semantic model
 
@@ -806,10 +818,10 @@ kcmd push --profile operational --no-kc --print
 ```
 
 ```
-Note: profile 'operational' leaves 1 field(s) unbound; 0 entity(ies), 1 metric(s) and 0 relationship(s) unavailable.
+Note: profile 'operational' leaves 1 field(s) unbound; 1 metric(s) and 0 action(s) unavailable.
 Pushing semantic model (Spanner Graph)...
 -- Spanner Graph --
--- //spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/propertyGraphs/sales
+-- spanner.googleapis.com/projects/$PROJECT/instances/$SPANNER_INSTANCE/databases/$SPANNER_DB/graphs/sales
 CREATE OR REPLACE PROPERTY GRAPH sales
 NODE TABLES (
   Orders AS orders
@@ -853,11 +865,11 @@ table's real column rather than the property alias. Three things also differ fro
 BigQuery DDL in step 3:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
-  one database, so there is no backticked `project.dataset.` qualifier — each
-  `source` is a bare table (`Orders`) in the target database.
-- **No `MEASURE`.** Spanner Graph has no measures. `revenue` is already withheld
-  here because `net_amount` is unbound, but even a bound metric is not emitted
-  onto a Spanner node; author metrics as usual and a BigQuery target still emits
+  one database, so there is no backticked `project.dataset.` qualifier — the DDL
+  names each table by the last part of its `source` (`Orders`).
+- **No `MEASURE`.** Spanner Graph has no measures, so a profile that deploys to
+  Spanner excludes every metric, as `operational` does with
+  `metrics_exclude: "*"`. Author metrics as usual; a BigQuery target still emits
   them.
 - **No `OPTIONS`.** Descriptions and synonyms are not written into the Spanner
   DDL; they live in Knowledge Catalog instead.
@@ -904,9 +916,238 @@ every field mean the same thing in both; only the bindings differ.
 
 ---
 
-## 5. Clean up
+## 5. Model a class hierarchy with `extends`
 
-Drop the BigQuery dataset (tables + property graph):
+A customer and a supplier are both parties you deal with. When several entities
+are kinds of one thing, declare the general kind once and say each specific kind
+`extends` it. A query written against the general kind then reaches every
+specific kind. This step adds a `supplier` entity beside `customer` and lifts the
+shared idea into an abstract `party` supertype, then deploys the result to
+BigQuery. For the modeling guide, see [class hierarchies](inheritance.md); for
+the generation rules, see
+[Reference → Class hierarchies](reference.md#class-hierarchies-extends--labels).
+
+### Add the supertype and a second subtype
+
+Rewrite the logical model to add three things: an abstract `party` that declares
+the shared `name` field, an `extends: [party]` on `customer`, and a new
+`supplier` entity that also extends `party`. `party` is `abstract`, so it has no
+`source` and no key and produces no node table; it survives in the graph only as
+a label on its subtypes. Each subtype inherits `name`, with its datatype, from
+`party`, and the profile binds it to that subtype's own column. The two
+subtypes line up under the shared label by that name:
+
+```bash
+cat > catalog/EntryGroups/$DATASET/sales.yaml <<'YAML'
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    description: Orders, line items, and customers for the codelab
+    entities:
+      - name: orders
+        primary_key: [order_id]
+        fields:
+          - { name: order_id,    datatype: Integer }
+          - { name: customer_id, datatype: Integer }
+          - { name: net_amount,  datatype: Decimal }
+      - name: party
+        abstract: true               # no source, no key, no node table; a shared label
+        fields:
+          - { name: name, datatype: String }
+      - name: customer
+        extends: [party]
+        primary_key: [customer_id]
+        fields:
+          - { name: customer_id, datatype: Integer }
+      - name: supplier
+        extends: [party]
+        primary_key: [supplier_id]
+        fields:
+          - { name: supplier_id, datatype: Integer }
+      - name: lineitem
+        primary_key: [line_id]
+        fields:
+          - { name: line_id,  datatype: Integer }
+          - { name: order_id, datatype: Integer }
+    relationships:
+      - name: placed_by
+        from: orders
+        to: customer
+        from_columns: [customer_id]
+        to_columns: [customer_id]
+      - name: part_of
+        from: lineitem
+        to: orders
+        from_columns: [order_id]
+        to_columns: [order_id]
+    metrics:
+      - name: revenue
+        datatype: Decimal
+        expression:
+          dialects: [{ dialect: BIGQUERY, expression: SUM(orders.net_amount) }]
+YAML
+```
+
+```mermaid
+classDiagram
+    class party {
+        <<abstract>>
+        name : string
+    }
+    class customer {
+        customer_id : integer
+    }
+    class supplier {
+        supplier_id : integer
+    }
+    party <|-- customer
+    party <|-- supplier
+```
+
+Add the `supplier` binding to the `analytical` profile. `party` binds nothing —
+it has no table — so each subtype's own binding supplies the `name` column that
+its `party` label reads. Rewrite the profile to include `supplier`:
+
+```bash
+cat > catalog/EntryGroups/$DATASET/sales.profiles/analytical.yaml <<YAML
+version: "0.2.0.dev0/google"
+semantic_model:
+  - name: sales
+    deployment_target: $TARGET
+    entities:
+      - name: orders
+        source: bigquery.googleapis.com/$BQ_DS/tables/orders
+        primary_key: [o_orderkey]
+        fields:
+          - { name: order_id,    expression: o_orderkey }
+          - { name: customer_id, expression: o_custkey }
+          - { name: net_amount,  expression: net_amount }
+      - name: customer
+        source: bigquery.googleapis.com/$BQ_DS/tables/customer
+        primary_key: [c_custkey]
+        fields:
+          - { name: customer_id, expression: c_custkey }
+          - { name: name,        expression: c_name }
+      - name: supplier
+        source: bigquery.googleapis.com/$BQ_DS/tables/supplier
+        primary_key: [s_suppkey]
+        fields:
+          - { name: supplier_id, expression: s_suppkey }
+          - { name: name,        expression: s_name }
+      - name: lineitem
+        source: bigquery.googleapis.com/$BQ_DS/tables/lineitem
+        primary_key: [l_linekey]
+        fields:
+          - { name: line_id,  expression: l_linekey }
+          - { name: order_id, expression: l_orderkey }
+    relationships:
+      - { name: placed_by, from_columns: [o_custkey],  to_columns: [c_custkey] }
+      - { name: part_of,   from_columns: [l_orderkey], to_columns: [o_orderkey] }
+YAML
+```
+
+### Create the supplier table
+
+Create the `supplier` table beside the others and load two rows:
+
+```bash
+bq query --use_legacy_sql=false '
+CREATE OR REPLACE TABLE `'"$PROJECT.$DATASET"'.supplier` AS
+SELECT * FROM UNNEST([STRUCT(1 AS s_suppkey, "Northwind" AS s_name),
+                      STRUCT(2, "Initech")]);'
+```
+
+### Deploy and read the labels
+
+Deploy the model again. The `orders`, `lineitem`, and edge tables are unchanged
+from step 3; the two node tables that matter now each carry the `party` label
+alongside their own default label. Each renders `name` from its own column:
+`c_name` on the customer table, `s_name` on the supplier table. The shared label
+reconciles by property name, so the two tables never have to agree on a physical
+column:
+
+```bash
+kcmd push --no-kc --print
+```
+
+```sql
+Pushing semantic model (BigQuery Graph)...
+-- BigQuery Graph --
+-- bigquery.googleapis.com/projects/$PROJECT/datasets/$DATASET/propertyGraphs/$GRAPH
+CREATE OR REPLACE PROPERTY GRAPH `$PROJECT.$DATASET.$GRAPH`
+NODE TABLES (
+  ...
+  `$PROJECT.$DATASET.customer` AS customer
+    KEY(c_custkey)
+    DEFAULT LABEL
+    PROPERTIES(
+      c_custkey AS customer_id,
+      c_name AS name
+    )
+    LABEL party
+    PROPERTIES(
+      c_name AS name
+    ),
+  `$PROJECT.$DATASET.supplier` AS supplier
+    KEY(s_suppkey)
+    DEFAULT LABEL
+    PROPERTIES(
+      s_suppkey AS supplier_id,
+      s_name AS name
+    )
+    LABEL party
+    PROPERTIES(
+      s_name AS name
+    ),
+  ...
+);
+
+Deployed 1 BigQuery Graph(s).
+```
+
+### Query the supertype
+
+A query against `party` reaches both subtypes. Match every party and return its
+name:
+
+```bash
+bq query --use_legacy_sql=false --nouse_cache '
+GRAPH `'"$PROJECT.$DATASET.$GRAPH"'`
+MATCH (p:party)
+RETURN p.name AS name ORDER BY name'
+```
+
+Every customer and every supplier comes back, each once, because each real party
+lives in exactly one table:
+
+```
++-----------+
+|   name    |
++-----------+
+| Acme      |
+| Globex    |
+| Initech   |
+| Northwind |
++-----------+
+```
+
+`MATCH (:customer)` still returns Acme and Globex alone, and `MATCH (:supplier)`
+Northwind and Initech alone: each subtype keeps its own label as well as the
+shared one.
+
+> **Spanner works the same way.** Inheritance deploys identically to Spanner
+> Graph — the extra labels and the flattened fields are the same on both
+> backends. To include suppliers on the operational Spanner graph from step 4,
+> add a `supplier` binding and a `Supplier` table to the `operational` profile
+> the same way you did here. Spanner carries no measures, as it does for any
+> model.
+
+---
+
+## 6. Clean up
+
+Drop the BigQuery dataset (tables, including `supplier`, plus the property
+graph):
 
 ```bash
 bq rm -r -f -d $PROJECT:$DATASET

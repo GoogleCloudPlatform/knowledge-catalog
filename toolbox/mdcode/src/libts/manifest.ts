@@ -58,24 +58,31 @@ export class CatalogManifest {
     this.defaultProfile = defaultProfile;
   }
 
+  // A manifest for a scope `kcmd init` just named, listing the scope's default
+  // aspects under snapshot.aspects.
+  private static forNewSource(source: CatalogSource): CatalogManifest {
+    const aspects = [...source.defaultAspects];
+    return new CatalogManifest(source, aspects.length ? { aspects } : undefined);
+  }
+
   static async initWithEntryGroup(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.ENTRYGROUP, name, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async initWithBigQuery(dataset: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.BIGQUERY_DATASET, dataset, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async initWithKnowledgeBase(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.KB, name, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async initWithSemanticModel(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.SEMANTIC_MODEL, name, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {

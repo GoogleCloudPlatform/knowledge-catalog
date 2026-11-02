@@ -37,9 +37,12 @@ const CORPUS = [
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  return loadModels(
-      text,
-      {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
+  return loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+    ...load,
+  });
 }
 
 function build(fixture: string, load: LoadOptions = {}) {

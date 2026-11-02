@@ -22,7 +22,7 @@ import {generatePropertyGraph} from './bigquery';
 // BigQuery-facing views are re-exported here so existing importers
 // (validate.ts, knowledge_catalog.ts, and the deploy tests) keep their
 // historical import path.
-import {BigQueryGraphTarget, bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
+import {BigQueryGraphTarget, bigQueryGraphTargets, BQ_GRAPH_FORM, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
 
 export {bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets};
@@ -151,7 +151,7 @@ async function awaitQueryDone(
 // location, but record a warning so the degraded path is visible -- otherwise a
 // silent fallback can route a non-US CREATE to the wrong region and fail later
 // with an opaque location error.
-async function datasetLocation(
+export async function datasetLocation(
     bigQuery: BigQueryClient, target: BigQueryGraphTarget,
     warnings: string[]): Promise<string|undefined> {
   const res = await bigQuery.getDataset(target.project, target.dataset);
@@ -220,8 +220,7 @@ export async function deployBigQuery(
         return fail(
             `Model '${model.name}' (${document}) declares BigQuery Graph ` +
             `deploymentTarget(s) that could not be parsed: ` +
-            `${malformed.join(', ')}. Expected //bigquery.googleapis.com/` +
-            `projects/<p>/datasets/<d>/propertyGraphs/<g>.`);
+            `${malformed.join(', ')}. Expected ${BQ_GRAPH_FORM}.`);
       }
       return fail(
           `Model '${model.name}' (${document}) declares no BigQuery Graph ` +

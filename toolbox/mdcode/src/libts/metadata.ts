@@ -1,6 +1,10 @@
 // Defines metadata objects provided by the catalog snapshot
 //
 
+// The aspect that holds an entry's overview text, which the documents layout
+// writes as a document's body.
+export const OVERVIEW_ASPECT = 'dataplex-types.global.overview';
+
 export interface Aspect {
   [key: string]: any;
 }

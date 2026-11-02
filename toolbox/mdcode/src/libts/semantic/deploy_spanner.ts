@@ -19,7 +19,7 @@
 import * as context from '../gcp/context';
 import {Operation, SpannerClient} from '../gcp/spanner';
 
-import {SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
+import {SPANNER_GRAPH_FORM, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {LoadedModel} from './loader';
 import {generateSpannerPropertyGraph} from './spanner';
 
@@ -143,8 +143,7 @@ export async function deploySpanner(
         return fail(
             `Model '${model.name}' (${document}) declares Spanner Graph ` +
             `deploymentTarget(s) that could not be parsed: ` +
-            `${malformed.join(', ')}. Expected //spanner.googleapis.com/` +
-            `projects/<p>/instances/<i>/databases/<db>/propertyGraphs/<g>.`);
+            `${malformed.join(', ')}. Expected ${SPANNER_GRAPH_FORM}.`);
       }
       return fail(
           `Model '${model.name}' (${document}) declares no Spanner Graph ` +

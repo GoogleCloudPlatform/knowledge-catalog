@@ -1,4 +1,4 @@
-version: 0.2.0.dev0
+version: 0.2.0.dev0/google
 semantic_model:
   - name: sales
     description: "A minimal sales domain: customers and the orders they place.
@@ -8,7 +8,7 @@ semantic_model:
         - Sales domain
       examples:
         - How many orders did each customer place last month?
-    datasets:
+    entities:
       - name: Customer
         primary_key:
           - customerId

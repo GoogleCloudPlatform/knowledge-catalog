@@ -1,11 +1,14 @@
 # Vendored Apache Ossie reference examples
 
-`tpcds_semantic_model.yaml` is copied **unmodified** from the Apache Ossie
+`tpcds_semantic_model.yaml` is copied from the Apache Ossie
 project and is used here as an interop fixture: it proves the loader ingests a
 real, spec-owner-authored OSI document (v0.2.0.dev0).
 
 - Source: https://github.com/apache/ossie/blob/main/examples/tpcds_semantic_model.yaml
 - License: Apache License 2.0 (the file retains its original ASF license header).
+
+Its five dataset sources are rewritten as BigQuery resource names, since kcmd
+does not accept bare table names.
 
 `osi-schema.json` is the OSI core JSON Schema (Draft 2020-12), copied unmodified
 from the same project. `osi_schema.test.ts` validates every YAML fixture in this

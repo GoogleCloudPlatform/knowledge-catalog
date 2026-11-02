@@ -8,22 +8,23 @@
 #     |- Employee   extends Person
 #           |- Manager   extends Employee   (transitive: also a Person)
 #
-# Every class here is CONCRETE (backed by a real table). A `livesIn` edge on
-# Person shows that edges do NOT inherit: Customer/Employee/Manager gain the
-# Person LABEL and its fields, but not its relationships. `extends` is a
+# Every class here is CONCRETE (backed by a real table). The `livesIn` edge
+# starts at Customer, a leaf: a relationship may attach only to a concrete
+# leaf entity, since an edge on Person would join Person's own rows and miss
+# its subtypes'. Customer/Employee/Manager gain the Person LABEL and its
+# fields. Each of them restates the fields it inherits with a column of its own
+# table, since a parent's expressions read the parent's table. `extends` is a
 # deliberate superset of released OSI (see osi_schema.test.ts).
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: people
     description: People and organizations, as a class hierarchy
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people"]}'
-    datasets:
+    deployment_target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people
+    entities:
       - name: Person
-        source: sqlgen-testing.demo.person
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/person
         primary_key: [id]
         description: A human being
         fields:
@@ -44,7 +45,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: email
       - name: Customer
-        source: sqlgen-testing.demo.customer
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/customer
         primary_key: [id]
         extends: [Person]
         fields:
@@ -58,8 +59,10 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: loyalty_tier
+          - { name: full_name, expression: { dialects: [{ dialect: ANSI_SQL, expression: full_name }] } }
+          - { name: email, expression: { dialects: [{ dialect: ANSI_SQL, expression: email }] } }
       - name: Employee
-        source: sqlgen-testing.demo.employee
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/employee
         primary_key: [id]
         extends: [Person]
         fields:
@@ -73,8 +76,10 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: department
+          - { name: full_name, expression: { dialects: [{ dialect: ANSI_SQL, expression: full_name }] } }
+          - { name: email, expression: { dialects: [{ dialect: ANSI_SQL, expression: email }] } }
       - name: Manager
-        source: sqlgen-testing.demo.manager
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/manager
         primary_key: [id]
         extends: [Employee]
         fields:
@@ -88,8 +93,11 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: team_size
+          - { name: department, expression: { dialects: [{ dialect: ANSI_SQL, expression: department }] } }
+          - { name: full_name, expression: { dialects: [{ dialect: ANSI_SQL, expression: full_name }] } }
+          - { name: email, expression: { dialects: [{ dialect: ANSI_SQL, expression: email }] } }
       - name: City
-        source: sqlgen-testing.demo.city
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/city
         primary_key: [id]
         fields:
           - name: id
@@ -104,7 +112,7 @@ semantic_model:
                   expression: city_name
     relationships:
       - name: livesIn
-        from: Person
+        from: Customer
         to: City
         from_columns: [city_id]
         to_columns: [id]

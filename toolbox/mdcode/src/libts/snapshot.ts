@@ -20,10 +20,12 @@ export class CatalogSnapshot {
   private readonly _aspectTypes: Map<string, dataplex.AspectType> = new Map();
 
   private readonly _layout: CatalogLayout;
+  private readonly _catalog: dataplex.CatalogClient;
 
-  private constructor(basePath: string, manifest: CatalogManifest) {
+  private constructor(basePath: string, manifest: CatalogManifest, ctx: gcp.ApiContext) {
     this.basePath = basePath;
     this.manifest = manifest;
+    this._catalog = new dataplex.CatalogClient(ctx);
 
     const catalogPath = path.join(this.basePath, 'catalog');
     this._layout = createLayout(
@@ -37,9 +39,9 @@ export class CatalogSnapshot {
     }
 
     const manifest = await CatalogManifest.load(manifestPath, ctx);
-    const snapshot = new CatalogSnapshot(basePath, manifest);
+    const snapshot = new CatalogSnapshot(basePath, manifest, ctx);
 
-    await snapshot._buildTypes(manifest, ctx);
+    await snapshot._buildTypes(manifest);
     await snapshot._layout.init();
     return snapshot;
   }
@@ -84,7 +86,8 @@ export class CatalogSnapshot {
         existingEntry.resource.description = entry.resource.description;
       }
       else {
-        const aspectType = dataplex._typeRefToName(f, 'aspect');
+        await this._loadEntryType(existingEntry.type);
+        const aspectType = dataplex._typeRefToName(aspectTypeRefOf(f), 'aspect');
         if (!this._aspectTypes.has(aspectType)) {
           throw new Error(`The aspect '${f}' is not registered in the snapshot.`);
         }
@@ -137,32 +140,11 @@ export class CatalogSnapshot {
     await this._layout.deleteEntry(name);
   }
 
-  // Build the map of types supported within the locally managed catalog snapshot
+  // Loads the entry and aspect types listed under snapshot in catalog.yaml.
   // Types are stored using two keys: the resource name and the 3-part type name.
-  private async _buildTypes(manifest: CatalogManifest, ctx: gcp.ApiContext): Promise<void> {
-    const catalog = new dataplex.CatalogClient(ctx);
-
+  private async _buildTypes(manifest: CatalogManifest): Promise<void> {
     for (const entryType of manifest.snapshotConfig?.entries || []) {
-      const parts = entryType.split('.');
-      const res = await catalog.getEntryType(parts[0], parts[1], parts[2]);
-      if (!res.result) {
-        throw new Error(`Unable to load type information for entry type ${entryType}`);
-      }
-
-      this._entryTypes.set(res.result.name, res.result);
-      this._entryTypes.set(entryType, res.result);
-
-      for (const requiredAspect of res.result.requiredAspects ?? []) {
-        if (!this._aspectTypes.has(requiredAspect.type)) {
-          const parts = requiredAspect.type.split('/');
-          const res = await catalog.getAspectType(parts[1], parts[3], parts[5]);
-          if (!res.result) {
-            throw new Error(`Unable to load type information for aspect type ${requiredAspect.type}`);
-          }
-          this._aspectTypes.set(res.result.name, res.result);
-          this._aspectTypes.set(`${parts[0]}.${parts[3]}.${parts[5]}`, res.result);
-        }
-      }
+      await this._loadEntryType(entryType);
     }
 
     for (const aspectType of manifest.snapshotConfig?.aspects || []) {
@@ -171,12 +153,48 @@ export class CatalogSnapshot {
       }
 
       const parts = aspectType.split('.');
-      const res = await catalog.getAspectType(parts[0], parts[1], parts[2]);
-      if (!res.result) {
+      const res = await this._catalog.getAspectType(parts[0], parts[1], parts[2]);
+      let type = res.result;
+      // Dataplex refuses the definition of some types whose aspects callers can
+      // still read and write. A refused type is registered by its name.
+      if (res.status == 403) {
+        type = { name: dataplex._typeRefToName(aspectType, 'aspect') };
+        console.warn(`Warning: Permission denied reading the definition of aspect type ${aspectType}. ` +
+                     `Its aspects are still pulled and pushed. If none are pulled, check the type name.`);
+      }
+      if (!type) {
         throw new Error(`Unable to load type information for aspect type ${aspectType}`);
       }
-      this._aspectTypes.set(res.result.name, res.result);
-      this._aspectTypes.set(aspectType, res.result);
+      this._aspectTypes.set(type.name, type);
+      this._aspectTypes.set(aspectType, type);
+    }
+  }
+
+  // Loads an entry type, given as project.location.type, and the aspect types
+  // it requires. Does nothing when entryType is empty or already loaded.
+  async _loadEntryType(entryType: string): Promise<void> {
+    if (!entryType || this._entryTypes.has(entryType)) {
+      return;
+    }
+    const parts = entryType.split('.');
+    const res = await this._catalog.getEntryType(parts[0], parts[1], parts[2]);
+    if (!res.result) {
+      throw new Error(`Unable to load type information for entry type ${entryType}`);
+    }
+
+    this._entryTypes.set(res.result.name, res.result);
+    this._entryTypes.set(entryType, res.result);
+
+    for (const requiredAspect of res.result.requiredAspects ?? []) {
+      if (!this._aspectTypes.has(requiredAspect.type)) {
+        const parts = requiredAspect.type.split('/');
+        const res = await this._catalog.getAspectType(parts[1], parts[3], parts[5]);
+        if (!res.result) {
+          throw new Error(`Unable to load type information for aspect type ${requiredAspect.type}`);
+        }
+        this._aspectTypes.set(res.result.name, res.result);
+        this._aspectTypes.set(`${parts[1]}.${parts[3]}.${parts[5]}`, res.result);
+      }
     }
   }
 
@@ -210,6 +228,8 @@ export class CatalogSnapshot {
         !this.manifest.publishingConfig.entries.includes(entry.type)) {
       return undefined;
     }
+
+    await this._loadEntryType(entry.type);
 
     const serviceName = this.manifest.source.serviceName(name);
     if (entry.resource?.parent && !entry.resource.parent.startsWith('projects/')) {
@@ -266,11 +286,13 @@ function toServiceEntry(entry: md.Entry,
   const aspects: Record<string, dataplex.Aspect> = {};
   if (entry.aspects) {
     for (const key in entry.aspects) {
-      if (manifest.publishingConfig && !manifest.publishingConfig.aspects?.includes(key)) {
+      if (manifest.publishingConfig &&
+          !manifest.publishingConfig.aspects?.includes(aspectTypeRefOf(key))) {
         continue;
       }
 
-      const aspectType = dataplex._typeRefToName(key, 'aspect');
+      // A field-level aspect keeps its `@<path>` in the key it is written under.
+      const aspectType = dataplex._typeRefToName(aspectTypeRefOf(key), 'aspect');
       if (manifest.source.ingestedEntries &&
           entryType.requiredAspects?.find((aspectInfo) => aspectInfo.type == aspectType)) {
         continue;
@@ -308,4 +330,11 @@ function toServiceEntry(entry: md.Entry,
     },
     aspects: aspects
   };
+}
+
+// The aspect type reference in an aspect key: the part before any `@<path>`,
+// as in `p.global.guidelines@Schema.col1`.
+function aspectTypeRefOf(key: string): string {
+  const at = key.indexOf('@');
+  return at < 0 ? key : key.slice(0, at);
 }

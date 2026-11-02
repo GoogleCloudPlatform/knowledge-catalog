@@ -10,6 +10,9 @@ now split by what you came to do:
 - **[Reference](semantic-model/reference.md)** — every flag, what push creates in
   BigQuery Graph, Spanner Graph, and Knowledge Catalog (including class
   hierarchies), validation, and permissions.
+- **[Model specification](semantic-model/model_spec.md)** — the normative model
+  format: every YAML construct, which parts are Apache Ossie and which are kcmd
+  extensions or narrowings.
 - **[What push and pull preserve](semantic-model/fidelity.md)** — the
   round-trip fidelity matrix: what survives a deploy, what a pull recovers, and
   what neither keeps.

@@ -22,7 +22,8 @@ const CTX = new ApiContext('test-project', 'us', 'test-token');
 // so this helper parses them the way commands.ts does. defaultProject mirrors
 // the scope's declared project.
 function models(docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(docs, {defaultProject});
+  const r = loadSemanticModels(
+      docs, {defaultProject, allowLegacyBareSource: true});
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -30,7 +31,7 @@ function models(docs: {name: string; text: string}[], defaultProject = 'test-pro
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 const BQ_URI =
-    '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
+    'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph';
 
 // A loader-valid model that declares a GOOGLE BigQuery Graph deployment target
 // (resolves to demo.sales.sales_graph), and the same model without one.
@@ -108,19 +109,19 @@ describe('bigQueryGraphTargets', () => {
 
   test('collects multiple targets in order', () => {
     const uri2 =
-        '//bigquery.googleapis.com/projects/p2/datasets/d2/propertyGraphs/g2';
+        'bigquery.googleapis.com/projects/p2/datasets/d2/propertyGraphs/g2';
     const {targets} = bigQueryGraphTargets(modelWithExtension(
         JSON.stringify({deploymentTargets: [BQ_URI, uri2]})));
     expect(targets.map(t => t.graphName)).toEqual(['sales_graph', 'g2']);
   });
 
-  test('collects a prefix-matching URI that fails the strict match', () => {
+  test('collects a prefix-matching target that fails the strict match', () => {
     // A backtick/semicolon in the graph name would break out of the quoted
     // identifier in the generated DDL; the tightened capture groups reject it.
     // It carries the BigQuery prefix, so it is surfaced as malformed rather
     // than silently dropped.
     const evil =
-        '//bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g`;DROP';
+        'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/g`;DROP';
     const {targets, malformed} = bigQueryGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
     expect(targets).toEqual([]);
@@ -454,6 +455,8 @@ describe('deployBigQuery', () => {
         expect(res.success).toBe(false);
         expect(res.details).toContain('could not be parsed');
         expect(res.details).toContain('propertyGraph/sales_graph');
+        expect(res.details).toContain(
+            'Expected bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>.');
         expect(res.details).not.toContain('declares no BigQuery Graph');
       });
 
