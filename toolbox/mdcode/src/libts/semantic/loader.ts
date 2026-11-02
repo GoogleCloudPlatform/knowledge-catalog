@@ -3106,24 +3106,29 @@ const CLOUDSQL_SCHEMA_TABLE_URI =
 const QUOTE = /["`]/;
 
 // A Cloud SQL table written as its resource name or resource URI: its
-// project, location and instance, and its resource name with no leading `//`,
-// which is also the id of its catalog entry in the `@cloudsql` entry group.
+// project, location and instance, its resource name with no leading `//`,
+// which is also the id of its catalog entry in the `@cloudsql` entry group,
+// and whether it sits in a schema, as only a MySQL table does not.
 export interface CloudSqlTable {
   project: string;
   location: string;
   instance: string;
   resourceName: string;
+  inSchema: boolean;
 }
 
 // The Cloud SQL table `source` names, or undefined when it names none. A name
 // with quotes names none, so push reports it without looking it up.
 export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
   const uri = asResourceUri(source.trim());
-  const m = QUOTE.test(uri) ? null :
-      uri.match(CLOUDSQL_TABLE_URI) ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
-  return m ?
-      {project: m[1], location: m[2], instance: m[3], resourceName: uri.slice(2)} :
-      undefined;
+  if (QUOTE.test(uri)) return undefined;
+  const mysql = uri.match(CLOUDSQL_TABLE_URI);
+  const m = mysql ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
+  if (!m) return undefined;
+  return {
+    project: m[1], location: m[2], instance: m[3], resourceName: uri.slice(2),
+    inSchema: !mysql,
+  };
 }
 
 // A BigQuery, BigLake, Spanner or AlloyDB table written as its resource name

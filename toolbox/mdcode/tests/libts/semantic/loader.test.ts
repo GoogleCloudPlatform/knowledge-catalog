@@ -205,6 +205,7 @@ describe('expression warnings judge each expression on the table that runs it', 
   const DBX = TP.replace('/orders', '/events');
   // The tables a lookup has not read, as in `kcmd import`.
   const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
+  const UNREAD_PG = PG.replace('/instances/i/', '/instances/j/');
   const UNREAD_TP = TP.replace('/orders', '/items');
   const opts: LoadOptions = {
     bindingOptional: true,
@@ -259,8 +260,10 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a Cloud SQL for MySQL table, Snowflake text', MYSQL, [['SNOWFLAKE', 'x']], unrunnable('MYSQL')],
     ['a Cloud SQL for PostgreSQL table, PostgreSQL text', PG, [['POSTGRES', 'x']], []],
     ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
-    ['a Cloud SQL table no lookup has read, Snowflake text', UNREAD, [['SNOWFLAKE', 'x']],
-     unrunnable('Cloud SQL', "'MYSQL', 'POSTGRES', 'SQLSERVER'")],
+    ['a Cloud SQL table no lookup has read, PostgreSQL text', UNREAD, [['POSTGRES', 'x']],
+     unrunnable('Cloud SQL', "'MYSQL'")],
+    ['a Cloud SQL table in a schema no lookup has read, Snowflake text', UNREAD_PG,
+     [['SNOWFLAKE', 'x']], unrunnable('Cloud SQL', "'POSTGRES', 'SQLSERVER'")],
     ['a third-party table no lookup has read, BigQuery text', UNREAD_TP, [['BIGQUERY', 'x']],
      unrunnable('third-party', "'SNOWFLAKE', 'DATABRICKS', 'MYSQL', 'POSTGRES', 'SQLSERVER'")],
     ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],

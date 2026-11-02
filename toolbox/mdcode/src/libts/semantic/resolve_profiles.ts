@@ -1293,8 +1293,14 @@ export function tableDialects(
   if (dialect) return {name: dialect, dialects: [dialect]};
   if (!unread || entity.abstract) return undefined;
   const source = writtenSource(entity);
-  if (cloudSqlTableOf(source)) {
-    const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))];
+  const table = cloudSqlTableOf(source);
+  if (table) {
+    // Only a MySQL table's name has no schema.
+    const fits = (type: string) =>
+        type.startsWith('cloudsql-mysql-') !== table.inSchema;
+    const dialects = [...new Set(Object.entries(DIALECT_OF_ENTRY_TYPE)
+                                     .filter(([type]) => fits(type))
+                                     .map(([, dialect]) => dialect))];
     return {name: 'Cloud SQL', dialects, unread};
   }
   if (thirdPartyEntryOf(source)) {
