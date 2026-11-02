@@ -7,9 +7,21 @@
 // The adapter is still designed to never throw: an unsupported source dialect
 // or an unparseable expression degrades to a per-request `error`.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 
+import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {polyglotTranspiler, transpileModel} from '../../../src/libts/semantic/transpile';
+
+// A model with one entity, `orders`, holding `fields`.
+function ordersModel(fields: Field[]): SemanticModel {
+  return {
+    name: 'sales',
+    entities: [{name: 'orders', dataSource: 'p.d.orders', keys: ['id'], fields}],
+    relationships: [],
+    metrics: [],
+  };
+}
 
 describe('polyglotTranspiler (mechanism invariants)', () => {
   test(
@@ -95,22 +107,11 @@ describe('polyglotTranspiler (mechanism invariants)', () => {
         // The engine gets common T-SQL forms wrong without an error (a CONVERT
         // style, DATEDIFF(dd, ...), DATEPART, N'' strings), so translating
         // SQLSERVER text warns the user to check the BIGQUERY entry.
-        const {model, warnings} = await transpileModel({
-          name: 'sales',
-          entities: [{
-            name: 'orders',
-            dataSource: 'p.d.orders',
-            keys: ['id'],
-            fields: [{
-              name: 'd',
-              dialects:
-                  [{dialect: 'SQLSERVER', expression: 'ISNULL(orders.d, 0)'}],
-              stringForm: false,
-            }],
-          }],
-          relationships: [],
-          metrics: [],
-        });
+        const {model, warnings} = await transpileModel(ordersModel([{
+          name: 'd',
+          dialects: [{dialect: 'SQLSERVER', expression: 'ISNULL(orders.d, 0)'}],
+          stringForm: false,
+        }]));
         expect(model.entities[0].fields[0].dialects).toEqual([
           {dialect: 'SQLSERVER', expression: 'ISNULL(orders.d, 0)'},
           {dialect: 'BIGQUERY', expression: 'COALESCE(orders.d, 0)'},
@@ -228,6 +229,97 @@ describe('polyglotTranspiler (transformations)', () => {
             'BIGQUERY');
         expect(bq.sql).toBe('SAFE_CAST(x AS FLOAT64)');
       });
+
+  // The engine writes each of these except the SPANNER row in a form
+  // BigQuery rejects, and reports success. Every `sql` below passes a
+  // BigQuery dry run against a table with a DATE column `d`. Every `error`
+  // is a form kcmd refuses.
+  test.each([
+    ['POSTGRES', "DATE_TRUNC('month', orders.d)", {sql: 'DATE_TRUNC(orders.d, MONTH)'}],
+    ['POSTGRES', "DATE_TRUNC('week', d)", {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
+    ['POSTGRES', "DATE_TRUNC('hour', CAST(d AS TIMESTAMP))", {sql: 'DATE_TRUNC(CAST(d AS DATETIME), HOUR)'}],
+    ['SNOWFLAKE', 'DATE_TRUNC(month, d)', {sql: 'DATE_TRUNC(d, MONTH)'}],
+    ['DATABRICKS', "date_trunc('MONTH', d)", {sql: 'date_trunc(d, MONTH)'}],
+    ['POSTGRES', "date_part('year', d)", {sql: 'EXTRACT(YEAR FROM d)'}],
+    ['POSTGRES', "date_part('doy', d)", {sql: 'EXTRACT(DAYOFYEAR FROM d)'}],
+    ['SNOWFLAKE', 'DATE_PART(year, d)', {sql: 'EXTRACT(YEAR FROM d)'}],
+    ['SQLSERVER', 'DATEPART(month, d)', {sql: 'EXTRACT(MONTH FROM d)'}],
+    ['SQLSERVER', 'YEAR(d) + DAY(d)', {sql: 'EXTRACT(YEAR FROM d) + EXTRACT(DAY FROM d)'}],
+    ['POSTGRES', "DATE_TRUNC('month', \"order date\")", {sql: 'DATE_TRUNC(`order date`, MONTH)'}],
+    ['POSTGRES', "DATE_TRUNC('day', d::timestamptz)", {sql: 'DATE_TRUNC(CAST(d AS TIMESTAMP), DAY)'}],
+    ['POSTGRES', "DATE_TRUNC('milliseconds', d::timestamptz)", {sql: 'DATE_TRUNC(CAST(d AS TIMESTAMP), MILLISECOND)'}],
+    ['SNOWFLAKE', "DATE_TRUNC('mm', d)", {sql: 'DATE_TRUNC(d, MONTH)'}],
+    ['SQLSERVER', 'DATETRUNC(iso_week, d)', {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
+    ['POSTGRES', "DATE_PART('year', d - INTERVAL '1 day')", {sql: 'EXTRACT(YEAR FROM d - INTERVAL 1 DAY)'}],
+    ['POSTGRES', 'EXTRACT(WEEK FROM d)', {sql: 'EXTRACT(ISOWEEK FROM d)'}],
+    ['POSTGRES', "d + '1 day'::interval", {sql: 'd + INTERVAL 1 DAY'}],
+    ['POSTGRES', "d - INTERVAL '2 weeks'", {sql: 'd - INTERVAL 2 WEEK'}],
+    ['SPANNER', 'DATE_TRUNC(d, MONTH)', {sql: 'DATE_TRUNC(d, MONTH)'}],
+    ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd cannot translate TO_CHAR to BigQuery'}],
+    ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd cannot translate DATE_TRUNC with part 'decade' to BigQuery"}],
+    ['POSTGRES', "date_part('dow', d)", {error: "kcmd cannot translate DATE_PART with part 'dow' to BigQuery"}],
+    ['POSTGRES', "d + INTERVAL '1 day 2 hours'", {error: "kcmd cannot translate INTERVAL '1 day 2 hours' to BigQuery"}],
+    ['POSTGRES', "NOW() - INTERVAL '1 month'", {error: "kcmd cannot translate INTERVAL '1 month' to BigQuery"}],
+    ['SQLSERVER', 'DATETRUNC(week, d)', {error: "kcmd cannot translate DATE_TRUNC with part 'WEEK' to BigQuery"}],
+    ['POSTGRES', "DATE_PART('day', shipped - ordered)", {error: 'kcmd cannot translate DATE_PART of a difference to BigQuery'}],
+    ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd cannot translate EXTRACT of a difference to BigQuery'}],
+  ] as const)('writes %s %s as BigQuery runs it, or refuses it', async (dialect, expression, want) => {
+    expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
+        .toEqual([{id: '0', ...want}]);
+  });
+
+  test('reports an error when the engine cannot write the repaired SQL', async () => {
+    const generate = spyOn(await loadSqlEngine(), 'generate')
+                         .mockReturnValue({success: false, error: 'boom'});
+    try {
+      expect(await polyglotTranspiler(
+                 [{id: '0', dialect: 'POSTGRES', expression: "DATE_TRUNC('month', d)"}],
+                 'BIGQUERY'))
+          .toEqual([{id: '0', error: 'boom'}]);
+    } finally {
+      generate.mockRestore();
+    }
+  });
+
+  // A canary for the repairs above. It calls the engine directly, without
+  // the adapter, and expects the broken BigQuery it writes today. When an
+  // engine upgrade makes this fail, the engine translates that form itself:
+  // delete its repair from "BigQuery repairs" in transpile.ts, and its case
+  // here.
+  test('the engine still writes the forms the adapter repairs unchanged', async () => {
+    const engine = await loadSqlEngine();
+    const unchanged = [
+      ['postgresql', "DATE_TRUNC('month', d)", "DATE_TRUNC('month', d)"],
+      ['postgresql', "date_part('year', d)", "DATE_PART('year', d)"],
+      ['postgresql', "TO_CHAR(d, 'YYYY-MM')", "TO_CHAR(d, 'YYYY-MM')"],
+      ['postgresql', "d + INTERVAL '1 day'", "d + INTERVAL '1 day'"],
+      ['tsql', 'YEAR(d)', 'YEAR(d)'],
+    ];
+    expect(unchanged.map(([dialect, sql]) => [
+      dialect, sql, engine.transpile(sql, dialect, 'bigquery').sql?.[0],
+    ])).toEqual(unchanged);
+  });
+
+  test('leaves a field it refuses without a BIGQUERY entry, with a warning', async () => {
+    const field = (name: string, expression: string): Field =>
+        ({name, dialects: [{dialect: 'POSTGRES', expression}], stringForm: false});
+    const {model, warnings} = await transpileModel(ordersModel([
+      field('month', "DATE_TRUNC('month', orders.d)"),
+      field('label', "TO_CHAR(orders.d, 'YYYY-MM')"),
+    ]));
+    expect(model.entities[0].fields.map(f => f.dialects)).toEqual([
+      [
+        {dialect: 'POSTGRES', expression: "DATE_TRUNC('month', orders.d)"},
+        {dialect: 'BIGQUERY', expression: 'DATE_TRUNC(orders.d, MONTH)'},
+      ],
+      [{dialect: 'POSTGRES', expression: "TO_CHAR(orders.d, 'YYYY-MM')"}],
+    ]);
+    expect(warnings).toEqual([
+      "field 'orders.month': transpiled 'POSTGRES' -> 'BIGQUERY'",
+      "field 'orders.label': could not transpile 'POSTGRES' -> 'BIGQUERY' " +
+          '(kcmd cannot translate TO_CHAR to BigQuery); left untranslated',
+    ]);
+  });
 
   test('reports a parse error per request rather than throwing', async () => {
     const [res] = await polyglotTranspiler(

@@ -18,6 +18,10 @@ export interface PolyglotEngine {
       {success: boolean; sql?: string[]; error?: string};
   parse(sql: string, dialect: string):
       {success: boolean; ast?: unknown[]; error?: string};
+  // Writes each tree in `ast` as SQL in `dialect`. A tree is a statement
+  // from `parse` or an expression from `sqlExpressionTree`.
+  generate(ast: unknown[], dialect: string):
+      {success: boolean; sql?: string[]; error?: string};
   tokenize(sql: string, dialect: string):
       {success: boolean; tokens?: SqlToken[]; error?: string};
 }
