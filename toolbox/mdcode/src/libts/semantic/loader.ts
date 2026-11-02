@@ -3210,14 +3210,16 @@ export function catalogNameSegments(path: string, colons = false): string[] {
   return out;
 }
 
-// True when `source` holds whitespace outside backticks and double quotes,
-// which marks it as a query.
+// True when `source` holds whitespace outside a closed pair of backticks or
+// double quotes, which marks it as a query.
 export function hasUnquotedWhitespace(source: string): boolean {
   let quote = '';
-  for (const ch of source) {
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
     if (ch === quote) {
       quote = '';
-    } else if (!quote && (ch === '`' || ch === '"')) {
+    } else if (!quote && (ch === '`' || ch === '"') &&
+               source.includes(ch, i + 1)) {
       quote = ch;
     } else if (!quote && /\s/.test(ch)) {
       return true;
@@ -3356,7 +3358,7 @@ export interface ThirdPartyEntry {
 export function thirdPartyEntryOf(source: string): ThirdPartyEntry|undefined {
   const name = source.trim();
   const m = name.match(ENTRY_NAME);
-  if (!m || m[1].startsWith('@')) return undefined;
+  if (!m || m[1].startsWith('@') || /\s/.test(m[2])) return undefined;
   const [, project, , location] = name.split('/');
   return {project, location, name};
 }

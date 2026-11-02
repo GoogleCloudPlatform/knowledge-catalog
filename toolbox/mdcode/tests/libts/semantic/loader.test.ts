@@ -3279,6 +3279,7 @@ describe('strict entity sources', () => {
       'bigquery.googleapis.com/projects/p/datasets/a.b/tables/t',
       'bigquery:p.`a.b`.t',
       'bigquery:p.d.`a.b`',
+      'projects/p/locations/us/entryGroups/sf/entries/"order items"',
     ]) {
       expect(databaseOf(bad)).toBeUndefined();
       expect(() => load(GOOGLE, {
@@ -3289,13 +3290,15 @@ describe('strict entity sources', () => {
   });
 
   test('source rejections: query-valued source, bare table name, 4-part bare name, overlong source, and unknown prefix each produce their own message', () => {
-    // 1. Query-valued source
-    expect(() => load(GOOGLE, {
-      name: 'm',
-      datasets: [{ name: 'orders', source: 'SELECT * FROM orders', primary_key: ['id'], fields: [] }],
-    })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
+    // 1. Query-valued source. A space after a quote that never closes is
+    // unquoted.
+    const TABLE = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables';
+    for (const query of ['SELECT * FROM orders', 'public."order items', 'public.`order items',
+      `${TABLE}/"order items`, `${TABLE}/\`order items`]) {
+      expect(() => loadSource(query)).toThrow(`dataset 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
+    }
     // A space inside double quotes or backticks belongs to a table name.
-    for (const bare of ['public."order items"', 'public.`order items`']) {
+    for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"']) {
       expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source.`);
     }
 
