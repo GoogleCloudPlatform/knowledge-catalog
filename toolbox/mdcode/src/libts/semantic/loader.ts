@@ -1965,7 +1965,8 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
 // when it has text in that dialect. That is the double-quote warning on a
 // dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the transpilation warning or
-// the ANSI_SQL note, which only the `preferred` dialect gives.
+// the ANSI_SQL note, which only the `preferred` dialect gives, and never for
+// the string form.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, ctx: string, dialect: string,
     preferred: string): string|undefined {

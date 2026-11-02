@@ -1311,8 +1311,8 @@ async function checkBeforeWrites(
     profileWarnings.push(...inlineBindingWarnings(model, document, named));
     // A profile that no selected deployment applies still goes to Knowledge
     // Catalog, so its load warnings print here, less those the model file's
-    // load gave, unless it has an error. A selected deployment prints its own
-    // profile's warnings.
+    // load gave, unless a check above recorded an error for that profile. A
+    // selected deployment prints its own profile's warnings.
     const applied = selectedByDoc.get(document)!.map(d => d.profile);
     for (const {name} of declared) {
       if (applied.includes(name)) continue;
