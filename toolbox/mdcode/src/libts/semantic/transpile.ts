@@ -113,6 +113,29 @@ export function doubleQuotedName(expression: string): string|undefined {
 }
 
 /**
+ * Returns each column reference that `expression` writes with its name or
+ * its qualifier in double quotes, as the `ANSI_SQL` parser reads it: the
+ * column's name, and its qualifier when it has one.
+ */
+export function doubleQuotedColumns(expression: string):
+    Array<{name: string; qualifier?: string}> {
+  const inQuotes = (id: any) =>
+      id?.quoted === true && expression.includes(`"${id.name}"`);
+  return columnNodes(sqlExpressionTree(expression, 'ANSI_SQL'))
+      .filter(c => inQuotes(c.name) || inQuotes(c.table))
+      .map(c => c.table ? {name: c.name.name, qualifier: c.table.name} :
+                          {name: c.name.name});
+}
+
+// The `{column: {name, table?}}` nodes of a `@polyglot-sql/sdk` AST, in tree
+// order.
+function columnNodes(node: unknown): any[] {
+  if (!node || typeof node !== 'object') return [];
+  const obj = node as Record<string, any>;
+  return obj.column ? [obj.column] : Object.values(obj).flatMap(columnNodes);
+}
+
+/**
  * Returns the names of the quoted column, table qualifier, and struct field
  * identifiers (`quoted: true`) in a `@polyglot-sql/sdk` AST `node`, in tree
  * order, with a table qualifier before its column name.

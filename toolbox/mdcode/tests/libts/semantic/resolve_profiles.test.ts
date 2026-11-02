@@ -3752,8 +3752,8 @@ describe('applyProfile options', () => {
     expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
     expect(onSpanner).toContain(
         `metric 'q': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
-        `if you meant a column, give it a 'SPANNER' expression without the ` +
-        `double quotes`);
+        `if you meant field 'id', give it a 'SPANNER' expression that writes ` +
+        `it as '<entity>.id'`);
     const onBigQuery: string[] = [];
     applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
     expect(onBigQuery.join('\n')).toContain(

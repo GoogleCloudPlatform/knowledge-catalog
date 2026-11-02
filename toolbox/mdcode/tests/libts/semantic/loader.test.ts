@@ -232,19 +232,25 @@ describe('expression warnings judge each expression on the table that runs it', 
   const vendor = (dialect: string) => both(
       `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
       `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
-  // The double-quote warning on a table of `dialect`, in `database`.
-  const quotedIn = (database: string, dialect: string, hint = '') => both(
-      `${database} reads "x" in its 'ANSI_SQL' expression as text; if you ` +
-      `meant a column, give it a '${dialect}' expression without the double ` +
-      `quotes${hint}`);
+  const readsX = (database: string) =>
+      `${database} reads "x" in its 'ANSI_SQL' expression as text; `;
+  // The double-quote warning on a table of `dialect`, in `database`. Field 'f'
+  // gets the plain advice, and metric 'm', whose "x" names no entity, the
+  // advice to write 't.x'.
+  const quotedIn = (database: string, dialect: string, hint = '') => [
+    `field 't.f': ${readsX(database)}if you meant a column, give it a '${
+        dialect}' expression without the double quotes${hint}`,
+    `metric 'm': ${readsX(database)}if you meant field 'x', give it a '${
+        dialect}' expression that writes it as 't.x'`,
+  ];
   // The warning that the `table` table, which may run `dialects`, has no text
   // to run.
   const unrunnable = (table: string, dialects = `'${table}'`) => both(
       `no ${dialects} or 'ANSI_SQL' dialect, so the ${table} table of entity ` +
       `'t' cannot run it`);
-  const quoted = quotedIn('BigQuery', 'BIGQUERY',
-      `; in a model file, 'kcmd import <file> --input first-party --flavor ` +
-      `<ossie|google> --transpile' adds one`);
+  const IMPORT_HINT = `; outside a profile, 'kcmd import <file> --input ` +
+      `first-party --flavor <ossie|google> --transpile' adds one`;
+  const quoted = quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT);
   const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
       'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
       'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
@@ -282,6 +288,14 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
     ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
+    ['a BigQuery table, a double-quoted name its entity qualifies', BQ,
+     [['ANSI_SQL', '"t"."x"']], [
+       `field 't.f': ${readsX('BigQuery').replace('"x"', '"t"')}if you meant ` +
+           `column 'x', give it a 'BIGQUERY' expression that writes it as 'x'`,
+       `metric 'm': ${readsX('BigQuery').replace('"x"', '"t"')}if you meant a ` +
+           `column, give it a 'BIGQUERY' expression without the double ` +
+           `quotes${IMPORT_HINT}`,
+     ]],
     ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
      [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
   ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(

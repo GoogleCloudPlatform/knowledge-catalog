@@ -15,8 +15,11 @@ const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
 // The warning that BigQuery reads field key's ANSI_SQL "c_key" as text, after
 // `label`.
-const quotedKey = (label: string) => has(
-    `Warning: ${label}[commerce] field 'Customer.key': BigQuery reads "c_key"`);
+const quotedKey = (label: string) => `Warning: ${label}[commerce] field ` +
+    `'Customer.key': BigQuery reads "c_key" in its 'ANSI_SQL' expression as ` +
+    `text; if you meant a column, give it a 'BIGQUERY' expression without the ` +
+    `double quotes; outside a profile, 'kcmd import <file> --input ` +
+    `first-party --flavor <ossie|google> --transpile' adds one`;
 const NOTE = has("Warning: [commerce] note: no 'BIGQUERY' dialect");
 // Customer on `source`, its key field given as `text` in `dialect`.
 const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
@@ -128,6 +131,10 @@ scenarios('push --no-deployment', [
     then: [{flags: {deployment: 'h', validateOnly: true}, code: 0,
             warnings: [NOTE, quotedKey("profile 'prod': ")]},
            {flags: {deployment: 'g', validateOnly: true}, code: 0,
+            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+           // A GOOGLE block profile's field gets the same warning.
+           {google: {profiles: [{name: 'prod', entities: [keyIn('prod', '"c_key"').entities.Customer]}]},
+            profiles: {}, flags: {validateOnly: true}, code: 0,
             warnings: [NOTE, quotedKey("profile 'prod': ")]},
            // Push's error for the Snowflake-only key is prod's only message.
            {profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', 'c_key', 'SNOWFLAKE')},

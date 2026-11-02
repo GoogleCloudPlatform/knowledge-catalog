@@ -18,7 +18,7 @@ import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
-import {doubleQuotedName, hasDoubleQuotedColumn} from './transpile';
+import {doubleQuotedColumns, doubleQuotedName, hasDoubleQuotedColumn} from './transpile';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1965,28 +1965,64 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   DATABRICKS: 'Databricks',
 };
 
+// A field or metric as a warning names it in `ctx`. A metric reads each field
+// as `entity.field`, and `entity` is the one it belongs to when known. A field
+// reads the columns of entity `entity`'s table.
+interface Subject {
+  ctx: string;
+  metric: boolean;
+  entity?: string;
+}
+
+// The name of a double-quoted column reference in `text` that the plain
+// advice would leave unreadable, and how to write it. A metric's unqualified
+// name must be written as `entity.field`. A field's name qualified by its own
+// entity must be written alone, since kcmd reads `entity.name` as a field.
+function quotedReferenceFix(text: string, {metric, entity}: Subject):
+    {token: string; meant: string; as: string}|undefined {
+  for (const {name, qualifier} of doubleQuotedColumns(text)) {
+    if (metric && qualifier === undefined && !nameProblem('field', name)) {
+      return {token: name, meant: `field '${name}'`,
+              as: `${entity ?? '<entity>'}.${name}`};
+    }
+    if (!metric && qualifier !== undefined && qualifier === entity) {
+      const token = text.includes(`"${qualifier}"`) ? qualifier : name;
+      return {token, meant: `column '${name}'`, as: name};
+    }
+  }
+  return undefined;
+}
+
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
 // when it has text in that dialect. That is the double-quote warning on a
 // dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the transpilation warning or
 // the ANSI_SQL note, which only the `preferred` dialect gives, and never for
 // the string form.
 function expressionWarning(
-    item: Pick<Field, 'dialects'|'stringForm'>, ctx: string, dialect: string,
-    preferred: string): string|undefined {
+    item: Pick<Field, 'dialects'|'stringForm'>, subject: Subject,
+    dialect: string, preferred: string): string|undefined {
+  const {ctx} = subject;
   const dialects = item.dialects ?? [];
   if (!dialects.length) return undefined;
   if (dialects.some(d => d.dialect === dialect)) return undefined;
   const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
   const database = DOUBLE_QUOTES_AS_TEXT[dialect];
   if (ansi && database && hasDoubleQuotedColumn(ansi.expression)) {
-    // Import adds only BigQuery text.
+    const reads = (token?: string) => `${ctx}: ${database} reads "${
+        token}" in its '${FALLBACK_DIALECT}' expression as text; `;
+    const fix = quotedReferenceFix(ansi.expression, subject);
+    if (fix) {
+      return reads(fix.token) +
+          `if you meant ${fix.meant}, give it a '${dialect}' expression ` +
+          `that writes it as '${fix.as}'`;
+    }
+    // Import adds only BigQuery text, and only outside a profile.
     const hint = dialect === DEFAULT_DIALECT ?
-        `; in a model file, '${IMPORT_TRANSPILE_COMMAND}' adds one` :
+        `; outside a profile, '${IMPORT_TRANSPILE_COMMAND}' adds one` :
         '';
-    return `${ctx}: ${database} reads "${
-               doubleQuotedName(ansi.expression)}" in its '${
-               FALLBACK_DIALECT}' expression as text; if you meant a column, ` +
-        `give it a '${dialect}' expression without the double quotes${hint}`;
+    return reads(doubleQuotedName(ansi.expression)) +
+        `if you meant a column, give it a '${dialect}' expression without ` +
+        `the double quotes${hint}`;
   }
   if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
@@ -2011,14 +2047,15 @@ function runsDialect(
 // `preferred` dialect, expressionWarning's transpilation warning already says
 // so.
 function tableWarning(
-    item: Pick<Field, 'expression'|'dialects'|'stringForm'>, ctx: string,
+    item: Pick<Field, 'expression'|'dialects'|'stringForm'>, subject: Subject,
     table: TableDialects, entity: string, preferred: string,
     profiled: boolean): string|undefined {
-  const w = table.unread ? undefined :
-                           expressionWarning(item, ctx, table.name, preferred);
+  const w = table.unread ?
+      undefined :
+      expressionWarning(item, subject, table.name, preferred);
   if (w || profiled || !noTextFor(item, table.dialects)) return w;
   const own = table.dialects.map(d => `'${d}'`).join(', ');
-  return `${ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
+  return `${subject.ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
              table.name} table of entity '${entity}' cannot run it`;
 }
 
@@ -2029,8 +2066,9 @@ function fieldWarnings(
     model: SemanticModel, preferred: string, profiled: boolean): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
-               f, `field '${e.name}.${f.name}'`, table, e.name, preferred,
-               profiled))
+               f, {ctx: `field '${e.name}.${f.name}'`, metric: false,
+                   entity: e.name},
+               table, e.name, preferred, profiled))
       .filter((w): w is string => w !== undefined);
 }
 
@@ -2042,18 +2080,23 @@ function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
     preferred: string, profiled: boolean): string|undefined {
-  const ctx = `metric '${metric.name}'`;
+  const subject = {
+    ctx: `metric '${metric.name}'`,
+    metric: true,
+    entity: reached.find(r => r !== undefined),
+  };
   const named =
       entities.filter(e => reached.includes(e.name))
           .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
   const tables = named.length ? named : entities;
   if (tables.some(e => runsDialect(e, preferred))) {
-    return expressionWarning(metric, ctx, preferred.toUpperCase(), preferred);
+    return expressionWarning(
+        metric, subject, preferred.toUpperCase(), preferred);
   }
   for (const e of tables) {
     const table = tableDialects(e, true);
     const w = table &&
-        tableWarning(metric, ctx, table, e.name, preferred, profiled);
+        tableWarning(metric, subject, table, e.name, preferred, profiled);
     if (w) return w;
   }
   return undefined;
