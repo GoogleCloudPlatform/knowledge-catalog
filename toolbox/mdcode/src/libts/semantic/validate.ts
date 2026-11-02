@@ -20,7 +20,7 @@ import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthP
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, noTextFor, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, importHint, inheritanceErrorOf, inheritedNamesOf, noTextFor, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -315,13 +315,12 @@ export function validateInlineDialects(
   for (const {entity: e, field: f, table: {name: dialect}} of
            fieldsOnTables(model)) {
     if (!noTextFor(f, [dialect])) continue;
-    const hint = importTranspiles(f, dialect) ?
-        `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` : '';
     errors.push(
         `field '${e.name}.${f.name}' in model '${model.name}' (${
             document}) has no expression for ${dialect} or ANSI_SQL, and ` +
         `the model file binds entity '${e.name}' to ${
-            /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${hint}.`);
+            /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${
+            importHint(f, dialect)}.`);
   }
   return errors;
 }

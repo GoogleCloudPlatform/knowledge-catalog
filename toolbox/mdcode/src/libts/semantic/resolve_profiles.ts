@@ -1334,6 +1334,13 @@ export function importTranspiles(
       transpilesFrom(f.importedDialect ?? '');
 }
 
+// The hint that import can add a text in `dialect` to `f`, or ''.
+export function importHint(
+    f: Parameters<typeof textsFor>[0], dialect: string): string {
+  return importTranspiles(f, dialect) ?
+      `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` : '';
+}
+
 // The dialect a model's sources imply: that of the one database every concrete
 // entity reads from, or undefined when they name several, or a source names
 // none. A legacy bare name, which the loader completes into
@@ -1685,13 +1692,10 @@ export function validateProfileCompleteness(
                 JSON.stringify(expressionSources(asInModelFile)) &&
             sourcesDialect({entities: [e]}) === dialect;
         if (noTextFor(f, [dialect]) && !reported) {
-          const viaImport = importTranspiles(f, dialect) ?
-              `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` :
-              '';
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}${viaImport}`);
+                  dialect}${importHint(f, dialect)}`);
         }
       }
     }
