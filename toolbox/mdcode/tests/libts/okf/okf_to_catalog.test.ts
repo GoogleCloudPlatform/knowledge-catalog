@@ -9,7 +9,6 @@ import {
   Entry,
   MetadataChange,
 } from '../../../src/libts/gcp/dataplex';
-import {Layouts} from '../../../src/libts/layout';
 import {CatalogSnapshot} from '../../../src/libts/snapshot';
 import {CatalogSync} from '../../../src/libts/sync';
 
@@ -47,7 +46,7 @@ function bundle(): string {
   const base = makeTempDir('okfpush-');
   fs.writeFileSync(
     path.join(base, 'catalog.yaml'),
-    'scope: entryGroup.dst-project.us.dst\n',
+    'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
     'utf8',
   );
   const root = path.join(base, 'bundle');
@@ -75,9 +74,7 @@ async function runPush(
       }
     } as any,
   );
-  const snapshot = await CatalogSnapshot.fromPath(base, CTX, {
-    layout: Layouts.OKF,
-  });
+  const snapshot = await CatalogSnapshot.fromPath(base, CTX);
   const sync = new CatalogSync(new CatalogClient(CTX), snapshot);
   return await sync.push(options);
 }
@@ -108,6 +105,27 @@ describe('CatalogSync OKF push --validate-only', () => {
     expect(lines).toContain(`would delete ${GROUP}/entries/stale/leaf`);
     expect(lines.at(-1)).toContain('3 change(s): 1 create, 1 update, 1 delete');
   });
+
+  test('fails on a malformed OKF concept', async () => {
+    const base = makeTempDir('okfpush-bad-');
+    fs.writeFileSync(
+      path.join(base, 'catalog.yaml'),
+      'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
+      'utf8',
+    );
+    const root = path.join(base, 'bundle');
+    fs.mkdirSync(root, {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'broken.md'),
+      '---\ntitle: missing type\n---\nbody\n',
+      'utf8',
+    );
+
+    const res = await runPush(base, [], {validateOnly: true});
+
+    expect(res.success).toBe(false);
+    expect(res.details).toContain('broken');
+  });
 });
 
 describe('CatalogSync OKF push', () => {
@@ -126,8 +144,6 @@ describe('CatalogSync OKF push', () => {
     expect(res.success).toBe(true);
     expect(batch).toHaveBeenCalledTimes(1);
     expect(sent).toHaveLength(2);
-    // Operation was already done: true, so pollOperation returns it directly
-    // without issuing a second getOperation call.
     expect(getOp).not.toHaveBeenCalled();
   });
 
@@ -181,8 +197,49 @@ describe('CatalogSync OKF push', () => {
     expect(update?.updateEntryRequest?.entry.entrySource?.displayName).toBe(
       'assets',
     );
+    expect(update?.updateEntryRequest?.updateMask).not.toContain('parent_entry');
     expect(update?.updateEntryRequest?.deleteMissingAspects).toBe(false);
     expect(sent.filter((c) => c.createEntryRequest)).toHaveLength(1);
+  });
+
+  test('pushes a pure OKF bundle (index.md, <dir>/index.md, <dir>/<leaf>.md) in parent-first order and skips log.md', async () => {
+    const base = makeTempDir('okfpush-pure-');
+    fs.writeFileSync(
+      path.join(base, 'catalog.yaml'),
+      'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
+      'utf8',
+    );
+    const root = path.join(base, 'bundle');
+    fs.mkdirSync(path.join(root, 'tables'), {recursive: true});
+    fs.writeFileSync(
+      path.join(root, 'index.md'),
+      '---\nokf_version: "0.2"\n---\n# Austin bikeshare knowledge\n',
+      'utf8',
+    );
+    fs.writeFileSync(path.join(root, 'log.md'), '## 2026-10-01\n- ingest\n', 'utf8');
+    fs.writeFileSync(path.join(root, 'tables/index.md'), '# Tables\n', 'utf8');
+    fs.writeFileSync(
+      path.join(root, 'tables/bikeshare_trips.md'),
+      '---\ntype: Table\ntitle: bikeshare_trips\nstatus: verified\n---\n# bikeshare_trips\n',
+      'utf8',
+    );
+
+    let sent: MetadataChange[] = [];
+    spyOn(CatalogClient.prototype, 'batchChangeMetadata')
+      .mockImplementation(async (_p, _l, _g, changes: MetadataChange[]) => {
+        sent = changes;
+        return okOperation() as any;
+      });
+    spyOn(console, 'log').mockImplementation(() => {});
+
+    const res = await runPush(base);
+
+    expect(res.success).toBe(true);
+    expect(sent.map((c) => c.createEntryRequest?.entryId)).toEqual([
+      'agents',
+      'tables',
+      'tables/bikeshare_trips',
+    ]);
   });
 
   test('deletes remote entries missing from bundle/ in children-before-parents order', async () => {
@@ -194,7 +251,7 @@ describe('CatalogSync OKF push', () => {
       });
     spyOn(console, 'log').mockImplementation(() => {});
 
-    await runPush(bundle(), ['assets', 'assets/t', 'old', 'old/sub', 'old/sub/leaf']);
+    await runPush(bundle(), ['assets', 'assets/t', 'agents', 'old', 'old/sub', 'old/sub/leaf']);
 
     const deletes = sent
       .filter((c) => c.deleteEntryRequest)
@@ -203,6 +260,7 @@ describe('CatalogSync OKF push', () => {
       `${GROUP}/entries/old/sub/leaf`,
       `${GROUP}/entries/old/sub`,
       `${GROUP}/entries/old`,
+      `${GROUP}/entries/agents`,
     ]);
   });
 
@@ -286,7 +344,7 @@ describe('CatalogSync OKF push', () => {
     const base = makeTempDir('okfpull-conc-');
     fs.writeFileSync(
       path.join(base, 'catalog.yaml'),
-      'scope: entryGroup.dst-project.us.dst\n',
+      'scope: entryGroup.dst-project.us.dst\nlayout: okf\n',
       'utf8',
     );
     const total = 24;
@@ -322,9 +380,7 @@ describe('CatalogSync OKF push', () => {
     const lines: string[] = [];
     spyOn(console, 'log').mockImplementation((m: any) => void lines.push(m));
 
-    const snapshot = await CatalogSnapshot.fromPath(base, CTX, {
-      layout: Layouts.OKF,
-    });
+    const snapshot = await CatalogSnapshot.fromPath(base, CTX);
     const sync = new CatalogSync(new CatalogClient(CTX), snapshot);
     const res = await sync.pull({dryRun: true});
 

@@ -63,12 +63,85 @@ function entryId(entry: gcp.Entry): string {
   return entryIdFromName(entry.name);
 }
 
+function entryDepth(
+  entry: gcp.Entry,
+  byName: Map<string, gcp.Entry>,
+  seen = new Set<string>(),
+): number {
+  if (!entry.parentEntry || seen.has(entry.name)) {
+    return entryId(entry).split('/').length - 1;
+  }
+  seen.add(entry.name);
+  const parent = byName.get(entry.parentEntry);
+  if (!parent) {
+    return entryId(entry).split('/').length;
+  }
+  return 1 + entryDepth(parent, byName, seen);
+}
+
+// When intermediate directories (e.g. `assets/bigquery/<project>`,
+// `query-context/templates`, or custom user folders) have no index entry of
+// their own, walk up the path to the nearest existing ancestor entry (or omit
+// `parentEntry` when none exists) so Dataplex never fails on a missing parent.
+function resolveMissingParents(
+  entries: gcp.Entry[],
+  entryGroup: string,
+  existing: Map<string, gcp.Entry>,
+): void {
+  const byName = new Map(entries.map((e) => [e.name, e]));
+  const known = (name: string) => byName.has(name) || existing.has(name);
+  const prefix = `${entryGroup}/entries/`;
+  for (const entry of entries) {
+    if (!entry.parentEntry || known(entry.parentEntry)) continue;
+    if (!entry.parentEntry.startsWith(prefix)) continue;
+    let rel = entry.parentEntry.slice(prefix.length);
+    let resolved: string | undefined;
+    while (rel.includes('/')) {
+      rel = rel.slice(0, rel.lastIndexOf('/'));
+      const candidate = `${prefix}${rel}`;
+      if (known(candidate)) {
+        resolved = candidate;
+        break;
+      }
+    }
+    if (
+      !resolved &&
+      !entry.entryType.endsWith('/entryTypes/query-template') &&
+      entry.name !== `${prefix}agents` &&
+      known(`${prefix}agents`)
+    ) {
+      resolved = `${prefix}agents`;
+    }
+    if (resolved) {
+      entry.parentEntry = resolved;
+    } else {
+      delete entry.parentEntry;
+    }
+  }
+  entries.sort((a, b) => {
+    const diff = entryDepth(a, byName) - entryDepth(b, byName);
+    if (diff !== 0) return diff;
+    const slashDiff = entryId(a).split('/').length - entryId(b).split('/').length;
+    return slashDiff !== 0 ? slashDiff : entryId(a).localeCompare(entryId(b));
+  });
+}
+
 function toChange(
   entry: gcp.Entry,
   entryGroup: string,
-  existing: Set<string>,
+  existing: Map<string, gcp.Entry>,
 ): gcp.MetadataChange {
   if (existing.has(entry.name)) {
+    const priorSource = existing.get(entry.name)?.entrySource;
+    if (priorSource?.createTime || priorSource?.updateTime) {
+      entry.entrySource = { ...entry.entrySource };
+      if (priorSource.createTime && !entry.entrySource.createTime) {
+        entry.entrySource.createTime = priorSource.createTime;
+      }
+      if (priorSource.updateTime && !entry.entrySource.updateTime) {
+        entry.entrySource.updateTime = priorSource.updateTime;
+      }
+    }
     return {
       updateEntryRequest: {
         entry,
@@ -471,27 +544,42 @@ export class CatalogSync {
       if (entry.entryType.endsWith('/entrygroup')) continue;
       entries.push(entry);
     }
-    entries.sort((a, b) => {
-      const depthDiff = entryId(a).split('/').length - entryId(b).split('/').length;
-      return depthDiff !== 0 ? depthDiff : entryId(a).localeCompare(entryId(b));
-    });
 
-    const existing = new Set<string>();
+    const existing = new Map<string, gcp.Entry>();
     const remoteEntries: gcp.Entry[] = [];
     for await (const stub of this._snapshot.manifest.source.entries(this._catalog.context)) {
-      existing.add(stub.name);
+      existing.set(stub.name, stub);
       if (stub.entryType?.endsWith('/entrygroup')) continue;
       if (entryId(stub) === `${groupId}_entry`) continue;
       remoteEntries.push(stub);
     }
 
+    resolveMissingParents(entries, entryGroup, existing);
+
     const localNames = new Set(entries.map(e => e.name));
+    const remoteByName = new Map(remoteEntries.map(e => [e.name, e]));
     const toDelete = remoteEntries
       .filter(e => !localNames.has(e.name))
       .sort((a, b) => {
-        const depthDiff = entryId(b).split('/').length - entryId(a).split('/').length;
-        return depthDiff !== 0 ? depthDiff : entryId(a).localeCompare(entryId(b));
+        // Delete `agents` last so root-level directories parented to `agents`
+        // are removed before `agents` itself.
+        const aIsAgents = entryId(a) === 'agents' ? 1 : 0;
+        const bIsAgents = entryId(b) === 'agents' ? 1 : 0;
+        if (aIsAgents !== bIsAgents) return aIsAgents - bIsAgents;
+        const depthDiff =
+          entryDepth(b, remoteByName) - entryDepth(a, remoteByName);
+        if (depthDiff !== 0) return depthDiff;
+        const slashDiff =
+          entryId(b).split('/').length - entryId(a).split('/').length;
+        return slashDiff !== 0 ? slashDiff : entryId(a).localeCompare(entryId(b));
       });
+
+    if (!entries.length && !toDelete.length) {
+      return {
+        success: false,
+        details: `no OKF concepts found in ${BUNDLE_DIR}/`,
+      };
+    }
 
     const upsertChanges = entries.map(entry => toChange(entry, entryGroup, existing));
     const deleteChanges: gcp.MetadataChange[] = toDelete.map(e => ({
@@ -507,7 +595,7 @@ export class CatalogSync {
       for (const entry of toDelete) console.log(`would delete ${entry.name}`);
       console.log(
         `${changes.length} change(s): ${creates} create, ${updates} update, ` +
-          `${deletes} delete. Nothing sent (--validate-only).`,
+          `${deletes} delete. Nothing sent (dry run).`,
       );
       return { success: true };
     }

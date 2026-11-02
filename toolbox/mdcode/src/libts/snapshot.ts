@@ -34,7 +34,8 @@ export class CatalogSnapshot {
     this.manifest = manifest;
     this._catalog = new dataplex.CatalogClient(ctx);
 
-    const effectiveLayout = options.layout ?? manifest.source.layout;
+    const effectiveLayout = options.layout ??
+        (manifest.layout === 'okf' ? Layouts.OKF : manifest.source.layout);
     if (effectiveLayout === Layouts.OKF) {
       const coords = entryGroupCoordinates(manifest.source);
       const bundlePath = path.join(this.basePath, BUNDLE_DIR);
@@ -46,6 +47,17 @@ export class CatalogSnapshot {
     }
   }
 
+  static async fromManifest(basePath: string, manifest: CatalogManifest,
+                            ctx: gcp.ApiContext,
+                            options: SnapshotOptions = {}): Promise<CatalogSnapshot> {
+    const snapshot = new CatalogSnapshot(basePath, manifest, ctx, options);
+    if (!(snapshot._layout instanceof OkfLayout)) {
+      await snapshot._buildTypes(manifest);
+    }
+    await snapshot._layout.init();
+    return snapshot;
+  }
+
   static async fromPath(basePath: string, ctx: gcp.ApiContext,
                         options: SnapshotOptions = {}): Promise<CatalogSnapshot> {
     const manifestPath = path.join(basePath, 'catalog.yaml');
@@ -54,13 +66,7 @@ export class CatalogSnapshot {
     }
 
     const manifest = await CatalogManifest.load(manifestPath, ctx);
-    const snapshot = new CatalogSnapshot(basePath, manifest, ctx, options);
-
-    if (!(snapshot._layout instanceof OkfLayout)) {
-      await snapshot._buildTypes(manifest);
-    }
-    await snapshot._layout.init();
-    return snapshot;
+    return await CatalogSnapshot.fromManifest(basePath, manifest, ctx, options);
   }
 
   get entryTypes(): Map<string, dataplex.EntryType> {
