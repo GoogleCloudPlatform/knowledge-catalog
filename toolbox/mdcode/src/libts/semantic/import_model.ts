@@ -481,10 +481,10 @@ function foldsUnquotedCase(prefix: ParsedSourcePrefix): boolean {
 }
 
 /**
- * The first unquoted leading part of `source` that `prefix` names with
- * capitals, which PostgreSQL reads in lower case. Gives its kind, the prefix's
- * name for it, and the name PostgreSQL reads. Expects a `source` that agrees
- * with `prefix` when letter case is ignored.
+ * The first unquoted part of `source` that PostgreSQL reads in lower case and
+ * so misses the name with capitals that `prefix` gives it, with the part's
+ * kind and both names. Expects a `source` that matches `prefix` when letter
+ * case is ignored.
  */
 function foldedPart(source: string, prefix: ParsedSourcePrefix):
     {kind: string; name: string; read: string}|undefined {

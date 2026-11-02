@@ -180,11 +180,11 @@ describe('kcmd import', () => {
          'and an entry group holds one model; remove it if this model replaces it, pass ' +
          "--out <path> to write elsewhere, or import into another entry group's scope."],
     ['an input file in the entry group under another name', workspace,
-     `Error: the input file ${IN_GROUP} sits in the entry group, so the import would ` +
-         `leave this model in two files there, ${IN_GROUP} and ${path.join(GROUP, 'retail.yaml')}. ` +
+     `Error: the input file ./${IN_GROUP} sits in the entry group, so the import would ` +
+         `leave this model in two files there, ./${IN_GROUP} and ${path.join(GROUP, 'retail.yaml')}. ` +
          'Move the input out of the entry group and import it from there, or pass ' +
          '--out <path> to write elsewhere.',
-     IN_GROUP],
+     `./${IN_GROUP}`],
   ];
   for (const [label, setUp, error, input = 'retail.yaml'] of REFUSED_WITHOUT_OUT) {
     test(`without --out, ${label} is refused and nothing is written`, async () => {

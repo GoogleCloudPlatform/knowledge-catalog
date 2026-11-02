@@ -497,6 +497,7 @@ describe('sources', () => {
     ['AlloyDB, backticked table', 'PUBLIC.`Orders`', ALLOYDB, `${ALLOYDB}/tables/Orders`],
     ['AlloyDB, backticked schema', '`Public`.ORDERS', ALLOYDB_DB, `${ALLOYDB_DB}/schemas/Public/tables/orders`],
     ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
+    ['AlloyDB, quoted schema against a prefix with capitals', '"sales".orders', `${ALLOYDB_DB}/schemas/Sales`, undefined],
     ['AlloyDB, non-ASCII letter', 'PUBLIC.ÄRGER', ALLOYDB, `${ALLOYDB}/tables/Ärger`],
     ['BigQuery', 'SALES.orders', BQ_PREFIX, undefined],
     ['Cloud SQL', 'PUBLIC.orders', CLOUDSQL_PREFIX, undefined],
@@ -509,12 +510,12 @@ describe('sources', () => {
   });
 
   // An unquoted part, which PostgreSQL reads in lower case, never matches a
-  // name with capitals in an AlloyDB prefix. [bare name, prefix, the part's
-  // kind, the prefix's name for it, the source with that name double-quoted,
-  // the rest of the source it then completes to]
+  // name with a capital letter from A to Z in an AlloyDB prefix. [bare name,
+  // prefix, the part's kind, the prefix's name for it, the source with that
+  // name double-quoted, the rest of the source it then completes to]
   test.each([
     ['Sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', '"Sales".orders', '/tables/orders'],
-    ['sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', '"Sales".orders', '/tables/orders'],
+    ['analytics.Sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', 'analytics."Sales".orders', '/tables/orders'],
     ['Analytics.public.orders', ALLOYDB_DB.replace(/analytics$/, 'Analytics'), 'database', 'Analytics', '"Analytics".public.orders', '/schemas/public/tables/orders'],
   ])('says how to match an AlloyDB prefix with capitals: %s against %s', async (bare, prefix, kind, name, quoted, rest) => {
     const read = name.toLowerCase();
