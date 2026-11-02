@@ -45,10 +45,13 @@ cli.command('init', 'Initialize a new catalog snapshot')
 cli.command('pull', 'Pull catalog entries')
     .option(
         '--dry-run',
-        'Reconstruct and report only; do not write or delete files (semantic-model scope)')
+        'Reconstruct and report only; do not write or delete files (semantic-model and OKF layouts)')
     .option(
         '--force-remove',
-        'Delete a differently-named local model and replace it with the catalog\'s; without it, a pull that would leave two models in the entry group fails. Also deletes a local profile file the catalog\'s stored copies do not include (semantic-model scope)')
+        'Delete a differently-named local model or stale local OKF concept file not in Knowledge Catalog')
+    .option(
+        '--format <format>',
+        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action((options) => run(() => commands.pull(options)));
 
 cli.command('push', 'Push catalog entries')
@@ -86,6 +89,9 @@ cli.command('push', 'Push catalog entries')
     .option('--deployment [names...]', 'Deploy only these deployments, by name')
     .option(
         '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
+    .option(
+        '--format <format>',
+        'On-disk format. Only `okf` is accepted; omit for the default layout')
     .action((options) => run(async () => {
       const deployment = commands.typedDeployment(process.argv.slice(2));
       return commands.push({...options, deployment});

@@ -2,11 +2,18 @@
 //
 
 import * as gcp from './gcp';
-import { CatalogSnapshot } from './snapshot';
+import { BUNDLE_DIR, OkfLayout } from './layouts/okf';
+import { CatalogSnapshot, toLocalEntry } from './snapshot';
+import { entryGroupCoordinates } from './source';
 
 export interface SyncResult {
   success: boolean;
   details?: string;
+}
+
+export interface PullSyncOptions {
+  dryRun?: boolean;
+  forceRemove?: boolean;
 }
 
 export interface ValidationResult {
@@ -15,6 +22,177 @@ export interface ValidationResult {
 
 export interface StatusResult {
   modified: boolean;
+}
+
+const READ_CONCURRENCY = 8;
+const BATCH_MAX_CHANGES = 250;
+
+export async function mapConcurrent<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  if (items.length === 0) return [];
+  const out = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, limit), items.length) },
+    async () => {
+      while (!failed) {
+        const idx = next++;
+        if (idx >= items.length) return;
+        try {
+          out[idx] = await fn(items[idx], idx);
+        } catch (err) {
+          failed = true;
+          throw err;
+        }
+      }
+    },
+  );
+  await Promise.all(workers);
+  return out;
+}
+
+function entryIdFromName(name: string): string {
+  return name.split('/entries/')[1] ?? name;
+}
+
+function entryId(entry: gcp.Entry): string {
+  return entryIdFromName(entry.name);
+}
+
+function toChange(
+  entry: gcp.Entry,
+  entryGroup: string,
+  existing: Set<string>,
+): gcp.MetadataChange {
+  if (existing.has(entry.name)) {
+    return {
+      updateEntryRequest: {
+        entry,
+        updateMask: 'aspects,entry_source',
+        aspectKeys: Object.keys(entry.aspects ?? {}),
+        deleteMissingAspects: false,
+      },
+    };
+  }
+  return {
+    createEntryRequest: { parent: entryGroup, entryId: entryId(entry), entry },
+  };
+}
+
+export function isUnimplementedBatch(res: { status: number; message?: string }): boolean {
+  if (res.status === 501) return true;
+  if (res.status !== 404 || !res.message) return false;
+  try {
+    const parsed = JSON.parse(res.message);
+    return parsed?.error?.status === 'UNIMPLEMENTED';
+  } catch {
+    return false;
+  }
+}
+
+interface BatchTarget {
+  project: string;
+  location: string;
+  groupId: string;
+}
+
+function changeLabel(change: gcp.MetadataChange | undefined): string {
+  if (!change) return '<unknown>';
+  if (change.createEntryRequest) return change.createEntryRequest.entryId;
+  if (change.updateEntryRequest) return entryId(change.updateEntryRequest.entry);
+  if (change.deleteEntryRequest) return entryIdFromName(change.deleteEntryRequest.name);
+  return '<unknown>';
+}
+
+async function applyChunk(
+  catalog: gcp.CatalogClient,
+  target: BatchTarget,
+  changes: gcp.MetadataChange[],
+): Promise<number> {
+  const res = await catalog.batchChangeMetadata(
+    target.project,
+    target.location,
+    target.groupId,
+    changes,
+  );
+
+  if (isUnimplementedBatch(res)) {
+    return await applyViaEntries(catalog, target, changes);
+  }
+
+  // A batch that exists and refused the plan validated it as a whole. Replaying
+  // it one entry at a time turns an atomic reject into a partial apply.
+  if (res.status !== 200 || !res.result) {
+    console.error(
+      `batchChangeMetadata failed (${res.status}): ${res.message ?? ''}`,
+    );
+    return changes.length;
+  }
+
+  const polled = await catalog.pollOperation(res.result, 'push');
+  if (polled.error) {
+    console.error(polled.error);
+    return changes.length;
+  }
+
+  const failures = polled.operation?.metadata?.failedRequests ?? {};
+  for (const [index, status] of Object.entries(failures)) {
+    const id = changeLabel(changes[Number(index)]);
+    console.error(`  ${id}: ${status.message ?? status.code}`);
+  }
+  return Object.keys(failures).length;
+}
+
+/** Per-entry fallback for universes where BatchChangeMetadata is unimplemented. */
+async function applyViaEntries(
+  catalog: gcp.CatalogClient,
+  target: BatchTarget,
+  changes: gcp.MetadataChange[],
+): Promise<number> {
+  let failed = 0;
+  for (const change of changes) {
+    const create = change.createEntryRequest;
+    const update = change.updateEntryRequest;
+    const del = change.deleteEntryRequest;
+    let res: { status: number; message?: string };
+    if (create) {
+      // Unlike the batch, entries.create rejects a body carrying `name`.
+      const { name, ...body } = create.entry;
+      res = await catalog.createEntry(
+        target.project,
+        target.location,
+        target.groupId,
+        create.entryId,
+        body as gcp.Entry,
+      );
+    } else if (update) {
+      res = await catalog.modifyEntry(
+        target.project,
+        target.location,
+        update.entry,
+        update.updateMask.split(',').filter(Boolean),
+        update.aspectKeys,
+      );
+    } else if (del) {
+      res = await catalog.deleteEntry(
+        target.project,
+        target.location,
+        target.groupId,
+        entryIdFromName(del.name),
+      );
+    } else {
+      continue;
+    }
+    if (res.status !== 200) {
+      console.error(`  ${changeLabel(change)}: HTTP ${res.status} ${res.message ?? ''}`);
+      failed++;
+    }
+  }
+  return failed;
 }
 
 
@@ -28,7 +206,15 @@ export class CatalogSync {
   }
 
   // Lists metadata in the Catalog service to create or update the local snapshot.
-  async pull(): Promise<SyncResult> {
+  async pull(options?: PullSyncOptions): Promise<SyncResult> {
+    if (this._snapshot.layout instanceof OkfLayout) {
+      try {
+        return await this._pullOkf(this._snapshot.layout, options ?? {});
+      } catch (e: any) {
+        return { success: false, details: e.message };
+      }
+    }
+
     try {
       const listedTypes = this._snapshot.manifest.snapshotConfig?.entries ?? [];
       const unreadableTypes = new Set<string>();
@@ -67,7 +253,7 @@ export class CatalogSync {
 
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
-                                                    requested);
+                                                    { aspects: requested });
         // The server will respond with 403 permission denied for both resource not exist or 
         // insufficient permission. We cannot tell if a resource not exist or user does not 
         // have the access. Thus using 200 for an ensured result.
@@ -106,6 +292,14 @@ export class CatalogSync {
   // but no create or update is issued -- mirroring the dry-run contract the
   // semantic-model legs honor, so the flag behaves the same on every scope.
   async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
+    if (this._snapshot.layout instanceof OkfLayout) {
+      try {
+        return await this._pushOkf(this._snapshot.layout, options ?? {});
+      } catch (e: any) {
+        return { success: false, details: e.message };
+      }
+    }
+
     const validateOnly = !!options?.validateOnly;
     const entries = await this._snapshot.listEntries();
 
@@ -170,6 +364,168 @@ export class CatalogSync {
     }
 
     return { success: true };
+  }
+
+  private async _pullOkf(
+    layout: OkfLayout,
+    options: PullSyncOptions,
+  ): Promise<SyncResult> {
+    entryGroupCoordinates(this._snapshot.manifest.source);
+
+    const stubs: gcp.Entry[] = [];
+    for await (const stub of this._snapshot.manifest.source.entries(this._catalog.context)) {
+      if (stub.entryType?.endsWith('/entrygroup')) continue;
+      stubs.push(stub);
+    }
+
+    const fetched = await mapConcurrent(stubs, READ_CONCURRENCY, async (stub) => {
+      const parts = stub.name.split('/');
+      const res = await this._catalog.lookupEntry(
+        parts[1],
+        parts[3],
+        stub.name,
+        { view: 'ALL' },
+      );
+      if (res.status !== 200 || !res.result) {
+        throw new Error(
+          `failed to read entry '${stub.name}' (status ${res.status})`,
+        );
+      }
+      return res.result;
+    });
+
+    const planned: Array<{ entry: gcp.Entry; localName: string }> = [];
+    const pulledNames = new Set<string>();
+    for (const entry of fetched) {
+      if (entry.entryType?.endsWith('/entrygroup')) continue;
+      const localName = this._snapshot.manifest.source.localName(entry);
+      const local = toLocalEntry(entry, localName);
+      if (entry.parentEntry) {
+        local.resource.parent =
+          this._snapshot.manifest.source.localName({ ...entry, name: entry.parentEntry });
+      }
+      // Pre-validate path containment and residue before writing or deleting files.
+      layout.previewConcept(localName, local);
+      planned.push({ entry, localName });
+      pulledNames.add(localName);
+    }
+
+    const stale = layout.listEntries().filter(name => !pulledNames.has(name));
+
+    if (options.dryRun) {
+      for (const { localName } of planned) {
+        console.log(`would write ${layout.relativeBundlePath(localName)}`);
+      }
+      for (const name of stale) {
+        if (options.forceRemove) {
+          console.log(`would remove ${layout.relativeBundlePath(name)}`);
+        } else {
+          console.warn(
+            `Warning: local file '${layout.relativeBundlePath(name)}' is not in ` +
+              `Knowledge Catalog; re-run with --force-remove to delete it.`,
+          );
+        }
+      }
+      console.log(`${planned.length} concept(s); no files written (--dry-run).`);
+      return { success: true };
+    }
+
+    for (const { entry } of planned) {
+      await this._snapshot._storeEntry(entry);
+    }
+    for (const name of stale) {
+      if (options.forceRemove) {
+        await layout.deleteEntry(name);
+        console.log(`Removed stale concept ${layout.relativeBundlePath(name)}.`);
+      } else {
+        console.warn(
+          `Warning: local file '${layout.relativeBundlePath(name)}' is not in ` +
+            `Knowledge Catalog; re-run with --force-remove to delete it.`,
+        );
+      }
+    }
+    console.log(`Wrote ${planned.length} concept(s) to ${BUNDLE_DIR}/.`);
+    return { success: true };
+  }
+
+  private async _pushOkf(
+    layout: OkfLayout,
+    options: { force?: boolean; validateOnly?: boolean },
+  ): Promise<SyncResult> {
+    const {
+      project,
+      location,
+      entryGroup: groupId,
+      container: entryGroup,
+    } = entryGroupCoordinates(this._snapshot.manifest.source);
+
+    if (!layout.bundleExists()) {
+      return { success: false, details: `no ${BUNDLE_DIR}/ directory to push` };
+    }
+
+    const names = await this._snapshot.listEntries();
+    const entries: gcp.Entry[] = [];
+    for (const name of names) {
+      const entry = await this._snapshot._fetchEntry(name);
+      if (!entry) continue;
+      if (entry.entryType.endsWith('/entrygroup')) continue;
+      entries.push(entry);
+    }
+    entries.sort((a, b) => {
+      const depthDiff = entryId(a).split('/').length - entryId(b).split('/').length;
+      return depthDiff !== 0 ? depthDiff : entryId(a).localeCompare(entryId(b));
+    });
+
+    const existing = new Set<string>();
+    const remoteEntries: gcp.Entry[] = [];
+    for await (const stub of this._snapshot.manifest.source.entries(this._catalog.context)) {
+      existing.add(stub.name);
+      if (stub.entryType?.endsWith('/entrygroup')) continue;
+      if (entryId(stub) === `${groupId}_entry`) continue;
+      remoteEntries.push(stub);
+    }
+
+    const localNames = new Set(entries.map(e => e.name));
+    const toDelete = remoteEntries
+      .filter(e => !localNames.has(e.name))
+      .sort((a, b) => {
+        const depthDiff = entryId(b).split('/').length - entryId(a).split('/').length;
+        return depthDiff !== 0 ? depthDiff : entryId(a).localeCompare(entryId(b));
+      });
+
+    const upsertChanges = entries.map(entry => toChange(entry, entryGroup, existing));
+    const deleteChanges: gcp.MetadataChange[] = toDelete.map(e => ({
+      deleteEntryRequest: { name: e.name },
+    }));
+    const changes = [...upsertChanges, ...deleteChanges];
+    const creates = upsertChanges.filter(c => c.createEntryRequest).length;
+    const updates = upsertChanges.length - creates;
+    const deletes = deleteChanges.length;
+
+    if (options.validateOnly) {
+      for (const entry of entries) console.log(`would write ${entry.name}`);
+      for (const entry of toDelete) console.log(`would delete ${entry.name}`);
+      console.log(
+        `${changes.length} change(s): ${creates} create, ${updates} update, ` +
+          `${deletes} delete. Nothing sent (--validate-only).`,
+      );
+      return { success: true };
+    }
+
+    let failed = 0;
+    for (let i = 0; i < changes.length; i += BATCH_MAX_CHANGES) {
+      failed += await applyChunk(
+        this._catalog,
+        { project, location, groupId },
+        changes.slice(i, i + BATCH_MAX_CHANGES),
+      );
+    }
+
+    console.log(
+      `Pushed ${changes.length - failed}/${changes.length} change(s) to ` +
+        `${groupId} (${creates} create, ${updates} update, ${deletes} delete).`,
+    );
+    return failed ? { success: false } : { success: true };
   }
 
   async validate(): Promise<ValidationResult> {

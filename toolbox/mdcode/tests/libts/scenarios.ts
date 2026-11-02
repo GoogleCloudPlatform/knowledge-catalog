@@ -229,9 +229,9 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
-    async function(project: string, location: string, entry: string, aspects?: string[]) {
+    async function(project: string, location: string, entry: string, opts?: gcp.LookupEntryOptions) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.lookupEntry(project, location, entry, aspects);
+        return await currentCatalogMock.lookupEntry(project, location, entry, opts);
       }
       return { status: 404, message: 'Not found' };
     }

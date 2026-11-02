@@ -23,8 +23,10 @@ export interface CatalogSource {
   readonly name: string;
   readonly ingestedEntries: boolean;
   readonly layout: Layouts;
-  // Present only for scopes that carry an EntryGroup (e.g. semantic-model);
-  // used to scope the local catalog layout to that group.
+  readonly project?: string;
+  readonly location?: string;
+  // Present only for scopes that carry an EntryGroup (e.g. entryGroup, kb,
+  // semantic-model); used to scope the local catalog layout to that group.
   readonly entryGroup?: string;
   // The aspect types `kcmd init` lists under snapshot.aspects, so pull fetches
   // them along with those each entry's type requires. System-generated aspects
@@ -96,4 +98,33 @@ export async function createSource(type: string, name: string,
     default:
       throw new Error(`Unknown source type: ${type}`);
   }
+}
+
+export interface EntryGroupCoordinates {
+  project: string;
+  location: string;
+  entryGroup: string;
+  container: string;
+}
+
+/** Validates and extracts `<project>.<location>.<entryGroup>` coordinates. */
+export function entryGroupCoordinates(source: CatalogSource): EntryGroupCoordinates {
+  if (source.type && source.type !== Sources.ENTRYGROUP && source.type !== Sources.KB) {
+    throw new Error(
+        `OKF layout applies only to '${Sources.ENTRYGROUP}' and '${Sources.KB}' scopes, got '${source.type}'.`);
+  }
+  const project = source.project ?? source.name.split('.')[0];
+  const location = source.location ?? source.name.split('.')[1];
+  const entryGroup = source.entryGroup ?? source.name.split('.')[2];
+  const parts = source.name.split('.');
+  if (!project || !location || !entryGroup || parts.length !== 3) {
+    throw new Error(
+        `EntryGroup must be in format <projectId>.<locationId>.<entryGroupId>: '${source.name}'`);
+  }
+  return {
+    project,
+    location,
+    entryGroup,
+    container: dataplex.catalogContainer(project, location, entryGroup),
+  };
 }

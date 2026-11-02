@@ -1087,7 +1087,8 @@ function fakeCatalog(
   // found, as it is for every table that exists.
   spyOn(P, 'lookupEntry')
       .mockImplementation(async (_p: string, _l: string, name: string,
-                                 aspectTypes?: string[]) => {
+                                 lookupOpts: {aspects?: string[]} = {}) => {
+        const aspectTypes = lookupOpts.aspects;
         if (name.includes('/entryGroups/@')) {
           return {status: 200, result: {name, entryType: systemEntryType(name, opts.cloudSqlEngine)}};
         }

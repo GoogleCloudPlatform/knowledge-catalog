@@ -15,6 +15,9 @@ export class KnowledgeBaseSource implements CatalogSource {
   readonly layout = Layouts.DOCUMENTS;
   readonly defaultAspects = [md.OVERVIEW_ASPECT];
   readonly systemAspects = [];
+  readonly project: string;
+  readonly location: string;
+  readonly entryGroup: string;
 
   private readonly _name: string[];
   private readonly _entryGroup: dataplex.EntryGroup;
@@ -24,6 +27,9 @@ export class KnowledgeBaseSource implements CatalogSource {
     this.name = name;
 
     this._name = name.split('.');
+    this.project = this._name[0];
+    this.location = this._name[1];
+    this.entryGroup = this._name[2];
     this._entryGroup = entryGroup;
   }
 

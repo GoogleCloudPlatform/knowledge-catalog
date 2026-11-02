@@ -14,6 +14,8 @@ export interface Entry {
   type: string;
   resource: {
     name?: string;
+    system?: string;
+    platform?: string;
     displayName?: string;
     description?: string;
     labels?: Record<string, string>;

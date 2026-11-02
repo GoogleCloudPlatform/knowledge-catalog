@@ -304,8 +304,10 @@ test('CatalogClient.lookupEntry sends each path as a paths parameter',
        const client = new CatalogClient(CTX);
        const get = spyOn(client as any, '_get')
                        .mockImplementation(async () => ({status: 404}));
-       await client.lookupEntry('proj', 'us', ENTRY, [GUIDELINES_TYPE],
-                                ['', 'Schema.a']);
+       await client.lookupEntry('proj', 'us', ENTRY, {
+         aspects: [GUIDELINES_TYPE],
+         paths: ['', 'Schema.a'],
+       });
        expect(get.mock.calls[0][1]).toEqual({
          entry: ENTRY,
          view: 'CUSTOM',
@@ -313,6 +315,17 @@ test('CatalogClient.lookupEntry sends each path as a paths parameter',
          paths: ['', 'Schema.a'],
        });
      });
+
+test('CatalogClient.lookupEntry supports {view: "ALL"}', async () => {
+  const client = new CatalogClient(CTX);
+  const get = spyOn(client as any, '_get')
+                  .mockImplementation(async () => ({status: 404}));
+  await client.lookupEntry('proj', 'us', ENTRY, {view: 'ALL'});
+  expect(get.mock.calls[0][1]).toEqual({
+    entry: ENTRY,
+    view: 'ALL',
+  });
+});
 
 
 // Dataplex keeps an aspect that aspectKeys names and the body leaves out
