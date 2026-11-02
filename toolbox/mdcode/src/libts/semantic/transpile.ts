@@ -31,6 +31,7 @@
 
 import {Field, Metric, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
+import {isSimpleIdentifier} from './sql_identifiers';
 import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
@@ -400,7 +401,7 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
               res.sql.length} statements`
         };
       if (write !== 'bigquery') return {id: r.id, sql: res.sql[0]};
-      const repaired = repairForBigQuery(engine, res.sql[0]);
+      const repaired = repairForBigQuery(engine, res.sql[0], read);
       return 'error' in repaired ? {id: r.id, error: repaired.error} :
                                    {id: r.id, sql: repaired.sql};
     } catch (err) {
@@ -423,19 +424,29 @@ function errMessage(err: unknown): string {
 // BigQuery output back, rewrites the forms it can translate, and refuses the
 // rest, so that no entry claims a translation BigQuery cannot run.
 
-// BigQuery's DATE_TRUNC part for each part name PostgreSQL, Snowflake and
-// Databricks take as a string. Their weeks start on Monday, as ISOWEEK does.
+// BigQuery's DATE_TRUNC part for each part name PostgreSQL, Snowflake,
+// Databricks and T-SQL take. PostgreSQL, Snowflake and Databricks start a week
+// on Monday, as ISOWEEK does. T-SQL's DATETRUNC reaches this map too, and its
+// `week` starts on the DATEFIRST day, so it is refused. Left out: `m`, which is
+// month in T-SQL and minute in Snowflake.
 const TRUNC_PARTS: Record<string, string> = {
   microsecond: 'MICROSECOND',
+  microseconds: 'MICROSECOND',
   millisecond: 'MILLISECOND',
+  milliseconds: 'MILLISECOND',
   second: 'SECOND',
   minute: 'MINUTE',
   hour: 'HOUR',
   day: 'DAY',
+  dd: 'DAY',
   week: 'ISOWEEK',
+  iso_week: 'ISOWEEK',
   month: 'MONTH',
+  mm: 'MONTH',
   quarter: 'QUARTER',
   year: 'YEAR',
+  yyyy: 'YEAR',
+  yy: 'YEAR',
 };
 
 // The engine's EXTRACT field for each DATE_PART part whose number BigQuery's
@@ -456,27 +467,22 @@ const EXTRACT_FIELDS: Record<string, unknown> = {
 };
 
 // The engine's interval unit for each unit a PostgreSQL interval string names.
+// Left out: `month` and `year`. BigQuery cannot add them to a TIMESTAMP, and
+// fails each query that does, though a dry run passes. kcmd cannot see whether
+// the value is a TIMESTAMP, so it refuses them.
 const INTERVAL_UNITS: Record<string, string> = {
   second: 'Second',
   minute: 'Minute',
   hour: 'Hour',
   day: 'Day',
   week: 'Week',
-  month: 'Month',
-  year: 'Year',
 };
 
-// The engine's EXTRACT field for T-SQL's YEAR(d), MONTH(d) and DAY(d) nodes.
-const PART_NODES: Record<string, string> = {
-  year: 'Year',
-  month: 'Month',
-  day: 'Day',
-};
-
-// `sql`, the engine's BigQuery output, with the forms above rewritten, or an
-// error naming a form kcmd cannot translate. A text the engine cannot read
-// back is returned as it is; transpileModel's qualifier check reports it.
-function repairForBigQuery(engine: PolyglotEngine, sql: string):
+// `sql`, the engine's BigQuery output from SQL in the engine's dialect `read`,
+// with the forms above rewritten, or an error naming a form kcmd cannot
+// translate. A text the engine cannot read back is returned as it is;
+// transpileModel's qualifier check reports it.
+function repairForBigQuery(engine: PolyglotEngine, sql: string, read: string):
     {sql: string}|{error: string} {
   const tree = sqlExpressionTree(sql, 'BIGQUERY');
   if (!tree) return {sql};
@@ -487,7 +493,10 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string):
     if (Array.isArray(node)) return node.map(walk);
     const out: any = {};
     for (const [k, v] of Object.entries(node)) out[k] = walk(v);
-    const repaired = repairNode(out);
+    // The engine reads BigQuery's TIMESTAMP as a timestamp without time zone,
+    // which it writes as DATETIME.
+    if (out.data_type === 'timestamp') out.timezone = true;
+    const repaired = repairNode(out, read);
     if (typeof repaired === 'string') {
       refused ??= repaired;
       return out;
@@ -507,8 +516,9 @@ function repairForBigQuery(engine: PolyglotEngine, sql: string):
 }
 
 // The node to put in place of `node`, a string naming a form kcmd cannot
-// translate, or undefined to keep `node`.
-function repairNode(node: any): unknown {
+// translate, or undefined to keep `node`. `read` is the engine's dialect for
+// the source SQL.
+function repairNode(node: any, read: string): unknown {
   const fn = node.function;
   if (fn) {
     const name = String(fn.name).toUpperCase();
@@ -519,21 +529,45 @@ function repairNode(node: any): unknown {
         args[0].literal?.literal_type === 'string') {
       const part = args[0].literal.value;
       const bqPart = TRUNC_PARTS[part.toLowerCase()];
-      if (!bqPart) return `DATE_TRUNC with part '${part}'`;
-      return {function: {...fn, args: [args[1], {var: {this: bqPart}}]}};
+      if (!bqPart || (read === 'tsql' && part.toLowerCase() === 'week')) {
+        return `DATE_TRUNC with part '${part}'`;
+      }
+      // The engine reads a lone name in the part position as a `var` node
+      // without its quotes, so put it back as a column, quoted if it must be.
+      const col = args[1].var?.this;
+      const date = col === undefined ? args[1] : {
+        column: {name: {name: col, quoted: !isSimpleIdentifier(col)}, table: null},
+      };
+      return {function: {...fn, args: [date, {var: {this: bqPart}}]}};
     }
     if (name === 'DATE_PART') {
       const part = args.length === 2 ? partName(args[0]) : undefined;
       const field = part && EXTRACT_FIELDS[part.toLowerCase()];
       if (!field) return `DATE_PART with part '${part ?? '?'}'`;
+      if (isDifference(args[1])) return 'DATE_PART of a difference';
       return {extract: {this: args[1], field}};
     }
     return undefined;
   }
-  for (const [kind, field] of Object.entries(PART_NODES)) {
-    if (node[kind]?.this) return {extract: {this: node[kind].this, field}};
+  if (node.extract && read !== 'bigquery') {
+    // A Spanner text already uses BigQuery's arithmetic.
+    if (isDifference(node.extract.this)) return 'EXTRACT of a difference';
+    // PostgreSQL and Databricks number weeks as ISO weeks.
+    if (node.extract.field === 'Week' &&
+        (read === 'postgresql' || read === 'databricks')) {
+      return {extract: {...node.extract, field: {Custom: 'ISOWEEK'}}};
+    }
   }
-  const interval = node.interval;
+  // The engine's nodes for YEAR(d), MONTH(d) and DAY(d).
+  for (const kind of ['year', 'month', 'day']) {
+    if (node[kind]?.this) {
+      return {extract: {this: node[kind].this, field: EXTRACT_FIELDS[kind]}};
+    }
+  }
+  // PostgreSQL's '1 day'::interval reaches here as a CAST to INTERVAL.
+  const interval = node.cast?.to?.data_type === 'interval' ?
+      {this: node.cast.this, unit: null} :
+      node.interval;
   if (interval && interval.unit === null &&
       interval.this?.literal?.literal_type === 'string') {
     const text: string = interval.this.literal.value;
@@ -550,10 +584,18 @@ function repairNode(node: any): unknown {
   return undefined;
 }
 
+// Whether `arg` subtracts one value from another, other than an interval.
+// BigQuery holds a TIMESTAMP difference in hours, so a day of it is 0 where
+// PostgreSQL counts the days.
+function isDifference(arg: any): boolean {
+  const value = arg.paren?.this ?? arg;
+  return !!value.sub && !value.sub.right?.interval;
+}
+
 // The part a DATE_PART names: a string, or a bare name as Snowflake and
-// T-SQL's DATEPART write it.
+// T-SQL's DATEPART write it, which the engine reads as a column.
 function partName(arg: any): string|undefined {
   if (arg.literal?.literal_type === 'string') return arg.literal.value;
   if (arg.column && !arg.column.table) return arg.column.name?.name;
-  return arg.var?.this;
+  return undefined;
 }

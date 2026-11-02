@@ -7,7 +7,7 @@
 // The adapter is still designed to never throw: an unsupported source dialect
 // or an unparseable expression degrades to a per-request `error`.
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
@@ -230,10 +230,10 @@ describe('polyglotTranspiler (transformations)', () => {
         expect(bq.sql).toBe('SAFE_CAST(x AS FLOAT64)');
       });
 
-  // The engine writes these to BigQuery unchanged and reports success, and
-  // BigQuery rejects each one. Every `sql` below passed a BigQuery dry run
-  // against a table with a DATE column `d` (bq query --dry_run, 2026-10-30);
-  // every `error` is a form kcmd refuses rather than write.
+  // The engine writes each of these except the SPANNER row in a form
+  // BigQuery rejects, and reports success. Every `sql` below passes a
+  // BigQuery dry run against a table with a DATE column `d`. Every `error`
+  // is a form kcmd refuses.
   test.each([
     ['POSTGRES', "DATE_TRUNC('month', orders.d)", {sql: 'DATE_TRUNC(orders.d, MONTH)'}],
     ['POSTGRES', "DATE_TRUNC('week', d)", {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
@@ -245,15 +245,40 @@ describe('polyglotTranspiler (transformations)', () => {
     ['SNOWFLAKE', 'DATE_PART(year, d)', {sql: 'EXTRACT(YEAR FROM d)'}],
     ['SQLSERVER', 'DATEPART(month, d)', {sql: 'EXTRACT(MONTH FROM d)'}],
     ['SQLSERVER', 'YEAR(d) + DAY(d)', {sql: 'EXTRACT(YEAR FROM d) + EXTRACT(DAY FROM d)'}],
-    ['POSTGRES', "d - INTERVAL '2 months'", {sql: 'd - INTERVAL 2 MONTH'}],
+    ['POSTGRES', "DATE_TRUNC('month', \"order date\")", {sql: 'DATE_TRUNC(`order date`, MONTH)'}],
+    ['POSTGRES', "DATE_TRUNC('day', d::timestamptz)", {sql: 'DATE_TRUNC(CAST(d AS TIMESTAMP), DAY)'}],
+    ['POSTGRES', "DATE_TRUNC('milliseconds', d::timestamptz)", {sql: 'DATE_TRUNC(CAST(d AS TIMESTAMP), MILLISECOND)'}],
+    ['SNOWFLAKE', "DATE_TRUNC('mm', d)", {sql: 'DATE_TRUNC(d, MONTH)'}],
+    ['SQLSERVER', 'DATETRUNC(iso_week, d)', {sql: 'DATE_TRUNC(d, ISOWEEK)'}],
+    ['POSTGRES', "DATE_PART('year', d - INTERVAL '1 day')", {sql: 'EXTRACT(YEAR FROM d - INTERVAL 1 DAY)'}],
+    ['POSTGRES', 'EXTRACT(WEEK FROM d)', {sql: 'EXTRACT(ISOWEEK FROM d)'}],
+    ['POSTGRES', "d + '1 day'::interval", {sql: 'd + INTERVAL 1 DAY'}],
+    ['POSTGRES', "d - INTERVAL '2 weeks'", {sql: 'd - INTERVAL 2 WEEK'}],
     ['SPANNER', 'DATE_TRUNC(d, MONTH)', {sql: 'DATE_TRUNC(d, MONTH)'}],
     ['POSTGRES', "TO_CHAR(d, 'YYYY-MM')", {error: 'kcmd cannot translate TO_CHAR to BigQuery'}],
     ['POSTGRES', "DATE_TRUNC('decade', d)", {error: "kcmd cannot translate DATE_TRUNC with part 'decade' to BigQuery"}],
     ['POSTGRES', "date_part('dow', d)", {error: "kcmd cannot translate DATE_PART with part 'dow' to BigQuery"}],
     ['POSTGRES', "d + INTERVAL '1 day 2 hours'", {error: "kcmd cannot translate INTERVAL '1 day 2 hours' to BigQuery"}],
+    ['POSTGRES', "NOW() - INTERVAL '1 month'", {error: "kcmd cannot translate INTERVAL '1 month' to BigQuery"}],
+    ['SQLSERVER', 'DATETRUNC(week, d)', {error: "kcmd cannot translate DATE_TRUNC with part 'WEEK' to BigQuery"}],
+    ['POSTGRES', "DATE_PART('day', shipped - ordered)", {error: 'kcmd cannot translate DATE_PART of a difference to BigQuery'}],
+    ['POSTGRES', 'EXTRACT(DAY FROM shipped - ordered)', {error: 'kcmd cannot translate EXTRACT of a difference to BigQuery'}],
   ] as const)('writes %s %s as BigQuery runs it, or refuses it', async (dialect, expression, want) => {
     expect(await polyglotTranspiler([{id: '0', dialect, expression}], 'BIGQUERY'))
         .toEqual([{id: '0', ...want}]);
+  });
+
+  test('reports an error when the engine cannot write the repaired SQL', async () => {
+    const generate = spyOn(await loadSqlEngine(), 'generate')
+                         .mockReturnValue({success: false, error: 'boom'});
+    try {
+      expect(await polyglotTranspiler(
+                 [{id: '0', dialect: 'POSTGRES', expression: "DATE_TRUNC('month', d)"}],
+                 'BIGQUERY'))
+          .toEqual([{id: '0', error: 'boom'}]);
+    } finally {
+      generate.mockRestore();
+    }
   });
 
   // A canary for the repairs above. It calls the engine directly, without
