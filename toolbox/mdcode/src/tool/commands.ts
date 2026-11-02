@@ -785,8 +785,8 @@ function retiredPushFlagErrors(options: PushOptions): string[] {
       retired(
           '--transpile',
           `; use '${IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects ` +
-              `when importing a model, in the model and each profile the ` +
-              `import writes`),
+              `when importing a model, in the model and each profile whose ` +
+              `tables are all in BigQuery or BigLake`),
     ],
     [
       options.profile !== undefined && typeof options.profile !== 'boolean',

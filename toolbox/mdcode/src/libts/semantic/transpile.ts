@@ -29,7 +29,7 @@
 //     warning is emitted -- never a throw.
 //
 
-import {Field, SemanticModel, SqlDialect} from './ir';
+import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
 import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
@@ -64,6 +64,9 @@ export type SqlTranspiler = (requests: TranspileRequest[], target: string) =>
 export interface TranspileOptions {
   target?: string;             // target dialect; default 'BIGQUERY'
   transpiler?: SqlTranspiler;  // mechanism; default `polyglotTranspiler`
+  // Whether to translate the field bindings of `profile`. Defaults to every
+  // profile.
+  translatesProfile?: (profile: ProfileSpec) => boolean;
 }
 
 export interface TranspileResult {
@@ -263,6 +266,7 @@ export async function transpileModel(
   }
   for (const m of clone.metrics) add(m, `metric '${m.name}'`);
   for (const p of clone.profiles ?? []) {
+    if (opts.translatesProfile && !opts.translatesProfile(p)) continue;
     for (const pe of p.entities) {
       for (const f of pe.fields ?? []) {
         add(f, `profile '${p.name}': field '${pe.name}.${f.name}'`);

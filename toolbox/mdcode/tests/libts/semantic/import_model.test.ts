@@ -271,28 +271,34 @@ describe('conversion, strict mode, and translation', () => {
       });
 });
 
-// A profile field written only in Snowflake SQL gets a BIGQUERY entry in every
-// profile the import writes.
+// A profile field written only in Snowflake SQL gets a BIGQUERY entry when every
+// table its profile binds is a BigQuery or BigLake table.
 describe('profile translation', () => {
   const fieldExpr =
       '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}';
   // Its Snowflake text spans two lines, which a profile file writes as a
   // block scalar.
   const SNOWFLAKE = 'NVL(o.order_id, 0)\n  + NVL(o.order_id, 1) + NVL(o.order_id, 2)';
-  const PROD = {
+  // Profile prod, which binds orders to `source` and its order_id to SNOWFLAKE.
+  const prodOn = (source: string) => ({
     name: 'prod',
     entities: [{
       name: 'orders',
-      source: `${BQ_PREFIX}/tables/orders_prod`,
+      source,
       fields: [{
         name: 'order_id',
         expression: {dialects: [{dialect: 'SNOWFLAKE', expression: SNOWFLAKE}]},
       }],
     }],
-  };
-  const block = `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
-      JSON.stringify({profiles: [PROD]})}'\n`;
-  const prodFile = {fileName: 'retail.profile.prod.yaml', content: yaml.stringify(PROD)};
+  });
+  const PROD = prodOn(`${BQ_PREFIX}/tables/orders_prod`);
+  const blockOf = (profile: object) =>
+      `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
+          JSON.stringify({profiles: [profile]})}'\n`;
+  const fileOf = (profile: object) =>
+      ({fileName: 'retail.profile.prod.yaml', content: yaml.stringify(profile)});
+  const block = blockOf(PROD);
+  const prodFile = fileOf(PROD);
   // Push reads a profile file without its actions, so a malformed one does not
   // stop translation.
   const withActions = {
@@ -300,35 +306,46 @@ describe('profile translation', () => {
     content: yaml.stringify({...PROD, actions: [{drop: {target: 'x'}}]}),
   };
   const strict = {strict: true, transpile: true};
+  const ossie = {...strict, flavor: 'ossie' as const};
+  const google = {...strict, flavor: 'google' as const};
+  const sfEntry = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
+  const bigLake =
+      'biglake.googleapis.com/projects/acme/catalogs/c/namespaces/n/tables/orders';
 
-  // [label, input, options]
+  // [label, input, options, translated]
   test.each([
-    ['a GOOGLE block profile, written back into the block', ossieDoc({extra: block}),
-     {...strict, flavor: 'ossie' as const}],
-    ['a GOOGLE block profile, written as a profile file', ossieDoc({fieldExpr, extra: block}),
-     {...strict, flavor: 'google' as const}],
-    ['a profile file, written into the vanilla model file', googleDoc({fieldExpr}),
-     {...strict, flavor: 'ossie' as const, profileFiles: [prodFile]}],
-    ['a profile file, written beside the Google model file', googleDoc({fieldExpr}),
-     {...strict, flavor: 'google' as const, profileFiles: [prodFile]}],
-    ['a profile file with a malformed action', googleDoc({fieldExpr}),
-     {...strict, flavor: 'google' as const, profileFiles: [withActions]}],
-  ])('translates %s', async (_, input, opts) => {
+    ['translates a GOOGLE block profile, written back into the block',
+     ossieDoc({extra: block}), ossie, true],
+    ['translates a GOOGLE block profile, written as a profile file',
+     ossieDoc({fieldExpr, extra: block}), google, true],
+    ['translates a profile file, written into the vanilla model file', googleDoc({fieldExpr}),
+     {...ossie, profileFiles: [prodFile]}, true],
+    ['translates a profile file, written beside the Google model file',
+     googleDoc({fieldExpr}), {...google, profileFiles: [prodFile]}, true],
+    ['translates a profile file with a malformed action', googleDoc({fieldExpr}),
+     {...google, profileFiles: [withActions]}, true],
+    ['translates a BigLake profile file', googleDoc({fieldExpr}),
+     {...google, profileFiles: [fileOf(prodOn(bigLake))]}, true],
+    ['skips a Snowflake profile file', googleDoc({fieldExpr}),
+     {...google, profileFiles: [fileOf(prodOn(sfEntry))]}, false],
+    ['skips a Spanner GOOGLE block profile, written as a profile file',
+     ossieDoc({fieldExpr, extra: blockOf(prodOn(SPANNER_TABLE))}), google, false],
+  ])('%s', async (_, input, opts, translated) => {
     const res = await importSemanticModelYaml(input, opts);
     expect(res.errors).toEqual([]);
     const written = res.files.length > 1 ?
         loadProfileFile(res.files[1].content, 'prod', {skipActions: true}) :
         loadModels(res.files[0].content).models[0].profiles![0];
+    const bigQuery = {
+      dialect: 'BIGQUERY' as const,
+      expression: 'COALESCE(o.order_id, 0) + COALESCE(o.order_id, 1) + COALESCE(o.order_id, 2)',
+    };
     expect(written.entities[0].fields![0].dialects).toEqual([
-      {dialect: 'SNOWFLAKE', expression: SNOWFLAKE},
-      {
-        dialect: 'BIGQUERY',
-        expression: 'COALESCE(o.order_id, 0) + COALESCE(o.order_id, 1) + COALESCE(o.order_id, 2)',
-      },
+      {dialect: 'SNOWFLAKE', expression: SNOWFLAKE}, ...translated ? [bigQuery] : [],
     ]);
-    expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual([
+    expect(res.warnings.filter(w => w.startsWith('profile '))).toEqual(translated ? [
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
-    ]);
+    ] : []);
   });
 
   test('reports a profile file it writes that does not parse', async () => {
@@ -415,8 +432,7 @@ entities:
      profileFile('orders.total', `${COMMENTED} [${SF}, ${BQ}]`)],
   ])('writes a profile file with %s as it writes the model file', async (_, input, output) => {
     const res = await importSemanticModelYaml(model, {
-      ...strict, flavor: 'google',
-      profileFiles: [{fileName: 'retail.profile.prod.yaml', content: input}],
+      ...google, profileFiles: [{fileName: 'retail.profile.prod.yaml', content: input}],
     });
     expect(res.files[1].content).toBe(output);
     const [total, orderId] = texts(input);

@@ -2611,7 +2611,7 @@ semantic_model:
       "Error: '--transpile' is no longer supported on 'kcmd push'; use " +
       "'kcmd import <file> --input first-party --flavor <ossie|google> " +
       "--transpile' to translate SQL dialects when importing a model, in the " +
-      'model and each profile the import writes.',
+      'model and each profile whose tables are all in BigQuery or BigLake.',
     ]);
     expect(prints(console.warn)).toEqual([]);
   });

@@ -1288,8 +1288,9 @@ function moveConstructs(
  * Loads `doc.root` into the `SemanticModel` IR, runs `transpileModel` to
  * translate vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, and
  * writes any newly added `BIGQUERY` dialect entries back onto `doc`, including
- * the field bindings of the profiles in the model's `GOOGLE` blocks. Translates
- * the model's `profileFiles` the same way and returns them.
+ * the field bindings of each BigQuery profile (`isBigQueryProfile`) in the
+ * model's `GOOGLE` blocks. Translates the BigQuery profiles among
+ * `profileFiles` the same way and returns every file.
  */
 async function transpileDocument(
     doc: ImportDocument,
@@ -1321,7 +1322,7 @@ async function transpileDocument(
     const transpiled = await transpileModel({
       ...m,
       profiles: [...(m.profiles ?? []), ...loaded.filter(p => p !== undefined)],
-    });
+    }, {translatesProfile: isBigQueryProfile});
     doc.warnings.push(...transpiled.warnings);
     const profile = (name: unknown) =>
         transpiled.model.profiles?.find(p => p.name === name);
@@ -1353,6 +1354,16 @@ async function transpileDocument(
     }
   }
   return translatedFiles;
+}
+
+// Whether push reads `profile` as a BigQuery profile: it names at least one
+// source in an accepted form, and each is a BigQuery or BigLake table.
+function isBigQueryProfile(profile: ProfileSpec): boolean {
+  const entities = profile.entities.flatMap(
+      ({source}) => isAcceptedSource(source) ?
+          [{authoredSource: source, dataSource: source!}] :
+          []);
+  return sourcesDialect({entities}) === 'BIGQUERY';
 }
 
 /**
@@ -1584,7 +1595,7 @@ async function generateAdaptedFiles(
 
   // 2. When `transpile` is enabled and no prior errors occurred, translate
   // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, in the model
-  // and in `profiles`.
+  // and in each BigQuery profile among `profiles`.
   if (transpile && doc.errors.length === 0) {
     profiles = await transpileDocument(doc, profiles);
   }
