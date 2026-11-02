@@ -3,7 +3,7 @@ type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/posts_questions
 title: Stack Overflow Posts Questions
 description: Contains all question posts from Stack Overflow.
-tags: stackoverflow, posts, questions
+tags: [stackoverflow, posts, questions]
 generated:
   at: '2026-07-10T22:49:19+00:00'
   by: reference_agent/gemini-2.5-flash

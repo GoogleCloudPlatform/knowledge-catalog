@@ -2,14 +2,15 @@
 #
 # TPC-DS model exercising relationship edge cases: a relationship whose
 # from_columns and to_columns share the same column name, and a target
-# dimension (date_dim) that declares no primary_key and no fields (only
-# custom_extensions). Fields carry a second, non-BigQuery dialect variant to
-# exercise dialect selection.
+# dimension (date_dim) that declares a primary key but no fields (only
+# custom_extensions). A relationship's to_columns must cover a key of its
+# target, so date_dim declares the one its join uses.
 #
 # Not to be confused with fixtures/ossie/tpcds_semantic_model.yaml: that is the
-# Apache Ossie reference example, copied verbatim to test that the loader parses
-# the canonical spec example faithfully. This one is hand-authored to isolate
-# the edge cases above for the loader -> BigQuery DDL goldens.
+# Apache Ossie reference example, copied with its sources rewritten, to test
+# that the loader parses the canonical spec example faithfully. This one is
+# hand-authored to isolate the edge cases above for the loader -> BigQuery DDL
+# goldens.
 
 version: "0.2.0.dev0"
 
@@ -19,7 +20,7 @@ semantic_model:
 
     datasets:
       - name: store_sales
-        source: tpcds.public.store_sales
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store_sales
         primary_key: [ss_item_sk, ss_ticket_number]
         description: Fact table containing all store sales transactions
         fields:
@@ -28,8 +29,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_item_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_item_sk}"
             dimension:
               is_time: false
           - name: ss_ticket_number
@@ -37,8 +36,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_ticket_number
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_ticket_number}"
             dimension:
               is_time: false
           - name: ss_customer_sk
@@ -46,8 +43,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_customer_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_customer_sk}"
             dimension:
               is_time: false
           - name: ss_store_sk
@@ -55,8 +50,6 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_store_sk
-                - dialect: MAQL
-                  expression: "{label/store_sales.attr.store_sales.ss_store_sk}"
             dimension:
               is_time: false
           - name: ss_quantity
@@ -64,36 +57,28 @@ semantic_model:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_quantity
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_quantity}"
             description: Quantity of items sold
           - name: ss_sales_price
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_sales_price
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_sales_price}"
             description: Sales price per unit
           - name: ss_ext_sales_price
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_ext_sales_price
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_ext_sales_price}"
             description: Extended sales price (quantity * price)
           - name: ss_net_profit
             expression:
               dialects:
                 - dialect: ANSI_SQL
                   expression: ss_net_profit
-                - dialect: MAQL
-                  expression: "{fact/store_sales.fact.store_sales.ss_net_profit}"
             description: Net profit from the sale
 
       - name: customer
-        source: tpcds.public.customer
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/customer
         primary_key: [c_customer_sk]
         description: Customer dimension with demographic information
         fields:
@@ -122,7 +107,7 @@ semantic_model:
             description: Customer last name
 
       - name: item
-        source: tpcds.public.item
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/item
         primary_key: [i_item_sk]
         description: Item/Product dimension
         fields:
@@ -155,7 +140,7 @@ semantic_model:
             description: Current price of the item
 
       - name: store
-        source: tpcds.public.store
+        source: bigquery.googleapis.com/projects/tpcds/datasets/public/tables/store
         primary_key: [s_store_sk]
         description: Store dimension with location attributes
         fields:
@@ -195,7 +180,8 @@ semantic_model:
             description: Number of employees at the store
 
       - name: date_dim
-        source: date_dim
+        source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/date_dim
+        primary_key: [ss_sold_date_sk]
         description: Date dimension with calendar attributes
         custom_extensions:
           - vendor_name: GOODDATA

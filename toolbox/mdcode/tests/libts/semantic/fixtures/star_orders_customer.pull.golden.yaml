@@ -1,0 +1,44 @@
+# warning: model 'sales': deployment names were not recovered (the catalog stores target URIs only); using 'default'
+version: 0.2.0.dev0/google
+semantic_model:
+  - name: sales
+    description: Sales orders with customer attributes
+    ai_context:
+      instructions: Use this model for order analysis.
+    deployments:
+      - name: default
+        target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
+    entities:
+      - name: orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
+        primary_key:
+          - o_orderkey
+        description: One row per order
+        fields:
+          - name: o_orderkey
+            description: Order identifier
+          - name: o_custkey
+          - name: o_orderdate
+            label: Order Date
+          - name: o_totalprice
+      - name: customer
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
+        primary_key:
+          - c_custkey
+        fields:
+          - name: c_custkey
+          - name: c_name
+            description: Customer name
+    relationships:
+      - name: orders_to_customer
+        from: orders
+        to: customer
+        from_columns:
+          - o_custkey
+        to_columns:
+          - c_custkey
+    metrics:
+      - name: total_revenue
+        description: Total order revenue
+      - name: order_count
+        description: Number of orders

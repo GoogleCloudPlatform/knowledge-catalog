@@ -5,19 +5,17 @@
 # ai_context at model / field / metric level, a time dimension (is_time), a
 # field label, and an entity-scoped COUNT metric.
 
-version: "0.2.0.dev0"
+version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
     description: Sales orders with customer attributes
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["//bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales"]}'
+    deployment_target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/sales
     ai_context:
       instructions: "Use this model for order analysis."
-    datasets:
+    entities:
       - name: orders
-        source: samples.tpch.orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
         primary_key: [o_orderkey]
         description: One row per order
         fields:
@@ -48,7 +46,7 @@ semantic_model:
                 - dialect: ANSI_SQL
                   expression: o_totalprice
       - name: customer
-        source: samples.tpch.customer
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/customer
         primary_key: [c_custkey]
         fields:
           - name: c_custkey
