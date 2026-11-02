@@ -3,7 +3,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {Action, CustomExtension, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Action, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import {listed, LoadedModel, LoadOptions, loadModels} from '../../../src/libts/semantic/loader';
 import {applyProfile, applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
@@ -18,26 +18,25 @@ const BQ_TARGET =
 const SPANNER_TARGET =
     'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
 
-function googleExt(targets: string[]): CustomExtension {
-  return {
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: targets})
-  };
-}
-
 function loaded(model: SemanticModel, document = 'doc'): LoadedModel {
   return {document, model};
 }
 
-function model(over: Partial<SemanticModel> = {}, exts?: CustomExtension[]):
+function model(over: Partial<SemanticModel> = {}, targets?: string[]):
     SemanticModel {
+  const deployments = over.deployments ??
+      targets?.map((target, i) => ({
+                     name: targets.length === 1 ? 'default' :
+                                                  `deployment_${i + 1}`,
+                     target,
+                   }));
   return {
     name: 'm',
     entities: [],
     relationships: [],
     metrics: [],
-    ...(exts ? {customExtensions: exts} : {}),
     ...over,
+    ...(deployments ? {deployments} : {}),
   };
 }
 
@@ -54,7 +53,7 @@ describe('validatePushRequirements', () => {
           metrics:
               [{name: 'rev', expression: 'SUM(o.p)', entity: 'o'} as Metric]
         },
-        [googleExt([BQ_TARGET])]);
+        [BQ_TARGET]);
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
 
@@ -62,7 +61,7 @@ describe('validatePushRequirements', () => {
       'a BigQuery-target metric that resolves to no entity is rejected', () => {
         const m = model(
             {metrics: [{name: 'cnt', expression: 'COUNT(*)'} as Metric]},
-            [googleExt([BQ_TARGET])]);
+            [BQ_TARGET]);
         const errs = validatePushRequirements([loaded(m)]);
         expect(errs.length).toBe(1);
         expect(errs[0]).toContain('metric \'cnt\'');
@@ -80,22 +79,15 @@ describe('validatePushRequirements', () => {
             authoredEntity: 'o',
           } as Metric],
         },
-        [googleExt([SPANNER_TARGET])]);
+        [SPANNER_TARGET]);
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
-  });
-
-  test('malformed GOOGLE extension JSON is reported, not thrown', () => {
-    const m = model({}, [{vendorName: 'GOOGLE', data: '{not json'}]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain('not valid JSON');
   });
 
   test('errors accumulate across models', () => {
     const unresolved = (name: string) => loaded(
         model(
             {name, metrics: [{name: 'cnt', expression: 'COUNT(*)'} as Metric]},
-            [googleExt([BQ_TARGET])]),
+            [BQ_TARGET]),
         name);
     expect(validatePushRequirements([unresolved('a'), unresolved('b')]))
         .toHaveLength(2);
@@ -261,7 +253,7 @@ describe('action parameters', () => {
             parameters: [{name: 'target', type: 'Order'}],
           }],
         },
-        [googleExt([BQ_TARGET])]);
+        [BQ_TARGET]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.some(e => e.includes('which is an entity'))).toBe(true);
     expect(errs.some(e => e.includes('{concept: Order, field: <field>}')))
@@ -289,7 +281,7 @@ describe('action parameters', () => {
             parameters: [{name: 'acct', concept: 'Savings', field: 'id'}],
           }],
         },
-        [googleExt([BQ_TARGET])]);
+        [BQ_TARGET]);
     const errs = validatePushRequirements([loaded(m)]);
     expect(errs.some(e => e.includes('NoSuchEntity'))).toBe(true);
     expect(errs.some(e => e.includes('declares no datatype'))).toBe(false);
@@ -320,11 +312,11 @@ describe('action statement pre-flight', () => {
   }
 
   function spannerModel(actions: Action[]): LoadedModel {
-    return loaded(model({actions}, [googleExt([SPANNER_TARGET])]));
+    return loaded(model({actions}, [SPANNER_TARGET]));
   }
 
   function bqModel(actions: Action[]): LoadedModel {
-    return loaded(model({actions}, [googleExt([BQ_TARGET])]));
+    return loaded(model({actions}, [BQ_TARGET]));
   }
 
   const GOOD = 'UPDATE account SET balance = @amount WHERE account_id = @id';
@@ -1367,7 +1359,7 @@ semantic_model:
             destination: {entity: 'customers', columns: []},
           }],
         },
-        [googleExt([BQ_TARGET])]))]);
+        [BQ_TARGET]))]);
     const halfBound =
         "relationship 'placed_by' in model 'm' (doc): from_columns and to_columns must be given together (both bind the edge) or both omitted (a logical edge); one without the other is a half-bound join.";
     expect(oneSideEmptyOnGraph).toEqual([halfBound]);
@@ -1430,7 +1422,7 @@ describe('field and metric expression references', () => {
             entities: [orders()],
             metrics: [{name: 'cnt', expression: 'COUNT(*)'}],
           },
-          [googleExt([target])]);
+          [target]);
       expect(validatePushRequirements([loaded(noEntity(BQ_TARGET))]).join('\n'))
           .toContain("metric 'cnt'");
       expect(validatePushRequirements([loaded(noEntity(SPANNER_TARGET))])
@@ -1522,7 +1514,7 @@ describe('field and metric expression references', () => {
       expect(validatePushRequirements([loaded(m)]))
           .toEqual(expected);
       // The BigQuery metric check reports each metric once.
-      const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
+      const graph = model(m, [BQ_TARGET]);
       expect(validatePushRequirements([loaded(graph)], {fieldsPruned: true})
                  .filter(e => e.startsWith('metric ')))
           .toEqual(expected);
@@ -1651,7 +1643,7 @@ describe('field and metric expression references', () => {
     test('checks BigQuery generator metric placement rules only when pushing to a BigQuery graph', () => {
       const bqPush = (entities: Entity[], metric: Metric, version?: SemanticModel['version']) =>
           validatePushRequirements(
-              [loaded(model({version, entities, metrics: [metric]}, [googleExt([BQ_TARGET])]))])
+              [loaded(model({version, entities, metrics: [metric]}, [BQ_TARGET]))])
               .join('\n');
 
       // A comment naming a second entity passes on every push, because the generator reads the
@@ -1661,10 +1653,10 @@ describe('field and metric expression references', () => {
       };
       expect(bqPush([orders(), customer()], commentMetric)).toBe('');
       expect(validatePushRequirements(
-                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([BQ_TARGET])]))]))
+                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [BQ_TARGET]))]))
           .toEqual([]);
       expect(validatePushRequirements(
-                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([SPANNER_TARGET])]))]))
+                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [SPANNER_TARGET]))]))
           .toEqual([]);
 
       const netEntity: Entity = {
@@ -1687,7 +1679,7 @@ describe('field and metric expression references', () => {
           "several entities (orders, customer); a BigQuery measure belongs to one entity's node " +
           'table, so scope its expression to one entity.');
       expect(validatePushRequirements(
-                 [loaded(model({entities: [orders(), customer()], metrics: [twoEntities]}, [googleExt([SPANNER_TARGET])]))]))
+                 [loaded(model({entities: [orders(), customer()], metrics: [twoEntities]}, [SPANNER_TARGET]))]))
           .toEqual([]);
 
       // Vanilla `COUNT(*)` anchored via a GOOGLE custom_extensions block loads with `metric.entity` set
@@ -2066,7 +2058,7 @@ ${extraMetric}`;
       expect(validatePushRequirements([loaded(kcOnly)]))
           .toEqual(expected);
       const graph =
-          model({entities: [{...orders(), fields}]}, [googleExt([BQ_TARGET])]);
+          model({entities: [{...orders(), fields}]}, [BQ_TARGET]);
       const errors =
           validatePushRequirements([loaded(graph)], {fieldsPruned: true});
       for (const e of expected) expect(errors).toContain(e);
@@ -2352,7 +2344,7 @@ ${extraMetric}`;
       expect(errors.join('\n')).toContain("extends unknown entity 'gone'");
       for (const e of expected) expect(errors).toContain(e);
       // The BigQuery metric check reports each metric once.
-      const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
+      const graph = model(m, [BQ_TARGET]);
       expect(validatePushRequirements([loaded(graph)], {fieldsPruned: true})
                  .filter(e => e.startsWith('metric ')))
           .toEqual(expected.slice(1));
@@ -2379,7 +2371,7 @@ ${extraMetric}`;
               },
             }],
           },
-          [googleExt([BQ_TARGET])]);
+          [BQ_TARGET]);
       const errors = validatePushRequirements([loaded(m)]);
       expect(errors).toContain(
           "relationship 'bought' field 'note' in model 'm' (doc): " +

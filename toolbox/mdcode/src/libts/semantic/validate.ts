@@ -6,8 +6,7 @@
 // empty array means valid); push prints them and aborts, and `kcmd import`
 // reports them. Kept separate from the loader -- which validates a document
 // against the schema -- because these are deployment requirements, not schema
-// rules, and they read the GOOGLE deployment-target extension the BigQuery leg
-// owns.
+// rules.
 
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
@@ -53,17 +52,7 @@ export function validatePushRequirements(
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...nameAndDescriptionErrors(model, document, !!opts.v2Aspects));
-    let deployInfo: ReturnType<typeof googleDeploymentTargets>;
-    try {
-      // One pass over the model's GOOGLE extension(s): both checks below read
-      // the same parse rather than re-parsing the JSON per reader.
-      deployInfo = googleDeploymentTargets(model);
-    } catch (err: any) {
-      // Malformed GOOGLE extension JSON: surface it as a validation error here
-      // rather than letting it throw out of a later leg as an uncaught stack.
-      errors.push(`${err.message || err} (${document})`);
-      continue;
-    }
+    const deployInfo = googleDeploymentTargets(model);
 
     // A model that targets a graph (BigQuery OR Spanner) must have every
     // relationship's join columns bound. The loader accepts a column-less
@@ -2373,15 +2362,8 @@ export async function validateBigQueryDataSources(
 // bills to: the project of the model's first BigQuery Graph deployment target
 // (where the CREATE PROPERTY GRAPH runs), falling back to the scope's default
 // project when the model declares no parseable BigQuery Graph target.
-// googleDeploymentTargets is safe here: validatePushRequirements ran first and
-// already rejected a malformed GOOGLE extension.
 function billingProject(model: SemanticModel, defaultProject: string): string {
-  try {
-    return googleDeploymentTargets(model).bigQuery[0]?.project ??
-        defaultProject;
-  } catch {
-    return defaultProject;
-  }
+  return googleDeploymentTargets(model).bigQuery[0]?.project ?? defaultProject;
 }
 
 
@@ -2515,12 +2497,7 @@ export async function validateSpannerActionStatements(
     // The database an action writes to is the one this profile deploys its
     // graph to: on Spanner the published graph and the operational rows live in
     // the same database. A model with no Spanner target contributes nothing.
-    let target: SpannerGraphTarget|undefined;
-    try {
-      target = spannerGraphTargets(loaded.model).targets[0];
-    } catch {
-      continue;
-    }
+    const target = spannerGraphTargets(loaded.model).targets[0];
     if (!target) continue;
     const key = `${target.project}/${target.instance}/${target.database}`;
     const entry = byDatabase.get(key) ?? {target, statements: []};

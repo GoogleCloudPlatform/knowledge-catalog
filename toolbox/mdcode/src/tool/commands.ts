@@ -122,17 +122,11 @@ export interface PushOptions {
 }
 
 
-// True when a model declares a deployment target of the given graph type. The
-// loader rejects a GOOGLE block that makes googleDeploymentTargets throw, so
-// only a model built in memory reaches the catch.
+// True when a model declares a deployment target of the given graph type.
 function hasTargetType(
     loaded: Pick<LoadedModel, 'model'>, type: 'bigquery'|'spanner'): boolean {
-  try {
-    const t = googleDeploymentTargets(loaded.model);
-    return type === 'bigquery' ? t.bigQuery.length > 0 : t.spanner.length > 0;
-  } catch {
-    return false;
-  }
+  const t = googleDeploymentTargets(loaded.model);
+  return type === 'bigquery' ? t.bigQuery.length > 0 : t.spanner.length > 0;
 }
 
 // The dialect pruning reads a model's SQL in: SPANNER when the model has a
@@ -1173,13 +1167,7 @@ async function printStore(
 // run.
 function printProfileReport(model: SemanticModel, name: string): void {
   // The targets the profile's deployments name, as --print-store reads them.
-  let targets: string[] = [];
-  try {
-    targets = profileTargets(model, name);
-  } catch {
-    // A GOOGLE block that is not valid JSON is a push-time error; here just
-    // show none rather than abort the listing.
-  }
+  const targets = profileTargets(model, name);
   // Pruned for the graphs this profile's own deployments name.
   const {report} = pruneUnavailable(
       model, name,

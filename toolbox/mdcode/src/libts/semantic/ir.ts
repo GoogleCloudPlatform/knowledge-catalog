@@ -49,10 +49,8 @@ export interface CustomExtension {
  * (edges), with model-level metrics defined over them.
  *
  * The IR is primarily semantics. The loader reads a model's named
- * `deployments:` list onto `deployments`. In the Google flavor it also folds
- * their target URIs into a model-level GOOGLE `custom_extensions` block for the
- * consumers that read it. A vanilla model lists its deployments in its GOOGLE
- * block, which the loader reads and does not fold.
+ * `deployments:` list onto `deployments` (from `deployments:` in the Google
+ * flavor or from the model-level GOOGLE `custom_extensions` block in vanilla).
  */
 export interface SemanticModel {
   name: string;
@@ -77,8 +75,7 @@ export interface SemanticModel {
   // absent on models authored before constraints existed, so consumers read it
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
-  // Vendor extension blocks carried verbatim (round-trip fidelity), and the
-  // GOOGLE block the loader folds a Google-flavor model's `deployments` into.
+  // Vendor extension blocks carried verbatim (round-trip fidelity).
   customExtensions?: CustomExtension[];
   version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
   // Named profiles. A Google-flavor model's come from its

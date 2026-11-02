@@ -45,7 +45,6 @@
 
 import * as yaml from 'yaml';
 
-import {googleBlockTargets, unnamedDeployments} from './deployment_target';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, Constraint, CustomExtension, Entity, Executor, Field, Metric, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {FORMAT_VERSION_PLACEMENT, FormatVersion, GOOGLE_VERSION, OSSIE_VERSION, writtenSource} from './loader';
 import {nameProblem} from './names';
@@ -53,8 +52,7 @@ import {declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE} from './resolve_profiles';
 
 // The vendor tag for Google-specific extension blocks on the IR (kept in sync
-// with loader.GOOGLE_VENDOR). In the Google flavor, a model-level deployment
-// target list rides in one as a folded shim alongside `model.deployments`.
+// with loader.GOOGLE_VENDOR).
 const GOOGLE_VENDOR = 'GOOGLE';
 
 // The dialect label for the IR's target/canonical `expression` when `dialects`
@@ -364,18 +362,16 @@ function modelDoc(
         `at least one and will not load until an entity is present.`);
   }
   const tableKey = isGoogleVersion ? 'entities' : 'datasets';
-  // Under GOOGLE_VERSION, deployments come from `model.deployments`, or from a
-  // GOOGLE `deploymentTargets` block when that is empty. Under OSSIE_VERSION,
-  // named deployments and profiles go in a GOOGLE block on the model.
+  // Under GOOGLE_VERSION, deployments come from `model.deployments`. Under
+  // OSSIE_VERSION, named deployments and profiles go in a GOOGLE block on the
+  // model.
   const namedDeployments = (model.deployments ?? []).map(d => compact({
                                                            name: d.name,
                                                            target: d.target,
                                                            profile: d.profile
                                                          }));
   const deployments = placement.model.deployments === 'native' ?
-      nonEmpty(
-          namedDeployments.length ? namedDeployments :
-                                    deploymentsFromGoogleExtensions(model)) :
+      nonEmpty(namedDeployments) :
       undefined;
   const blockProfiles = placement.model.profiles === 'block' ?
       nonEmpty(profileDocuments(model, warnings).map(p => p.doc)) :
@@ -415,7 +411,7 @@ function modelDoc(
         undefined,
     custom_extensions: customExtensionsDoc(
         model.customExtensions, `model '${model.name}'`, isGoogleVersion,
-        /* isModel= */ true, warnings, /* isField= */ false, blockPayload),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -493,7 +489,7 @@ function datasetDoc(
                              isGoogleVersion))),
     custom_extensions: customExtensionsDoc(
         entity.customExtensions, `entity '${entity.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings, /* isField= */ false, blockPayload),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -534,7 +530,7 @@ function fieldDoc(
     ai_context: aiContextDoc(field.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         field.customExtensions, `field '${field.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings, /* isField= */ true),
+        warnings, /* isField= */ true),
   });
 }
 
@@ -565,7 +561,7 @@ function metricDoc(metric: Metric, warnings: string[], version: FormatVersion):
     ai_context: aiContextDoc(metric.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         metric.customExtensions, `metric '${metric.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings, /* isField= */ false, blockPayload),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -775,7 +771,7 @@ function relationshipDoc(
     ai_context: aiContextDoc(rel.aiContext, isGoogleVersion),
     custom_extensions: customExtensionsDoc(
         rel.customExtensions, `relationship '${rel.name}'`, isGoogleVersion,
-        /* isModel= */ false, warnings, /* isField= */ false, blockPayload),
+        warnings, /* isField= */ false, blockPayload),
   });
 }
 
@@ -887,17 +883,6 @@ function aiContextDoc(ai: AiContext|undefined, isGoogleVersion: boolean):
   return isGoogleVersion ? {...base, custom} : {...custom, ...base};
 }
 
-// The deployments a vanilla model lists only as targets in its GOOGLE blocks,
-// named as a pull names them. A block whose data is not valid JSON gives none,
-// and customExtensionsDoc warns that it was dropped. The other blocks still
-// give theirs.
-function deploymentsFromGoogleExtensions(model: SemanticModel):
-    Array<{name: string; target: string}> {
-  const targets = (model.customExtensions ??
-                   []).flatMap(ext => blockTargets(ext, model.name));
-  return unnamedDeployments(targets);
-}
-
 // The serialized payload of a synthesized `GOOGLE` `custom_extensions` block
 // (the serializer counterpart to `GoogleBlockValues` in `loader.ts`, covering
 // the `'block'`-placed constructs of
@@ -912,16 +897,14 @@ interface GoogleBlockPayload {
 
 // Serializes `custom_extensions` for one IR element. Under OSSIE_VERSION,
 // third-party extensions are emitted, followed by a synthesized GOOGLE block
-// when `blockPayload` carries any keys. Any other raw GOOGLE block on the IR
+// when `blockPayload` carries any keys. Any raw GOOGLE block on the IR
 // is dropped with a warning so it cannot collide with the synthesized block or
 // write keys the loader rejects. Under GOOGLE_VERSION,
 // third-party extensions are written out unchanged without warning, while
-// `GOOGLE` blocks are skipped (silently for the model's `deploymentTargets`
-// block, and with a warning for any other `GOOGLE` block).
+// `GOOGLE` blocks are skipped with a warning.
 function customExtensionsDoc(
     exts: CustomExtension[]|undefined, where: string, isGoogleVersion: boolean,
-    isModel: boolean, warnings: string[], isField = false,
-    blockPayload?: GoogleBlockPayload):
+    warnings: string[], isField = false, blockPayload?: GoogleBlockPayload):
     Array<{vendor_name: string; data: string}>|undefined {
   const payload: GoogleBlockPayload = blockPayload ? {...blockPayload} : {};
   if (!exts?.length && Object.keys(payload).length === 0) return undefined;
@@ -931,12 +914,6 @@ function customExtensionsDoc(
     for (const e of exts ?? []) {
       if (e.vendorName !== GOOGLE_VENDOR) {
         kept.push({vendor_name: e.vendorName, data: e.data});
-        continue;
-      }
-      // The loader's copy of the model's `deployments`, which the GOOGLE
-      // block below writes in their own form.
-      if (isModel && payload.deployments !== undefined &&
-          isDeploymentTargetsBlock(e)) {
         continue;
       }
       droppedGoogle += 1;
@@ -968,7 +945,6 @@ function customExtensionsDoc(
       kept.push({vendor_name: ext.vendorName, data: ext.data});
       continue;
     }
-    if (isModel && blockTargets(ext, '').length > 0) continue;
     droppedGoogle += 1;
   }
   if (droppedGoogle > 0) {
@@ -977,30 +953,6 @@ function customExtensionsDoc(
         `representation under '${GOOGLE_VERSION}' and are not serialized`);
   }
   return nonEmpty(kept);
-}
-
-/**
- * Returns true if `e.data` is a JSON object with a `'deploymentTargets'`
- * property.
- *
- * The loader folds a Google-flavor model's `deployments` into such a block.
- */
-function isDeploymentTargetsBlock(e: CustomExtension): boolean {
-  try {
-    const d = JSON.parse(e.data);
-    return !!d && typeof d === 'object' &&
-        Object.hasOwn(d, 'deploymentTargets');
-  } catch {
-    return false;
-  }
-}
-
-function blockTargets(ext: CustomExtension, modelName: string): string[] {
-  try {
-    return googleBlockTargets([ext], modelName);
-  } catch {
-    return [];
-  }
 }
 
 // Drops undefined-valued keys so the emitted YAML only shows fields the model

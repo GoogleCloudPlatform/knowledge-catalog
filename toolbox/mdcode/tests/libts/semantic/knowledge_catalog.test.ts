@@ -480,10 +480,7 @@ describe('model-level structure', () => {
           relationships: [],
           metrics: [],
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
-          customExtensions: [{
-            vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: [spannerUri]}),
-          }],
+          deployments: [{name: 'default', target: spannerUri}],
         };
         const {entries} = generateCatalogResources(model, OPTS);
         const anchor = entries[0];
@@ -505,10 +502,11 @@ describe('model-level structure', () => {
           relationships: [],
           metrics: [],
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
-          customExtensions: [{
-            vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: [spannerUri, bqUri, alloyUri]}),
-          }],
+          deployments: [
+            {name: 'd1', target: spannerUri},
+            {name: 'd2', target: bqUri},
+            {name: 'd3', target: alloyUri},
+          ],
         };
         const {entries} = generateCatalogResources(model, OPTS);
         const anchor = entries[0];
@@ -532,10 +530,7 @@ describe('model-level structure', () => {
           relationships: [],
           metrics: [],
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
-          customExtensions: [{
-            vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: targets}),
-          }],
+          deployments: targets.map((target, i) => ({name: `d_${i}`, target})),
         };
         const {entries} = generateCatalogResources(model, OPTS);
         const anchor = entries[0];
@@ -1230,9 +1225,7 @@ ${ENTITY_YAML('orders')}
            'only block is GOOGLE\'s',
        () => {
          const model = loaded();
-         // The loader folds the deployments into a GOOGLE block.
-         expect(model.customExtensions!.some(x => x.vendorName === 'GOOGLE'))
-             .toBe(true);
+         model.customExtensions!.push({vendorName: 'GOOGLE', data: '{}'});
          const DBT = {vendorName: 'DBT', data: '{"materialized": "table"}'};
          expect(data(model, 'sales', 'semantic-extensions')).toEqual({
            customExtensions:
@@ -1242,8 +1235,7 @@ ${ENTITY_YAML('orders')}
              [{vendorName: 'Google', data: '{}'}];
          expect(metric(model, 'revenue', 'semantic-extensions'))
              .toEqual({customExtensions: [{vendorName: 'Google', data: '{}'}]});
-         model.customExtensions =
-             model.customExtensions!.filter(x => x.vendorName === 'GOOGLE');
+         model.customExtensions = [{vendorName: 'GOOGLE', data: '{}'}];
          model.metrics[0].customExtensions =
              [{vendorName: 'GOOGLE', data: '{"entity": "orders"}'}];
          expect(data(model, 'sales', 'semantic-extensions')).toBeUndefined();

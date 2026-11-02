@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {checkCatalogAspects} from './deploy_knowledge_catalog';
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
+import {deploymentTargetError, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dialectLookupKey, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
@@ -1506,18 +1506,14 @@ function withDialects(
 }
 
 /**
- * Validates every deployment target on `model` using `googleDeploymentTargets`
- * and `targetProblem` so invalid targets fail import with `kcmd push`'s exact
- * message.
+ * Validates every deployment target on `model` using `targetProblem` so
+ * invalid targets fail import with `kcmd push`'s exact message.
  */
 function validateDeploymentTargets(
     model: SemanticModel, doc: ImportDocument): void {
-  for (const t of googleDeploymentTargets(model).uris) {
-    if (targetProblem('', t)) {
-      const d = model.deployments?.find(x => x.target === t);
-      doc.errors.push(
-          d ? deploymentTargetError(model, d) :
-              googleBlockTargetError(model, t));
+  for (const d of model.deployments ?? []) {
+    if (targetProblem('', d.target)) {
+      doc.errors.push(deploymentTargetError(model, d));
     }
   }
 }

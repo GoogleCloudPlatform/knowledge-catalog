@@ -1197,16 +1197,14 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
     expect(m.metrics.find(mt => mt.name === 'revenue')!.customExtensions?.[0].data).toContain('currency');
   });
 
-  test('sales_google_ext.yaml: GOOGLE block verbatim + datatypes + unique_keys', () => {
+  test('sales_google_ext.yaml: deployments + datatypes + unique_keys', () => {
     const {models} = loadModels(fixture('sales_google_ext.yaml'));
     const m = models[0];
-    expect(m.customExtensions).toEqual([{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({
-        deploymentTargets: [
-          'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph'
-        ]
-      }),
+    expect(m.customExtensions).toBeUndefined();
+    expect(m.deployments).toEqual([{
+      name: 'default',
+      target:
+          'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph',
     }]);
     const orders = m.entities[0];
     expect(orders.uniqueKeys).toEqual([['o_orderkey'], ['o_ordernumber']]);
@@ -1941,7 +1939,6 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
     expect(m.relationships[0].description).toBe('who placed it');
     expect(m.metrics[0].authoredEntity).toBe('orders');
     expect(m.metrics[0].entity).toBe('orders');
-    // No folded `deploymentTargets` copy joins the model's blocks.
     for (const o of [m, m.entities[0], m.relationships[0], m.metrics[0]]) {
       expect(o.customExtensions).toEqual([{ vendorName: 'ACME', data: '{"a":1}' }]);
     }
@@ -3606,7 +3603,7 @@ describe('deployments and inline profiles', () => {
   const BQ_TARGET = 'bigquery.googleapis.com/projects/acme/datasets/analytics/propertyGraphs/sales';
   const SPANNER_TARGET = 'spanner.googleapis.com/projects/acme/instances/test/databases/sales/graphs/sales';
 
-  test('a named deployments list loads onto model.deployments and folds targets into the GOOGLE custom_extensions shim', () => {
+  test('a named deployments list loads onto model.deployments without folding into custom_extensions', () => {
     const { models } = load(GOOGLE, {
       name: 'sales',
       deployments: [
@@ -3620,12 +3617,8 @@ describe('deployments and inline profiles', () => {
       { name: 'prod', target: BQ_TARGET },
       { name: 'staging', target: SPANNER_TARGET, profile: 'spanner_binding' },
     ]);
-    expect(m.customExtensions).toEqual([
-      {
-        vendorName: 'GOOGLE',
-        data: JSON.stringify({ deploymentTargets: [BQ_TARGET, SPANNER_TARGET] }),
-      },
-    ]);
+    expect(m.customExtensions).toBeUndefined();
+    expect(googleDeploymentTargets(m).uris).toEqual([BQ_TARGET, SPANNER_TARGET]);
   });
 
   test('duplicate deployment names are rejected', () => {

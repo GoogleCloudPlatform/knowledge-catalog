@@ -34,21 +34,21 @@ const BQ_URI =
 const OSSIE = fs.readFileSync(
     path.join(FIXTURES, 'sales_spanner_graph_target.yaml'), 'utf8');
 
-function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
+function modelWithDeployments(...targets: string[]): SemanticModel {
   return {
     name: 'm',
     entities: [],
     relationships: [],
     metrics: [],
-    customExtensions: [{vendorName: vendor, data}],
+    deployments: targets.map((target, i) => ({name: `d_${i}`, target})),
   };
 }
 
 
 describe('spannerGraphTargets', () => {
   test('parses a Spanner Graph deployment target', () => {
-    const {targets, malformed} = spannerGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [SPANNER_URI]})));
+    const {targets, malformed} =
+        spannerGraphTargets(modelWithDeployments(SPANNER_URI));
     expect(targets).toEqual([
       {
         project: 'demo',
@@ -64,8 +64,8 @@ describe('spannerGraphTargets', () => {
   test('a BigQuery target is not a Spanner target, and not malformed', () => {
     // A BigQuery URI is a recognized destination, just not a Spanner one, so it
     // is neither returned as a Spanner target nor flagged as a typo.
-    const {targets, malformed} = spannerGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [BQ_URI]})));
+    const {targets, malformed} =
+        spannerGraphTargets(modelWithDeployments(BQ_URI));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([]);
   });
@@ -76,16 +76,14 @@ describe('spannerGraphTargets', () => {
   test('an AlloyDB target is not a Spanner target, and not malformed', () => {
     const pg =
         'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
-    const {targets, malformed} = spannerGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [pg]})));
+    const {targets, malformed} = spannerGraphTargets(modelWithDeployments(pg));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([]);
   });
 
   test('an unsupported target is collected as malformed', () => {
     const bad = 'cloudsql.googleapis.com/projects/p/whatever';
-    const {targets, malformed} = spannerGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [bad]})));
+    const {targets, malformed} = spannerGraphTargets(modelWithDeployments(bad));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([bad]);
   });
@@ -93,8 +91,8 @@ describe('spannerGraphTargets', () => {
   test('rejects a graph name with an injection character', () => {
     const evil =
         'spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/g`;DROP';
-    const {targets, malformed} = spannerGraphTargets(
-        modelWithExtension(JSON.stringify({deploymentTargets: [evil]})));
+    const {targets, malformed} =
+        spannerGraphTargets(modelWithDeployments(evil));
     expect(targets).toEqual([]);
     expect(malformed).toEqual([evil]);
   });
@@ -223,7 +221,7 @@ describe('deploySpanner', () => {
         path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
     const typo = 'spanner.googleapis.com/projects/demo/instance/i/databases/d/graphs/g';
     for (const [text, details] of [
-      [bqDoc, 'no Spanner Graph deploymentTarget'],
+      [bqDoc, 'no Spanner Graph deployment target'],
       [bqDoc.replace(/target: \S+/, `target: ${typo}`),
        `could not be parsed: ${typo}. Expected spanner.googleapis.com/` +
            `projects/<p>/instances/<i>/databases/<db>/graphs/<g>.`],

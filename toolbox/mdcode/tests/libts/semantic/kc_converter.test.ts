@@ -25,7 +25,7 @@ import {describe, expect, test} from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import {CustomExtension, Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
+import {Entity, Metric, SemanticModel} from '../../../src/libts/semantic/ir';
 import {linkNamePrefix, modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
@@ -473,24 +473,21 @@ describe('relationship recovery (schema-join links -> IR)', () => {
 
 
 describe(
-    'deployment-target recovery (semantic-model aspect -> deployments + custom_extensions)',
+    'deployment-target recovery (semantic-model aspect -> deployments)',
     () => {
-      test('the GOOGLE deployment targets ride back onto deployments and custom_extensions with a name warning', () => {
+      test('deployment targets ride back onto deployments with a name warning', () => {
         const uri =
             'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-        const data = JSON.stringify({deploymentTargets: [uri]});
         const model: SemanticModel = {
           name: 'sales',
-          customExtensions: [{vendorName: 'GOOGLE', data}],
+          deployments: [{name: 'default', target: uri}],
           entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: []}],
           relationships: [],
           metrics: [],
         };
         const {models, warnings} = roundTrip(model);
         expect(models[0].deployments).toEqual([{name: 'default', target: uri}]);
-        expect(models[0].customExtensions).toEqual([
-          {vendorName: 'GOOGLE', data}
-        ]);
+        expect(models[0].customExtensions).toBeUndefined();
         expect(warnings).toEqual([
           "model 'sales': deployment names were not recovered (the catalog stores target URIs only); using 'default'",
         ]);
@@ -517,19 +514,17 @@ describe(
             'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
         const model: SemanticModel = {
           name: 'sales',
-          customExtensions: [{
-            vendorName: 'GOOGLE',
-            data: JSON.stringify({deploymentTargets: [uri, uri]}),
-          }],
+          deployments: [
+            {name: 'd1', target: uri},
+            {name: 'd2', target: uri},
+          ],
           entities: [{name: 'e', dataSource: 'p.d.t', keys: [], fields: []}],
           relationships: [],
           metrics: [],
         };
         const {models} = roundTrip(model);
         expect(models[0].deployments).toEqual([{name: 'default', target: uri}]);
-        expect(models[0].customExtensions).toEqual([
-          {vendorName: 'GOOGLE', data: JSON.stringify({deploymentTargets: [uri]})},
-        ]);
+        expect(models[0].customExtensions).toBeUndefined();
       });
 
       test(
@@ -559,12 +554,7 @@ describe(
             expect(models[0].deployments).toEqual([
               {name: 'default', target: uri},
             ]);
-            expect(models[0].customExtensions).toEqual([
-              {
-                vendorName: 'GOOGLE',
-                data: JSON.stringify({deploymentTargets: [uri]}),
-              },
-            ]);
+            expect(models[0].customExtensions).toBeUndefined();
             expect(models[0].entities[0].authoredSource)
                 .toBe('bigquery.googleapis.com/projects/p/datasets/d/tables/t');
             expect(models[0].entities[0].dataSource).toBe('p.d.t');
@@ -1250,15 +1240,9 @@ function stripToKcFloor(model: SemanticModel): SemanticModel {
   // ai_context rides back through the built-in `guidelines` aspect, but only
   // `instructions` -- synonyms/examples are not persisted. Reduce every
   // entry-backed object's ai_context to instructions-only (dropping the block
-  // when it carried nothing else). A GOOGLE deployment-targets block also rides
-  // back, re-serialized to the reader's canonical JSON form.
+  // when it carried nothing else).
   floorAiContext(m);
-  const ext = canonicalGoogleExt(m.customExtensions);
-  if (ext) {
-    m.customExtensions = ext;
-  } else {
-    delete m.customExtensions;
-  }
+  delete m.customExtensions;
 
   for (const e of m.entities) {
     // keys (primaryKey) and unique keys (uniqueConstraints) now persist through
@@ -1382,31 +1366,3 @@ describe('an expression with no SQL stored in the catalog', () => {
             'and the document will not load until it is set.');
   });
 });
-
-// The inverse-canonical of the emitter's deployment-target persistence,
-// matching the reader's readDeploymentTargets: keep only GOOGLE
-// deploymentTargets and re-serialize them so an authored block and its
-// round-tripped form (which the reader always JSON.stringifies afresh) compare
-// equal. Returns undefined when the model declares none, exactly as the reader
-// omits custom_extensions then.
-function canonicalGoogleExt(exts: CustomExtension[]|undefined):
-    CustomExtension[]|undefined {
-  const targets: string[] = [];
-  for (const ext of exts ?? []) {
-    if (ext.vendorName !== 'GOOGLE') continue;
-    let parsed: any;
-    try {
-      parsed = JSON.parse(ext.data);
-    } catch {
-      continue;
-    }
-    for (const t of parsed?.deploymentTargets ?? []) {
-      if (typeof t === 'string' && t) targets.push(t);
-    }
-  }
-  return targets.length ? [{
-    vendorName: 'GOOGLE',
-    data: JSON.stringify({deploymentTargets: targets})
-  }] :
-                          undefined;
-}
