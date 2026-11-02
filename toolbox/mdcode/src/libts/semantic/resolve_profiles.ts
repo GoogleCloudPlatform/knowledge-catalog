@@ -30,7 +30,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
@@ -1266,22 +1266,52 @@ export function textsFor(
   return text !== undefined ? [{text, dialect}] : [];
 }
 
-// Whether a field or metric holds SQL but none that a table of `dialect`
-// runs: no text in that dialect and no ANSI_SQL text.
+// Whether a field or metric holds SQL but has no text in any of `dialects`
+// and no ANSI_SQL text, so no table of those dialects runs it.
 export function noTextFor(
-    f: Parameters<typeof textsFor>[0], dialect: string): boolean {
-  return isFieldBound(f) && !textsFor(f, dialect).length;
+    f: Parameters<typeof textsFor>[0], dialects: string[]): boolean {
+  return isFieldBound(f) && dialects.every(d => !textsFor(f, d).length);
 }
 
-// Each field of each entity whose table's dialect the load knows, with that
-// dialect. An inherited field is listed on each entity that inherits it.
-export function fieldsOnTables(model: SemanticModel):
-    Array<{entity: Entity; field: Field; dialect: string}> {
+// An entity's table as a message names it, with every dialect it may run.
+// When the load knows the table's dialect, the name is that dialect and the
+// only one. A Cloud SQL or third-party table that no lookup has read is
+// `unread`: it is named after its system and may run any dialect of it.
+export interface TableDialects {
+  name: string;
+  dialects: string[];
+  unread?: boolean;
+}
+
+// The table of `entity`, or undefined when the load does not know its
+// dialect. With `unread`, an unread Cloud SQL or third-party table is given
+// too.
+export function tableDialects(
+    entity: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>,
+    unread: boolean): TableDialects|undefined {
+  const dialect = sourcesDialect({entities: [entity]});
+  if (dialect) return {name: dialect, dialects: [dialect]};
+  if (!unread || entity.abstract) return undefined;
+  const source = writtenSource(entity);
+  if (cloudSqlTableOf(source)) {
+    const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))];
+    return {name: 'Cloud SQL', dialects, unread};
+  }
+  if (thirdPartyEntryOf(source)) {
+    const dialects = [...DIALECT_OF_FQN_PREFIX.values()];
+    return {name: 'third-party', dialects, unread};
+  }
+  return undefined;
+}
+
+// Each field of each entity whose table tableDialects gives, with that table.
+// An inherited field is listed on each entity that inherits it.
+export function fieldsOnTables(model: SemanticModel, unread = false):
+    Array<{entity: Entity; field: Field; table: TableDialects}> {
   return resolvedEntities(model).flatMap(entity => {
-    const dialect = sourcesDialect({entities: [entity]});
-    return dialect ?
-        (entity.fields ?? []).map(field => ({entity, field, dialect})) :
-        [];
+    const table = tableDialects(entity, unread);
+    if (!table) return [];
+    return (entity.fields ?? []).map(field => ({entity, field, table}));
   });
 }
 

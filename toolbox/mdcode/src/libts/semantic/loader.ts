@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
+import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedName, hasDoubleQuotedColumn} from './transpile';
@@ -2002,29 +2002,31 @@ function runsDialect(
   return sourcesDialect({entities: [entity]}) === dialect.toUpperCase();
 }
 
-// The warning `item` gives on the `dialect` table of `entity`:
-// expressionWarning's, or, unless `profiled`, one saying that table has no
-// text to run. On a table of the `preferred` dialect, expressionWarning's
-// transpilation warning already says so.
+// The warning `item` gives on `table`, the table of `entity`:
+// expressionWarning's when the load knows the table's dialect, or, unless
+// `profiled`, one saying the table has no text to run. On a table of the
+// `preferred` dialect, expressionWarning's transpilation warning already says
+// so.
 function tableWarning(
     item: Pick<Field, 'expression'|'dialects'|'stringForm'>, ctx: string,
-    dialect: string, entity: string, preferred: string,
+    table: TableDialects, entity: string, preferred: string,
     profiled: boolean): string|undefined {
-  const w = expressionWarning(item, ctx, dialect, preferred);
-  if (w || profiled || !noTextFor(item, dialect)) return w;
-  return `${ctx}: no '${dialect}' or '${
-             FALLBACK_DIALECT}' dialect, so the ${dialect} table of entity '${
-             entity}' cannot run it`;
+  const w = table.unread ? undefined :
+                           expressionWarning(item, ctx, table.name, preferred);
+  if (w || profiled || !noTextFor(item, table.dialects)) return w;
+  const own = table.dialects.map(d => `'${d}'`).join(', ');
+  return `${ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
+             table.name} table of entity '${entity}' cannot run it`;
 }
 
-// The warning each field's expression gives on each entity whose table's
-// dialect the load knows. An inherited field is judged on each entity that
+// The warning each field's expression gives on each entity whose table
+// tableDialects gives. An inherited field is judged on each entity that
 // inherits it, and named after that entity.
 function fieldWarnings(
     model: SemanticModel, preferred: string, profiled: boolean): string[] {
-  return fieldsOnTables(model)
-      .map(({entity: e, field: f, dialect}) => tableWarning(
-               f, `field '${e.name}.${f.name}'`, dialect, e.name, preferred,
+  return fieldsOnTables(model, true)
+      .map(({entity: e, field: f, table}) => tableWarning(
+               f, `field '${e.name}.${f.name}'`, table, e.name, preferred,
                profiled))
       .filter((w): w is string => w !== undefined);
 }
@@ -2046,9 +2048,9 @@ function metricWarning(
     return expressionWarning(metric, ctx, preferred.toUpperCase(), preferred);
   }
   for (const e of tables) {
-    const dialect = sourcesDialect({entities: [e]});
-    const w = dialect &&
-        tableWarning(metric, ctx, dialect, e.name, preferred, profiled);
+    const table = tableDialects(e, true);
+    const w = table &&
+        tableWarning(metric, ctx, table, e.name, preferred, profiled);
     if (w) return w;
   }
   return undefined;
@@ -3527,6 +3529,16 @@ export function sourceToDataSource(source: string): string {
   }
   return value;
 }
+
+// The dialect each Cloud SQL table or view entry type gives.
+export const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
+  'cloudsql-mysql-table': 'MYSQL',
+  'cloudsql-mysql-view': 'MYSQL',
+  'cloudsql-postgresql-table': 'POSTGRES',
+  'cloudsql-postgresql-view': 'POSTGRES',
+  'cloudsql-sqlserver-table': 'SQLSERVER',
+  'cloudsql-sqlserver-view': 'SQLSERVER',
+};
 
 // The dialect each fullyQualifiedName prefix of a third-party table gives.
 export const DIALECT_OF_FQN_PREFIX = new Map([

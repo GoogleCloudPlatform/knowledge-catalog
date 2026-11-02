@@ -201,10 +201,11 @@ describe('expression warnings judge each expression on the table that runs it', 
   const ALLOY = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/t';
   const MYSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/t';
   const PG = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/t';
-  // The table a lookup has not read, as in `kcmd import`.
-  const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
   const TP = 'projects/p/locations/us/entryGroups/g/entries/orders';
   const DBX = TP.replace('/orders', '/events');
+  // The tables a lookup has not read, as in `kcmd import`.
+  const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
+  const UNREAD_TP = TP.replace('/orders', '/items');
   const opts: LoadOptions = {
     bindingOptional: true,
     sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS']]),
@@ -235,10 +236,11 @@ describe('expression warnings judge each expression on the table that runs it', 
       `${database} reads "x" in its 'ANSI_SQL' expression as text; if you ` +
       `meant a column, give it a '${dialect}' expression without the double ` +
       `quotes${hint}`);
-  // The warning that the table of `dialect` has no text to run.
-  const unrunnable = (dialect: string) => both(
-      `no '${dialect}' or 'ANSI_SQL' dialect, so the ${dialect} table of ` +
-      `entity 't' cannot run it`);
+  // The warning that the `table` table, which may run `dialects`, has no text
+  // to run.
+  const unrunnable = (table: string, dialects = `'${table}'`) => both(
+      `no ${dialects} or 'ANSI_SQL' dialect, so the ${table} table of entity ` +
+      `'t' cannot run it`);
   const quoted = quotedIn('BigQuery', 'BIGQUERY',
       `; in a model file, 'kcmd import <file> --input first-party --flavor ` +
       `<ossie|google> --transpile' adds one`);
@@ -257,6 +259,10 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a Cloud SQL for MySQL table, Snowflake text', MYSQL, [['SNOWFLAKE', 'x']], unrunnable('MYSQL')],
     ['a Cloud SQL for PostgreSQL table, PostgreSQL text', PG, [['POSTGRES', 'x']], []],
     ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
+    ['a Cloud SQL table no lookup has read, Snowflake text', UNREAD, [['SNOWFLAKE', 'x']],
+     unrunnable('Cloud SQL', "'MYSQL', 'POSTGRES', 'SQLSERVER'")],
+    ['a third-party table no lookup has read, BigQuery text', UNREAD_TP, [['BIGQUERY', 'x']],
+     unrunnable('third-party', "'SNOWFLAKE', 'DATABRICKS', 'MYSQL', 'POSTGRES', 'SQLSERVER'")],
     ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],
     ['a third-party table, a double-quoted name in ANSI_SQL', TP, [['ANSI_SQL', '"x"']], []],
     ['a third-party Databricks table, a double-quoted name in ANSI_SQL', DBX,

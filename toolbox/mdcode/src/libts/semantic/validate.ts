@@ -312,8 +312,9 @@ function measureProblem(
 export function validateInlineDialects(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
-  for (const {entity: e, field: f, dialect} of fieldsOnTables(model)) {
-    if (!noTextFor(f, dialect)) continue;
+  for (const {entity: e, field: f, table: {name: dialect}} of
+           fieldsOnTables(model)) {
+    if (!noTextFor(f, [dialect])) continue;
     const hint = importTranspiles(f, dialect) ?
         `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` : '';
     errors.push(

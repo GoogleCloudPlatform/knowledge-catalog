@@ -405,10 +405,13 @@ describe('sources', () => {
 
   test('keeps a third-party entry name as written, with no warning', async () => {
     const entry = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
-    const res = await importSemanticModelYaml(
-        ossieDoc({source: entry}), {sourcePrefix: BQ_PREFIX});
+    const doc = ossieDoc({
+      source: entry,
+      fieldExpr: '{dialects: [{dialect: SNOWFLAKE, expression: order_id}]}',
+    });
+    const res = await importSemanticModelYaml(doc, {sourcePrefix: BQ_PREFIX});
     expect([res.ok, res.warnings, res.files[0].content])
-        .toEqual([true, [], ossieDoc({source: entry})]);
+        .toEqual([true, [], doc]);
   });
 
   test(
