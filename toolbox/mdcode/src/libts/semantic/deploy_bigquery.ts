@@ -22,10 +22,10 @@ import {generatePropertyGraph} from './bigquery';
 // BigQuery-facing views are re-exported here so existing importers
 // (validate.ts, knowledge_catalog.ts, and the deploy tests) keep their
 // historical import path.
-import {BigQueryGraphTarget, bigQueryGraphTargets, BQ_GRAPH_FORM, deploymentTargetUris, googleDeploymentTargets} from './deployment_target';
+import {BigQueryGraphTarget, bigQueryGraphTargets, BQ_GRAPH_FORM, googleDeploymentTargets} from './deployment_target';
 import {LoadedModel} from './loader';
 
-export {bigQueryGraphTargets, deploymentTargetUris, googleDeploymentTargets};
+export {bigQueryGraphTargets, googleDeploymentTargets};
 export type {BigQueryGraphTarget};
 
 

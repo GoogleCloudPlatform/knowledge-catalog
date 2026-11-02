@@ -18,12 +18,6 @@ const BQ_TARGET =
 const SPANNER_TARGET =
     'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
 
-// A parsed AlloyDB deployment target. Not a graph target: it names a database
-// to run against, which is the whole reason a push has to say something other
-// than "typo" about it.
-const ALLOYDB_TARGET =
-    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
-
 function googleExt(targets: string[]): CustomExtension {
   return {
     vendorName: 'GOOGLE',
@@ -64,45 +58,6 @@ describe('validatePushRequirements', () => {
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
 
-  test('a model with no deployment target is rejected', () => {
-    const errs = validatePushRequirements([loaded(model())]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(
-        'declares 0 deployments; push uses exactly one deployment for now, ' +
-        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
-    expect(errs[0]).toContain('doc');
-
-    const vanillaErrs =
-        validatePushRequirements([loaded(model({version: '0.2.0.dev0'}))]);
-    expect(vanillaErrs).toHaveLength(1);
-    expect(vanillaErrs[0]).toEndWith(
-        "; list 'deployments' in a GOOGLE custom_extensions block on the " +
-        "model, or set version: '0.2.0.dev0/google' and use 'deployments:'");
-    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
-  });
-
-  // A vanilla model that lists deployments has them in its GOOGLE block, so
-  // the message says where they are instead of how to declare them.
-  test('a vanilla model is told its GOOGLE block holds its deployments', () => {
-    const twice = model({
-      version: '0.2.0.dev0',
-      deployments: [
-        {name: 'a', target: BQ_TARGET},
-        {name: 'b', target: SPANNER_TARGET},
-      ],
-    });
-    expect(validatePushRequirements([loaded(twice)])[0]).toEndWith(
-        'with a BigQuery Graph or Spanner Graph target under ' +
-        "'deployments' in its GOOGLE custom_extensions block.");
-    const alloy = model({
-      version: '0.2.0.dev0',
-      deployments: [{name: 'a', target: ALLOYDB_TARGET}],
-    });
-    expect(validatePushRequirements([loaded(alloy)])[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (under 'deployments' in " +
-        'its GOOGLE custom_extensions block), or run');
-  });
-
   test(
       'a BigQuery-target metric that resolves to no entity is rejected', () => {
         const m = model(
@@ -129,144 +84,6 @@ describe('validatePushRequirements', () => {
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
 
-  test('an unsupported deployment target is rejected as malformed', () => {
-    // A single, otherwise well-formed URI that is neither a BigQuery nor a
-    // Spanner Graph target fails because it does not parse as either.
-    const m = model(
-        {}, [googleExt(['dataplex.googleapis.com/projects/p/locations/us'])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(
-        "target 'dataplex.googleapis.com/projects/p/locations/us', which is " +
-        'not a BigQuery graph, a Spanner graph or an AlloyDB database');
-    expect(errs[0]).not.toContain('deploymentTarget');
-  });
-
-  // An AlloyDB target parses and is supported, and a push still cannot use it:
-  // AlloyDB has no property-graph DDL, so there is no graph to publish. The
-  // message has to separate that from the malformed case above, because the
-  // fix is a different command rather than a corrected URI.
-  test('an AlloyDB target is rejected as a store, not as a typo', () => {
-    const m = model({}, [googleExt([ALLOYDB_TARGET])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(`target '${ALLOYDB_TARGET}' is an AlloyDB database`);
-    expect(errs[0]).toContain('runs against rather than deploys to');
-    expect(errs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (under 'deployments'), " +
-        "or run 'kcmd push --no-profile' to publish to Knowledge Catalog only.");
-    expect(errs[0]).not.toContain('deploymentTarget');
-    expect(errs[0]).not.toContain('is not a valid');
-
-    const vanilla =
-        model({version: '0.2.0.dev0'}, [googleExt([ALLOYDB_TARGET])]);
-    const vanillaErrs = validatePushRequirements([loaded(vanilla)]);
-    expect(vanillaErrs).toHaveLength(1);
-    // The version hint goes with the graph target it enables, not with the
-    // catalog-only option.
-    expect(vanillaErrs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (list 'deployments' in " +
-        "a GOOGLE custom_extensions block on the model, or set version: " +
-        "'0.2.0.dev0/google' and use 'deployments:'), or run 'kcmd push " +
-        "--no-profile' to publish to Knowledge Catalog only.");
-    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
-  });
-
-  // A Knowledge-Catalog-only push deploys no graph at all, so it has no opinion
-  // about the target -- including this one.
-  test('an AlloyDB target passes when no graph is being deployed', () => {
-    const m = model({}, [googleExt([ALLOYDB_TARGET])]);
-    expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
-        .toEqual([]);
-  });
-
-  test('more than one deployment target is rejected', () => {
-    const other =
-        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const m = model({}, [googleExt([BQ_TARGET, other])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(
-        'declares 2 deployments; push uses exactly one deployment for now, ' +
-        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
-  });
-
-  test('more than one target in a vanilla model ends with the version hint', () => {
-    const other =
-        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const m = model({version: '0.2.0.dev0'}, [googleExt([BQ_TARGET, other])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toEndWith(
-        "with a BigQuery Graph or Spanner Graph target; list 'deployments' " +
-        "in a GOOGLE custom_extensions block on the model, or set version: " +
-        "'0.2.0.dev0/google' and use 'deployments:'");
-  });
-
-  // The entry to fix is named, rather than the count of targets.
-  test('a target in no accepted form beside a valid one is named', () => {
-    const typo = model({}, [googleExt([BQ_TARGET, 'bq-typo'])]);
-    const errors = validatePushRequirements([loaded(typo)]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toStartWith(
-        "model 'm' (doc) target 'bq-typo', which is not a BigQuery graph, a " +
-        'Spanner graph or an AlloyDB database.');
-    const nonString = model({version: '0.2.0.dev0'}, [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({deploymentTargets: [BQ_TARGET, 42]}),
-    }]);
-    const errs = validatePushRequirements([loaded(nonString)]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain(
-        "target '42', which is not a BigQuery graph, a Spanner graph or an " +
-        'AlloyDB database');
-  });
-
-  // A padded target is the same target, so a blank one is dropped and a padded
-  // copy is caught as a repeat, on a catalog-only push too.
-  test('GOOGLE-block targets are trimmed and blank ones dropped before the repeat check', () => {
-    const padded = model({version: '0.2.0.dev0'},
-                         [googleExt([BQ_TARGET, '  ', ` ${BQ_TARGET} `])]);
-    expect(validatePushRequirements([loaded(padded)], {targetOptional: true}))
-        .toEqual([
-          `model 'm' (doc) declares duplicate deployment target '${
-              BQ_TARGET}'; each deployment must target a distinct resource.`,
-        ]);
-    const blank = model({version: '0.2.0.dev0'},
-                        [googleExt(['', ` ${BQ_TARGET} `])]);
-    expect(validatePushRequirements([loaded(blank)])).toEqual([]);
-  });
-
-  // A target in no accepted form is rejected on every push, a KC-only one too,
-  // and the error names what to write instead.
-  test('a target in no accepted form is rejected on every push', () => {
-    const legacy = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/instances/i/databases/db';
-    for (const [target, rest] of [
-      [`//${BQ_TARGET}`,
-       `which is a resource URI; write its GCP resource name, without the ` +
-           `leading '//': '${BQ_TARGET}'.`],
-      [legacy,
-       `the instance-based AlloyDB name, which names no real resource. An ` +
-           `AlloyDB database belongs to its cluster; write ` +
-           `'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db'.`],
-      [SPANNER_TARGET.replace('/graphs/', '/propertyGraphs/'),
-       `which names a Spanner graph by 'propertyGraphs'; write its Dataplex ` +
-           `name: '${SPANNER_TARGET}'.`],
-      ['bigquery:graph:p.d.g',
-       `which is a Knowledge Catalog name. Write the GCP resource name ` +
-           `instead: 'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`],
-      ['example.com/not/a/graph',
-       `which is not a BigQuery graph, a Spanner graph or an AlloyDB database.`],
-    ]) {
-      const m = model({}, [googleExt([target])]);
-      for (const targetOptional of [false, true]) {
-        const errs = validatePushRequirements([loaded(m)], {targetOptional});
-        expect(errs).toHaveLength(1);
-        expect(errs[0]).toStartWith(`model 'm' (doc) target '${target}', ${rest}`);
-      }
-    }
-  });
-
   test('malformed GOOGLE extension JSON is reported, not thrown', () => {
     const m = model({}, [{vendorName: 'GOOGLE', data: '{not json'}]);
     const errs = validatePushRequirements([loaded(m)]);
@@ -275,45 +92,15 @@ describe('validatePushRequirements', () => {
   });
 
   test('errors accumulate across models', () => {
-    const a = loaded(model({name: 'a'}), 'a');
-    const b = loaded(model({name: 'b'}), 'b');
-    const errs = validatePushRequirements([a, b]);
-    expect(errs.length).toBe(2);
-  });
-
-  test(
-      'targetOptional accepts a model with no deployment target (KC-only)',
-      () => {
-        // A Knowledge-Catalog-only push governs the logical model and deploys
-        // no graph, so it needs no deployment target. The same model without
-        // the option is rejected (proving the option is what relaxed it).
-        const m = model();
-        expect(validatePushRequirements([loaded(m)], {
-          targetOptional: true
-        })).toEqual([]);
-        expect(validatePushRequirements([loaded(m)]).length).toBe(1);
-      });
-
-  test('targetOptional ignores the deployment target count and kind (KC-only), but still rejects duplicate targets', () => {
-    // A KC-only push deploys no graph, so its deployment target is irrelevant:
-    // more than one distinct target is accepted, where a graph push rejects
-    // it. (Zero targets is covered
-    // above.) A repeated target URI is still rejected so a vanilla file obeys
-    // the same uniqueness rule as `deployments:`.
-    const dup = model({}, [googleExt([BQ_TARGET, BQ_TARGET])]);
-    for (const targetOptional of [false, true]) {
-      const errs = validatePushRequirements([loaded(dup)], {targetOptional});
-      expect(errs.some(e => e.includes(`duplicate deployment target '${BQ_TARGET}'`))).toBe(true);
-    }
-    const other =
-        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const many = model({}, [googleExt([BQ_TARGET, other])]);
-    expect(validatePushRequirements([loaded(many)], {targetOptional: true}))
-        .toEqual([]);
-    expect(validatePushRequirements([loaded(many)]).length).toBe(1);
+    const unresolved = (name: string) => loaded(
+        model(
+            {name, metrics: [{name: 'cnt', expression: 'COUNT(*)'} as Metric]},
+            [googleExt([BQ_TARGET])]),
+        name);
+    expect(validatePushRequirements([unresolved('a'), unresolved('b')]))
+        .toHaveLength(2);
   });
 });
-
 
 // Helpers for the live data-source check.
 function entity(name: string, dataSource: string): Entity {
@@ -2296,8 +2083,8 @@ ${extraMetric}`;
             {dialect: 'POSTGRES' as const, expression: ' '},
           ],
         },
-        // `expression` is not the text of any dialect entry here. Knowledge
-        // Catalog stores `expression` when push runs with --emit-expressions.
+        // `expression` is not the text of any dialect entry here, as it can
+        // be in a model built in memory.
         {
           name: 'stale',
           expression: '/* old */',
@@ -2352,8 +2139,8 @@ ${extraMetric}`;
       const m = model({entities: [base, sub]});
       expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
           .toEqual(expected);
-      // `expression` is not the text of the dialect entry here. Knowledge
-      // Catalog stores `expression` when push runs with --emit-expressions.
+      // `expression` is not the text of the dialect entry here, as it can be
+      // in a model built in memory.
       const stale: Entity = {
         ...base,
         fields: [
@@ -2369,12 +2156,6 @@ ${extraMetric}`;
                  [loaded(model({entities: [stale, sub]}))],
                  {targetOptional: true}))
           .toEqual(expected);
-      // A catalog-only push lifts a profile's exclusions to publish every
-      // field. A field the profile excludes on `sub` is not read there.
-      expect(validatePushRequirements([loaded(m)], {
-        targetOptional: true,
-        liftedExclusions: [{model: 'm', entity: 'sub', field: 'label'}],
-      })).toEqual([]);
     });
 
     // serializeModel writes both texts, and the loader rejects either one with

@@ -3733,18 +3733,13 @@ entities:
 `;
 
   // A profile held in memory takes the same path as the same profile in a
-  // file, so it gets the same model, warnings and missing sources.
+  // file, so it gets the same model and warnings.
   test('a profile held in memory and its file give the same result', () => {
     const fromFile = profileForDocument(DOC, [{name: 'prod', text: FILE}], 'prod');
     const fromSpec = profileForDocument(
         DOC, [{name: 'prod', spec: loadProfileFile(FILE, 'prod')}], 'prod');
     expect(fromSpec).toEqual(fromFile);
     if (fromFile.kind !== 'file') throw new Error(JSON.stringify(fromFile));
-    // The model file as it loads on its own comes back too.
-    expect(fromFile.base.entities.find(e => e.name === 'orders')!.dataSource)
-        .toBe('acme.raw.orders');
-    // An abstract entity needs no source; `items` has none in either file.
-    expect(fromFile.sourceless).toEqual(['items']);
     // A profile's empty primary key warns, as the model file's would.
     expect(fromFile.warnings)
         .toContain("[sales] dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)");

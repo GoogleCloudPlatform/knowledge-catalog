@@ -458,22 +458,27 @@ export function scenarios(
 
 // The two-phase push's messages, without the `Error: ` prefix.
 export const at = (d: string) => `[commerce] deployment '${d}'`;
-const ownProfile = 'does not apply to a push that uses deployments, since ' +
-    'each deployment names its own profile.';
 export const msg = {
   VALIDATED: 'Validation complete; no changes applied.',
-  // The refusal of a push flag the two-phase path does not take.
+  // The refusal of each flag push no longer takes, by the flag as typed.
+  retired: {
+    '--profile': "'--profile' is no longer supported on 'kcmd push'; declare " +
+        "a deployment with 'profile: prod' under 'deployments:' and run " +
+        "'kcmd push --deployment <name>'.",
+    '--all-profiles': "'--all-profiles' is no longer supported on 'kcmd " +
+        "push'; 'kcmd push' deploys all entries under 'deployments:' by " +
+        'default.',
+    '--no-profile': "'--no-profile' is no longer supported on 'kcmd push'; " +
+        "use '--no-deployment' to skip database deployments or " +
+        "'--deployment <name>' to select one.",
+    '--emit-expressions':
+        "'--emit-expressions' is no longer supported on 'kcmd push'.",
+    '--no-kc': "'--no-kc' is no longer supported on 'kcmd push'; every push " +
+        'publishes the model to Knowledge Catalog.',
+  },
+  // The refusal of a combination of the --deployment flags.
   flag: {
-    noKc: "'--no-kc' is not supported; every push publishes the model to " +
-        'Knowledge Catalog.',
     both: 'Cannot combine --no-deployment with --deployment.',
-    profile: `'--profile' ${ownProfile} Use '--deployment <name>' to deploy ` +
-        'only some deployments.',
-    allProfiles: `'--all-profiles' ${ownProfile} A push deploys every ` +
-        "deployment unless '--deployment' names some.",
-    noProfile: "'--no-profile' does not apply to a push that uses " +
-        "deployments. Use '--no-deployment' to publish to Knowledge Catalog " +
-        'only.',
     bare: '--deployment names no deployment; give one or more deployment ' +
         'names, comma-separated.',
   },

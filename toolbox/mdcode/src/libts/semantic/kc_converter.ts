@@ -37,7 +37,7 @@
 // The per-field `semantics` block -- field/metric expressions and the DIMENSION
 // role
 // -- is gated off the catalog by default: the emitter writes it only under
-// `--emit-expressions` (see `KcGenerateOptions.emitExpressions`), so those
+// `KcGenerateOptions.emitExpressions`, which push leaves off, so those
 // three recover only when the push that wrote them enabled it, and a default
 // push -> pull drops them. It cannot recover what the emitter never writes:
 // `ai_context.synonyms`/`examples` and field-level `ai_context` (only
@@ -625,7 +625,7 @@ function readField(fd: any, entityName: string, warnings: string[]): Field|
 // Reconstructs a metric from its `semantic-metric` aspect. The attach `entity`
 // is re-derived from the expression (as the loader does) when the aspect holds
 // one, else it falls back to the entity the emitter persisted. A default push
-// omits the expression entirely (it is gated behind `--emit-expressions`), so
+// omits the expression entirely (it is gated behind `emitExpressions`), so
 // an absent expression is expected, not an error, and does not warn.
 function readMetric(
     entry: Entry, entityNames: string[], warnings: string[]): Metric {

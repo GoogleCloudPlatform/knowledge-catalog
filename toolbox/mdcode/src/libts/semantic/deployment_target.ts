@@ -243,7 +243,7 @@ export function targetProblem(at: string, target: string): string|undefined {
 }
 
 /** Why `target` is not accepted. `at` says where it is written. */
-export function targetError(at: string, target: string): string {
+function targetError(at: string, target: string): string {
   const legacy = asResourceUri(target).match(LEGACY_ALLOYDB_TARGET);
   if (legacy) {
     return `${at}, the instance-based AlloyDB name, which names no real ` +
@@ -485,12 +485,4 @@ export function alloyDbTargets(model: SemanticModel):
     {targets: AlloyDbTarget[]; malformed: string[]} {
   const {alloyDb, malformed} = googleDeploymentTargets(model);
   return {targets: alloyDb, malformed};
-}
-
-
-// Every deploymentTarget URI a model declares, regardless of whether each
-// parses as a supported target. Validation uses this to require that a model
-// declares exactly one deployment target. Throws on malformed extension JSON.
-export function deploymentTargetUris(model: SemanticModel): string[] {
-  return googleDeploymentTargets(model).uris;
 }

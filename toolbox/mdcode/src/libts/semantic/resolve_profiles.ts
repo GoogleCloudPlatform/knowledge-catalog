@@ -6,8 +6,8 @@
 // BINDING PROFILES that supply the physical facets it leaves open: each entity's
 // `source`, each field's column (`expression`) and each action's `executor`. An
 // old-style `semantic_model:` profile may also name a deployment target.
-// `kcmd push --profile <name>` applies the selected profile to the logical
-// model BY NAME and deploys the result. See docs/semantic-model/profiles.md.
+// `kcmd push` applies the profile each deployment names to the logical model
+// BY NAME and deploys the result. See docs/semantic-model/profiles.md.
 //
 // Three passes live here:
 //   - applyProfile applies a profile, read into a ProfileSpec, to a loaded
@@ -1157,14 +1157,11 @@ function applyProfileSpec(
 
 /** A profile applied to a model document loaded on its own. */
 export interface AppliedProfile {
-  // The model document as it loads on its own, and with the profile applied.
-  base: SemanticModel;
+  // The model document with the profile applied.
   model: SemanticModel;
   // The document's load warnings, less those the profile settles, then those
   // its values give, each prefixed with the document name.
   warnings: string[];
-  // Each concrete entity left with no source, which a pruned push rejects.
-  sourceless: string[];
 }
 
 /**
@@ -1198,13 +1195,10 @@ function applyToDocument(
   const loaded = loadSemanticModels(
       [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
-  const base = loaded.models[0].model;
-  const res = apply(base, {document: doc.name, warnings: loaded.warnings});
+  const res = apply(
+      loaded.models[0].model, {document: doc.name, warnings: loaded.warnings});
   if ('error' in res) return {error: res.error, stage: 'apply'};
-  const sourceless = (res.model.entities ?? [])
-                         .filter(e => !e.abstract && !e.dataSource)
-                         .map(e => e.name);
-  return {base, model: res.model, warnings: res.warnings, sourceless};
+  return {model: res.model, warnings: res.warnings};
 }
 
 /**
@@ -1286,7 +1280,7 @@ export function profileForDocument(
  * complete, such as one with a half-given join, fails that load. Names
  * `profileName` when one profile is selected.
  */
-export function modelFileAloneMessage(
+function modelFileAloneMessage(
     error: string, profileName?: string): string {
   return profileName === undefined ?
       `${error} (the model file must load on its own before a profile file ` +
@@ -1336,12 +1330,6 @@ export function reservedProfileNameError(
   return `[${docName}] a binding profile may not be named '${
              DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
       `bindings. Rename the profile.`;
-}
-
-/** The error for a concrete entity no profile file or model file binds. */
-export function profileSourceMessage(entity: string): string {
-  return `entity '${entity}' has no source in this profile or in the model ` +
-      `file`;
 }
 
 // The warnings a load of the applied model would give, each prefixed with the

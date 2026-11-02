@@ -1,14 +1,13 @@
-// Tests of which pushes take two phases, the push flags a push in two phases
-// refuses, the deployments `--deployment` selects and checks, the
+// Tests of the push flags push refuses, what a model with no deployments
+// publishes, the deployments `--deployment` selects and checks, the
 // default_profile warning and the Spanner metrics rule (src/tool/commands.ts,
 // src/libts/semantic/deployment_target.ts).
 
 import {expect, test} from 'bun:test';
 
-import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 import {PushOptions, typedDeployment} from '../../../src/tool/commands';
 
-import {boundAt, boundTo, Case, CUSTOMER, Deployment, err, EXPRESSION_KEY, has, modelFile, msg, PushRun, refused, scenarios, SPANNER_CUSTOMER, spannerGraph} from './harness';
+import {boundAt, boundTo, Case, CUSTOMER, Deployment, err, EXPRESSION_KEY, has, msg, PushRun, refused, scenarios, SPANNER_CUSTOMER, spannerGraph} from './harness';
 
 const ownBinding = (r: PushRun, model = r.published) =>
     expect(model.entities[0].dataSource).toBe('test-project.d.customer');
@@ -32,37 +31,48 @@ const underDefault =
       check: ownBinding,
     });
 
-const PUBLISHED = {
+// A push that publishes the model file as written, with the profile files
+// `profiles` lists, stores a copy of each file in `files`, and deploys nothing.
+const published = (profiles: string[]|undefined, files: string[]) => ({
+  code: 0,
   events: ['preflight', 'apply'],
   check: (r: PushRun) => {
     ownBinding(r);
-    expect(r.published.profiles!.map(p => p.name)).toEqual(['prod']);
+    expect(r.published.profiles?.map(p => p.name)).toEqual(profiles);
+    const [, , options] = r.fake.preflight.mock.calls[0];
+    expect(options.sourceFiles.map((f: any) => f.fileName)).toEqual(files);
   },
-};
-const ONE_PHASE = {
-  called: {preflight: 0, apply: 0, deployKc: 1},
-  check: (r: PushRun) => {
-    const [models, , options] = r.fake.deployKc.mock.calls[0];
-    const loaded = loadSemanticModels(
-        [{name: 'commerce', text: modelFile()}],
-        {defaultProject: 'test-project'});
-    expect(loaded.error).toBeUndefined();
-    expect(models).toEqual(loaded.models);
-    expect((options.sourceFiles ?? []).map((f: any) => f.fileName))
-        .toEqual(['commerce.yaml']);
-  },
-};
+});
 
 scenarios('the two-phase push path', [
   {
-    name: '--no-kc, --profile, --all-profiles and --no-profile each fail before any network call, as do --no-deployment with --deployment in either order, a bare or empty --deployment and a deployment name the model lacks',
+    name: '--no-kc, --profile, --all-profiles, --no-profile and --emit-expressions each fail before any network call, all of them at once each with its own error, as do --no-deployment with --deployment in either order, a bare or empty --deployment and a deployment name the model lacks',
     deployments: ['g1', 'g2'],
     profiles: {x: boundTo('x')},
-    ...refused({kc: false}, err(msg.flag.noKc)),
+    ...refused({kc: false}, err(msg.retired['--no-kc'])),
     then: [
-      refused({profile: 'x'}, err(msg.flag.profile)),
-      refused({allProfiles: true}, err(msg.flag.allProfiles)),
-      refused({profile: false}, err(msg.flag.noProfile)),
+      // cac gives a numeric profile name as a number.
+      refused({profile: 'x'}, err(msg.retired['--profile'])),
+      refused({profile: 7 as any}, err(msg.retired['--profile'])),
+      refused({allProfiles: true}, err(msg.retired['--all-profiles'])),
+      refused({profile: false}, err(msg.retired['--no-profile'])),
+      refused({emitExpressions: true}, err(msg.retired['--emit-expressions'])),
+      {
+        flags: {
+          profile: false,
+          allProfiles: true,
+          emitExpressions: true,
+          kc: false,
+        },
+        code: 1,
+        errors: [
+          msg.retired['--all-profiles'],
+          msg.retired['--no-profile'],
+          msg.retired['--emit-expressions'],
+          msg.retired['--no-kc'],
+        ].map(err),
+        noNetwork: true,
+      },
       refused({deployment: [false, 'g1']}, err(msg.flag.both)),
       refused({deployment: ['g1', false]}, err(msg.flag.both)),
       refused({deployment: [true]}, err(msg.flag.bare)),
@@ -141,24 +151,22 @@ scenarios('the two-phase push path', [
     then: [{noModel: true, flags: {deployment: false}, code: 0, warnings: []}],
   },
   {
-    name: 'a model with a sibling profile file and no deployments list publishes the model file as written, with every profile, and deploys nothing, with no flags or profile: true; it refuses --no-kc, and under --no-profile or with only a legacy profile file publishes in one step',
+    // cac gives `true` for an absent flag that has a negated form, and for a
+    // bare `--profile`.
+    name: 'a model with no deployments list publishes the model file as written, with its profile files, and deploys nothing, with no flags, profile: true or deployment: true, beside a sibling profile file, a legacy profile file or none',
     profiles: {prod: boundTo('prod')},
-    ...PUBLISHED,
+    ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
     then: [
-      {flags: {profile: true}, code: 0, ...PUBLISHED},
-      refused({kc: false}, err(msg.flag.noKc)),
-      {flags: {profile: false}, code: 0, called: ONE_PHASE.called},
-      {profiles: {}, legacy: {old: 'semantic_model:\n  - name: commerce\n'},
-       code: 0, called: ONE_PHASE.called},
-    ],
-  },
-  {
-    // cac gives `true` for an absent flag that has a negated form.
-    name: 'a model with no deployments list and no profile file does not push in two phases, with no flags, deployment: true or profile: true',
-    ...ONE_PHASE,
-    then: [
-      {flags: {deployment: true}, code: 0, ...ONE_PHASE},
-      {flags: {profile: true}, code: 0, ...ONE_PHASE},
+      {
+        flags: {profile: true, deployment: true},
+        ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
+      },
+      {
+        profiles: {},
+        legacy: {old: 'semantic_model:\n  - name: commerce\n'},
+        ...published(undefined, ['commerce.yaml', 'commerce.profiles/old.yaml']),
+      },
+      {profiles: {}, ...published(undefined, ['commerce.yaml'])},
     ],
   },
   {

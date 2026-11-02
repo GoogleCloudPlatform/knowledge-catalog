@@ -12,14 +12,14 @@ import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
 import {googleDeploymentTargets} from './deploy_bigquery';
-import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets, targetError} from './deployment_target';
+import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {bindsThirdPartyTable, databaseOf, DEPLOYMENTS_VERSION_HINT, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {bindsThirdPartyTable, databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, applyProfileExclusions, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, ProfileExclusion, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
+import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -28,11 +28,9 @@ import {SqlColumn, withoutComments} from './sql_parser';
 // error messages (empty when all models pass), each tagged with the model's
 // source document so the author can find it.
 //
-// `targetOptional` permits a model with NO deployment target -- the case for a
-// Knowledge-Catalog-only push, which governs the logical model and deploys no
-// graph. A graph leg never sets it, so a bq/spanner/all push still requires
-// exactly one target. A KC-only push skips the target count and kind checks,
-// while still rejecting a repeated target and one in no accepted form.
+// `targetOptional` says the push deploys no graph, as a Knowledge-Catalog-only
+// push does, so the checks of the BigQuery generator's metric rules, which only
+// a BigQuery graph needs, are skipped.
 //
 // `fieldsPruned` says the caller has already dropped every field the selected
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
@@ -43,11 +41,6 @@ import {SqlColumn, withoutComments} from './sql_parser';
 // could not read, whose field references were therefore not checked) for the
 // caller to print.
 //
-// `liftedExclusions` are the fields a binding profile excludes, which a
-// catalog-only push takes off the model so that it publishes every field. The
-// check that each inherited field holds SQL still leaves each one off the
-// entity that excludes it, as applying the profile does.
-//
 // `v2Aspects` says push writes the second-generation Knowledge Catalog types
 // (selected via KC_V2_ASPECTS=1).
 export function validatePushRequirements(
@@ -56,7 +49,6 @@ export function validatePushRequirements(
       targetOptional?: boolean;
       fieldsPruned?: boolean;
       warnings?: string[];
-      liftedExclusions?: ReadonlyArray<ProfileExclusion>;
       v2Aspects?: boolean;
     } = {}): string[] {
   const errors: string[] = [];
@@ -72,75 +64,6 @@ export function validatePushRequirements(
       // rather than letting it throw out of a later leg as an uncaught stack.
       errors.push(`${err.message || err} (${document})`);
       continue;
-    }
-
-    const seenUris = new Set<string>();
-    for (const uri of deployInfo.uris) {
-      if (seenUris.has(uri)) {
-        errors.push(
-            `model '${model.name}' (${document}) declares duplicate ` +
-            `deployment target '${uri}'; each deployment must target a ` +
-            `distinct resource.`);
-        break;
-      }
-      seenUris.add(uri);
-    }
-
-    // A target in no accepted form is named on every push, a KC-only one too.
-    const malformed = deployInfo.malformed[0];
-    if (malformed !== undefined) {
-      errors.push(targetError(
-          `model '${model.name}' (${document}) target '${malformed}'`,
-          malformed));
-    }
-
-    // A graph push must declare exactly one deployment target -- a single
-    // BigQuery Graph OR Spanner Graph URI (we do not support zero or several
-    // graphs per model). The target's host selects which deploy leg runs.
-    //
-    // An AlloyDB target parses, and is still not one of those two: it names a
-    // database a model RUNS against rather than a graph a push publishes. It
-    // gets its own arm below so it is not reported as a typo.
-    //
-    // A KC-only push (targetOptional) deploys no graph, so its deployment
-    // target count and kind are irrelevant: skip this check (duplicate targets
-    // were already rejected above). Such a push may carry no target (a logical
-    // model), one, or even several backends (whose KC aspect records all of
-    // them) -- none of that affects the Knowledge Catalog write.
-    if (!opts.targetOptional && malformed === undefined) {
-      // Where the model lists its deployments. A vanilla model with no
-      // `deployments` in its GOOGLE block is told how to declare them instead.
-      const where = model.version !== OSSIE_VERSION ? `under 'deployments'` :
-          model.deployments?.length ?
-          `under 'deployments' in its GOOGLE custom_extensions block` :
-          undefined;
-      // When the model binds a third-party table, a graph target and a
-      // catalog-only push are refused too, so neither error below gives advice.
-      // When the model names a target, the refusal beside it says why.
-      const thirdParty = model.entities?.some(bindsThirdPartyTable);
-      if (deployInfo.uris.length !== 1) {
-        errors.push(
-            `model '${model.name}' (${document}) declares ${
-                deployInfo.uris
-                    .length} deployments; push uses ` +
-            `exactly one deployment for now${thirdParty ? '.' :
-            `, with a BigQuery Graph or Spanner Graph target${
-                where ? ` ${where}.` : `; ${DEPLOYMENTS_VERSION_HINT}`}`}`);
-      } else if (deployInfo.alloyDb.length) {
-        // Parseable, supported, and for the other command. AlloyDB has no
-        // property-graph DDL, so there is no graph here for a push to deploy
-        // -- which makes this a deployment pointed at the wrong verb rather
-        // than a URI to correct, and the message says which verb it is for.
-        const advice = thirdParty ? '' :
-            ` Declare a BigQuery or Spanner Graph target (${
-                where ?? DEPLOYMENTS_VERSION_HINT}), or run 'kcmd push ` +
-            `--no-profile' to publish to Knowledge Catalog only.`;
-        errors.push(
-            `model '${model.name}' (${document}) target '${
-                deployInfo.alloyDb[0].uri}' is an AlloyDB database, which a ` +
-            `model runs against rather than deploys to; AlloyDB has no ` +
-            `property graph for a push to publish.${advice}`);
-      }
     }
 
     // A model that targets a graph (BigQuery OR Spanner) must have every
@@ -173,7 +96,7 @@ export function validatePushRequirements(
     const flaggedMetrics = new Set<string>();
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
-        flaggedMetrics, opts.liftedExclusions));
+        flaggedMetrics));
     if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
       errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
     }
@@ -1353,12 +1276,9 @@ function relationshipKeyErrors(
 
 // Why each field of `model` holds no SQL, in the loader's words. Each field
 // is read on the entity that declares it, and each field an entity inherits
-// is read on that entity, as the loader does, less each field in
-// `liftedExclusions` on the entity that excludes it. An association's field
-// is an edge property, read on its relationship.
-function fieldNoSqlErrors(
-    model: SemanticModel, document: string,
-    liftedExclusions: ReadonlyArray<ProfileExclusion> = []): string[] {
+// is read on that entity, as the loader does. An association's field is an
+// edge property, read on its relationship.
+function fieldNoSqlErrors(model: SemanticModel, document: string): string[] {
   const where = `in model '${model.name}' (${document})`;
   const errors: string[] = [];
   for (const e of model.entities ?? []) {
@@ -1372,10 +1292,9 @@ function fieldNoSqlErrors(
     }
   }
   if ((model.entities ?? []).some(e => e.extends?.length)) {
-    const marked = applyProfileExclusions(model, liftedExclusions);
-    const concepts = ifResolvable(() => declaredConcepts(marked));
+    const concepts = ifResolvable(() => declaredConcepts(model));
     const inherited = concepts ?
-        inheritedNoSqlProblems(marked.entities ?? [], concepts, noSqlProblemOf) :
+        inheritedNoSqlProblems(model.entities ?? [], concepts, noSqlProblemOf) :
         [];
     for (const problem of inherited) {
       errors.push(`model '${model.name}' (${document}): ${problem}.`);
@@ -1440,14 +1359,12 @@ function metricNoSqlError(
 // Exported so `commands.ts` can also run it on the unpruned model before
 // `pruneUnavailable` drops unbound fields and metrics on a graph push. When
 // given, `flaggedMetrics` collects the name of each metric it reports.
-// `liftedExclusions` is as validatePushRequirements takes it.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>,
-    liftedExclusions?: ReadonlyArray<ProfileExclusion>): string[] {
+    flaggedMetrics?: Set<string>): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
-    errors.push(...fieldNoSqlErrors(model, document, liftedExclusions));
+    errors.push(...fieldNoSqlErrors(model, document));
     const fieldsByEntity = ifResolvable(() => declaredFields(model));
     if (!fieldsByEntity) {
       for (const metric of model.metrics ?? []) {

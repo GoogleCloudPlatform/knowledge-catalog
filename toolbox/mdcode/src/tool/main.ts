@@ -61,7 +61,7 @@ cli.command('push', 'Push catalog entries')
         'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')
     .option(
         '--emit-expressions',
-        'Emit SQL-expression fields not yet in the published Knowledge Catalog system-type templates (per-field schema semantics, metric expression); off by default, enable once the templates support them; semantic-model push only')
+        'No longer supported on push; set KC_V2_ASPECTS=1 to publish expression fields')
     .option(
         '--dry-run',
         'Run every check and show what would change, without applying anything')
@@ -71,10 +71,10 @@ cli.command('push', 'Push catalog entries')
         'Skip the check that every source names a table Knowledge Catalog knows about; a Cloud SQL or third-party source is still looked up for its dialect; semantic-model push only')
     .option(
         '--no-profile',
-        'Deploy the graph for no binding profile: publish only the logical model to Knowledge Catalog, leaving any deployed graph untouched; the graph is deployed by default for the default binding profile; not accepted for a model that lists deployments; semantic-model push only')
+        'No longer supported on push; use --no-deployment to skip database deployments, or --deployment <name> to select one')
     .option(
         '--no-kc',
-        'Skip the Knowledge Catalog metadata push and deploy only the graph; Knowledge Catalog is pushed by default; not accepted for a model that lists deployments or has a sibling profile file; semantic-model push only')
+        'No longer supported on push; every push publishes the model to Knowledge Catalog')
     .option(
         '--print',
         'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
@@ -83,18 +83,28 @@ cli.command('push', 'Push catalog entries')
         'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model file; write a profile\'s BIGQUERY or ANSI_SQL expressions yourself')
     .option(
         '--profile [name]',
-        'Deploy the graph for one binding profile (reads <model>.profiles/<name>.yaml; a sibling <model>.profile.<name>.yaml, or a profile in a 0.2.0.dev0 model\'s GOOGLE block, deploys only through a deployment that names it); its deployment target selects the graph backend; defaults to default_profile, else the inline bindings, for a model that lists no deployments and has no sibling profile file; mutually exclusive with --all-profiles and --no-profile; not accepted for a model that lists deployments; semantic-model push only')
+        'No longer supported on push; declare a deployment with profile: prod under deployments: and run kcmd push --deployment <name>')
     .option(
         '--all-profiles',
-        'Deploy the graph for every defined binding profile (plus the inline bindings when the document declares a target); Knowledge Catalog still records the default binding; mutually exclusive with --profile and --no-profile; not accepted for a model that lists deployments; semantic-model push only')
+        'No longer supported on push; kcmd push deploys every entry under deployments: by default')
     // The value is optional because --no-deployment defaults this option to
     // true, which cac reports as a missing value when the value is required.
     .option('--deployment [names...]', 'Deploy only these deployments, by name')
     .option(
         '--no-deployment', 'Publish to Knowledge Catalog only; deploy nothing')
+    // --emit-expressions, --no-profile, --no-kc, --profile and --all-profiles
+    // stay registered only so push can say what replaces each: cac refuses an
+    // unregistered option before push runs.
     .action((options) => run(async () => {
-      const deployment = commands.typedDeployment(process.argv.slice(2));
-      return commands.push({...options, deployment});
+      const args = process.argv.slice(2);
+      const deployment = commands.typedDeployment(args);
+      // cac gives a bare --profile the same true it gives an absent one, so
+      // read whether it was typed, as for --deployment.
+      const typed = args.slice(0, (args.indexOf('--') + 1 || args.length + 1) - 1);
+      const profile = options.profile === true && typed.includes('--profile') ?
+          '' :
+          options.profile;
+      return commands.push({...options, deployment, profile});
     }));
 
 
