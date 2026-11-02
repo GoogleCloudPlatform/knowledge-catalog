@@ -88,7 +88,9 @@ under a prefix such as `snowflake:` or `databricks:table:` is rejected. A
 Bigtable or Dataproc Metastore table is rejected too, since the preview does
 not support them yet. An entry name in a system entry group, such as
 `@bigquery`, is rejected with an error that says what to write instead. A bare
-table name, a query, and any other prefix are rejected. The source also fixes
+table name, a query, and any other prefix are rejected. A resource name or
+entry name with double quotes or backticks in it is rejected too, and the
+error gives the name without them. The source also fixes
 the profile's SQL dialect, so every field the profile binds needs an expression
 in that dialect or in `ANSI_SQL`.
 

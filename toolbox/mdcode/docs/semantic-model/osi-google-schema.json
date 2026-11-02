@@ -191,7 +191,8 @@
     },
     "TableSource": {
       "type": "string",
-      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @.",
+      "description": "The GCP resource name, with no leading //, of a BigQuery, BigLake, Spanner, AlloyDB or Cloud SQL table, or the Knowledge Catalog entry name of a table outside Google Cloud, in an entry group whose id does not begin with @. Neither form takes double quotes or backticks.",
+      "pattern": "^[^\"`]*$",
       "anyOf": [
         {
           "title": "BigQuery table",

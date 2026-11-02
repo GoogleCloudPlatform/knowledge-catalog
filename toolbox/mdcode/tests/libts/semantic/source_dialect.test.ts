@@ -282,5 +282,9 @@ entities:
     // A tag kcmd does not resolve is read as the loader reads it: a !!set
     // stays a plain mapping, so its values are walked.
     expect(sourcesToLookUp([`tables: !!set\n  orders: ${MYSQL}\n`])).toEqual([MYSQL]);
+    // A name with quotes is not looked up, since the loader rejects it.
+    expect(sourcesToLookUp(['"orders"', '`orders`'].flatMap(q => [
+      `source: '${MYSQL.replace('orders', q)}'\n`,
+      `source: '${THIRD_PARTY.replace('orders', q)}'\n`]))).toEqual([]);
   });
 });

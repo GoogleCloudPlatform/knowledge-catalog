@@ -3020,6 +3020,9 @@ const CLOUDSQL_TABLE_URI =
 const CLOUDSQL_SCHEMA_TABLE_URI =
     /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/;
 
+// A double quote or a backtick, which no resource name or entry name holds.
+const QUOTE = /["`]/;
+
 // A Cloud SQL table written as its resource name or resource URI: its
 // project, location and instance, and its resource name with no leading `//`,
 // which is also the id of its catalog entry in the `@cloudsql` entry group.
@@ -3030,10 +3033,12 @@ export interface CloudSqlTable {
   resourceName: string;
 }
 
-// The Cloud SQL table `source` names, or undefined when it names none.
+// The Cloud SQL table `source` names, or undefined when it names none. A name
+// with quotes names none, so push reports it without looking it up.
 export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
   const uri = asResourceUri(source.trim());
-  const m = uri.match(CLOUDSQL_TABLE_URI) ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
+  const m = QUOTE.test(uri) ? null :
+      uri.match(CLOUDSQL_TABLE_URI) ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
   return m ?
       {project: m[1], location: m[2], instance: m[3], resourceName: uri.slice(2)} :
       undefined;
@@ -3120,17 +3125,36 @@ function cloudSqlSchemaTable(s: string[]): string {
       s[1]}/instances/${s[2]}/databases/${s[3]}/schemas/${s[4]}/tables/${s[5]}`;
 }
 
-// What a source written as a resource URI or a Knowledge Catalog name of a
-// table kcmd reads is, and the resource name to write instead; undefined for
-// any other source. The loader rejects such a source, and pull warns for one
-// an older push stored.
+// What a source written as a resource URI, as a Knowledge Catalog name of a
+// table kcmd reads, or with quotes in a resource name or entry name is, and
+// the name to write instead; undefined for any other source. The loader
+// rejects such a source, and pull warns for one an older push stored.
 export function oldSourceForm(source: string): string|undefined {
+  const unquoted = unquotedName(source);
+  if (unquoted !== undefined) {
+    return `a name with quotes in it; resource names and entry names take ` +
+        `no quotes, so write '${unquoted}'`;
+  }
   const name = asResourceName(source);
   if (name !== source && isAcceptedSource(name)) return resourceUriFix(source);
   const fromCatalog = catalogNameResourceName(source);
   return fromCatalog === undefined ? undefined :
       `a Knowledge Catalog name; write the table's GCP resource name: '${
           fromCatalog}'`;
+}
+
+// `source` with its quotes removed, written as a resource name, when it is a
+// table's resource name, resource URI or entry name holding them; undefined
+// for any other source.
+function unquotedName(source: string): string|undefined {
+  if (!QUOTE.test(source)) return undefined;
+  const name = source.replace(/["`]/g, '');
+  const uri = asResourceUri(name);
+  const table = [
+    BIGQUERY_TABLE_URI, BIGLAKE_TABLE_URI, SPANNER_TABLE_URI, ALLOYDB_TABLE_URI,
+    CLOUDSQL_TABLE_URI, CLOUDSQL_SCHEMA_TABLE_URI,
+  ].some(re => re.test(uri));
+  return table || ENTRY_NAME.test(name) ? asResourceName(name) : undefined;
 }
 
 // The GCP resource name of the first-party table a Knowledge Catalog name
@@ -3354,11 +3378,12 @@ export interface ThirdPartyEntry {
   name: string;
 }
 
-// The third-party entry `source` names, or undefined when it names none.
+// The third-party entry `source` names, or undefined when it names none, as
+// an entry name with quotes does.
 export function thirdPartyEntryOf(source: string): ThirdPartyEntry|undefined {
   const name = source.trim();
   const m = name.match(ENTRY_NAME);
-  if (!m || m[1].startsWith('@') || /\s/.test(m[2])) return undefined;
+  if (!m || m[1].startsWith('@') || QUOTE.test(name)) return undefined;
   const [, project, , location] = name.split('/');
   return {project, location, name};
 }

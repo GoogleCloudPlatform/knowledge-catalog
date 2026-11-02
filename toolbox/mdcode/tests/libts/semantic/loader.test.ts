@@ -3279,7 +3279,6 @@ describe('strict entity sources', () => {
       'bigquery.googleapis.com/projects/p/datasets/a.b/tables/t',
       'bigquery:p.`a.b`.t',
       'bigquery:p.d.`a.b`',
-      'projects/p/locations/us/entryGroups/sf/entries/"order items"',
     ]) {
       expect(databaseOf(bad)).toBeUndefined();
       expect(() => load(GOOGLE, {
@@ -3300,6 +3299,18 @@ describe('strict entity sources', () => {
     // A space inside double quotes or backticks belongs to a table name.
     for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"']) {
       expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source.`);
+    }
+    // A resource name or entry name takes no double quotes or backticks; the
+    // message gives the name without them.
+    const quotedNames = (q: string) => [`${TABLE}/${q}orders${q}`, `${TABLE}/${q}order items${q}`,
+      `biglake.googleapis.com/projects/acme/catalogs/c/namespaces/n/tables/${q}orders${q}`,
+      `spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/${q}orders${q}`,
+      `alloydb.googleapis.com/projects/acme/locations/l/clusters/c/databases/db/schemas/${q}public${q}/tables/orders`,
+      `cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables/${q}orders${q}`,
+      `projects/acme/locations/us/entryGroups/sf/entries/${q}orders${q}`];
+    for (const quoted of [...quotedNames('"'), ...quotedNames('`')]) {
+      expect(() => loadSource(quoted)).toThrow(
+        `source '${quoted}' is a name with quotes in it; resource names and entry names take no quotes, so write '${quoted.replace(/["`]/g, '')}'.`);
     }
 
     // Each bare-name message also names the command that completes bare names.
