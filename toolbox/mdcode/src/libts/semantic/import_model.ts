@@ -33,8 +33,9 @@ export interface ImportSemanticModelOptions {
    */
   strict?: boolean;
   /**
-   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
-   * used when converting a Google-flavor model to vanilla (`'ossie'`).
+   * Sibling `<model>.profile.<name>.yaml` files located beside a Google-flavor
+   * input file, used when converting to vanilla (`'ossie'`) or translating
+   * expressions (`transpile`).
    */
   profileFiles?: SerializedFile[];
 }
@@ -343,10 +344,8 @@ function validateObjectNames(
     validateRecords('deployment', asRecords(g.deployments), modelScope);
     validateRecords('profile', asRecords(g.profiles), modelScope);
   }
-  if (doc.targetVersion === OSSIE_VERSION) {
-    for (const pf of profileFiles ?? []) {
-      validateName('profile', parseProfileName(pf.fileName), modelScope);
-    }
+  for (const pf of profileFiles ?? []) {
+    validateName('profile', parseProfileName(pf.fileName), modelScope);
   }
 
   // 2. Validate dataset/entity, field, relationship, and metric names.
@@ -769,49 +768,157 @@ function adaptToOssieVersion(doc: ImportDocument): void {
 }
 
 /**
- * Loads `doc.root` into the `SemanticModel` IR, runs `transpileModel` to
- * translate vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, and
- * writes any newly added `BIGQUERY` dialect entries back onto `doc`.
+ * Writes `irDialects` back onto `exprDoc.expression` when `transpileModel`
+ * appended a new dialect entry (e.g. `BIGQUERY`), returning `true` when
+ * `exprDoc` was updated.
  */
-async function transpileDocument(doc: ImportDocument): Promise<void> {
+function syncIrToExpressionDoc(
+    exprDoc: Record<string, any>,
+    irDialects: Array<{dialect: string; expression: string}>|
+    undefined): boolean {
+  const prevCount = typeof exprDoc.expression === 'string' ?
+      1 :
+      asRecords(exprDoc.expression?.dialects).length;
+  if (prevCount > 0 && irDialects && irDialects.length > prevCount) {
+    exprDoc.expression = {
+      dialects:
+          irDialects.map(d => ({dialect: d.dialect, expression: d.expression})),
+    };
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Syncs each profile entity field in `profileDocs` with its transpiled
+ * counterpart in `irProfiles`, returning `true` when any field was updated.
+ */
+function syncIrToProfileDocs(
+    profileDocs: Array<Record<string, any>>,
+    irProfiles: ProfileSpec[]): boolean {
+  let modified = false;
+  for (const profileDoc of profileDocs) {
+    const irProf = irProfiles.find(p => p.name === profileDoc.name);
+    for (const entityDoc of asRecords(profileDoc.entities)) {
+      const irEnt = irProf?.entities.find(e => e.name === entityDoc.name);
+      for (const fieldDoc of asRecords(entityDoc.fields)) {
+        const irDialects =
+            irEnt?.fields?.find(f => f.name === fieldDoc.name)?.dialects;
+        if (syncIrToExpressionDoc(fieldDoc, irDialects)) {
+          modified = true;
+        }
+      }
+    }
+  }
+  return modified;
+}
+
+/**
+ * Writes any transpiled `BIGQUERY` dialect entries from `irProfiles` back into
+ * the `GOOGLE` `custom_extensions` block(s) on `doc.model`.
+ *
+ * Called after `fromDocument` succeeds, so every `GOOGLE` block's `data` is a
+ * validated JSON object string. When any profile field is updated, `ext.data`
+ * is re-serialized with `JSON.stringify` and `doc.modified` is set to `true`.
+ */
+function syncIrToGoogleBlocks(
+    doc: ImportDocument, irProfiles: ProfileSpec[]|undefined): void {
+  if (!irProfiles?.length) return;
+  for (const ext of asRecords(doc.model.custom_extensions)) {
+    if (!isGoogleVendor(ext.vendor_name)) continue;
+    // 1. Parse the validated `GOOGLE` block JSON payload and skip blocks
+    // without a `profiles` array.
+    const parsed = JSON.parse(ext.data) as Record<string, unknown>;
+    if (!Array.isArray(parsed.profiles)) continue;
+
+    // 2. Sync each profile field's dialect entries and re-serialize `ext.data`
+    // only when at least one profile field was updated.
+    if (syncIrToProfileDocs(asRecords(parsed.profiles), irProfiles)) {
+      ext.data = JSON.stringify(parsed);
+      doc.modified = true;
+    }
+  }
+}
+
+/**
+ * Syncs each sibling `<model>.profile.<name>.yaml` file in `profileFiles` with
+ * its transpiled counterpart in `irProfiles`.
+ *
+ * When at least one profile file gained a dialect entry from `transpileModel`,
+ * returns all sibling profile files (re-serializing modified profile files and
+ * preserving unmodified profile files verbatim); otherwise returns `[]`.
+ */
+function syncIrToProfileFiles(
+    modelName: string, profileFiles: SerializedFile[]|undefined,
+    irProfiles: ProfileSpec[]|undefined): SerializedFile[] {
+  if (!profileFiles?.length || !irProfiles?.length) return [];
+  let anyModified = false;
+  const adapted = profileFiles.map(pf => {
+    const profileName = parseProfileName(pf.fileName);
+    const fileName = `${modelName}.profile.${profileName}.yaml`;
+    const profileDoc =
+        plainCopy(yaml.parse(pf.content, YAML_OPTIONS)) as Record<string, any>;
+    if (syncIrToProfileDocs([profileDoc], irProfiles)) {
+      anyModified = true;
+      return {fileName, content: yaml.stringify(profileDoc, {lineWidth: 0})};
+    }
+    return {fileName, content: pf.content};
+  });
+  return anyModified ? adapted : [];
+}
+
+/**
+ * Loads `doc.root` into the `SemanticModel` IR, attaches any sibling
+ * `attachedProfiles`, runs `transpileModel` to translate vendor or
+ * double-quoted `ANSI_SQL` expressions to `BIGQUERY`, writes any newly added
+ * `BIGQUERY` dialect entries back onto `doc`, and returns the transpiled
+ * `ProfileSpec[]`.
+ */
+async function transpileDocument(
+    doc: ImportDocument,
+    attachedProfiles?: ProfileSpec[]): Promise<ProfileSpec[]|undefined> {
+  // 1. Load `doc.root` into the `SemanticModel` IR, bailing out if the input
+  // document has a structural or schema load error.
   let preLoaded: ReturnType<typeof fromDocument>;
   try {
     preLoaded = fromDocument(
         doc.root, {bindingOptional: true, warnUnacceptedSource: true});
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
-    return;
+    return undefined;
   }
-  // Writes `irDialects` back onto `rawNode.expression` when `transpileModel`
-  // appended a new dialect entry (e.g. `BIGQUERY`).
-  const syncNode =
-      (rawNode: Record<string, any>,
-       irDialects: Array<{dialect: string; expression: string}>|undefined) => {
-        const prevCount = typeof rawNode.expression === 'string' ?
-            1 :
-            asRecords(rawNode.expression?.dialects).length;
-        if (prevCount > 0 && irDialects && irDialects.length > prevCount) {
-          rawNode.expression = {
-            dialects: irDialects.map(
-                d => ({dialect: d.dialect, expression: d.expression})),
-          };
-          doc.modified = true;
-        }
-      };
+
+  // 2. Transpile each loaded model (with any sibling `attachedProfiles`
+  // attached) and write newly added `BIGQUERY` dialect entries back onto
+  // `doc.datasets`, `doc.metrics`, and `GOOGLE` block `profiles`.
+  let transpiledProfiles: ProfileSpec[]|undefined;
   for (const m of preLoaded.models) {
+    if (attachedProfiles?.length) {
+      m.profiles = attachedProfiles;
+    }
     const transpiled = await transpileModel(m);
     doc.warnings.push(...transpiled.warnings);
     for (const ds of doc.datasets) {
       const irEntity = transpiled.model.entities.find(e => e.name === ds.name);
       for (const f of asRecords(ds.fields)) {
-        syncNode(f, irEntity?.fields.find(x => x.name === f.name)?.dialects);
+        if (syncIrToExpressionDoc(
+                f, irEntity?.fields.find(x => x.name === f.name)?.dialects)) {
+          doc.modified = true;
+        }
       }
     }
     for (const mt of doc.metrics) {
-      syncNode(
-          mt, transpiled.model.metrics.find(x => x.name === mt.name)?.dialects);
+      if (syncIrToExpressionDoc(
+              mt,
+              transpiled.model.metrics.find(x => x.name === mt.name)
+                  ?.dialects)) {
+        doc.modified = true;
+      }
     }
+    syncIrToGoogleBlocks(doc, transpiled.model.profiles);
+    transpiledProfiles = transpiled.model.profiles;
   }
+  return transpiledProfiles;
 }
 
 /**
@@ -838,8 +945,8 @@ function validateDeploymentTargets(
  * profile load error in `doc.errors`.
  */
 function attachProfileFiles(
-    model: SemanticModel, profileFiles: SerializedFile[]|undefined,
-    doc: ImportDocument): void {
+    model: Pick<SemanticModel, 'name'|'profiles'>,
+    profileFiles: SerializedFile[]|undefined, doc: ImportDocument): void {
   if (!profileFiles?.length) return;
   const profiles: ProfileSpec[] = [];
   const seen = new Set<string>();
@@ -946,9 +1053,9 @@ function loadSemanticModel(doc: ImportDocument): SemanticModel|undefined {
 /**
  * Phase 4 (Convert): Generates converted output file(s) across versions
  * (`0.2.0.dev0` <-> `0.2.0.dev0/google`) by loading `doc.root` into the
- * `SemanticModel` IR, optionally running `transpileModel`, attaching profile
- * files and checking conversion gaps when targeting `0.2.0.dev0`, and
- * serializing with `serializeModelFiles`.
+ * `SemanticModel` IR, attaching profile files and checking conversion gaps when
+ * targeting `0.2.0.dev0`, optionally running `transpileModel`, and serializing
+ * with `serializeModelFiles`.
  */
 async function generateConvertedFiles(
     doc: ImportDocument,
@@ -959,20 +1066,20 @@ async function generateConvertedFiles(
   let model = loadSemanticModel(doc);
   if (!model) return [];
 
-  // 2. When `opts.transpile` is enabled, translate vendor or double-quoted
-  // `ANSI_SQL` expressions to `BIGQUERY`.
-  if (opts.transpile) {
-    const transpiled = await transpileModel(model);
-    model = transpiled.model;
-    doc.warnings.push(...transpiled.warnings);
-  }
-
-  // 3. When converting to `0.2.0.dev0`, load sibling profile files and verify
-  // the model has no conversion gaps.
+  // 2. When converting to `0.2.0.dev0`, load sibling profile files and verify
+  // the model has no conversion gaps before running `transpileModel`.
   if (doc.targetVersion === OSSIE_VERSION) {
     attachProfileFiles(model, opts.profileFiles, doc);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
+  }
+
+  // 3. When `opts.transpile` is enabled, translate vendor or double-quoted
+  // `ANSI_SQL` expressions (including attached profiles) to `BIGQUERY`.
+  if (opts.transpile) {
+    const transpiled = await transpileModel(model);
+    model = transpiled.model;
+    doc.warnings.push(...transpiled.warnings);
   }
 
   // 4. Switch `model.version` to `doc.targetVersion` and serialize the output
@@ -985,12 +1092,14 @@ async function generateConvertedFiles(
 
 /**
  * Phase 4 (Adapt): Adapts `doc` in place to its target version
- * (`adaptToGoogleVersion` or `adaptToOssieVersion`), optionally transpiles
- * expressions via `transpileDocument`, and returns the adapted output file.
+ * (`adaptToGoogleVersion` or `adaptToOssieVersion`), attaches any sibling
+ * `profileFiles` when transpiling a Google-flavor input document, optionally
+ * transpiles expressions via `transpileDocument`, and returns the adapted
+ * output file(s).
  */
 async function generateAdaptedFiles(
-    doc: ImportDocument, rawYaml: string,
-    transpile: boolean): Promise<SerializedFile[]> {
+    doc: ImportDocument, rawYaml: string, transpile: boolean,
+    profileFiles?: SerializedFile[]): Promise<SerializedFile[]> {
   // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
   // or `0.2.0.dev0`).
   if (doc.inputVersion === OSSIE_VERSION &&
@@ -1000,17 +1109,32 @@ async function generateAdaptedFiles(
     adaptToOssieVersion(doc);
   }
 
-  // 2. When `transpile` is enabled and no prior errors occurred, translate
-  // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`.
-  if (transpile && doc.errors.length === 0) {
-    await transpileDocument(doc);
+  // 2. Attach any sibling `profileFiles` (passed when `transpile` is enabled
+  // on a Google-flavor input), and when `transpile` is enabled with no prior
+  // errors, translate vendor or double-quoted `ANSI_SQL` expressions to
+  // `BIGQUERY`.
+  let attachedProfiles: ProfileSpec[]|undefined;
+  if (profileFiles?.length) {
+    const profileHolder: Pick<SemanticModel, 'name'|'profiles'> = {
+      name: String(doc.model.name ?? ''),
+    };
+    attachProfileFiles(profileHolder, profileFiles, doc);
+    if (doc.errors.length > 0) return [];
+    attachedProfiles = profileHolder.profiles;
   }
+  const irProfiles = transpile && doc.errors.length === 0 ?
+      await transpileDocument(doc, attachedProfiles) :
+      undefined;
 
-  // 3. Serialize `doc.root` when modified or preserve `rawYaml` verbatim when
-  // unmodified.
+  // 3. Serialize `doc.root` when modified (or preserve `rawYaml` verbatim when
+  // unmodified), and append sibling profile files when at least one profile
+  // file gained a translated dialect entry.
   const content =
       doc.modified ? yaml.stringify(doc.root, {lineWidth: 0}) : rawYaml;
-  return [{fileName: `${doc.model.name}.yaml`, content}];
+  return [
+    {fileName: `${doc.model.name}.yaml`, content},
+    ...syncIrToProfileFiles(String(doc.model.name), profileFiles, irProfiles),
+  ];
 }
 
 /**
@@ -1060,7 +1184,14 @@ export async function importSemanticModelYaml(
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
-  validateInputDocument(doc, opts.profileFiles);
+  // Read sibling profile files only when converting a Google-flavor model to
+  // vanilla or when translating expressions, so a plain Google-to-Google
+  // import preserves its single-file output.
+  const profileFiles = doc.inputVersion === GOOGLE_VERSION &&
+          (doc.targetVersion === OSSIE_VERSION || opts.transpile) ?
+      opts.profileFiles :
+      undefined;
+  validateInputDocument(doc, profileFiles);
 
   // 2. Run third-party repairs (which record errors in `strict` mode).
   repairDocument(doc);
@@ -1069,7 +1200,7 @@ export async function importSemanticModelYaml(
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
-      await generateAdaptedFiles(doc, rawYaml, !!opts.transpile);
+      await generateAdaptedFiles(doc, rawYaml, !!opts.transpile, profileFiles);
 
   // 4. Validate the primary output document and return the result.
   if (files.length > 0 && doc.errors.length === 0) {

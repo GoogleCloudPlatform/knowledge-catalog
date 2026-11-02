@@ -258,6 +258,54 @@ describe('transpileModel', () => {
         .toBe(true);
   });
 
+  test('transpiles profile entity field expressions', async () => {
+    const withProfile: SemanticModel = {
+      name: 'm',
+      entities: [
+        {name: 'orders', dataSource: 'p.d.orders', keys: ['id'], fields: []},
+        {
+          name: 'customers',
+          dataSource: 'p.d.customers',
+          keys: ['cid'],
+          fields: [],
+        },
+      ],
+      relationships: [],
+      metrics: [],
+      profiles: [{
+        name: 'prod',
+        entities: [
+          {name: 'customers', source: 'p.d.customers_prod'},
+          {
+            name: 'orders',
+            source: 'p.d.orders_prod',
+            fields: [{
+              name: 'id',
+              dialects: [{dialect: 'SNOWFLAKE', expression: 'NVL(o.id, 0)'}],
+              stringForm: false,
+            }],
+          },
+        ],
+        relationships: [],
+      }],
+    };
+    const snapshot = structuredClone(withProfile);
+    const {transpiler} = fakeTranspiler(() => 'COALESCE(o.id, 0)');
+
+    const {model, warnings} = await transpileModel(withProfile, {transpiler});
+
+    expect(withProfile).toEqual(snapshot);
+    const pf = model.profiles![0].entities[1].fields![0];
+    expect(pf.dialects).toEqual([
+      {dialect: 'SNOWFLAKE', expression: 'NVL(o.id, 0)'},
+      {dialect: 'BIGQUERY', expression: 'COALESCE(o.id, 0)'},
+    ]);
+    expect(pf.stringForm).toBe(false);
+    expect(warnings).toEqual([
+      `profile 'prod' field 'orders.id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'`,
+    ]);
+  });
+
   test(
       'passes the source dialect and expression through to the mechanism',
       async () => {

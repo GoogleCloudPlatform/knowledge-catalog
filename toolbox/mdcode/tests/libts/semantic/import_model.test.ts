@@ -142,8 +142,14 @@ describe('conversion, strict mode, and translation', () => {
       {}, '--input first-party'
     ],
     [
-      'bare source in strict mode', googleDoc({source: 'orders'}),
-      {strict: true}, 'orders'
+      'bare source in strict mode',
+      googleDoc({
+        source: 'orders',
+        fieldExpr:
+            '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}',
+      }),
+      {strict: true, transpile: true},
+      'orders',
     ],
     [
       'loader error in Check step (blank SQL)', googleDoc({fieldExpr: '"   "'}),
@@ -154,6 +160,7 @@ describe('conversion, strict mode, and translation', () => {
 
     expect(res.ok).toBe(false);
     expect(res.files).toEqual([]);
+    expect(res.warnings).toEqual([]);
     expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
   });
 
@@ -181,6 +188,89 @@ describe('conversion, strict mode, and translation', () => {
         expect(loaded.metrics[0].dialects).toEqual([
           {dialect: 'ANSI_SQL', expression: 'COUNT("orders"."order_id")'},
           {dialect: 'BIGQUERY', expression: 'COUNT(`orders`.`order_id`)'},
+        ]);
+      });
+
+  test(
+      'translates profile field expressions in a vanilla GOOGLE block and warns when untranslatable',
+      async () => {
+        // The `deployments`-only GOOGLE block exercises the
+        // `!Array.isArray(parsed.profiles)` branch in `syncIrToGoogleBlocks`.
+        const profilesData = JSON.stringify({
+          profiles: [
+            {
+              name: 'prod',
+              entities: [{
+                name: 'orders',
+                source: `${BQ_TABLE}_prod`,
+                fields: [{
+                  name: 'id',
+                  expression: {
+                    dialects:
+                        [{dialect: 'SNOWFLAKE', expression: 'NVL(o.id, 0)'}],
+                  },
+                }],
+              }],
+            },
+            {
+              name: 'dev',
+              entities: [{
+                name: 'orders',
+                source: `${BQ_TABLE}_dev`,
+                fields: [{
+                  name: 'id',
+                  expression: {
+                    dialects: [{dialect: 'SNOWFLAKE', expression: 'NVL(o.id,'}],
+                  },
+                }],
+              }],
+            },
+          ],
+        });
+        const input = `
+version: "0.2.0.dev0"
+semantic_model:
+  - name: retail
+    datasets:
+      - name: orders
+        source: ${BQ_TABLE}
+        primary_key: [id]
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: SNOWFLAKE
+                  expression: "NVL(orders.id, 0)"
+    custom_extensions:
+      - vendor_name: DBT
+        data: '{"keep":true}'
+      - vendor_name: GOOGLE
+        data: '{"deployments":[{"name":"prod_bq","target":"bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail","profile":"prod"}]}'
+      - vendor_name: GOOGLE
+        data: '${profilesData}'
+`;
+
+        const res = await importSemanticModelYaml(
+            input, {strict: true, transpile: true});
+
+        expect(res.ok).toBe(true);
+        expect(res.errors).toEqual([]);
+        expect(res.warnings).toEqual([
+          `field 'orders.id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'`,
+          `profile 'prod' field 'orders.id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'`,
+          expect.stringMatching(
+              /^profile 'dev' field 'orders\.id': could not transpile 'SNOWFLAKE' -> 'BIGQUERY' \(.+\); left untranslated$/),
+        ]);
+        const loaded = loadModels(res.files[0].content).models[0];
+        expect(loaded.customExtensions).toEqual([
+          {vendorName: 'DBT', data: '{"keep":true}'},
+        ]);
+        expect(loaded.profiles![0].entities[0].fields![0].dialects).toEqual([
+          {dialect: 'SNOWFLAKE', expression: 'NVL(o.id, 0)'},
+          {dialect: 'BIGQUERY', expression: 'COALESCE(o.id, 0)'},
+        ]);
+        expect(loaded.profiles![1].entities[0].fields![0].dialects).toEqual([
+          {dialect: 'SNOWFLAKE', expression: 'NVL(o.id,'},
         ]);
       });
 
@@ -631,7 +721,20 @@ semantic_model:
                   {
                     "name": "orders",
                     "source": "${BQ_TABLE}",
-                    "primary_key": ["order_id"]
+                    "primary_key": ["order_id"],
+                    "fields": [
+                      {
+                        "name": "order_id",
+                        "expression": {
+                          "dialects": [
+                            {
+                              "dialect": "SNOWFLAKE",
+                              "expression": "NVL(o.order_id, 0)"
+                            }
+                          ]
+                        }
+                      }
+                    ]
                   }
                 ]
               }
@@ -684,6 +787,22 @@ semantic_model:
               name: 'orders',
               source: BQ_TABLE,
               primaryKey: ['order_id'],
+              fields: [
+                {
+                  name: 'order_id',
+                  expression: 'COALESCE(o.order_id, 0)',
+                  importedExpression: 'NVL(o.order_id, 0)',
+                  importedDialect: 'SNOWFLAKE',
+                  dialects: [
+                    {dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'},
+                    {
+                      dialect: 'BIGQUERY',
+                      expression: 'COALESCE(o.order_id, 0)',
+                    },
+                  ],
+                  stringForm: false,
+                },
+              ],
             },
           ],
           relationships: [],
@@ -724,6 +843,113 @@ semantic_model:
         expect(loaded.aiContext?.additionalProperties).toEqual({
           owner: 'analytics',
         });
+      });
+
+  test(
+      'translates profile file field expressions when converting Google flavor to vanilla',
+      async () => {
+        const profileWithSnowflake = `
+name: prod
+entities:
+  - name: orders
+    source: ${BQ_TABLE}_prod
+    primary_key: [order_id]
+    fields:
+      - name: order_id
+        expression:
+          dialects:
+            - dialect: SNOWFLAKE
+              expression: "NVL(o.order_id, 0)"
+`;
+
+        const res = await importSemanticModelYaml(googleDoc(), {
+          flavor: 'ossie',
+          strict: true,
+          transpile: true,
+          profileFiles: [
+            {
+              fileName: 'retail.profile.prod.yaml',
+              content: profileWithSnowflake,
+            },
+          ],
+        });
+
+        expect(res.ok).toBe(true);
+        expect(res.errors).toEqual([]);
+        expect(res.warnings).toEqual([
+          `profile 'prod' field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'`,
+        ]);
+        const loaded = loadModels(res.files[0].content).models[0];
+        expect(loaded.profiles![0].entities[0].fields![0].dialects).toEqual([
+          {dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'},
+          {dialect: 'BIGQUERY', expression: 'COALESCE(o.order_id, 0)'},
+        ]);
+      });
+
+  test(
+      'translates profile file field expressions on a Google-to-Google import and preserves unmodified profile files',
+      async () => {
+        const profileWithSnowflake = `name: prod
+entities:
+  - name: orders
+    source: ${BQ_TABLE}_prod
+    primary_key: [order_id]
+    fields:
+      - name: order_id
+        expression:
+          dialects:
+            - dialect: SNOWFLAKE
+              expression: "NVL(o.order_id, 0)"
+`;
+        const stagingProfile = {
+          fileName: 'retail.profile.staging.yaml',
+          content: profileYaml.replace('name: prod', 'name: staging'),
+        };
+        const profileFiles = [
+          {fileName: 'retail.profile.prod.yaml', content: profileWithSnowflake},
+          stagingProfile,
+        ];
+
+        const offRes = await importSemanticModelYaml(googleModelYaml, {
+          flavor: 'google',
+          strict: true,
+          profileFiles,
+        });
+        const unchangedRes = await importSemanticModelYaml(googleModelYaml, {
+          flavor: 'google',
+          strict: true,
+          transpile: true,
+          profileFiles: [stagingProfile],
+        });
+        const onRes = await importSemanticModelYaml(googleModelYaml, {
+          flavor: 'google',
+          strict: true,
+          transpile: true,
+          profileFiles,
+        });
+
+        expect(offRes.ok).toBe(true);
+        expect(offRes.files).toEqual([
+          {fileName: 'retail.yaml', content: googleModelYaml},
+        ]);
+        expect(unchangedRes.ok).toBe(true);
+        expect(unchangedRes.files).toEqual([
+          {fileName: 'retail.yaml', content: googleModelYaml},
+        ]);
+        expect(onRes.ok).toBe(true);
+        expect(onRes.warnings).toEqual([
+          `profile 'prod' field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'`,
+        ]);
+        expect(onRes.files[0]).toEqual({
+          fileName: 'retail.yaml',
+          content: googleModelYaml,
+        });
+        expect(onRes.files[2]).toEqual(stagingProfile);
+        const loadedProd = loadProfileFile(onRes.files[1].content, 'prod');
+        expect(loadedProd.entities[0].fields![0].dialects).toEqual([
+          {dialect: 'SNOWFLAKE', expression: 'NVL(o.order_id, 0)'},
+          {dialect: 'BIGQUERY', expression: 'COALESCE(o.order_id, 0)'},
+        ]);
       });
 
   test(
@@ -818,11 +1044,13 @@ semantic_model:
   test.each([
     [
       'reserved default profile name',
+      {flavor: 'ossie' as const, strict: true},
       [{fileName: 'retail.profile.default.yaml', content: 'name: default\n'}],
       `'default' names the model's inline bindings`,
     ],
     [
       'case-insensitive duplicate profile names',
+      {flavor: 'ossie' as const, strict: true},
       [
         {fileName: 'retail.profile.prod.yaml', content: 'name: prod\n'},
         {fileName: 'PROD.yaml', content: 'name: PROD\n'},
@@ -831,18 +1059,20 @@ semantic_model:
     ],
     [
       'mismatched profile name inside file',
+      {flavor: 'google' as const, strict: true, transpile: true},
       [{fileName: '/dir/retail.profile.prod.yaml', content: 'name: staging\n'}],
       `does not match its file's profile name 'prod'`,
     ],
     [
       'nameless .yml profile file',
+      {flavor: 'google' as const, strict: true, transpile: true},
       [{fileName: 'retail.profile.yml', content: 'name: ""\n'}],
       `Profile name '' is not valid`,
     ],
-  ])('refuses invalid profile file when converting to vanilla: %s',
-     async (_, profileFiles, expectedMsg) => {
-       const res = await importSemanticModelYaml(
-           googleDoc(), {flavor: 'ossie', strict: true, profileFiles});
+  ])('refuses invalid profile file when importing a Google-flavor model: %s',
+     async (_, opts, profileFiles, expectedMsg) => {
+       const res =
+           await importSemanticModelYaml(googleDoc(), {...opts, profileFiles});
 
        expect(res.ok).toBe(false);
        expect(res.files).toEqual([]);
@@ -899,7 +1129,7 @@ semantic_model:
         expect(roundTrippedCanonical.files).toEqual(canonicalGoogle.files);
       });
 
-  test('ignores profileFiles when target flavor is google', async () => {
+  test('ignores profileFiles for a vanilla input', async () => {
     const googleRes = await importSemanticModelYaml(ossieDoc(), {
       flavor: 'google',
       strict: true,
