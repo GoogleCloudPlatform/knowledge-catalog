@@ -3741,11 +3741,19 @@ describe('applyProfile options', () => {
 
   test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
     // The empty key warns. A Spanner table runs the Spanner-only text, and a
-    // BigQuery table needs it translated.
+    // BigQuery table needs it translated. Both read a double-quoted ANSI_SQL
+    // token as text.
+    const quoted = base();
+    quoted.metrics!.push(
+        {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
     const onSpanner: string[] = [];
-    applyProfile(base(), rebind(SP('Orders')), {warnings: onSpanner});
+    applyProfile(quoted, rebind(SP('Orders')), {warnings: onSpanner});
     expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
     expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
+    expect(onSpanner).toContain(
+        `metric 'q': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
+        `if you meant a column, give it a 'SPANNER' expression without the ` +
+        `double quotes`);
     const onBigQuery: string[] = [];
     applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
     expect(onBigQuery.join('\n')).toContain(

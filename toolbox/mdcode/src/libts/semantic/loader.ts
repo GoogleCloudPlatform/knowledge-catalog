@@ -1952,28 +1952,40 @@ function fallsBackToAnsi(
       dialects.some(d => d.dialect === FALLBACK_DIALECT);
 }
 
-// The warning `item` gives on a table of the `preferred` dialect, or undefined
-// when it has text in that dialect. Vendor-only text needs transpilation, and
-// ANSI_SQL text warns on BigQuery when it holds a double-quoted token, or else
-// gives the ANSI_SQL note when it is not the string form.
+// The table dialects whose database reads a double-quoted token as a string,
+// each with that database's name for a message. hasDoubleQuotedColumn finds
+// such a token as BigQuery reads it, and Spanner and MySQL read it the same
+// way. The PostgreSQL family reads it as a name.
+const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
+  BIGQUERY: 'BigQuery',
+  SPANNER: 'Spanner',
+  MYSQL: 'MySQL',
+};
+
+// The warning `item` gives on a table of `dialect`, written in capitals, or
+// undefined when it has text in that dialect. ANSI_SQL text warns when that
+// dialect reads a token it double-quotes as a string. Only on a table of the
+// `preferred` dialect does vendor-only text need transpilation, and other
+// ANSI_SQL text give the ANSI_SQL note when it is not the string form.
 function expressionWarning(
-    item: Pick<Field, 'dialects'|'stringForm'>, ctx: string,
+    item: Pick<Field, 'dialects'|'stringForm'>, ctx: string, dialect: string,
     preferred: string): string|undefined {
   const dialects = item.dialects ?? [];
   if (!dialects.length) return undefined;
-  if (dialects.some(d => d.dialect === preferred.toUpperCase())) {
-    return undefined;
-  }
+  if (dialects.some(d => d.dialect === dialect)) return undefined;
   const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
-  if (ansi && preferred.toUpperCase() === DEFAULT_DIALECT &&
-      hasDoubleQuotedColumn(ansi.expression)) {
-    return `${ctx}: BigQuery reads "${
+  const database = DOUBLE_QUOTES_AS_TEXT[dialect];
+  if (ansi && database && hasDoubleQuotedColumn(ansi.expression)) {
+    // Import adds only BigQuery text.
+    const hint = dialect === DEFAULT_DIALECT ?
+        `; in a model file, '${IMPORT_TRANSPILE_COMMAND}' adds one` :
+        '';
+    return `${ctx}: ${database} reads "${
                doubleQuotedName(ansi.expression)}" in its '${
                FALLBACK_DIALECT}' expression as text; if you meant a column, ` +
-        `give it a '${DEFAULT_DIALECT}' expression without the double ` +
-        `quotes; in a model file, '${IMPORT_TRANSPILE_COMMAND}' adds one`;
+        `give it a '${dialect}' expression without the double quotes${hint}`;
   }
-  if (item.stringForm) return undefined;
+  if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
   const vendor = dialects.find(d => d.dialect !== FALLBACK_DIALECT);
   return `${ctx}: no '${preferred}' or '${
@@ -1990,38 +2002,47 @@ function runsDialect(
   return sourcesDialect({entities: [entity]}) === dialect.toUpperCase();
 }
 
-// The warning each field's expression gives, on each entity whose table runs
-// SQL in `preferred`. An inherited field is judged on each entity that
+// The warning each field's expression gives, on each entity whose table's
+// dialect the load knows. An inherited field is judged on each entity that
 // inherits it, and named after that entity.
 function fieldWarnings(model: SemanticModel, preferred: string): string[] {
   return resolvedEntities(model)
-      .filter(e => runsDialect(e, preferred))
-      .flatMap(e => e.fields.map(
-          f => expressionWarning(f, `field '${e.name}.${f.name}'`, preferred)))
+      .flatMap(e => {
+        const dialect = sourcesDialect({entities: [e]});
+        return dialect ?
+            e.fields.map(
+                f => expressionWarning(
+                    f, `field '${e.name}.${f.name}'`, dialect, preferred)) :
+            [];
+      })
       .filter((w): w is string => w !== undefined);
 }
 
 // The warning `metric`'s expression gives on the tables of the `reached`
 // entities, in that order, or on every table when it reaches none. On a table
-// of the `preferred` dialect it is expressionWarning's, and otherwise it names
-// the first table whose dialect has no text in the metric, unless `profiled`.
+// of the `preferred` dialect it is expressionWarning's. Otherwise it is the
+// first that a table's dialect gives: expressionWarning's, or, unless
+// `profiled`, one saying the metric has no text in that dialect.
 function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
     preferred: string, profiled: boolean): string|undefined {
+  const ctx = `metric '${metric.name}'`;
   const named =
       entities.filter(e => reached.includes(e.name))
           .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));
   const tables = named.length ? named : entities;
   if (tables.some(e => runsDialect(e, preferred))) {
-    return expressionWarning(metric, `metric '${metric.name}'`, preferred);
+    return expressionWarning(metric, ctx, preferred.toUpperCase(), preferred);
   }
-  if (profiled) return undefined;
   for (const e of tables) {
     const dialect = sourcesDialect({entities: [e]});
-    if (dialect &&
+    if (!dialect) continue;
+    const w = expressionWarning(metric, ctx, dialect, preferred);
+    if (w) return w;
+    if (!profiled &&
         expressionForDialect(metric, dialect as SqlDialect) === undefined) {
-      return `metric '${metric.name}': no '${dialect}' or '${
+      return `${ctx}: no '${dialect}' or '${
                  FALLBACK_DIALECT}' dialect, so the ${dialect} table of ` +
           `entity '${e.name}' cannot run it`;
     }

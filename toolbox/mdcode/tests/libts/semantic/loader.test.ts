@@ -229,10 +229,13 @@ describe('expression warnings judge each expression on the table that runs it', 
   const vendor = (dialect: string) => both(
       `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
       `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
-  const quoted = both(
-      `BigQuery reads "x" in its 'ANSI_SQL' expression as text; if you meant ` +
-      `a column, give it a 'BIGQUERY' expression without the double quotes; ` +
-      `in a model file, 'kcmd import <file> --input first-party --flavor ` +
+  // The double-quote warning on a table of `dialect`, in `database`.
+  const quotedIn = (database: string, dialect: string, hint = '') => both(
+      `${database} reads "x" in its 'ANSI_SQL' expression as text; if you ` +
+      `meant a column, give it a '${dialect}' expression without the double ` +
+      `quotes${hint}`);
+  const quoted = quotedIn('BigQuery', 'BIGQUERY',
+      `; in a model file, 'kcmd import <file> --input first-party --flavor ` +
       `<ossie|google> --transpile' adds one`);
   const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
       'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
@@ -252,6 +255,12 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
     ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],
     ['a third-party table, a double-quoted name in ANSI_SQL', TP, [['ANSI_SQL', '"x"']], []],
+    ['a Spanner table, a double-quoted name in ANSI_SQL', SPANNER, [['ANSI_SQL', '"x"']],
+     quotedIn('Spanner', 'SPANNER')],
+    ['a Cloud SQL for MySQL table, a double-quoted name in ANSI_SQL', MYSQL,
+     [['ANSI_SQL', '"x"']], quotedIn('MySQL', 'MYSQL')],
+    ['a Cloud SQL for PostgreSQL table, a double-quoted name in ANSI_SQL', PG,
+     [['ANSI_SQL', '"x"']], []],
     ['an entity with no source, Snowflake text', undefined, [['SNOWFLAKE', 'x']], []],
     ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
