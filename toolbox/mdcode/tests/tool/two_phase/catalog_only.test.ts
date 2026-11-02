@@ -18,11 +18,14 @@ const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
 const quotedKey = (label: string) => has(
     `Warning: ${label}[commerce] field 'Customer.key': BigQuery reads "c_key"`);
 const NOTE = has("Warning: [commerce] note: no 'BIGQUERY' dialect");
-// Customer on `source`, its key field given as ANSI_SQL `text`.
-const keyAt = (source: string, text: string) => ({
+// Customer on `source`, its key field given as `text` in `dialect`.
+const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
   ...CUSTOMER, source,
-  fields: [{name: 'key', expression: {dialects: [{dialect: 'ANSI_SQL', expression: text}]}}],
+  fields: [{name: 'key', expression: {dialects: [{dialect, expression: text}]}}],
 });
+// A profile that binds Customer to table customer in dataset `name`.
+const keyIn = (name: string, text: string, dialect?: string) =>
+    ({entities: {Customer: keyAt(bqTable('customer', name), text, dialect)}});
 
 // A catalog preflight that plans one line and gives `result`.
 const planned = (result = {}) =>
@@ -107,20 +110,21 @@ scenarios('push --no-deployment', [
     // Knowledge Catalog receives every profile file, applied or not. The
     // model file and profile dev give the same ANSI_SQL note, which prints
     // once.
-    name: 'prints the warnings of a profile file no selected deployment applies, labelled with its name, and those of an applied one once',
+    name: 'prints the warnings of a profile file no selected deployment applies, labelled with its name, and those of an applied one once, and none for a profile push rejects',
     deployments: [{name: 'g', profile: 'prod'}, {name: 'h', profile: 'dev'}],
     entities: [keyAt(bqTable('customer'), 'c_key')],
-    profiles: {
-      dev: {entities: {Customer: keyAt(bqTable('customer', 'dev'), 'c_key')}},
-      prod: {entities: {Customer: keyAt(bqTable('customer', 'prod'), '"c_key"')}},
-    },
+    profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', '"c_key"')},
     flags: {validateOnly: true},
     code: 0,
     warnings: [NOTE, quotedKey("profile 'prod': ")],
     then: [{flags: {deployment: 'h', validateOnly: true}, code: 0,
             warnings: [NOTE, quotedKey("profile 'prod': ")]},
            {flags: {deployment: 'g', validateOnly: true}, code: 0,
-            warnings: [NOTE, quotedKey('')]}],
+            warnings: [NOTE, quotedKey('')]},
+           // Push's error for the Snowflake-only key is prod's only message.
+           {profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', 'c_key', 'SNOWFLAKE')},
+            flags: {validateOnly: true}, code: 1, warnings: [NOTE],
+            rejects: [has("field 'Customer.key' has no expression for BIGQUERY or ANSI_SQL")]}],
     report: {code: 0},
   },
   {
