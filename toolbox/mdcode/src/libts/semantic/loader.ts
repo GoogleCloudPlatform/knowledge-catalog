@@ -3781,7 +3781,8 @@ export function parseSource(
     const viaImport = importHint ?
         `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
             `--source-prefix <prefix>' to complete each bare table name ` +
-            `from the database that <prefix> names.` :
+            `from the database or Knowledge Catalog entry group that ` +
+            `<prefix> names.` :
         '';
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and
