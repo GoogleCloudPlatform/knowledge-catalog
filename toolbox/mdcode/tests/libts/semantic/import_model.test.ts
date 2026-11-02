@@ -384,6 +384,10 @@ describe('profile translation', () => {
   const SINGLE = "'CONCAT(orders.total, '' x'')'";
   // The start of an expression whose dialects list has a comment of two lines.
   const COMMENTED = '\n          # Snowflake only,\n          # for now\n          dialects:';
+  // An entry that writes expression before dialect, quoted and commented.
+  const REVERSED = '\n          dialects:\n            # Snowflake only\n' +
+      "            - expression: 'NVL(order_id, 0)' # fallback to 0\n" +
+      '              dialect: SNOWFLAKE # source warehouse';
   // A blank line after every line, and a comment inside a flow expression.
   const BLANKS = profileFile('orders.total', ` {\n          dialects: [  # Snowflake only\n` +
       `            ${SF}\n          ]\n        }`).replaceAll('\n', '\n\n');
@@ -406,6 +410,10 @@ describe('profile translation', () => {
      BLANKS.replace('# bound fields\n\n', '# bound fields\n').replace(/ \{[^]*/,
          '\n          {\n\n            dialects:\n              [\n                # Snowflake only\n\n' +
          `                ${SF},\n                ${BQ}\n              ]\n          }\n`)],
+    ['an entry that writes expression before dialect', profileFile('orders.total', REVERSED),
+     profileFile('orders.total', `${REVERSED}
+            - dialect: BIGQUERY
+              expression: COALESCE(order_id, 0)`)],
     ['CRLF line endings and a single-quoted string',
      profileFile(SINGLE, `${COMMENTED} [${SF}]`).replaceAll('\n', '\r\n'),
      profileFile(SINGLE, `${COMMENTED} [${SF}, ${BQ}]`)],

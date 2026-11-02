@@ -1371,24 +1371,29 @@ function isBigQueryProfile(profile: ProfileSpec, model: SemanticModel): boolean 
 }
 
 /**
- * Writes `irDialects` onto `rawNode.expression` when `transpileModel` appended
- * a dialect entry, such as `BIGQUERY`, and returns whether it did.
+ * Adds to `rawNode.expression` each dialect entry, such as `BIGQUERY`, that
+ * `transpileModel` appended to `irDialects`, and returns whether it added any.
+ * The entries already in a dialects list stay as written.
  */
 function syncDialects(
     rawNode: Record<string, any>,
     irDialects: Array<{dialect: string; expression: string}>|undefined):
     boolean {
+  const dialects = rawNode.expression?.dialects;
   const prevCount = typeof rawNode.expression === 'string' ?
       1 :
-      asRecords(rawNode.expression?.dialects).length;
-  if (prevCount > 0 && irDialects && irDialects.length > prevCount) {
-    rawNode.expression = {
-      dialects: irDialects.map(
-          d => ({dialect: d.dialect, expression: d.expression})),
-    };
-    return true;
+      asRecords(dialects).length;
+  if (prevCount === 0 || !irDialects || irDialects.length <= prevCount) {
+    return false;
   }
-  return false;
+  const entries = irDialects.map(
+      d => ({dialect: d.dialect, expression: d.expression}));
+  if (typeof rawNode.expression === 'string') {
+    rawNode.expression = {dialects: entries};
+  } else {
+    dialects.push(...entries.slice(prevCount));
+  }
+  return true;
 }
 
 /**
