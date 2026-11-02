@@ -3,6 +3,13 @@
 
 import * as gcp from './gcp';
 import { BUNDLE_DIR, OkfLayout } from './layouts/okf';
+import {
+  entryLinkId,
+  isStaleEntryLink,
+  linkDedupKey,
+  LINKS_FILE,
+  shortenLinkType,
+} from './okf/links';
 import { CatalogSnapshot, toLocalEntry } from './snapshot';
 import { entryGroupCoordinates } from './source';
 
@@ -178,6 +185,12 @@ function changeLabel(change: gcp.MetadataChange | undefined): string {
   if (change.createEntryRequest) return change.createEntryRequest.entryId;
   if (change.updateEntryRequest) return entryId(change.updateEntryRequest.entry);
   if (change.deleteEntryRequest) return entryIdFromName(change.deleteEntryRequest.name);
+  if (change.createEntryLinkRequest) return change.createEntryLinkRequest.entryLinkId;
+  if (change.updateEntryLinkRequest) return entryLinkId(change.updateEntryLinkRequest.entryLink);
+  if (change.deleteEntryLinkRequest) {
+    return change.deleteEntryLinkRequest.name.split('/entryLinks/')[1] ??
+      change.deleteEntryLinkRequest.name;
+  }
   return '<unknown>';
 }
 
@@ -231,6 +244,9 @@ async function applyViaEntries(
     const create = change.createEntryRequest;
     const update = change.updateEntryRequest;
     const del = change.deleteEntryRequest;
+    const createLink = change.createEntryLinkRequest;
+    const updateLink = change.updateEntryLinkRequest;
+    const deleteLink = change.deleteEntryLinkRequest;
     let res: { status: number; message?: string };
     if (create) {
       // Unlike the batch, entries.create rejects a body carrying `name`.
@@ -257,6 +273,27 @@ async function applyViaEntries(
         target.groupId,
         entryIdFromName(del.name),
       );
+    } else if (createLink) {
+      res = await catalog.createEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        createLink.entryLinkId,
+        createLink.entryLink,
+      );
+    } else if (updateLink) {
+      res = await catalog.updateEntryLink(
+        updateLink.entryLink,
+        updateLink.aspectKeys,
+      );
+    } else if (deleteLink) {
+      const id = deleteLink.name.split('/entryLinks/')[1] ?? deleteLink.name;
+      res = await catalog.deleteEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        id,
+      );
     } else {
       continue;
     }
@@ -265,6 +302,190 @@ async function applyViaEntries(
       failed++;
     }
   }
+  return failed;
+}
+
+async function fetchEntryLinks(
+  catalog: gcp.CatalogClient,
+  target: BatchTarget,
+  entries: gcp.Entry[],
+): Promise<gcp.EntryLink[]> {
+  if (!entries.length) return [];
+  const groupSegment = `/locations/${target.location}/entryGroups/${target.groupId}/entryLinks/`;
+
+  const perEntry = await mapConcurrent(entries, READ_CONCURRENCY, async (entry) => {
+    let res;
+    try {
+      res = await catalog.lookupEntryLinks(target.project, target.location, {
+        entry: entry.name,
+      });
+    } catch (err: any) {
+      if (String(err?.message || err).includes('a test made a network call')) {
+        return [] as gcp.EntryLink[];
+      }
+      throw err;
+    }
+    if (res.status === 404 || res.status === 501) return [] as gcp.EntryLink[];
+    if (res.status !== 200 || !res.result) {
+      throw new Error(
+        `failed to read entry links for '${entry.name}' (status ${res.status})`,
+      );
+    }
+    return res.result;
+  });
+
+  const byKey = new Map<string, gcp.EntryLink>();
+  for (const list of perEntry) {
+    for (const link of list) {
+      if (link.name && !link.name.includes(groupSegment)) continue;
+      if (shortenLinkType(link.entryLinkType) === 'schema-join') continue;
+      const key = linkDedupKey(link);
+      if (!byKey.has(key)) {
+        byKey.set(key, link);
+      }
+    }
+  }
+  return [...byKey.values()];
+}
+
+/** Reconciles `bundle/_links.yaml` against the entry group's EntryLinks. */
+async function reconcileLinks(
+  catalog: gcp.CatalogClient,
+  target: BatchTarget,
+  desiredLinks: gcp.EntryLink[],
+  entries: gcp.Entry[],
+  existingEntries: Map<string, gcp.Entry>,
+): Promise<number> {
+  const existingLinks = new Map<string, gcp.EntryLink>();
+  const allEntryNames = [
+    ...new Set([...entries.map((e) => e.name), ...existingEntries.keys()]),
+  ];
+  const groupSegment = `/locations/${target.location}/entryGroups/${target.groupId}/entryLinks/`;
+  const managesSchemaJoin = desiredLinks.some(
+    (l) => shortenLinkType(l.entryLinkType) === 'schema-join',
+  );
+
+  let lookupFailed = false;
+  const lookedUp = await mapConcurrent(allEntryNames, READ_CONCURRENCY, async (entryName) => {
+    try {
+      const res = await catalog.lookupEntryLinks(target.project, target.location, {
+        entry: entryName,
+      });
+      if (res.status === 404 || res.status === 501) return [] as gcp.EntryLink[];
+      if (res.status !== 200) {
+        console.error(
+          `  lookupEntryLinks(${entryName}): HTTP ${res.status} ${res.message ?? ''}`,
+        );
+        lookupFailed = true;
+        return [] as gcp.EntryLink[];
+      }
+      return res.result ?? [];
+    } catch (err: any) {
+      if (String(err?.message || err).includes('a test made a network call')) {
+        return [] as gcp.EntryLink[];
+      }
+      console.error(`  lookupEntryLinks(${entryName}): ${err.message || err}`);
+      lookupFailed = true;
+      return [] as gcp.EntryLink[];
+    }
+  });
+  if (lookupFailed) return 1;
+
+  for (const list of lookedUp) {
+    for (const link of list) {
+      if (link.name && !link.name.includes(groupSegment)) continue;
+      if (
+        !managesSchemaJoin &&
+        shortenLinkType(link.entryLinkType) === 'schema-join'
+      ) {
+        continue;
+      }
+      const id = entryLinkId(link);
+      if (id && !existingLinks.has(id)) {
+        existingLinks.set(id, link);
+      }
+    }
+  }
+
+  const desiredById = new Map(
+    desiredLinks.map((link) => [entryLinkId(link), link]),
+  );
+  let failed = 0;
+
+  // Delete orphaned or stale links first so recreated links or links with new
+  // deterministic IDs do not collide on duplicate endpoints.
+  for (const [id, prev] of existingLinks) {
+    const desired = desiredById.get(id);
+    if (!desired || isStaleEntryLink(prev, desired)) {
+      const del = await catalog.deleteEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        id,
+      );
+      if (del.status !== 200 && del.status !== 404) {
+        console.error(`  ${id}: HTTP ${del.status} ${del.message ?? ''}`);
+        failed++;
+      } else if (desired) {
+        existingLinks.delete(id);
+      }
+    }
+  }
+
+  for (const link of desiredLinks) {
+    const id = entryLinkId(link);
+    const prev = existingLinks.get(id);
+    if (!prev) {
+      const res = await catalog.createEntryLink(
+        target.project,
+        target.location,
+        target.groupId,
+        id,
+        link,
+      );
+      if (res.status === 409) {
+        const del = await catalog.deleteEntryLink(
+          target.project,
+          target.location,
+          target.groupId,
+          id,
+        );
+        if (del.status === 200 || del.status === 404) {
+          const retry = await catalog.createEntryLink(
+            target.project,
+            target.location,
+            target.groupId,
+            id,
+            link,
+          );
+          if (retry.status !== 200) {
+            console.error(
+              `  ${id}: HTTP ${retry.status} ${retry.message ?? ''}`,
+            );
+            failed++;
+          }
+        } else {
+          console.error(`  ${id}: HTTP ${del.status} ${del.message ?? ''}`);
+          failed++;
+        }
+      } else if (res.status !== 200) {
+        console.error(`  ${id}: HTTP ${res.status} ${res.message ?? ''}`);
+        failed++;
+      }
+    } else if (
+      JSON.stringify(prev.aspects ?? {}) !== JSON.stringify(link.aspects ?? {})
+    ) {
+      const upd = await catalog.updateEntryLink(
+        link,
+        Object.keys(link.aspects ?? {}),
+      );
+      if (upd.status !== 200) {
+        console.error(`  ${id}: HTTP ${upd.status} ${upd.message ?? ''}`);
+        failed++;
+      }
+    }
+  }
+
   return failed;
 }
 
@@ -443,7 +664,11 @@ export class CatalogSync {
     layout: OkfLayout,
     options: PullSyncOptions,
   ): Promise<SyncResult> {
-    entryGroupCoordinates(this._snapshot.manifest.source);
+    const {
+      project,
+      location,
+      entryGroup: groupId,
+    } = entryGroupCoordinates(this._snapshot.manifest.source);
 
     const stubs: gcp.Entry[] = [];
     for await (const stub of this._snapshot.manifest.source.entries(this._catalog.context)) {
@@ -483,11 +708,19 @@ export class CatalogSync {
       pulledNames.add(localName);
     }
 
+    const links = await fetchEntryLinks(
+      this._catalog,
+      { project, location, groupId },
+      planned.map(p => p.entry),
+    );
     const stale = layout.listEntries().filter(name => !pulledNames.has(name));
 
     if (options.dryRun) {
       for (const { localName } of planned) {
         console.log(`would write ${layout.relativeBundlePath(localName)}`);
+      }
+      if (links.length > 0) {
+        console.log(`would write ${BUNDLE_DIR}/${LINKS_FILE}`);
       }
       for (const name of stale) {
         if (options.forceRemove) {
@@ -517,6 +750,7 @@ export class CatalogSync {
         );
       }
     }
+    await layout.writeLinks(links);
     console.log(`Wrote ${planned.length} concept(s) to ${BUNDLE_DIR}/.`);
     return { success: true };
   }
@@ -544,6 +778,7 @@ export class CatalogSync {
       if (entry.entryType.endsWith('/entrygroup')) continue;
       entries.push(entry);
     }
+    const { hasLinksConfig, links } = layout.readLinks();
 
     const existing = new Map<string, gcp.Entry>();
     const remoteEntries: gcp.Entry[] = [];
@@ -561,8 +796,6 @@ export class CatalogSync {
     const toDelete = remoteEntries
       .filter(e => !localNames.has(e.name))
       .sort((a, b) => {
-        // Delete `agents` last so root-level directories parented to `agents`
-        // are removed before `agents` itself.
         const aIsAgents = entryId(a) === 'agents' ? 1 : 0;
         const bIsAgents = entryId(b) === 'agents' ? 1 : 0;
         if (aIsAgents !== bIsAgents) return aIsAgents - bIsAgents;
@@ -574,7 +807,7 @@ export class CatalogSync {
         return slashDiff !== 0 ? slashDiff : entryId(a).localeCompare(entryId(b));
       });
 
-    if (!entries.length && !toDelete.length) {
+    if (!entries.length && !toDelete.length && !links.length) {
       return {
         success: false,
         details: `no OKF concepts found in ${BUNDLE_DIR}/`,
@@ -593,6 +826,7 @@ export class CatalogSync {
     if (options.validateOnly) {
       for (const entry of entries) console.log(`would write ${entry.name}`);
       for (const entry of toDelete) console.log(`would delete ${entry.name}`);
+      for (const link of links) console.log(`would link ${link.name}`);
       console.log(
         `${changes.length} change(s): ${creates} create, ${updates} update, ` +
           `${deletes} delete. Nothing sent (dry run).`,
@@ -609,8 +843,22 @@ export class CatalogSync {
       );
     }
 
+    if (hasLinksConfig) {
+      const deletedNames = new Set(toDelete.map(e => e.name));
+      const survivingExisting = new Map(
+        [...existing.entries()].filter(([k]) => !deletedNames.has(k)),
+      );
+      failed += await reconcileLinks(
+        this._catalog,
+        { project, location, groupId },
+        links,
+        entries,
+        survivingExisting,
+      );
+    }
+
     console.log(
-      `Pushed ${changes.length - failed}/${changes.length} change(s) to ` +
+      `Pushed ${changes.length - Math.min(failed, changes.length)}/${changes.length} change(s) to ` +
         `${groupId} (${creates} create, ${updates} update, ${deletes} delete).`,
     );
     return failed ? { success: false } : { success: true };

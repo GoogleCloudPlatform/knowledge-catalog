@@ -46,6 +46,17 @@ export interface MetadataChange {
     deleteMissingAspects: boolean;
   };
   deleteEntryRequest?: { name: string; };
+  createEntryLinkRequest?: {
+    parent: string;
+    entryLinkId: string;
+    entryLink: EntryLink;
+  };
+  updateEntryLinkRequest?: {
+    entryLink: EntryLink;
+    allowMissing?: boolean;
+    aspectKeys?: string[];
+  };
+  deleteEntryLinkRequest?: { name: string; };
 }
 
 export interface LookupEntryOptions {
