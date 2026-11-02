@@ -3210,19 +3210,18 @@ export function catalogNameSegments(path: string, colons = false): string[] {
   return out;
 }
 
+// True when `source` holds whitespace outside backticks and double quotes,
+// which marks it as a query.
 export function hasUnquotedWhitespace(source: string): boolean {
-  let quoted = false;
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === '`') {
-      if (quoted && source[i + 1] === '`') {
-        i++;
-      } else {
-        quoted = !quoted;
-      }
-      continue;
+  let quote = '';
+  for (const ch of source) {
+    if (ch === quote) {
+      quote = '';
+    } else if (!quote && (ch === '`' || ch === '"')) {
+      quote = ch;
+    } else if (!quote && /\s/.test(ch)) {
+      return true;
     }
-    if (!quoted && /\s/.test(ch)) return true;
   }
   return false;
 }

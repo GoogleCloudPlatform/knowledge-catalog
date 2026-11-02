@@ -299,6 +299,12 @@ describe('sources', () => {
       {sourcePrefix: BQ_PREFIX},
       true,
     ],
+    [
+      'double-quoted table with a space',
+      'public."order items"',
+      {sourcePrefix: CLOUDSQL_PREFIX},
+      true,
+    ],
     ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, true],
     ['resource URI', `//${BQ_TABLE}`, {}, false],
     ['first-party catalog name', 'bigquery:acme.sales.orders', {}, false],

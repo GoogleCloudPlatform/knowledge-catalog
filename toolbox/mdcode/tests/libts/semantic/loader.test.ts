@@ -3294,6 +3294,10 @@ describe('strict entity sources', () => {
       name: 'm',
       datasets: [{ name: 'orders', source: 'SELECT * FROM orders', primary_key: ['id'], fields: [] }],
     })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
+    // A space inside double quotes or backticks belongs to a table name.
+    for (const bare of ['public."order items"', 'public.`order items`']) {
+      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source.`);
+    }
 
     // Each bare-name message also names the command that completes bare names.
     const VIA_IMPORT = "Or run 'kcmd import <file> --flavor <ossie|google> " +
