@@ -109,7 +109,7 @@ agree on every structural row and differ only where a Spanner target has no
     Cloud SQL or third-party table's dialect, and `kcmd skills-generate` and
     `kcmd profiles --print-store` do not look up a third-party table's.
     Import reads a Cloud SQL table whose name has no schema as MySQL. On any
-    other table whose dialect a command has not looked up, it warns only about
+    other table whose dialect a command has not looked up, kcmd warns only about
     a field or metric with no text in any dialect the table's name allows. A
     BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
