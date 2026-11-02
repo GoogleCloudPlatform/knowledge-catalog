@@ -64,9 +64,9 @@ export type SqlTranspiler = (requests: TranspileRequest[], target: string) =>
 export interface TranspileOptions {
   target?: string;             // target dialect; default 'BIGQUERY'
   transpiler?: SqlTranspiler;  // mechanism; default `polyglotTranspiler`
-  // Whether to translate the field bindings of `profile`. Defaults to every
-  // profile.
-  translatesProfile?: (profile: ProfileSpec) => boolean;
+  // Whether to translate the field bindings of `profile` of `model`. Defaults
+  // to every profile.
+  translatesProfile?: (profile: ProfileSpec, model: SemanticModel) => boolean;
 }
 
 export interface TranspileResult {
@@ -266,7 +266,7 @@ export async function transpileModel(
   }
   for (const m of clone.metrics) add(m, `metric '${m.name}'`);
   for (const p of clone.profiles ?? []) {
-    if (opts.translatesProfile && !opts.translatesProfile(p)) continue;
+    if (opts.translatesProfile && !opts.translatesProfile(p, clone)) continue;
     for (const pe of p.entities) {
       for (const f of pe.fields ?? []) {
         add(f, `profile '${p.name}': field '${pe.name}.${f.name}'`);

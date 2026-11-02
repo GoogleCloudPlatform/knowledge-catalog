@@ -1357,11 +1357,14 @@ async function transpileDocument(
   return translatedFiles;
 }
 
-// Whether push reads `profile` as a BigQuery profile: it names at least one
-// source in an accepted form, and each is a BigQuery or BigLake table.
-function isBigQueryProfile(profile: ProfileSpec): boolean {
+// Whether `profile` is a BigQuery profile of `model`, by the rule push's import
+// hint uses: each accepted source it states for a concrete entity of `model`
+// is a BigQuery or BigLake table, and it states at least one.
+function isBigQueryProfile(profile: ProfileSpec, model: SemanticModel): boolean {
+  const concrete =
+      new Set(model.entities.filter(e => !e.abstract).map(e => e.name));
   const entities = profile.entities.flatMap(
-      ({source}) => isAcceptedSource(source) ?
+      ({name, source}) => concrete.has(name) && isAcceptedSource(source) ?
           [{authoredSource: source, dataSource: source!}] :
           []);
   return sourcesDialect({entities}) === 'BIGQUERY';
@@ -1596,7 +1599,7 @@ async function generateAdaptedFiles(
 
   // 2. When `transpile` is enabled and no prior errors occurred, translate
   // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, in the model
-  // and in each BigQuery profile among `profiles`.
+  // and in each BigQuery profile, in its GOOGLE blocks or among `profiles`.
   if (transpile && doc.errors.length === 0) {
     profiles = await transpileDocument(doc, profiles);
   }
