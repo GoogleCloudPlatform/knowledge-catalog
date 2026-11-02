@@ -99,8 +99,9 @@ agree on every structural row and differ only where a Spanner target has no
     metric, translated from a vendor-only expression or from an `ANSI_SQL`
     expression that double-quotes column names. It leaves a profile's
     expressions as written. Without the translation, kcmd warns about either
-    kind of text on a BigQuery table. Spanner and MySQL also read a
-    double-quoted name as text, so kcmd warns about that kind on their tables.
+    kind of text on a BigQuery table. Spanner, MySQL and Databricks also read
+    a double-quoted name as text, so kcmd warns about that kind on their
+    tables.
     Otherwise, on a table in another database, it warns only about a metric
     with no text that table runs. When a profile binds that table, push
     rejects the metric instead. A BigQuery

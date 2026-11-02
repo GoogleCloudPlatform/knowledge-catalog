@@ -1954,12 +1954,13 @@ function fallsBackToAnsi(
 
 // The table dialects whose database reads a double-quoted token as a string,
 // each with that database's name for a message. hasDoubleQuotedColumn finds
-// such a token as BigQuery reads it, and Spanner and MySQL read it the same
-// way. The PostgreSQL family reads it as a name.
+// such a token as BigQuery reads it, and Spanner, MySQL and Databricks read it
+// the same way. The PostgreSQL family reads it as a name.
 const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   BIGQUERY: 'BigQuery',
   SPANNER: 'Spanner',
   MYSQL: 'MySQL',
+  DATABRICKS: 'Databricks',
 };
 
 // The warning `item` gives on a table of `dialect`, written in capitals, or

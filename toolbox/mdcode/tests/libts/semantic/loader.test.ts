@@ -204,9 +204,10 @@ describe('expression warnings judge each expression on the table that runs it', 
   // The table a lookup has not read, as in `kcmd import`.
   const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
   const TP = 'projects/p/locations/us/entryGroups/g/entries/orders';
+  const DBX = TP.replace('/orders', '/events');
   const opts: LoadOptions = {
     bindingOptional: true,
-    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [TP, 'SNOWFLAKE']]),
+    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS']]),
   };
   const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
       ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
@@ -255,6 +256,8 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
     ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],
     ['a third-party table, a double-quoted name in ANSI_SQL', TP, [['ANSI_SQL', '"x"']], []],
+    ['a third-party Databricks table, a double-quoted name in ANSI_SQL', DBX,
+     [['ANSI_SQL', '"x"']], quotedIn('Databricks', 'DATABRICKS')],
     ['a Spanner table, a double-quoted name in ANSI_SQL', SPANNER, [['ANSI_SQL', '"x"']],
      quotedIn('Spanner', 'SPANNER')],
     ['a Cloud SQL for MySQL table, a double-quoted name in ANSI_SQL', MYSQL,
