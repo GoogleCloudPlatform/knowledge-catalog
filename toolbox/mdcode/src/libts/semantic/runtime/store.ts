@@ -17,7 +17,7 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
@@ -43,20 +43,12 @@ export interface AlloyDbDatabase {
   /**
    * `projects/<p>/locations/<l>/clusters/<c>/databases/<d>`. The store's
    * identity, which on AlloyDB reaches all the way down to the PostgreSQL
-   * database: one cluster holds several, and two of them are two stores. A
-   * legacy instance-based target takes the same name, and its instance is in
-   * `instance`.
+   * database: one cluster holds several, and two of them are two stores.
    */
   name: string;
   project: string;
   location: string;
   cluster: string;
-  /**
-   * The instance a connection goes through. A legacy target names it. For
-   * any other target, withPrimaryInstance finds the cluster's primary
-   * instance.
-   */
-  instance?: string;
   database: string;
 }
 
@@ -87,11 +79,6 @@ export type Store = SpannerStore|AlloyDbStore|BigQueryStore;
 export type ChosenStore = SpannerStore|AlloyDbDatabase|BigQueryStore;
 
 
-// The instance-based AlloyDB table URI kcmd used before, which legacy profiles
-// still bind.
-const LEGACY_ALLOYDB_TABLE_SOURCE =
-    /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/[A-Za-z0-9_-]+\/databases\/([A-Za-z0-9_-]+)\/tables\/.+$/;
-
 // A BigQuery table an entity is bound to. The loader rewrites the resource-name
 // URI an author may write into `project.dataset.table`, which is the form the
 // generator emits and the only one that reaches here. The table name takes any
@@ -103,16 +90,11 @@ const BIGQUERY_TABLE_SOURCE = /^([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.[^./]+$/;
 // The database a bound table sits in, or undefined when the source names no
 // table of any backend this module knows. A Spanner or AlloyDB source, in
 // either spelling, takes the loader's databaseOf form, `spanner/<p>/<i>/<db>`
-// or `alloydb/<p>/<l>/<c>/<db>`. An AlloyDB database belongs to its cluster,
-// so an instance in a legacy source is not part of it.
+// or `alloydb/<p>/<l>/<c>/<db>`.
 function storeOf(source: string): string|undefined {
   const database = databaseOf(source);
   if (database?.startsWith('spanner/') || database?.startsWith('alloydb/')) {
     return database;
-  }
-  const legacy = source.match(LEGACY_ALLOYDB_TABLE_SOURCE);
-  if (legacy) {
-    return `alloydb/${legacy[1]}/${legacy[2]}/${legacy[3]}/${legacy[4]}`;
   }
   const bigQuery = source.match(BIGQUERY_TABLE_SOURCE);
   if (bigQuery) return `bigquery/${bigQuery[1]}/${bigQuery[2]}`;
@@ -208,10 +190,8 @@ export interface StoreError {
  * The store a model runs against under binding profile `profile`, which
  * defaults to `default`, the model file's own bindings. It is the one the
  * deployments for that profile name: those that name it in `profile`, or that
- * name none or `default` for `default`. A model with no `deployments` list,
- * such as a vanilla model that lists `deploymentTargets` in its GOOGLE block,
- * names no profile for any of its targets, so they are all for `default`. The
- * instance-based and cluster-based URIs of one AlloyDB database are one store.
+ * name none or `default` for `default`. A model with no `deployments` list
+ * names no profile for any of its targets, so they are all for `default`.
  * With several targets, the store is the single operational one, Spanner or
  * AlloyDB.
  *
@@ -251,11 +231,11 @@ export function resolveStore(
     return {error: `${err?.message || err}`, named: true, rejected: true};
   }
 
-  // The loader reads a vanilla model's `deployments` out of its GOOGLE block.
-  // It keeps a GOOGLE block on the model only when the block lists
-  // `deploymentTargets`, the older form, whose targets carry no deployment
-  // name. A message names that key only for such a block, and names the
-  // block's `deployments` for a vanilla model that lists them, as push does.
+  // The loader reads a vanilla model's `deployments` out of its GOOGLE block,
+  // and rejects the older `deploymentTargets`, so only a model built in memory
+  // keeps a GOOGLE block that lists targets. A message names that key only for
+  // such a block, and names the block's `deployments` for a vanilla model that
+  // lists them, as push does.
   const vanilla = model.version === OSSIE_VERSION;
   const inGoogleBlock = vanilla && model.deployments === undefined &&
       (model.customExtensions ?? []).some(e => e.vendorName === 'GOOGLE');
@@ -299,8 +279,7 @@ export function resolveStore(
   // The profile's targets are among those read above. So this does not
   // throw, and none of them is in no accepted form.
   const targets = googleDeploymentTargets(scoped);
-  const {spanner, bigQuery} = targets;
-  const alloyDb = mergeUriPairs(targets.alloyDb);
+  const {spanner, alloyDb, bigQuery} = targets;
   const declared = spanner.length + alloyDb.length + bigQuery.length;
 
   const operational = [...spanner, ...alloyDb];
@@ -353,28 +332,6 @@ export function resolveStore(
     };
   }
   return store;
-}
-
-
-// The AlloyDB targets, with each database that is named once by its
-// instance-based URI and once by its cluster-based URI counted once. The
-// instance-based one is kept, whichever is listed first, because it names the
-// instance to connect through. Any other repeat of a database is kept, so two
-// instances of one database count twice. resolveStore has already refused the
-// same URI listed twice.
-function mergeUriPairs(targets: AlloyDbTarget[]): AlloyDbTarget[] {
-  const byDatabase = new Map<string, AlloyDbTarget[]>();
-  for (const t of targets) {
-    const key = destinationKey(t.uri);
-    byDatabase.set(key, [...(byDatabase.get(key) ?? []), t]);
-  }
-  return targets.filter(t => {
-    const named = byDatabase.get(destinationKey(t.uri))!;
-    const pair = named.length === 2 &&
-        named.some(n => n.instance !== undefined) &&
-        named.some(n => n.instance === undefined);
-    return !pair || t.instance !== undefined;
-  });
 }
 
 
@@ -480,7 +437,6 @@ function storeFor(
       project: alloyDb.project,
       location: alloyDb.location,
       cluster: alloyDb.cluster,
-      ...(alloyDb.instance !== undefined ? {instance: alloyDb.instance} : {}),
       database: alloyDb.database,
     };
   }
@@ -497,16 +453,13 @@ function storeFor(
  * `store` with the instance a connection goes through. An AlloyDB target
  * names a database in a cluster, so this asks the AlloyDB API for the
  * cluster's primary instance. Fails, naming the cluster, when it has none,
- * when the primary is not READY, or when the listing fails. Any other store,
- * and an AlloyDB store that already names its instance, comes back unchanged.
+ * when the primary is not READY, or when the listing fails. Any other store
+ * comes back unchanged.
  */
 export async function withPrimaryInstance(
     store: ChosenStore,
     client: AlloyDbClient): Promise<Store|{error: string}> {
   if (store.kind !== 'alloydb') return store;
-  // A legacy target names its instance. The spread gives the type that says
-  // so.
-  if (store.instance !== undefined) return {...store, instance: store.instance};
   const cluster = `projects/${store.project}/locations/${
       store.location}/clusters/${store.cluster}`;
   let res: ApiResult<Instance[]>;

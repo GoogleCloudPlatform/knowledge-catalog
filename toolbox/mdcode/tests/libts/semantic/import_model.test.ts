@@ -243,10 +243,10 @@ describe('vanilla output, extensions, and targets', () => {
       'bigquery:graph:acme.sales.retail',
     ],
     [
-      'GOOGLE-block deploymentTargets URI',
+      'GOOGLE-block deployments URI',
       ossieDoc({
         extra:
-            '    custom_extensions:\n      - vendor_name: GOOGLE\n        data: \'{"deploymentTargets":["//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail"]}\'\n',
+            '    custom_extensions:\n      - vendor_name: GOOGLE\n        data: \'{"deployments":[{"name":"prod","target":"//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail"}]}\'\n',
       }),
       '//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail',
     ],

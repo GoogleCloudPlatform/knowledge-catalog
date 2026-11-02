@@ -22,7 +22,7 @@ const SPANNER_TARGET =
 // to run against, which is the whole reason a push has to say something other
 // than "typo" about it.
 const ALLOYDB_TARGET =
-    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
 
 function googleExt(targets: string[]): CustomExtension {
   return {
@@ -245,7 +245,7 @@ describe('validatePushRequirements', () => {
       [`//${BQ_TARGET}`,
        `which is a resource URI; write its GCP resource name, without the ` +
            `leading '//': '${BQ_TARGET}'.`],
-      [`//${legacy}`,
+      [legacy,
        `the instance-based AlloyDB name, which names no real resource. An ` +
            `AlloyDB database belongs to its cluster; write ` +
            `'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db'.`],
@@ -1954,7 +1954,7 @@ semantic_model:
   - name: sales
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '${JSON.stringify({deploymentTargets: [BQ_TARGET]})}'
+        data: '${JSON.stringify({deployments: [{name: 'bq', target: BQ_TARGET}]})}'
     datasets:
       - name: orders
         source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders

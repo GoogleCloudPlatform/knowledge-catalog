@@ -11,10 +11,10 @@ const header = (d: string) => `\n-- Deployment '${d}' --`;
 
 const sales = (s: Scope) =>
     modelFile(s).replace('name: commerce', 'name: sales');
-const vanilla = (g: string) => ({google: {deploymentTargets: [bqGraph(g)]}});
+const vanilla = (g: string) =>
+    ({google: {deployments: [{name: g, target: bqGraph(g)}]}});
 const stops = (error: unknown, flags = {}) =>
     ({...refused(flags, error), log: []});
-const NO_TARGET = has("model 'sales' (sales) declares 0 deployments");
 const ONE_MODEL = err(
     "entry group 'commerce_eg' would receive 2 models, but only one model " +
     'per entry group is supported; split them into separate entry groups.');
@@ -38,23 +38,14 @@ const NO_LOCATION = (project: string) =>
 
 scenarios('push writes nothing when a check fails', [
   {
-    name: 'a push whose catalog leg fails its checks deploys no graph, and a ' +
-        '--validate-only push reports the error before any live check',
-    ...vanilla('g'),
-    files: {'sales.yaml': sales({})},
-    ...stops(NO_TARGET),
-    then: [stops(NO_TARGET, {validateOnly: true})],
-  },
-  {
     name: 'a push of two model files whose GOOGLE block names the graph ' +
         'prints only the one-model error and checks no graph, as do a ' +
-        '--validate-only, a catalog-only and a --no-deployment push',
+        '--validate-only and a --no-deployment push',
     ...vanilla('g'),
     files: {'sales.yaml': sales(vanilla('h'))},
     ...stops(ONE_MODEL),
     then: [
       stops(ONE_MODEL, {validateOnly: true}),
-      stops(ONE_MODEL, {validateOnly: true, profile: false}),
       stops(ONE_MODEL, {deployment: false}),
     ],
   },

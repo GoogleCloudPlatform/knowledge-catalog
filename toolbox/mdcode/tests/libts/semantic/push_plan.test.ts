@@ -412,43 +412,6 @@ semantic_model:
             "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
-  // A vanilla model file for model `name`, whose GOOGLE block lists `target`.
-  const modelFile = (
-      name: string,
-      target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g') =>
-      `version: "0.2.0.dev0"
-semantic_model:
-  - name: ${name}
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${target}"]}'
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-`;
-
-  // Both models are under one profile, so only their names tell them apart.
-  test('push refuses two model files that deploy one graph', async () => {
-    const eg = setupWorkspace();
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    spyOn(console, 'warn').mockImplementation(() => {});
-    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
-    fs.writeFileSync(path.join(eg, 'a.yaml'), modelFile('a'));
-    fs.writeFileSync(path.join(eg, 'b.yaml'), modelFile('b'));
-
-    expect(await push({kc: false, validateOnly: true})).toBe(1);
-    expect(bqSpy).not.toHaveBeenCalled();
-    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
-        .toContain(
-            "model 'a' under binding profile 'default' and model 'b' under " +
-            "binding profile 'default' both deploy to the same graph " +
-            "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
-  });
-
   test('push refuses two model files that list deployments before it checks a deployment\'s profile', async () => {
     const eg = setupWorkspace();
     const errSpy = spyOn(console, 'error').mockImplementation(() => {});
@@ -533,7 +496,7 @@ semantic_model:
 
     const spGraph = 'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g1';
     const bqGraph = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const alloyTarget = 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+    const alloyTarget = 'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
 
     // Primary model pushed without `emitExpressions` (the default push) and
     // pulled through the CLI: a BigQuery entity and two deployments in

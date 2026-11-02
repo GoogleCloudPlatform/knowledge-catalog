@@ -146,17 +146,17 @@ describe('targets', () => {
          }
        });
 
-  // The instance-based AlloyDB URI in a `deployments:` list.
-  // resolveModelDeployments rejects it, and resolveStore reads it until the
-  // legacy forms go.
-  test('an instance-based AlloyDB URI in a list: resolveStore reads it, resolveModelDeployments rejects it',
+  // The instance-based AlloyDB URI in a `deployments:` list. resolveStore
+  // refuses it as resolveModelDeployments does.
+  test('an instance-based AlloyDB URI in a list: resolveStore and resolveModelDeployments both reject it',
        () => {
          const m = deployed(
              `      - {name: old, target: "${CLUSTER}/instances/i/databases/d"}\n`,
              `${CLUSTER}/databases/d/schemas/public/tables/customer`);
-         const store = resolveStore(m);
-         expect('error' in store).toBe(false);
-         expect('error' in resolveModelDeployments(m)).toBe(true);
+         const resolved = resolveModelDeployments(m);
+         if (!('error' in resolved)) throw new Error('expected an error');
+         expect(resolveStore(m))
+             .toEqual({error: resolved.error, named: true, rejected: true});
        });
 
   // A programmatic empty list hides the GOOGLE block, the same way push

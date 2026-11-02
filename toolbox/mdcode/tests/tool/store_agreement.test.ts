@@ -319,82 +319,9 @@ entities:
 });
 
 
-// A vanilla model's GOOGLE block lists something that is not a string. Push
-// and the runtime both read it as a target in no accepted form.
-describe('a vanilla GOOGLE block whose deploymentTargets holds a non-string',
-         () => {
-           test('push rejects it, so skills-generate does too', async () => {
-             writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": [42]}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-             const r = await runAll();
-             expect(codes(r))
-                 .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-           });
-
-           test('beside a padded valid target, push rejects it, so skills-generate does too',
-                async () => {
-                  writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["  ${SPANNER_DB}/graphs/commerce  ", 42]}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-                  const r = await runAll();
-                  expect(codes(r)).toEqual(
-                      {push: 1, report: 1, printStore: 1, skills: 1});
-                });
-         });
-
-
-// A vanilla model's GOOGLE block lists only blank targets. They name nothing,
-// so push publishes to Knowledge Catalog only and the runtime finds no store.
-describe('a vanilla GOOGLE block whose deploymentTargets are all blank', () => {
-  test('push accepts it, so skills-generate does too', async () => {
-    writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["  ", ""]}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-    const r = await runAll();
-    expect(codes(r)).toEqual({push: 0, report: 0, printStore: 1, skills: 0});
-    expect(r.printStore.out).toContain('declares no deployment target');
-    expect(r.skills.out).not.toContain('Error:');
-  });
-});
-
-
-// A vanilla model's GOOGLE block lists a BigQuery target twice beside a
-// Spanner target. The Spanner target alone would give a store, and every push
-// refuses the repeat.
+// A vanilla model's GOOGLE block deploys a BigQuery target twice beside a
+// Spanner target. The Spanner target alone would give a store, and the loader
+// refuses the repeat for every command.
 describe('a vanilla GOOGLE block that lists a target twice', () => {
   test('beside a Spanner target, push rejects it, so skills-generate does too',
        async () => {
@@ -404,7 +331,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/graphs/commerce", "${graph}", "${graph}"]}'
+        data: '{"deployments": [{"name": "sp", "target": "${SPANNER_DB}/graphs/commerce"}, {"name": "a", "target": "${graph}"}, {"name": "b", "target": "${graph}"}]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -415,10 +342,9 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.printStore.out)
-             .toContain(`declares duplicate deployment target '${graph}'`);
-         expect(r.skills.out)
-             .toContain(`declares duplicate deployment target '${graph}'`);
+         const repeat = `deployments 'a' and 'b' target the same resource '${graph}'`;
+         expect(r.printStore.out).toContain(repeat);
+         expect(r.skills.out).toContain(repeat);
        });
 
   // A target written as a resource URI is refused, beside its resource name
@@ -432,7 +358,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/graphs/commerce", "${graph}", "${name}"]}'
+        data: '{"deployments": [{"name": "sp", "target": "${SPANNER_DB}/graphs/commerce"}, {"name": "uri", "target": "${graph}"}, {"name": "bq", "target": "${name}"}]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -443,7 +369,7 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         const fix = `lists '${graph}', which is a resource URI; write its ` +
+         const fix = `targets '${graph}', which is a resource URI; write its ` +
              `GCP resource name, without the leading '//': '${name}'.`;
          expect(r.printStore.out).toContain(fix);
          expect(r.skills.out).toContain(fix);
@@ -629,7 +555,7 @@ semantic_model:
   - name: commerce
     custom_extensions:
       - vendor_name: GOOGLE
-        data: '{"deploymentTargets": ["${SPANNER_DB}/graphs/a", "${SPANNER_DB}2/graphs/b"]}'
+        data: '{"deployments": [{"name": "a", "target": "${SPANNER_DB}/graphs/a"}, {"name": "b", "target": "${SPANNER_DB}2/graphs/b"}]}'
     datasets:
       - name: Order
         source: ${SPANNER_DB}/tables/Orders
@@ -640,32 +566,7 @@ semantic_model:
 `});
          const r = await runAll();
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.skills.out).toContain(
-             "in its GOOGLE block's 'deploymentTargets'");
-       });
-
-  test('a vanilla GOOGLE block with no target: none of the four says deployments',
-       async () => {
-         writeScope({'commerce.yaml': `version: "0.2.0.dev0"
-semantic_model:
-  - name: commerce
-    custom_extensions:
-      - vendor_name: GOOGLE
-        data: '{"deploymentTargets": []}'
-    datasets:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - name: key
-            expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
-`});
-         const r = await runAll();
-         expect(codes(r)).toEqual({push: 0, report: 0, printStore: 1, skills: 0});
-         expect(r.printStore.out).toContain(
-             "declares no deployment target in its GOOGLE block's " +
-             "'deploymentTargets'");
-         expect(r.printStore.out).not.toContain("Declare one deployment");
+         expect(r.skills.out).toContain("in its GOOGLE block's 'deployments'");
        });
 
   test('a duplicate target: the loader refuses it for every command', async () => {

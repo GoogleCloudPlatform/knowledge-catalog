@@ -119,8 +119,8 @@ const sameAsRuntime = (c: Case): Case => ({
 scenarios('push --no-deployment refuses a scope before any network call', [
   {
     name: '--no-deployment refuses a target a vanilla GOOGLE block lists twice',
-    google: {deploymentTargets: [bqGraph('g'), bqGraph('g')]},
-    errors: [has(`declares duplicate deployment target '${bqGraph('g')}'`)],
+    google: {deployments: [{name: 'a', target: bqGraph('g')}, {name: 'b', target: bqGraph('g')}]},
+    errors: [has(`deployments 'a' and 'b' target the same resource '${bqGraph('g')}'`)],
   },
   {
     name: '--no-deployment refuses a deployment whose target is in no accepted form',

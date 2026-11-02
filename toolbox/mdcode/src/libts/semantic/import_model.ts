@@ -361,28 +361,16 @@ function validateObjectNames(
 }
 
 /**
- * Phase 2 (Pre-validation): Rejects legacy `deploymentTargets` inside a
- * vanilla model's `GOOGLE` block when converting to the Google version, and
- * validates all identifier names in the input document and any attached
- * `profileFiles`.
+ * Phase 2 (Pre-validation): Validates all identifier names in the input
+ * document and any attached `profileFiles`. The loader rejects a model's
+ * legacy `deploymentTargets`.
  */
 function validateInputDocument(
     doc: ImportDocument, profileFiles?: SerializedFile[]): void {
-  // 1. Reject legacy `deploymentTargets` inside a vanilla model's `GOOGLE`
-  // block when converting to the Google version (`0.2.0.dev0/google`).
   const modelScope = typeof doc.model.name === 'string' ?
       `model '${doc.model.name}'` :
       'model';
   const googleBlocks = parseGoogleBlocks(doc.model.custom_extensions);
-  if (doc.inputVersion === OSSIE_VERSION &&
-      doc.targetVersion === GOOGLE_VERSION &&
-      googleBlocks.some(g => 'deploymentTargets' in g)) {
-    doc.errors.push(
-        `${modelScope}: 'deploymentTargets' is no longer supported; ` +
-        `use 'deployments:' inside the GOOGLE block instead.`);
-  }
-
-  // 2. Validate all identifier names in the document and attached profiles.
   validateObjectNames(doc, googleBlocks, modelScope, profileFiles);
 }
 

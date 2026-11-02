@@ -5,7 +5,7 @@
 
 import {describe, expect, test} from 'bun:test';
 
-import {ALLOYDB_FORM, BQ_GRAPH_FORM, destinationKey, googleDeploymentTargets, parseDeploymentSelection, resolveModelDeployments, SPANNER_GRAPH_FORM} from '../../../src/libts/semantic/deployment_target';
+import {ALLOYDB_FORM, BQ_GRAPH_FORM, googleDeploymentTargets, parseDeploymentSelection, resolveModelDeployments, SPANNER_GRAPH_FORM} from '../../../src/libts/semantic/deployment_target';
 import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
 
@@ -171,19 +171,6 @@ describe('resolveModelDeployments: rejected targets', () => {
 });
 
 
-describe('destinationKey', () => {
-  test('is the resource URI of the target, which the checks compare', () => {
-    expect(destinationKey(BQ)).toBe(`//${BQ}`);
-    expect(destinationKey(ALLOY)).toBe(`//${ALLOY}`);
-    expect(destinationKey('not a target')).toBe('not a target');
-  });
-
-  test('names a legacy AlloyDB database by its cluster', () => {
-    expect(destinationKey(ALLOY_INSTANCE)).toBe(`//${ALLOY}`);
-  });
-});
-
-
 describe('resolveModelDeployments: profiles and selection', () => {
   const model = modelWith([
     {name: 'bq_prod', target: BQ, profile: 'analytical'},
@@ -267,31 +254,5 @@ describe('googleDeploymentTargets reads the named list', () => {
     });
     expect(vanilla.bigQuery).toEqual([]);
     expect(vanilla.malformed).toEqual([target]);
-  });
-
-  // A legacy file's `deployment_target:` may still hold the instance-based
-  // name, and keeps working until the demo moves off it.
-  test('a legacy deployment_target keeps its instance-based AlloyDB name', () => {
-    const model = loadModels(
-                      `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: retail
-    deployment_target: ${ALLOY_INSTANCE}
-    entities:
-      - name: Order
-        primary_key: [id]
-        fields:
-          - { name: id }
-`,
-                      {bindingOptional: true, allowLegacyBareSource: true})
-                      .models[0];
-    expect(googleDeploymentTargets(model).alloyDb).toEqual([{
-      project: 'acme',
-      location: 'us-central1',
-      cluster: 'main',
-      instance: 'primary',
-      database: 'sales',
-      uri: ALLOY_INSTANCE,
-    }]);
   });
 });

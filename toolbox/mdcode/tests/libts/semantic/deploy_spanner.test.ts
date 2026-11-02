@@ -77,7 +77,7 @@ describe('spannerGraphTargets', () => {
   // it -- and it is not a typo, so it must not be reported as one either.
   test('an AlloyDB target is not a Spanner target, and not malformed', () => {
     const pg =
-        'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
+        'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
     const {targets, malformed} = spannerGraphTargets(
         modelWithExtension(JSON.stringify({deploymentTargets: [pg]})));
     expect(targets).toEqual([]);
