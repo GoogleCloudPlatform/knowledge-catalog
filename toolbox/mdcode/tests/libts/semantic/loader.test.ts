@@ -3298,11 +3298,13 @@ describe('strict entity sources', () => {
       expect(() => loadSource(query)).toThrow(`dataset 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
     }
     // A space inside double quotes or backticks belongs to a table name, which
-    // kcmd cannot name.
+    // kcmd cannot name. The message says how to write a table outside Google
+    // Cloud.
     const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
     for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"',
       'acme.cat.ns."order items"']) {
-      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source, and ${NO_SPACE}`);
+      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source, and ${NO_SPACE} ` +
+        'A table outside Google Cloud is written as the entry name');
     }
     // A resource name or entry name takes no double quotes or backticks; the
     // message gives the name without them.

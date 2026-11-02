@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {catalogNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, THIRD_PARTY_SOURCE, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -122,9 +122,7 @@ function sourceWarning(ctx: string, source: string): string {
       (bare && !space ?
            `, or until 'kcmd import' runs again with '--source-prefix'.` :
            '.') +
-      (isGoogleCloudForm(source) ? '' :
-           ` A table outside Google Cloud is written as the entry name of ` +
-               `its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);
+      (isGoogleCloudForm(source) ? '' : ` ${THIRD_PARTY_SOURCE}`);
 }
 
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);

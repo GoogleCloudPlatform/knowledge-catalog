@@ -3385,6 +3385,9 @@ const ENTRY_NAME =
 // The entry name form, as messages show it.
 export const ENTRY_NAME_FORM =
     'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>';
+// How a source names a table outside Google Cloud, as messages say it.
+export const THIRD_PARTY_SOURCE = 'A table outside Google Cloud is written ' +
+    `as the entry name of its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`;
 
 // The Knowledge Catalog entry of a table outside Google Cloud. Its entry group
 // is not a system one. `name` is the entry name the source writes.
@@ -3589,7 +3592,7 @@ export function parseSource(
       if (segs.some(s => /\s/.test(s))) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-            `is not a valid source, and ${NO_SPACE}.`);
+            `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
       }
       if (segs.length === 4) {
         throw new SemanticModelError(
