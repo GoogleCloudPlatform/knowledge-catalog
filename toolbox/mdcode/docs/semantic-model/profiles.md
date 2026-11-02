@@ -90,8 +90,9 @@ not support them yet. An entry name in a system entry group, such as
 `@bigquery`, is rejected with an error that says what to write instead. A bare
 table name, a query, and any other prefix are rejected. A resource name or
 entry name with double quotes or backticks in it is rejected too, and the
-error gives the name without them when there is one. kcmd cannot name a table
-whose name holds a space. The source also fixes
+error gives the name without them when there is one. kcmd cannot write a
+resource name that holds a space, so a name with one gets no suggestion. The
+source also fixes
 the profile's SQL dialect, so every field the profile binds needs an expression
 in that dialect or in `ANSI_SQL`.
 

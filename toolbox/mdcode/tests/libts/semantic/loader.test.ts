@@ -3323,7 +3323,7 @@ describe('strict entity sources', () => {
         expect(() => loadSource(`${base}/${fill}`)).toThrow(`source '${base}/${fill}' ${QUOTES}.`);
       }
     }
-    // A system entry name gets its own message, which names the resource name.
+    // A quoted system entry name gets the system entry message.
     expect(() => loadSource('projects/acme/locations/us/entryGroups/@bigquery/entries/"orders"'))
       .toThrow("in the system entry group '@bigquery'");
     // Every catalog name the loader reads is rejected, naming the resource
@@ -3335,10 +3335,11 @@ describe('strict entity sources', () => {
       ['bigquery:acme.raw."order items"', `, and ${NO_SPACE}`],
       ['bigquery:acme.raw.a/b', "; write the table's GCP resource name."],
       ['bigquery:acme.raw.""', "; write the table's GCP resource name."],
+      ['biglake:table:acme.c.n.""', "; write the table's GCP resource name."],
     ]) {
       expect(() => loadSource(fqn)).toThrow(`source '${fqn}' is a Knowledge Catalog name${end}`);
     }
-    // The legacy wrapper reads double quotes as part of a bare name.
+    // Under the legacy wrapper, a space inside double quotes still marks a query.
     expect(() => loadSource('public."order items"', { allowLegacyBareSource: true, defaultProject: 'acme' }))
       .toThrow('looks like a SQL query');
 

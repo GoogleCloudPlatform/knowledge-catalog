@@ -3126,9 +3126,10 @@ function cloudSqlSchemaTable(s: string[]): string {
 }
 
 // What a source written as a resource URI, as a Knowledge Catalog name of a
-// table kcmd reads, or with quotes in a resource name or entry name is, and
-// the name to write instead; undefined for any other source. The loader
-// rejects such a source, and pull warns for one an older push stored.
+// table kcmd reads, or with quotes in a resource name or in an entry name
+// outside a system entry group is, and the name to write instead when there
+// is one; undefined for any other source. The loader rejects such a source,
+// and pull warns for one an older push stored.
 export function oldSourceForm(source: string): string|undefined {
   const unquoted = unquotedName(source);
   if (unquoted !== undefined) {
@@ -3153,7 +3154,7 @@ export function oldSourceForm(source: string): string|undefined {
       write;
 }
 
-// Why no name to write can be given for a table whose name holds whitespace.
+// Why no name to write is given when that name would hold a space.
 const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
 
 // `source` with its quotes removed, written as a resource name, when it is a
@@ -3497,8 +3498,7 @@ export function parseSource(
     warnings?: string[], importHint = false): ParsedSource {
   const trimmed = source.trim();
 
-  // The legacy wrapper reads double quotes as part of a bare name, so a space
-  // inside them is unquoted there.
+  // Under the legacy wrapper, a space inside double quotes also marks a query.
   if (hasUnquotedWhitespace(trimmed) || (opts.allowLegacyBareSource &&
       hasUnquotedWhitespace(trimmed.replaceAll('"', '')))) {
     throw new SemanticModelError(

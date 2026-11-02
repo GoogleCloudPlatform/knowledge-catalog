@@ -105,8 +105,9 @@ const LOADER_SOURCE_WARNING =
 
 // The warning for `source`, which import leaves as written. It names the
 // name to write when the loader's message does, and suggests --source-prefix
-// only for a bare name, the one kind a prefix completes. A source in no Google
-// Cloud form may be a third-party table, so the warning says how to write one.
+// only for a source with no `/` or `:`, the kind a prefix may complete. A
+// source in no Google Cloud form may be a third-party table, so the warning
+// says how to write one.
 function sourceWarning(ctx: string, source: string): string {
   const problem = oldSourceForm(source);
   if (problem !== undefined) {
