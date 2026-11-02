@@ -670,7 +670,7 @@ describe('sources completed from an entry group', () => {
       'version: "0.2.0.dev0"\nsemantic_model:\n  - name: retail\n    datasets:\n' +
       datasets.map(([name, source]) => `      - name: ${name}\n        source: ${
           source}\n        primary_key: [id]\n        fields:\n          - name: id\n` +
-          `            expression: {dialects: [{dialect: BIGQUERY, expression: ${name}.id}]}\n`)
+          `            expression: {dialects: [{dialect: ANSI_SQL, expression: ${name}.id}]}\n`)
           .join('');
   // A lister that records each call and yields ENTRIES, or throws `error`.
   const lister = (error?: string) => {
