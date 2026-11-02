@@ -439,20 +439,26 @@ describe('entrySource.resource on a read', () => {
 
 // With GCP_LOG set, a request is logged as its method and URL, with its body
 // on the next line.
-test('GCP_LOG logs each request as its method and URL', async () => {
-  const client = new CatalogClient(CTX);
-  spyOn(client as any, '_requestCore')
-      .mockImplementation(async () => new Response('{}'));
-  const log = spyOn(console, 'log').mockImplementation(() => {});
-  process.env.GCP_LOG = '1';
-  await client.getEntryGroup('proj', 'us', 'g');
-  await (client as any)._post('projects/proj/x', {a: 1});
-  delete process.env.GCP_LOG;
-  const v1 = 'https://dataplex.googleapis.com/v1/projects/proj';
-  // Each request line is followed by its response's.
-  expect(log.mock.calls.filter((_, i) => i % 2 === 0)).toEqual([
-    [`[GCP_LOG] GET ${v1}/locations/us/entryGroups/g`, ''],
-    [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
-  ]);
-  log.mockRestore();
-});
+test('GCP_LOG logs each request as its method and URL, with any body on ' +
+         'the next line',
+     async () => {
+       const client = new CatalogClient(CTX);
+       spyOn(client as any, '_requestCore')
+           .mockImplementation(async () => new Response('{}'));
+       const log = spyOn(console, 'log').mockImplementation(() => {});
+       process.env.GCP_LOG = '1';
+       await client.getEntryGroup('proj', 'us', 'g');
+       await (client as any)._post('projects/proj/x', {a: 1});
+       delete process.env.GCP_LOG;
+       // mockRestore empties log.mock.calls, so copy them first.
+       const calls = [...log.mock.calls];
+       log.mockRestore();
+       const endpoint =
+           process.env.DATAPLEX_ENDPOINT || 'https://dataplex.googleapis.com';
+       const v1 = `${endpoint}/v1/projects/proj`;
+       // Each request line is followed by its response's.
+       expect(calls.filter((_, i) => i % 2 === 0)).toEqual([
+         [`[GCP_LOG] GET ${v1}/locations/us/entryGroups/g`, ''],
+         [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
+       ]);
+     });
