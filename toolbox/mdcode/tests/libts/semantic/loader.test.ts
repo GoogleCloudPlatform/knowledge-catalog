@@ -3309,10 +3309,38 @@ describe('strict entity sources', () => {
       `alloydb.googleapis.com/projects/acme/locations/l/clusters/c/databases/db/schemas/${q}public${q}/tables/orders`,
       `cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables/${q}orders${q}`,
       `projects/acme/locations/us/entryGroups/sf/entries/${q}orders${q}`];
+    const QUOTES = 'is a name with quotes in it; resource names and entry names take no quotes';
+    const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
     for (const quoted of [...quotedNames('"'), ...quotedNames('`')]) {
-      expect(() => loadSource(quoted)).toThrow(
-        `source '${quoted}' is a name with quotes in it; resource names and entry names take no quotes, so write '${quoted.replace(/["`]/g, '')}'.`);
+      const plain = quoted.replace(/["`]/g, '');
+      expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}${
+        /\s/.test(plain) ? `, and ${NO_SPACE}` : `, so write '${plain}'.`}`);
     }
+    // Quotes that fill a segment leave no name to write.
+    const CLOUDSQL_TABLES = 'cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables';
+    for (const base of [TABLE, CLOUDSQL_TABLES]) {
+      for (const fill of ['""', '"', '``', '`']) {
+        expect(() => loadSource(`${base}/${fill}`)).toThrow(`source '${base}/${fill}' ${QUOTES}.`);
+      }
+    }
+    // A system entry name gets its own message, which names the resource name.
+    expect(() => loadSource('projects/acme/locations/us/entryGroups/@bigquery/entries/"orders"'))
+      .toThrow("in the system entry group '@bigquery'");
+    // Every catalog name the loader reads is rejected, naming the resource
+    // name when it can.
+    for (const [fqn, end] of [
+      ['bigquery:acme.sales."a/b c"', `, and ${NO_SPACE}`],
+      ['bigquery:acme.sales.``` `', `, and ${NO_SPACE}`],
+      ['bigquery:acme.raw.`order items`', `, and ${NO_SPACE}`],
+      ['bigquery:acme.raw."order items"', `, and ${NO_SPACE}`],
+      ['bigquery:acme.raw.a/b', "; write the table's GCP resource name."],
+      ['bigquery:acme.raw.""', "; write the table's GCP resource name."],
+    ]) {
+      expect(() => loadSource(fqn)).toThrow(`source '${fqn}' is a Knowledge Catalog name${end}`);
+    }
+    // The legacy wrapper reads double quotes as part of a bare name.
+    expect(() => loadSource('public."order items"', { allowLegacyBareSource: true, defaultProject: 'acme' }))
+      .toThrow('looks like a SQL query');
 
     // Each bare-name message also names the command that completes bare names.
     const VIA_IMPORT = "Or run 'kcmd import <file> --flavor <ossie|google> " +

@@ -146,6 +146,11 @@ describe('conversion, strict mode, and translation', () => {
       {strict: true}, 'orders'
     ],
     [
+      'catalog name a resource name cannot be built from',
+      googleDoc({source: `'bigquery:acme.sales."a/b c"'`}), {strict: true},
+      'is a Knowledge Catalog name'
+    ],
+    [
       'resource name with quotes in strict mode',
       googleDoc({source: `'${BQ_PREFIX}/tables/"orders"'`}), {strict: true},
       `so write '${BQ_TABLE}'. 'kcmd push' rejects the file until it is repointed.`
@@ -328,8 +333,9 @@ describe('sources', () => {
     [
       'system entry name',
       'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {},
-      "or until 'kcmd import' runs again with '--source-prefix'."
+      `is not a valid GCP resource name; ${PUSH}`
     ],
+    ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, ADVICE],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);

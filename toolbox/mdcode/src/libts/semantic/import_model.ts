@@ -104,8 +104,9 @@ const LOADER_SOURCE_WARNING =
     /^(.*?): source '(.*)' is not a valid GCP resource name\.$/s;
 
 // The warning for `source`, which import leaves as written. It names the
-// name to write when the loader's message does. A source in no Google Cloud
-// form may be a third-party table, so the warning says how to write one.
+// name to write when the loader's message does, and suggests --source-prefix
+// only for a bare name, the one kind a prefix completes. A source in no Google
+// Cloud form may be a third-party table, so the warning says how to write one.
 function sourceWarning(ctx: string, source: string): string {
   const problem = oldSourceForm(source);
   if (problem !== undefined) {
@@ -113,8 +114,10 @@ function sourceWarning(ctx: string, source: string): string {
         `the file until it is repointed.`;
   }
   return `${ctx}: source '${source}' is not a valid GCP resource name; ` +
-      `'kcmd push' rejects the file until it is repointed, or until ` +
-      `'kcmd import' runs again with '--source-prefix'.` +
+      `'kcmd push' rejects the file until it is repointed` +
+      (/[/:]/.test(source) ?
+           '.' :
+           `, or until 'kcmd import' runs again with '--source-prefix'.`) +
       (isGoogleCloudForm(source) ? '' :
            ` A table outside Google Cloud is written as the entry name of ` +
                `its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);
@@ -417,7 +420,9 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
   const qualified = prefix.child ?
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
-  return isAcceptedSource(qualified) ? qualified : undefined;
+  return oldSourceForm(qualified) === undefined && isAcceptedSource(qualified) ?
+      qualified :
+      undefined;
 }
 
 /**

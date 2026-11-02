@@ -77,7 +77,7 @@ written as its GCP resource name, with no leading `//`, such as
 `cloudsql.googleapis.com/…`, and is read with ambient IAM. A resource URI (the
 name with a leading `//`) or a Knowledge Catalog name such as
 `bigquery:<p>.<d>.<t>` is rejected, and the error names the resource name to
-write. `kcmd pull` returns a model an older push stored that way as stored,
+write when there is one. `kcmd pull` returns a model an older push stored that way as stored,
 and warns for each such value. A table outside Google Cloud is written as
 the entry name of its Knowledge Catalog entry,
 `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, and takes the
@@ -90,7 +90,8 @@ not support them yet. An entry name in a system entry group, such as
 `@bigquery`, is rejected with an error that says what to write instead. A bare
 table name, a query, and any other prefix are rejected. A resource name or
 entry name with double quotes or backticks in it is rejected too, and the
-error gives the name without them. The source also fixes
+error gives the name without them when there is one. kcmd cannot name a table
+whose name holds a space. The source also fixes
 the profile's SQL dialect, so every field the profile binds needs an expression
 in that dialect or in `ANSI_SQL`.
 

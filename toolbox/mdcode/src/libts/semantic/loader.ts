@@ -3132,41 +3132,56 @@ function cloudSqlSchemaTable(s: string[]): string {
 export function oldSourceForm(source: string): string|undefined {
   const unquoted = unquotedName(source);
   if (unquoted !== undefined) {
-    return `a name with quotes in it; resource names and entry names take ` +
-        `no quotes, so write '${unquoted}'`;
+    const quotes = 'a name with quotes in it; resource names and entry ' +
+        'names take no quotes';
+    return !unquoted ? quotes :
+        /\s/.test(unquoted) ? `${quotes}, and ${NO_SPACE}` :
+                              `${quotes}, so write '${unquoted}'`;
   }
   const name = asResourceName(source);
   if (name !== source && isAcceptedSource(name)) return resourceUriFix(source);
-  const fromCatalog = catalogNameResourceName(source);
-  return fromCatalog === undefined ? undefined :
-      `a Knowledge Catalog name; write the table's GCP resource name: '${
-          unquotedName(fromCatalog) ?? fromCatalog}'`;
+  const built = catalogNameResourceName(source);
+  const plain = built === undefined ? undefined : unquotedName(built) ?? built;
+  const write = "a Knowledge Catalog name; write the table's GCP resource name";
+  if (plain && isAcceptedSource(plain)) return `${write}: '${plain}'`;
+  if (!/^[a-z_]+:/.test(source) ||
+      !(isAcceptedSource(source) || isAcceptedSource(built ?? ''))) {
+    return undefined;
+  }
+  return plain && /\s/.test(plain) ?
+      `a Knowledge Catalog name, and ${NO_SPACE}` :
+      write;
 }
 
+// Why no name to write can be given for a table whose name holds whitespace.
+const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
+
 // `source` with its quotes removed, written as a resource name, when it is a
-// table's resource name, resource URI or entry name holding them; undefined
+// table's resource name, resource URI or entry name outside a system entry
+// group, holding them; '' when removing them leaves no such name; undefined
 // for any other source.
 function unquotedName(source: string): string|undefined {
   if (!QUOTE.test(source)) return undefined;
   const name = source.replace(/["`]/g, '');
-  const uri = asResourceUri(name);
-  const table = [
-    BIGQUERY_TABLE_URI, BIGLAKE_TABLE_URI, SPANNER_TABLE_URI, ALLOYDB_TABLE_URI,
-    CLOUDSQL_TABLE_URI, CLOUDSQL_SCHEMA_TABLE_URI,
-  ].some(re => re.test(uri));
-  return table || ENTRY_NAME.test(name) ? asResourceName(name) : undefined;
+  const named = (s: string) =>
+      !s.match(ENTRY_NAME)?.[1].startsWith('@') &&
+      (ENTRY_NAME.test(s) ||
+       [
+         BIGQUERY_TABLE_URI, BIGLAKE_TABLE_URI, SPANNER_TABLE_URI,
+         ALLOYDB_TABLE_URI, CLOUDSQL_TABLE_URI, CLOUDSQL_SCHEMA_TABLE_URI,
+       ].some(re => re.test(asResourceUri(s))));
+  return named(name) ? asResourceName(name) : named(source) ? '' : undefined;
 }
 
-// The GCP resource name of the first-party table a Knowledge Catalog name
-// names, or undefined when `fqn` is not one in an accepted shape.
+// The GCP resource name a Knowledge Catalog name of a first-party table
+// builds, accepted or not, or undefined when `fqn` is in no such shape.
 function catalogNameResourceName(fqn: string): string|undefined {
   const form = CATALOG_NAME_FORMS.find(([prefix]) => fqn.startsWith(prefix));
   if (!form || fqn.length > MAX_CATALOG_NAME_LENGTH) return undefined;
   const [prefix, count, resourceName] = form;
   const segs = catalogNameSegments(fqn.slice(prefix.length));
   if (segs.length !== count || segs.some(seg => seg === '')) return undefined;
-  const name = resourceName(segs);
-  return isAcceptedSource(name) ? name : undefined;
+  return resourceName(segs);
 }
 
 // A catalog name's dot-separated segments. A segment containing a reserved
@@ -3482,7 +3497,10 @@ export function parseSource(
     warnings?: string[], importHint = false): ParsedSource {
   const trimmed = source.trim();
 
-  if (hasUnquotedWhitespace(trimmed)) {
+  // The legacy wrapper reads double quotes as part of a bare name, so a space
+  // inside them is unquoted there.
+  if (hasUnquotedWhitespace(trimmed) || (opts.allowLegacyBareSource &&
+      hasUnquotedWhitespace(trimmed.replaceAll('"', '')))) {
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source '${trimmed}' looks like a ` +
         `SQL query; a query-valued source is not supported yet. Bind 'source' ` +
