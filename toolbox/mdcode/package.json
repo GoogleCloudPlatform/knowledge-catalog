@@ -20,12 +20,13 @@
   },
   "files": [
     "build/ts/kcmd/",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
-    "build:libts": "npx tsc -p src/libts/tsconfig.json",
-    "build:cli": "npx bun build --target=node --format=cjs --packages=external --banner=\"#!/usr/bin/env node\" --outfile build/ts/kcmd/cli.js src/tool/main.ts && node -e \"require('fs').chmodSync('build/ts/kcmd/cli.js', 0o755)\"",
-    "build:tool": "npx bun build --compile --outfile dist/kcmd src/tool/main.ts",
+    "build:libts": "node -e \"require('fs').rmSync('build/ts/kcmd',{recursive:true,force:true})\" && npx tsc -p src/libts/tsconfig.json",
+    "build:cli": "node -e \"const cp=require('child_process');let sha='';try{sha=cp.execSync('git rev-parse --short HEAD',{stdio:['ignore','pipe','ignore']}).toString().trim()}catch{}cp.execFileSync('npx',['bun','build','--target=node','--format=cjs','--packages=external','--define','__KCMD_COMMIT__='+JSON.stringify(sha),'--banner=#!/usr/bin/env node','--outfile','build/ts/kcmd/cli.js','src/tool/main.ts'],{stdio:'inherit'});require('fs').chmodSync('build/ts/kcmd/cli.js',0o755)\"",
+    "build:tool": "node -e \"const cp=require('child_process');let sha='';try{sha=cp.execSync('git rev-parse --short HEAD',{stdio:['ignore','pipe','ignore']}).toString().trim()}catch{}cp.execFileSync('npx',['bun','build','--compile','--define','__KCMD_COMMIT__='+JSON.stringify(sha),'--outfile','dist/kcmd','src/tool/main.ts'],{stdio:'inherit'})\"",
     "build": "npm run build:libts && npm run build:cli && npm run build:tool",
     "compile": "npx tsc --noEmit",
     "test:libts": "npx bun test ./tests/libts/scenarios.ts && npx bun test ./tests/libts/layouts/",
@@ -56,6 +57,7 @@
     "ajv": "^8.17.1",
     "bun": "^1.3.14",
     "bun-types": "^1.3.14",
+    "google-artifactregistry-auth": "3.5.0",
     "memfs": "^4.57.2",
     "typescript": "^6.0.3"
   }

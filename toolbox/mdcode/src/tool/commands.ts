@@ -366,7 +366,15 @@ export interface PullOptions {
 }
 
 
+function ensureManifestExists(basePath = '.'): void {
+  const manifestPath = path.join(basePath, 'catalog.yaml');
+  if (!fs.existsSync(manifestPath)) {
+    throw new Error(`Cannot find catalog manifest at '${manifestPath}'`);
+  }
+}
+
 export async function pull(options: PullOptions = {}): Promise<number> {
+  ensureManifestExists('.');
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -1108,6 +1116,7 @@ export async function push(options: PushOptions): Promise<number> {
         `importing a model. Import translates the model file only, so write ` +
         `a profile's 'BIGQUERY' or 'ANSI_SQL' expressions yourself.`);
   }
+  ensureManifestExists('.');
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
 
@@ -2338,6 +2347,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const only =
       typeof options.profile === 'string' ? options.profile : undefined;
 
+  ensureManifestExists('.');
   const ctx = context.ApiContext.default();
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
   if (snapshot.manifest.source.type !== Sources.SEMANTIC_MODEL) {

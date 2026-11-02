@@ -144,9 +144,6 @@ kcmd init --bigquery-dataset <projectId>.<datasetId1> --bigquery-dataset <projec
 # Initialize a new catalog snapshot for a custom EntryGroup
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId>
 
-# Initialize an Open Knowledge Format (OKF v0.2) bundle for a custom EntryGroup
-kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format=okf
-
 # Initialize a new catalog snapshot for a locally-authored Semantic Model.
 # The scope names the EntryGroup the model belongs to; the model is authored as
 # a single Apache Ossie document at
