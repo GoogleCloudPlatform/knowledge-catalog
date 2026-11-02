@@ -2499,17 +2499,30 @@ export async function importModel(
     const model = result.files[0].fileName.replace(YAML_FILE, '');
     targets = result.files.map(
         f => pulledFileTarget(layout, model, f.fileName, false));
-    // Re-importing the same model replaces its file.
-    const others = layout.modelDocuments()
-                       .map(d => layout.modelPath(d.name))
-                       .filter(p => p !== layout.modelPath(model));
+    // Re-importing the same model replaces its file. The input itself may be
+    // in the entry group under another name.
+    const docs = layout.modelDocuments()
+                     .map(d => layout.modelPath(d.name))
+                     .filter(p => p !== layout.modelPath(model));
+    const others = docs.filter(p => path.resolve(p) !== path.resolve(file));
+    const refusals: string[] = [];
     if (others.length) {
-      return fail(
+      refusals.push(
           `the entry group already holds another model's file (${
               others.join(', ')}), and an entry group holds one model; ` +
           `remove it if this model replaces it, pass --out <path> to write ` +
           `elsewhere, or import into another entry group's scope.`);
     }
+    if (others.length < docs.length) {
+      refusals.push(
+          `the input file ${file} sits in the entry group, so the import ` +
+          `would leave this model in two files there, ${file} and ${
+              layout.modelPath(model)}. Move the input${
+              profileFiles.length ? ' and its profile files' : ''} out of ` +
+          `the entry group and import it from there, or pass --out <path> ` +
+          `to write elsewhere.`);
+    }
+    if (refusals.length) return fail(...refusals);
     // Refuse to leave behind a profile file this import does not write. Push
     // rejects one beside a vanilla model, and reads one beside a Google model
     // as that model's profile. A Google model file re-imported in place keeps

@@ -477,6 +477,17 @@ describe('sources', () => {
       });
 
   const ALLOYDB = `${ALLOYDB_DB}/schemas/public`;
+  // The warnings for a model whose one source is `bare`.
+  const caseWarnings = async (bare: string, sourcePrefix: string) =>
+      (await importSemanticModelYaml(
+           ossieDoc({
+             source: `'${bare}'`,
+             fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: order_id}]}',
+           }),
+           {sourcePrefix}))
+          .warnings;
+  const rewrote = (bare: string, completed: string) =>
+      `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.`;
   // [label, bare name, prefix, the source it completes to, or undefined when
   // it differs from the prefix only in letter case]
   test.each([
@@ -487,22 +498,33 @@ describe('sources', () => {
     ['AlloyDB, backticked schema', '`Public`.ORDERS', ALLOYDB_DB, `${ALLOYDB_DB}/schemas/Public/tables/orders`],
     ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
     ['AlloyDB, non-ASCII letter', 'PUBLIC.ÄRGER', ALLOYDB, `${ALLOYDB}/tables/Ärger`],
-    ['AlloyDB, mixed-case prefix', 'sales.orders', `${ALLOYDB_DB}/schemas/Sales`, undefined],
     ['BigQuery', 'SALES.orders', BQ_PREFIX, undefined],
     ['Cloud SQL', 'PUBLIC.orders', CLOUDSQL_PREFIX, undefined],
   ])('matches letter case against a prefix: %s', async (_, bare, sourcePrefix, completed) => {
-    const res = await importSemanticModelYaml(
-        ossieDoc({
-          source: `'${bare}'`,
-          fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: order_id}]}',
-        }),
-        {sourcePrefix});
-
-    expect(res.warnings).toEqual([
+    expect(await caseWarnings(bare, sourcePrefix)).toEqual([
       completed ?
-          `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.` :
+          rewrote(bare, completed) :
           `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so import cannot complete it; correct the letter case of the source or of '--source-prefix'.`,
     ]);
+  });
+
+  // An unquoted part, which PostgreSQL reads in lower case, never matches a
+  // name with capitals in an AlloyDB prefix. [bare name, prefix, the part's
+  // kind, the prefix's name for it, the source with that name double-quoted,
+  // the rest of the source it then completes to]
+  test.each([
+    ['Sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', '"Sales".orders', '/tables/orders'],
+    ['sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', '"Sales".orders', '/tables/orders'],
+    ['Analytics.public.orders', ALLOYDB_DB.replace(/analytics$/, 'Analytics'), 'database', 'Analytics', '"Analytics".public.orders', '/schemas/public/tables/orders'],
+  ])('says how to match an AlloyDB prefix with capitals: %s against %s', async (bare, prefix, kind, name, quoted, rest) => {
+    const read = name.toLowerCase();
+    expect(await caseWarnings(bare, prefix)).toEqual([
+      `dataset 'orders': source '${bare}' names ${kind} '${read}', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names ${kind} '${name}', so import cannot complete the source. If the ${kind} is '${name}', write it as '"${name}"' in the source; if it is '${read}', write '${read}' in '--source-prefix'.`,
+    ]);
+    // Each way the warning gives completes the source.
+    const lowered = prefix.replace(`/${name}`, `/${read}`);
+    expect(await caseWarnings(quoted, prefix)).toEqual([rewrote(quoted, prefix + rest)]);
+    expect(await caseWarnings(bare, lowered)).toEqual([rewrote(bare, lowered + rest)]);
   });
 
   test(

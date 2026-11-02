@@ -468,6 +468,41 @@ function sourceParts(source: string, prefix: ParsedSourcePrefix):
 }
 
 /**
+ * `text` with its ASCII letters in lower case. PostgreSQL folds only these in a
+ * UTF-8 database.
+ */
+function lowerAscii(text: string): string {
+  return text.replace(/[A-Z]/g, c => c.toLowerCase());
+}
+
+/** True when the database of `prefix` reads unquoted names in lower case. */
+function foldsUnquotedCase(prefix: ParsedSourcePrefix): boolean {
+  return prefix.base.startsWith('alloydb.googleapis.com/');
+}
+
+/**
+ * The first unquoted leading part of `source` that `prefix` names with
+ * capitals, which PostgreSQL reads in lower case. Gives its kind, the prefix's
+ * name for it, and the name PostgreSQL reads. Expects a `source` that agrees
+ * with `prefix` when letter case is ignored.
+ */
+function foldedPart(source: string, prefix: ParsedSourcePrefix):
+    {kind: string; name: string; read: string}|undefined {
+  const segs = bareNameSegments(source, prefix);
+  if (!segs || !foldsUnquotedCase(prefix)) return undefined;
+  const start = prefix.known.length - segs.length + (prefix.child ? 2 : 1);
+  for (let i = start; i < prefix.known.length; i++) {
+    const s = segs[i - start];
+    const read = lowerAscii(s.text);
+    // An AlloyDB prefix names a database, then perhaps a schema.
+    if (!s.quoted && read !== prefix.known[i]) {
+      return {kind: i ? 'schema' : 'database', name: prefix.known[i], read};
+    }
+  }
+  return undefined;
+}
+
+/**
  * Qualifies a bare dot-separated table name `source` against `prefix` into a
  * GCP resource name when `prefix` supplies the missing hierarchy segments and
  * any overlapping segments agree, or returns `undefined` if `source` cannot be
@@ -484,13 +519,11 @@ function qualifyTableSource(
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
-  // PostgreSQL folds only ASCII letters in a UTF-8 database.
-  const lower = (t: string) => t.replace(/[A-Z]/g, c => c.toLowerCase());
-  const foldsCase = prefix.base.startsWith('alloydb.googleapis.com/');
+  const foldsCase = foldsUnquotedCase(prefix);
   const read = (s: {text: string; quoted: boolean}) =>
-      foldsCase && !s.quoted ? lower(s.text) : s.text;
+      foldsCase && !s.quoted ? lowerAscii(s.text) : s.text;
   const agrees = (s: {text: string; quoted: boolean}, k: string) =>
-      read(s) === k || (ignoreCase && lower(s.text) === lower(k));
+      read(s) === k || (ignoreCase && lowerAscii(s.text) === lowerAscii(k));
   const tail = prefix.known.slice(prefix.known.length - overlap);
   if (tail.some((k, i) => !agrees(segs[i], k))) return undefined;
 
@@ -729,8 +762,18 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
                  isAcceptedSource(trimmed))) {
       // Why a prefix that nearly fits the name cannot complete it.
       const p = doc.sourcePrefix;
+      const caseOnly =
+          !!p && qualifyTableSource(trimmed, p, true) !== undefined;
+      const folded = p && caseOnly ? foldedPart(trimmed, p) : undefined;
       let why: string|undefined;
-      if (p && qualifyTableSource(trimmed, p, true) !== undefined) {
+      if (folded) {
+        const {kind, name, read} = folded;
+        why = `names ${kind} '${read}', since PostgreSQL reads an unquoted ` +
+            `name in lower case. '--source-prefix' names ${kind} '${name}', ` +
+            `so import cannot complete the source. If the ${kind} is ` +
+            `'${name}', write it as '"${name}"' in the source; if it is ` +
+            `'${read}', write '${read}' in '--source-prefix'.`;
+      } else if (caseOnly) {
         why = `differs from '--source-prefix' only in letter case, so ` +
             `import cannot complete it; correct the letter case of the ` +
             `source or of '--source-prefix'.`;

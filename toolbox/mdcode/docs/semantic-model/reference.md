@@ -112,7 +112,8 @@ the conversion. Without `--out`, the files go into the scope's entry group
 folder, and an import that would leave one of the model's profile files there
 unwritten is refused. Without `--out`, an import is also refused when the entry
 group folder already holds another model's file, since an entry group holds one
-model.
+model. It is refused too when the input file sits in that folder under a name
+other than `<model>.yaml`, since the model would then have two files.
 
 | Flag | Effect |
 |------|--------|

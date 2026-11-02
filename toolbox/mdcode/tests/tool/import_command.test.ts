@@ -160,8 +160,9 @@ describe('kcmd import', () => {
     });
   }
 
-  // [label, the workspace, the error]
-  const REFUSED_WITHOUT_OUT: Array<[string, () => void, string]> = [
+  const IN_GROUP = path.join(GROUP, 'shop.yaml');
+  // [label, the workspace, the error, the input file]
+  const REFUSED_WITHOUT_OUT: Array<[string, () => void, string, string?]> = [
     ['no catalog.yaml', () => {},
      'Error: there is no catalog.yaml in this directory, so there is no model ' +
          'layout to write into. Pass --out <path> to write the file directly.'],
@@ -174,17 +175,23 @@ describe('kcmd import', () => {
      }, 'Error: this catalog is not a semantic-model scope'],
     ['an entry group that holds another model', () => {
        workspace();
-       write(path.join(GROUP, 'shop.yaml'), model().replace('name: retail', 'name: shop'));
-     }, `Error: the entry group already holds another model's file (${path.join(GROUP, 'shop.yaml')}), ` +
+       write(IN_GROUP, model().replace('name: retail', 'name: shop'));
+     }, `Error: the entry group already holds another model's file (${IN_GROUP}), ` +
          'and an entry group holds one model; remove it if this model replaces it, pass ' +
          "--out <path> to write elsewhere, or import into another entry group's scope."],
+    ['an input file in the entry group under another name', workspace,
+     `Error: the input file ${IN_GROUP} sits in the entry group, so the import would ` +
+         `leave this model in two files there, ${IN_GROUP} and ${path.join(GROUP, 'retail.yaml')}. ` +
+         'Move the input out of the entry group and import it from there, or pass ' +
+         '--out <path> to write elsewhere.',
+     IN_GROUP],
   ];
-  for (const [label, setUp, error] of REFUSED_WITHOUT_OUT) {
+  for (const [label, setUp, error, input = 'retail.yaml'] of REFUSED_WITHOUT_OUT) {
     test(`without --out, ${label} is refused and nothing is written`, async () => {
       setUp();
-      write('retail.yaml', model());
+      write(input, model());
       const before = filesIn();
-      expect(await importModel('retail.yaml', {flavor: 'ossie'})).toBe(1);
+      expect(await importModel(input, {flavor: 'ossie'})).toBe(1);
       expect(errors).toEqual([expect.stringContaining(error)]);
       expect(filesIn()).toEqual(before);
     });
@@ -217,10 +224,12 @@ describe('kcmd import', () => {
     const PROFILE_FILE = path.join(GROUP, 'retail.profile.prod.yaml');
     const google = model().replace('version: "0.2.0.dev0"', 'version: "0.2.0.dev0/google"')
                        .replace('    datasets:\n', '    entities:\n');
-    const setUp = () => {
+    // Writes the model and its profile file as `<stem>.yaml` and
+    // `<stem>.profile.prod.yaml`.
+    const setUp = (stem = 'retail') => {
       workspace();
-      write(MODEL_FILE, google);
-      write(PROFILE_FILE,
+      write(path.join(GROUP, `${stem}.yaml`), google);
+      write(path.join(GROUP, `${stem}.profile.prod.yaml`),
             `name: prod\nentities:\n  - name: orders\n    source: ${PREFIX}/tables/orders_prod\n`);
     };
 
@@ -237,6 +246,13 @@ describe('kcmd import', () => {
       expect(await importModel(MODEL_FILE, {flavor: 'google', input: 'first-party'})).toBe(0);
       expect(errors).toEqual([]);
       expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
+    });
+
+    test('under another name in the entry group is refused, saying to move its profile files too', async () => {
+      setUp('shop');
+      expect(await importModel(IN_GROUP, {flavor: 'ossie', input: 'first-party'})).toBe(1);
+      expect(errors).toEqual([expect.stringContaining(
+          'Move the input and its profile files out of the entry group')]);
     });
   });
 
