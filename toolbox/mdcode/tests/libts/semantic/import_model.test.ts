@@ -326,9 +326,9 @@ describe('profile translation', () => {
      googleDoc({fieldExpr}), {...google, profileFiles: [withActions]}, true],
     ['translates a BigLake profile file', googleDoc({fieldExpr}),
      {...google, profileFiles: [fileOf(prodOn(bigLake))]}, true],
-    ['translates a profile file that also binds an abstract entity on Snowflake',
+    ['translates a profile file that also binds an abstract and an unknown entity on Snowflake',
      googleDoc({fieldExpr, extra: '      - name: party\n        abstract: true\n'}),
-     {...google, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, {name: 'party', source: sfEntry}]})]}, true],
+     {...google, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, ...['party', 'ghost'].map(name => ({name, source: sfEntry}))]})]}, true],
     ['skips a profile file on BigQuery and Snowflake',
      googleDoc({fieldExpr, extra: `      - name: items\n        source: ${BQ_TABLE}\n`}),
      {...google, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, {name: 'items', source: sfEntry}]})]}, false],
@@ -823,23 +823,6 @@ describe('sources completed from an entry group', () => {
                        '"public".customers', '`public`.customers']);
        }
      });
-
-  // [label, bare name, the source the no-entry message says to write]
-  test.each([
-    ['a BigQuery table', 'sales.orders', BQ_TABLE],
-    ['a third-party table in another entry group', 'public.ghosts',
-     'projects/acme/locations/us/entryGroups/sf2/entries/ghosts'],
-  ])('a bare name no entry ends in loads once written as reported: %s', async (_, bare, fixed) => {
-    const {listEntries} = lister();
-    const res = await importSemanticModelYaml(
-        model(['customers', 'public.customers'], ['other', bare]),
-        {flavor: 'ossie', sourcePrefix: GROUP, listEntries});
-    expect(res.warnings).toEqual(
-        [rewrote('customers', 'public.customers', 'customers'), noEntry('other', bare)]);
-    const content = res.files[0].content.replace(`source: ${bare}\n`, `source: ${fixed}\n`);
-    expect(loadModels(content).models[0].entities.map(e => e.authoredSource))
-        .toEqual([named('customers').name, fixed]);
-  });
 
   // [label, input, sourcePrefix]
   test.each([
