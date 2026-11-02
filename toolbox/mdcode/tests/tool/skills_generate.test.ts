@@ -16,11 +16,15 @@ import * as path from 'node:path';
 
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
+import {loadSemanticModels} from '../../src/libts/semantic/loader';
+import {applyProfileFile} from '../../src/libts/semantic/resolve_profiles';
 import {readableEntities} from '../../src/libts/semantic/runtime/agent_tools';
 import {dialectFor} from '../../src/libts/semantic/runtime/dialect';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {storeLine} from '../../src/libts/semantic/runtime/store';
-import {skillsGenerate} from '../../src/tool/commands';
+import {validatePushRequirements} from '../../src/libts/semantic/validate';
+import {profiles, skillsGenerate} from '../../src/tool/commands';
+import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -618,4 +622,79 @@ semantic_model:
     expect(await columns())
         .toEqual({person: ['id', 'flags'], customer: ['id', 'flags']});
   });
+});
+
+describe('demo/semantic-model/skill/', () => {
+  const demoDir =
+      path.join(__dirname, '..', '..', 'demo', 'semantic-model', 'skill');
+  const entryGroupDir =
+      path.join(demoDir, 'catalog', 'EntryGroups', 'commerce_demo');
+
+  test(
+      'loads, validates, and runs skills-generate and profiles --print-store',
+      async () => {
+        passGraphChecks();
+        passSourceCheck();
+        spyOn(AlloyDbClient.prototype, 'listInstances').mockResolvedValue({
+          status: 200,
+          result: [{
+            name:
+                'projects/my-project/locations/us-central1/clusters/my-cluster/instances/my-instance',
+            instanceType: 'PRIMARY',
+            state: 'READY',
+          }],
+        });
+
+        const modelText =
+            fs.readFileSync(path.join(entryGroupDir, 'commerce.yaml'), 'utf8');
+        const loaded = loadSemanticModels(
+            [{name: 'commerce', text: modelText}], {bindingOptional: true});
+        expect(loaded.error).toBeUndefined();
+        expect(loaded.models).toHaveLength(1);
+        const baseModel = loaded.models[0].model;
+        expect(validatePushRequirements([{
+                 document: 'commerce',
+                 model: {
+                   ...baseModel,
+                   deployments: undefined,
+                   customExtensions: undefined,
+                 },
+               }]))
+            .toEqual([]);
+
+        for (const profileName of ['spanner', 'alloydb'] as const) {
+          const profileText = fs.readFileSync(
+              path.join(entryGroupDir, `commerce.profile.${profileName}.yaml`),
+              'utf8');
+          const applied = applyProfileFile(baseModel, profileText, profileName);
+          expect('error' in applied).toBe(false);
+          if ('error' in applied) return;
+          expect(validatePushRequirements([
+            {document: 'commerce', model: applied.model},
+          ])).toEqual([]);
+        }
+
+        const spannerOut = path.join(dir, 'spanner-skills');
+        const alloydbOut = path.join(dir, 'alloydb-skills');
+        process.chdir(demoDir);
+        expect(await skillsGenerate(
+                   {profile: 'spanner', out: spannerOut, force: true}))
+            .toBe(0);
+        expect(await skillsGenerate(
+                   {profile: 'alloydb', out: alloydbOut, force: true}))
+            .toBe(0);
+        expect(fs.readFileSync(
+                   path.join(
+                       spannerOut, 'commerce', 'references', 'issue-credit.md'),
+                   'utf8'))
+            .toBe(fs.readFileSync(
+                path.join(
+                    alloydbOut, 'commerce', 'references', 'issue-credit.md'),
+                'utf8'));
+
+        logs = [];
+        expect(await profiles({profile: 'spanner', printStore: true})).toBe(0);
+        expect(logs.join('\n'))
+            .toContain('my-project/my-instance/semantic_skill_demo');
+      });
 });

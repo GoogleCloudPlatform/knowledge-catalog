@@ -25,6 +25,6 @@ EDGE TABLES (
 
 -- availability --
 unbound field: Order.amount
-dropped metric: total_amount (field Order.amount is unbound)
+dropped metric: total_amount (excluded)
 -- warnings --
 -- (none)

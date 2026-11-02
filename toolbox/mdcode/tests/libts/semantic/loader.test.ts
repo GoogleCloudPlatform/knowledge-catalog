@@ -1087,7 +1087,11 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
     const m = models[0];
     expect(m.customExtensions).toEqual([{
       vendorName: 'GOOGLE',
-      data: JSON.stringify({ deploymentTargets: ['projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph'] }),
+      data: JSON.stringify({
+        deploymentTargets: [
+          'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph'
+        ]
+      }),
     }]);
     const orders = m.entities[0];
     expect(orders.uniqueKeys).toEqual([['o_orderkey'], ['o_ordernumber']]);

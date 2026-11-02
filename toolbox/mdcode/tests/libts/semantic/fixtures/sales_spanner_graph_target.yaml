@@ -11,7 +11,9 @@ version: "0.2.0.dev0/google"
 
 semantic_model:
   - name: sales
-    deployment_target: spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/sales_graph
+    deployments:
+      - name: default
+        target: spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/graphs/sales_graph
     entities:
       - name: orders
         source: spanner.googleapis.com/projects/demo/instances/prod/databases/commerce/tables/Orders

@@ -17,13 +17,11 @@ import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
-// The deploy leg now consumes models already parsed by loadSemanticModels
+// The deploy leg consumes models already parsed by loadSemanticModels
 // (shared with the Knowledge Catalog leg). These tests still author documents,
-// so this helper parses them the way commands.ts does. defaultProject mirrors
-// the scope's declared project.
-function models(docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(
-      docs, {defaultProject, allowLegacyBareSource: true});
+// so this helper parses them the way commands.ts does.
+function models(docs: {name: string; text: string}[]) {
+  const r = loadSemanticModels(docs);
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -39,18 +37,18 @@ const OSSIE =
     fs.readFileSync(path.join(FIXTURES, 'sales_bq_graph_target.yaml'), 'utf8');
 const OSSIE_NO_TARGET =
     fs.readFileSync(path.join(FIXTURES, 'sales_no_target.yaml'), 'utf8');
-// An existing fixture whose only GOOGLE deployment target is a (non-BigQuery)
-// Dataplex URI; exercises the deploy leg's unparseable-target path.
+// Derived from sales_google_ext.yaml with a (non-BigQuery) Dataplex URI target
+// to exercise the deploy leg's unparseable-target path while keeping the
+// fixture itself schema-valid.
 const OSSIE_DATAPLEX_ONLY =
-    fs.readFileSync(path.join(FIXTURES, 'sales_google_ext.yaml'), 'utf8');
-// A model whose only GOOGLE target carries the BigQuery prefix but fails the
-// strict URI match; exercises the "declared but unparseable" report.
+    fs.readFileSync(path.join(FIXTURES, 'sales_google_ext.yaml'), 'utf8')
+        .replace(
+            'bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph',
+            'projects/demo/locations/us/entryGroups/@bigquery/entries/sales_graph');
+// A model whose target carries the BigQuery prefix but fails the strict URI
+// match (`/propertyGraph/` instead of `/propertyGraphs/`).
 const OSSIE_BAD_TARGET =
-    fs.readFileSync(path.join(FIXTURES, 'sales_bad_target.yaml'), 'utf8');
-// A model whose dataset `source` omits its project, so the loader must qualify
-// it with the caller-supplied defaultProject.
-const OSSIE_UNQUALIFIED_SOURCE = fs.readFileSync(
-    path.join(FIXTURES, 'sales_unqualified_source.yaml'), 'utf8');
+    OSSIE.replace('/propertyGraphs/sales_graph', '/propertyGraph/sales_graph');
 
 // A model carrying only a single custom_extension.
 function modelWithExtension(data: string, vendor = 'GOOGLE'): SemanticModel {
@@ -506,21 +504,6 @@ describe('deployBigQuery', () => {
             {validateOnly: true});
         expect(res.success).toBe(false);
         expect(res.details).toContain('could not be parsed');
-      });
-
-  test(
-      'qualifies an under-qualified source with the given defaultProject',
-      async () => {
-        // The loader qualifies `sales.orders` with the passed defaultProject
-        // ('scope-proj'), not the ambient ctx.project ('test-project'): the
-        // scope's declared project is deterministic where gcloud's is not.
-        const res = await deployBigQuery(
-            models([{name: 'sales', text: OSSIE_UNQUALIFIED_SOURCE}], 'scope-proj'),
-            CTX, {validateOnly: true});
-        expect(res.success).toBe(true);
-        const ddl = res.ddl.join('\n');
-        expect(ddl).toContain('`scope-proj.sales.orders`');
-        expect(ddl).not.toContain('test-project.sales.orders');
       });
 
   test('validateOnly over an empty workspace is a clean no-op', async () => {
