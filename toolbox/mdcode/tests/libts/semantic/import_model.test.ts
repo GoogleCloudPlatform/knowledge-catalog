@@ -428,6 +428,51 @@ describe('profile translation', () => {
   });
 });
 
+// A profile source push rejects is reported in push's words, and the profile
+// stays as written.
+describe('profile sources', () => {
+  type Profile = {name: string; entities: object[]};
+  const pg = (source: string): Profile => ({name: 'pg', entities: [{name: 'orders', source}]});
+  // A profile on a valid resource name, which gets no report.
+  const ok = {...pg(BQ_TABLE), name: 'ok'};
+  const block = (...profiles: Profile[]) =>
+      `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({profiles})}'\n`;
+  const files = (...profiles: Profile[]) => profiles.map(
+      p => ({fileName: `retail.profile.${p.name}.yaml`, content: yaml.stringify(p)}));
+  type Build = (...profiles: Profile[]) => [string, object];
+  const PATHS: Array<[string, Build]> = [
+    ['GOOGLE block, first-party, to ossie', (...ps) => [ossieDoc({extra: block(...ps)}), {strict: true, flavor: 'ossie'}]],
+    ['GOOGLE block, first-party, to google', (...ps) => [ossieDoc({extra: block(...ps)}), {strict: true, flavor: 'google'}]],
+    ['profile file, first-party, to ossie', (...ps) => [googleDoc(), {strict: true, flavor: 'ossie', profileFiles: files(...ps)}]],
+    ['profile file, first-party, to google', (...ps) => [googleDoc(), {strict: true, flavor: 'google', profileFiles: files(...ps)}]],
+    ['profile file, third-party, to google', (...ps) => [googleDoc(), {flavor: 'google', profileFiles: files(...ps)}]],
+  ];
+  const SOURCES = [
+    ['bare name', 'orders', "bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders"],
+    ['backticked path', '`acme.sales.orders`', "bare table name '`acme.sales.orders`' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/acme.sales.orders"],
+    ['catalog name', 'bigquery:acme.sales.orders', `source 'bigquery:acme.sales.orders' is a Knowledge Catalog name; write the table's GCP resource name: '${BQ_TABLE}'.`],
+  ];
+
+  test.each(SOURCES.flatMap(([kind, source, message]) => PATHS.map(
+      ([path, build]) => [`${kind} in a ${path}`, ...build(pg(source), ok), message])))(
+      'reports a %s', async (_, input, opts: any, message) => {
+        const res = await importSemanticModelYaml(input as string, opts);
+        const report = `profile 'pg': entity 'orders': ${message}\n'kcmd import' ` +
+            `leaves a profile's sources as written, even with '--source-prefix'.`;
+        expect(opts.strict ? res.errors : res.warnings).toEqual([report]);
+        if (!opts.strict) expect(res.files.slice(1)).toEqual(opts.profileFiles);
+      });
+
+  test('skips the sources push does not read, of an unknown or an abstract entity', async () => {
+    const res = await importSemanticModelYaml(
+        googleDoc({extra: '      - name: party\n        abstract: true\n'}), {
+          strict: true, flavor: 'google',
+          profileFiles: files({name: 'pg', entities: ['ghost', 'party'].map(name => ({name, source: 'orders'}))}),
+        });
+    expect(res.errors).toEqual([]);
+  });
+});
+
 describe('vanilla output, extensions, and targets', () => {
   test(
       'wraps short-form expression, moves relationship description into GOOGLE block, and warns on unaccepted source',
@@ -1595,7 +1640,7 @@ ${lines}`;
       profileFiles: [
         {
           fileName: 'retail.profile.default.yaml',
-          content: 'name: default\n',
+          content: 'name: default\nentities: [{name: orders, source: orders}]\n',
         },
       ],
     });

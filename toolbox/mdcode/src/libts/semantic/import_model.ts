@@ -5,10 +5,10 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
+import {DEFAULT_PROFILE, loadProfileFile, plainCopy, readerMessage, sourcesDialect} from './resolve_profiles';
 import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -210,6 +210,18 @@ function sourceWarning(
       (rerun ? `, or until 'kcmd import' runs again with '--source-prefix'.` :
                '.') +
       (isGoogleCloudForm(source) ? '' : ` ${THIRD_PARTY_SOURCE}`);
+}
+
+// Push's error for `source`, read as the loader reads a source in `ctx`, or
+// undefined when push accepts it.
+function sourceError(source: string, ctx: string): string|undefined {
+  try {
+    parseSource(source, {}, ctx);
+    return undefined;
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return readerMessage(err);
+  }
 }
 
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
@@ -935,8 +947,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
       doc.modified = true;
     } else if (parts) {
       completeFromEntryGroup(ds, trimmed, parts, doc);
-    } else if (!(oldSourceForm(trimmed) === undefined &&
-                 isAcceptedSource(trimmed))) {
+    } else if (sourceError(trimmed, dsLabel) !== undefined) {
       // Why a prefix that nearly fits the name cannot complete it.
       const p = doc.sourcePrefix;
       const caseOnly =
@@ -1062,6 +1073,43 @@ function repairDocument(doc: ImportDocument): void {
     truncateDescription(r, rLabel, doc);
     for (const b of parseGoogleBlocks(r.custom_extensions)) {
       truncateDescription(b, rLabel, doc);
+    }
+  }
+}
+
+/**
+ * Reports each source push rejects in the profiles import writes: those in
+ * the model's GOOGLE blocks and `profileFiles`. Push reads a profile's source
+ * only for an entity the model declares that is not abstract. Each profile
+ * stays as written.
+ */
+function reportProfileSources(
+    doc: ImportDocument, profileFiles: SerializedFile[]): void {
+  const concrete =
+      new Set(doc.datasets.filter(ds => !ds.abstract).map(ds => ds.name));
+  const profiles = [
+    ...parseGoogleBlocks(doc.model.custom_extensions)
+        .flatMap(g => asRecords(g.profiles)),
+    ...profileFiles.flatMap(pf => {
+      try {
+        return [loadProfileFile(
+            pf.content, parseProfileName(pf.fileName), {skipActions: true})];
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        return [];
+      }
+    }),
+  ];
+  for (const p of profiles) {
+    for (const pe of asRecords(p.entities)) {
+      const problem = concrete.has(pe.name) && typeof pe.source === 'string' ?
+          sourceError(pe.source, `entity '${pe.name}'`) :
+          undefined;
+      if (problem) {
+        doc.warnOrError(
+            `profile '${p.name}': ${problem}\n'kcmd import' leaves a ` +
+            `profile's sources as written, even with '--source-prefix'.`);
+      }
     }
   }
 }
@@ -1686,8 +1734,9 @@ export async function importSemanticModelYaml(
   }
   validateInputDocument(doc, opts.profileFiles);
 
-  // 2. Read the `--source-prefix` entry group, if needed, and run third-party
-  // repairs (which record errors in `strict` mode).
+  // 2. Read the `--source-prefix` entry group, if needed, run third-party
+  // repairs, and report each profile source push rejects (which record errors
+  // in `strict` mode).
   const listError = await listEntryTables(doc);
   if (listError) {
     return {
@@ -1698,6 +1747,10 @@ export async function importSemanticModelYaml(
     };
   }
   repairDocument(doc);
+  // Import writes the profile files of a Google-flavor model only.
+  const profileFiles =
+      doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
+  reportProfileSources(doc, profileFiles);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and

@@ -1051,7 +1051,7 @@ function applyBindings(
 
 // The message of an error the loader's source or expression reader throws,
 // without the prefix a model file's load gives it.
-function readerMessage(err: SemanticModelError): string {
+export function readerMessage(err: SemanticModelError): string {
   return err.message.replace(/^Semantic model load error: /, '');
 }
 
