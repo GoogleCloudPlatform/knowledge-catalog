@@ -10,6 +10,7 @@ export interface Concept {
 }
 
 export const RESIDUE_KEY = 'x-kcmd';
+export const EXTRA_KEY = 'extra';
 
 export const ENTRY_SOURCE_KEYS = ['title', 'description', 'resource'] as const;
 
@@ -63,8 +64,18 @@ export function conceptToFileContent(concept: Concept): string {
     }
   }
   for (const [key, value] of Object.entries(frontmatter)) {
-    if (key === RESIDUE_KEY || key in ordered || value === undefined) continue;
+    if (
+      key === RESIDUE_KEY ||
+      key === EXTRA_KEY ||
+      key in ordered ||
+      value === undefined
+    ) {
+      continue;
+    }
     ordered[key] = value;
+  }
+  if (frontmatter[EXTRA_KEY] !== undefined) {
+    ordered[EXTRA_KEY] = frontmatter[EXTRA_KEY];
   }
   if (frontmatter[RESIDUE_KEY] !== undefined) {
     ordered[RESIDUE_KEY] = frontmatter[RESIDUE_KEY];

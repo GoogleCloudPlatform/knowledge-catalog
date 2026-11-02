@@ -9,6 +9,7 @@ import * as md from '../metadata';
 import {
   Concept,
   conceptToFileContent,
+  EXTRA_KEY,
   fileContentToConcept,
   RESIDUE_KEY,
 } from '../okf/concept';
@@ -17,6 +18,16 @@ import {conceptToEntry, entryToConcept} from '../okf/concept_to_entry';
 export const BUNDLE_DIR = 'bundle';
 
 const FALLBACK_CONTAINER = 'projects/_/locations/_/entryGroups/_';
+
+function mapping(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
 
 function conceptFiles(dir: string): string[] {
   return fs
@@ -33,11 +44,62 @@ function toPosixId(root: string, file: string): string {
   return path.relative(root, file).split(path.sep).join('/').replace(/\.md$/, '');
 }
 
-function residueEntryType(frontmatter: Record<string, unknown>): string | undefined {
-  const raw = frontmatter[RESIDUE_KEY];
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const et = (raw as Record<string, unknown>)['entryType'];
-  return typeof et === 'string' ? et : undefined;
+/**
+ * Resolves the catalog entry ID a concept file maps to, or `undefined` when the
+ * file should be skipped (`<group>_entry`, append-only `log.md`, or a generated
+ * `index.md` shadowed by an explicit `agents.md` / `<dir>.md`).
+ */
+function resolvedEntryName(
+  id: string,
+  frontmatter: Record<string, unknown>,
+  bundlePath: string,
+): string | undefined {
+  const residue = mapping(frontmatter[RESIDUE_KEY]);
+  const extra = mapping(frontmatter[EXTRA_KEY]);
+  if (
+    text(residue['entryType'])?.endsWith('/entrygroup') ||
+    text(extra['type'])?.endsWith('/entrygroup')
+  ) {
+    return undefined;
+  }
+
+  const hasExplicitMeta =
+    frontmatter[RESIDUE_KEY] !== undefined ||
+    frontmatter[EXTRA_KEY] !== undefined ||
+    frontmatter['type'] !== undefined;
+
+  // Skip append-only operation logs (`log.md`) that carry no concept frontmatter.
+  if (id === 'log' && !hasExplicitMeta) {
+    return undefined;
+  }
+  // When `agents.md` or `<dir>.md` already exists alongside a directory-listing
+  // `index.md` that has no explicit concept metadata, prefer the explicit file.
+  if (
+    id === 'index' &&
+    !hasExplicitMeta &&
+    fs.existsSync(path.join(bundlePath, 'agents.md'))
+  ) {
+    return undefined;
+  }
+  if (
+    id.endsWith('/index') &&
+    !hasExplicitMeta &&
+    fs.existsSync(path.join(bundlePath, `${id.slice(0, -'/index'.length)}.md`))
+  ) {
+    return undefined;
+  }
+
+  const explicitId = text(residue['entryId']) ?? text(extra['entry_id']);
+  if (explicitId) return explicitId;
+
+  const hasExplicitType =
+    text(residue['entryType']) !== undefined ||
+    text(extra['type']) !== undefined;
+  if (!hasExplicitType) {
+    if (id === 'index') return 'agents';
+    if (id.endsWith('/index')) return id.slice(0, -'/index'.length);
+  }
+  return id;
 }
 
 function toLocalFromService(entry: dataplex.Entry, localName: string): md.Entry {
@@ -174,16 +236,16 @@ export class OkfLayout implements CatalogLayout {
 
     for (const file of conceptFiles(this._bundlePath)) {
       const id = toPosixId(this._bundlePath, file);
+      let entryName: string | undefined = id;
       try {
         const concept = fileContentToConcept(fs.readFileSync(file, 'utf8'), id);
-        if (residueEntryType(concept.frontmatter)?.endsWith('/entrygroup')) {
-          continue;
-        }
+        entryName = resolvedEntryName(id, concept.frontmatter, this._bundlePath);
       } catch {
         // Defer frontmatter parse errors to loadEntry so pull --force-remove
         // can still overwrite or prune a corrupted local concept file.
       }
-      this._index.set(id, file);
+      if (!entryName) continue;
+      this._index.set(entryName, file);
     }
   }
 
@@ -205,8 +267,8 @@ export class OkfLayout implements CatalogLayout {
       throw new Error(`Entry not found: ${name}`);
     }
     const id = toPosixId(this._bundlePath, file);
-    const text = await fs.promises.readFile(file, 'utf8');
-    const concept = fileContentToConcept(text, id);
+    const textContent = await fs.promises.readFile(file, 'utf8');
+    const concept = fileContentToConcept(textContent, id);
     const gcpEntry = conceptToEntry(concept, this._container);
     return toLocalFromService(gcpEntry, name);
   }

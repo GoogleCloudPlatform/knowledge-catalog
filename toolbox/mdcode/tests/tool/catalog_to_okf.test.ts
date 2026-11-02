@@ -1,4 +1,4 @@
-// Tests `kcmd pull --format=okf` writing an OKF bundle via OkfLayout + CatalogSync.
+// Tests `kcmd pull` in an OKF workspace (`layout: okf`) writing an OKF bundle.
 
 import {afterEach, beforeEach, describe, expect, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -57,7 +57,7 @@ beforeEach(() => {
   cwd = process.cwd();
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-c2okf-'));
   process.chdir(dir);
-  fs.writeFileSync('catalog.yaml', 'scope: entryGroup.p.us.kb\n');
+  fs.writeFileSync('catalog.yaml', 'scope: entryGroup.p.us.kb\nlayout: okf\n');
 
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(console, 'log').mockImplementation(() => {});
@@ -79,11 +79,11 @@ function read(rel: string): string {
   return fs.readFileSync(path.join(dir, 'bundle', rel), 'utf8');
 }
 
-describe('pull --format okf', () => {
+describe('pull in layout: okf workspace', () => {
   test('writes one concept per entry, under bundle/', async () => {
     stubCatalog([withOverview('tables/trips', '# Trips\n\nProse.\n')]);
 
-    expect(await pull({format: 'okf'})).toBe(0);
+    expect(await pull()).toBe(0);
 
     expect(fs.existsSync(path.join(dir, 'catalog.yaml'))).toBe(true);
     expect(read('tables/trips.md')).toBe(
@@ -101,13 +101,13 @@ describe('pull --format okf', () => {
 
   test('the overview aspect becomes the markdown body', async () => {
     stubCatalog([withOverview('a', 'body text')]);
-    await pull({format: 'okf'});
+    await pull();
     expect(read('a.md')).toEndWith('---\nbody text\n');
   });
 
   test('an entry with no overview still yields a valid concept', async () => {
     stubCatalog([entry('a')]);
-    await pull({format: 'okf'});
+    await pull();
     expect(read('a.md')).toContain('type: generic');
   });
 
@@ -119,13 +119,13 @@ describe('pull --format okf', () => {
         },
       } as Partial<Entry>),
     ]);
-    await pull({format: 'okf'});
+    await pull();
     expect(read('a.md')).toContain('type: context-overlay');
   });
 
   test('description and resource are omitted when absent', async () => {
     stubCatalog([entry('a', {entrySource: {displayName: 'a'}} as Partial<Entry>)]);
-    await pull({format: 'okf'});
+    await pull();
     const text = read('a.md');
     expect(text).not.toContain('description:');
     expect(text).not.toContain('resource:');
@@ -133,7 +133,7 @@ describe('pull --format okf', () => {
 
   test('nested entry ids become nested directories', async () => {
     stubCatalog([withOverview('assets/bigquery/p.d.t', 'x')]);
-    await pull({format: 'okf'});
+    await pull();
     expect(
       fs.existsSync(path.join(dir, 'bundle/assets/bigquery/p.d.t.md')),
     ).toBe(true);
@@ -142,7 +142,7 @@ describe('pull --format okf', () => {
   test('--dry-run writes nothing', async () => {
     stubCatalog([withOverview('a', 'x')]);
 
-    expect(await pull({format: 'okf', dryRun: true})).toBe(0);
+    expect(await pull({dryRun: true})).toBe(0);
 
     expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(false);
   });
@@ -153,7 +153,7 @@ describe('pull --format okf', () => {
       async () => ({status: 403, message: 'denied'}) as any,
     );
 
-    await expect(pull({format: 'okf'})).rejects.toThrow(/failed to read entry/);
+    await expect(pull()).rejects.toThrow(/failed to read entry/);
     expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(false);
   });
 
@@ -167,7 +167,7 @@ describe('pull --format okf', () => {
       } as Partial<Entry>),
     ]);
 
-    await pull({format: 'okf'});
+    await pull();
 
     const text = read('a.md');
     expect(text).toContain('dataplex-types.global.schema');
@@ -186,12 +186,12 @@ describe('pull --format okf', () => {
     const warnings: string[] = [];
     spyOn(console, 'warn').mockImplementation((m: any) => void warnings.push(m));
 
-    expect(await pull({format: 'okf'})).toBe(0);
+    expect(await pull()).toBe(0);
     expect(fs.existsSync(path.join(dir, 'bundle/stale/old.md'))).toBe(true);
     expect(warnings.join('\n')).toContain('bundle/stale/old.md');
     expect(warnings.join('\n')).toContain('--force-remove');
 
-    expect(await pull({format: 'okf', forceRemove: true})).toBe(0);
+    expect(await pull({forceRemove: true})).toBe(0);
     expect(fs.existsSync(path.join(dir, 'bundle/stale/old.md'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'bundle/stale'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'bundle/fresh.md'))).toBe(true);
@@ -200,7 +200,7 @@ describe('pull --format okf', () => {
   test('aborts before writing or deleting files if any entry ID escapes bundle/', async () => {
     stubCatalog([withOverview('good', 'ok\n'), withOverview('../evil', 'bad\n')]);
 
-    await expect(pull({format: 'okf'})).rejects.toThrow(/escapes bundle\//);
+    await expect(pull()).rejects.toThrow(/escapes bundle\//);
     expect(fs.existsSync(path.join(dir, 'bundle'))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'evil.md'))).toBe(false);
   });
