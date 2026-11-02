@@ -179,31 +179,24 @@ kcmd push
 ```
 
 For the semantic-model scope, `kcmd push` deploys the model as a property graph
-(`CREATE OR REPLACE PROPERTY GRAPH`) to the backend named by the model's GOOGLE
-deployment target — **BigQuery Graph** or **Spanner Graph**; the same authored
-model deploys to either, and swapping the target switches backends. Pass
-`--validate-only` to print the generated DDL without executing it. For a BigQuery
+(`CREATE OR REPLACE PROPERTY GRAPH`) to the backend each entry of the model's
+`deployments` list names in its `target`: **BigQuery Graph** or **Spanner
+Graph**. The same authored model deploys to either. Pass `--validate-only
+--print` to print the generated DDL without executing it. For a BigQuery
 target this path additionally reads the target dataset's metadata
 (`bigquery.datasets.get`) to pin the query job's processing location; the call
 degrades gracefully when the permission is absent, so a narrower service account
 still works but falls back to BigQuery's own location inference. Each dataset
 `source` is the table's GCP resource name, such as
 `bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`.
-(A Spanner target names its tables inside one database, so a `source` is reduced
-to its final segment, and Spanner Graph has no `MEASURE`, so metrics are dropped
-with a warning.)
+(A Spanner target names its tables inside one database. Spanner Graph has no
+`MEASURE`, so a Spanner deployment uses a profile that excludes every metric.)
 
-`kcmd push` also deploys the model to Knowledge Catalog (entries for the model,
-its entities and metrics, and `schema-join` links for its relationships). A push
-has two axes: the binding-profile axis picks how many binding profiles the graph
-deploys for (`--no-profile` for none, the default binding, `--profile <name>` for
-one, or `--all-profiles` for every one), and each profile's `deployment_target`
-selects its backend; `--no-kc` skips the Knowledge Catalog leg. Use `--print` to
-dump each destination's generated artifact, and `--force-remove` to delete models
-left in the entry group that the push no longer includes. See
-[docs/semantic-model/](docs/semantic-model/README.md) for the full guide,
-including how re-push reconciles removed entities, metrics, relationships, and
-models.
+`kcmd push` publishes the model and its sibling profile files to Knowledge
+Catalog before deploying the selected `deployments` entries (see
+[Reference — `kcmd push`](docs/semantic-model/reference.md#push) for
+`--deployment`, `--no-deployment`, `--print`, and `--force-remove`, and
+[docs/semantic-model/](docs/semantic-model/README.md) for the full guide).
 
 NOTE: The CLI uses `gcloud` to obtain authentication tokens, so ensure you are authenticated via `gcloud auth application-default login`.
 

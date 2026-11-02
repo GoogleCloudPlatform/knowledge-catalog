@@ -23,7 +23,7 @@ destination at once:
   **analytical**, such as BigQuery for reporting and conversational-analytics
   agents, or **operational**, such as Spanner for the live state an agent reads
   before it acts. Which store a model deploys to is set by its
-  [deployment target](#where-a-model-deploys-the-deployment-target); the query
+  [deployments](#where-a-model-deploys-deployments); the query
   mechanics are in [Reference](reference.md#what-gets-created-in-bigquery).
 
 Both come from the same source, so a single `push` keeps them in sync and you
@@ -193,9 +193,7 @@ rebuilds the model document from them only when no copy of the model file is
 stored (see [Pull](#pull)).
 Governance works whether the model is purely logical or already bound: govern it
 before it has any physical home, or govern the logical model together with its
-bindings. Every store you bind it to later serves this one definition. (Running
-`--no-kc` on a model with no deployment target is an error — it would have nowhere
-to deploy.)
+bindings. Every store you bind it to later serves this one definition.
 
 > Writing these entries needs the `semantic-model` / `semantic-entity` /
 > `semantic-metric` entry types and write access to the entry group. See
@@ -206,36 +204,34 @@ to deploy.)
 To make the model queryable, bind it to a store: name where each entity reads
 from, which column each field maps to, and which store the model deploys to. You
 can put these bindings directly on the model, or keep them in a separate **binding
-profile** so one logical model serves several stores. See
-[Binding profiles](profiles.md); for a runnable end-to-end that binds the same
-model to BigQuery and Spanner and queries each, see the [codelab](codelab.md).
+profile** (`<model>.profile.<name>.yaml`) so one logical model serves several
+stores. See [Binding profiles](profiles.md); for a runnable end-to-end that
+binds the same model to BigQuery and Spanner and queries each, see the
+[codelab](codelab.md).
 
-Once the model is bound, `kcmd push` deploys to the store its target names and to
-Knowledge Catalog. The most common flags:
+Once the model declares `deployments`, `kcmd push` publishes to Knowledge
+Catalog and deploys each selected deployment to the store its `target` names.
+The most common flags:
 
 ```bash
-kcmd push                      # deploy to the store (default binding) + Knowledge Catalog
-kcmd push --no-kc              # deploy only to the store, skip Knowledge Catalog
-kcmd push --no-profile         # publish only to Knowledge Catalog, deploy to no store
-kcmd push --profile analytical # deploy with one binding profile; its target picks the store
-kcmd push --all-profiles       # deploy once per binding profile
-kcmd push --validate-only      # run all checks, write nothing
-kcmd push --print              # also print the generated DDL / entry plan
+kcmd push                         # publish to Knowledge Catalog + deploy every deployment in deployments
+kcmd push --deployment analytical # publish to Knowledge Catalog + deploy only the analytical deployment
+kcmd push --no-deployment         # publish only to Knowledge Catalog, deploy to no store
+kcmd push --validate-only         # run all checks, write nothing
+kcmd push --print                 # also print the generated DDL / entry plan
 ```
 
-A push has two axes. The **binding-profile axis** sets how many profiles the model
-deploys for: the default binding, `--no-profile` (none — catalog only), a single
-`--profile`, or every one with `--all-profiles`. The **Knowledge Catalog axis** is
-`--no-kc` (skip the catalog leg). You never name the store on the command line; the
-model's deployment target — or the [profile](profiles.md) you merge — selects it.
-The checks that gate a push are in
+You never name the store on the command line; each entry in `deployments` names
+its `target` and optional `profile`. The checks that gate a push are in
 [Validation](reference.md#validation), and the full flag list is in
 [Reference → push](reference.md#push), with the order of push's checks and writes.
 
-### Where a model deploys (the deployment target)
+### Where a model deploys (`deployments`)
 
-A bound model declares exactly one **deployment target**: where in a store the
-model deploys, written as its GCP resource name. Its host selects the store:
+A bound model declares its **deployments** in `deployments`: each entry names
+where in a store that deployment lands (`target`), written as its GCP resource
+name, and optionally which binding `profile` it uses. The target's host selects
+the store:
 
 ```
 # BigQuery — an analytical store
@@ -243,20 +239,23 @@ bigquery.googleapis.com/projects/<project>/datasets/<dataset>/propertyGraphs/<na
 
 # Spanner — an operational store
 spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/graphs/<name>
+
+# AlloyDB — an operational runtime store (no property-graph DDL deployed on push)
+alloydb.googleapis.com/projects/<project>/locations/<location>/clusters/<cluster>/databases/<database>
 ```
 
 A BigQuery target names the project and dataset the model deploys into; a Spanner
 target names the instance and database. Swapping one target for the other
-deploys the same model to the other store — the logical model does not change. The
-target is also recorded on the model's Knowledge Catalog entry. A model with more
-than one deployment target is rejected at push time (see
+deploys the same model to the other store, and listing both deploys it to both.
+The logical model does not change. The deployments
+are also recorded on the model's Knowledge Catalog entry. Two deployments in the
+same model that name the same target are rejected at load time (see
 [Validation](reference.md#validation)).
 
-For a model that serves more than one store, the target belongs to a
-[binding profile](profiles.md) rather than the model. `deployment_target` is a
-resource name and a native key under the extended `0.2.0.dev0/google` profile; under
-vanilla Ossie the same target is written inside a `GOOGLE` custom extension instead
-(see [model spec §6](model_spec.md#6-the-extension-mechanism)).
+`deployments:` is a native model key under the extended `0.2.0.dev0/google`
+flavor; under vanilla Ossie (`0.2.0.dev0`) the same list is written inside a
+`GOOGLE` custom extension instead (see
+[model spec §6](model_spec.md#6-the-extension-mechanism)).
 
 ### Table sources
 
@@ -280,9 +279,9 @@ lists every accepted store.
 In **BigQuery**, a single `CREATE OR REPLACE PROPERTY GRAPH` per deployment
 target: each entity becomes a node table, each relationship an edge table, each
 metric a measure. In **Spanner**, the same `CREATE OR REPLACE PROPERTY GRAPH` with
-bare table names and no measures — Spanner Graph has no `MEASURE`, so metrics are
-dropped with a warning while the graph structure (nodes, edges, labels,
-inheritance) still deploys. In **Knowledge Catalog**, one entry per model, entity,
+bare table names and no measures — Spanner has no `MEASURE`, so a Spanner
+deployment uses a profile that excludes every metric, and push rejects one that
+leaves a metric available. In **Knowledge Catalog**, one entry per model, entity,
 and metric, plus `schema-join` links for relationships. The exact mapping — and
 the class-hierarchy handling — is in
 [Reference → What gets created](reference.md#what-gets-created-in-bigquery) (and
@@ -328,8 +327,8 @@ Every push prints one line per destination summarizing what it did. For a push
 that deploys to both the store and Knowledge Catalog:
 
 ```
-Deployed 1 BigQuery Graph(s).
 Wrote 5 new and 2 updated Knowledge Catalog entries; removed 1 orphaned entry; linked 2 relationships; unlinked 1 orphaned link.
+Deployed 1 BigQuery Graph(s).
 ```
 
 A Spanner-targeting model prints `Deployed 1 Spanner Graph(s).` in place of the
