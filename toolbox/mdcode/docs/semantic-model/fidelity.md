@@ -105,10 +105,13 @@ agree on every structural row and differ only where a Spanner target has no
     On a table in another database, it warns about a field or metric with no
     text that table runs. Push rejects such a field in the model file with an
     error in place of the warning. When a profile binds that table, push
-    rejects the field or metric instead. `kcmd import`
-    does not look up a Cloud SQL or third-party table's dialect, so it warns
-    there only about a field or metric with no text in any dialect the
-    table's name allows. A BigQuery
+    rejects the field or metric instead. `kcmd import` does not look up a
+    Cloud SQL or third-party table's dialect, and `kcmd skills-generate` and
+    `kcmd profiles --print-store` do not look up a third-party table's.
+    Import reads a Cloud SQL table whose name has no schema as MySQL. On any
+    other table whose dialect a command has not looked up, it warns only about
+    a field or metric with no text in any dialect the table's name allows. A
+    BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with
     a warning, though push rejects such a field in the model file first. A

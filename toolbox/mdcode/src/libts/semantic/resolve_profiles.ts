@@ -1274,8 +1274,8 @@ export function noTextFor(
 }
 
 // An entity's table as a message names it, with every dialect it may run. A
-// Cloud SQL or third-party table no lookup has read is `unread` and named
-// after its system.
+// table whose dialect neither a lookup nor its name gives is `unread` and
+// named after its system.
 export interface TableDialects {
   name: string;
   dialects: string[];
@@ -1283,8 +1283,8 @@ export interface TableDialects {
 }
 
 // The table of `entity`, or undefined when the load does not know its
-// dialect. With `withUnread`, an unread Cloud SQL or third-party table is
-// given too.
+// dialect. With `withUnread`, a Cloud SQL or third-party table no lookup has
+// read is given too, and a Cloud SQL name with no schema gives MySQL.
 export function tableDialects(
     entity: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>,
     withUnread: boolean): TableDialects|undefined {
@@ -1295,11 +1295,10 @@ export function tableDialects(
   const table = cloudSqlTableOf(source);
   if (table) {
     // Only a MySQL table's name has no schema.
-    const fits = (type: string) =>
-        type.startsWith('cloudsql-mysql-') !== table.inSchema;
-    const dialects = [...new Set(Object.entries(DIALECT_OF_ENTRY_TYPE)
-                                     .filter(([type]) => fits(type))
-                                     .map(([, dialect]) => dialect))];
+    const mysql = DIALECT_OF_SYSTEM.cloudsql_mysql;
+    if (!table.inSchema) return {name: mysql, dialects: [mysql]};
+    const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))].filter(
+        d => d !== mysql);
     return {name: 'Cloud SQL', dialects, unread: true};
   }
   if (thirdPartyEntryOf(source)) {
