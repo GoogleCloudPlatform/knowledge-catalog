@@ -3413,7 +3413,7 @@ describe('strict entity sources', () => {
   // loader would reject, such as a table name with a dot, gets the general
   // error.
   test('a bare name the hint cannot read gets the general error', () => {
-    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c', 'raw.`my.orders`']) {
+    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c', 'raw.`my.orders`', 'public."or"ders']) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
