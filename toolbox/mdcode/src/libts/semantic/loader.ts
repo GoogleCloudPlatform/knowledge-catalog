@@ -1953,9 +1953,8 @@ function fallsBackToAnsi(
 }
 
 // The table dialects whose database reads a double-quoted token as a string,
-// each with that database's name for a message. hasDoubleQuotedColumn finds
-// such a token as BigQuery reads it, and Spanner, MySQL and Databricks read it
-// the same way. The PostgreSQL family reads it as a name.
+// as hasDoubleQuotedColumn finds it, each with that database's name for a
+// message. Every other dialect reads it as a name.
 const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   BIGQUERY: 'BigQuery',
   SPANNER: 'Spanner',
@@ -1963,11 +1962,10 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
   DATABRICKS: 'Databricks',
 };
 
-// The warning `item` gives on a table of `dialect`, written in capitals, or
-// undefined when it has text in that dialect. ANSI_SQL text warns when that
-// dialect reads a token it double-quotes as a string. Only on a table of the
-// `preferred` dialect does vendor-only text need transpilation, and other
-// ANSI_SQL text give the ANSI_SQL note when it is not the string form.
+// The warning `item` gives on a table of `dialect`, in capitals, or undefined
+// when it has text in that dialect. That is the double-quote warning on a
+// dialect in DOUBLE_QUOTES_AS_TEXT, and otherwise the transpilation warning or
+// the ANSI_SQL note, which only the `preferred` dialect gives.
 function expressionWarning(
     item: Pick<Field, 'dialects'|'stringForm'>, ctx: string, dialect: string,
     preferred: string): string|undefined {
@@ -2021,7 +2019,7 @@ function fieldWarnings(model: SemanticModel, preferred: string): string[] {
 
 // The warning `metric`'s expression gives on the tables of the `reached`
 // entities, in that order, or on every table when it reaches none. On a table
-// of the `preferred` dialect it is expressionWarning's. Otherwise it is the
+// of the `preferred` dialect it is expressionWarning's; otherwise it is the
 // first that a table's dialect gives: expressionWarning's, or, unless
 // `profiled`, one saying the metric has no text in that dialect.
 function metricWarning(
