@@ -773,8 +773,9 @@ describe('sources completed from an entry group', () => {
   const noEntry = (ds: string, source: string) =>
       `dataset '${ds}': left bare source '${source}' as written, since no entry for ` +
       `a table or view in entry group '${GROUP}' has a fullyQualifiedName that ends in ` +
-      "it. 'kcmd push' rejects the file until the source is the entry name of the " +
-      "table's Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
+      "it. 'kcmd push' rejects the file until the source is the table's GCP resource " +
+      'name. A table outside Google Cloud is written as the entry name of its Knowledge ' +
+      "Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
   // The message for `source` of dataset `ds`, which the entries `ids` end in.
   const several = (ds: string, source: string, ...ids: string[]) =>
       `dataset '${ds}': left bare source '${source}' as written, since several entries in ` +
@@ -816,6 +817,23 @@ describe('sources completed from an entry group', () => {
                        '"public".customers', '`public`.customers']);
        }
      });
+
+  // [label, bare name, the source the no-entry message says to write]
+  test.each([
+    ['a BigQuery table', 'sales.orders', BQ_TABLE],
+    ['a third-party table in another entry group', 'public.ghosts',
+     'projects/acme/locations/us/entryGroups/sf2/entries/ghosts'],
+  ])('a bare name no entry ends in loads once written as reported: %s', async (_, bare, fixed) => {
+    const {listEntries} = lister();
+    const res = await importSemanticModelYaml(
+        model(['customers', 'public.customers'], ['other', bare]),
+        {flavor: 'ossie', sourcePrefix: GROUP, listEntries});
+    expect(res.warnings).toEqual(
+        [rewrote('customers', 'public.customers', 'customers'), noEntry('other', bare)]);
+    const content = res.files[0].content.replace(`source: ${bare}\n`, `source: ${fixed}\n`);
+    expect(loadModels(content).models[0].entities.map(e => e.authoredSource))
+        .toEqual([named('customers').name, fixed]);
+  });
 
   // [label, input, sourcePrefix]
   test.each([
