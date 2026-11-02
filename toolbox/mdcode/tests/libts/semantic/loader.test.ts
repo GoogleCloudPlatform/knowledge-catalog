@@ -3382,6 +3382,10 @@ describe('strict entity sources', () => {
       expect(models[0].entities[0].dataSource).toBe('acme.raw.orders');
     }
 
+    // A BigQuery path in one pair of backticks gives each of its parts.
+    expect(() => loadSource('`acme.raw.orders`')).toThrow(
+      'source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders\n');
+
     // 3. Four-part bare table name suggests its BigLake resource name
     expect(() => load(GOOGLE, {
       name: 'm',
@@ -3405,10 +3409,11 @@ describe('strict entity sources', () => {
     }
   });
 
-  // A bare name with an empty segment, or with five or more, gets the general
-  // error, since no hint can name its table.
+  // A bare name with an empty segment, with five or more, or whose hint the
+  // loader would reject, such as a table name with a dot, gets the general
+  // error.
   test('a bare name the hint cannot read gets the general error', () => {
-    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c']) {
+    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c', 'raw.`my.orders`']) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],

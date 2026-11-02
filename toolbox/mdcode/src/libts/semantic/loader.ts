@@ -3565,9 +3565,8 @@ export function parseSource(
   const isBareTableName = trimmed.length > 0 && !trimmed.includes('/') &&
       !trimmed.includes(':') && rawSegs.length > 0;
   if (isBareTableName) {
-    const segs = rawSegs.map(unquote);
     if (opts.allowLegacyBareSource) {
-      const parts = [...segs];
+      const parts = rawSegs.map(unquote);
       if (parts.length === 1 && opts.defaultDataset) {
         parts.unshift(opts.defaultDataset);
       }
@@ -3579,39 +3578,38 @@ export function parseSource(
         dataSource: parts.join('.'),
       };
     }
-    // A name with an empty segment, or with more than four, gets the general
-    // error below, and a name holding a space gets no name to write. With
-    // `importHint`, the other bare-name messages also name the command that
-    // completes a model file's bare names.
+    // With `importHint`, the example also names the command that completes a
+    // model file's bare names.
     const viaImport = importHint ?
         `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
             `--source-prefix <prefix>' to complete each bare table name ` +
             `from the database that <prefix> names.` :
         '';
+    // A name holding a space gets no name to write. Any other name gets an
+    // example built from the parts import reads, when the loader accepts the
+    // example, or else the general error below.
+    const segs = bareNameSegments(trimmed, true);
     if (segs.length <= 4 && segs.every(s => s.length > 0)) {
       if (segs.some(s => /\s/.test(s))) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
             `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
       }
-      if (segs.length === 4) {
-        throw new SemanticModelError(
-            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-            `is not a valid source. Write its BigLake resource name ` +
-            `instead:\n` +
-            `  source: biglake.googleapis.com/projects/${segs[0]}/catalogs/${
-                segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}${viaImport}`);
-      }
       const p = segs.length >= 3 ? segs[0] : '<project>';
       const d = segs.length >= 3 ? segs[1] :
           segs.length === 2 ? segs[0] : '<dataset>';
       const t = segs[segs.length - 1];
-      throw new SemanticModelError(
-          `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-          `is not a valid source. Write the table's GCP resource name ` +
-          `instead, for example:\n` +
-          `  source: bigquery.googleapis.com/projects/${p}/datasets/${d}/` +
-          `tables/${t}${viaImport}`);
+      const [write, example] = segs.length === 4 ?
+          ['Write its BigLake resource name instead:',
+           `biglake.googleapis.com/projects/${segs[0]}/catalogs/${
+               segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}`] :
+          ["Write the table's GCP resource name instead, for example:",
+           `bigquery.googleapis.com/projects/${p}/datasets/${d}/tables/${t}`];
+      if (oldSourceForm(example) === undefined && isAcceptedSource(example)) {
+        throw new SemanticModelError(
+            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+            `is not a valid source. ${write}\n  source: ${example}${viaImport}`);
+      }
     }
   }
 
@@ -3630,6 +3628,14 @@ export function parseSource(
 
 export function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
+}
+
+// The parts of a bare table name, without their quotes. With `bigQuery`, a
+// path in one pair of backticks, as BigQuery writes `p.d.t`, has the parts of
+// the same path written without them.
+export function bareNameSegments(name: string, bigQuery: boolean): string[] {
+  const path = bigQuery && /^`[^`]*`$/.test(name) ? name.slice(1, -1) : name;
+  return catalogNameSegments(path).map(unquote);
 }
 
 

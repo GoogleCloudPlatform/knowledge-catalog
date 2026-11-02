@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, THIRD_PARTY_SOURCE, unquote} from './loader';
+import {bareNameSegments, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -401,14 +401,11 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
   }
 
   // 2. Split the bare dot-separated table reference into unquoted segments
-  // (unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first) and
-  // verify that any leading segments overlapping `prefix.known` match.
-  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
-          trimmed.startsWith('`') && trimmed.endsWith('`') &&
-          !trimmed.slice(1, -1).includes('`') ?
-      trimmed.slice(1, -1) :
-      trimmed;
-  const segs = catalogNameSegments(unwrapped).map(unquote);
+  // (reading a BigQuery path in one pair of backticks, such as `` `p.d.t` ``,
+  // as its parts) and verify that any leading segments overlapping
+  // `prefix.known` match.
+  const segs = bareNameSegments(
+      trimmed, prefix.base.startsWith('bigquery.googleapis.com/'));
   if (!segs.length || segs.some(s => !s.length)) return undefined;
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
