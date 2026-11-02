@@ -318,7 +318,7 @@ describe('sources', () => {
       'double-quoted table with a space',
       'public."order items"',
       {sourcePrefix: CLOUDSQL_PREFIX},
-      ADVICE,
+      `kcmd cannot name a table whose name holds a space. ${PUSH} ${ADVICE}`,
     ],
     ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
     ['resource URI', `//${BQ_TABLE}`, {}, `'//': '${BQ_TABLE}'. ${PUSH}`],

@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -105,8 +105,8 @@ const LOADER_SOURCE_WARNING =
 
 // The warning for `source`, which import leaves as written. It names the
 // name to write when the loader's message does, and suggests --source-prefix
-// only for a source with no `/` or `:`, the kind a prefix may complete. A
-// source in no Google Cloud form may be a third-party table, so the warning
+// only for a source with no `/`, `:` or space, the kind a prefix may complete.
+// A source in no Google Cloud form may be a third-party table, so the warning
 // says how to write one.
 function sourceWarning(ctx: string, source: string): string {
   const problem = oldSourceForm(source);
@@ -114,11 +114,14 @@ function sourceWarning(ctx: string, source: string): string {
     return `${ctx}: source '${source}' is ${problem}. 'kcmd push' rejects ` +
         `the file until it is repointed.`;
   }
-  return `${ctx}: source '${source}' is not a valid GCP resource name; ` +
+  const bare = !/[/:]/.test(source);
+  const space = bare && /\s/.test(source);
+  return `${ctx}: source '${source}' is not a valid GCP resource name` +
+      (space ? `, and ${NO_SPACE}. ` : '; ') +
       `'kcmd push' rejects the file until it is repointed` +
-      (/[/:]/.test(source) ?
-           '.' :
-           `, or until 'kcmd import' runs again with '--source-prefix'.`) +
+      (bare && !space ?
+           `, or until 'kcmd import' runs again with '--source-prefix'.` :
+           '.') +
       (isGoogleCloudForm(source) ? '' :
            ` A table outside Google Cloud is written as the entry name of ` +
                `its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);

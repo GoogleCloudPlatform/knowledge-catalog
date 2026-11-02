@@ -3155,7 +3155,7 @@ export function oldSourceForm(source: string): string|undefined {
 }
 
 // Why no name to write is given when that name would hold a space.
-const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
+export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
 
 // `source` with its quotes removed, written as a resource name, when it is a
 // table's resource name, resource URI or entry name outside a system entry
@@ -3575,14 +3575,20 @@ export function parseSource(
       };
     }
     // A name with an empty segment, or with more than four, gets the general
-    // error below. With `importHint`, both bare-name messages below also name
-    // the command that completes a model file's bare names.
+    // error below, and a name holding a space gets no name to write. With
+    // `importHint`, the other bare-name messages also name the command that
+    // completes a model file's bare names.
     const viaImport = importHint ?
         `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
             `--source-prefix <prefix>' to complete each bare table name ` +
             `from the database that <prefix> names.` :
         '';
     if (segs.length <= 4 && segs.every(s => s.length > 0)) {
+      if (segs.some(s => /\s/.test(s))) {
+        throw new SemanticModelError(
+            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+            `is not a valid source, and ${NO_SPACE}.`);
+      }
       if (segs.length === 4) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +

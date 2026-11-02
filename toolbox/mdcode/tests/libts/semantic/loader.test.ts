@@ -3297,9 +3297,12 @@ describe('strict entity sources', () => {
       `${TABLE}/"order items`, `${TABLE}/\`order items`]) {
       expect(() => loadSource(query)).toThrow(`dataset 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
     }
-    // A space inside double quotes or backticks belongs to a table name.
-    for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"']) {
-      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source.`);
+    // A space inside double quotes or backticks belongs to a table name, which
+    // kcmd cannot name.
+    const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
+    for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"',
+      'acme.cat.ns."order items"']) {
+      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source, and ${NO_SPACE}`);
     }
     // A resource name or entry name takes no double quotes or backticks; the
     // message gives the name without them.
@@ -3310,7 +3313,6 @@ describe('strict entity sources', () => {
       `cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables/${q}orders${q}`,
       `projects/acme/locations/us/entryGroups/sf/entries/${q}orders${q}`];
     const QUOTES = 'is a name with quotes in it; resource names and entry names take no quotes';
-    const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
     for (const quoted of [...quotedNames('"'), ...quotedNames('`')]) {
       const plain = quoted.replace(/["`]/g, '');
       expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}${
