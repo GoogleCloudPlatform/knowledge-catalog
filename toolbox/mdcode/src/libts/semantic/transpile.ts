@@ -103,13 +103,14 @@ export function hasDoubleQuotedColumn(expression: string): boolean {
 }
 
 /**
- * Returns a name that `expression` double-quotes, for a message: the first
- * name the `ANSI_SQL` parser marks quoted that `expression` writes in double
- * quotes, else the first name it marks quoted.
+ * Returns the names that `expression` double-quotes, each once, for a
+ * message: those the `ANSI_SQL` parser marks quoted that `expression` writes
+ * in double quotes, else the first name it marks quoted.
  */
-export function doubleQuotedName(expression: string): string|undefined {
+export function doubleQuotedNames(expression: string): string[] {
   const names = quotedNames(sqlExpressionTree(expression, 'ANSI_SQL'));
-  return names.find(n => expression.includes(`"${n}"`)) ?? names[0];
+  const written = names.filter(n => expression.includes(`"${n}"`));
+  return [...new Set(written.length ? written : names.slice(0, 1))];
 }
 
 /**

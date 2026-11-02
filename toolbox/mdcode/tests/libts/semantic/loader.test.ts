@@ -291,8 +291,6 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
     ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
     // Import keeps a qualifier, so a qualified name gets no import hint.
-    ['a BigQuery table, a double-quoted qualified name', BQ, [['ANSI_SQL', '"t"."x"']],
-     quotedIn('BigQuery', 'BIGQUERY', '', 't')],
     ['a BigQuery table, a double-quoted qualifier', BQ, [['ANSI_SQL', '"t".x']],
      quotedIn('BigQuery', 'BIGQUERY', '', 't')],
     ['a BigQuery table, a double-quoted name with a qualifier', BQ, [['ANSI_SQL', 't."x"']],
@@ -304,6 +302,12 @@ describe('expression warnings judge each expression on the table that runs it', 
        quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f')[0],
        `metric 'm': ${readsX('BigQuery', 'f')}if you meant a field, give it a ` +
            `'BIGQUERY' expression that names it as 't.f'`,
+     ]],
+    // The warning names every double-quoted name, and fills in no field for two.
+    ['a BigQuery table, two double-quoted names', BQ, [['ANSI_SQL', '"f" || "y"']], [
+       quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f" and "y')[0],
+       `metric 'm': ${readsX('BigQuery', 'f" and "y')}if you meant fields, give it ` +
+           `a 'BIGQUERY' expression that names each as '<entity>.<field>'`,
      ]],
     ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
      [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],

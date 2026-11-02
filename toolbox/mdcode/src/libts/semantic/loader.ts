@@ -18,7 +18,7 @@ import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
-import {doubleQuotedColumns, doubleQuotedName, hasDoubleQuotedColumn} from './transpile';
+import {doubleQuotedColumns, doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1988,16 +1988,19 @@ function expressionWarning(
   const ansi = dialects.find(d => d.dialect === FALLBACK_DIALECT);
   const database = DOUBLE_QUOTES_AS_TEXT[dialect];
   if (ansi && database && hasDoubleQuotedColumn(ansi.expression)) {
-    const token = doubleQuotedName(ansi.expression);
-    const reads = `${ctx}: ${database} reads "${token}" in its '${
+    const names = doubleQuotedNames(ansi.expression);
+    const reads = `${ctx}: ${database} reads ${
+        listed(names.map(n => `"${n}"`))} in its '${
         FALLBACK_DIALECT}' expression as text; `;
     const {metric, entity} = subject;
     if (metric) {
-      const field = entity?.fields.some(f => f.name === token) ?
-          `${entity.name}.${token}` :
+      const [name, ...more] = names;
+      const field = !more.length && entity?.fields.some(f => f.name === name) ?
+          `${entity.name}.${name}` :
           '<entity>.<field>';
-      return reads + `if you meant a field, give it a '${dialect}' ` +
-          `expression that names it as '${field}'`;
+      return reads + `if you meant ${more.length ? 'fields' : 'a field'}, ` +
+          `give it a '${dialect}' expression that names ${
+                 more.length ? 'each' : 'it'} as '${field}'`;
     }
     // Import adds only BigQuery text, only outside a profile, and keeps each
     // qualifier, which push reads as an entity.
