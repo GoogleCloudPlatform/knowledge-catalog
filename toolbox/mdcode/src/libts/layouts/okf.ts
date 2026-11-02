@@ -14,6 +14,12 @@ import {
   RESIDUE_KEY,
 } from '../okf/concept';
 import {conceptToEntry, entryToConcept} from '../okf/concept_to_entry';
+import {
+  BundleLinksResult,
+  formatLinksYaml,
+  LINKS_FILE,
+  readBundleLinks,
+} from '../okf/links';
 
 export const BUNDLE_DIR = 'bundle';
 
@@ -298,6 +304,32 @@ export class OkfLayout implements CatalogLayout {
     await fs.promises.unlink(file);
     this._index.delete(name);
     this._pruneEmptyDirs(path.dirname(file), root);
+  }
+
+  /** Reads `bundle/_links.yaml` plus any frontmatter `links` on indexed concepts. */
+  readLinks(): BundleLinksResult {
+    const concepts: Concept[] = [];
+    for (const name of this.listEntries()) {
+      const file = this._index.get(name);
+      if (!file || !fs.existsSync(file)) continue;
+      concepts.push(fileContentToConcept(fs.readFileSync(file, 'utf8'), name));
+    }
+    return readBundleLinks(this._bundlePath, this._container, concepts);
+  }
+
+  /** Writes or removes `bundle/_links.yaml` to match pulled EntryLinks. */
+  async writeLinks(links: dataplex.EntryLink[]): Promise<void> {
+    const linksPath = path.join(this._bundlePath, LINKS_FILE);
+    if (links.length > 0) {
+      await fs.promises.mkdir(this._bundlePath, {recursive: true});
+      await fs.promises.writeFile(
+        linksPath,
+        formatLinksYaml(links, this._container),
+        'utf8',
+      );
+    } else if (fs.existsSync(linksPath)) {
+      await fs.promises.unlink(linksPath);
+    }
   }
 
   private _pruneEmptyDirs(dir: string, stopAt: string): void {
