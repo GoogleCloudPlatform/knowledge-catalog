@@ -115,9 +115,8 @@ dropped, such as those on a key that goes into or out of a `GOOGLE` block. A
 flow collection over several lines that import changes is written again in
 block style, without the comments inside it. A value that import would write as
 a `|+` block scalar is double-quoted instead, and a `|+` block scalar that it
-moves is written again. A profile file written beside the model keeps its text,
-except that each expression `--transpile` translates is rewritten on one line
-without its comments. A profile file's comments are dropped when its contents
+moves is written again. A profile file written beside the model keeps its
+comments the same way. A profile file's comments are dropped when its contents
 move into the model file. A JSON file is written as YAML, and import reports
 the conversion. Without `--out`, the files go into the scope's entry group
 folder, and an import that would leave one of the model's profile files there

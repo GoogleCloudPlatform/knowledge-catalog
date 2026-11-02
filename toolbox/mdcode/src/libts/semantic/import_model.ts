@@ -1303,9 +1303,7 @@ async function transpileDocument(
     return profileFiles;
   }
   const syncNode = (...args: Parameters<typeof syncDialects>) => {
-    const changed = syncDialects(...args);
-    if (changed) doc.modified = true;
-    return changed;
+    if (syncDialects(...args)) doc.modified = true;
   };
   // Each of `profileFiles` as loaded, or undefined for one that does not
   // load. One that parses is written as it is, since push reports it.
@@ -1325,8 +1323,10 @@ async function transpileDocument(
       profiles: [...(m.profiles ?? []), ...loaded.filter(p => p !== undefined)],
     });
     doc.warnings.push(...transpiled.warnings);
+    const profile = (name: unknown) =>
+        transpiled.model.profiles?.find(p => p.name === name);
     translatedFiles = profileFiles.map((pf, i) => {
-      const p = transpiled.model.profiles?.find(t => t.name === loaded[i]?.name);
+      const p = loaded[i] && profile(loaded[i].name);
       return p ? {...pf, content: withDialects(pf.content, p)} : pf;
     });
     for (const ds of doc.datasets) {
@@ -1343,18 +1343,13 @@ async function transpileDocument(
     // gained an entry is written back as JSON.
     for (const block of asRecords(doc.model.custom_extensions)) {
       const data = parseGoogleBlocks([block])[0];
-      let changed = false;
-      for (const p of asRecords(data?.profiles)) {
-        const irProfile = transpiled.model.profiles?.find(x => x.name === p.name);
-        for (const pe of asRecords(p.entities)) {
-          const irEntity = irProfile?.entities.find(x => x.name === pe.name);
-          for (const f of asRecords(pe.fields)) {
-            const irField = irEntity?.fields?.find(x => x.name === f.name);
-            changed = syncNode(f, irField?.dialects) || changed;
-          }
-        }
+      const changed = asRecords(data?.profiles)
+                          .map(p => syncProfile(p, profile(p.name)))
+                          .includes(true);
+      if (changed) {
+        block.data = JSON.stringify(data);
+        doc.modified = true;
       }
-      if (changed) block.data = JSON.stringify(data);
     }
   }
   return translatedFiles;
@@ -1382,43 +1377,33 @@ function syncDialects(
 }
 
 /**
- * Returns the profile file `content` with each expression that gained a dialect
- * entry in the translated `profile` rewritten in place as one flow mapping.
- * Every other character of the file stays as written.
+ * Writes onto the raw profile `p` each field expression that gained a dialect
+ * entry in the translated `irProfile`, and returns whether any did.
+ */
+function syncProfile(
+    p: Record<string, any>, irProfile: ProfileSpec|undefined): boolean {
+  let changed = false;
+  for (const pe of asRecords(p.entities)) {
+    const irEntity = irProfile?.entities.find(x => x.name === pe.name);
+    for (const f of asRecords(pe.fields)) {
+      const irField = irEntity?.fields?.find(x => x.name === f.name);
+      changed = syncDialects(f, irField?.dialects) || changed;
+    }
+  }
+  return changed;
+}
+
+/**
+ * Returns the profile file `content` with each field expression that gained a
+ * dialect entry in the translated `profile`, written as the model file is.
  */
 function withDialects(content: string, profile: ProfileSpec): string {
-  const ydoc = yaml.parseDocument(content, YAML_OPTIONS);
-  const root = ydoc.toJS();
-  const edits: Array<{start: number; end: number; text: string}> = [];
-  // The profile lists its entities and fields in the file's order.
-  profile.entities.forEach((pe, i) => (pe.fields ?? []).forEach((f, j) => {
-    const raw = root.entities[i].fields[j];
-    if (!syncDialects(raw, f.dialects)) return;
-    const node =
-        ydoc.getIn(['entities', i, 'fields', j, 'expression'], true) as yaml.Node;
-    const [start, end] = node.range!;
-    const entry = new yaml.Document(raw.expression);
-    (entry.contents as yaml.YAMLMap).flow = true;
-    // The node's range can end in whitespace, which stays.
-    const written = content.slice(start, end);
-    // Each string is double-quoted with its line breaks escaped, so the
-    // mapping stays on the one line it starts on.
-    const oneLine = entry.toString({
-      lineWidth: 0,
-      defaultStringType: 'QUOTE_DOUBLE',
-      defaultKeyType: 'PLAIN',
-      doubleQuotedMinMultiLineLength: Infinity,
-    });
-    edits.push({
-      start,
-      end,
-      text: oneLine.trimEnd() + written.slice(written.trimEnd().length),
-    });
-  }));
-  // Applied from the end of the file, so each edit's offsets still hold.
-  return edits.reverse().reduce(
-      (out, {start, end, text}) => out.slice(0, start) + text + out.slice(end),
-      content);
+  const {document, text} = parseForUpdate(content);
+  const root = plainCopy(document.toJS()) as Record<string, any>;
+  const links = linkNodes(root, document.contents);
+  return syncProfile(root, profile) ?
+      writeDocument({document, links, text}, root) :
+      content;
 }
 
 /**
@@ -1614,7 +1599,9 @@ async function generateAdaptedFiles(
  * Returns the input's text changed to hold `root`. What survives from the
  * input keeps its text, and long SQL stays on one line.
  */
-function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
+function writeDocument(
+    doc: Pick<ImportDocument, 'document'|'links'|'text'>,
+    root: Record<string, any>): string {
   // The vanilla flavor lists a model's entities under `datasets:` and the
   // Google flavor under `entities:`. Renaming the key keeps the comments of
   // the list and of every entity in it.

@@ -259,11 +259,11 @@ describe('kcmd import', () => {
         '    fields:\n      - name: order_id\n        expression:\n' +
         '          dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]\n' +
         '    primary_key: [order_id]     # same key\n';
-    // PROFILE translated by --transpile. Only the expression changes.
-    const TRANSLATED = PROFILE.replace(
-        'dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]',
-        '{ dialects: [ { dialect: "SNOWFLAKE", expression: "NVL(order_id, 0)" }, ' +
-            '{ dialect: "BIGQUERY", expression: "COALESCE(order_id, 0)" } ] }');
+    // PROFILE translated by --transpile, written as the model file is: the
+    // flow list gains the entry, and one space stays before each comment.
+    const TRANSLATED = PROFILE.replaceAll('     #', ' #').replace(
+        '"NVL(order_id, 0)"}]',
+        '"NVL(order_id, 0)"}, {dialect: BIGQUERY, expression: "COALESCE(order_id, 0)"}]');
     // Writes the model and its profile file as `<stem>.yaml` and
     // `<stem>.profile.prod.yaml`.
     const setUp = (stem = 'retail') => {

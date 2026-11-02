@@ -303,7 +303,7 @@ describe('profile translation', () => {
 
   // [label, input, options]
   test.each([
-    ['a GOOGLE block profile, written back into the block', ossieDoc({fieldExpr, extra: block}),
+    ['a GOOGLE block profile, written back into the block', ossieDoc({extra: block}),
      {...strict, flavor: 'ossie' as const}],
     ['a GOOGLE block profile, written as a profile file', ossieDoc({fieldExpr, extra: block}),
      {...strict, flavor: 'google' as const}],
@@ -338,6 +338,90 @@ describe('profile translation', () => {
     });
     expect(res.errors).toEqual([expect.stringContaining(
         "the import writes 'retail.profile.prod.yaml', which does not parse: ")]);
+  });
+
+  // A model with entities orders and items, and a profile file that binds
+  // items before orders, and orders' total and order_id each to the text after
+  // its `expression:`.
+  const model = googleDoc({
+    extra: '          - name: total\n            expression: orders.total\n' +
+        `      - name: items\n        source: ${BQ_PREFIX}/tables/items\n` +
+        '        primary_key: [id]\n        fields:\n          - name: id\n' +
+        '            expression: items.id\n',
+  });
+  const profileFile = (total: string, orderId: string) =>
+      `name: prod\nentities:\n  - name: items\n    source: ${BQ_PREFIX}/tables/items_prod\n` +
+      '  - name: orders\n    fields: # bound fields\n' +
+      `      - name: total\n        expression: ${total}\n` +
+      `      - name: order_id\n        expression:${orderId}\n`;
+  const SF = '{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}';
+  const BQ = '{dialect: BIGQUERY, expression: "COALESCE(order_id, 0)"}';
+  const BLOCK = '\n          dialects:\n            - dialect: SNOWFLAKE # as written\n' +
+      '              expression: NVL(order_id, 0)';
+  const SINGLE = "'CONCAT(orders.total, '' x'')'";
+  // The start of an expression whose dialects list has a comment of two lines.
+  const COMMENTED = '\n          # Snowflake only,\n          # for now\n          dialects:';
+  // The texts of each field of orders in profile file `text`.
+  const texts = (text: string) =>
+      loadProfileFile(text, 'prod').entities[1].fields!.map(f => f.dialects);
+
+  // [label, input, output]
+  test.each([
+    ['a folded block scalar and a commented block expression',
+     profileFile('>-\n          orders.total\n          + 1', BLOCK),
+     profileFile('>-\n          orders.total + 1', `${BLOCK}
+            - dialect: BIGQUERY
+              expression: COALESCE(order_id, 0)`)],
+    ['a single-quoted string', profileFile(SINGLE, ` {dialects: [${SF}]}`),
+     profileFile(SINGLE, ` {dialects: [${SF}, ${BQ}]}`)],
+    ['a double-quoted string with a line break',
+     profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`, ` {dialects: [${SF}]}`),
+     profileFile(`"CONCAT(orders.total, 'a long enough text')\n\n          \\  || 'x'"`,
+                 ` {dialects: [${SF}, ${BQ}]}`)],
+    ['a blank line at each position and a comment inside a flow expression',
+     profileFile('orders.total', ` {\n          dialects: [  # Snowflake only\n            ${SF}\n` +
+                                     '          ]\n        }').replaceAll('\n', '\n\n'), `\
+name: prod
+
+entities:
+
+  - name: items
+
+    source: ${BQ_PREFIX}/tables/items_prod
+
+  - name: orders
+
+    fields: # bound fields
+      - name: total
+
+        expression: orders.total
+
+      - name: order_id
+
+        expression:
+          {
+
+            dialects:
+              [
+                # Snowflake only
+
+                ${SF},
+                ${BQ}
+              ]
+          }
+`],
+    ['CRLF line endings',
+     profileFile('orders.total', `${COMMENTED} [${SF}]`).replaceAll('\n', '\r\n'),
+     profileFile('orders.total', `${COMMENTED} [${SF}, ${BQ}]`)],
+  ])('writes a profile file with %s as it writes the model file', async (_, input, output) => {
+    const res = await importSemanticModelYaml(model, {
+      ...strict, flavor: 'google',
+      profileFiles: [{fileName: 'retail.profile.prod.yaml', content: input}],
+    });
+    expect(res.files[1].content).toBe(output);
+    const [total, orderId] = texts(input);
+    expect(texts(res.files[1].content)).toEqual(
+        [total, [...orderId!, {dialect: 'BIGQUERY', expression: 'COALESCE(order_id, 0)'}]]);
   });
 });
 
