@@ -14,7 +14,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {modelsFromCatalogResources} from '../../../src/libts/semantic/kc_converter';
 import {generateCatalogResources} from '../../../src/libts/semantic/knowledge_catalog';
 import {fromDocument, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -1511,15 +1511,13 @@ describe('a projection the catalog cannot give back', () => {
     const {warnings: kcWarnings} = generateCatalogResources(model, OPTS);
     expect(kcWarnings.some(w => w.includes('parameter'))).toBe(false);
 
-    // The `sql` profile the guide shows next, merged onto that same model.
+    // The `sql` profile the guide shows next, applied onto that same model.
     const operationalYaml =
         yamlFenceFromActionsDoc('## Carrying the write as DML');
-    const merged = mergeProfileOntoDoc(docYaml, operationalYaml, 'operational');
-    expect('error' in merged).toBe(false);
-    if ('error' in merged) return;
-    const mergedModel =
-        loadModels(merged.text, {allowLegacyBareSource: true}).models[0];
-    expect(mergedModel.actions![0].executor).toEqual({
+    const applied = applyProfileFile(model, operationalYaml, 'operational');
+    expect('error' in applied).toBe(false);
+    if ('error' in applied) return;
+    expect(applied.model.actions![0].executor).toEqual({
       kind: 'sql',
       sql: {
         statements: [
@@ -1530,7 +1528,7 @@ describe('a projection the catalog cannot give back', () => {
       },
     });
     expect(validatePushRequirements([
-      {document: 'payments.yaml', model: mergedModel}
+      {document: 'payments.yaml', model: applied.model},
     ])).toEqual([]);
   });
 
