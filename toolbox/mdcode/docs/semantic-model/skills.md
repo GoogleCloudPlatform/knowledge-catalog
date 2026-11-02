@@ -358,7 +358,7 @@ creates, modifies, or deletes:
 ## Switching binding profiles (`--profile`)
 
 When a model has multiple binding profiles (such as
-`commerce.profiles/spanner.yaml` and `commerce.profiles/alloydb.yaml` in
+`commerce.profile.spanner.yaml` and `commerce.profile.alloydb.yaml` in
 `demo/semantic-model/skill`), running `kcmd skills-generate` under each profile
 leaves every `references/<action>.md` page **byte-identical**:
 
@@ -372,9 +372,9 @@ diff /tmp/spanner-skills/commerce/references/issue-credit.md \
 
 The `alloydb` profile names its database by cluster, so `kcmd skills-generate
 --profile alloydb` looks up the cluster's primary instance through the AlloyDB
-API. Point `alloydb.yaml` at a cluster you can read before you run it. The
-output below shows the placeholder names, with `my-instance` as the primary
-instance.
+API. Point `commerce.profile.alloydb.yaml` and the `alloydb` deployment in
+`commerce.yaml` at a cluster you can read before you run it. The output below
+shows the placeholder names, with `my-instance` as the primary instance.
 
 `diff` exits with `0` and no output. Only `SKILL.md` changes, in
 `Finding a record` and `Running an action`:

@@ -8,3 +8,6 @@ pulled/
 # profile files ARE the demo, and its manifest is one static line.
 !semantic-model/skill/catalog/
 !semantic-model/skill/catalog.yaml
+# The skill that the README's commands write.
+semantic-model/skill/skills/
+semantic-model/skill/.claude/

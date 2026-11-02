@@ -2,8 +2,9 @@
 #
 # Everything in this file is a physical fact: a table, a column, the DML. A
 # profile may not add an entity, rename a field or change what anything means --
-# the loader rejects that -- so reading this file tells you the whole of what is
-# deployment-specific about the demo, and nothing about the business.
+# the loader rejects that -- so this file and the `spanner` deployment in
+# commerce.yaml tell you the whole of what is deployment-specific about the
+# demo, and nothing about the business.
 #
 # If you are running against a different project, instance or database, the
 # names appear in each `source` below and in the `spanner` deployment's
