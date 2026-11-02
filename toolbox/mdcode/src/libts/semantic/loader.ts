@@ -1966,11 +1966,10 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
 };
 
 // A field or metric as a warning names it in `ctx`. A metric reads fields as
-// `entity.field`, and `entity` is the entity it belongs to when known.
+// `entity.field`.
 interface Subject {
   ctx: string;
   metric: boolean;
-  entity?: Pick<Entity, 'name'|'fields'>;
 }
 
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
@@ -1992,15 +1991,11 @@ function expressionWarning(
     const reads = `${ctx}: ${database} reads ${
         listed(names.map(n => `"${n}"`))} in its '${
         FALLBACK_DIALECT}' expression as text; `;
-    const {metric, entity} = subject;
-    if (metric) {
-      const [name, ...more] = names;
-      const field = !more.length && entity?.fields.some(f => f.name === name) ?
-          `${entity.name}.${name}` :
-          '<entity>.<field>';
-      return reads + `if you meant ${more.length ? 'fields' : 'a field'}, ` +
-          `give it a '${dialect}' expression that names ${
-                 more.length ? 'each' : 'it'} as '${field}'`;
+    if (subject.metric) {
+      const several = names.length > 1;
+      return reads + `if you meant ${several ? 'fields' : 'a field'}, give ` +
+          `it a '${dialect}' expression that names ${
+                 several ? 'each' : 'it'} as '<entity>.<field>'`;
     }
     // Import adds only BigQuery text, only outside a profile, and keeps each
     // qualifier, which push reads as an entity.
@@ -2068,11 +2063,7 @@ function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
     preferred: string, profiled: boolean): string|undefined {
-  const subject = {
-    ctx: `metric '${metric.name}'`,
-    metric: true,
-    entity: entities.find(e => e.name === reached.find(r => r !== undefined)),
-  };
+  const subject = {ctx: `metric '${metric.name}'`, metric: true};
   const named =
       entities.filter(e => reached.includes(e.name))
           .sort((a, b) => reached.indexOf(a.name) - reached.indexOf(b.name));

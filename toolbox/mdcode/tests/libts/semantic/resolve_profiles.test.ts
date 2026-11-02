@@ -3744,10 +3744,8 @@ describe('applyProfile options', () => {
     // BigQuery table needs it translated. Both read a double-quoted ANSI_SQL
     // token as text.
     const quoted = base();
-    // Metric r has no anchor, so its entity is the first one it reaches.
     quoted.metrics!.push(
-        {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]},
-        {name: 'r', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id") / COUNT(orders.id)'}]});
+        {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
     const onSpanner: string[] = [];
     applyProfile(quoted, rebind(SP('Orders')), {warnings: onSpanner});
     expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
@@ -3756,10 +3754,6 @@ describe('applyProfile options', () => {
         `metric 'q': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
         `if you meant a field, give it a 'SPANNER' expression that names it ` +
         `as '<entity>.<field>'`);
-    expect(onSpanner).toContain(
-        `metric 'r': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
-        `if you meant a field, give it a 'SPANNER' expression that names it ` +
-        `as 'orders.id'`);
     const onBigQuery: string[] = [];
     applyProfile(base(), rebind(BQ('orders2')), {warnings: onBigQuery});
     expect(onBigQuery.join('\n')).toContain(

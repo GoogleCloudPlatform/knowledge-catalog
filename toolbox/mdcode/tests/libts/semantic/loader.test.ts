@@ -297,13 +297,7 @@ describe('expression warnings judge each expression on the table that runs it', 
      quotedIn('BigQuery', 'BIGQUERY')],
     ['a BigQuery table, a double-quoted name beside a backticked qualified one', BQ,
      [['ANSI_SQL', 'CONCAT("x", `t`.`y`)']], quoted],
-    ['a BigQuery table, a double-quoted name of a field of the metric\'s entity', BQ,
-     [['ANSI_SQL', '"f"']], [
-       quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f')[0],
-       `metric 'm': ${readsX('BigQuery', 'f')}if you meant a field, give it a ` +
-           `'BIGQUERY' expression that names it as 't.f'`,
-     ]],
-    // The warning names every double-quoted name, and fills in no field for two.
+    // The warning names every double-quoted name.
     ['a BigQuery table, two double-quoted names', BQ, [['ANSI_SQL', '"f" || "y"']], [
        quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f" and "y')[0],
        `metric 'm': ${readsX('BigQuery', 'f" and "y')}if you meant fields, give it ` +
