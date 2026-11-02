@@ -9,6 +9,8 @@ import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
+const SPANNER_TABLE =
+    'spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/orders';
 const CLOUDSQL_PREFIX =
     'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
 
@@ -187,6 +189,13 @@ describe('conversion, strict mode, and translation', () => {
         expect(offRes.warnings.map(w => w.split(':')[0])).toEqual([
           "field 'orders.order_id'", "metric 'total_orders'",
         ]);
+        // On a Spanner table, the vendor field warns that the table cannot
+        // run it.
+        const onSpanner = await importSemanticModelYaml(
+            raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
+        expect(onSpanner.warnings[0]).toBe(
+            "field 'orders.order_id': no 'SPANNER' or 'ANSI_SQL' dialect, so " +
+            "the SPANNER table of entity 'orders' cannot run it");
         expect(onStrictRes.ok).toBe(true);
         expect(onStrictRes.warnings).toEqual([
           "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",

@@ -12,10 +12,10 @@
 import * as yaml from 'yaml';
 import * as z from 'zod';
 
-import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, expressionForDialect, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
+import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {DEFAULT_PROFILE, IMPORT_TRANSPILE_COMMAND, profileSpecOf, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedName, hasDoubleQuotedColumn} from './transpile';
@@ -2002,27 +2002,37 @@ function runsDialect(
   return sourcesDialect({entities: [entity]}) === dialect.toUpperCase();
 }
 
-// The warning each field's expression gives, on each entity whose table's
+// The warning `item` gives on the `dialect` table of `entity`:
+// expressionWarning's, or, unless `profiled`, one saying that table has no
+// text to run. On a table of the `preferred` dialect, expressionWarning's
+// transpilation warning already says so.
+function tableWarning(
+    item: Pick<Field, 'expression'|'dialects'|'stringForm'>, ctx: string,
+    dialect: string, entity: string, preferred: string,
+    profiled: boolean): string|undefined {
+  const w = expressionWarning(item, ctx, dialect, preferred);
+  if (w || profiled || !noTextFor(item, dialect)) return w;
+  return `${ctx}: no '${dialect}' or '${
+             FALLBACK_DIALECT}' dialect, so the ${dialect} table of entity '${
+             entity}' cannot run it`;
+}
+
+// The warning each field's expression gives on each entity whose table's
 // dialect the load knows. An inherited field is judged on each entity that
 // inherits it, and named after that entity.
-function fieldWarnings(model: SemanticModel, preferred: string): string[] {
-  return resolvedEntities(model)
-      .flatMap(e => {
-        const dialect = sourcesDialect({entities: [e]});
-        return dialect ?
-            e.fields.map(
-                f => expressionWarning(
-                    f, `field '${e.name}.${f.name}'`, dialect, preferred)) :
-            [];
-      })
+function fieldWarnings(
+    model: SemanticModel, preferred: string, profiled: boolean): string[] {
+  return fieldsOnTables(model)
+      .map(({entity: e, field: f, dialect}) => tableWarning(
+               f, `field '${e.name}.${f.name}'`, dialect, e.name, preferred,
+               profiled))
       .filter((w): w is string => w !== undefined);
 }
 
 // The warning `metric`'s expression gives on the tables of the `reached`
 // entities, in that order, or on every table when it reaches none. On a table
 // of the `preferred` dialect it is expressionWarning's; otherwise it is the
-// first that a table's dialect gives: expressionWarning's, or, unless
-// `profiled`, one saying the metric has no text in that dialect.
+// first tableWarning a table gives.
 function metricWarning(
     metric: Pick<Metric, 'name'|'expression'|'dialects'|'stringForm'>,
     reached: ReadonlyArray<string|undefined>, entities: ReadonlyArray<Entity>,
@@ -2037,15 +2047,9 @@ function metricWarning(
   }
   for (const e of tables) {
     const dialect = sourcesDialect({entities: [e]});
-    if (!dialect) continue;
-    const w = expressionWarning(metric, ctx, dialect, preferred);
+    const w = dialect &&
+        tableWarning(metric, ctx, dialect, e.name, preferred, profiled);
     if (w) return w;
-    if (!profiled &&
-        expressionForDialect(metric, dialect as SqlDialect) === undefined) {
-      return `${ctx}: no '${dialect}' or '${
-                 FALLBACK_DIALECT}' dialect, so the ${dialect} table of ` +
-          `entity '${e.name}' cannot run it`;
-    }
   }
   return undefined;
 }
@@ -2120,15 +2124,15 @@ export function inferMetricEntities(
 // order a load gives them: each concrete entity's missing key, each field's
 // expression warning, then each metric's expression warning and its warning
 // when it names no entity. A metric a profile excludes gives none. With
-// `profiled`, the profile check reports a metric its tables cannot run, so
-// no warning repeats it. A profile changes only these; a load's other
+// `profiled`, the profile check reports a field or metric its tables cannot
+// run, so no warning repeats it. A profile changes only these; a load's other
 // warnings, about actions, come after them.
 export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT,
     profiled = false): string[] {
   const entities = model.entities ?? [];
   const out = entities.map(keyWarning).filter((w): w is string => !!w);
-  out.push(...fieldWarnings(model, preferred));
+  out.push(...fieldWarnings(model, preferred, profiled));
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   const excluded = new Set(model.excludedMetrics);
@@ -2233,7 +2237,7 @@ function convertModel(
   // A field is judged on each entity that inherits it too, so its warning
   // waits until every entity is read.
   warnings.push(...fieldWarnings(
-      {name: m.name, entities, relationships, metrics: []}, dialect));
+      {name: m.name, entities, relationships, metrics: []}, dialect, false));
   const impliedDialect = sourcesDialect({entities});
   const metrics = (m.metrics ?? []).map(
       mt => convertMetric(

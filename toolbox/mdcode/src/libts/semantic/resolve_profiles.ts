@@ -1266,6 +1266,25 @@ export function textsFor(
   return text !== undefined ? [{text, dialect}] : [];
 }
 
+// Whether a field or metric holds SQL but none that a table of `dialect`
+// runs: no text in that dialect and no ANSI_SQL text.
+export function noTextFor(
+    f: Parameters<typeof textsFor>[0], dialect: string): boolean {
+  return isFieldBound(f) && !textsFor(f, dialect).length;
+}
+
+// Each field of each entity whose table's dialect the load knows, with that
+// dialect. An inherited field is listed on each entity that inherits it.
+export function fieldsOnTables(model: SemanticModel):
+    Array<{entity: Entity; field: Field; dialect: string}> {
+  return resolvedEntities(model).flatMap(entity => {
+    const dialect = sourcesDialect({entities: [entity]});
+    return dialect ?
+        (entity.fields ?? []).map(field => ({entity, field, dialect})) :
+        [];
+  });
+}
+
 // The import command that adds BigQuery SQL to a model file. Push reads only
 // files written for kcmd, so `--input first-party` fits each of them.
 export const IMPORT_TRANSPILE_COMMAND =

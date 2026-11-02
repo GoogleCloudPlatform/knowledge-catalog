@@ -235,6 +235,10 @@ describe('expression warnings judge each expression on the table that runs it', 
       `${database} reads "x" in its 'ANSI_SQL' expression as text; if you ` +
       `meant a column, give it a '${dialect}' expression without the double ` +
       `quotes${hint}`);
+  // The warning that the table of `dialect` has no text to run.
+  const unrunnable = (dialect: string) => both(
+      `no '${dialect}' or 'ANSI_SQL' dialect, so the ${dialect} table of ` +
+      `entity 't' cannot run it`);
   const quoted = quotedIn('BigQuery', 'BIGQUERY',
       `; in a model file, 'kcmd import <file> --input first-party --flavor ` +
       `<ossie|google> --transpile' adds one`);
@@ -247,11 +251,10 @@ describe('expression warnings judge each expression on the table that runs it', 
     ['a BigQuery table, Snowflake text', BQ, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
     ['a BigLake table, Snowflake text', LAKE, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
     ['a Spanner table, Spanner text', SPANNER, [['SPANNER', 'x']], []],
-    ['a Spanner table, Snowflake text', SPANNER, [['SNOWFLAKE', 'x']],
-     ["metric 'm': no 'SPANNER' or 'ANSI_SQL' dialect, so the SPANNER table of " +
-      "entity 't' cannot run it"]],
+    ['a Spanner table, Snowflake text', SPANNER, [['SNOWFLAKE', 'x']], unrunnable('SPANNER')],
     ['an AlloyDB table, AlloyDB text', ALLOY, [['ALLOYDB', 'x']], []],
     ['a Cloud SQL for MySQL table, MySQL text', MYSQL, [['MYSQL', 'x']], []],
+    ['a Cloud SQL for MySQL table, Snowflake text', MYSQL, [['SNOWFLAKE', 'x']], unrunnable('MYSQL')],
     ['a Cloud SQL for PostgreSQL table, PostgreSQL text', PG, [['POSTGRES', 'x']], []],
     ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
     ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],

@@ -95,8 +95,8 @@ scenarios('push --no-deployment', [
       code: 0,
       warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
     }, {
-      // Under a profile on Spanner, push's error is the only message.
-      profiles: {ops: {entities: {Customer: {...CUSTOMER, source: SPANNER_CUSTOMER}}}},
+      // Under a profile on Spanner, push's errors are the only messages.
+      profiles: {ops: {entities: {Customer: keyAt(SPANNER_CUSTOMER, 'c_key', 'SNOWFLAKE')}}},
       metrics: [SNOWFLAKE_METRIC],
       flags: {deployment: undefined, validateOnly: true, profile: 'ops'},
       code: 1,
