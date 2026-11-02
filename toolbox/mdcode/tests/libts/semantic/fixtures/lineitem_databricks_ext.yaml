@@ -4,7 +4,9 @@
 # dataset with no primary_key, custom_extensions at field / relationship /
 # metric / model level, a COUNT(DISTINCT) metric, and a computed measure
 # (SUM(l_extendedprice * (1 - l_discount))) written with bare, unqualified
-# column references.
+# column references. Note: this is a loader/round-trip fixture only (never
+# passed through push validation, which rejects unqualified column references
+# in metrics).
 
 version: "0.2.0.dev0"
 
@@ -13,7 +15,7 @@ semantic_model:
     description: Line item shipping metrics
     datasets:
       - name: lineitem
-        source: samples.tpch.lineitem
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/lineitem
         fields:
           - name: line_number
             expression:
@@ -24,7 +26,7 @@ semantic_model:
               - vendor_name: DATABRICKS
                 data: '{"_v": 1, "format": {"type": "number", "decimal_places": {"type": "exact", "places": 0}}}'
       - name: orders
-        source: samples.tpch.orders
+        source: bigquery.googleapis.com/projects/samples/datasets/tpch/tables/orders
         unique_keys:
           - [o_orderkey]
     relationships:

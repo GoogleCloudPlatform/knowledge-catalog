@@ -30,20 +30,44 @@ export class CatalogSync {
   // Lists metadata in the Catalog service to create or update the local snapshot.
   async pull(): Promise<SyncResult> {
     try {
-      const entries = this._snapshot.manifest.source.entries(this._catalog.context);
-      
-      for await (const entry of entries) {
-        if (this._snapshot.entryTypes.size && !this._snapshot.entryTypes.has(entry.entryType)) {
+      const listedTypes = this._snapshot.manifest.snapshotConfig?.entries ?? [];
+      const unreadableTypes = new Set<string>();
+      const entries: gcp.Entry[] = [];
+
+      // Loads the type of every entry to pull before fetching any entry, so each
+      // entry is fetched with the same aspect types whatever the listing order.
+      for await (const entry of this._snapshot.manifest.source.entries(this._catalog.context)) {
+        const typeRef = gcp._nameToTypeRef(entry.entryType);
+        // Skips the entry Dataplex keeps for the entry group itself.
+        if (entry.entryType.endsWith('/entryTypes/entrygroup') || unreadableTypes.has(typeRef) ||
+            (listedTypes.length && !listedTypes.includes(typeRef))) {
           continue;
         }
+        try {
+          await this._snapshot._loadEntryType(typeRef);
+        }
+        catch (e: any) {
+          unreadableTypes.add(typeRef);
+          console.warn(`Warning: ${e.message}. Entries of this type are not pulled.`);
+          continue;
+        }
+        entries.push(entry);
+      }
 
-        // TODO: Need to populate type info if its a type we haven't seen.
+      // Pull fetches the aspect types it knows: those catalog.yaml lists and
+      // each entry's type requires. It warns about each other aspect type an
+      // entry carries, apart from the scope's system aspects.
+      const aspectTypes = this._snapshot.aspectTypes;
+      const requested = [...aspectTypes.keys()];
+      const system = new Set(this._snapshot.manifest.source.systemAspects);
+      const leftOut = new Map<string, number>();
+      for (const entry of entries) {
         // TODO: Handle local modification conflicts.
         // TODO: Handle config changes or service deletions that require removing local entries.
 
         const nameParts = entry.name.split('/');
         const res = await this._catalog.lookupEntry(nameParts[1], nameParts[3], entry.name,
-                                                    [...this._snapshot.aspectTypes.keys()]);
+                                                    requested);
         // The server will respond with 403 permission denied for both resource not exist or 
         // insufficient permission. We cannot tell if a resource not exist or user does not 
         // have the access. Thus using 200 for an ensured result.
@@ -51,7 +75,24 @@ export class CatalogSync {
           continue;
         }
 
+        // lookupEntry sets every returned aspect's type.
+        const stored = new Set(Object.values(res.result.aspects ?? {})
+                                   .map(a => gcp._nameToTypeRef(a.aspectType!)));
         await this._snapshot._storeEntry(res.result);
+
+        const onEntry = await this._catalog.lookupEntryAspectTypes(
+            nameParts[1], nameParts[3], entry.name);
+        for (const type of onEntry.result ?? []) {
+          if (!stored.has(type) && !aspectTypes.has(type) && !system.has(type)) {
+            leftOut.set(type, (leftOut.get(type) ?? 0) + 1);
+          }
+        }
+      }
+      for (const [type, count] of leftOut) {
+        console.warn(
+            `Warning: pull left out aspect type '${type}' on ${count} ` +
+            `${count === 1 ? 'entry' : 'entries'}; list it under ` +
+            `snapshot.aspects in catalog.yaml to pull it.`);
       }
       return { success: true };
     }
@@ -60,8 +101,12 @@ export class CatalogSync {
     }
   }
 
-  // Pushes local metadata to the Catalog service to publish/deploy it.
+  // Pushes local metadata to the Catalog service to publish/deploy it. Under
+  // `validateOnly` the entries are still walked and the pre-flight lookups run,
+  // but no create or update is issued -- mirroring the dry-run contract the
+  // semantic-model legs honor, so the flag behaves the same on every scope.
   async push(options?: { force?: boolean, validateOnly?: boolean; }): Promise<SyncResult> {
+    const validateOnly = !!options?.validateOnly;
     const entries = await this._snapshot.listEntries();
 
     for (const name of entries) {
@@ -81,6 +126,10 @@ export class CatalogSync {
 
       const exist = await this._catalog.lookupEntry(project, location, entry.name);
       if (exist.status != 200 || !exist.result) {
+        if (validateOnly) {
+          // Would create; write nothing under --validate-only.
+          continue;
+        }
         const entryGroup = nameParts[5];
         const entryId = nameParts.slice(7).join('/');
         const createEntryRes = await this._catalog.createEntry(project, location, entryGroup, entryId, entry);
@@ -106,6 +155,11 @@ export class CatalogSync {
       }
 
       if (!updateMask.length) {
+        continue;
+      }
+
+      if (validateOnly) {
+        // Would update; write nothing under --validate-only.
         continue;
       }
 

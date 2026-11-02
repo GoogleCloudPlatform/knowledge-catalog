@@ -1,8 +1,20 @@
+> [!IMPORTANT]
+> **OKF now lives in its own repository:
+> [GoogleCloudPlatform/open-knowledge-format](https://github.com/GoogleCloudPlatform/open-knowledge-format).**
+>
+> That repository is the canonical home of the specification, the reference
+> agent, and the sample bundles. Please read the spec, file issues, and open
+> pull requests there.
+>
+> **Stop using the copy under `okf/` in this repository.** It is a frozen
+> snapshot, no longer maintained, and anything built against it will drift out
+> of date.
+
 # Open Knowledge Format (OKF)
 
 ### 📖 [Read the Open Knowledge Format v0.2 specification → SPEC.md](SPEC.md)
 
-> **This repository is primarily about the [Open Knowledge Format
+> **This directory is primarily about the [Open Knowledge Format
 > (OKF)](SPEC.md).**
 >
 > OKF is a **universal, vendor-neutral format** for representing knowledge

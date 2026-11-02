@@ -26,6 +26,13 @@ export interface CatalogSource {
   // Present only for scopes that carry an EntryGroup (e.g. semantic-model);
   // used to scope the local catalog layout to that group.
   readonly entryGroup?: string;
+  // The aspect types `kcmd init` lists under snapshot.aspects, so pull fetches
+  // them along with those each entry's type requires. System-generated aspects
+  // are left out, since push sends every local aspect back.
+  readonly defaultAspects: readonly string[];
+  // The aspect types the service writes on this scope's entries beyond those
+  // their entry types require. Pull leaves them out without a warning.
+  readonly systemAspects: readonly string[];
 
   entries(ctx: gcp.ApiContext): AsyncGenerator<gcp.Entry, void, unknown>;
   localName(entry: gcp.Entry): string;

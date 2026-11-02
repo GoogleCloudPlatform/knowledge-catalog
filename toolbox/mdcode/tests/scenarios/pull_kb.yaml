@@ -1,11 +1,15 @@
 name: pull_kb
-description: Knowledge Base with multiple entries
+description: Knowledge Base with multiple entries, pulled with the aspect their entry type requires, and one entry whose type cannot be read, which is not pulled
 setup:
   catalog:
     entryGroups:
       - name: projects/t/locations/u/entryGroups/g
     entryTypes:
       - name: projects/dataplex-types/locations/global/entryTypes/generic
+        requiredAspects:
+          - type: projects/dataplex-types/locations/global/aspectTypes/generic
+    aspectTypes:
+      - name: projects/dataplex-types/locations/global/aspectTypes/generic
     entries:
       - name: projects/t/locations/u/entryGroups/g/entries/e0
         entryType: projects/dataplex-types/locations/global/entryTypes/generic
@@ -15,8 +19,13 @@ setup:
           labels:
             aaa: bbb
             xyz: 'true'
+        aspects:
+          dataplex-types.global.generic:
+            aspectType: projects/dataplex-types/locations/global/aspectTypes/generic
+            data:
+              system: wiki
       - name: projects/t/locations/u/entryGroups/g/entries/e1
-        entryType: projects/dataplex-types/locations/global/entryTypes/generic
+        entryType: projects/other/locations/global/entryTypes/unreadable
       - name: projects/t/locations/u/entryGroups/g/entries/e2
         entryType: projects/dataplex-types/locations/global/entryTypes/generic
       - name: projects/t/locations/u/entryGroups/g/entries/e3
@@ -39,7 +48,8 @@ assert:
       - contains: "title: Sample entry"
       - contains: "description: Sample entry description"
       - contains: "- xyz"
-    catalog/e1.md: {}
+      - contains: "system: wiki"
+    catalog/e1.md: null
     catalog/e2.md: {}
     catalog/e3.md: {}
     catalog/dir/sub.md: {}

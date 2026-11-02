@@ -89,6 +89,10 @@ function runScenario(scenario: any) {
       if (!fs.existsSync('/catalog.yaml')) {
         throw new Error('Scenario did not include or initialize a manifest');
       }
+      // Record the warnings that loading the snapshot and the actions print.
+      const warnings: string[] = [];
+      const warn = spyOn(console, 'warn').mockImplementation(
+        (...args: any[]) => { warnings.push(args.join(' ')); });
       const snapshot = await kcmac.CatalogSnapshot.fromPath('/', TEST_API_CONTEXT);
       const sync = new kcmac.CatalogSync(catalog, snapshot);
 
@@ -119,6 +123,12 @@ function runScenario(scenario: any) {
             throw new Error(`Unknown action: ${action}`);
         }
       }
+      warn.mockRestore();
+
+      // Assert expectations - Warnings
+      if (scenario.assert?.warnings) {
+        expect(warnings).toEqual(scenario.assert.warnings);
+      }
 
       // Assert expectations - Filesystem
       if (scenario.assert?.fileSystem) {
@@ -131,13 +141,29 @@ function runScenario(scenario: any) {
           }
           else {
             expect(fs.existsSync(absolutePath)).toBe(true);
-            if (typeof condition === 'string') {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent.trim()).toBe(condition.trim());
-            }
-            else if (condition && typeof condition === 'object' && 'contains' in condition) {
-              const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
-              expect(actualContent).toContain(condition.contains);
+            const actualContent = fs.readFileSync(absolutePath, 'utf8') as string;
+            // A condition is one of: a bare string (exact match), a `{contains}`
+            // mapping, a `{notContains}` mapping, an empty `{}` mapping
+            // (existence only, already asserted above), or a list of such
+            // conditions.
+            const conditions = Array.isArray(condition) ? condition : [condition];
+            for (const c of conditions) {
+              if (typeof c === 'string') {
+                expect(actualContent.trim()).toBe(c.trim());
+              }
+              else if (c && typeof c === 'object' && 'contains' in c) {
+                expect(actualContent).toContain(c.contains);
+              }
+              else if (c && typeof c === 'object' && 'notContains' in c) {
+                expect(actualContent).not.toContain(c.notContains);
+              }
+              else if (c && typeof c === 'object' && Object.keys(c).length === 0) {
+                // Existence-only assertion; nothing more to check.
+              }
+              else {
+                throw new Error(
+                  `Unsupported fileSystem assertion for ${fpath}: ${JSON.stringify(c)}`);
+              }
             }
           }
         }
@@ -146,6 +172,9 @@ function runScenario(scenario: any) {
       // Assert expectations - Catalog Service
       if (scenario.assert?.catalog?.entries) {
         expect(JSON.parse(JSON.stringify(catalog.mockEntries))).toEqual(JSON.parse(JSON.stringify(scenario.assert.catalog.entries)));
+      }
+      if (scenario.assert?.catalog?.lookupAspectTypes) {
+        expect(catalog.lookupAspectTypes).toEqual(scenario.assert.catalog.lookupAspectTypes);
       }
     });
   });
@@ -200,9 +229,18 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockImplementation(
+    async function(project: string, location: string, entry: string, aspects?: string[]) {
+      if (currentCatalogMock) {
+        return await currentCatalogMock.lookupEntry(project, location, entry, aspects);
+      }
+      return { status: 404, message: 'Not found' };
+    }
+  );
+
+  spyOn(gcp.CatalogClient.prototype, 'lookupEntryAspectTypes').mockImplementation(
     async function(project: string, location: string, entry: string) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.lookupEntry(project, location, entry);
+        return await currentCatalogMock.lookupEntryAspectTypes(project, location, entry);
       }
       return { status: 404, message: 'Not found' };
     }
@@ -228,9 +266,9 @@ function main() {
   );
 
   spyOn(gcp.CatalogClient.prototype, 'updateEntry').mockImplementation(
-    async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[]) {
+    async function(entry: gcp.Entry, updateMask?: string[], aspectKeys?: string[], deleteMissingAspects?: boolean) {
       if (currentCatalogMock) {
-        return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys);
+        return await currentCatalogMock.updateEntry(entry, updateMask, aspectKeys, deleteMissingAspects);
       }
       return { status: 404, message: 'Not found' };
     }

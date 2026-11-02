@@ -1,5 +1,5 @@
 name: push_bq
-description: Push BigQuery dataset modifications
+description: Push BigQuery dataset modifications from a catalog.yaml that lists aspect types but no entry types
 setup:
   bigQuery:
     datasets:
@@ -11,8 +11,6 @@ setup:
   catalog:
     entryTypes:
       - name: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
-    aspectTypes:
-      - name: projects/dataplex-types/locations/global/aspectTypes/overview
     entries:
       - name: projects/p/locations/us/entryGroups/@bigquery/entries/bigquery.googleapis.com/projects/p/datasets/d
         entryType: projects/dataplex-types/locations/global/entryTypes/bigquery-dataset
@@ -27,8 +25,6 @@ setup:
     catalog.yaml: |
       scope: bq-dataset.p.d
       snapshot:
-        entries:
-          - dataplex-types.global.bigquery-dataset
         aspects:
           - dataplex-types.global.overview
 

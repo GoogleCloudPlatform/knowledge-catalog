@@ -3,7 +3,7 @@ type: BigQuery Table
 resource: https://bigquery.googleapis.com/v2/projects/bigquery-public-data/datasets/stackoverflow/tables/votes
 title: Stack Overflow Votes
 description: Records all votes cast on Stack Overflow posts.
-tags: Stack Overflow, votes, posts, community
+tags: [Stack Overflow, votes, posts, community]
 generated:
   by: reference_agent/gemini-2.5-flash
   at: '2026-07-10T22:51:18+00:00'

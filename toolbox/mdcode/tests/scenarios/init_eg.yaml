@@ -11,4 +11,5 @@ init:
 assert:
   fileSystem:
     catalog.yaml:
-      contains: "scope: entryGroup.test-proj.us.test-group"
+      - contains: "scope: entryGroup.test-proj.us.test-group"
+      - contains: "aspects:\n    - dataplex-types.global.overview"

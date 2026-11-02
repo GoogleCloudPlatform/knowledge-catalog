@@ -8,7 +8,6 @@ import * as yaml from 'yaml';
 import * as md from '../metadata';
 import { CatalogLayout } from '../layout';
 
-const OVERVIEW_ASPECT_KEY = 'dataplex-types.global.overview';
 const DEFAULT_ENTRY_TYPE = 'dataplex-types.global.generic';
 const INDEX_NAME = 'index';
 
@@ -86,11 +85,11 @@ export class DocumentsLayout implements CatalogLayout {
 
     const bodyTrimmed = body.trim();
     if (bodyTrimmed) {
-      if (!entry.aspects[OVERVIEW_ASPECT_KEY]) {
-        entry.aspects[OVERVIEW_ASPECT_KEY] = {};
+      if (!entry.aspects[md.OVERVIEW_ASPECT]) {
+        entry.aspects[md.OVERVIEW_ASPECT] = {};
       }
-      entry.aspects[OVERVIEW_ASPECT_KEY].content = bodyTrimmed;
-      entry.aspects[OVERVIEW_ASPECT_KEY].contentType = 'MARKDOWN';
+      entry.aspects[md.OVERVIEW_ASPECT].content = bodyTrimmed;
+      entry.aspects[md.OVERVIEW_ASPECT].contentType ??= 'MARKDOWN';
     }
     return entry;
   }
@@ -103,12 +102,14 @@ export class DocumentsLayout implements CatalogLayout {
     const clonedEntry = JSON.parse(JSON.stringify(entry)) as md.Entry;
     let body = '';
 
-    if (clonedEntry.aspects?.[OVERVIEW_ASPECT_KEY]) {
-      const aspect = clonedEntry.aspects[OVERVIEW_ASPECT_KEY];
+    if (clonedEntry.aspects?.[md.OVERVIEW_ASPECT]) {
+      const aspect = clonedEntry.aspects[md.OVERVIEW_ASPECT];
       if (aspect.content !== undefined) {
         body = aspect.content;
         delete aspect.content;
-        delete aspect.contentType;
+        // Any other content type stays in the front matter, so a push
+        // keeps it.
+        if (aspect.contentType === 'MARKDOWN') delete aspect.contentType;
       }
     }
 
@@ -182,19 +183,29 @@ function deriveParentLocalName(name: string): string | undefined {
   return [...parentDir, INDEX_NAME].join('/');
 }
 
-export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+// Splits markdown text into its YAML frontmatter, parsed, and its body.
+// `metadata` is undefined when the text does not open with a `---` block.
+export function splitFrontmatter(
+    content: string): {metadata?: any; body: string} {
   const lines = content.split(/\r?\n/);
-  if (lines[0] !== '---') {
-    return { entry: null, body: content };
-  }
-  const endIndex = lines.indexOf('---', 1);
-  if (endIndex === -1) {
-    return { entry: null, body: content };
-  }
+  const endIndex = lines[0] === '---' ? lines.indexOf('---', 1) : -1;
+  if (endIndex === -1) return {body: content};
+  return {
+    metadata: yaml.parse(lines.slice(1, endIndex).join('\n')),
+    body: lines.slice(endIndex + 1).join('\n'),
+  };
+}
 
-  const frontmatter = lines.slice(1, endIndex).join('\n');
-  const metadata = yaml.parse(frontmatter);
-  const body = lines.slice(endIndex + 1).join('\n');
+// Markdown text with `metadata` as its YAML frontmatter and `body` after it.
+export function joinFrontmatter(metadata: object, body: string): string {
+  return `---\n${yaml.stringify(metadata).trim()}\n---\n${body}`;
+}
+
+export function parseMarkdown(content: string): { entry: md.Entry|null; body: string } {
+  const {metadata, body} = splitFrontmatter(content);
+  if (metadata === undefined) {
+    return { entry: null, body };
+  }
 
   const entry = (metadata.catalogEntry ?? {}) as md.Entry;
   entry.type = (typeof metadata.type === 'string' && metadata.type.split('.').length === 3)
@@ -252,6 +263,5 @@ export function toMarkdown(entry: md.Entry, body: string): string {
     delete entryClone.resource.labels[tag];
   }
 
-  const frontmatter = yaml.stringify(metadata).trim();
-  return `---\n${frontmatter}\n---\n${body}`;
+  return joinFrontmatter(metadata, body);
 }

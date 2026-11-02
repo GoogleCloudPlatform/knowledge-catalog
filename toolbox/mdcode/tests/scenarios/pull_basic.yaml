@@ -1,14 +1,36 @@
 name: pull_basic
-description: EntryGroup with single entry
+description: EntryGroup with entries of two types, each pulled with every loaded aspect type whatever the listing order, beside the entry group's own entry, which is not pulled
 setup:
   catalog:
     entryGroups:
       - name: projects/test/locations/us/entryGroups/g1
     entryTypes:
       - name: projects/test/locations/global/entryTypes/et1
+      - name: projects/test/locations/global/entryTypes/et2
+        requiredAspects:
+          - type: projects/test/locations/global/aspectTypes/a1
+      - name: projects/dataplex-types/locations/global/entryTypes/entrygroup
+    aspectTypes:
+      - name: projects/test/locations/global/aspectTypes/a1
     entries:
       - name: projects/test/locations/us/entryGroups/g1/entries/e1
         entryType: projects/test/locations/global/entryTypes/et1
+        aspects:
+          test.global.a1:
+            aspectType: projects/test/locations/global/aspectTypes/a1
+            data:
+              note: on e1
+      - name: projects/test/locations/us/entryGroups/g1/entries/e2
+        entryType: projects/test/locations/global/entryTypes/et2
+      - name: projects/test/locations/us/entryGroups/g1/entries/e3
+        entryType: projects/test/locations/global/entryTypes/et1
+        aspects:
+          test.global.a1:
+            aspectType: projects/test/locations/global/aspectTypes/a1
+            data:
+              note: on e3
+      - name: projects/test/locations/us/entryGroups/g1/entries/g1_entry
+        entryType: projects/dataplex-types/locations/global/entryTypes/entrygroup
 
   fileSystem:
     catalog.yaml: |
@@ -22,3 +44,11 @@ assert:
     catalog/e1.yaml:
       - contains: "name: e1"
       - contains: "type: test.global.et1"
+      - contains: "note: on e1"
+    catalog/e3.yaml:
+      - contains: "note: on e3"
+    catalog/g1_entry.yaml: null
+  catalog:
+    lookupAspectTypes:
+      - projects/test/locations/global/aspectTypes/a1
+      - test.global.a1

@@ -10,6 +10,9 @@ import { CatalogSource, createSource, Sources } from './source';
 
 const manifestSchema = z.object({
   scope: z.union([z.string(), z.array(z.string())]),
+  // The binding profile a bare `kcmd push` uses when --profile is omitted
+  // (semantic-model scope). Omitted means the inline 'default' binding.
+  default_profile: z.string().optional(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -40,35 +43,46 @@ export class CatalogManifest {
   readonly source: CatalogSource;
   readonly snapshotConfig?: SnapshotConfig;
   readonly publishingConfig?: PublishingConfig;
+  // The default binding profile for a semantic-model scope (see the schema).
+  readonly defaultProfile?: string;
 
   private constructor(
     source: CatalogSource,
     snapshotConfig?: SnapshotConfig,
-    publishingConfig?: PublishingConfig
+    publishingConfig?: PublishingConfig,
+    defaultProfile?: string
   ) {
     this.source = source;
     this.snapshotConfig = snapshotConfig;
     this.publishingConfig = publishingConfig;
+    this.defaultProfile = defaultProfile;
+  }
+
+  // A manifest for a scope `kcmd init` just named, listing the scope's default
+  // aspects under snapshot.aspects.
+  private static forNewSource(source: CatalogSource): CatalogManifest {
+    const aspects = [...source.defaultAspects];
+    return new CatalogManifest(source, aspects.length ? { aspects } : undefined);
   }
 
   static async initWithEntryGroup(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.ENTRYGROUP, name, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async initWithBigQuery(dataset: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.BIGQUERY_DATASET, dataset, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async initWithKnowledgeBase(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.KB, name, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async initWithSemanticModel(name: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
     const source = await createSource(Sources.SEMANTIC_MODEL, name, ctx);
-    return new CatalogManifest(source);
+    return CatalogManifest.forNewSource(source);
   }
 
   static async load(path: string, ctx: gcp.ApiContext): Promise<CatalogManifest> {
@@ -167,7 +181,8 @@ export class CatalogManifest {
       }
     }
 
-    return new CatalogManifest(source, snapshot, publishing);
+    return new CatalogManifest(
+        source, snapshot, publishing, result.data.default_profile);
   }
 
   save(path: string): void {
@@ -182,6 +197,7 @@ export class CatalogManifest {
 
     const data: any = {
       scope: scope,
+      default_profile: this.defaultProfile ?? undefined,
       snapshot: this.snapshotConfig ?? undefined,
       publishing: this.publishingConfig ?? undefined
     };

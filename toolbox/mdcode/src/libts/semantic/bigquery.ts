@@ -1,10 +1,10 @@
 // Generates BigQuery property-graph DDL (with inline measures) from the
 // Semantic Model IR.
 //
-// The IR (./ir) is pure semantics. This module is one of its consumers: it
-// emits a single `CREATE OR REPLACE PROPERTY GRAPH` statement over the
-// entities' existing base tables, with model-level metrics rendered as inline
-// `MEASURE(...)` properties.
+// The shared GoogleSQL generator (./graph_ddl) writes the graph structure: node
+// tables, edge tables, labels, properties, and key and join columns. This
+// module supplies its BigQuery engine: qualified names, measures, the
+// per-element OPTIONS clause, and the SQL text a field binds to.
 //
 // BigQuery graph measures bind an aggregate to exactly one table's KEY; the
 // cross-entity rollup happens at query time via GRAPH_EXPAND(...) + AGG(...).
@@ -19,31 +19,18 @@
 // See: https://docs.cloud.google.com/bigquery/docs/graph-measures
 //
 
-import {AiContext, Association, Entity, Field, isTimeDimension, Metric, Relationship, SemanticModel,} from './ir';
-import {referencedEntityNames, stripQualifier} from './sql_expr_utils';
+import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
+import {AiContext, Entity, expressionForDialect, Field, isFieldBound, isTimeDimension, Metric, SemanticModel,} from './ir';
+import {referencedEntityNames, sqlWithoutComments, stripQualifier, SUPPORTED_AGGREGATES} from './sql_expr_utils';
+import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 
 export interface GenerateOptions {
-  project?: string;    // fills the project for the graph name + under-qualified
-                       // table refs
-  dataset?: string;    // fills the dataset for the graph name + under-qualified
-                       // table refs
+  project?: string;    // fills the graph name's project
+  dataset?: string;    // fills the graph name's dataset
   graphName?: string;  // default: model.name
 }
 
-export interface GenerateResult {
-  ddl: string;         // CREATE OR REPLACE PROPERTY GRAPH ...
-  warnings: string[];  // skipped metrics, unresolved table refs, etc.
-}
-
-// Aggregate functions BigQuery accepts inside MEASURE(...). This is the
-// COMPLETE allowed set, not a convenience subset: BigQuery rejects any other
-// aggregate in a measure expression with "Aggregate function <name> is not
-// allowed in a measure expression in BigQuery" (verified live — STDDEV,
-// VARIANCE, COUNTIF, APPROX_COUNT_DISTINCT, ANY_VALUE, LOGICAL_AND/OR,
-// BIT_AND/OR/XOR all rejected). A metric using an aggregate outside this set
-// therefore cannot be a MEASURE and is skipped + warned rather than emitted as
-// DDL BigQuery would reject.
-const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
+export type {GenerateResult};
 
 /**
  * Generates the BigQuery property-graph DDL for a semantic model.
@@ -58,96 +45,40 @@ const SUPPORTED_AGGREGATES = ['SUM', 'AVG', 'COUNT', 'MIN', 'MAX'];
  */
 export function generatePropertyGraph(
     model: SemanticModel, opts: GenerateOptions = {}): GenerateResult {
-  const warnings: string[] = [];
+  return generateGraphDdl(model, bigQueryEngine(opts));
+}
 
-  // The IR requires entities/relationships/metrics, but be defensive against a
-  // hand-built or partially-deserialized model rather than throwing on `.map`.
-  const entities = model.entities ?? [];
-  const relationships = model.relationships ?? [];
-  const metrics = model.metrics ?? [];
+// The BigQuery engine for the shared generator.
+function bigQueryEngine(opts: GenerateOptions): GraphEngine {
+  return {
+    name: 'BigQuery',
+    table: qualifyTable,
+    graphName: model => qualifyGraph(model, opts),
+    placeMetrics,
+    elementOptions: (description, ai) =>
+        optionsClause(elementDescription(description, ai), ai?.synonyms),
+    fieldOptions: field =>
+        optionsClause(fieldDescription(field), field.aiContext?.synonyms),
+    dialect: 'BIGQUERY',
+    fieldExpression,
+  };
+}
 
-  // A graph node table requires a non-empty KEY. An entity whose primary key is
-  // empty cannot form a valid node, so skip it (and, below, any edge that
-  // references it) rather than emit `KEY()` — invalid DDL. The loader already
-  // warns about the missing key; this records the resulting structural drop.
-  const skipped = new Set<string>();
-  const validEntities = entities.filter(entity => {
-    if (entity.keys && entity.keys.length) return true;
-    warnings.push(
-        `entity '${
-            entity.name}': empty KEY (no primary key); node table skipped, ` +
-        `as a graph node requires a KEY`);
-    skipped.add(entity.name);
-    return false;
-  });
-
-  // A property graph must have at least one NODE TABLE; an empty `NODE TABLES
-  // ()` block is invalid DDL under any circumstance. When no entity can form a
-  // node — the model declares none, or every one was skipped for an empty KEY —
-  // fail loudly rather than emit a graph BigQuery would reject. The collected
-  // skip reasons ride along in the error so the caller sees why each entity
-  // dropped.
-  if (!validEntities.length) {
-    const reason = entities.length ?
-        'every entity was skipped because it has no primary key (a graph node requires a KEY)' :
-        'the model declares no entities';
-    throw new Error(
-        `cannot generate a property graph: ${reason}; a graph requires at ` +
-        `least one NODE TABLE` +
-        (warnings.length ? `\n${warnings.join('\n')}` : ''));
-  }
-
-  // Metrics are model-level; place each on the single entity its aggregate
-  // references, lowering it to a MEASURE over an exposed property. Both maps
-  // are keyed by entity name; entries on a skipped entity simply never render.
-  const entityByName = new Map(entities.map(e => [e.name, e]));
-  const metricsByEntity = new Map<string, string[]>();
+// Places each metric on the single entity its aggregate references, lowering
+// it to a MEASURE over an exposed property (see placeMetric).
+function placeMetrics(
+    metrics: Metric[], input: MetricPlacementInput,
+    warnings: string[]): Map<string, string[]> {
   const loweringByEntity = new Map<string, MeasureLowering>();
   for (const metric of metrics) {
-    placeMetric(
-        metric, model, entityByName, skipped, metricsByEntity, loweringByEntity,
-        warnings);
+    placeMetric(metric, input, loweringByEntity, warnings);
   }
-
-  const nodeTables = validEntities.map(
-      entity => renderNodeTable(
-          entity, loweringByEntity.get(entity.name)?.derivedProperties ?? [],
-          metricsByEntity.get(entity.name) ?? [], opts, warnings));
-
-  const entitiesByName = new Map(validEntities.map(e => [e.name, e]));
-  const edgeTables =
-      relationships
-          .filter(rel => {
-            // An edge REFERENCES both endpoint nodes; if either was skipped the
-            // edge cannot resolve, so drop it too.
-            const dangling = [rel.source.entity, rel.destination.entity].filter(
-                n => skipped.has(n));
-            if (!dangling.length) return true;
-            warnings.push(
-                `relationship '${rel.name}': references skipped entity ` +
-                `${dangling.map(n => `'${n}'`).join(', ')}; edge omitted`);
-            return false;
-          })
-          .map(rel => renderEdgeTable(rel, entitiesByName, opts, warnings));
-
-  const graphName = qualifyGraph(model, opts);
-
-  const blocks: string[] = [
-    `CREATE OR REPLACE PROPERTY GRAPH ${graphName}`,
-    `NODE TABLES (\n${nodeTables.join(',\n')}\n)`,
-  ];
-  if (edgeTables.length) {
-    blocks.push(`EDGE TABLES (\n${edgeTables.join(',\n')}\n)`);
+  // The operand properties come first: the measures aggregate them.
+  const placed = new Map<string, string[]>();
+  for (const [name, lowering] of loweringByEntity) {
+    placed.set(name, [...lowering.derivedProperties, ...lowering.measures]);
   }
-
-  // Graph-level metadata: the trailing OPTIONS after the EDGE TABLES clause
-  // (grammar: create_property_graph_statement). The model's AI-first
-  // annotations are folded into the description here (see elementDescription).
-  const graphOpts =
-      optionsClause(elementDescription(model.description, model.aiContext));
-  if (graphOpts) blocks.push(graphOpts);
-
-  return {ddl: blocks.join('\n') + ';\n', warnings: dedupe(warnings)};
+  return placed;
 }
 
 
@@ -160,7 +91,9 @@ export function generatePropertyGraph(
 // unique.
 interface MeasureLowering {
   derivedProperties: string[];  // extra property lines to emit on the node
+  measures: string[];           // the MEASURE properties placed on the node
   taken: Set<string>;           // property names already in use on the node
+  fieldNames: Set<string>;      // declared field names (each an exposed property)
   byLocalExpr: Map<string, string>;  // existing field local-expression -> its
                                      // property name
   operandToName:
@@ -172,15 +105,24 @@ interface MeasureLowering {
 // duplicating.
 function newLowering(entity: Entity): MeasureLowering {
   const taken = new Set<string>();
+  const fieldNames = new Set<string>();
   const byLocalExpr = new Map<string, string>();
   for (const f of entity.fields) {
     taken.add(f.name);
+    fieldNames.add(f.name);
     const expr = fieldExpression(f);
     if (expr === undefined) continue;
     const local = stripQualifier(expr, entity.name);
     if (!byLocalExpr.has(local)) byLocalExpr.set(local, f.name);
   }
-  return {derivedProperties: [], taken, byLocalExpr, operandToName: new Map()};
+  return {
+    derivedProperties: [],
+    measures: [],
+    taken,
+    fieldNames,
+    byLocalExpr,
+    operandToName: new Map()
+  };
 }
 
 // Assigns a metric to the node table of the single entity its aggregate
@@ -188,30 +130,33 @@ function newLowering(entity: Entity): MeasureLowering {
 // warning (and skips) when it references zero/multiple entities or is not a
 // single supported aggregate over one operand.
 function placeMetric(
-    metric: Metric, model: SemanticModel, entityByName: Map<string, Entity>,
-    skipped: Set<string>, metricsByEntity: Map<string, string[]>,
+    metric: Metric, input: MetricPlacementInput,
     loweringByEntity: Map<string, MeasureLowering>, warnings: string[]): void {
-  // The IR keeps at most two expression forms; a measure is emitted from the
-  // target/canonical `expression`, falling back to the imported vendor SQL when
-  // that is all the model carries (a transpile pass may fill `expression`
-  // later).
+  const {entityByName, skipped, ancestorsUsed} = input;
+  // A measure is emitted from the metric's BigQuery SQL (see
+  // metricExpression). A metric with SQL only for other engines is skipped
+  // with a warning naming the dialects it lacks, rather than emitting that
+  // other engine's SQL into a BigQuery graph.
   const expression = metricExpression(metric);
   if (expression === undefined) {
-    warnings.push(`metric '${
-        metric
-            .name}' has no expression; skipped (nothing to emit as a MEASURE)`);
+    warnings.push(
+        metric.dialects?.length || metric.importedExpression !== undefined ?
+            `metric '${metric.name}' has no 'BIGQUERY' or 'ANSI_SQL' ` +
+                `expression; skipped (nothing to emit as a MEASURE)` :
+            `metric '${metric.name}' has no expression; skipped (nothing ` +
+                `to emit as a MEASURE)`);
     return;
   }
 
-  let referenced = referencedEntities(expression, model);
+  // The entities whose `<name>.` qualifier the expression uses. String literals
+  // are ignored, so a value like 'orders.x' does not reference `orders`.
+  let referenced = referencedEntityNames(expression, [...entityByName.keys()]);
 
   // A qualifier-free aggregate (e.g. COUNT(*)) names no entity in its
-  // expression; fall back to the declared attach entity when the IR provides
-  // one, so it can still be placed rather than dropped as "references no
-  // entity". The loader DERIVES metric.entity from the expression's qualifiers,
-  // so from a loaded model this never fires (no qualifier => no entity). It is
-  // the hand-built-IR path: an author sets metric.entity for a COUNT(*) to
-  // attach it (see the COUNT(*)-lowering tests).
+  // expression; fall back to `metric.entity` when the IR provides one (an
+  // authored `entity` in `0.2.0.dev0/google`, an entity inferred from another
+  // dialect entry, or hand-built IR), so it can still be placed rather than
+  // dropped as "references no entity".
   if (referenced.length === 0 && metric.entity) {
     referenced = [metric.entity];
   }
@@ -245,6 +190,16 @@ function placeMetric(
         entityName}'; skipped (cannot be a single MEASURE)`);
     return;
   }
+  // An abstract entity is a table-less supertype with no node table, so it can
+  // carry no MEASURE. Report that specifically -- it is also in `skipped`, so
+  // this must precede the generic no-KEY message below to stay accurate.
+  if (entity.abstract) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is ` +
+        `abstract (a table-less supertype with no node table to carry a ` +
+        `MEASURE); metric dropped`);
+    return;
+  }
   // A metric can only become a MEASURE on a node table, but an entity that was
   // skipped upstream (empty KEY) has no node table to carry it. Check the skip
   // set already computed, and report the drop directly, instead of letting it
@@ -252,6 +207,23 @@ function placeMetric(
   if (skipped.has(entityName)) {
     warnings.push(`metric '${metric.name}' targets entity '${
         entityName}', which has no KEY and was skipped; metric dropped`);
+    return;
+  }
+  // A measure is allowed only on a LEAF type -- one that no table-emitting
+  // entity extends. A metric lowers to a MEASURE on the target's DEFAULT LABEL;
+  // when that entity is a supertype its label is shared with every subtype
+  // table, and BigQuery forbids a MEASURE on a label carried by more than one
+  // element table (verified live: "defined as MEASURE, but there are other
+  // declarations with the same name"). Drop it with a warning rather than emit
+  // DDL BigQuery rejects. Push validation rejects such a metric before
+  // generation; this guard covers a caller that generates DDL without
+  // validating first.
+  if (ancestorsUsed.has(entityName)) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is not ` +
+        `a leaf type (another entity extends it); a measure is allowed only on ` +
+        `a leaf type, because a supertype's label is shared across its ` +
+        `subtype tables; skipped`);
     return;
   }
 
@@ -275,9 +247,11 @@ function placeMetric(
   loweringByEntity.set(entityName, lowering);
 
   // Resolve the aggregate's operand to an exposed property. COUNT(*) has no
-  // operand column, so it counts the (non-null) key property instead.
+  // operand column, so it counts the first column of the node's key instead:
+  // the primary key, else the first unique key (nodeKey).
   let operandExpr = agg.operand;
-  if (operandExpr === '*') {
+  const countsKey = agg.operand === '*';
+  if (countsKey) {
     // The entity is already known to have a key (checked above), so only the
     // aggregate itself can disqualify a `*` operand: BigQuery lowers `COUNT(*)`
     // to a count over the key, but no other aggregate has a `*` form.
@@ -287,7 +261,20 @@ function placeMetric(
           `(only COUNT(*) over a keyed node can be lowered)`);
       return;
     }
-    operandExpr = entity.keys[0];
+    operandExpr = nodeKey(entity)[0];
+  }
+
+  // A field with no BigQuery SQL is left out of the node table, so a measure
+  // over it would aggregate a property the table does not declare.
+  if (!countsKey &&
+      entity.fields.some(
+          f => f.name === operandExpr && isFieldBound(f) &&
+              fieldExpression(f) === undefined)) {
+    warnings.push(
+        `metric '${metric.name}' aggregates field '${operandExpr}', which ` +
+        `has no 'BIGQUERY' or 'ANSI_SQL' expression; skipped (nothing to ` +
+        `emit as a MEASURE)`);
+    return;
   }
 
   // The measure is itself exposed as a node property named `metric.name`, so it
@@ -306,15 +293,17 @@ function placeMetric(
   }
   lowering.taken.add(metric.name);
 
-  const propName = exposeOperand(lowering, operandExpr, metric.name);
-  const aggregate = `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${propName})`;
+  const propName = countsKey ?
+      exposeKeyColumn(lowering, operandExpr, metric.name) :
+      exposeOperand(lowering, operandExpr, metric.name);
+  const aggregate =
+      `${agg.fn}(${agg.distinct ? 'DISTINCT ' : ''}${quoteIfReserved(propName)})`;
 
-  const opts =
-      optionsClause(elementDescription(metric.description, metric.aiContext));
-  const measure = `MEASURE(${aggregate}) AS ${metric.name}`;
-  const lines = metricsByEntity.get(entityName) ?? [];
-  lines.push(opts ? `${measure} ${opts}` : measure);
-  metricsByEntity.set(entityName, lines);
+  const opts = optionsClause(
+      elementDescription(metric.description, metric.aiContext),
+      metric.aiContext?.synonyms);
+  const measure = `MEASURE(${aggregate}) AS ${quoteIfReserved(metric.name)}`;
+  lowering.measures.push(opts ? `${measure} ${opts}` : measure);
 }
 
 // Ensures `operandExpr` is exposed as a node property and returns its property
@@ -328,25 +317,55 @@ function exposeOperand(
       lowering.operandToName.get(operandExpr);
   if (existing) return existing;
 
+  // An operand that names a declared field is already an exposed property, so a
+  // MEASURE may aggregate it directly by name -- even when a profile bound that
+  // field to a differently named physical column (the property is
+  // `<column> AS <field>`, and a MEASURE may reference a sibling alias).
+  // Synthesizing an input property here would emit `<field> AS ..._input`, and
+  // an alias is illegal inside a property expression -- BigQuery rejects it with
+  // "Unrecognized name". (A raw column that is not a field still falls through
+  // to be exposed under its own name, which BigQuery requires.)
+  if (lowering.fieldNames.has(operandExpr)) return operandExpr;
+
   let name: string;
   if (isSimpleIdentifier(operandExpr) && !lowering.taken.has(operandExpr)) {
     // A bare column not already declared: expose it under its own name.
     name = operandExpr;
-    lowering.derivedProperties.push(name);
+    lowering.derivedProperties.push(quoteIfReserved(name));
   } else {
     name = uniqueName(`${metricName}_input`, lowering.taken);
-    lowering.derivedProperties.push(`${operandExpr} AS ${name}`);
+    lowering.derivedProperties.push(`${quoteIfReserved(operandExpr)} AS ${name}`);
   }
   lowering.taken.add(name);
   lowering.operandToName.set(operandExpr, name);
   return name;
 }
 
+// Exposes the key column COUNT(*) counts and returns its property name,
+// reusing a field whose expression is exactly that column, or the property an
+// earlier metric exposed for it.
+function exposeKeyColumn(
+    lowering: MeasureLowering, column: string, metricName: string): string {
+  const existing =
+      lowering.byLocalExpr.get(column) ?? lowering.operandToName.get(column);
+  if (existing) return existing;
+  const bare = isSimpleIdentifier(column) && !lowering.taken.has(column);
+  const name =
+      bare ? column : uniqueName(`${metricName}_input`, lowering.taken);
+  lowering.derivedProperties.push(
+      bare ? quoteIfReserved(column) : `${physicalColumn(column)} AS ${name}`);
+  lowering.taken.add(name);
+  // An operand named like a field reads that field (exposeOperand), so only a
+  // column no field is named after is shared with a later metric's operand.
+  if (!lowering.fieldNames.has(column)) lowering.operandToName.set(column, name);
+  return name;
+}
+
 // Extracts the function name and operand from a single-aggregate expression, or
 // returns null when the body is not exactly one supported aggregate wrapping
-// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, or a
-// multi-argument call). `COUNT(DISTINCT x)` is recognized, yielding operand `x`
-// with distinct.
+// one operand (a non-aggregate, a compound like `SUM(x)/SUM(y)`, a call with no
+// operand, or a multi-argument call). `COUNT(DISTINCT x)` is recognized,
+// yielding operand `x` with distinct.
 function extractAggregate(body: string):
     {fn: string; operand: string; distinct: boolean}|null {
   const s = body.trim();
@@ -393,12 +412,13 @@ function extractAggregate(body: string):
 
   let operand = s.slice(start, end).trim();
   let distinct = false;
-  const dm = operand.match(/^DISTINCT\s+(.*)$/is);
+  const dm = operand.match(/^DISTINCT(?:\s+(.*))?$/is);
   if (dm) {
     distinct = true;
-    operand = dm[1].trim();
+    operand = (dm[1] ?? '').trim();
   }
 
+  if (operand === '') return null;  // no operand, as in SUM() or SUM(DISTINCT)
   if (operand !== '*' && hasTopLevelComma(operand))
     return null;  // multi-arg aggregate
   return {fn, operand, distinct};
@@ -433,9 +453,6 @@ function hasTopLevelComma(expr: string): boolean {
   return false;
 }
 
-function isSimpleIdentifier(s: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(s);
-}
 
 // Returns `base` if free, else the first `base_2`, `base_3`, ... not in
 // `taken`.
@@ -447,202 +464,41 @@ function uniqueName(base: string, taken: Set<string>): string {
   }
 }
 
-// Returns the model entity names whose `<name>.` qualifier appears in an
-// expression. String literals are ignored so a value like 'orders.x' is not
-// mistaken for a reference to the `orders` entity.
-function referencedEntities(
-    expression: string, model: SemanticModel): string[] {
-  return referencedEntityNames(
-      expression, (model.entities ?? []).map(e => e.name));
-}
 
-
-function renderNodeTable(
-    entity: Entity, derivedProperties: string[], measures: string[],
-    opts: GenerateOptions, warnings: string[]): string {
-  const table = qualifyTable(
-      entity.dataSource, opts, warnings, `entity '${entity.name}'`);
-  // Order: declared fields, then any operand properties synthesized for
-  // measures, then the measures themselves (which reference those operand
-  // properties).
-  const properties = [
-    ...entity.fields.map(f => renderFieldProperty(f, entity.name)),
-    ...derivedProperties,
-    ...measures,
-  ];
-
-  const lines = [
-    line(1, `${table} AS ${entity.name}`),
-    line(2, `KEY(${entity.keys.join(', ')})`),
-  ];
-  // Element-table description attaches to the DEFAULT LABEL: after the key
-  // clause, before PROPERTIES (grammar: element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(entity.description, entity.aiContext));
-  if (labelOpts) lines.push(line(2, labelOpts));
-  // Omit the PROPERTIES block when there is nothing to list, rather than emit
-  // an empty `PROPERTIES()` (a node table may declare just its KEY).
-  if (properties.length) lines.push(propertiesBlock(properties));
-  return lines.join('\n');
-}
-
-// Renders a field as a graph property: a bare column when the expression is
-// just the column, else `<expr> AS <name>`. Attaches metadata (label, temporal
-// role, description, AI-first annotations) as trailing OPTIONS per the
-// `derived_property` rule. A field with no expression is exposed as a bare
-// column under its name.
-function renderFieldProperty(field: Field, entity: string): string {
-  const expr = fieldExpression(field);
-  const local = expr !== undefined ? stripQualifier(expr, entity) : field.name;
-  const prop = local === field.name ? field.name : `${local} AS ${field.name}`;
-  const opts = optionsClause(fieldDescription(field));
-  return opts ? `${prop} ${opts}` : prop;
-}
-
-
-function renderEdgeTable(
-    rel: Relationship, entitiesByName: Map<string, Entity>,
-    opts: GenerateOptions, warnings: string[]): string {
-  // A many-to-many relationship is backed by its own association table rather
-  // than a source entity's foreign key; render it from that block.
-  if (rel.association) {
-    return renderAssociationEdge(
-        rel, rel.association, entitiesByName, opts, warnings);
-  }
-  // A relationship is a direct foreign key: the SOURCE entity's own base table
-  // backs the edge (one edge row per source row). Its FK columns
-  // (`rel.source.columns`) reference the destination's key columns
-  // (`rel.destination.columns`); the edge is keyed by, and references its
-  // source node through, the source entity's own key (looked up here rather
-  // than duplicated onto the relationship).
-  const sourceEntity = entitiesByName.get(rel.source.entity);
-  let backing: string;
-  let sourceKey: string[];
-  if (!sourceEntity) {
-    warnings.push(`relationship '${rel.name}': unknown source entity '${
-        rel.source.entity}'`);
-    backing = `\`${rel.source.entity}\``;
-    sourceKey = rel.source.columns;
-  } else {
-    backing = qualifyTable(
-        sourceEntity.dataSource, opts, warnings, `relationship '${rel.name}'`);
-    sourceKey = sourceEntity.keys;
-  }
-
-  const key = sourceKey.join(', ');
-  const lines = [
-    line(1, `${backing} AS ${rel.name}`),
-    line(2, `KEY(${key})`),
-    line(2, `SOURCE KEY(${key}) REFERENCES ${rel.source.entity}(${key})`),
-    line(
-        2,
-        `DESTINATION KEY(${rel.source.columns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${rel.destination.columns.join(', ')})`),
-  ];
-
-  // Edge description attaches to the DEFAULT LABEL: after the
-  // SOURCE/DESTINATION clauses (grammar: element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(rel.description, rel.aiContext));
-  if (labelOpts) lines.push(line(2, labelOpts));
-
-  return lines.join('\n');
-}
-
-
-// Renders a many-to-many edge backed by an association (junction) table. Unlike
-// a direct FK, the edge has its OWN backing table and KEY, each endpoint's
-// SOURCE/DESTINATION KEY names the junction columns referencing that entity's
-// declared key, and the junction's own `fields` become edge PROPERTIES.
-function renderAssociationEdge(
-    rel: Relationship, assoc: Association, entitiesByName: Map<string, Entity>,
-    opts: GenerateOptions, warnings: string[]): string {
-  const backing = qualifyTable(
-      assoc.dataSource, opts, warnings, `relationship '${rel.name}'`);
-  if (!assoc.keys?.length) {
-    warnings.push(
-        `relationship '${rel.name}': association table has no KEY; the edge ` +
-        `table will be invalid (an edge requires a KEY)`);
-  }
-
-  // The REFERENCES target is each endpoint entity's declared key; fall back to
-  // the endpoint's own columns (and warn) when the entity cannot be resolved.
-  const refColumns = (end: {entity: string; columns: string[]}): string => {
-    const entity = entitiesByName.get(end.entity);
-    if (!entity) {
-      warnings.push(
-          `relationship '${rel.name}': unknown entity '${end.entity}'`);
-      return end.columns.join(', ');
-    }
-    return entity.keys.join(', ');
-  };
-
-  const lines = [
-    line(1, `${backing} AS ${rel.name}`),
-    line(2, `KEY(${assoc.keys.join(', ')})`),
-    line(
-        2,
-        `SOURCE KEY(${assoc.sourceColumns.join(', ')}) REFERENCES ${
-            rel.source.entity}(${refColumns(rel.source)})`),
-    line(
-        2,
-        `DESTINATION KEY(${assoc.destinationColumns.join(', ')}) REFERENCES ${
-            rel.destination.entity}(${refColumns(rel.destination)})`),
-  ];
-
-  // Edge description attaches to the DEFAULT LABEL: after the
-  // SOURCE/DESTINATION clauses, before PROPERTIES (grammar:
-  // element_table_definition).
-  const labelOpts =
-      optionsClause(elementDescription(rel.description, rel.aiContext));
-  if (labelOpts) lines.push(line(2, labelOpts));
-
-  // The junction's own non-key fields are the edge's properties.
-  const properties =
-      (assoc.fields ?? []).map(f => renderFieldProperty(f, rel.name));
-  if (properties.length) lines.push(propertiesBlock(properties));
-
-  return lines.join('\n');
-}
-
-
-// The target/canonical expression, falling back to the imported vendor SQL when
-// that is all the IR carries (see the Field/Metric expression-fidelity
-// contract).
+// The SQL BigQuery runs for a field or metric: its `BIGQUERY` dialect entry,
+// else its `ANSI_SQL` one (see expressionForDialect), read as BigQuery with its
+// comments removed. Another engine's vendor SQL is never returned. The DDL puts
+// ` AS <name>` and a comma after the expression on the same line, and a line
+// comment left in would swallow them.
 function fieldExpression(f: Field): string|undefined {
-  return f.expression ?? f.importedExpression;
+  return bigQuerySql(f);
 }
 function metricExpression(m: Metric): string|undefined {
-  return m.expression ?? m.importedExpression;
+  return bigQuerySql(m);
+}
+function bigQuerySql(item: Field|Metric): string|undefined {
+  const text = expressionForDialect(item, 'BIGQUERY');
+  return text === undefined ? undefined : sqlWithoutComments(text);
 }
 
 
 // Builds a backtick-quoted table reference from the IR's `dataSource` string.
 // The IR contract guarantees `dataSource` is already canonical and
-// fully-qualified: the producer (loader) normalizes a bare name into a dotted
-// `project.dataset.table` (or a longer Lakehouse catalog name). For BigQuery
-// that canonical form IS the target addressing scheme, so this emits it
-// verbatim and NEVER prepends the graph's own project/dataset -- those name
-// where the graph is CREATED, not where a source table lives, and the two can
-// differ (e.g. a graph in `proj.demo` over source tables in `samples.tpch`).
-// Qualifying a source table is the producer's job, not the emitter's. A
-// verbatim query (contains whitespace) cannot back a graph element table, so it
-// is passed through parenthesized with a warning.
+// fully-qualified: the producer (loader) normalizes a BigQuery or BigLake
+// source into a dotted `project.dataset.table` (or four-part BigLake catalog
+// name). For BigQuery that canonical form IS the target addressing scheme, so
+// this emits it verbatim and NEVER prepends the graph's own project/dataset --
+// those name where the graph is CREATED, not where a source table lives, and
+// the two can differ (e.g. a graph in `proj.demo` over source tables in
+// `samples.tpch`). Qualifying a source table is the producer's job, not the
+// emitter's.
 function qualifyTable(
-    dataSource: string, _opts: GenerateOptions, warnings: string[],
-    context: string): string {
+    dataSource: string, warnings: string[], context: string): string {
   const trimmed = (dataSource ?? '').trim();
   if (!trimmed) {
     warnings.push(
         `${context}: empty data source; the table reference will be invalid`);
     return '``';
-  }
-  if (/\s/.test(trimmed)) {
-    warnings.push(
-        `${context}: data source '${
-            trimmed}' looks like a query, not a table reference; ` +
-        `emitting it verbatim (a graph element table requires a table)`);
-    return `(${trimmed})`;
   }
   return `\`${trimmed}\``;
 }
@@ -654,9 +510,10 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
   let project = opts.project;
   let dataset = opts.dataset;
 
-  const first = (model.entities ?? [])[0];
-  if ((!project || !dataset) && first?.dataSource &&
-      !/\s/.test(first.dataSource)) {
+  // Pick the first entity with a non-empty `dataSource` to derive the graph's
+  // location; skip abstract entities (empty source).
+  const first = (model.entities ?? []).find(e => e.dataSource);
+  if ((!project || !dataset) && first) {
     const p = first.dataSource.trim().split('.');
     if (p.length >= 3) {
       project = project ?? p[0];
@@ -677,54 +534,33 @@ function qualifyGraph(model: SemanticModel, opts: GenerateOptions): string {
 }
 
 
-// All generated indentation flows through this single mechanism: one nesting
-// level == one INDENT. `line` indents one line to a depth; `list` indents a set
-// of lines and joins them comma-separated; `propertiesBlock` is the shared
-// `PROPERTIES( ... )` shape used by both node and edge tables. Keeping every
-// indent derived from `depth` (rather than hardcoded spaces) makes the output
-// indentation consistent by construction.
-const INDENT = '  ';
-const pad = (depth: number): string => INDENT.repeat(depth);
-const line = (depth: number, text: string): string => `${pad(depth)}${text}`;
-const list = (depth: number, lines: string[]): string =>
-    lines.map(l => line(depth, l)).join(',\n');
-
-function propertiesBlock(properties: string[]): string {
-  return `${line(2, 'PROPERTIES(')}\n${list(3, properties)}\n${line(2, ')')}`;
-}
-
-
-// Composes the `OPTIONS(description=...)` text for a graph element from its
-// base description and AI-first annotations. BigQuery graph DDL exposes only a
-// single description slot, so instructions, synonyms, and examples are folded
-// into that one text (the only metadata sink the graph DDL provides).
+// Composes the folded `description` text for a graph element from its base
+// description and the AI-first annotations that have no dedicated BigQuery
+// option: instructions and examples. Synonyms are NOT folded in here --
+// BigQuery's PropertyGraph{Label,Property}Options carry a structured `synonyms`
+// array, so they are emitted as their own option (see optionsClause and the
+// call sites).
 function elementDescription(description?: string, ai?: AiContext): string|
     undefined {
   return composeText([
     description,
     ai?.instructions,
-    synonymsLine(ai?.synonyms),
     examplesLine(ai?.examples),
   ]);
 }
 
 // A field additionally carries a human `label` and a temporal-dimension role,
 // which lead the composed text (matching the authored order) ahead of its
-// description and AI-first annotations.
+// description and instructions/examples. Synonyms are emitted structurally, as
+// for elementDescription.
 function fieldDescription(field: Field): string|undefined {
   return composeText([
     field.label,
     isTimeDimension(field) ? 'Time dimension.' : undefined,
     field.description,
     field.aiContext?.instructions,
-    synonymsLine(field.aiContext?.synonyms),
     examplesLine(field.aiContext?.examples),
   ]);
-}
-
-function synonymsLine(synonyms?: string[]): string|undefined {
-  return synonyms && synonyms.length ? `Synonyms: ${synonyms.join(', ')}` :
-                                       undefined;
 }
 
 function examplesLine(examples?: string[]): string|undefined {
@@ -740,14 +576,22 @@ function composeText(parts: (string|undefined)[]): string|undefined {
   return kept.length ? kept.join('\n\n') : undefined;
 }
 
-// Renders the trailing `OPTIONS(description=...)` clause, or undefined when
-// there is nothing to say. The grammar allows this clause on graph properties
-// and measures (after the alias), on element tables (as DEFAULT LABEL options,
-// before PROPERTIES), and on the graph itself (after the EDGE TABLES clause).
-// See storage/googlesql/parser: `derived_property`, `element_table_definition`,
-// `create_property_graph_statement`.
-function optionsClause(text?: string): string|undefined {
-  return text ? `OPTIONS(description=${quote(text)})` : undefined;
+// Renders the trailing `OPTIONS(...)` clause for a graph element -- a folded
+// `description` string and/or a structured `synonyms` array -- or undefined
+// when there is nothing to emit. Both map to BigQuery's
+// PropertyGraph{Label,Property}Options (`description` singular, `synonyms`
+// repeated), honored on element-table labels (DEFAULT LABEL, before PROPERTIES)
+// and on derived properties and measures (after the alias). Statement-level
+// graph OPTIONS is intentionally not emitted: it parses but BigQuery silently
+// drops it (verified live; create_property_graph_options is off for BigQuery).
+function optionsClause(description?: string, synonyms?: string[]): string|
+    undefined {
+  const parts: string[] = [];
+  if (description) parts.push(`description=${quote(description)}`);
+  if (synonyms && synonyms.length) {
+    parts.push(`synonyms=[${synonyms.map(quote).join(', ')}]`);
+  }
+  return parts.length ? `OPTIONS(${parts.join(', ')})` : undefined;
 }
 
 // Renders a value as a BigQuery double-quoted string literal. Backslash and the
@@ -761,8 +605,4 @@ function quote(s: string): string {
                       .replace(/\r/g, '\\r')
                       .replace(/\t/g, '\\t');
   return `"${escaped}"`;
-}
-
-function dedupe(items: string[]): string[] {
-  return [...new Set(items)];
 }

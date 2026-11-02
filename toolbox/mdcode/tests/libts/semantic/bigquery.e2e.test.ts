@@ -22,12 +22,21 @@
 // Unit-level tests for the same generator (inline IR, inline goldens) live in
 // `bigquery.test.ts`.
 
-import {describe, expect, test} from 'bun:test';
+import {beforeAll, describe, expect, test} from 'bun:test';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import * as yaml from 'yaml';
+
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
-import {loadModels, LoadOptions} from '../../../src/libts/semantic/loader';
+import {loadModels, loadSemanticModels, LoadOptions} from '../../../src/libts/semantic/loader';
+import {mergeProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
+import {validatePushRequirements} from '../../../src/libts/semantic/validate';
+
+beforeAll(async () => {
+  await loadSqlEngine();
+});
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
@@ -40,7 +49,9 @@ const CORPUS = [
   'vendor_dialects.yaml',
   'measure_lowering.yaml',
   'metric_skips.yaml',
-  'keyless_dimension.yaml',
+  'hierarchy_graph.yaml',
+  'reserved_words.yaml',
+  'reserved_words_inherit.yaml',
 ];
 
 // Loads a fixture file to its IR. Split out from `build` so a test that only
@@ -48,9 +59,12 @@ const CORPUS = [
 // also run generation — which now throws for a model that yields no node table.
 function loadFixture(fixture: string, load: LoadOptions = {}) {
   const text = fs.readFileSync(path.join(FIXTURES, fixture), 'utf8');
-  return loadModels(
-      text,
-      {defaultProject: 'sqlgen-testing', defaultDataset: 'demo', ...load});
+  return loadModels(text, {
+    defaultProject: 'sqlgen-testing',
+    defaultDataset: 'demo',
+    allowLegacyBareSource: true,
+    ...load,
+  });
 }
 
 // Loads a fixture file and generates its property-graph DDL in one step, so a
@@ -98,6 +112,55 @@ describe(
       }
     });
 
+
+// keyless_dimension.yaml joins to a dataset with no key, which push rejects.
+// The generator still drops a node with no key, and every edge to it, if one
+// reaches it, so its golden stays outside the push-validated corpus.
+describe('a relationship to a keyless dataset', () => {
+  test('is rejected by push validation', () => {
+    const {models} = loadFixture('keyless_dimension.yaml');
+    expect(validatePushRequirements(
+               models.map(model => ({document: 'keyless_dimension.yaml', model})),
+               {targetOptional: true})
+               .join('\n'))
+        .toContain("cover no primary or unique key of 'nokey'");
+  });
+
+  test('is dropped by the generator, with its node, if one reaches it', () => {
+    const golden = goldenPath('keyless_dimension.yaml');
+    const actual = render('keyless_dimension.yaml');
+    if (process.env.UPDATE_GOLDENS) {
+      fs.writeFileSync(golden, actual);
+      return;
+    }
+    expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+  });
+});
+
+
+// A golden captures what the generator emits, and the generator runs only on a
+// model push validation has accepted. A fixture that validation rejects would
+// pin output no real push produces, so every golden fixture must pass. The
+// deployment target is optional here: most fixtures exercise generation and
+// declare none. `metric_skips.yaml` and `measure_lowering.yaml` exist
+// specifically to exercise how the generator skips or lowers a metric that push
+// validation rejects (unanchored multi-entity metrics and undeclared field
+// references), so they are excluded from this check.
+const GENERATOR_ONLY_FIXTURES = new Set([
+  'metric_skips.yaml',
+  'measure_lowering.yaml',
+]);
+describe('every golden fixture passes push validation', () => {
+  for (const fixture of CORPUS.filter(f => !GENERATOR_ONLY_FIXTURES.has(f))) {
+    test(fixture, () => {
+      const {models} = loadFixture(fixture);
+      expect(validatePushRequirements(
+                 models.map(model => ({document: fixture, model})),
+                 {targetOptional: true}))
+          .toEqual([]);
+    });
+  }
+});
 
 describe('dialect selection is surfaced by risk when the target dialect is absent', () => {
   test(
@@ -158,10 +221,13 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
         ]);
       });
 
-  test('a dataset with only unique_keys (no primary_key) is warned about', () => {
-    expect(loadWarnings)
-        .toContain(
-            'dataset \'orders\': no primary_key; the entity\'s KEY will be empty (invalid for graph generation)');
+  // The graph keys a node by its first unique key when it has no primary key,
+  // so only the dataset with neither is warned about.
+  test('a dataset with only unique_keys (no primary_key) is not warned about', () => {
+    const noKey = (dataset: string) => `dataset '${dataset}': no primary_key; ` +
+        `the entity's KEY will be empty (invalid for graph generation)`;
+    expect(loadWarnings).toContain(noKey('lineitem'));
+    expect(loadWarnings).not.toContain(noKey('orders'));
   });
 });
 
@@ -344,3 +410,195 @@ describe(
         });
       }
     });
+
+
+// A binding-profile pair is two files -- a logical model plus a profile that
+// supplies the physical bindings -- so it does not fit the single-file CORPUS
+// loop above. Each pair runs the same file -> merge -> prune -> IR -> DDL path
+// push takes, against its own golden. Read a `<logical>.yaml` beside its
+// `<logical>.<profile>.yaml` and their `.<profile>.bigquery.golden.sql` to see,
+// end to end, what a given binding case emits.
+//
+// The corpus covers the distinct binding cases:
+//   - profile_binding + analytical : a purely logical base (no inline bindings)
+//     bound entirely by the profile, which renames every physical column and
+//     leaves one field unbound.
+//   - profile_binding + operational: the SAME logical base bound a second way --
+//     one model, two physical realizations, a different field unbound in each.
+//   - partial_binding + prod       : a combined single-file model (already fully
+//     bound inline) whose profile re-declares every column over new tables and a
+//     new deployment target (an environment swap); selecting it clears the inline
+//     bindings, so the profile is authoritative.
+//   - partial_binding + remap      : the same combined base, a profile that
+//     re-declares its columns -- renaming one and omitting another, which leaves
+//     that field unbound.
+function buildProfile(logicalFixture: string, profile: string) {
+  const dir = path.join(FIXTURES, 'profiles');
+  const logicalText = fs.readFileSync(path.join(dir, logicalFixture), 'utf8');
+  const profileText = fs.readFileSync(
+      path.join(dir, logicalFixture.replace(/\.yaml$/, `.${profile}.yaml`)),
+      'utf8');
+  const merged =
+      mergeProfile(yaml.parse(logicalText), yaml.parse(profileText), profile);
+  if (merged.error) throw new Error(merged.error);
+  const loaded = loadSemanticModels(
+      [{name: logicalFixture.replace(/\.yaml$/, ''), text: yaml.stringify(merged.doc)}],
+      {
+        defaultProject: 'acme',
+        defaultDataset: 'sales',
+        allowLegacyBareSource: true,
+      });
+  if (loaded.error) throw new Error(loaded.error);
+  const {model, report} = pruneUnavailable(loaded.models[0].model, profile);
+  // Derive the generation project/dataset from the model's own resolved
+  // bindings, so the graph name and its tables share the one project.dataset the
+  // chosen profile points at (each profile may target a different environment).
+  const bound = (model.entities ?? []).find(
+      e => /^[^.]+\.[^.]+\.[^.]+$/.test(e.dataSource ?? ''));
+  const [project, dataset] =
+      bound ? bound.dataSource!.split('.') : ['acme', 'sales'];
+  const {ddl, warnings: genWarnings} =
+      generatePropertyGraph(model, {project, dataset});
+  return {model, report, ddl, loadWarnings: loaded.warnings, genWarnings};
+}
+
+// The golden for a merged profile: the DDL, then the availability report (what
+// the binding withheld) and every warning, so a reviewer sees the pruned field
+// and metric alongside the emitted physical columns.
+function renderProfile(logicalFixture: string, profile: string): string {
+  const {ddl, report, loadWarnings, genWarnings} =
+      buildProfile(logicalFixture, profile);
+  const lines: string[] = [];
+  for (const d of report.droppedEntities) {
+    lines.push(`dropped entity: ${d.name} (${d.reason})`);
+  }
+  for (const fld of report.unboundFields) lines.push(`unbound field: ${fld}`);
+  for (const d of report.droppedMetrics) {
+    lines.push(`dropped metric: ${d.name} (${d.reason})`);
+  }
+  for (const d of report.droppedRelationships) {
+    lines.push(`dropped relationship: ${d.name} (${d.reason})`);
+  }
+  const reportBlock = lines.length ? lines.join('\n') : '(nothing withheld)';
+  const warnings = [...loadWarnings, ...genWarnings];
+  const warnBlock =
+      warnings.length ? warnings.map(w => `-- ${w}`).join('\n') : '-- (none)';
+  return `${ddl}\n-- availability --\n${reportBlock}\n-- warnings --\n${
+      warnBlock}\n`;
+}
+
+const profileGoldenPath = (logicalFixture: string, profile: string) =>
+    path.join(
+        FIXTURES, 'profiles',
+        logicalFixture.replace(/\.yaml$/, `.${profile}.bigquery.golden.sql`));
+
+// Every logical/profile pair that gets a golden. New pairs are added here.
+const PROFILE_CORPUS = [
+  {logical: 'profile_binding.yaml', profile: 'analytical'},
+  {logical: 'profile_binding.yaml', profile: 'operational'},
+  {logical: 'partial_binding.yaml', profile: 'prod'},
+  {logical: 'partial_binding.yaml', profile: 'remap'},
+];
+
+
+describe(
+    'golden DDL: each logical model + binding profile generates its exact property graph',
+    () => {
+      for (const {logical, profile} of PROFILE_CORPUS) {
+        test(`${logical} + ${profile}`, () => {
+          const actual = renderProfile(logical, profile);
+          const golden = profileGoldenPath(logical, profile);
+          if (process.env.UPDATE_GOLDENS) {
+            fs.writeFileSync(golden, actual);
+            return;
+          }
+          if (!fs.existsSync(golden)) {
+            throw new Error(`missing golden ${
+                path.basename(golden)} -- run UPDATE_GOLDENS=1 to create it`);
+          }
+          expect(actual).toBe(fs.readFileSync(golden, 'utf8'));
+        });
+      }
+    });
+
+
+describe('binding profiles resolve physical columns and availability', () => {
+  test('a renamed profile emits physical columns, never logical names', () => {
+    const {ddl} = buildProfile('profile_binding.yaml', 'analytical');
+    // Structural sites carry the bound physical column.
+    expect(ddl).toContain('KEY(cust_id)');
+    expect(ddl).toContain('KEY(order_id)');
+    expect(ddl).toContain(
+        'DESTINATION KEY(fk_customer) REFERENCES Customer(cust_id)');
+    // A renamed column is exposed under its logical name (`gross_amount AS
+    // amount`), and the MEASURE aggregates that exposed property -- the one
+    // position where the logical name is correct, because it names a sibling
+    // property, not a raw column. This is the shape live BigQuery accepts
+    // (verified: `MEASURE(SUM(item_count))` over `num_of_item AS item_count`).
+    expect(ddl).toContain('gross_amount AS amount');
+    expect(ddl).toContain('MEASURE(SUM(amount)) AS total_amount');
+    // No logical field name leaks into a structural (KEY/REFERENCES) position,
+    // where BigQuery requires the physical column.
+    expect(ddl).not.toContain('KEY(id)');
+    expect(ddl).not.toContain('KEY(customerId)');
+    expect(ddl).not.toContain('REFERENCES Customer(id)');
+    expect(ddl).not.toContain('(customerId)');
+  });
+
+  test('an unbound field prunes it and the metric that reads it', () => {
+    const {model, report} = buildProfile('profile_binding.yaml', 'analytical');
+    const customer = model.entities.find(e => e.name === 'Customer')!;
+    expect(customer.fields.map(f => f.name)).toEqual(['id', 'name']);
+    expect((model.metrics ?? []).map(m => m.name).sort()).toEqual([
+      'order_count', 'total_amount'
+    ]);
+    expect(report.unboundFields).toContain('Customer.segment');
+    expect(report.droppedMetrics.some(d => d.name === 'segment_count'))
+        .toBe(true);
+  });
+
+  test(
+      'a second profile over the same model binds a different field, so it ' +
+          'answers a different metric',
+      () => {
+        // operational binds `segment` and unbinds `amount`: the mirror image of
+        // analytical. One logical model, two physical realizations.
+        const {model, report} = buildProfile('profile_binding.yaml', 'operational');
+        const names = (model.metrics ?? []).map(m => m.name).sort();
+        expect(names).toEqual(['order_count', 'segment_count']);
+        expect(report.unboundFields).toEqual(['Order.amount']);
+        expect(report.droppedMetrics.map(d => d.name)).toEqual(['total_amount']);
+      });
+
+  test(
+      'a profile that re-declares every column deploys the whole model over ' +
+          'new tables (an environment swap)',
+      () => {
+        // prod re-declares every column -- the same names -- over the prod
+        // tables and a new target. Nothing is unbound, so every metric survives.
+        // Selecting the profile clears the base's inline bindings; the profile's
+        // own bindings are what deploy.
+        const {ddl, model, report} = buildProfile('partial_binding.yaml', 'prod');
+        expect(report.unboundFields).toEqual([]);
+        expect(report.droppedMetrics).toEqual([]);
+        expect((model.metrics ?? []).map(m => m.name).sort()).toEqual([
+          'order_count', 'total_amount', 'total_discount'
+        ]);
+        // The re-declared columns, emitted over the prod tables.
+        expect(ddl).toContain('`acme-prod.sales.customers` AS Customer');
+        expect(ddl).toContain('customer_name AS name');
+        // A field whose column equals its logical name emits bare, no AS.
+        expect(ddl).toContain('MEASURE(SUM(discount)) AS total_discount');
+        expect(ddl).not.toContain('acme-dev');
+      });
+
+  test('a profile renames one column and omits another, unbinding it', () => {
+    // remap re-declares its columns: Customer.name maps to a different column,
+    // and Order.discount is omitted -- so it is unbound and total_discount prunes.
+    const {ddl, report} = buildProfile('partial_binding.yaml', 'remap');
+    expect(ddl).toContain('full_name AS name');   // remapped column
+    expect(ddl).toContain('order_id AS id');       // re-declared
+    expect(report.unboundFields).toEqual(['Order.discount']);
+    expect(report.droppedMetrics.map(d => d.name)).toEqual(['total_discount']);
+  });
+});

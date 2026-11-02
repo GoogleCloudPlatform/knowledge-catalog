@@ -41,7 +41,13 @@ export class StandardLayout implements CatalogLayout {
         }
       }
       catch (err) {
-        // Skip unreadable/invalid yaml files during indexing
+        // A file that fails to read or parse is left out of the index, so it is
+        // never listed and never pushed. Warn rather than drop it silently:
+        // push otherwise makes the destination match the directory, and a file
+        // vanishing from that set is easy to miss.
+        const reason = err instanceof Error ? err.message : String(err);
+        const relPath = path.relative(this._catalogPath, localPath);
+        console.warn(`Skipping unreadable catalog file '${relPath}': ${reason}`);
       }
     }
   }

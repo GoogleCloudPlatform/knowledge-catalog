@@ -11,7 +11,7 @@ title: Acme Retail bundle history
 
 ## 2026-06-30
 
-- **Re-generated** `metrics/revenue.md`, `computations/revenue-ytd.md`, and `policies/revenue-recognition.md` after Finance published the FY2026 revenue recognition policy addendum. Updated `stale_after` on both revenue concepts to `2026-12-31`.
+- **Re-generated** `metrics/revenue.md`, `computations/revenue-ytd.md`, and `policies/revenue-recognition.md` after Finance published the FY2026 revenue recognition policy addendum. Updated `stale_after` on both revenue concepts to `2026-12-31T00:00:00Z`.
 
 ## 2026-04-15
 
