@@ -3422,18 +3422,20 @@ export function dialectLookupKey(source: string): string|undefined {
 // system entry group, one whose id starts with `@`, such as `@bigquery`.
 // Undefined for any other source. The entry id of a Google Cloud table in a
 // system entry group is its GCP resource name, so the message names it as the
-// source to write. Any other id, such as a dataset's, gets an example.
+// source to write, without quotes. Any other id, such as a dataset's, gets an
+// example. An id that holds a space gets no name to write.
 function systemEntrySourceError(source: string, ctx: string): string|undefined {
   const entry = source.match(ENTRY_NAME);
   if (!entry?.[1].startsWith('@')) return undefined;
-  const id = entry[2].replace(/^\/\//, '');
+  const id = entry[2].replace(/^\/\//, '').replace(/["`]/g, '');
+  const where = `Semantic model load error: ${ctx}: source '${source}' is a ` +
+      `Knowledge Catalog entry name in the system entry group '${entry[1]}'`;
+  if (/\s/.test(id)) return `${where}, and ${NO_SPACE}.`;
   const write = RESOURCE_NAME.test(id) && /\/tables\/[^/]+$/.test(id) ?
       `: '${id}'` :
       `, such as ` +
           `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>'`;
-  return `Semantic model load error: ${ctx}: source '${source}' is a ` +
-      `Knowledge Catalog entry name in the system entry group '${entry[1]}'; ` +
-      `write the table's resource name instead${write}.`;
+  return `${where}; write the table's resource name instead${write}.`;
 }
 
 // Google Cloud services whose tables the preview does not support yet, each

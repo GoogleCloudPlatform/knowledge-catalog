@@ -3325,9 +3325,16 @@ describe('strict entity sources', () => {
         expect(() => loadSource(`${base}/${fill}`)).toThrow(`source '${base}/${fill}' ${QUOTES}.`);
       }
     }
-    // A quoted system entry name gets the system entry message.
-    expect(() => loadSource('projects/acme/locations/us/entryGroups/@bigquery/entries/"orders"'))
-      .toThrow("in the system entry group '@bigquery'");
+    // A quoted system entry name gets the system entry message. It names the
+    // resource name without quotes, or says kcmd cannot name the table.
+    const SYSTEM = 'projects/acme/locations/us/entryGroups/@bigquery/entries';
+    for (const [id, end] of [
+      ['"orders"', "; write the table's resource name instead, such as"],
+      [`${TABLE}/"orders"`, `; write the table's resource name instead: '${TABLE}/orders'.`],
+      [`${TABLE}/"order items"`, `, and ${NO_SPACE}`],
+    ]) {
+      expect(() => loadSource(`${SYSTEM}/${id}`)).toThrow(`in the system entry group '@bigquery'${end}`);
+    }
     // Every catalog name the loader reads is rejected, naming the resource
     // name when it can.
     for (const [fqn, end] of [
