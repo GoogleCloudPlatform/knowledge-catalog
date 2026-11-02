@@ -691,19 +691,19 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   name of its Knowledge Catalog entry,
   `projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>`, in an entry group
   whose id does not begin with `@`. An entry name in a system entry group is
-  rejected with the resource name to write, and so are a Knowledge Catalog
-  name such as `snowflake:acme.retail.public.orders` and a value with a
-  leading `//`. Push and `kcmd profiles` look each entry up once before they
-  load the model. The prefix of the entry's `fullyQualifiedName` gives the
-  dialect: `snowflake:` gives `SNOWFLAKE`, `databricks:` gives `DATABRICKS`,
-  `mysql:` gives `MYSQL`, `postgresql:` gives `POSTGRES` and `sqlserver:`
-  gives `SQLSERVER`. An entry with no `fullyQualifiedName` gives the dialect
-  of its `entrySource.system`, in any letter case: `SNOWFLAKE`, `DATABRICKS`,
-  `MYSQL`, `POSTGRESQL` or `POSTGRES`, or `SQLSERVER`. A missing entry, or one
-  that gives no dialect, stops the command before anything is written. So does
-  an entry whose `fullyQualifiedName` names something other than a table or
-  view, such as the schema `snowflake:acme.retail.public`. A field
-  the model file binds to the table then needs SQL in that dialect or in
+  rejected with the resource name to write when there is one, and so are a
+  Knowledge Catalog name such as `snowflake:acme.retail.public.orders` and a
+  value with a leading `//`. Push and `kcmd profiles` look each entry up once
+  before they load the model. The prefix of the entry's `fullyQualifiedName`
+  gives the dialect: `snowflake:` gives `SNOWFLAKE`, `databricks:` gives
+  `DATABRICKS`, `mysql:` gives `MYSQL`, `postgresql:` gives `POSTGRES` and
+  `sqlserver:` gives `SQLSERVER`. An entry with no `fullyQualifiedName` gives
+  the dialect of its `entrySource.system`, in any letter case: `SNOWFLAKE`,
+  `DATABRICKS`, `MYSQL`, `POSTGRESQL` or `POSTGRES`, or `SQLSERVER`. A missing
+  entry, or one that gives no dialect, stops the command before anything is
+  written. So does an entry whose `fullyQualifiedName` names something other
+  than a table or view, such as the schema `snowflake:acme.retail.public`. A
+  field the model file binds to the table then needs SQL in that dialect or in
   `ANSI_SQL`. So does every field and metric of a profile whose sources fix
   that dialect. *(live — needs read access to the entry)*
 * **Each field the model file binds has a text its entity's database runs.**
