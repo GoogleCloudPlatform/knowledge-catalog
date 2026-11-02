@@ -3095,6 +3095,7 @@ describe('strict entity sources', () => {
       [`//${SPANNER}`, 'uri', SPANNER],
       [`//${MYSQL}`, 'uri', MYSQL],
       ['bigquery:acme.raw.orders', 'fqn', BQ],
+      ['bigquery:acme.raw."orders"', 'fqn', BQ],
       ['bigquery:`acme-prod`.raw.orders', 'fqn', 'bigquery.googleapis.com/projects/acme-prod/datasets/raw/tables/orders'],
       ['spanner:acme.regional-us-central1.inst.db.orders', 'fqn', SPANNER],
       ['alloydb:acme.us-central1.cl.db.public.orders', 'fqn', ALLOYDB],

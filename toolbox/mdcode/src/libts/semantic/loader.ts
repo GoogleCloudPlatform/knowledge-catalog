@@ -3140,7 +3140,7 @@ export function oldSourceForm(source: string): string|undefined {
   const fromCatalog = catalogNameResourceName(source);
   return fromCatalog === undefined ? undefined :
       `a Knowledge Catalog name; write the table's GCP resource name: '${
-          fromCatalog}'`;
+          unquotedName(fromCatalog) ?? fromCatalog}'`;
 }
 
 // `source` with its quotes removed, written as a resource name, when it is a

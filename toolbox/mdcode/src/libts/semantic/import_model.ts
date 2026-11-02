@@ -103,10 +103,15 @@ const STANDARD_AI_CONTEXT_KEYS =
 const LOADER_SOURCE_WARNING =
     /^(.*?): source '(.*)' is not a valid GCP resource name\.$/s;
 
-// The warning for `source`, which import leaves as written. A source in no
-// Google Cloud form may be a third-party table, so the warning says how to
-// write one.
+// The warning for `source`, which import leaves as written. It names the
+// name to write when the loader's message does. A source in no Google Cloud
+// form may be a third-party table, so the warning says how to write one.
 function sourceWarning(ctx: string, source: string): string {
+  const problem = oldSourceForm(source);
+  if (problem !== undefined) {
+    return `${ctx}: source '${source}' is ${problem}. 'kcmd push' rejects ` +
+        `the file until it is repointed.`;
+  }
   return `${ctx}: source '${source}' is not a valid GCP resource name; ` +
       `'kcmd push' rejects the file until it is repointed, or until ` +
       `'kcmd import' runs again with '--source-prefix'.` +

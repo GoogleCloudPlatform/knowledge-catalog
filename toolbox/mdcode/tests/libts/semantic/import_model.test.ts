@@ -146,6 +146,11 @@ describe('conversion, strict mode, and translation', () => {
       {strict: true}, 'orders'
     ],
     [
+      'resource name with quotes in strict mode',
+      googleDoc({source: `'${BQ_PREFIX}/tables/"orders"'`}), {strict: true},
+      `so write '${BQ_TABLE}'. 'kcmd push' rejects the file until it is repointed.`
+    ],
+    [
       'loader error in Check step (blank SQL)', googleDoc({fieldExpr: '"   "'}),
       {}, 'blank'
     ],
@@ -289,39 +294,49 @@ describe('sources', () => {
         .toBe(BQ_TABLE);
   });
 
-  // Only a source in no Google Cloud form gets the entry name advice.
+  // Each warning ends with what to do: the entry name advice for a source in
+  // no Google Cloud form, the name to write when the loader gives one, or else
+  // a run with --source-prefix.
+  const ADVICE = 'A table outside Google Cloud is written as the entry name of ' +
+      "its Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
+  const PUSH = "'kcmd push' rejects the file until it is repointed.";
   test.each([
-    ['no sourcePrefix', 'orders', {}, true],
-    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, true],
+    ['no sourcePrefix', 'orders', {}, ADVICE],
+    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
     [
       'backtick-quoted table with dot',
       '\'sales.`my.table`\'',
       {sourcePrefix: BQ_PREFIX},
-      true,
+      ADVICE,
     ],
     [
       'double-quoted table with a space',
       'public."order items"',
       {sourcePrefix: CLOUDSQL_PREFIX},
-      true,
+      ADVICE,
     ],
-    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, true],
-    ['resource URI', `//${BQ_TABLE}`, {}, false],
-    ['first-party catalog name', 'bigquery:acme.sales.orders', {}, false],
-    ['system entry name', 'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {}, false],
+    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
+    ['resource URI', `//${BQ_TABLE}`, {}, `'//': '${BQ_TABLE}'. ${PUSH}`],
+    [
+      'resource name with quotes', `'${BQ_PREFIX}/tables/"orders"'`, {},
+      `so write '${BQ_TABLE}'. ${PUSH}`
+    ],
+    [
+      'first-party catalog name', 'bigquery:acme.sales.orders', {},
+      `resource name: '${BQ_TABLE}'. ${PUSH}`
+    ],
+    [
+      'system entry name',
+      'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {},
+      "or until 'kcmd import' runs again with '--source-prefix'."
+    ],
   ])('leaves %s as written with a warning and writes the file',
-     async (_, src, opts, advice) => {
+     async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
        const cleanSrc = src.replace(/^'|'$/g, '');
 
        expect(res.ok).toBe(true);
-       const warning = res.warnings.find(
-           w => w.includes(cleanSrc) && w.includes('--source-prefix'));
-       expect(warning?.endsWith(
-                  'A table outside Google Cloud is written as the entry name ' +
-                  "of its Knowledge Catalog entry, 'projects/<p>/locations/" +
-                  "<l>/entryGroups/<g>/entries/<id>'."))
-           .toBe(advice);
+       expect(res.warnings.find(w => w.includes(cleanSrc))).toEndWith(tail);
      });
 
   test('keeps a third-party entry name as written, with no warning', async () => {
