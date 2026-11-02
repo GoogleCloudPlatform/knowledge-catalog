@@ -170,7 +170,8 @@ describe('kcmd push refuses a retired flag', () => {
     [['--transpile'],
      "'--transpile' is no longer supported on 'kcmd push'; use 'kcmd import " +
          "<file> --input first-party --flavor <ossie|google> --transpile' to " +
-         'translate SQL dialects when importing a model.'],
+         'translate SQL dialects when importing a model, in the model and each ' +
+         'profile the import writes.'],
     [['--profile', 'prod'], msg.retired['--profile']],
     [['--profile'], msg.retired['--profile']],
     [['--profile='], msg.retired['--profile']],
