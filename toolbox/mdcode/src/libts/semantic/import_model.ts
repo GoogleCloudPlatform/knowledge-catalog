@@ -1462,38 +1462,34 @@ function validateDeploymentTargets(
 /**
  * Loads each sibling `<model>.profile.<name>.yaml` entry in `profileFiles` via
  * `loadProfileFile` and attaches the resulting `ProfileSpec` list to
- * `model.profiles`, recording any reserved or duplicate profile name or
- * profile load error in `doc.errors`.
+ * `model.profiles`. Records in `doc.errors` push's error for the first file
+ * that breaks a file rule beside `modelFile`, or each profile's load error
+ * labeled with its file.
  */
 function attachProfileFiles(
     model: SemanticModel, profileFiles: SerializedFile[]|undefined,
-    doc: ImportDocument): void {
-  if (!profileFiles?.length) return;
+    doc: ImportDocument, modelFile: string): void {
+  const files = (profileFiles ?? [])
+                    .map(pf => ({...pf, name: parseProfileName(pf.fileName)}))
+                    .filter(pf => !nameProblem('profile', pf.name));
+  // Push checks every file's name before it loads any profile, and stops at
+  // the first file that breaks a file rule.
+  const seen = new Map<string, string>();
+  try {
+    for (const pf of files) {
+      checkProfileFileName(modelFile, pf.fileName, pf.name, pf.content, seen);
+    }
+  } catch (err: any) {
+    doc.errors.push(err.message);
+    return;
+  }
   const profiles: ProfileSpec[] = [];
-  const seen = new Set<string>();
-  for (const pf of profileFiles) {
-    const profileName = parseProfileName(pf.fileName);
-    if (nameProblem('profile', profileName)) continue;
-    const lower = profileName.toLowerCase();
-    if (lower === DEFAULT_PROFILE) {
-      doc.errors.push(
-          `model '${model.name}': a profile may not be named ` +
-          `'${profileName}'; '${DEFAULT_PROFILE}' names the model's inline ` +
-          `bindings.`);
-      continue;
-    }
-    if (seen.has(lower)) {
-      doc.errors.push(
-          `model '${model.name}': duplicate profile name '${profileName}'; ` +
-          `profile names must be unique ignoring case.`);
-      continue;
-    }
-    seen.add(lower);
+  for (const pf of files) {
     try {
-      profiles.push(loadProfileFile(pf.content, profileName));
+      profiles.push(loadProfileFile(pf.content, pf.name));
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
-      doc.errors.push(err.message);
+      doc.errors.push(`[${pf.fileName}] ${err.message}`);
     }
   }
   if (profiles.length > 0) {
@@ -1584,7 +1580,8 @@ async function generateConvertedFiles(
   const model = loadSemanticModel(doc);
   if (!model) return [];
   if (doc.targetVersion === OSSIE_VERSION) {
-    attachProfileFiles(model, opts.profileFiles, doc);
+    attachProfileFiles(
+        model, opts.profileFiles, doc, opts.fileName ?? `${model.name}.yaml`);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
   }

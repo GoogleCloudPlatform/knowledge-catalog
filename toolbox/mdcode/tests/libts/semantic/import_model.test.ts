@@ -1606,39 +1606,38 @@ semantic_model:
        expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
      });
 
+  // [label, the profile files beside sales.yaml, push's error]
   test.each([
-    [
-      'reserved default profile name',
-      [{fileName: 'retail.profile.default.yaml', content: 'name: default\n'}],
-      `'default' names the model's inline bindings`,
-    ],
-    [
-      'case-insensitive duplicate profile names',
-      [
-        {fileName: 'retail.profile.prod.yaml', content: 'name: prod\n'},
-        {fileName: 'PROD.yaml', content: 'name: PROD\n'},
-      ],
-      `duplicate profile name 'PROD'`,
-    ],
-    [
-      'mismatched profile name inside file',
-      [{fileName: '/dir/retail.profile.prod.yaml', content: 'name: staging\n'}],
-      `does not match its file's profile name 'prod'`,
-    ],
-    [
-      'nameless .yml profile file',
-      [{fileName: 'retail.profile.yml', content: 'name: ""\n'}],
-      `Profile name '' is not valid`,
-    ],
-  ])('refuses invalid profile file when converting to vanilla: %s',
-     async (_, profileFiles, expectedMsg) => {
-       const res = await importSemanticModelYaml(
-           googleDoc(), {flavor: 'ossie', strict: true, profileFiles});
-
-       expect(res.ok).toBe(false);
-       expect(res.files).toEqual([]);
-       expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
-     });
+    ['a profile file that does not parse', [['sales.profile.pg.yaml', 'name: pg\nentities: [\n']],
+     expect.stringContaining("Profile file 'sales.profile.pg.yaml' does not parse: ")],
+    ['the reserved name', [['sales.profile.default.yaml', 'name: default\n']],
+     "Profile name 'default' is reserved for the inline bindings in 'sales.yaml'; remove " +
+     "'sales.profile.default.yaml'."],
+    ['names that differ only in letter case',
+     [['sales.profile.PROD.yaml', 'name: PROD\n'], ['sales.profile.prod.yaml', 'name: prod\n']],
+     "Profile files 'sales.profile.PROD.yaml' and 'sales.profile.prod.yaml' name the same " +
+     'profile; profile names are unique ignoring case.'],
+    ['another name inside the file', [['sales.profile.prod.yaml', 'name: staging\n']],
+     "Profile file 'sales.profile.prod.yaml' declares name 'staging', which does not match " +
+     "filename suffix 'prod'."],
+    ['a file that declares no name', [['sales.profile.prod.yaml', 'entities: []\n']],
+     "Profile file 'sales.profile.prod.yaml' declares no name; add 'name: prod'."],
+    ['a key a profile may not set', [['sales.profile.prod.yaml', 'name: prod\nbogus: 1\n']],
+     "[sales.profile.prod.yaml] profile 'prod' sets 'bogus', which a profile may not set; a " +
+     'profile carries only physical bindings, and the logical model owns everything else'],
+    ['a file rule after a profile that does not load',
+     [['sales.profile.a.yaml', 'name: a\nbogus: 1\n'], ['sales.profile.b.yaml', 'name: c\n']],
+     "Profile file 'sales.profile.b.yaml' declares name 'c', which does not match filename suffix 'b'."],
+    ['a nameless .yml profile file', [['sales.profile.yml', 'name: ""\n']],
+     "model 'retail': Profile name '' is not valid; names must match ^[A-Za-z][A-Za-z0-9_-]*$: " +
+     'a letter, then letters, digits, underscores or hyphens.'],
+  ])('refuses %s when converting to vanilla, in push\'s words', async (_, files, error) => {
+    const res = await importSemanticModelYaml(googleDoc(), {
+      flavor: 'ossie', strict: true, fileName: 'sales.yaml',
+      profileFiles: files.map(([fileName, content]) => ({fileName, content})),
+    });
+    expect([res.files, res.errors]).toEqual([[], [error]]);
+  });
 
   test(
       'round-trips Google flavor to vanilla and back with equal loaded IR (wrapping short-form as ANSI_SQL) and preserves canonical files identically',
