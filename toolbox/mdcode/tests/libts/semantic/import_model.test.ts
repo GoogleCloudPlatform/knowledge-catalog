@@ -364,21 +364,25 @@ describe('profile translation', () => {
     expect(res.warnings.filter(w => w.startsWith("profile 'prod': field"))).toEqual(translated ? [
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
     ] : []);
-    expect(res.warnings).not.toContain('Converted the JSON file to YAML.');
+    expect(res.warnings).not.toContain("Converted 'retail.profile.prod.yaml' to YAML.");
   });
 
   // A profile file that changes is written as YAML, as a model file is. One
-  // that does not change stays as written.
+  // that does not change stays as written. Each warning names its file.
   test.each([
     ['a BigQuery', PROD, true],
     ['a Snowflake', prodOn(sfEntry), false],
   ])('reports writing %s JSON profile file as YAML only when it changes', async (_, profile, translated) => {
-    const json = JSON.stringify(profile);
-    const res = await importSemanticModelYaml(googleDoc({fieldExpr}), {
-      ...google, profileFiles: [{...prodFile, content: json}],
+    const model = JSON.stringify(yaml.parse(googleDoc({fieldExpr})));
+    const res = await importSemanticModelYaml(model, {
+      ...google, fileName: 'retail.yaml',
+      profileFiles: [{...prodFile, content: JSON.stringify(profile)}],
     });
     expect(res.errors).toEqual([]);
-    expect(res.warnings.includes('Converted the JSON file to YAML.')).toBe(translated);
+    expect(res.warnings.filter(w => w.startsWith('Converted '))).toEqual([
+      "Converted 'retail.yaml' to YAML.",
+      ...translated ? ["Converted 'retail.profile.prod.yaml' to YAML."] : [],
+    ]);
     expect(res.files[1].content.startsWith('name: prod\n')).toBe(translated);
   });
 
