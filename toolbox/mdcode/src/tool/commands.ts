@@ -29,8 +29,8 @@ import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semant
 import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect,} from '../libts/semantic/resolve_profiles';
-import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, undeclaredProfileError,} from '../libts/semantic/resolve_profiles';
+import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';

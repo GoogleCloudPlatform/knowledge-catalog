@@ -559,6 +559,48 @@ describe('profile checks', () => {
     expect(res.errors).toEqual(errors);
     expect(res.warnings).toEqual(warnings);
   });
+
+  // A model with metric total, deploying `deployment` with profile `profile`.
+  const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
+  const SPANNER_GRAPH = 'spanner.googleapis.com/projects/acme/instances/i/databases/db/graphs/g';
+  const onSpanner = (more = {}) =>
+      ({...orders({source: SPANNER_TABLE})[0], ...more});
+  const DEPLOYED: Array<[string, (d: object, p: Profile) => [string, any]]> = [
+    ['a profile file', (d, p) => [googleDoc({extra:
+        `    deployments: [${JSON.stringify(d)}]\n` +
+        "    metrics:\n      - {name: total, entity: orders, expression: 'COUNT(orders.order_id)'}\n"}),
+     {...strict, flavor: 'google', profileFiles: files([p])}]],
+    ['a GOOGLE block', (d, p) => [ossieDoc({extra:
+        "    metrics:\n      - name: total\n        expression: {dialects: [{dialect: ANSI_SQL, expression: 'COUNT(orders.order_id)'}]}\n" +
+        `        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]\n` +
+        `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d], profiles: [p]})}'\n`}),
+     {...strict, flavor: 'ossie'}]],
+  ];
+  // [problem, deployment, profile, push's error]
+  const DEPLOYMENT_PROBLEMS: Array<[string, object, Profile, string]> = [
+    ['a deployment that names an unknown profile', {name: 'g', target: BQ_GRAPH, profile: 'nope'}, PG,
+     "[sales] model 'retail': deployment 'g' names unknown binding profile 'nope'; defined profiles: pg."],
+    ['a Spanner graph whose profile keeps a metric', {name: 's', target: SPANNER_GRAPH, profile: 'pg'}, onSpanner(),
+     "model 'retail' (sales) deployment 's' targets Spanner, which has no measures, and profile 'pg' " +
+     `leaves metric(s) 'total' available; name them in its 'metrics_exclude', or set it to "*".`],
+    ['a BigQuery graph whose profile binds a Spanner table', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
+     onSpanner({metrics_exclude: '*'}),
+     `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
+     `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
+  ];
+  test.each(DEPLOYMENT_PROBLEMS.flatMap(([problem, d, p, error]) => DEPLOYED.map(
+      ([path, build]) => [problem, path, ...build(d, p), error] as const)))(
+      'reports %s, in %s', async (_, __, input, opts, error) => {
+        const res = await importSemanticModelYaml(input, opts);
+        expect(res.errors).toEqual([error]);
+      });
+
+  test('checks no deployment when a profile file breaks a file rule, as push does', async () => {
+    const [input, opts] = DEPLOYED[0][1](
+        {name: 'g', target: BQ_GRAPH, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG));
+    expect((await importSemanticModelYaml(input, opts)).errors)
+        .toEqual(["Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."]);
+  });
 });
 
 describe('vanilla output, extensions, and targets', () => {

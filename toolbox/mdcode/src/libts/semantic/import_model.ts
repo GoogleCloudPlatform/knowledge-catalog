@@ -4,17 +4,17 @@
 import * as yaml from 'yaml';
 
 import {checkProfileFileName} from '../layouts/semantic-model';
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
+import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {appliedProfileWarnings, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, namedProfileErrors, plainCopy, readerMessage, sourcesDialect} from './resolve_profiles';
+import {appliedProfileWarnings, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, namedProfileErrors, plainCopy, readerMessage, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
 import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
-import {validateInheritedColumns, validateInlineDialects} from './validate';
+import {deploymentTableErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -1657,8 +1657,8 @@ function writeDocument(
 /**
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and checks
- * the model file's own bindings and each profile the output declares as push
- * does.
+ * the model file's own bindings, each profile the output declares and each
+ * deployment as push does.
  */
 function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
@@ -1725,16 +1725,50 @@ function validateOutputDocument(
         declared, doc.warnings, {});
     for (const e of errors) doc.warnOrError(e.error);
     // Push also warns about the values each profile without an error sets.
-    let profiles: DeclaredProfile[] = [];
+    let profiles: DeclaredProfile[];
     try {
       profiles = declared();
     } catch {
-      // namedProfileErrors reports a profile file that breaks a file rule.
+      // namedProfileErrors reports a profile file that breaks a file rule,
+      // which stops push before it checks a deployment.
+      return;
     }
     const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
     for (const {name} of profiles) {
       if (errors.some(e => e.profile === name)) continue;
       doc.warnings.push(...appliedProfileWarnings(model, profiles, name, own));
+    }
+
+    // 4. Check each deployment with push's offline checks, under the profile
+    // it names. A profile file that does not load is reported above.
+    const withFiles = {...loaded.models[0]};
+    withFiles.profiles = [
+      ...withFiles.profiles ?? [],
+      ...profiles.flatMap(p => {
+        try {
+          return 'text' in p ?
+              [loadProfileFile(p.text, p.name, {skipActions: true})] :
+              [];
+        } catch {
+          return [];
+        }
+      }),
+    ];
+    const every = resolveModelDeployments(withFiles);
+    const deployments = 'error' in every ? [] : every.deployments;
+    for (const e of [
+           undeclaredProfileError(
+               model.name, withFiles, profiles.map(p => p.name)) ?? [],
+           ...[...new Set(deployments.map(d => d.profile))].flatMap(
+               profile => validateDeployments({
+                 ...withFiles,
+                 deployments: withFiles.deployments?.filter(
+                     d => (d.profile ?? DEFAULT_PROFILE) === profile),
+               }, model.name)),
+           ...deployments.flatMap(
+               d => deploymentTableErrors(model.name, withFiles, d)),
+         ].flat()) {
+      doc.warnOrError(e);
     }
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
