@@ -41,7 +41,7 @@ test.each<[string, string, (value: any) => void, string?]>([
   [
     'a flow mapping given text of several lines, in a scalar and a new mapping',
     'f: [{name: a, d: x}]\n', v => {
-      const text = `${'Owned by the analytics team. '.repeat(2)}\n\nAsk first.`;
+      const text = 'Owned by the analytics team in the main office.\n\nAsk first.';
       v.f[0].d = text;
       v.f[0].e = {k: text};
     }
