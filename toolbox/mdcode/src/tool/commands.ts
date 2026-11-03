@@ -145,7 +145,7 @@ function hasTargetType(
 // The dialect pruning reads a model's SQL in: SPANNER when the model has a
 // Spanner graph target, since that graph reads SPANNER text first, else the
 // dialect its sources imply.
-function pruningDialect(model: SemanticModel): string|undefined {
+function pruningDialect(model: SemanticModel): string|null|undefined {
   return hasTargetType({model}, 'spanner') ? 'SPANNER' : sourcesDialect(model);
 }
 

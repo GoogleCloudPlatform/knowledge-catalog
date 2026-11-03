@@ -526,9 +526,10 @@ describe('profile checks', () => {
   const KEYED = `    primary_key: [order_id]\n    fields:\n      - {name: order_id, expression: order_id}\n`;
   const pg = (body: string) => [{fileName: 'sales.profile.pg.yaml', content:
       `name: pg\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n${body}`}];
-  // The warning about "Order Amount" in a field, or with `metric` in a metric.
-  const READS = (database: string, dialect: string, metric = false) =>
-      `${database} reads "Order Amount" in its 'ANSI_SQL' expression as text; ` + (metric ?
+  // The warning about `names`, "Order Amount" unless given, in a field, or with
+  // `metric` in a metric.
+  const READS = (database: string, dialect: string, metric = false, names = '"Order Amount"') =>
+      `${database} reads ${names} in its 'ANSI_SQL' expression as text; ` + (metric ?
           `if you meant a field, give it a '${dialect}' expression that names it as ` +
               "'<entity>.<field>'" :
           `if you meant a column or a field, give it a '${dialect}' expression that names a ` +
@@ -536,8 +537,25 @@ describe('profile checks', () => {
               "fields list holds this expression as '<entity>.<field>'");
   const AMOUNT = (expr: string) => `          - {name: amount, expression: ${expr}}\n`;
   const UNBOUND = model('').replace(/ +source: .*\n/, '');
+  // A Cloud SQL for MySQL table, whose dialect only a lookup gives.
+  const MYSQL = (t: string) =>
+      `cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/i/databases/app/tables/${t}`;
   // [label, model, profile files, errors, warnings]
   test.each([
+    ['reads no ANSI_SQL text of a profile whose tables only a lookup gives the dialect of',
+     model(`          - {name: x}\n          - {name: y, expression: '"orders"."x"'}\n`),
+     [{fileName: 'sales.profile.pg.yaml', content: `name: pg\nentities:\n  - name: orders\n` +
+       `    source: ${MYSQL('orders')}\n    primary_key: [order_id]\n    fields:\n` +
+       `      - {name: order_id, expression: '"orders"."order_no"'}\n    fields_exclude: [x]\n`}],
+     [], [`field 'orders.y': ${READS('BigQuery', 'BIGQUERY', false, '"orders" and "x"')}`,
+          `profile 'pg': [sales] field 'orders.order_id': ${READS('MySQL', 'MYSQL', false, '"orders" and "order_no"')}`,
+          `profile 'pg': [sales] field 'orders.y': ${READS('MySQL', 'MYSQL', false, '"orders" and "x"')}`]],
+    ['reads no ANSI_SQL text of a model whose tables only a lookup gives the dialect of',
+     googleDoc({source: MYSQL('orders'), fieldExpr: `'"t"."order_id"'`, extra:
+         `      - name: items\n        extends: [orders]\n        source: ${MYSQL('items')}\n` +
+         "        primary_key: [order_id]\n    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id)'}\n"}),
+     [], [], ['orders', 'items'].map(e =>
+         `field '${e}.order_id': ${READS('MySQL', 'MYSQL', false, '"t" and "order_id"')}`)],
     ['warns once about a model field that a valid profile inherits',
      model(AMOUNT(`'"Order Amount"'`)), pg(KEYED), [],
      [`field 'orders.amount': ${READS('BigQuery', 'BIGQUERY')}`]],

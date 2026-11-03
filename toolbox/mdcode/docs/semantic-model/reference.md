@@ -120,25 +120,26 @@ checks, such as whether a metric reads a known field or has SQL for its
 deployment's target, stay with push. Push reads each Cloud SQL and third-party
 table's engine from its Knowledge Catalog entry, and import does not, so the
 checks that need the engine stay with push: whether a profile's tables in one
-Cloud SQL instance or one third-party system are in one database, and whether a
-field has SQL in its table's dialect. Nothing is written when the import
-reports an error. Import rewrites only the values it changes, and every other
-line of the file stays as written, with its comments, blank lines, quoting,
-indentation and line endings. Comments on anything import removes or moves
-elsewhere in the file are dropped, such as those on a key that goes into or out
-of a `GOOGLE` block. A flow collection over several lines that import changes
-is written again in block style, without the comments inside it. A value that
-import would write as a `|+` block scalar is double-quoted instead, and a `|+`
-block scalar that it moves is written again. A profile file written beside the
-model is rewritten the same way. A profile file's comments are dropped when its
-contents move into the model file. A JSON file is written as YAML, and import
-reports the conversion. Without `--out`, the files go into the scope's entry
-group folder, and an import that would leave one of the model's profile files
-there unwritten is refused. Without `--out`, an import is also refused when the
-entry group folder already holds another model's file, since an entry group
-holds one model. It is refused too when the input file is a `.yaml` file in
-that folder other than `<model>.yaml`, since the model would then have two
-files.
+Cloud SQL instance or one third-party system are in one database, whether a
+field has SQL in its table's dialect, and what an `ANSI_SQL` text reads when
+every table of the model file or profile is such a table. Nothing is written
+when the import reports an error. Import rewrites only the values it changes,
+and every other line of the file stays as written, with its comments, blank
+lines, quoting, indentation and line endings. Comments on anything import
+removes or moves elsewhere in the file are dropped, such as those on a key that
+goes into or out of a `GOOGLE` block. A flow collection over several lines that
+import changes is written again in block style, without the comments inside it.
+A value that import would write as a `|+` block scalar is double-quoted
+instead, and a `|+` block scalar that it moves is written again. A profile file
+written beside the model is rewritten the same way. A profile file's comments
+are dropped when its contents move into the model file. A JSON file is written
+as YAML, and import reports the conversion. Without `--out`, the files go into
+the scope's entry group folder, and an import that would leave one of the
+model's profile files there unwritten is refused. Without `--out`, an import is
+also refused when the entry group folder already holds another model's file,
+since an entry group holds one model. It is refused too when the input file is
+a `.yaml` file in that folder other than `<model>.yaml`, since the model would
+then have two files.
 
 | Flag | Effect |
 |------|--------|

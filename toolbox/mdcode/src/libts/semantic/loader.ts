@@ -2090,14 +2090,16 @@ function keyWarning(
 // and returns the warning the metric gives when an expression could not be
 // parsed or when it states no `entity` and its expressions name none. An
 // authored anchor, which vanilla writes in a GOOGLE block, settles which entity
-// the metric belongs to, so a `COUNT(*)` with one is not warned about.
+// the metric belongs to, so a `COUNT(*)` with one is not warned about. An
+// ANSI_SQL text whose `impliedDialect` no lookup read (null) is read as
+// generic SQL, the closest reading there is.
 export function inferMetricEntities(
     metric: Pick<
         Metric,
         'name'|'authoredEntity'|'expression'|'importedExpression'|
         'importedDialect'|'dialects'>,
     entityNames: string[], preferred: string = DEFAULT_DIALECT,
-    impliedDialect?: string, version?: FormatVersion):
+    impliedDialect?: string|null, version?: FormatVersion):
     {referenced: string[]; warning?: string} {
   const ctx = `metric '${metric.name}'`;
   const sources: Array<{text: string; dialect: string}> =
@@ -2114,7 +2116,7 @@ export function inferMetricEntities(
   let unparsed = false;
   for (const {text, dialect} of sources) {
     if (!text) continue;
-    const cols = columnsForSource(text, dialect, impliedDialect);
+    const cols = columnsForSource(text, dialect, impliedDialect ?? undefined);
     if (cols === undefined) {
       unparsed = true;
     } else {
@@ -2641,7 +2643,7 @@ function convertRelationship(
 
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entities: Entity[],
-    warnings: string[], dialect: string, impliedDialect?: string): Metric {
+    warnings: string[], dialect: string, impliedDialect?: string|null): Metric {
   rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
   const entityNames = entities.map(e => e.name);

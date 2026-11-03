@@ -126,10 +126,12 @@ export function columnReferences(expression: string, dialect: string):
 // an `ANSI_SQL` entry as its own SQL. When the sources do not imply a single
 // dialect, the generic parser reads the text, and any bare identifier that
 // BigQuery's parser does not also read as a bare column (such as a `MONTH`
-// date part or a double-quoted string literal) is filtered out.
+// date part or a double-quoted string literal) is filtered out. When their
+// dialect is null, which no lookup read, an `ANSI_SQL` text is not read.
 export function columnsForSource(
     text: string, dialect: string,
-    impliedDialect?: string): ReadonlyArray<SqlColumn>|undefined {
+    impliedDialect?: string|null): ReadonlyArray<SqlColumn>|undefined {
+  if (dialect === 'ANSI_SQL' && impliedDialect === null) return undefined;
   if (dialect === 'ANSI_SQL' && impliedDialect) {
     return columnReferences(text, impliedDialect);
   }

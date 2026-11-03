@@ -1847,18 +1847,18 @@ describe('completeness sees the model as the profile does', () => {
 
   // The dialect of a Cloud SQL table written as its resource name is the one
   // its catalog entry's type names, not one the source text implies. With no
-  // entry read, it is unknown, even for a MySQL-shaped name; the catalog name
-  // still implies its dialect from its prefix.
+  // entry read, it is unknown (null), even for a MySQL-shaped name; the
+  // catalog name still implies its dialect from its prefix.
   test('a Cloud SQL resource name implies no dialect', () => {
     const dialectOf = (source: string) => sourcesDialect({entities: [
       {name: 'orders', dataSource: source, authoredSource: source, keys: [], fields: []},
     ]} as any);
     expect(dialectOf(
         'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/tables/orders'))
-        .toBeUndefined();
+        .toBeNull();
     expect(dialectOf(
         'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/db/schemas/s/tables/orders'))
-        .toBeUndefined();
+        .toBeNull();
   });
 
   // A profile's rebinding is read as the model file's source is, so a catalog
@@ -2829,10 +2829,10 @@ describe('profile completeness: dialects and struct paths', () => {
     const [model] = fromDocument(doc(CS), opts).models;
     expect(model.entities[0].sourceDialect).toBe('MYSQL');
     expect(sourcesDialect(model)).toBe('MYSQL');
-    // Without the lookup, nothing is recorded and no dialect is implied.
+    // Without the lookup, nothing is recorded and the dialect is unknown.
     const [unread] = fromDocument(doc(CS)).models;
     expect(unread.entities[0].sourceDialect).toBeUndefined();
-    expect(sourcesDialect(unread)).toBeUndefined();
+    expect(sourcesDialect(unread)).toBeNull();
     // A profile that rebinds the entity elsewhere drops the recorded dialect.
     const rebound = applyProfile(model, {
       name: 'bq', entities: [{name: 'orders', source: BQ('orders')}], relationships: [],

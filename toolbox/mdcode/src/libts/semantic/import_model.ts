@@ -1045,7 +1045,9 @@ function repairDocument(doc: ImportDocument): void {
   }
 
   // 3. Infer the model's source dialect from its repaired datasets via
-  // `sourcesDialect`, and repair or prune each metric (`repairMetric`).
+  // `sourcesDialect`, and repair or prune each metric (`repairMetric`). The
+  // pruning infers each metric's entity, so it reads an ANSI_SQL text whose
+  // dialect no lookup gave as generic SQL, as the loader's inference does.
   const entityNames = doc.datasets.map(ds => ds.name)
                           .filter((n): n is string => typeof n === 'string');
   const impliedDialect = sourcesDialect({
@@ -1055,7 +1057,7 @@ function repairDocument(doc: ImportDocument): void {
           authoredSource: typeof ds.source === 'string' ? ds.source : undefined,
           dataSource: '',
         })),
-  });
+  }) ?? undefined;
   doc.metrics = doc.metrics.filter(
       mt => repairMetric(mt, entityNames, impliedDialect, doc));
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {

@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames, stripQualifier} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -299,6 +299,14 @@ describe('columnReferences', () => {
         .toEqual([{qualifier: 'orders', name: 'geo'}]);
     expect(columnReferences('SUM(dbo.fn_tax(orders.amount))', 'SQLSERVER'))
         .toEqual([{qualifier: 'orders', name: 'amount'}]);
+  });
+});
+
+describe('columnsForSource', () => {
+  test('reads an ANSI_SQL text in its tables\' dialect, and not at all when no lookup gave it', () => {
+    expect(columnsForSource('UPPER("c")', 'ANSI_SQL', 'POSTGRES')).toEqual([{name: 'c'}]);
+    expect(columnsForSource('UPPER("c")', 'ANSI_SQL', null)).toBeUndefined();
+    expect(columnsForSource('UPPER(c)', 'MYSQL', null)).toEqual([{name: 'c'}]);
   });
 });
 

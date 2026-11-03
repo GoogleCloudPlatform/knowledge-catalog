@@ -108,14 +108,15 @@ export interface AvailabilityReport {
  * it. What a field or metric reads comes from the text `dialect` evaluates
  * (see textsFor). `dialect` defaults to the dialect the model's sources
  * imply. When the sources are in systems of different dialects, or one names
- * no system, there is no dialect and every text counts.
+ * no system, there is no dialect and every text counts. When no lookup read
+ * the dialect, it is null and no text counts.
  * The input is never mutated. The report names each dropped block
  * and the unbound field that stops it, so a caller can state the withheld
  * coverage. A model with nothing unbound resolves unchanged.
  */
 export function pruneUnavailable(
     model: SemanticModel, profileName: string,
-    dialect: string|undefined = sourcesDialect(model)):
+    dialect: string|null|undefined = sourcesDialect(model)):
     {model: SemanticModel; report: AvailabilityReport} {
   const clone: SemanticModel = structuredClone(model);
   const report: AvailabilityReport = {
@@ -1289,12 +1290,14 @@ export function expressionSources(
 // database runs an ANSI_SQL text as its own SQL. A field held without a
 // dialect list offers its imported text when that is in the profile's dialect,
 // and otherwise the text the loader picked. With no known dialect, every text
-// counts, each read in the dialect it is written in.
+// counts, each read in the dialect it is written in. With a null dialect, which
+// no lookup read, the text the database runs is not known, and none counts.
 function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
-    dialect: string|undefined): Array<{text: string; dialect: string}> {
+    dialect: string|null|undefined): Array<{text: string; dialect: string}> {
+  if (dialect === null) return [];
   if (dialect === undefined) return expressionSources(f);
   // The text a database of this dialect runs: its own entry, or the
   // ANSI_SQL one.
@@ -1388,13 +1391,14 @@ export function importHint(
 
 // The dialect a model's sources imply: that of the one database every concrete
 // entity reads from, or undefined when they name several, or a source names
-// none. A legacy bare name, which the loader completes into
+// none. It is null when every source is a table whose dialect no lookup read
+// (see dialectOfSources). A legacy bare name, which the loader completes into
 // `project.dataset.table` in `dataSource`, names BigQuery however many parts it
 // was written with.
 export function sourcesDialect(model: {
   entities?: ReadonlyArray<
       Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>;
-}): string|undefined {
+}): string|null|undefined {
   return dialectOfSources(
       (model.entities ?? [])
           .filter(e => !e.abstract)
@@ -1412,9 +1416,15 @@ export function sourcesDialect(model: {
 //
 // A Cloud SQL table written as its resource name, and a third-party table,
 // imply the dialect their catalog entry gives, which a lookup read into
-// `lookedUp` (LoadOptions.sourceDialects).
-function dialectOfSources(
-    sources: Array<{source: string; lookedUp?: string}>): string|undefined {
+// `lookedUp` (LoadOptions.sourceDialects). When every source is such a table
+// and none was looked up, as in `kcmd import`, the dialect is null: how their
+// database reads an ANSI_SQL text is not known, so a check reads no such text.
+function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
+    string|null|undefined {
+  if (sources.length &&
+      sources.every(s => dialectLookupKey(s.source.trim()) && !s.lookedUp)) {
+    return null;
+  }
   const dialects = new Set<string|undefined>(sources.map(({source, lookedUp}) => {
     const s = source.trim();
     if (dialectLookupKey(s)) return lookedUp;
@@ -1431,12 +1441,13 @@ function dialectOfSources(
 export interface CompletenessOptions extends DialectLoad {
   // The caller warns about the model file's SQL that it reads, which it does
   // only when the hierarchy of the model it checks resolves. It reads an
-  // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
-  // every other entry in its own dialect. A warning about the model file's SQL
-  // is left out when the caller also warns about each text this check cannot
-  // read: an entry in a dialect other than ANSI_SQL, or an ANSI_SQL text when
-  // this profile's dialect is `dialect` or the caller cannot read it either.
-  ownSqlOnly?: {dialect?: string};
+  // ANSI_SQL text in `dialect`, as generic SQL when that is unset, and not at
+  // all when it is null, and every other entry in its own dialect. A warning
+  // about the model file's SQL is left out when the caller also warns about
+  // each text this check cannot read: an entry in a dialect other than
+  // ANSI_SQL, or an ANSI_SQL text when this profile's dialect is `dialect` or
+  // the caller cannot read it either.
+  ownSqlOnly?: {dialect?: string|null};
 }
 
 /**
@@ -1571,12 +1582,14 @@ export function validateProfileCompleteness(
     // These rules check every text the profile wrote, since each must be a
     // valid field expression wherever it runs; the dependency rules below read
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
-    // as the profile's own SQL.
+    // as the profile's own SQL, and not at all when no lookup read its
+    // dialect.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
       // A text with no SQL is reported above, and has nothing to read.
       const readable = expressionSources(pf).filter(
-          s => noSqlReason(s.text, s.dialect, pe.name) === undefined);
+          s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
+              !(s.dialect === 'ANSI_SQL' && dialect === null));
       for (const {text, dialect: written} of readable) {
         const columns = columnReferences(
             text, written === 'ANSI_SQL' && dialect ? dialect : written);
@@ -2106,10 +2119,10 @@ function boundDeclaration(
 // The first column `entityName`'s binding of `field` reads, as written, and
 // the entity that declares it (see boundDeclaration), or undefined when that
 // entity is abstract. A column is a reference no entity name qualifies, and an
-// ANSI_SQL text is read in `dialect` if set.
+// ANSI_SQL text is read in `dialect` if set, and not at all if it is null.
 export function columnBinding(
     model: SemanticModel, entityName: string, field: string,
-    dialect?: string): {owner: string; column: string}|undefined {
+    dialect?: string|null): {owner: string; column: string}|undefined {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   const bound = boundDeclaration(model, entityName, field);
   if (!bound || byName.get(bound.owner)?.abstract) return undefined;
@@ -2132,7 +2145,7 @@ export function columnBinding(
 // qualifier.
 function fieldDependencies(
     model: SemanticModel, entityName: string, field: string,
-    unreadable: Set<string>, dialect?: string,
+    unreadable: Set<string>, dialect?: string|null,
     onUnread?: (what: string, owner: Field,
                 text: {text: string; dialect: string}) => void): string[] {
   const bound = boundDeclaration(model, entityName, field);
