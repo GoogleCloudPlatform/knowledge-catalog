@@ -156,6 +156,8 @@ interface Update {
   seqIndent: number;
   /** Columns from a `-` to the keys of the mapping after it. */
   itemIndent: number;
+  /** Whether a mapping in a list starts on the line after its `-`. */
+  itemAlone: boolean;
   /** The space inside the brackets of the file's flow mappings and lists. */
   pad: {map: string, seq: string};
 }
@@ -555,7 +557,10 @@ function block(
     return /^[|>]/.test(s) ? line.split(u.nl) : [line];
   }
   if (prefix === '-' && isRecord(value)) {
-    const [first, ...rest] = items(u, value, col + u.itemIndent, next);
+    const lines = items(u, value, col + u.itemIndent, next);
+    // In a file whose items start on the line after their '-', so do new ones.
+    if (u.itemAlone) return [pad + '-', ...lines];
+    const [first, ...rest] = lines;
     return [pad + '-' + first.slice(col + 1), ...rest];
   }
   const nested =
@@ -759,10 +764,11 @@ function scalarText(
  * first item is on the bracket's line.
  */
 function indents(doc: yaml.Document, text: string):
-    Pick<Update, 'step'|'seqIndent'|'itemIndent'|'pad'> {
+    Pick<Update, 'step'|'seqIndent'|'itemIndent'|'itemAlone'|'pad'> {
   const col = (p: number) => p - lineStart(text, p);
   const found: Partial<Record<'step'|'seqIndent'|'itemIndent', number>> = {};
   const pad: Partial<Update['pad']> = {};
+  let itemAlone: boolean|undefined;
   yaml.visit(doc, {
     Collection: (_, v) => {
       const first = v.items[0];
@@ -783,12 +789,16 @@ function indents(doc: yaml.Document, text: string):
       found[yaml.isMap(v) ? 'step' : 'seqIndent'] ??=
           col(at) - col(key.range![0]);
       if (yaml.isMap(first) && !first.flow && first.items[0]) {
-        found.itemIndent ??=
-            col((first.items[0].key as yaml.Node).range![0]) - col(at);
+        const firstKey = (first.items[0].key as yaml.Node).range![0];
+        found.itemIndent ??= col(firstKey) - col(at);
+        itemAlone ??= lineStart(text, firstKey) !== lineStart(text, at);
       }
     },
   });
-  return {step: 2, seqIndent: 2, itemIndent: 2, ...found, pad: {map: '', seq: '', ...pad}};
+  return {
+    step: 2, seqIndent: 2, itemIndent: 2, ...found,
+    itemAlone: itemAlone ?? false, pad: {map: '', seq: '', ...pad},
+  };
 }
 
 /** The offset of each `-` of a block list. */

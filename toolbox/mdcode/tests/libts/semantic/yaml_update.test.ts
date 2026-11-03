@@ -11,6 +11,14 @@ import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic
 // value, under YAML 1.1 as well. A row with a fourth column must give that
 // text.
 test.each<[string, string, (value: any) => void, string?]>([
+  [
+    'a mapping added to a list whose items start on the line after their dash',
+    'a:\n  -\n   k: 1\n', v => v.a.push({k: 2}), 'a:\n  -\n   k: 1\n  -\n   k: 2\n'
+  ],
+  [
+    'a mapping added to a list whose items start on the line after their dash, two columns in',
+    'a:\n  -\n    k: 1\n', v => v.a.push({k: 2}), 'a:\n  -\n    k: 1\n  -\n    k: 2\n'
+  ],
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   [
