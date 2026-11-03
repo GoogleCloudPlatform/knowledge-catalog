@@ -172,12 +172,13 @@ interface Slot {
 
 /**
  * Fills `held` for `value` in place of `node`: the node `links` maps each
- * object to, and each mapping or list whose items `patch` keeps.
+ * object to, and each mapping or list whose items `patch` keeps. The value
+ * that keeps a node's items in place holds it.
  */
 function hold(u: Update, value: unknown, node: unknown): void {
   if (!isObject(value)) return;
   const linked = u.links.get(value);
-  if (linked) u.held.set(linked, value);
+  if (linked && !u.held.has(linked)) u.held.set(linked, value);
   const kept = isFull(value) && yaml.isCollection(node) &&
           Array.isArray(value) === yaml.isSeq(node) ?
       matchItems(u, entriesOf(value), node) :
@@ -565,6 +566,7 @@ function block(
  * the text at offset `next`.
  */
 function items(u: Update, value: object, col: number, next?: number): string[] {
+  release(u, value);
   const entries = entriesOf(value);
   return entries.flatMap(([k, v], i) => {
     const prefix =
@@ -573,6 +575,15 @@ function items(u: Update, value: object, col: number, next?: number): string[] {
         u, prefix, v, col, String(k),
         i === entries.length - 1 ? next : undefined);
   });
+}
+
+/**
+ * Lets the entries of `value`, which is written entry by entry, move from the
+ * node `links` maps it to, unless another value keeps that node in place.
+ */
+function release(u: Update, value: object): void {
+  const node = u.links.get(value);
+  if (u.held.get(node) === value) u.held.delete(node);
 }
 
 /**
@@ -714,6 +725,7 @@ function scalarText(
     u: Update, value: unknown, col: number, flow: boolean,
     type?: yaml.Scalar.Type): string {
   if (flow && isFull(value)) {
+    release(u, value);
     const seq = Array.isArray(value);
     const pad = seq ? u.pad.seq : u.pad.map;
     const parts = entriesOf(value).map(([k, v]) => seq ?

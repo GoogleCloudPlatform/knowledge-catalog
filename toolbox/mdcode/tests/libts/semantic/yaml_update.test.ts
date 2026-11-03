@@ -132,6 +132,22 @@ test.each<[string, string, (value: any) => void, string?]>([
         'c:\n  custom:\n    team:\n      lead: &l ann  # c\n    other:\n      owner: ann\n'
   ],
   [
+    'moved mappings written entry by entry, one holding an alias of an anchor outside it',
+    "x: &a 1\nm:\n  k: 1\n  w:\n    r: *a\n    h: |-  # c\n      p\n    t: 'd'\nf: {k: 1}\ng:\n  t: 'e'\n" +
+        'a:\n  k: 1\n  h: |-  # c\n    p\n',
+    v => {
+      v.m = {k: 1, c: {w: v.m.w}};
+      v.f.g = v.g;
+      delete v.g;
+      // A new mapping takes the place of `a`, which moves with a new key.
+      const a = Object.assign(v.a, {z: 1});
+      v.a = {k: 1, h: 'p'};
+      v.b = a;
+    },
+    "x: &a 1\nm:\n  k: 1\n  c:\n    w:\n      r: 1\n      h: |-  # c\n        p\n      t: 'd'\n" +
+        "f: {k: 1, g: {t: 'e'}}\na:\n  k: 1\n  h: |-  # c\n    p\nb:\n  k: 1\n  h: p\n  z: 1\n"
+  ],
+  [
     'an empty value moved to a new key', 'a:\n  k: 1\n  e:  # c\n',
     v => (delete v.a.e, v.b = {e: null}), 'a:\n  k: 1\nb:\n  e:\n'
   ],
