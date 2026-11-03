@@ -320,15 +320,20 @@ function widths(s: Side): Set<string> {
   return found;
 }
 
-// Each comment of `s`, with its line and the key before it, if any.
+// Each comment of `s`, with its line and the key on the line where the
+// token before it starts, if any.
 function comments(s: Side) {
   let at = 0;
+  let last = 0;
   return [...new yaml.Lexer().lex(s.text)].flatMap(token => {
     const p = at;
     if (!['\u0002', '\u0018', '\u001f'].includes(token)) at += token.length;
-    if (token[0] !== '#') return [];
+    if (token[0] !== '#') {
+      if (token.trim()) last = p;
+      return [];
+    }
     const line = lineOf(s, p);
-    const key = /^\s*(?:-\s+)?([\w"']+)\s*:/.exec(lineText(s, line))?.[1] ?? '';
+    const key = /^\s*(?:-\s+)?([\w"']+)\s*:/.exec(lineText(s, lineOf(s, last)))?.[1] ?? '';
     return [{token, line, key, after: !isBlank(before(s, p))}];
   });
 }
@@ -363,7 +368,7 @@ function check(input: string, output: string) {
   if (input.includes('\r\n') && /(^|[^\r])\n/.test(output)) problems.push('LF');
   if (input[0] !== output[0]) problems.push('first character');
   for (const i of y.changed) {
-    if (/\S[ \t]+\r?\n?$/.test(lineText(y, i))) problems.push('trailing space');
+    if (/[ \t]\r?\n?$/.test(lineText(y, i))) problems.push('trailing space');
   }
   return {input: rest(x), output: rest(y), problems};
 }
@@ -443,7 +448,7 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a datatype rewritten', changed(vanilla, m => fields(m)[0].datatype = 'integer')],
   ['a source completed', changed(vanilla, m => ds(m)[0].source = 'orders'),
    {sourcePrefix: BQ.replace('/tables/orders', '')}],
-  ['a description cut', changed(vanilla, m => ds(m)[0].description = 'Orders. '.repeat(260))],
+  ['a description cut', changed(vanilla, m => ds(m)[0].description = `Orders.${' Orders.'.repeat(129)}\n\n`.repeat(2))],
   ['a key removed', changed(vanilla, m => {
      const {name, ...rest} = fields(m)[1];
      fields(m)[1] = {name, datatype: 'Opaque', ...rest};
@@ -527,13 +532,13 @@ test.each([...CHANGES, ['no change', google] as const].flatMap(
       const res = await importSemanticModelYaml(input, opts);
 
       // The output holds what the same change makes of a YAML file, in the
-      // input's key order, with no blank lines.
+      // input's key order, with no line of only spaces.
       expect(res.warnings).toContain('Converted the JSON file to YAML.');
       const yamlRes = await importSemanticModelYaml(plain, opts);
       expect(JSON.stringify(yaml.parse(res.files[0].content)))
           .toBe(JSON.stringify(yaml.parse(yamlRes.files[0].content)));
       expect(res.files[0].content)
-          .not.toMatch(/^\s|\n[ \t]*\n|:\n\s*(\[\]|\{\})|\n\s*-\s*\n/);
+          .not.toMatch(/^\s|\n[ \t]+\n|:\n\s*(\[\]|\{\})|\n\s*-\s*\n/);
       const reimport = await again(res.files[0].content, opts);
       expect(reimport.files[0].content).toBe(res.files[0].content);
       expect(reimport.warnings).not.toContain('Converted the JSON file to YAML.');

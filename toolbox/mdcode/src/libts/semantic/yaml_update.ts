@@ -403,8 +403,8 @@ function items(u: Update, value: object, col: number): string[] {
 }
 
 /**
- * `value` written as a scalar or flow collection. The lines of a block
- * scalar after the first are indented under column `col`.
+ * `value` written as a scalar or flow collection. Each line after the first
+ * that is not empty is indented under column `col`.
  */
 function scalarText(
     u: Update, value: unknown, col: number, flow: boolean,
@@ -421,7 +421,8 @@ function scalarText(
   });
   return (flow ? text.slice(1, -2) : text.slice(3, -1))
       .split('\n')
-      .join(u.nl + ' '.repeat(col));
+      .map((line, i) => i > 0 && line ? ' '.repeat(col) + line : line)
+      .join(u.nl);
 }
 
 /** The indentation of the file's first nested mapping, list and list item. */
