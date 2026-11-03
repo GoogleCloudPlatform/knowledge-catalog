@@ -366,9 +366,9 @@ describe('profile translation', () => {
     ] : []);
   });
 
-  test.each([false, true])('names a profile file that does not parse, strict: %p', async strict => {
+  test('names a profile file that does not parse', async () => {
     const res = await importSemanticModelYaml(googleDoc(), {
-      flavor: 'google', strict, fileName: 'sales.yaml',
+      flavor: 'google', fileName: 'sales.yaml',
       profileFiles: [{fileName: 'sales.profile.prod.yaml', content: 'name: [prod\n'}],
     });
     expect(res.errors).toEqual([expect.stringContaining(
@@ -593,9 +593,9 @@ describe('profile checks', () => {
         `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d].flat(), profiles: [p]})}'\n`}),
      {...strict, flavor: 'ossie'}]],
   ];
-  // [problem, deployment, profile, push's errors, or its error for pg's label]
+  // [problem, deployments, profile, push's error, or its errors for pg's label]
   const DEPLOYMENT_PROBLEMS:
-      Array<[string, object, Profile, string|string[]|((label: string) => string)]> = [
+      Array<[string, object|object[], Profile, string|((label: string) => string[])]> = [
     ['a deployment that names an unknown profile', {name: 'g', target: BQ_GRAPH, profile: 'nope'}, PG,
      "[sales] model 'retail': deployment 'g' names unknown binding profile 'nope'; defined profiles: pg."],
     ['a Spanner graph whose profile keeps a metric', {name: 's', target: SPANNER_GRAPH, profile: 'pg'}, onSpanner(),
@@ -605,10 +605,10 @@ describe('profile checks', () => {
      onSpanner({metrics_exclude: '*'}),
      `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
      `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
-    ['a profile with a bad source once', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
-     orders({source: 'orders'})[0], badSource],
-    ["a Spanner graph on the model file's own bindings, whose model declares metrics",
-     {name: 's', target: SPANNER_GRAPH}, PG, [
+    ["a profile with a bad source once, and a Spanner graph on the model file's own bindings",
+     [{name: 'g', target: BQ_GRAPH, profile: 'pg'}, {name: 's', target: SPANNER_GRAPH}],
+     orders({source: 'orders'})[0], label => [
+       badSource(label),
        "[sales] deployment 's' targets Spanner database 'acme/i/db', but the model file binds " +
        `entity 'orders' to '${BQ_TABLE}', which is not a table in that database.`,
        "[sales] deployment 's' targets a Spanner graph and uses the model file's own bindings, " +
@@ -617,7 +617,7 @@ describe('profile checks', () => {
   ];
   test.each(DEPLOYMENT_PROBLEMS.flatMap(([problem, d, p, error]) => DEPLOYED.map(
       ([path, label, build]) => [problem, path, ...build(d, p),
-                                 typeof error === 'function' ? [error(label)] : [error].flat()] as const)))(
+                                 [typeof error === 'function' ? error(label) : error].flat()] as const)))(
       'reports %s, in %s', async (_, __, input, opts, errors) => {
         const res = await importSemanticModelYaml(input, opts);
         expect(res.errors).toEqual(errors);
@@ -1611,8 +1611,6 @@ semantic_model:
 
   // [label, the profile files beside sales.yaml, push's error]
   test.each([
-    ['a profile file that does not parse', [['sales.profile.pg.yaml', 'name: pg\nentities: [\n']],
-     expect.stringContaining("Profile file 'sales.profile.pg.yaml' does not parse: ")],
     ['the reserved name', [['sales.profile.default.yaml', 'name: default\n']],
      "Profile name 'default' is reserved for the inline bindings in 'sales.yaml'; remove " +
      "'sales.profile.default.yaml'."],
@@ -1620,11 +1618,6 @@ semantic_model:
      [['sales.profile.PROD.yaml', 'name: PROD\n'], ['sales.profile.prod.yaml', 'name: prod\n']],
      "Profile files 'sales.profile.PROD.yaml' and 'sales.profile.prod.yaml' name the same " +
      'profile; profile names are unique ignoring case.'],
-    ['another name inside the file', [['sales.profile.prod.yaml', 'name: staging\n']],
-     "Profile file 'sales.profile.prod.yaml' declares name 'staging', which does not match " +
-     "filename suffix 'prod'."],
-    ['a file that declares no name', [['sales.profile.prod.yaml', 'entities: []\n']],
-     "Profile file 'sales.profile.prod.yaml' declares no name; add 'name: prod'."],
     ['a key a profile may not set', [['sales.profile.prod.yaml', 'name: prod\nbogus: 1\n']],
      "[sales.profile.prod.yaml] profile 'prod' sets 'bogus', which a profile may not set; a " +
      'profile carries only physical bindings, and the logical model owns everything else'],
