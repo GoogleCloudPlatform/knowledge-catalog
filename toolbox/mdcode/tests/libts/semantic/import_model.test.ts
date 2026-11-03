@@ -494,6 +494,9 @@ describe('profile checks', () => {
     ['the reserved name', [{...PG, name: 'default'}],
      at => `Profile name 'default' is reserved for the inline bindings in '${at.doc}.yaml'; ` +
          `remove '${at.doc}.profile.default.yaml'.`, true],
+    ['a name that breaks the naming rule', [{...PG, name: '1x'}],
+     at => `Profile file '${at.doc}.profile.1x.yaml' has profile name '1x'; a profile name is ` +
+         'a letter followed by letters, digits, underscores and hyphens.', true],
     ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}),
      at => `profile 'pg': [${at.doc}] field 'orders.order_id': BigQuery reads "Order ID" in its ` +
          `'ANSI_SQL' expression as text; if you meant a column, give it a 'BIGQUERY' expression ` +
@@ -1628,9 +1631,9 @@ semantic_model:
     ['a file rule after a profile that does not load',
      [['sales.profile.a.yaml', 'name: a\nbogus: 1\n'], ['sales.profile.b.yaml', 'name: c\n']],
      "Profile file 'sales.profile.b.yaml' declares name 'c', which does not match filename suffix 'b'."],
-    ['a nameless .yml profile file', [['sales.profile.yml', 'name: ""\n']],
-     "model 'retail': Profile name '' is not valid; names must match ^[A-Za-z][A-Za-z0-9_-]*$: " +
-     'a letter, then letters, digits, underscores or hyphens.'],
+    ['a name that breaks the naming rule', [['sales.profile.-us.yaml', 'name: -us\n']],
+     "Profile file 'sales.profile.-us.yaml' has profile name '-us'; a profile name is a letter " +
+     'followed by letters, digits, underscores and hyphens.'],
   ])('refuses %s when converting to vanilla, in push\'s words', async (_, files, error) => {
     const res = await importSemanticModelYaml(googleDoc(), {
       flavor: 'ossie', strict: true, fileName: 'sales.yaml',

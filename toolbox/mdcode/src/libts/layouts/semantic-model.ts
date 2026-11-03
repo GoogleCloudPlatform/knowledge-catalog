@@ -233,11 +233,8 @@ export class SemanticModelLayout implements CatalogLayout {
         }) :
         undefined;
     if (badName) {
-      throw new Error(
-          `Profile file '${badName}' has profile name '${
-              badName.slice(prefix.length, -'.yaml'.length)}'; a profile ` +
-          `name is a letter followed by letters, digits, underscores and ` +
-          `hyphens.`);
+      throw new Error(profileNameError(
+          badName, badName.slice(prefix.length, -'.yaml'.length))!);
     }
     const siblings = this._siblingProfilePaths(model);
     if (!siblings.length) return [];
@@ -523,12 +520,14 @@ export function formatOverviewSidecar(
 // Throws when the profile file `file`, holding `text` for profile `name` beside
 // the model file `modelFile`, names the same profile as a file in `seen`, which
 // maps each profile name read before, in lower case, to its file. It also
-// throws when the file does not parse, uses the legacy `semantic_model:`
-// wrapper, takes the name reserved for the inline bindings, or declares no name
-// or another name. Adds the file to `seen`.
+// throws when the name breaks the naming rule, the file does not parse, uses
+// the legacy `semantic_model:` wrapper, takes the name reserved for the inline
+// bindings, or declares no name or another name. Adds the file to `seen`.
 export function checkProfileFileName(
     modelFile: string, file: string, name: string, text: string,
     seen: Map<string, string>): void {
+  const badName = profileNameError(file, name);
+  if (badName) throw new Error(badName);
   // Profile names are unique ignoring case.
   const twin = seen.get(name.toLowerCase());
   if (twin) {
@@ -559,6 +558,14 @@ export function checkProfileFileName(
         `Profile file '${file}' declares name '${declared}', which does not ` +
         `match filename suffix '${name}'.`);
   }
+}
+
+// Push's error for the profile file `file` whose profile name `name` breaks
+// the naming rule, or undefined.
+export function profileNameError(file: string, name: string): string|undefined {
+  if (nameProblem('profile', name) === undefined) return undefined;
+  return `Profile file '${file}' has profile name '${name}'; a profile name ` +
+      `is a letter followed by letters, digits, underscores and hyphens.`;
 }
 
 // The `name` a profile file declares at its top level, or undefined when it

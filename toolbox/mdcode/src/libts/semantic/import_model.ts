@@ -477,13 +477,12 @@ function parseGoogleBlocks(exts: unknown): Array<Record<string, unknown>> {
 
 /**
  * Validates all model, deployment, profile, entity/dataset, field,
- * relationship, and metric names in `doc` (plus any `googleBlocks` and
- * `profileFiles`) in a single pass so every invalid or over-length identifier
- * is reported at once.
+ * relationship, and metric names in `doc` (plus any `googleBlocks`) in a
+ * single pass so every invalid or over-length identifier is reported at once.
  */
 function validateObjectNames(
     doc: ImportDocument, googleBlocks: Array<Record<string, unknown>>,
-    modelScope: string, profileFiles?: SerializedFile[]): void {
+    modelScope: string): void {
   // Validates a single identifier `name` against `kind`'s rules via
   // `nameProblem` and appends any error to `doc.errors`.
   const validateName = (kind: NameKind, name: unknown, scope?: string) => {
@@ -498,19 +497,14 @@ function validateObjectNames(
         for (const record of records) validateName(kind, record.name, scope);
       };
 
-  // 1. Validate model, deployment, and profile names (inline, `GOOGLE` block,
-  // and sibling `profileFiles`).
+  // 1. Validate model, deployment, and profile names (inline and `GOOGLE`
+  // block).
   validateName('model', doc.model.name);
   validateRecords('deployment', asRecords(doc.model.deployments), modelScope);
   validateRecords('profile', asRecords(doc.model.profiles), modelScope);
   for (const g of googleBlocks) {
     validateRecords('deployment', asRecords(g.deployments), modelScope);
     validateRecords('profile', asRecords(g.profiles), modelScope);
-  }
-  if (doc.targetVersion === OSSIE_VERSION) {
-    for (const pf of profileFiles ?? []) {
-      validateName('profile', parseProfileName(pf.fileName), modelScope);
-    }
   }
 
   // 2. Validate dataset/entity, field, relationship, and metric names.
@@ -526,16 +520,14 @@ function validateObjectNames(
 
 /**
  * Phase 2 (Pre-validation): Validates all identifier names in the input
- * document and any attached `profileFiles`. The loader rejects a model's
- * legacy `deploymentTargets`.
+ * document. The loader rejects a model's legacy `deploymentTargets`.
  */
-function validateInputDocument(
-    doc: ImportDocument, profileFiles?: SerializedFile[]): void {
+function validateInputDocument(doc: ImportDocument): void {
   const modelScope = typeof doc.model.name === 'string' ?
       `model '${doc.model.name}'` :
       'model';
   const googleBlocks = parseGoogleBlocks(doc.model.custom_extensions);
-  validateObjectNames(doc, googleBlocks, modelScope, profileFiles);
+  validateObjectNames(doc, googleBlocks, modelScope);
 }
 
 /**
@@ -1469,9 +1461,8 @@ function validateDeploymentTargets(
 function attachProfileFiles(
     model: SemanticModel, profileFiles: SerializedFile[]|undefined,
     doc: ImportDocument, modelFile: string): void {
-  const files = (profileFiles ?? [])
-                    .map(pf => ({...pf, name: parseProfileName(pf.fileName)}))
-                    .filter(pf => !nameProblem('profile', pf.name));
+  const files = (profileFiles ?? []).map(
+      pf => ({...pf, name: parseProfileName(pf.fileName)}));
   // Push checks every file's name before it loads any profile, and stops at
   // the first file that breaks a file rule.
   const seen = new Map<string, string>();
@@ -1796,7 +1787,7 @@ export async function importSemanticModelYaml(
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
-  validateInputDocument(doc, opts.profileFiles);
+  validateInputDocument(doc);
 
   // 2. Read the `--source-prefix` entry group, if needed, and run third-party
   // repairs (which record errors in `strict` mode).
