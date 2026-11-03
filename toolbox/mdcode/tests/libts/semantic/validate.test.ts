@@ -18,12 +18,6 @@ const BQ_TARGET =
 const SPANNER_TARGET =
     'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
 
-// A parsed AlloyDB deployment target. Not a graph target: it names a database
-// to run against, which is the whole reason a push has to say something other
-// than "typo" about it.
-const ALLOYDB_TARGET =
-    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
-
 function googleExt(targets: string[]): CustomExtension {
   return {
     vendorName: 'GOOGLE',
@@ -64,45 +58,6 @@ describe('validatePushRequirements', () => {
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
 
-  test('a model with no deployment target is rejected', () => {
-    const errs = validatePushRequirements([loaded(model())]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(
-        'declares 0 deployments; push uses exactly one deployment for now, ' +
-        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
-    expect(errs[0]).toContain('doc');
-
-    const vanillaErrs =
-        validatePushRequirements([loaded(model({version: '0.2.0.dev0'}))]);
-    expect(vanillaErrs).toHaveLength(1);
-    expect(vanillaErrs[0]).toEndWith(
-        "; list 'deployments' in a GOOGLE custom_extensions block on the " +
-        "model, or set version: '0.2.0.dev0/google' and use 'deployments:'");
-    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
-  });
-
-  // A vanilla model that lists deployments has them in its GOOGLE block, so
-  // the message says where they are instead of how to declare them.
-  test('a vanilla model is told its GOOGLE block holds its deployments', () => {
-    const twice = model({
-      version: '0.2.0.dev0',
-      deployments: [
-        {name: 'a', target: BQ_TARGET},
-        {name: 'b', target: SPANNER_TARGET},
-      ],
-    });
-    expect(validatePushRequirements([loaded(twice)])[0]).toEndWith(
-        'with a BigQuery Graph or Spanner Graph target under ' +
-        "'deployments' in its GOOGLE custom_extensions block.");
-    const alloy = model({
-      version: '0.2.0.dev0',
-      deployments: [{name: 'a', target: ALLOYDB_TARGET}],
-    });
-    expect(validatePushRequirements([loaded(alloy)])[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (under 'deployments' in " +
-        'its GOOGLE custom_extensions block), or run');
-  });
-
   test(
       'a BigQuery-target metric that resolves to no entity is rejected', () => {
         const m = model(
@@ -129,144 +84,6 @@ describe('validatePushRequirements', () => {
     expect(validatePushRequirements([loaded(m)])).toEqual([]);
   });
 
-  test('an unsupported deployment target is rejected as malformed', () => {
-    // A single, otherwise well-formed URI that is neither a BigQuery nor a
-    // Spanner Graph target fails because it does not parse as either.
-    const m = model(
-        {}, [googleExt(['dataplex.googleapis.com/projects/p/locations/us'])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(
-        "target 'dataplex.googleapis.com/projects/p/locations/us', which is " +
-        'not a BigQuery graph, a Spanner graph or an AlloyDB database');
-    expect(errs[0]).not.toContain('deploymentTarget');
-  });
-
-  // An AlloyDB target parses and is supported, and a push still cannot use it:
-  // AlloyDB has no property-graph DDL, so there is no graph to publish. The
-  // message has to separate that from the malformed case above, because the
-  // fix is a different command rather than a corrected URI.
-  test('an AlloyDB target is rejected as a store, not as a typo', () => {
-    const m = model({}, [googleExt([ALLOYDB_TARGET])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(`target '${ALLOYDB_TARGET}' is an AlloyDB database`);
-    expect(errs[0]).toContain('runs against rather than deploys to');
-    expect(errs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (under 'deployments'), " +
-        "or run 'kcmd push --no-profile' to publish to Knowledge Catalog only.");
-    expect(errs[0]).not.toContain('deploymentTarget');
-    expect(errs[0]).not.toContain('is not a valid');
-
-    const vanilla =
-        model({version: '0.2.0.dev0'}, [googleExt([ALLOYDB_TARGET])]);
-    const vanillaErrs = validatePushRequirements([loaded(vanilla)]);
-    expect(vanillaErrs).toHaveLength(1);
-    // The version hint goes with the graph target it enables, not with the
-    // catalog-only option.
-    expect(vanillaErrs[0]).toContain(
-        "Declare a BigQuery or Spanner Graph target (list 'deployments' in " +
-        "a GOOGLE custom_extensions block on the model, or set version: " +
-        "'0.2.0.dev0/google' and use 'deployments:'), or run 'kcmd push " +
-        "--no-profile' to publish to Knowledge Catalog only.");
-    expect(vanillaErrs[0]).not.toContain("under 'deployments'");
-  });
-
-  // A Knowledge-Catalog-only push deploys no graph at all, so it has no opinion
-  // about the target -- including this one.
-  test('an AlloyDB target passes when no graph is being deployed', () => {
-    const m = model({}, [googleExt([ALLOYDB_TARGET])]);
-    expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
-        .toEqual([]);
-  });
-
-  test('more than one deployment target is rejected', () => {
-    const other =
-        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const m = model({}, [googleExt([BQ_TARGET, other])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs.length).toBe(1);
-    expect(errs[0]).toContain(
-        'declares 2 deployments; push uses exactly one deployment for now, ' +
-        "with a BigQuery Graph or Spanner Graph target under 'deployments'.");
-  });
-
-  test('more than one target in a vanilla model ends with the version hint', () => {
-    const other =
-        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const m = model({version: '0.2.0.dev0'}, [googleExt([BQ_TARGET, other])]);
-    const errs = validatePushRequirements([loaded(m)]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toEndWith(
-        "with a BigQuery Graph or Spanner Graph target; list 'deployments' " +
-        "in a GOOGLE custom_extensions block on the model, or set version: " +
-        "'0.2.0.dev0/google' and use 'deployments:'");
-  });
-
-  // The entry to fix is named, rather than the count of targets.
-  test('a target in no accepted form beside a valid one is named', () => {
-    const typo = model({}, [googleExt([BQ_TARGET, 'bq-typo'])]);
-    const errors = validatePushRequirements([loaded(typo)]);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toStartWith(
-        "model 'm' (doc) target 'bq-typo', which is not a BigQuery graph, a " +
-        'Spanner graph or an AlloyDB database.');
-    const nonString = model({version: '0.2.0.dev0'}, [{
-      vendorName: 'GOOGLE',
-      data: JSON.stringify({deploymentTargets: [BQ_TARGET, 42]}),
-    }]);
-    const errs = validatePushRequirements([loaded(nonString)]);
-    expect(errs).toHaveLength(1);
-    expect(errs[0]).toContain(
-        "target '42', which is not a BigQuery graph, a Spanner graph or an " +
-        'AlloyDB database');
-  });
-
-  // A padded target is the same target, so a blank one is dropped and a padded
-  // copy is caught as a repeat, on a catalog-only push too.
-  test('GOOGLE-block targets are trimmed and blank ones dropped before the repeat check', () => {
-    const padded = model({version: '0.2.0.dev0'},
-                         [googleExt([BQ_TARGET, '  ', ` ${BQ_TARGET} `])]);
-    expect(validatePushRequirements([loaded(padded)], {targetOptional: true}))
-        .toEqual([
-          `model 'm' (doc) declares duplicate deployment target '${
-              BQ_TARGET}'; each deployment must target a distinct resource.`,
-        ]);
-    const blank = model({version: '0.2.0.dev0'},
-                        [googleExt(['', ` ${BQ_TARGET} `])]);
-    expect(validatePushRequirements([loaded(blank)])).toEqual([]);
-  });
-
-  // A target in no accepted form is rejected on every push, a KC-only one too,
-  // and the error names what to write instead.
-  test('a target in no accepted form is rejected on every push', () => {
-    const legacy = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/instances/i/databases/db';
-    for (const [target, rest] of [
-      [`//${BQ_TARGET}`,
-       `which is a resource URI; write its GCP resource name, without the ` +
-           `leading '//': '${BQ_TARGET}'.`],
-      [legacy,
-       `the instance-based AlloyDB name, which names no real resource. An ` +
-           `AlloyDB database belongs to its cluster; write ` +
-           `'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db'.`],
-      [SPANNER_TARGET.replace('/graphs/', '/propertyGraphs/'),
-       `which names a Spanner graph by 'propertyGraphs'; write its Dataplex ` +
-           `name: '${SPANNER_TARGET}'.`],
-      ['bigquery:graph:p.d.g',
-       `which is a Knowledge Catalog name. Write the GCP resource name ` +
-           `instead: 'bigquery.googleapis.com/projects/<p>/datasets/<d>/propertyGraphs/<g>'.`],
-      ['example.com/not/a/graph',
-       `which is not a BigQuery graph, a Spanner graph or an AlloyDB database.`],
-    ]) {
-      const m = model({}, [googleExt([target])]);
-      for (const targetOptional of [false, true]) {
-        const errs = validatePushRequirements([loaded(m)], {targetOptional});
-        expect(errs).toHaveLength(1);
-        expect(errs[0]).toStartWith(`model 'm' (doc) target '${target}', ${rest}`);
-      }
-    }
-  });
-
   test('malformed GOOGLE extension JSON is reported, not thrown', () => {
     const m = model({}, [{vendorName: 'GOOGLE', data: '{not json'}]);
     const errs = validatePushRequirements([loaded(m)]);
@@ -275,45 +92,15 @@ describe('validatePushRequirements', () => {
   });
 
   test('errors accumulate across models', () => {
-    const a = loaded(model({name: 'a'}), 'a');
-    const b = loaded(model({name: 'b'}), 'b');
-    const errs = validatePushRequirements([a, b]);
-    expect(errs.length).toBe(2);
-  });
-
-  test(
-      'targetOptional accepts a model with no deployment target (KC-only)',
-      () => {
-        // A Knowledge-Catalog-only push governs the logical model and deploys
-        // no graph, so it needs no deployment target. The same model without
-        // the option is rejected (proving the option is what relaxed it).
-        const m = model();
-        expect(validatePushRequirements([loaded(m)], {
-          targetOptional: true
-        })).toEqual([]);
-        expect(validatePushRequirements([loaded(m)]).length).toBe(1);
-      });
-
-  test('targetOptional ignores the deployment target count and kind (KC-only), but still rejects duplicate targets', () => {
-    // A KC-only push deploys no graph, so its deployment target is irrelevant:
-    // more than one distinct target is accepted, where a graph push rejects
-    // it. (Zero targets is covered
-    // above.) A repeated target URI is still rejected so a vanilla file obeys
-    // the same uniqueness rule as `deployments:`.
-    const dup = model({}, [googleExt([BQ_TARGET, BQ_TARGET])]);
-    for (const targetOptional of [false, true]) {
-      const errs = validatePushRequirements([loaded(dup)], {targetOptional});
-      expect(errs.some(e => e.includes(`duplicate deployment target '${BQ_TARGET}'`))).toBe(true);
-    }
-    const other =
-        'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g2';
-    const many = model({}, [googleExt([BQ_TARGET, other])]);
-    expect(validatePushRequirements([loaded(many)], {targetOptional: true}))
-        .toEqual([]);
-    expect(validatePushRequirements([loaded(many)]).length).toBe(1);
+    const unresolved = (name: string) => loaded(
+        model(
+            {name, metrics: [{name: 'cnt', expression: 'COUNT(*)'} as Metric]},
+            [googleExt([BQ_TARGET])]),
+        name);
+    expect(validatePushRequirements([unresolved('a'), unresolved('b')]))
+        .toHaveLength(2);
   });
 });
-
 
 // Helpers for the live data-source check.
 function entity(name: string, dataSource: string): Entity {
@@ -870,7 +657,7 @@ describe('inheritance rules', () => {
   }
   function check(over: Partial<SemanticModel>): string[] {
     return validatePushRequirements(
-        [loaded(model(over))], {targetOptional: true});
+        [loaded(model(over))]);
   }
   const customer = ent('customer', {
     fields: [{name: 'name', expression: 'name', type: 'String',
@@ -967,12 +754,12 @@ semantic_model:
         loadModels(text, {bindingOptional, allowLegacyBareSource: true})
             .models.map(m => loaded(m, 'sales.yaml'));
     // The catalog leg validates the logical model unpruned.
-    expect(validatePushRequirements(docs(logical, true), {targetOptional: true}))
+    expect(validatePushRequirements(docs(logical, true)))
         .toEqual([]);
     const merged = mergeProfileOntoDoc(logical, profile, 'analytical');
     if ('error' in merged) throw new Error(merged.error);
     expect(validatePushRequirements(
-               docs(merged.text, false), {targetOptional: true}))
+               docs(merged.text, false)))
         .toEqual([]);
   });
 
@@ -990,14 +777,14 @@ semantic_model:
     for (const [m, want] of [[cyclic, /must not form a cycle/],
                              [ambiguous, /declare or rebind 'id'/]] as const) {
       const errors = validatePushRequirements(
-          [loaded(m)], {targetOptional: true, fieldsPruned: true});
+          [loaded(m)], {fieldsPruned: true});
       expect(errors.join('\n')).toMatch(want);
     }
     // Pruning never drops an entity, so an unknown parent is reported on a
     // pruned model too.
     expect(validatePushRequirements(
                [loaded(model({entities: [ent('a', {extends: ['gone']})]}))],
-               {targetOptional: true, fieldsPruned: true}).join('\n'))
+               {fieldsPruned: true}).join('\n'))
         .toContain("extends unknown entity 'gone'");
   });
 
@@ -1081,7 +868,7 @@ semantic_model:
       const errors = validatePushRequirements(
           [loaded(model({entities: [person, employee, order],
                          relationships: [rel('person')]}))],
-          {targetOptional: true, fieldsPruned: true});
+          {fieldsPruned: true});
       expect(errors.join('\n'))
           .toContain("connects 'person', which is extended by another entity");
     });
@@ -1119,8 +906,7 @@ describe('a relationship joins on a key of its target', () => {
     destination: {entity: 'customer', columns: to},
   });
   const check = (customer: Entity, to: string[]) => validatePushRequirements(
-      [loaded(model({entities: [ent('orders'), customer], relationships: [join(to)]}))],
-      {targetOptional: true});
+      [loaded(model({entities: [ent('orders'), customer], relationships: [join(to)]}))]);
 
   test('a join on a key, a unique key or a superset of one passes', () => {
     expect(check(ent('customer'), ['id'])).toEqual([]);
@@ -1170,8 +956,7 @@ describe('a relationship key check compares names as written', () => {
   });
   const orders: Entity = {name: 'orders', dataSource: 'p.d.o', keys: ['o_id'], fields: []};
   const check = (entities: Entity[], rel: any) => validatePushRequirements(
-      [loaded(model({entities: [orders, ...entities], relationships: [rel]}))],
-      {targetOptional: true});
+      [loaded(model({entities: [orders, ...entities], relationships: [rel]}))]);
 
   // A key is a physical column, so `customerId` is not read as the column
   // the field of that name is bound to.
@@ -1351,7 +1136,7 @@ describe('physical column names and relationship shape', () => {
           destination: {entity: 'customers', columns: [col]},
         }],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual([]);
     }
   });
@@ -1361,14 +1146,12 @@ describe('physical column names and relationship shape', () => {
       const expectHint = hintedColumns.includes(bad);
 
       const pkErrs = validatePushRequirements(
-          [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
-          {targetOptional: true});
+          [loaded(model({entities: [baseOrders({keys: [bad]})]}))]);
       expect(pkErrs).toEqual(
           [columnError("entity 'orders'", 'primary_key', bad, expectHint)]);
 
       const ukErrs = validatePushRequirements(
-          [loaded(model({entities: [baseOrders({uniqueKeys: [[bad]]})]}))],
-          {targetOptional: true});
+          [loaded(model({entities: [baseOrders({uniqueKeys: [[bad]]})]}))]);
       expect(ukErrs).toEqual(
           [columnError("entity 'orders'", 'unique_keys', bad, expectHint)]);
 
@@ -1380,8 +1163,7 @@ describe('physical column names and relationship shape', () => {
               source: {entity: 'orders', columns: [bad]},
               destination: {entity: 'customers', columns: ['c_id']},
             }],
-          }))],
-          {targetOptional: true});
+          }))]);
       expect(fromErrs).toEqual([columnError(
           "relationship 'placed_by'", 'from_columns', bad, expectHint)]);
 
@@ -1393,8 +1175,7 @@ describe('physical column names and relationship shape', () => {
               source: {entity: 'orders', columns: ['o_id']},
               destination: {entity: 'customers', columns: [bad]},
             }],
-          }))],
-          {targetOptional: true});
+          }))]);
       expect(toErrs).toEqual([columnError(
           "relationship 'placed_by'", 'to_columns', bad, expectHint)]);
     }
@@ -1406,8 +1187,7 @@ describe('physical column names and relationship shape', () => {
     for (const op of operators) {
       for (const bad of [`${op}a`, `a ${op}b`, `a${op} b`]) {
         const errs = validatePushRequirements(
-            [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
-            {targetOptional: true});
+            [loaded(model({entities: [baseOrders({keys: [bad]})]}))]);
         expect(errs).toEqual(
             [columnError("entity 'orders'", 'primary_key', bad, false)]);
       }
@@ -1435,8 +1215,7 @@ describe('physical column names and relationship shape', () => {
       for (const bad of [`a${c}b`, `a${c}b c`]) {
         if (isColumnName(bad)) continue;
         const errs = validatePushRequirements(
-            [loaded(model({entities: [baseOrders({keys: [bad]})]}))],
-            {targetOptional: true});
+            [loaded(model({entities: [baseOrders({keys: [bad]})]}))]);
         expect(errs).toEqual(
             [columnError("entity 'orders'", 'primary_key', bad, hint)]);
       }
@@ -1455,7 +1234,7 @@ semantic_model:
           - { name: o_id, expression: o_id }
 `).models;
     const errs =
-        validatePushRequirements([loaded(parsed)], {targetOptional: true});
+        validatePushRequirements([loaded(parsed)]);
     expect(errs).toHaveLength(1);
     expect(errs[0]).toContain(
         "entity 'orders' in model 'sales' (doc): primary_key column 'LOWER(o_id)' is not a physical column name");
@@ -1471,8 +1250,7 @@ semantic_model:
       fields: [],
     };
     const errs = validatePushRequirements(
-        [loaded(model({entities: [party]}))],
-        {targetOptional: true});
+        [loaded(model({entities: [party]}))]);
     expect(errs.length).toBe(1);
     expect(errs[0]).toContain('cannot declare a primary key or unique keys');
   });
@@ -1493,8 +1271,7 @@ semantic_model:
             source: {entity: 'orders', columns: ['o_id']},
             destination: {entity: 'party', columns: ['LOWER(id)']},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(errs).toHaveLength(2);
     expect(errs.join('\n')).toContain("connects 'party', which is abstract");
     expect(errs.join('\n')).toContain(
@@ -1517,8 +1294,7 @@ semantic_model:
               destinationColumns: ['c_id'],
             },
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(errs).toEqual([]);
   });
 
@@ -1537,8 +1313,7 @@ semantic_model:
               destinationColumns: ['g_id'],
             },
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(errs).toEqual([
       "relationship 'orders_ghosts' in model 'm' (doc): 'to' dataset 'ghost' is not defined in the model.",
     ]);
@@ -1553,8 +1328,7 @@ semantic_model:
             source: {entity: 'ghost', columns: ['c_id']},
             destination: {entity: 'customers', columns: ['c_id']},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(badFrom.length).toBe(1);
     expect(badFrom[0]).toContain("relationship 'placed_by'");
     expect(badFrom[0]).toContain("'from' dataset 'ghost' is not defined in the model.");
@@ -1567,8 +1341,7 @@ semantic_model:
             source: {entity: 'orders', columns: ['o_id']},
             destination: {entity: 'ghost', columns: ['o_id']},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(badTo.length).toBe(1);
     expect(badTo[0]).toContain("relationship 'placed_by'");
     expect(badTo[0]).toContain("'to' dataset 'ghost' is not defined in the model.");
@@ -1588,8 +1361,7 @@ semantic_model:
               destination: {entity: 'orders', columns: ['o_id']},
             },
           ],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(bothWays).toEqual([
       "relationship 'placed' in model 'm' (doc) runs from 'customers' to " +
           "'orders', and relationship 'placed_by' runs the other way; keep " +
@@ -1606,8 +1378,7 @@ semantic_model:
             source: {entity: 'orders', columns: ['o_id', 'extra_id']},
             destination: {entity: 'customers', columns: ['c_id']},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(fromLonger).toEqual([
       "relationship 'placed_by' in model 'm' (doc): from_columns (2) and to_columns (1) have different lengths; the join keys are mismatched.",
     ]);
@@ -1620,8 +1391,7 @@ semantic_model:
             source: {entity: 'orders', columns: ['o_id']},
             destination: {entity: 'customers', columns: ['c_id', 'extra_id']},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(toLonger).toEqual([
       "relationship 'placed_by' in model 'm' (doc): from_columns (1) and to_columns (2) have different lengths; the join keys are mismatched.",
     ]);
@@ -1648,8 +1418,7 @@ semantic_model:
             source: {entity: 'orders', columns: []},
             destination: {entity: 'customers', columns: ['c_id']},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(onlyToBound).toEqual([halfBound]);
 
     const unbound = validatePushRequirements(
@@ -1660,8 +1429,7 @@ semantic_model:
             source: {entity: 'orders', columns: []},
             destination: {entity: 'customers', columns: []},
           }],
-        }))],
-        {targetOptional: true});
+        }))]);
     expect(unbound).toEqual([]);
   });
 });
@@ -1719,7 +1487,7 @@ describe('field and metric expression references', () => {
         }],
       });
       expect(validatePushRequirements(
-                 [loaded(multiEntity)], {targetOptional: true, fieldsPruned: true})
+                 [loaded(multiEntity)], {fieldsPruned: true})
                  .join('\n'))
           .toContain('reaches multiple entities (orders, customer)');
 
@@ -1729,7 +1497,7 @@ describe('field and metric expression references', () => {
         metrics: [{name: 'cnt', expression: 'COUNT(*)'}],
       });
       expect(validatePushRequirements(
-                 [loaded(vanillaNoEntity)], {targetOptional: true})
+                 [loaded(vanillaNoEntity)])
                  .join('\n'))
           .toContain("set 'entity' in a GOOGLE custom_extensions block on the metric");
     });
@@ -1749,7 +1517,7 @@ describe('field and metric expression references', () => {
           {name: 'comment', expression: '-- todo', entity: 'orders'},
         ],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual([
             message('empty_metric'),
             message('anchored'),
@@ -1789,7 +1557,7 @@ describe('field and metric expression references', () => {
         "metric 'stale' in model 'm' (doc): 'expression' is blank; write " +
             "the metric's SQL.",
       ];
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual(expected);
       // The BigQuery metric check reports each metric once.
       const graph = model({...m, customExtensions: [googleExt([BQ_TARGET])]});
@@ -1808,12 +1576,12 @@ describe('field and metric expression references', () => {
           authoredEntity: 'ghost',
         }],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual([
             "metric 'cnt' in model 'm' (doc): entity 'ghost' is not declared in the model.",
           ]);
       expect(validatePushRequirements(
-                 [loaded(m)], {targetOptional: true, fieldsPruned: true}))
+                 [loaded(m)], {fieldsPruned: true}))
           .toEqual([
             "metric 'cnt' in model 'm' (doc): entity 'ghost' is not declared in the model.",
           ]);
@@ -1832,7 +1600,7 @@ describe('field and metric expression references', () => {
         }],
       });
       expect(validatePushRequirements(
-                 [loaded(wrongAnchor)], {targetOptional: true})
+                 [loaded(wrongAnchor)])
                  .join('\n'))
           .toContain("anchored to entity 'customer', but its expression only references 'orders'");
 
@@ -1865,7 +1633,7 @@ describe('field and metric expression references', () => {
         }],
       });
       expect(validatePushRequirements(
-                 [loaded(subtypeMismatch)], {targetOptional: true})
+                 [loaded(subtypeMismatch)])
                  .join('\n'))
           .toContain("anchored to entity 'vip', but its expression only references 'customer'");
 
@@ -1879,7 +1647,7 @@ describe('field and metric expression references', () => {
         }],
       });
       expect(validatePushRequirements(
-                 [loaded(subtypeMatches)], {targetOptional: true}))
+                 [loaded(subtypeMatches)]))
           .toEqual([]);
     });
 
@@ -1892,7 +1660,7 @@ describe('field and metric expression references', () => {
           entity: 'orders',
         }],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true})
+      expect(validatePushRequirements([loaded(m)])
                  .join('\n'))
           .toContain("entity 'orders' has no field 'o_totalprice'");
     });
@@ -1914,7 +1682,7 @@ describe('field and metric expression references', () => {
           },
         ],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual([]);
     });
 
@@ -1931,8 +1699,7 @@ describe('field and metric expression references', () => {
       };
       expect(bqPush([orders(), customer()], commentMetric)).toBe('');
       expect(validatePushRequirements(
-                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([BQ_TARGET])]))],
-                 {targetOptional: true}))
+                 [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([BQ_TARGET])]))]))
           .toEqual([]);
       expect(validatePushRequirements(
                  [loaded(model({entities: [orders(), customer()], metrics: [commentMetric]}, [googleExt([SPANNER_TARGET])]))]))
@@ -1972,7 +1739,6 @@ semantic_model:
           dialects: [{ dialect: BIGQUERY, expression: "COUNT(*)" }]
 `).models[0];
       expect(vanillaDoc.metrics[0].entity).toBe('orders');
-      expect(validatePushRequirements([loaded(vanillaDoc)], {targetOptional: true})).toEqual([]);
       expect(validatePushRequirements([loaded(vanillaDoc)])).toEqual([]);
 
       // Metric with only a non-BigQuery dialect expression is rejected, and
@@ -2038,7 +1804,7 @@ ${metricBlock}`).models[0];
           }],
         });
         const errs =
-            validatePushRequirements([loaded(m)], {targetOptional: true});
+            validatePushRequirements([loaded(m)]);
         expect(errs).toEqual([
           `metric 'net_revenue' in model 'm' (doc): '${col}' must be written ` +
           `as 'entity.field'; a metric reads fields, never columns.`,
@@ -2058,7 +1824,7 @@ ${metricBlock}`).models[0];
             expression: `COUNT(${expr})`,
           }],
         });
-        expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+        expect(validatePushRequirements([loaded(m)]))
             .toEqual([
               `metric 'net_revenue' in model 'm' (doc): '${expr}' has qualifier ` +
               `'${qual}', which is not a declared entity in model 'm'; write ` +
@@ -2073,7 +1839,7 @@ ${metricBlock}`).models[0];
           expression: 'SUM(Orders.net_amount)',
         }],
       });
-      expect(validatePushRequirements([loaded(caseMismatch)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(caseMismatch)]))
           .toEqual([
             "metric 'net_revenue' in model 'm' (doc): 'Orders.net_amount' " +
             "uses qualifier 'Orders', which differs in case from entity " +
@@ -2111,7 +1877,7 @@ ${metricBlock}`).models[0];
           },
         ],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true})).toEqual([]);
+      expect(validatePushRequirements([loaded(m)])).toEqual([]);
 
       // BigQuery `DATE_DIFF(end_col, start_col, DAY)` still checks its first argument as a column.
       const bqDateDiffBadCol = model({
@@ -2123,7 +1889,7 @@ ${metricBlock}`).models[0];
           authoredEntity: 'orders',
         }],
       });
-      expect(validatePushRequirements([loaded(bqDateDiffBadCol)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(bqDateDiffBadCol)]))
           .toEqual([
             "metric 'bad_diff' in model 'm' (doc): 'end_date' must be written as 'entity.field'; a metric reads fields, never columns.",
           ]);
@@ -2151,7 +1917,7 @@ ${extraMetric}`;
       const bqWarnings: string[] = [];
       expect(validatePushRequirements(
                  bqLoaded.models.map(m => loaded(m, 'sales.yaml')),
-                 {targetOptional: true, warnings: bqWarnings}))
+                 {warnings: bqWarnings}))
           .toEqual([]);
       expect(bqWarnings).toEqual([]);
 
@@ -2161,8 +1927,7 @@ ${extraMetric}`;
           '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders\n',
           '      - { name: bad_recent, expression: \'COUNTIF(orders.missing_date >= DATE "2024-01-01")\' }\n'));
       expect(validatePushRequirements(
-                 bqBadLoaded.models.map(m => loaded(m, 'sales.yaml')),
-                 {targetOptional: true})
+                 bqBadLoaded.models.map(m => loaded(m, 'sales.yaml')))
                  .join('\n'))
           .toContain("entity 'orders' has no field 'missing_date'");
 
@@ -2190,7 +1955,7 @@ ${extraMetric}`;
         ],
       });
       const warnings: string[] = [];
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true, warnings})).toEqual([]);
+      expect(validatePushRequirements([loaded(m)], {warnings})).toEqual([]);
       expect(warnings).toEqual([
         "metric 'unparseable_anchored' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
         "metric 'unparseable_unanchored' in model 'm' (doc): kcmd could not read its SQL, so the fields it reads were not checked.",
@@ -2214,7 +1979,7 @@ ${extraMetric}`;
         ],
       });
       expect(validatePushRequirements(
-                 [loaded(m)], {targetOptional: true, fieldsPruned: true})
+                 [loaded(m)], {fieldsPruned: true})
                  .join('\n'))
           .toContain("field 'orders.bad_cross' in model 'm' (doc) references entity 'customer'");
     });
@@ -2229,7 +1994,7 @@ ${extraMetric}`;
           ],
         }],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true})
+      expect(validatePushRequirements([loaded(m)])
                  .join('\n'))
           .toContain("field 'orders.taxed' in model 'm' (doc) references 'orders.missing_field'");
     });
@@ -2296,8 +2061,8 @@ ${extraMetric}`;
             {dialect: 'POSTGRES' as const, expression: ' '},
           ],
         },
-        // `expression` is not the text of any dialect entry here. Knowledge
-        // Catalog stores `expression` when push runs with --emit-expressions.
+        // `expression` is not the text of any dialect entry here, as it can
+        // be in a model built in memory.
         {
           name: 'stale',
           expression: '/* old */',
@@ -2316,7 +2081,7 @@ ${extraMetric}`;
         message('pg_note', "the POSTGRES entry of 'expression' is only a comment"),
       ];
       const kcOnly = model({entities: [{...orders(), fields}]});
-      expect(validatePushRequirements([loaded(kcOnly)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(kcOnly)]))
           .toEqual(expected);
       const graph =
           model({entities: [{...orders(), fields}]}, [googleExt([BQ_TARGET])]);
@@ -2350,10 +2115,10 @@ ${extraMetric}`;
             "field's SQL.",
       ];
       const m = model({entities: [base, sub]});
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual(expected);
-      // `expression` is not the text of the dialect entry here. Knowledge
-      // Catalog stores `expression` when push runs with --emit-expressions.
+      // `expression` is not the text of the dialect entry here, as it can be
+      // in a model built in memory.
       const stale: Entity = {
         ...base,
         fields: [
@@ -2366,15 +2131,8 @@ ${extraMetric}`;
         ],
       };
       expect(validatePushRequirements(
-                 [loaded(model({entities: [stale, sub]}))],
-                 {targetOptional: true}))
+                 [loaded(model({entities: [stale, sub]}))]))
           .toEqual(expected);
-      // A catalog-only push lifts a profile's exclusions to publish every
-      // field. A field the profile excludes on `sub` is not read there.
-      expect(validatePushRequirements([loaded(m)], {
-        targetOptional: true,
-        liftedExclusions: [{model: 'm', entity: 'sub', field: 'label'}],
-      })).toEqual([]);
     });
 
     // serializeModel writes both texts, and the loader rejects either one with
@@ -2416,7 +2174,7 @@ ${extraMetric}`;
           importedDialect: 'POSTGRES',
         }],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true}))
+      expect(validatePushRequirements([loaded(m)]))
           .toEqual([
             fieldMessage(
                 'notes', "the POSTGRES entry of 'expression' is only a comment"),
@@ -2460,8 +2218,7 @@ ${extraMetric}`;
           "'sub', 'expression' is only the qualifier 'sub.'; write the " +
           "field's SQL.";
       expect(validatePushRequirements(
-                 [loaded(model({entities: [base, sub]}))],
-                 {targetOptional: true}))
+                 [loaded(model({entities: [base, sub]}))]))
           .toEqual([
             own('own'),
             own('memo'),
@@ -2499,8 +2256,7 @@ ${extraMetric}`;
         fields: [],
       });
       expect(validatePushRequirements(
-                 [loaded(model({entities: [base, sub('a'), sub('b')]}))],
-                 {targetOptional: true}))
+                 [loaded(model({entities: [base, sub('a'), sub('b')]}))]))
           .toEqual([
             "field 'base.memo' in model 'm' (doc): 'expression' is only a " +
                 "comment; write the field's SQL, or remove 'expression' to " +
@@ -2558,8 +2314,7 @@ ${extraMetric}`;
           field === 'listed' ? "the BIGQUERY entry of 'expression'" :
                                "'expression'";
       expect(validatePushRequirements(
-                 [loaded(model({entities: [base, a]}))],
-                 {targetOptional: true}))
+                 [loaded(model({entities: [base, a]}))]))
           .toEqual([
             ...['loose', 'marked', 'listed'].map(
                 f => `field 'base.${f}' in model 'm' (doc): ${
@@ -2604,7 +2359,7 @@ ${extraMetric}`;
             "'expression' is only a comment; write the metric's SQL.",
       ];
       const errors =
-          validatePushRequirements([loaded(m)], {targetOptional: true});
+          validatePushRequirements([loaded(m)]);
       expect(errors.join('\n')).toContain("extends unknown entity 'gone'");
       for (const e of expected) expect(errors).toContain(e);
       // The BigQuery metric check reports each metric once.
@@ -2681,7 +2436,7 @@ ${extraMetric}`;
       });
       const warnings: string[] = [];
       const errors = validatePushRequirements(
-          [loaded(m)], {targetOptional: true, warnings});
+          [loaded(m)], {warnings});
       expect(errors.map(e => e.slice(0, e.indexOf(' in model'))))
           .toEqual([
             "field 'orders.memo'",
@@ -2708,7 +2463,7 @@ ${extraMetric}`;
           ],
         }],
       });
-      expect(validatePushRequirements([loaded(m)], {targetOptional: true})
+      expect(validatePushRequirements([loaded(m)])
                  .join('\n'))
           .toContain("entity 'orders' has no field 'no_such_field'");
     });
@@ -2730,7 +2485,7 @@ describe('push checks names and description lengths', () => {
     ...over,
   });
   const errorsOf = (m: SemanticModel, v2Aspects?: boolean) =>
-      validatePushRequirements([loaded(m)], {targetOptional: true, v2Aspects});
+      validatePushRequirements([loaded(m)], {v2Aspects});
 
   test('a valid model passes', () => {
     expect(errorsOf(withNames())).toEqual([]);

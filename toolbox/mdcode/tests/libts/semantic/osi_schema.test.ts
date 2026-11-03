@@ -141,8 +141,8 @@ describe('fixtures are valid for their declared OSI flavor', () => {
 // Each case is one document and whether it is valid. It is checked against the
 // schema root and against what a Knowledge Catalog push accepts: the loader
 // with bindingOptional, then resolveModelDeployments, undeclaredProfileError,
-// validateInlineDialects, validateDeployments and validatePushRequirements with
-// targetOptional, as the push command runs them.
+// validateInlineDialects, validateDeployments and validatePushRequirements, as
+// the push command runs them.
 // A case where the two disagree fails.
 // ---------------------------------------------------------------------------
 
@@ -166,9 +166,8 @@ function loaderErrors(doc: unknown): string|undefined {
         ...validateDeployments(model, 'doc')]),
       // Push checks the catalog's model as one that deploys nowhere.
       ...validatePushRequirements(
-        models.map(model => ({ document: 'doc',
-          model: model.deployments ? { ...model, deployments: [] } : model })),
-        { targetOptional: true }),
+        models.map(model =>
+          ({ document: 'doc', model: { ...model, deployments: [] } }))),
     ];
     return errors.length ? errors.join('\n') : undefined;
   } catch (err) {
@@ -564,8 +563,7 @@ function profileErrors(doc: any): string|undefined {
     const errors = validateProfileCompleteness(profileModel, spec);
     if (!errors.length) {
       errors.push(...validatePushRequirements(
-        [{ document: 'doc', model: applyProfile(profileModel, spec) }],
-        { targetOptional: true }));
+        [{ document: 'doc', model: applyProfile(profileModel, spec) }]));
     }
     return errors.length ? errors.join('\n') : undefined;
   } catch (err) {

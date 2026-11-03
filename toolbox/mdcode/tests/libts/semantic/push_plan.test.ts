@@ -1,9 +1,7 @@
-// Tests the semantic-model push/pull/profiles planning and CLI guards
-// (src/tool/commands.ts): which flag combinations are coherent
-// (checkPushSelection), how a model document's deployment target is detected
-// (declaresGraphTarget), when a push warns that it publishes to Knowledge
-// Catalog only (catalogOnlyWarning), how a graph push treats a profile file,
-// how deployment-level `profile:` guards behave across `kcmd push`, `kcmd
+// Tests the semantic-model push/pull/profiles planning
+// (src/tool/commands.ts): how a model document's deployment target is detected
+// (declaresGraphTarget), how a profile file is told apart from a legacy
+// wrapper, how deployment-level `profile:` guards behave across `kcmd push`, `kcmd
 // profiles`, and `createSemanticRuntimes`, and how `kcmd pull` reconstructs
 // loadable `.yaml` files from Knowledge Catalog resources.
 //
@@ -25,67 +23,7 @@ import {loadModels} from '../../../src/libts/semantic/loader';
 import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import * as pullKc from '../../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
-import {catalogOnlyWarning, checkPushSelection, declaresGraphTarget, isProfileFileForm, profileFileGraphError, profiles, pull, push} from '../../../src/tool/commands';
-
-describe('checkPushSelection', () => {
-  // Both legs on, no binding-profile selection: the default `kcmd push`. Each
-  // test overrides the field it exercises.
-  const base = {
-    graphEnabled: true,
-    kcEnabled: true,
-    allProfiles: false,
-    namedProfile: false,
-  };
-
-  test('the default push (both legs, default profile) is coherent', () => {
-    expect(checkPushSelection(base)).toBeNull();
-  });
-
-  test('--no-kc (graph only) is coherent', () => {
-    expect(checkPushSelection({...base, kcEnabled: false})).toBeNull();
-  });
-
-  test('--no-profile (catalog only) is coherent', () => {
-    expect(checkPushSelection({...base, graphEnabled: false})).toBeNull();
-  });
-
-  test('--profile selects one binding profile', () => {
-    expect(checkPushSelection({...base, namedProfile: true})).toBeNull();
-  });
-
-  test('--all-profiles fans out over every binding profile', () => {
-    expect(checkPushSelection({...base, allProfiles: true})).toBeNull();
-  });
-
-  test('--no-profile --no-kc is an error: nothing to deploy', () => {
-    const r = checkPushSelection({...base, graphEnabled: false, kcEnabled: false});
-    expect(r).not.toBeNull();
-    expect(r!.error).toContain('nothing to deploy');
-  });
-
-  test('--no-profile --profile is an error: no graph to bind', () => {
-    const r =
-        checkPushSelection({...base, graphEnabled: false, namedProfile: true});
-    expect(r).not.toBeNull();
-    expect(r!.error).toContain('no graph to bind');
-  });
-
-  test('--no-profile --all-profiles is an error: no graph to bind', () => {
-    const r =
-        checkPushSelection({...base, graphEnabled: false, allProfiles: true});
-    expect(r).not.toBeNull();
-    expect(r!.error).toContain('no graph to bind');
-  });
-
-  test('--profile --all-profiles is an error: one profile or every profile', () => {
-    const r =
-        checkPushSelection({...base, namedProfile: true, allProfiles: true});
-    expect(r).not.toBeNull();
-    expect(r!.error).toContain('use one or the other');
-  });
-});
-
-
+import {declaresGraphTarget, isProfileFileForm, profiles, pull, push} from '../../../src/tool/commands';
 
 describe('declaresGraphTarget', () => {
   const withSugar = `
@@ -248,42 +186,10 @@ semantic_model:
 });
 
 
-// --no-kc drops the only leg an action or a constraint deploys through. The
-// warning counted actions alone, so a model whose catalog-only content was all
-// constraints was dropped without a word.
-describe('catalogOnlyWarning', () => {
-  test('names constraints when the model declares only constraints', () => {
-    const msg = catalogOnlyWarning('sales', {actions: 0, constraints: 2});
-    expect(msg).toContain('2 constraint(s)');
-    expect(msg).not.toContain('action(s)');
-    expect(msg).toContain('--no-kc');
-  });
-
-  test('names actions when the model declares only actions', () => {
-    const msg = catalogOnlyWarning('sales', {actions: 1, constraints: 0});
-    expect(msg).toContain('1 action(s)');
-    expect(msg).not.toContain('constraint(s)');
-  });
-
-  test('names both, in one sentence, when the model declares both', () => {
-    expect(catalogOnlyWarning('sales', {actions: 1, constraints: 2}))
-        .toContain('1 action(s) and 2 constraint(s)');
-  });
-});
-
-
-describe('a graph push of a profile file', () => {
+describe('a profile file', () => {
   test('the profile file form is told apart from the legacy wrapper', () => {
     expect(isProfileFileForm('name: prod\nentities: []\n')).toBe(true);
     expect(isProfileFileForm('version: x\nsemantic_model: []\n')).toBe(false);
-  });
-
-  test('is refused before any deploy, since a profile file names no target', () => {
-    expect(profileFileGraphError(
-               [{name: 'retail', text: '', applied: {} as any}], 'prod'))
-        .toContain("binding profile 'prod' is a named profile, which names no deployment target");
-    expect(profileFileGraphError([{name: 'retail', text: ''}], 'prod'))
-        .toBeUndefined();
   });
 });
 
@@ -373,43 +279,6 @@ semantic_model:
         .not.toContain('the model file must load on its own');
     expect(logSpy.mock.calls.map(c => c.join(' ')).join('\n'))
         .toContain("Model 'b'");
-  });
-
-  // The error names the model and the profile on each side.
-  test('push --all-profiles refuses two profiles that deploy one graph', async () => {
-    const eg = setupWorkspace();
-    const errSpy = spyOn(console, 'error').mockImplementation(() => {});
-    spyOn(console, 'warn').mockImplementation(() => {});
-    const bqSpy = spyOn(bqDeploy, 'deployBigQuery');
-    fs.writeFileSync(path.join(eg, 'sales.yaml'), `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        primary_key: [id]
-        fields:
-          - { name: id, expression: id }
-`);
-    fs.mkdirSync(path.join(eg, 'sales.profiles'), {recursive: true});
-    fs.writeFileSync(path.join(eg, 'sales.profiles', 'staging.yaml'), `semantic_model:
-  - name: sales
-    deployment_target: bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g
-    entities:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders_staging
-`);
-    fs.copyFileSync(path.join(eg, 'sales.profiles', 'staging.yaml'),
-                    path.join(eg, 'sales.profiles', 'qa.yaml'));
-
-    expect(await push({allProfiles: true, kc: false, validateOnly: true}))
-        .toBe(1);
-    expect(bqSpy).not.toHaveBeenCalled();
-    expect(errSpy.mock.calls.map(c => c.join(' ')).join('\n'))
-        .toContain(
-            "model 'sales' under binding profile 'qa' and model 'sales' " +
-            "under binding profile 'staging' both deploy to the same graph " +
-            "'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g'");
   });
 
   test('push refuses two model files that list deployments before it checks a deployment\'s profile', async () => {

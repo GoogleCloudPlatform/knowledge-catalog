@@ -1235,22 +1235,6 @@ describe('validateProfileCompleteness', () => {
     expect(errors.join('\n')).toContain("entity 'Order' has no source");
   });
 
-  test('leaves out, when applied, the rules push checks on the applied model', () => {
-    const p = profile({
-      entities: [
-        {...profile().entities[0], primaryKey: ['LOWER(c_custkey)'],
-         fields: [...CUSTOMER_COLUMNS, {name: 'lifetimeValue', expression: 'Order.total'}]},
-        {...profile().entities[1], source: undefined},
-      ],
-    });
-    const errors = validateProfileCompleteness(irModel(), p).join('\n');
-    expect(errors).toContain("key column 'LOWER(c_custkey)' is not a physical");
-    expect(errors).toContain("field 'Customer.lifetimeValue' reads entity 'Order'");
-    expect(validateProfileCompleteness(irModel(), p, [], {applied: true})).toEqual([
-      "profile 'prod': entity 'Order' has no source in this profile",
-    ]);
-  });
-
   test('BigQuery datasets are one database; two Spanner databases are not', () => {
     const twoDatasets = profile({
       entities: [
@@ -1500,15 +1484,6 @@ describe('validateProfileCompleteness', () => {
     expect(warned({dialect: sourcesDialect(m)})).toEqual([unread]);
     // The caller reads it as PostgreSQL too, and warns about it itself.
     expect(warned({dialect: 'ALLOYDB'})).toEqual([]);
-    // The caller applies a profile that rebinds the field, so it never reads
-    // the model file's text.
-    expect(warned({dialect: 'ALLOYDB', rebound: ['Customer.code']}))
-        .toEqual([unread]);
-    // A rebound field counts only by its exact entity and field names.
-    expect(warned({
-      dialect: 'ALLOYDB',
-      rebound: ['Customer.cod', 'Customer.code2', 'Order.code'],
-    })).toEqual([]);
   });
 });
 
@@ -2464,7 +2439,7 @@ entities:
         `field's SQL`;
     const fields = ['loose', 'marked', 'listed', 'todo'];
     expect(validatePushRequirements(
-               [{document: 'shop.yaml', model: shop}], {targetOptional: true}))
+               [{document: 'shop.yaml', model: shop}]))
         .toEqual([
           "field 'base.todo' in model 'shop' (shop.yaml): 'expression' is " +
               "only a comment; write the field's SQL, or remove 'expression' " +
@@ -2521,8 +2496,7 @@ entities:
     loaded.entities[0].fields[1] =
         {...note, stringForm: false, expression: 'base.orders.'};
     expect(validatePushRequirements(
-               [{document: 'shop.yaml', model: loaded}],
-               {targetOptional: true}))
+               [{document: 'shop.yaml', model: loaded}]))
         .toEqual([`model 'shop' (shop.yaml): ${problem}.`]);
   });
 
@@ -2748,14 +2722,22 @@ relationships: []
   const conflict = expect.stringContaining(
       "profile 'prod': entity 'E' inherits field 'x' from 'B' and from 'D'");
 
-  // Push reports the inheritance error itself for the profile it applies.
+  // Among them, what each field the profile binds reads.
   test('and its other rules still run', () => {
-    const noSource = "profile 'prod': entity 'E' has no source in this profile";
-    expect(validateProfileCompleteness(diamond(), bindsXOnB()))
-        .toEqual([conflict, noSource]);
-    expect(validateProfileCompleteness(
-               diamond(), bindsXOnB(), [], {applied: true}))
-        .toEqual([noSource]);
+    expect(validateProfileCompleteness(diamond(), bindsXOnB())).toEqual([
+      conflict, "profile 'prod': entity 'E' has no source in this profile",
+    ]);
+    const model = diamond([
+      {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'f'}]},
+    ]);
+    const spec = bindsXOnB([
+      {...ownBinding('E'), fields: [{name: 'e', expression: 'F.f'}]}, ownBinding('F'),
+    ]);
+    expect(validateProfileCompleteness(model, spec)).toEqual([
+      conflict,
+      "profile 'prod': field 'E.e' reads entity 'F'; a field expression " +
+          'reads only its own entity',
+    ]);
   });
 
   // On a broken hierarchy each entity is resolved with only its own
@@ -2778,17 +2760,15 @@ relationships: []
     ]);
   });
 
-  // Push's own check of the SQL it reads stands down on a broken hierarchy, so
-  // this check gives the warning for the profile push applies too.
-  test('and warns about SQL it cannot read for the profile push applies', () => {
+  test('and warns about SQL it cannot read', () => {
     const model = diamond([
       {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'LOWER(f'}]},
     ]);
     const spec = bindsXOnB(
         [ownBinding('E'), {name: 'F', source: BQ('f'), primaryKey: ['f']}]);
     const warnings: string[] = [];
-    expect(validateProfileCompleteness(model, spec, warnings, {applied: true}))
-        .toEqual([]);
+    expect(validateProfileCompleteness(model, spec, warnings))
+        .toEqual([conflict]);
     expect(warnings).toEqual([
       "profile 'prod': kcmd could not read the SQL of field 'F.f', so the " +
           'fields it reads were not checked',
@@ -2799,22 +2779,6 @@ relationships: []
     validateProfileCompleteness(
         model, spec, leftOut, {ownSqlOnly: {dialect: 'BIGQUERY'}});
     expect(leftOut).toEqual([]);
-  });
-
-  // Push's own check of what a field reads stands down on a broken hierarchy
-  // too, so this check reads the fields of the profile push applies.
-  test('and reads what the fields of the profile push applies read', () => {
-    const model = diamond([
-      {name: 'F', dataSource: '', keys: ['f'], fields: [{name: 'f', expression: 'f'}]},
-    ]);
-    const spec = bindsXOnB([
-      {...ownBinding('E'), fields: [{name: 'e', expression: 'F.f'}]}, ownBinding('F'),
-    ]);
-    expect(validateProfileCompleteness(model, spec, [], {applied: true}))
-        .toEqual([
-          "profile 'prod': field 'E.e' reads entity 'F'; a field expression " +
-              'reads only its own entity',
-        ]);
   });
 
   // E inherits x from both A and B, so the model file's hierarchy does not
@@ -2842,21 +2806,16 @@ relationships: []
 
   test('does not call a field unknown on an entity whose own ancestors do not resolve', () => {
     const spec = bindsAll([{name: 'e', expression: 'UPPER(E.a)'}]);
-    for (const applied of [false, true]) {
-      expect(validateProfileCompleteness(unknownAncestry([]), spec, [], {applied}))
-          .toEqual([]);
-    }
+    expect(validateProfileCompleteness(unknownAncestry([]), spec)).toEqual([]);
   });
 
   // Restating an inherited field by its name alone is not a binding, and push
   // reports that line once the hierarchy resolves. E.a still reads A's
   // binding, which reads a column.
   test('does not call unbound a restated inherited field on such an entity', () => {
-    for (const applied of [false, true]) {
-      expect(validateProfileCompleteness(
-                 unknownAncestry([{name: 'a'}]), bindsAll(), [], {applied}))
-          .toEqual([]);
-    }
+    expect(validateProfileCompleteness(
+               unknownAncestry([{name: 'a'}]), bindsAll()))
+        .toEqual([]);
   });
 
   // A binding is a per-table fact, so an exclusion applies to the entity that
@@ -3733,18 +3692,13 @@ entities:
 `;
 
   // A profile held in memory takes the same path as the same profile in a
-  // file, so it gets the same model, warnings and missing sources.
+  // file, so it gets the same model and warnings.
   test('a profile held in memory and its file give the same result', () => {
     const fromFile = profileForDocument(DOC, [{name: 'prod', text: FILE}], 'prod');
     const fromSpec = profileForDocument(
         DOC, [{name: 'prod', spec: loadProfileFile(FILE, 'prod')}], 'prod');
     expect(fromSpec).toEqual(fromFile);
     if (fromFile.kind !== 'file') throw new Error(JSON.stringify(fromFile));
-    // The model file as it loads on its own comes back too.
-    expect(fromFile.base.entities.find(e => e.name === 'orders')!.dataSource)
-        .toBe('acme.raw.orders');
-    // An abstract entity needs no source; `items` has none in either file.
-    expect(fromFile.sourceless).toEqual(['items']);
     // A profile's empty primary key warns, as the model file's would.
     expect(fromFile.warnings)
         .toContain("[sales] dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)");
@@ -4680,8 +4634,7 @@ entities:
         `'orders', ${own} and the POSTGRES entry of 'expression' is only the ` +
         "qualifier 'orders.'; write the field's SQL";
     expect(validatePushRequirements(
-               [{document: 'shop.yaml', model: shop(note)}],
-               {targetOptional: true}))
+               [{document: 'shop.yaml', model: shop(note)}]))
         .toEqual([
           `field 'base.note' in model 'shop' (shop.yaml): ${own}; write ` +
               "the field's SQL, or remove 'expression' to leave the field " +

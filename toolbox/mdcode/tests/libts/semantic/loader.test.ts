@@ -10,7 +10,7 @@
 
 import { describe, test, expect } from 'bun:test';
 import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument, writtenSource } from '../../../src/libts/semantic/loader';
-import { deploymentTargetUris } from '../../../src/libts/semantic/deployment_target';
+import { googleDeploymentTargets } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
 import { loadProfileFile, validateProfileCompleteness, validateProfileConsistency } from '../../../src/libts/semantic/resolve_profiles';
@@ -1814,7 +1814,7 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
     const m = load(VANILLA, retail(VANILLA)).models[0];
     expect(m.profiles).toEqual([loadProfileFile(JSON.stringify(PROD), 'prod')]);
     expect(m.deployments).toEqual([{ name: 'bq_prod', target: G }]);
-    expect(deploymentTargetUris(m)).toEqual([G]);
+    expect(googleDeploymentTargets(m).uris).toEqual([G]);
     expect(m.entities[0].extends).toEqual(['base_order']);
     expect(m.relationships[0].description).toBe('who placed it');
     expect(m.metrics[0].authoredEntity).toBe('orders');

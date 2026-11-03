@@ -130,7 +130,7 @@ export const OSSIE_VERSION = '0.2.0.dev0';
 export const GOOGLE_VERSION = '0.2.0.dev0/google';
 // How a vanilla author declares deployments: in a GOOGLE block on the model,
 // or under `deployments:` after a switch to the Google flavor.
-export const DEPLOYMENTS_VERSION_HINT =
+const DEPLOYMENTS_VERSION_HINT =
     `list 'deployments' in a GOOGLE custom_extensions block on the model, or ` +
     `set version: '${GOOGLE_VERSION}' and use 'deployments:'`;
 /**
