@@ -530,6 +530,7 @@ describe('profile checks', () => {
       `column, give it a '${dialect}' expression without the double quotes${hint}`;
   const HINT = "; 'kcmd import <file> --input first-party --flavor google --transpile' adds one";
   const AMOUNT = (expr: string) => `          - {name: amount, expression: ${expr}}\n`;
+  const UNBOUND = model('').replace(/ +source: .*\n/, '');
   // [label, model, profile files, errors, warnings]
   test.each([
     ['warns once about a model field that a valid profile inherits',
@@ -557,6 +558,14 @@ describe('profile checks', () => {
      ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
       "whose expression reads column 'order_id' of that entity's table; restate it with an " +
       "expression for this entity's table."], []],
+    ["warns that the model file's own bindings leave an entity unbound, beside a profile",
+     UNBOUND, pg(KEYED), [],
+     ["model 'retail' (sales) has an unbound 'default' profile: the model file leaves entity " +
+      "'orders' without a source. It cannot be queried through 'default'."]],
+    ["warns that the model file's own bindings leave an entity unbound, with no profile",
+     UNBOUND, [], [],
+     ["model 'retail' (sales) is non-executable: the model file leaves entity 'orders' without " +
+      'a source, and the model declares no named profile. It cannot be queried until it is bound.']],
   ])('%s', async (_, input, profileFiles, errors, warnings) => {
     const res = await importSemanticModelYaml(
         input, {...strict, flavor: 'google', profileFiles});

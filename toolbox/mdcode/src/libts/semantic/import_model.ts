@@ -14,7 +14,7 @@ import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
-import {deploymentTableErrors, spannerMetricsErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
+import {deploymentTableErrors, inlineBindingWarnings, spannerMetricsErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -1740,6 +1740,9 @@ function validateOutputDocument(
     }
     // Push stops at a source its loader rejects.
     if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) return;
+    doc.warnings.push(...inlineBindingWarnings(
+        loaded.models[0], model.name,
+        profiles.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE)));
 
     // 4. Check each deployment with push's offline checks, under the profile
     // it names. A profile file that does not load is reported above. Push
