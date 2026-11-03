@@ -246,6 +246,12 @@ scope: <type>.<name>              # The resources in the snapshot. Examples:
                                   #   - bq-dataset.<projectId>.<datasetId1>
                                   #   - bq-dataset.<projectId>.<datasetId2>
 
+displayName: Sales                # Optional. The context set's (entry group's) display
+description: >-                   # name and description, for a scope backed by an entry
+  Orders, customers and revenue   # group (entryGroup, kb, semantic-model) in any layout.
+  for the sales team.             # `kcmd pull` sets them from the entry group; `kcmd push`
+                                  # writes a changed one back. An absent key is not managed.
+
 
 aliases:                          # Optional. Can always use 3-part fully qualified references.
                                   # NOTE: All built-in types have predefined simple aliases.
