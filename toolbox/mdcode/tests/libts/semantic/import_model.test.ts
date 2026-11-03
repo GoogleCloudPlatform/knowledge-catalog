@@ -1016,7 +1016,8 @@ describe('sources completed from an entry group', () => {
       ['quoted', `'"public"."orders"'`], ['dotted', "'`my.schema`.t'"],
       ['customers', 'public.customers'], ['orders', 'public.orders'], ['items', 'items'],
       ['lines', 'public.lines'], ['ghosts', 'public.ghosts'],
-      ['quoted_lower', `'"public".customers'`], ['ticked_lower', "'`public`.customers'"]);
+      ['quoted_lower', `'"public".customers'`], ['ticked_lower', "'`public`.customers'"],
+      ['dq_path', `'"public.orders"'`]);
   // Entry `id` as the import writes it, and its fullyQualifiedName.
   const named = (id: string) => ({
     name: `${GROUP}/entries/${id}`,
@@ -1052,6 +1053,11 @@ describe('sources completed from an entry group', () => {
     // A quoted part keeps its letter case.
     noEntry('quoted_lower', '"public".customers'),
     noEntry('ticked_lower', '`public`.customers'),
+    // A double-quoted whole path is one name, so the lookup does not split it.
+    `dataset 'dq_path': source '"public.orders"' is not a valid GCP resource name; ` +
+        "'kcmd push' rejects the file until it is repointed. A table outside Google Cloud " +
+        'is written as the entry name of its Knowledge Catalog entry, ' +
+        "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.",
   ];
 
   // A completion is a warning in strict mode too; a name left as written is an
@@ -1071,7 +1077,7 @@ describe('sources completed from an entry group', () => {
                     .models[0].entities.map(e => e.authoredSource))
              .toEqual([...['orders', 'dotted', 'customers'].map(id => named(id).name),
                        'public.orders', 'items', 'public.lines', 'public.ghosts',
-                       '"public".customers', '`public`.customers']);
+                       '"public".customers', '`public`.customers', '"public.orders"']);
        }
      });
 
