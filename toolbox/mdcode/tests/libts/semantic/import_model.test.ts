@@ -1112,10 +1112,7 @@ describe('sources completed from an entry group', () => {
     noEntry('quoted_lower', '"public".customers'),
     noEntry('ticked_lower', '`public`.customers'),
     // A double-quoted whole path is one name, so the lookup does not split it.
-    `dataset 'dq_path': source '"public.orders"' is not a valid GCP resource name; ` +
-        "'kcmd push' rejects the file until it is repointed. A table outside Google Cloud " +
-        'is written as the entry name of its Knowledge Catalog entry, ' +
-        "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.",
+    noEntry('dq_path', '"public.orders"'),
   ];
 
   // A completion is a warning in strict mode too; a name left as written is an
