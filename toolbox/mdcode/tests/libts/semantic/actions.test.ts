@@ -1059,8 +1059,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         const errs = validatePushRequirements(
-            [{document: 'test.yaml', model: missingDesc.models[0]}],
-            {targetOptional: true});
+            [{document: 'test.yaml', model: missingDesc.models[0]}]);
         expect(errs.some(
                    e => e.includes('multiple parameters of type \'String\'')))
             .toBe(true);
@@ -1078,8 +1077,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         expect(validatePushRequirements(
-                   [{document: 'test.yaml', model: withDesc.models[0]}],
-                   {targetOptional: true}))
+                   [{document: 'test.yaml', model: withDesc.models[0]}]))
             .toEqual([]);
       });
 
@@ -1097,8 +1095,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     const errs = validatePushRequirements(
-        [{document: 'test.yaml', model: missingDesc.models[0]}],
-        {targetOptional: true});
+        [{document: 'test.yaml', model: missingDesc.models[0]}]);
     expect(errs.some(
                e => e.includes('multiple parameters projected from') &&
                    e.includes('customer.id')))
@@ -1123,8 +1120,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     expect(validatePushRequirements(
-               [{document: 'test.yaml', model: withDesc.models[0]}],
-               {targetOptional: true}))
+               [{document: 'test.yaml', model: withDesc.models[0]}]))
         .toEqual([]);
   });
 
@@ -1142,8 +1138,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     const errs = validatePushRequirements(
-        [{document: 'test.yaml', model: missingDesc.models[0]}],
-        {targetOptional: true});
+        [{document: 'test.yaml', model: missingDesc.models[0]}]);
     expect(errs.some(
                e => e.includes('multiple parameters of type \'Integer\'') &&
                    e.includes('parameter \'quantity\' must have')))
@@ -1160,8 +1155,7 @@ describe('parameter description, required, and default', () => {
       ],
     }]);
     expect(validatePushRequirements(
-               [{document: 'test.yaml', model: withDesc.models[0]}],
-               {targetOptional: true}))
+               [{document: 'test.yaml', model: withDesc.models[0]}]))
         .toEqual([]);
   });
 
@@ -1201,8 +1195,7 @@ describe('parameter description, required, and default', () => {
           ],
         }]);
         const errs = validatePushRequirements(
-            [{document: 'test.yaml', model: contradictory.models[0]}],
-            {targetOptional: true});
+            [{document: 'test.yaml', model: contradictory.models[0]}]);
         expect(
             errs.some(e => e.includes('\'required: true\' and a \'default\'')))
             .toBe(true);
@@ -1513,7 +1506,7 @@ describe('a projection the catalog cannot give back', () => {
       },
     ]);
     expect(validatePushRequirements(
-               [{document: 'payments.yaml', model}], {targetOptional: true}))
+               [{document: 'payments.yaml', model}]))
         .toEqual([]);
     const {warnings: kcWarnings} = generateCatalogResources(model, OPTS);
     expect(kcWarnings.some(w => w.includes('parameter'))).toBe(false);

@@ -36,7 +36,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, storeMessage, thirdPartyTargetErrors, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateActions, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {YAML_OPTIONS} from '../libts/semantic/yaml_options';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
@@ -122,9 +122,9 @@ export interface PushOptions {
   // translates SQL dialects instead. It stays an option so the refusal can say
   // so.
   transpile?: boolean;
-  // No longer supported: push refuses `--profile <name>` and `--no-profile`,
-  // which cac gives as false, since each deployment names its profile. cac
-  // gives an absent or bare `--profile` the value true.
+  // No longer supported: push refuses `--profile <name>`, a bare `--profile`
+  // and `--no-profile`. main.ts passes a bare `--profile` as an empty string,
+  // and cac gives `--no-profile` as false and an absent `--profile` as true.
   profile?: string|boolean;
   // No longer supported: push refuses `--all-profiles`.
   allProfiles?: boolean;
@@ -810,10 +810,11 @@ function extractOkfRootMetadata(
   return {displayName, description, overviewContent};
 }
 
-// The error for each flag `options` carries that push no longer takes, each
-// naming what replaces it. cac gives `--no-profile` and `--no-kc` as false, an
-// absent `--profile` as true, and a numeric profile name as a number. main.ts
-// passes a bare `--profile` as '', since cac gives it true too.
+// The error for each flag `options` carries that push no longer takes, naming
+// what replaces it where something does. cac gives `--no-profile` and
+// `--no-kc` as false, and a numeric profile name as a number. main.ts passes a
+// bare `--profile` as an empty string, since cac gives it the true an absent
+// one has.
 function retiredPushFlagErrors(options: PushOptions): string[] {
   const retired = (flag: string, instead = '') =>
       `'${flag}' is no longer supported on 'kcmd push'${instead}.`;
@@ -1332,10 +1333,9 @@ async function checkBeforeWrites(
 
   // Every named profile is checked on its own against the model file, and so
   // are the model file's own bindings and each deployment. The catalog's model
-  // is checked as a model that deploys nowhere, though one with no deployments
-  // list keeps its GOOGLE block targets. A selected deployment's own checks
-  // run only after these pass, so these give every error and every warning
-  // about SQL kcmd cannot read.
+  // is checked as a model that deploys nowhere. A selected deployment's own
+  // checks run only after these pass, so these give every error and every
+  // warning about SQL kcmd cannot read.
   const profileWarnings: string[] = [];
   const profileErrors = namedProfileErrors(
       docs, new Map(loaded.models.map(m => [m.document, m.model])),
@@ -1360,11 +1360,8 @@ async function checkBeforeWrites(
   const kcWarnings: string[] = [];
   const kcErrors = models.flatMap(
       m => ofModel(m.document, ...validatePushRequirements(
-          [m.model.deployments === undefined ?
-               m :
-               {...m, model: {...m.model, deployments: []}}],
+          [{...m, model: {...m.model, deployments: []}}],
           {
-            targetOptional: true,
             warnings: kcWarnings,
             v2Aspects: kcV2Aspects(),
           })));
@@ -1373,15 +1370,12 @@ async function checkBeforeWrites(
     return stop([...profileErrors, ...kcErrors]);
   }
   // Each deployment's tables must be in the database it deploys to, whether
-  // or not this push selects the deployment. The catalog keeps the GOOGLE
-  // block targets of a model with no deployments list, so a third-party table
-  // under one is refused too.
+  // or not this push selects the deployment.
   const tableErrors = models.flatMap(
-      ({document, model}) => model.deployments ?
-          (everyByDoc.get(document) ?? []).flatMap(d => ofProfile(
+      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(
+          d => ofProfile(
               document, d.profile,
-              ...deploymentTableErrors(document, model, d))) :
-          ofModel(document, ...thirdPartyTargetErrors(document, model)));
+              ...deploymentTableErrors(document, model, d))));
   if (tableErrors.length) return stop(tableErrors);
 
   const plans: DeploymentPlan[] = [];
@@ -1555,16 +1549,15 @@ async function deploymentPlan(
           (model.deployments ?? []).filter(d => d.name === deployment.name),
     },
   };
-  // An AlloyDB database holds no graph.
   const errors = [
     ...unprunedErrors,
     ...validatePushRequirements([narrowed], {
-      targetOptional: deployment.engine === 'alloydb',
       fieldsPruned: true,
       v2Aspects: kcV2Aspects(),
     }),
   ];
   if (errors.length) return {errors};
+  // An AlloyDB database holds no graph.
   if (deployment.engine === 'alloydb') {
     return {deployment, at, model: narrowed};
   }

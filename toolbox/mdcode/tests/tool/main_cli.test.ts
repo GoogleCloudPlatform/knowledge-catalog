@@ -173,6 +173,7 @@ describe('kcmd push refuses a retired flag', () => {
          'translate SQL dialects when importing a model.'],
     [['--profile', 'prod'], msg.retired['--profile']],
     [['--profile'], msg.retired['--profile']],
+    [['--profile='], msg.retired['--profile']],
     [['--all-profiles'], msg.retired['--all-profiles']],
     [['--no-profile'], msg.retired['--no-profile']],
     [['--emit-expressions'], msg.retired['--emit-expressions']],

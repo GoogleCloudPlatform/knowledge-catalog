@@ -15,7 +15,7 @@ import {googleDeploymentTargets} from './deploy_bigquery';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {bindsThirdPartyTable, databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -27,10 +27,6 @@ import {SqlColumn, withoutComments} from './sql_parser';
 // Checks every model against the push requirements and returns the collected
 // error messages (empty when all models pass), each tagged with the model's
 // source document so the author can find it.
-//
-// `targetOptional` says the push deploys no graph, as a Knowledge-Catalog-only
-// push does, so the checks of the BigQuery generator's metric rules, which only
-// a BigQuery graph needs, are skipped.
 //
 // `fieldsPruned` says the caller has already dropped every field the selected
 // binding profile leaves unbound, so `entity.fields` is a subset of what the
@@ -46,7 +42,6 @@ import {SqlColumn, withoutComments} from './sql_parser';
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
-      targetOptional?: boolean;
       fieldsPruned?: boolean;
       warnings?: string[];
       v2Aspects?: boolean;
@@ -97,7 +92,7 @@ export function validatePushRequirements(
     errors.push(...validateExpressionReferences(
         [{document, model}], !!opts.fieldsPruned, opts.warnings,
         flaggedMetrics));
-    if (!opts.targetOptional && deployInfo.bigQuery.length > 0) {
+    if (deployInfo.bigQuery.length > 0) {
       errors.push(...validateBigQueryMetrics(model, document, flaggedMetrics));
     }
 
@@ -1705,25 +1700,6 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// One error for each third-party table of `model` under each target its
-// GOOGLE block or legacy wrapper names. `model` has no deployments list.
-export function thirdPartyTargetErrors(
-    document: string, model: SemanticModel): string[] {
-  const {bigQuery, spanner, alloyDb} = googleDeploymentTargets(model);
-  const entities = (model.entities ?? []).filter(bindsThirdPartyTable);
-  return [
-    ...bigQuery.map(coordinates => ({engine: 'bigquery' as const, coordinates})),
-    ...spanner.map(coordinates => ({engine: 'spanner' as const, coordinates})),
-    ...alloyDb.map(coordinates => ({engine: 'alloydb' as const, coordinates})),
-  ].flatMap(t => {
-    const {target, outside} = targetDatabase(t);
-    return entities.map(
-        e => `model '${model.name}' (${document}) targets ${target}, but ` +
-            `binds entity '${e.name}' to '${e.authoredSource}', ${outside}.`);
-  });
-}
-
-
 // Live pre-flight over the BigQuery-targeting models: confirms every entity's
 // BigQuery source table is reachable BEFORE any destination leg runs, so a push
 // fails fast when the model could not deploy, rather than surfacing a missing
@@ -2010,8 +1986,7 @@ export async function validateSpannerActionStatements(
     if (!statements.length) continue;
     // The database an action writes to is the one this profile deploys its
     // graph to: on Spanner the published graph and the operational rows live in
-    // the same database. A model with no parseable Spanner target contributes
-    // nothing -- validatePushRequirements has already reported that.
+    // the same database. A model with no Spanner target contributes nothing.
     let target: SpannerGraphTarget|undefined;
     try {
       target = spannerGraphTargets(loaded.model).targets[0];

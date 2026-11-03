@@ -98,10 +98,13 @@ cli.command('push', 'Push catalog entries')
     .action((options) => run(async () => {
       const args = process.argv.slice(2);
       const deployment = commands.typedDeployment(args);
-      // cac gives a bare --profile the same true it gives an absent one, so
-      // read whether it was typed, as for --deployment.
-      const typed = args.slice(0, (args.indexOf('--') + 1 || args.length + 1) - 1);
-      const profile = options.profile === true && typed.includes('--profile') ?
+      // cac gives a bare --profile, or --profile= with no value, the same true
+      // it gives an absent one, so read whether it was typed, as for
+      // --deployment.
+      const end = args.indexOf('--');
+      const typed = end < 0 ? args : args.slice(0, end);
+      const profile = options.profile === true &&
+              typed.some(a => a === '--profile' || a.startsWith('--profile=')) ?
           '' :
           options.profile;
       return commands.push({...options, deployment, profile});

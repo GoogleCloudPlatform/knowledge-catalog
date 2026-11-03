@@ -20,8 +20,8 @@
 // created. What an AlloyDB target says is where the model's rows live -- which
 // is the whole of what a runtime needs in order to read an entity and carry out
 // an action. A model bound to it deploys to Knowledge Catalog and runs; it does
-// not deploy a graph, and `validatePushRequirements` says so in those words
-// rather than reporting the URI as a typo.
+// not deploy a graph, and push says so in a note rather than reporting the URI
+// as a typo.
 //
 // The deploy legs (deploy_bigquery, deploy_spanner) and the push-time validator
 // all derive their targets from this one reader, so a multi-destination push

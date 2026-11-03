@@ -120,8 +120,7 @@ describe('a relationship to a keyless dataset', () => {
   test('is rejected by push validation', () => {
     const {models} = loadFixture('keyless_dimension.yaml');
     expect(validatePushRequirements(
-               models.map(model => ({document: 'keyless_dimension.yaml', model})),
-               {targetOptional: true})
+               models.map(model => ({document: 'keyless_dimension.yaml', model})))
                .join('\n'))
         .toContain("cover no primary or unique key of 'nokey'");
   });
@@ -155,8 +154,7 @@ describe('every golden fixture passes push validation', () => {
     test(fixture, () => {
       const {models} = loadFixture(fixture);
       expect(validatePushRequirements(
-                 models.map(model => ({document: fixture, model})),
-                 {targetOptional: true}))
+                 models.map(model => ({document: fixture, model}))))
           .toEqual([]);
     });
   }

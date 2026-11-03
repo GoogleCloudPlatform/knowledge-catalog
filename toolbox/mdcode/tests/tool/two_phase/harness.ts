@@ -164,7 +164,6 @@ const SERVICES = {
   preflight: [kc, 'preflightKnowledgeCatalog',
               (a, real) => a[2]?.validateOnly ? real() : {prepared: PREPARED}],
   apply: [kc, 'applyKnowledgeCatalog', () => kcResult()],
-  deployKc: [kc, 'deployKnowledgeCatalog', () => kcResult()],
   bq: [bqLeg, 'deployBigQuery',
        (a, real) => a[2]?.validateOnly ? real() : DEPLOYED],
   spanner: [spannerLeg, 'deploySpanner',
@@ -331,7 +330,7 @@ async function runPush(services: Services, flags: commands.PushOptions) {
 
 const kindOf = (call: string) => call.split(' ')[0];
 // The kinds of call the `events` outcome lists.
-const EVENTS = new Set(['preflight', 'apply', 'deployKc', 'deploy']);
+const EVENTS = new Set(['preflight', 'apply', 'deploy']);
 
 async function checkPush(r: PushRun, step: PushStep, runs: PushRun[]) {
   const same = (actual: unknown, expected?: unknown[]) => {
@@ -351,7 +350,6 @@ async function checkPush(r: PushRun, step: PushStep, runs: PushRun[]) {
   // No catalog write, no deploy, and no BigQuery query but a dry run.
   if (step.nothingWritten) {
     expect(r.fake.apply).not.toHaveBeenCalled();
-    expect(r.fake.deployKc).not.toHaveBeenCalled();
     expect(r.fake.calls.filter(c => c.startsWith('deploy '))).toEqual([]);
     expect(r.fake.query.mock.calls.filter(c => c[3] !== true)).toEqual([]);
   }
