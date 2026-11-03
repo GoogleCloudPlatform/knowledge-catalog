@@ -80,6 +80,10 @@ beforeEach(() => {
       .mockResolvedValue({status: 200, result: {}} as any);
   spyOn(CatalogClient.prototype, 'getAspectType')
       .mockResolvedValue({status: 200, result: {}} as any);
+  // Pull reads the entry group for the context set's display name and
+  // description; this one sets neither, so catalog.yaml is left as written.
+  spyOn(CatalogClient.prototype, 'getEntryGroup')
+      .mockResolvedValue({status: 200, result: {name: 'commerce_eg'}} as any);
   passGraphChecks();
   passSourceCheck();
 });

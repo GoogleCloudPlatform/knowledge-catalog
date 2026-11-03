@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import * as kcmd from '../libts';
+import {ContextSetMetadata, describeChanged, EntryGroupRef, entryGroupOf, metadataErrors, pullContextSetMetadata, pushContextSetMetadata, readContextSetMetadata} from '../libts/context_set';
 import {BigLakeClient} from '../libts/gcp/biglake';
 import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
@@ -306,7 +307,9 @@ export async function pull(options: PullOptions = {}): Promise<number> {
   }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
-    return await pullSemanticModel(ctx, snapshot, options);
+    const code = await pullSemanticModel(ctx, snapshot, options);
+    if (code !== 0) return code;
+    return await pullContextSet(ctx, snapshot, options);
   }
 
   const catalog = new dataplex.CatalogClient(ctx);
@@ -322,7 +325,7 @@ export async function pull(options: PullOptions = {}): Promise<number> {
 
   if (result.success) {
     if (!options.dryRun) console.log('Successfully updated local snapshot.');
-    return 0;
+    return await pullContextSet(ctx, snapshot, options);
   } else {
     console.error('Error pulling catalog entries:', result.details);
     return 1;
@@ -823,6 +826,10 @@ export async function push(options: PushOptions): Promise<number> {
     }
   }
 
+  const contextSet = snapshot.manifest.contextSet;
+  const contextSetErrors = metadataErrors(contextSet);
+  if (contextSetErrors.length) return printErrors(...contextSetErrors);
+
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
@@ -832,6 +839,12 @@ export async function push(options: PushOptions): Promise<number> {
   const result = await sync.push(options);
 
   if (result.success) {
+    const ref = entryGroupOf(
+        snapshot.manifest.source.type, snapshot.manifest.source.name);
+    if (ref) {
+      const code = await pushContextSet(ctx, ref, contextSet, options);
+      if (code !== 0) return code;
+    }
     console.log(
         options.validateOnly ? 'Validation complete; no changes applied.' :
                                'Successfully pushed catalog entries.');
@@ -897,6 +910,14 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
+  const contextSet = readContextSetMetadata('catalog.yaml');
+  const contextSetErrors = metadataErrors(contextSet);
+  if (contextSetErrors.length) return fail(...contextSetErrors);
+  const contextSetRef: EntryGroupRef = {
+    project: source.project,
+    location: source.location,
+    entryGroup: source.entryGroup,
+  };
   const {plans, kcModels, leftOut, overviews} = checked;
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
@@ -941,6 +962,9 @@ async function pushInTwoPhases(
           deployment.engine === 'bigquery' ? 'BigQuery' : 'Spanner', generated,
           options);
     }
+    const pendingCode =
+        await pushContextSet(ctx, contextSetRef, contextSet, options);
+    if (pendingCode !== 0) return pendingCode;
     return reportCatalogResult(preflight.result!, options);
   }
   for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
@@ -952,6 +976,9 @@ async function pushInTwoPhases(
       await kc.applyKnowledgeCatalog(preflight.prepared!, ctx, kcOptions);
   const publishedCode = reportCatalogResult(published, options);
   if (publishedCode !== 0) return publishedCode;
+  const contextSetCode =
+      await pushContextSet(ctx, contextSetRef, contextSet, options);
+  if (contextSetCode !== 0) return contextSetCode;
   for (const {deployment, model} of plans) {
     header(deployment);
     if (deployment.engine === 'alloydb') {
@@ -1630,6 +1657,51 @@ function reportCatalogResult(
           `Wrote ${result.created} new and ${result.updated} updated ` +
               `Knowledge Catalog entr${n === 1 ? 'y' : 'ies'}${removed}${
                   linked}${unlinked}.`);
+  return 0;
+}
+
+
+// Writes catalog.yaml's display name and description to the context set
+// `ref` names when they differ from it, and prints what changed. Under
+// --validate-only it changes nothing and prints what a push would change.
+// Returns a process exit code (0 on success).
+async function pushContextSet(
+    ctx: context.ApiContext, ref: EntryGroupRef, local: ContextSetMetadata,
+    options: {validateOnly?: boolean}): Promise<number> {
+  const {changed, error} = await pushContextSetMetadata(
+      new dataplex.CatalogClient(ctx), ref, local,
+      {validateOnly: options.validateOnly});
+  if (error) return printErrors(error);
+  if (changed.length) {
+    console.log(
+        options.validateOnly ? `Would update ${describeChanged(changed)}.` :
+                               `Updated ${describeChanged(changed)}.`);
+  }
+  return 0;
+}
+
+
+// Sets catalog.yaml's display name and description from the context set the
+// workspace's scope names, and prints what changed. A scope with no entry
+// group has nothing to pull. Under --dry-run it writes nothing and prints what
+// a pull would change. Returns a process exit code (0 on success).
+async function pullContextSet(
+    ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
+    options: {dryRun?: boolean}): Promise<number> {
+  const {type, name} = snapshot.manifest.source;
+  const ref = entryGroupOf(type, name);
+  if (!ref) return 0;
+  const {changed, error} = await pullContextSetMetadata(
+      new dataplex.CatalogClient(ctx), ref,
+      path.join(snapshot.basePath || '.', 'catalog.yaml'),
+      {dryRun: options.dryRun});
+  if (error) return printErrors(error);
+  if (changed.length) {
+    console.log(
+        options.dryRun ?
+            `Would update ${describeChanged(changed)} in catalog.yaml.` :
+            `Updated ${describeChanged(changed)} in catalog.yaml.`);
+  }
   return 0;
 }
 

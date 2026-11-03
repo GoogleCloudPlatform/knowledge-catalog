@@ -1,0 +1,288 @@
+// Tests for the context set's display name and description in catalog.yaml
+// (src/libts/context_set.ts): which scopes take the keys, how they are
+// compared with the entry group, and how pull and push move them.
+
+import {afterEach, beforeEach, describe, expect, test} from 'bun:test';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+
+import {entryGroupOf, manifestMetadataErrors, MAX_DESCRIPTION_LENGTH, MAX_DISPLAY_NAME_LENGTH, metadataErrors, metadataOfEntryGroup, metadataUpdate, pullContextSetMetadata, pushContextSetMetadata, readContextSetMetadata, writeContextSetMetadata} from '../../src/libts/context_set';
+import {ApiContext} from '../../src/libts/gcp/context';
+import {CatalogClient} from '../../src/libts/gcp/dataplex';
+import {CatalogManifest} from '../../src/libts/manifest';
+
+const REF = {project: 'p', location: 'us', entryGroup: 'sales'};
+
+let dir = '';
+let manifest = '';
+
+beforeEach(() => {
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-context-set-'));
+  manifest = path.join(dir, 'catalog.yaml');
+});
+
+afterEach(() => {
+  fs.rmSync(dir, {recursive: true, force: true});
+});
+
+
+// A catalog client that answers getEntryGroup with `group` and records each
+// update. `updateStatus` and `opError` make the update fail.
+function fakeCatalog(
+    group: Record<string, unknown>|undefined,
+    opts: {getStatus?: number; updateStatus?: number; opError?: string} = {}) {
+  const updates: Array<{patch: unknown; mask: unknown}> = [];
+  const catalog = {
+    async getEntryGroup() {
+      const status = opts.getStatus ?? 200;
+      return status === 200 ? {status, result: group} :
+                              {status, message: 'denied'};
+    },
+    async updateEntryGroup(
+        _p: string, _l: string, _g: string, patch: unknown, mask: unknown) {
+      updates.push({patch, mask});
+      const status = opts.updateStatus ?? 200;
+      return status === 200 ?
+          {status, result: {name: 'projects/p/locations/us/operations/op'}} :
+          {status, message: 'permission denied'};
+    },
+    async awaitOperation() {
+      return opts.opError;
+    },
+  };
+  return {catalog: catalog as unknown as CatalogClient, updates};
+}
+
+
+describe('which scopes take the keys', () => {
+  test('entry group, knowledge base and semantic-model scopes', () => {
+    expect(entryGroupOf('entryGroup', 'p.us.sales')).toEqual(REF);
+    expect(entryGroupOf('kb', 'p.us.sales')).toEqual(REF);
+    expect(entryGroupOf('semantic-model', 'p.us.sales')).toEqual(REF);
+    expect(entryGroupOf('bq-dataset', 'p.d')).toBeUndefined();
+    expect(entryGroupOf('entryGroup', 'p.us')).toBeUndefined();
+  });
+
+  test('a BigQuery dataset scope and a value that is not a string are refused',
+       () => {
+         expect(manifestMetadataErrors({scope: 'semantic-model.p.us.s'}))
+             .toEqual([]);
+         expect(manifestMetadataErrors(
+                    {scope: 'semantic-model.p.us.s', description: 'd'}))
+             .toEqual([]);
+         expect(manifestMetadataErrors(
+                    {scope: 'bq-dataset.p.d', displayName: 'n'}))
+             .toEqual([expect.stringContaining(
+                 '\'displayName\' apply only to scopes backed by an entry group')]);
+         expect(manifestMetadataErrors(
+                    {scope: ['bq-dataset.p.d1', 'bq-dataset.p.d2'],
+                     description: 'd'}))
+             .toHaveLength(1);
+         expect(manifestMetadataErrors(
+                    {scope: 'entryGroup.p.us.s', description: 42}))
+             .toEqual(['Manifest error: \'description\' must be a string.']);
+       });
+});
+
+
+describe('comparing with the entry group', () => {
+  test('only a key the workspace holds, and that differs, is updated', () => {
+    expect(metadataUpdate({}, {description: 'remote'})).toBeUndefined();
+    expect(metadataUpdate({description: 'same'}, {description: 'same'}))
+        .toBeUndefined();
+    expect(metadataUpdate(
+               {displayName: 'Sales', description: 'new'},
+               {displayName: 'Sales', description: 'old'}))
+        .toEqual({patch: {description: 'new'}, updateMask: ['description']});
+  });
+
+  test('an empty value clears a set one, and matches an unset one', () => {
+    expect(metadataUpdate({description: ''}, {description: 'old'}))
+        .toEqual({patch: {description: ''}, updateMask: ['description']});
+    expect(metadataUpdate({description: ''}, {})).toBeUndefined();
+  });
+
+  test('an entry group\'s empty or missing values are left out', () => {
+    expect(metadataOfEntryGroup(
+               {name: 'n', displayName: '', description: 'd', type: 'x'}))
+        .toEqual({description: 'd'});
+    expect(metadataOfEntryGroup(undefined)).toEqual({});
+  });
+
+  test('values longer than Knowledge Catalog allows are errors', () => {
+    expect(metadataErrors({
+      displayName: 'n'.repeat(MAX_DISPLAY_NAME_LENGTH),
+      description: 'd'.repeat(MAX_DESCRIPTION_LENGTH),
+    })).toEqual([]);
+    expect(metadataErrors({
+      displayName: 'n'.repeat(MAX_DISPLAY_NAME_LENGTH + 1),
+      description: 'd'.repeat(MAX_DESCRIPTION_LENGTH + 1),
+    })).toEqual([
+      expect.stringContaining('display name is 501 characters long'),
+      expect.stringContaining('description is 1025 characters long'),
+    ]);
+  });
+});
+
+
+describe('writing catalog.yaml', () => {
+  test('sets the keys and keeps every other key and comment', () => {
+    fs.writeFileSync(
+        manifest,
+        '# The sales workspace.\nscope: semantic-model.p.us.sales # pinned\n' +
+            'snapshot:\n  aspects: [p.global.a]\n');
+    expect(writeContextSetMetadata(
+               manifest, {displayName: 'Sales', description: 'Orders.'}))
+        .toEqual(['displayName', 'description']);
+    const text = fs.readFileSync(manifest, 'utf8');
+    expect(text).toContain('# The sales workspace.');
+    expect(text).toContain('scope: semantic-model.p.us.sales # pinned');
+    expect(text).toContain('aspects: [ p.global.a ]');
+    expect(readContextSetMetadata(manifest))
+        .toEqual({displayName: 'Sales', description: 'Orders.'});
+  });
+
+  test('removes a key the entry group does not set', () => {
+    fs.writeFileSync(
+        manifest, 'scope: entryGroup.p.us.sales\ndescription: old\n');
+    expect(writeContextSetMetadata(manifest, {})).toEqual(['description']);
+    expect(fs.readFileSync(manifest, 'utf8'))
+        .toBe('scope: entryGroup.p.us.sales\n');
+  });
+
+  test('leaves the file untouched when nothing changes', () => {
+    const text = 'scope: entryGroup.p.us.sales\ndescription:   "same"\n';
+    fs.writeFileSync(manifest, text);
+    expect(writeContextSetMetadata(manifest, {description: 'same'}))
+        .toEqual([]);
+    expect(fs.readFileSync(manifest, 'utf8')).toBe(text);
+  });
+
+  test('keeps a multi-line description', () => {
+    fs.writeFileSync(manifest, 'scope: entryGroup.p.us.sales\n');
+    const description = 'Semantic model `sales`:\norders and refunds.';
+    writeContextSetMetadata(manifest, {description});
+    expect(readContextSetMetadata(manifest)).toEqual({description});
+  });
+});
+
+
+describe('pullContextSetMetadata', () => {
+  test('writes the entry group\'s values to catalog.yaml', async () => {
+    fs.writeFileSync(manifest, 'scope: semantic-model.p.us.sales\n');
+    const {catalog} =
+        fakeCatalog({name: 'n', displayName: 'Sales', description: 'Orders.'});
+    expect(await pullContextSetMetadata(catalog, REF, manifest))
+        .toEqual({changed: ['displayName', 'description']});
+    expect(readContextSetMetadata(manifest))
+        .toEqual({displayName: 'Sales', description: 'Orders.'});
+  });
+
+  test('a dry run reports what would change and writes nothing', async () => {
+    const text = 'scope: semantic-model.p.us.sales\ndescription: local\n';
+    fs.writeFileSync(manifest, text);
+    const {catalog} = fakeCatalog({name: 'n', description: 'remote'});
+    expect(await pullContextSetMetadata(catalog, REF, manifest, {dryRun: true}))
+        .toEqual({changed: ['description']});
+    expect(fs.readFileSync(manifest, 'utf8')).toBe(text);
+  });
+
+  test('a failed read is an error and writes nothing', async () => {
+    const text = 'scope: semantic-model.p.us.sales\n';
+    fs.writeFileSync(manifest, text);
+    const {catalog} = fakeCatalog(undefined, {getStatus: 403});
+    expect(await pullContextSetMetadata(catalog, REF, manifest)).toEqual({
+      changed: [],
+      error: 'reading context set \'p.us.sales\': denied',
+    });
+    expect(fs.readFileSync(manifest, 'utf8')).toBe(text);
+  });
+});
+
+
+describe('pushContextSetMetadata', () => {
+  test('updates only what differs, with an update mask', async () => {
+    const {catalog, updates} =
+        fakeCatalog({name: 'n', displayName: 'Sales', description: 'old'});
+    expect(await pushContextSetMetadata(
+               catalog, REF, {displayName: 'Sales', description: 'new'}))
+        .toEqual({changed: ['description']});
+    expect(updates).toEqual(
+        [{patch: {description: 'new'}, mask: ['description']}]);
+  });
+
+  test('no keys, or no difference, calls nothing to update', async () => {
+    const {catalog, updates} = fakeCatalog({name: 'n', description: 'same'});
+    expect(await pushContextSetMetadata(catalog, REF, {}))
+        .toEqual({changed: []});
+    expect(await pushContextSetMetadata(catalog, REF, {description: 'same'}))
+        .toEqual({changed: []});
+    expect(updates).toEqual([]);
+  });
+
+  test('validate-only reports the change and writes nothing', async () => {
+    const {catalog, updates} = fakeCatalog({name: 'n'});
+    expect(await pushContextSetMetadata(
+               catalog, REF, {displayName: 'Sales'}, {validateOnly: true}))
+        .toEqual({changed: ['displayName']});
+    expect(updates).toEqual([]);
+  });
+
+  test('an over-long value fails before any call', async () => {
+    const {catalog, updates} = fakeCatalog(undefined, {getStatus: 500});
+    const result = await pushContextSetMetadata(
+        catalog, REF, {description: 'd'.repeat(MAX_DESCRIPTION_LENGTH + 1)});
+    expect(result.error).toContain('1025 characters long');
+    expect(updates).toEqual([]);
+  });
+
+  test('a refused update and a failed operation are errors', async () => {
+    const refused =
+        fakeCatalog({name: 'n'}, {updateStatus: 403}).catalog;
+    expect(await pushContextSetMetadata(refused, REF, {description: 'd'}))
+        .toEqual({
+          changed: [],
+          error: 'updating context set \'p.us.sales\': permission denied',
+        });
+    const failed = fakeCatalog({name: 'n'}, {opError: 'updateEntryGroup: boom'})
+                       .catalog;
+    expect(await pushContextSetMetadata(failed, REF, {description: 'd'}))
+        .toEqual({
+          changed: [],
+          error: 'updating context set \'p.us.sales\': updateEntryGroup: boom',
+        });
+  });
+});
+
+
+describe('CatalogManifest', () => {
+  const ctx = new ApiContext('p', 'us', 'token');
+
+  test('loads the keys and keeps them when it saves', async () => {
+    fs.writeFileSync(
+        manifest,
+        'scope: semantic-model.p.us.sales\ndisplayName: Sales\n' +
+            'description: Orders.\n');
+    const loaded = await CatalogManifest.load(manifest, ctx);
+    expect(loaded.contextSet)
+        .toEqual({displayName: 'Sales', description: 'Orders.'});
+    const saved = path.join(dir, 'saved.yaml');
+    loaded.save(saved);
+    expect(readContextSetMetadata(saved))
+        .toEqual({displayName: 'Sales', description: 'Orders.'});
+  });
+
+  test('a workspace without the keys has none', async () => {
+    fs.writeFileSync(manifest, 'scope: semantic-model.p.us.sales\n');
+    expect((await CatalogManifest.load(manifest, ctx)).contextSet).toEqual({});
+  });
+
+  test('refuses the keys in a BigQuery dataset scope, before any call',
+       async () => {
+         fs.writeFileSync(
+             manifest, 'scope: bq-dataset.p.d\ndescription: Orders.\n');
+         await expect(CatalogManifest.load(manifest, ctx))
+             .rejects.toThrow('apply only to scopes backed by an entry group');
+       });
+});
