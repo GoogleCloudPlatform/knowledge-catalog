@@ -5,9 +5,9 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, dottedPartProblem, fillForm, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
-import {SerializedFile, serializeModelFiles} from './osi_converter';
+import {SerializedFile} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -488,7 +488,7 @@ function foldsUnquotedCase(prefix: ParsedSourcePrefix): boolean {
  */
 function foldedPart(source: string, prefix: ParsedSourcePrefix):
     {kind: string; name: string; read: string}|undefined {
-  const segs = bareNameSegments(source, prefix);
+  const segs = sourceParts(source, prefix);
   if (!segs || !foldsUnquotedCase(prefix)) return undefined;
   const start = prefix.known.length - segs.length + (prefix.child ? 2 : 1);
   for (let i = start; i < prefix.known.length; i++) {
@@ -880,22 +880,30 @@ function repairDocument(doc: ImportDocument): void {
 }
 
 /**
+ * Sets `version` to `doc.targetVersion`, and names the model's entity list as
+ * that flavor does: `entities:` in the Google flavor, `datasets:` in vanilla.
+ */
+function setTargetVersion(doc: ImportDocument): void {
+  const [from, to] = doc.targetVersion === GOOGLE_VERSION ?
+      ['datasets', 'entities'] :
+      ['entities', 'datasets'];
+  doc.root.version = doc.targetVersion;
+  doc.modified = true;
+  if (doc.model[from] !== undefined && doc.model[to] === undefined) {
+    doc.model[to] = doc.model[from];
+    delete doc.model[from];
+  }
+}
+
+/**
  * Converts a plain vanilla (`0.2.0.dev0`) document to the Google version
  * (`0.2.0.dev0/google`) by updating `version`, renaming `datasets:` to
  * `entities:`, and moving custom `ai_context` sibling properties under
  * `ai_context.custom`.
  */
 function adaptToGoogleVersion(doc: ImportDocument): void {
-  // 1. Switch the document header to `0.2.0.dev0/google` and rename the
-  // top-level `datasets:` collection to `entities:`.
-  doc.root.version = GOOGLE_VERSION;
-  doc.modified = true;
-  if (doc.model.datasets !== undefined && doc.model.entities === undefined) {
-    doc.model.entities = doc.model.datasets;
-    delete doc.model.datasets;
-  }
-
-  // 2. Move any non-standard sibling keys on `ai_context` objects (at model,
+  setTargetVersion(doc);
+  // Move any non-standard sibling keys on `ai_context` objects (at model,
   // entity, field, relationship, or metric scope) under `ai_context.custom`,
   // since `0.2.0.dev0/google` uses strict schema validation on `ai_context`.
   for (const {ai} of modelAiContexts(doc.root)) {
@@ -904,13 +912,36 @@ function adaptToGoogleVersion(doc: ImportDocument): void {
 }
 
 /**
- * Adapts `doc` to the vanilla (`0.2.0.dev0`) version: wraps short-form string
- * expressions into a single-entry `ANSI_SQL` dialect list, and moves plain
- * relationship `description`s into a `GOOGLE` `custom_extensions` block. The
- * vanilla flavor rejects both forms, so in a vanilla file each change is a
- * repair and goes through `warnOrError`.
+ * Adapts `doc` to the vanilla (`0.2.0.dev0`) version: converts a Google file's
+ * version, entity list and custom `ai_context` members, wraps short-form
+ * string expressions into a single-entry `ANSI_SQL` dialect list, and moves
+ * plain relationship `description`s into a `GOOGLE` `custom_extensions` block.
+ * The vanilla flavor rejects the last two forms, so in a vanilla file each of
+ * those changes is a repair and goes through `warnOrError`.
  */
 function adaptToOssieVersion(doc: ImportDocument): void {
+  // 0. A Google file takes the vanilla version and entity list, and each
+  // member of an `ai_context`'s `custom` mapping goes beside the standard
+  // members, where `custom` was. An `ai_context` that held only an empty
+  // `custom` is dropped.
+  if (doc.inputVersion === GOOGLE_VERSION) {
+    setTargetVersion(doc);
+    for (const owner of [
+           doc.model, ...doc.datasets,
+           ...doc.datasets.flatMap(ds => asRecords(ds.fields)),
+           ...doc.relationships, ...doc.metrics
+         ]) {
+      const ai = owner.ai_context;
+      if (!isRecord(ai) || !isRecord(ai.custom)) continue;
+      const entries = Object.entries(ai);
+      for (const k of Object.keys(ai)) delete ai[k];
+      for (const [k, v] of entries) {
+        Object.assign(ai, k === 'custom' ? v : {[k]: v});
+      }
+      if (Object.keys(ai).length === 0) delete owner.ai_context;
+    }
+  }
+
   // 1. Wrap any short-form string `expression: "<sql>"` on a field or metric
   // into `{dialects: [{dialect: 'ANSI_SQL', expression: "<sql>"}]}`, since
   // `0.2.0.dev0` requires the `expression.dialects` object form.
@@ -938,27 +969,128 @@ function adaptToOssieVersion(doc: ImportDocument): void {
   // `description` directly on a relationship, but `kcmd` reads and preserves
   // relationship descriptions from a `{vendor_name: 'GOOGLE', data: ...}`
   // extension entry (`FORMAT_VERSION_PLACEMENT['0.2.0.dev0'].relationship`).
+  // A conversion from Google has moved them already (`moveConstructs`).
   for (const r of doc.relationships) {
-    if (typeof r.description === 'string') {
-      // Append `{vendor_name: 'GOOGLE', data: '{"description":"..."}'}` to the
-      // relationship's `custom_extensions` list (creating the list if absent).
-      const exts =
-          Array.isArray(r.custom_extensions) ? r.custom_extensions : [];
-      exts.push({
-        vendor_name: GOOGLE_VENDOR,
-        data: JSON.stringify({description: r.description}),
-      });
-      r.custom_extensions = exts;
-      // Remove the native `description` key so `0.2.0.dev0` validation passes.
-      delete r.description;
-      doc.modified = true;
-      if (doc.inputVersion === OSSIE_VERSION) {
-        doc.warnOrError(
-            `relationship '${r.name}': moved 'description' into a ` +
-            `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`);
+    if (typeof r.description !== 'string') continue;
+    putGoogleBlock(r, {description: r.description});
+    delete r.description;
+    doc.modified = true;
+    doc.warnOrError(
+        `relationship '${r.name}': moved 'description' into a ` +
+        `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`);
+  }
+}
+
+// Where the Google flavor writes a key that a GOOGLE block carries in vanilla:
+// right after the last of these keys the object has, as `kcmd pull` does.
+const NATIVE_KEY_AFTER: Readonly<Record<string, readonly string[]>> = {
+  deployments: ['name', 'description', 'ai_context'],
+  extends: ['name', 'source'],
+  description: ['name', 'from', 'to', 'from_columns', 'to_columns'],
+  entity: ['name'],
+};
+
+/**
+ * Sets `obj[key]` to `value` right after the last of `after` that `obj` has,
+ * or first. `obj` stays the same object, so the writer keeps its text.
+ */
+function setAfter(
+    obj: Record<string, any>, after: readonly string[], key: string,
+    value: unknown): void {
+  const entries = Object.entries(obj);
+  const at =
+      Math.max(-1, ...after.map(a => entries.findIndex(([k]) => k === a)));
+  entries.splice(at + 1, 0, [key, value]);
+  for (const k of Object.keys(obj)) delete obj[k];
+  for (const [k, v] of entries) obj[k] = v;
+}
+
+/**
+ * Removes the `GOOGLE` blocks from `obj.custom_extensions`, and the list when
+ * no block is left in it, and returns the values the blocks carry.
+ */
+function takeGoogleBlocks(obj: Record<string, any>): Record<string, unknown> {
+  const values = Object.assign({}, ...parseGoogleBlocks(obj.custom_extensions));
+  if (!hasGoogleBlock(asRecords(obj.custom_extensions))) return values;
+  const kept = obj.custom_extensions.filter(
+      (b: unknown) => !isRecord(b) || !isGoogleVendor(b.vendor_name));
+  if (kept.length) {
+    obj.custom_extensions = kept;
+  } else {
+    delete obj.custom_extensions;
+  }
+  return values;
+}
+
+/** True for an empty string, list or mapping. */
+function isEmpty(value: unknown): boolean {
+  return value === '' ||
+      ((isRecord(value) || Array.isArray(value)) &&
+       Object.keys(value).length === 0);
+}
+
+/** Appends a `GOOGLE` block that carries `values` to `obj.custom_extensions`. */
+function putGoogleBlock(
+    obj: Record<string, any>, values: Record<string, unknown>): void {
+  if (Object.keys(values).length === 0) return;
+  obj.custom_extensions = [
+    ...(Array.isArray(obj.custom_extensions) ? obj.custom_extensions : []),
+    {vendor_name: GOOGLE_VENDOR, data: JSON.stringify(values)},
+  ];
+}
+
+/**
+ * Moves each construct that `doc`'s flavor and its target flavor place
+ * differently (`FORMAT_VERSION_PLACEMENT`) between a native key, a `GOOGLE`
+ * block and the profile files. A key the target flavor has no place for is
+ * dropped, and so is an empty value bound for a `GOOGLE` block. Returns the
+ * profile files the Google flavor writes.
+ */
+function moveConstructs(
+    doc: ImportDocument, profileFiles: SerializedFile[]): SerializedFile[] {
+  const levels = {
+    model: [doc.model],
+    dataset: doc.datasets,
+    relationship: doc.relationships,
+    metric: doc.metrics,
+  };
+  let files: SerializedFile[] = [];
+  for (const [level, objects] of Object.entries(levels)) {
+    const placement = (version: FormatVersion) =>
+        FORMAT_VERSION_PLACEMENT[version][level as keyof typeof levels] as
+        Record<string, ConstructPlacement>;
+    const was = placement(doc.inputVersion);
+    for (const obj of objects) {
+      const block = takeGoogleBlocks(obj);
+      const moved: Record<string, unknown> = {};
+      for (const [key, place] of Object.entries(placement(doc.targetVersion))) {
+        // A key the input's flavor has no place for stays as written.
+        if (was[key] === place || was[key] === 'none') continue;
+        const value: unknown = was[key] === 'block' ? block[key] :
+            was[key] === 'file' ?
+            profileFiles.map(pf => yaml.parse(pf.content, YAML_OPTIONS)) :
+            obj[key];
+        delete obj[key];
+        if (value === undefined) continue;
+        if (place === 'native') {
+          setAfter(obj, NATIVE_KEY_AFTER[key], key, value);
+        } else if (place === 'file') {
+          files = asRecords(value).map(p => ({
+            fileName: `${doc.model.name}.profile.${p.name}.yaml`,
+            content: yaml.stringify(p, {
+              aliasDuplicateObjects: false,
+              compat: 'yaml-1.1',
+              lineWidth: 0,
+            }),
+          }));
+        } else if (place === 'block' && !isEmpty(value)) {
+          moved[key] = value;
+        }
       }
+      putGoogleBlock(obj, moved);
     }
   }
+  return files;
 }
 
 /**
@@ -1137,83 +1269,39 @@ function loadSemanticModel(doc: ImportDocument): SemanticModel|undefined {
 }
 
 /**
- * Phase 4 (Convert): Generates converted output file(s) across versions
- * (`0.2.0.dev0` <-> `0.2.0.dev0/google`) by loading `doc.root` into the
- * `SemanticModel` IR, optionally running `transpileModel`, attaching profile
- * files and checking conversion gaps when targeting `0.2.0.dev0`, and
- * serializing with `serializeModelFiles`.
+ * Phase 4 (Convert): Checks with the `SemanticModel` IR that `doc` converts to
+ * its target version (`0.2.0.dev0` <-> `0.2.0.dev0/google`), attaching profile
+ * files and checking conversion gaps when targeting `0.2.0.dev0`, then edits
+ * `doc` into that version with `generateAdaptedFiles`.
  */
 async function generateConvertedFiles(
     doc: ImportDocument,
     opts: ImportSemanticModelOptions): Promise<SerializedFile[]> {
-  // 1. Load the input document (including any `GOOGLE` blocks in `0.2.0.dev0`)
-  // into the `SemanticModel` IR.
   if (doc.errors.length > 0) return [];
-  let model = loadSemanticModel(doc);
+  const model = loadSemanticModel(doc);
   if (!model) return [];
-
-  // 2. When `opts.transpile` is enabled, translate vendor or double-quoted
-  // `ANSI_SQL` expressions to `BIGQUERY`.
-  if (opts.transpile) {
-    const transpiled = await transpileModel(model);
-    model = transpiled.model;
-    doc.warnings.push(...transpiled.warnings);
-  }
-
-  // 3. When converting to `0.2.0.dev0`, load sibling profile files and verify
-  // the model has no conversion gaps.
   if (doc.targetVersion === OSSIE_VERSION) {
     attachProfileFiles(model, opts.profileFiles, doc);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
   }
-
-  // 4. Switch `model.version` to `doc.targetVersion` and serialize the files
-  // with `serializeModelFiles`, each value on one line. The model file is
-  // written into the input's text to keep its comments.
-  model.version = doc.targetVersion;
-  const serialized = serializeModelFiles(model, {lineWidth: 0});
-  doc.warnings.push(...serialized.warnings);
-  const [modelFile, ...profiles] = serialized.files;
-  const written = yaml.parse(modelFile.content, YAML_OPTIONS);
-  keepDatatypes(doc, written);
-  const content = writeDocument(doc, written);
-  return [{...modelFile, content}, ...profiles];
-}
-
-/**
- * Sets each field's and metric's datatype in the serialized model `written` to
- * the value `doc` holds after repair. The serializer omits `Opaque`, which
- * both flavors accept.
- */
-function keepDatatypes(doc: ImportDocument, written: Record<string, any>): void {
-  const model = asRecords(written.semantic_model)[0] ?? {};
-  const named = (list: unknown, name: unknown) =>
-      asRecords(list).find(x => x.name === name);
-  const pairs = [
-    ...doc.datasets.flatMap(ds => {
-      const entity = named(model.entities ?? model.datasets, ds.name);
-      return asRecords(ds.fields)
-          .map(f => [f, named(entity?.fields, f.name)] as const);
-    }),
-    ...doc.metrics.map(mt => [mt, named(model.metrics, mt.name)] as const),
-  ];
-  for (const [authored, out] of pairs) {
-    if (out && typeof authored.datatype === 'string') {
-      out.datatype = authored.datatype;
-    }
-  }
+  return generateAdaptedFiles(doc, !!opts.transpile, opts.profileFiles);
 }
 
 /**
  * Phase 4 (Adapt): Adapts `doc` in place to its target version
- * (`adaptToGoogleVersion` or `adaptToOssieVersion`), optionally transpiles
- * expressions via `transpileDocument`, and returns the adapted output file.
+ * (`moveConstructs`, then `adaptToGoogleVersion` or `adaptToOssieVersion`),
+ * optionally transpiles expressions via `transpileDocument`, and returns the
+ * output files. Every value these steps do not change keeps its text.
  */
 async function generateAdaptedFiles(
-    doc: ImportDocument, transpile: boolean): Promise<SerializedFile[]> {
+    doc: ImportDocument, transpile: boolean,
+    profileFiles: SerializedFile[] = []): Promise<SerializedFile[]> {
   // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
   // or `0.2.0.dev0`).
+  const profiles = doc.inputVersion === doc.targetVersion ?
+      [] :
+      moveConstructs(doc, profileFiles);
   if (doc.inputVersion === OSSIE_VERSION &&
       doc.targetVersion === GOOGLE_VERSION) {
     adaptToGoogleVersion(doc);
@@ -1230,7 +1318,7 @@ async function generateAdaptedFiles(
   // 3. Write `doc.root` into the input's text when modified or preserve the
   // text verbatim when unmodified.
   const content = doc.modified ? writeDocument(doc, doc.root) : doc.text;
-  return [{fileName: `${doc.model.name}.yaml`, content}];
+  return [{fileName: `${doc.model.name}.yaml`, content}, ...profiles];
 }
 
 /**

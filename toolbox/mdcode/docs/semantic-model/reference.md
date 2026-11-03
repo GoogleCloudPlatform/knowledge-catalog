@@ -100,7 +100,12 @@ repaired, and each repair is reported as a warning. Renaming a dialect such as
 `GOOGLE_SQL` or `bigquery` is a repair. In a vanilla file written as vanilla,
 recasing a datatype such as `integer` is a repair, and so is writing a string
 `expression` as an `ANSI_SQL` entry under `dialects`. The other changes convert
-the file between flavors and are not reported. A file written for kcmd converts
+the file between flavors and are not reported. A conversion moves each value
+the two flavors place differently, such as a dataset's `extends`, between its
+own key and a `GOOGLE` block, as written. A conversion to vanilla drops an
+empty `extends`, `deployments` or relationship `description` instead of writing
+a `GOOGLE` block for it, and drops an `ai_context` that holds only an empty
+`custom`. A file written for kcmd converts
 between flavors exactly or not at all. The `<model>.profile.<name>.yaml` files
 beside `<file>` go in with it. Nothing is written when the import reports an
 error. Import rewrites only the values it changes, and every other line of the

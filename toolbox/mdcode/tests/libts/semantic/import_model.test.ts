@@ -1098,6 +1098,88 @@ semantic_model:
             .toContain(`expression: ${longSql}\n`);
       });
 
+  // A relationship from `orders` to itself, with `lines` added to it.
+  const selfJoin = (lines: string) => `    relationships:
+      - name: self
+        from: orders
+        to: orders
+        from_columns: [order_id]
+        to_columns: [order_id]
+${lines}`;
+  test.each([
+    ['a padded description', '    description: "  Retail model  "\n'],
+    ['a block description', '    description: |\n      Retail model.\n'],
+    ['a string ai_context', '    ai_context: Retail model\n'],
+  ].flatMap(
+      ([what, lines]): Array<[string, string, string, string | string[]]> => [
+        [what, 'google', ossieDoc({modelAiContext: lines}), lines],
+        [what, 'ossie', googleDoc({modelAiContext: lines}), lines],
+      ]).concat([
+    [
+      'GOOGLE block values in their own keys', 'google',
+      ossieDoc({
+        modelDescription: 'Retail',
+        modelAiContext:
+            `    custom_extensions: [{vendor_name: GOOGLE, data: '{"deployments": [{"name": "prod", "target": "${BQ_PREFIX}/propertyGraphs/retail"}]}'}]\n`,
+        source: `${BQ_TABLE}\n        custom_extensions: [{vendor_name: GOOGLE, data: '{"extends": ["base"]}'}]`,
+        extra: `      - name: base\n        source: ${BQ_TABLE}\n        fields: []\n` +
+            selfJoin(
+                `        custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "  Self join.\\n"}'}]\n`),
+      }),
+      [
+        '    description: "Retail"\n    deployments:\n      - name: prod\n',
+        `        source: ${BQ_TABLE}\n        extends:\n          - base\n        primary_key:`,
+        '        to_columns: [order_id]\n        description: |2\n            Self join.\n',
+      ],
+    ],
+    [
+      'a description in a GOOGLE block', 'ossie',
+      googleDoc({
+        extra: selfJoin(
+            '        description: |\n          Self join.\n        custom_extensions:\n          - vendor_name: DBT\n            data: "{}"\n'),
+      }),
+      `            data: "{}"\n          - vendor_name: GOOGLE\n            data: '{"description":"Self join.\\n"}'\n`,
+    ],
+    [
+      'custom ai_context members where custom was', 'ossie',
+      googleDoc({
+        modelAiContext:
+            '    ai_context:\n      instructions: i\n      custom:\n        team: sales\n      synonyms: [s]\n',
+      }),
+      '    ai_context:\n      instructions: i\n      team: sales\n      synonyms: [s]\n',
+    ],
+    [
+      'no empty value, abstract: false or empty actions', 'ossie',
+      googleDoc({
+        modelAiContext:
+            '    deployments: []\n    ai_context: {custom: {}}\n    actions: []\n    constraints: []\n',
+        source: `${BQ_TABLE}\n        abstract: false\n        extends: []`,
+        extra: selfJoin('        description: ""\n') + '# end\n',
+      }),
+      ossieDoc({extra: `${selfJoin('')}# end\n`}),
+    ],
+  ]))('writes %s in a conversion to %s', async (_, flavor, input, lines) => {
+    const res = await importSemanticModelYaml(
+        input, {flavor: flavor as 'google' | 'ossie', strict: true});
+
+    expect(res.errors).toEqual([]);
+    for (const line of [lines].flat()) {
+      expect(res.files[0].content).toContain(line);
+    }
+    const again =
+        await importSemanticModelYaml(res.files[0].content, {strict: true});
+    expect(again.files[0].content).toBe(res.files[0].content);
+  });
+
+  test('keeps a key vanilla has no place for when it writes a third-party file as Google', async () => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: `${BQ_TABLE}\n        abstract: false`}),
+        {flavor: 'google'});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toContain(`${BQ_TABLE}\n        abstract: false\n`);
+  });
+
   test('ignores profileFiles when target flavor is google', async () => {
     const googleRes = await importSemanticModelYaml(ossieDoc(), {
       flavor: 'google',
