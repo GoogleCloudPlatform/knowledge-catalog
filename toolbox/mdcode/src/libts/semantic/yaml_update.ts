@@ -415,7 +415,15 @@ function blockEnd(t: string, end: number, col: number): number {
 
 function setScalar(
     u: Update, node: yaml.Scalar, value: unknown, slot: Slot): void {
-  const [from, to, lead] = rangeOf(u, node);
+  const t = u.text;
+  const [from, end, lead] = rangeOf(u, node);
+  // A block scalar that keeps its final line breaks ends in the blank lines
+  // after its text. The edit stops before them, so they stay.
+  let to = end;
+  while (/^BLOCK/.test(node.type ?? '') && lineStart(t, to - 1) > from &&
+         !t.slice(lineStart(t, to - 1), to).trim()) {
+    to = lineStart(t, to - 1);
+  }
   const kept = typeof node.value === 'string' && typeof value === 'string';
   const type = kept ? node.type : undefined;
   let s = scalarText(u, value, slot.col, slot.flow, type);
@@ -428,7 +436,6 @@ function setScalar(
   // A block scalar that keeps its final line breaks, as `|+` does, also takes
   // the blank lines after it. It is written with that many fewer, or
   // double-quoted when it ends in fewer.
-  const t = u.text;
   let blank = 0;
   for (let p = to; p < t.length && !t.slice(p, nextLine(t, p)).trim();
        p = nextLine(t, p)) {
