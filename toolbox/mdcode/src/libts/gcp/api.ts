@@ -7,7 +7,10 @@ import * as context from './context';
 export interface ApiResult<T> {
   status: number;
   result?: T;
+  // For a failed response, the message errorMessage reads from its body.
   message?: string;
+  // For a failed response, its whole body.
+  body?: string;
 }
 
 export interface ApiClientOptions {
@@ -20,6 +23,31 @@ export interface RequestOptions {
 
 const TRANSIENT_TRIES = 4;
 const TRANSIENT_DELAY_CAP_MS = 5000;
+const MAX_MESSAGE_LENGTH = 2000;
+
+// The message in a failed response's body: a Google API error's
+// LocalizedMessage detail, which Spanner leaves unescaped, or else its
+// `error.message`. Any other body comes back trimmed and cut to 2,000
+// characters.
+export function errorMessage(body: string): string {
+  const text = body.trim();
+  try {
+    const error = JSON.parse(text)?.error;
+    const details = Array.isArray(error?.details) ? error.details : [];
+    const localized = details.find((d: any) =>
+        d?.['@type']?.endsWith('LocalizedMessage') && isText(d.message));
+    const message = localized?.message ?? error?.message;
+    if (isText(message)) return message.trim();
+  } catch {
+    // Not JSON, such as a proxy's HTML error page.
+  }
+  return text.length > MAX_MESSAGE_LENGTH ?
+      `${text.slice(0, MAX_MESSAGE_LENGTH)}...` : text;
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
+}
 
 export function isTransientStatus(status: number): boolean {
   return status >= 500 || status === 429;
@@ -137,13 +165,14 @@ export class ApiClient {
 
     const result: ApiResult<T> = { status: response.status };
     if (!response.ok) {
-      result.message = await response.text();
+      result.body = await response.text();
+      result.message = errorMessage(result.body);
     }
     else {
       result.result = await response.json() as T;
     }
 
-    this._context.log(`${response.status}:${result.message ?? ''}\n`, result.result);
+    this._context.log(`${response.status}:${result.body ?? ''}\n`, result.result);
     return result;
   }
 

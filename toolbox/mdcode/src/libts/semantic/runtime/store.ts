@@ -16,7 +16,7 @@
 // not what it is.
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
-import {ApiResult} from '../../gcp/api';
+import {ApiResult, errorMessage} from '../../gcp/api';
 import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, destinationKey, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
@@ -545,18 +545,10 @@ export async function withPrimaryInstance(
 }
 
 
-// The message of a failed API call: the error the response body states, or
-// failing that the body as it is, after the HTTP status.
+// The message of a failed API call, after the HTTP status.
 function apiError(res: {status: number; message?: string}): string {
-  try {
-    const message = JSON.parse(res.message ?? '')?.error?.message;
-    if (typeof message === 'string' && message) {
-      return `${res.status} ${message}`;
-    }
-  } catch {
-    // Not JSON: report the body as it is.
-  }
-  return res.message ? `${res.status} ${res.message}` : `${res.status}`;
+  const message = errorMessage(res.message ?? '');
+  return message ? `${res.status} ${message}` : `${res.status}`;
 }
 
 

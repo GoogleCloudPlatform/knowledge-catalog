@@ -141,3 +141,39 @@ describe('writes', () => {
     expect(core).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('a failed response', () => {
+  const debug = 'at com.google.Frame(Frame.java:1)\n'.repeat(1000);
+  const google = (error: object) => JSON.stringify({error}, null, 2);
+  test.each([
+    ['a Google API error gives its message',
+     google({message: 'Bad.', details: [{'@type': 'Debug', detail: debug}]}),
+     'Bad.'],
+    ['a LocalizedMessage detail is preferred',
+     google({
+       message: 'a \\"b\\"',
+       details: [{'@type': 'google.rpc.LocalizedMessage', message: 'a "b"'}],
+     }),
+     'a "b"'],
+    ['a JSON body with no error message comes back as it is',
+     '{"error": "x"}', '{"error": "x"}'],
+    ['a body that is not JSON comes back trimmed',
+     ' <html>Bad Gateway</html>\n', '<html>Bad Gateway</html>'],
+    ['a long body that is not JSON is cut',
+     debug, `${debug.slice(0, 2000)}...`],
+  ])('%s, and GCP_LOG prints the whole body', async (_name, body, message) => {
+    const client = new ApiClient('https://host', 'v1', CTX);
+    spyOn(client as any, '_requestCore')
+        .mockResolvedValue(new Response(body, {status: 400}));
+    const log = spyOn(console, 'log').mockImplementation(() => {});
+    process.env.GCP_LOG = '1';
+    try {
+      expect(await (client as any)._get('entries/a'))
+          .toEqual({status: 400, message, body});
+      expect(log).toHaveBeenLastCalledWith(`[GCP_LOG] 400:${body}\n`, '');
+    } finally {
+      delete process.env.GCP_LOG;
+      log.mockRestore();
+    }
+  });
+});
