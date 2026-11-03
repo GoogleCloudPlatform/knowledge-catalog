@@ -219,10 +219,13 @@ function patchItems(
   // items take whole lines. In any other flow collection, they take the text
   // between items. One choice for both keeps their edits apart.
   const lines = flow && g.every(i => i.ownLines);
-  // The text between two items, without its comments.
-  const sep =
-      g.length > 1 ? t.slice(g[0].end, g[1].start).replace(/[ \t]*#.*/g, '') :
-                     ', ';
+  // The text between two items, without its comments. After a lone item that
+  // starts its line, a new item starts its own line too.
+  const indent = t.slice(lineStart(t, g[0].start), g[0].start);
+  const sep = g.length > 1 ?
+      t.slice(g[0].end, g[1].start).replace(/[ \t]*#.*/g, '') :
+      flow && !indent.trim() ? ',' + u.nl + indent :
+                               ', ';
   const slotOf = (i: number): Slot => {
     const item = items[i];
     const sep = yaml.isPair(item) ?

@@ -121,9 +121,9 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   [
     'flow collections over several lines with a `}` or comment on an entry\'s line',
-    'a: {\n  i: p,\n  o: q}\nl: [p,  # c\n  q]\nm: [p,  # d\n  q]\n',
-    v => (delete v.a.o, v.a.c = 'r', v.l.push('r'), v.m.pop()),
-    'a: {\n  i: p,\n  c: r}\nl: [p,  # c\n  q,\n  r]\nm: [p  # d\n  ]\n'
+    'a: {\n  i: p,\n  o: q}\nl: [p,  # c\n  q]\nm: [p,  # d\n  q]\nk: [\n  p]\n',
+    v => (delete v.a.o, v.a.c = 'r', v.l.push('r'), v.m.pop(), v.k.push('r')),
+    'a: {\n  i: p,\n  c: r}\nl: [p,  # c\n  q,\n  r]\nm: [p  # d\n  ]\nk: [\n  p,\n  r]\n'
   ],
   [
     'a flow mapping given text of several lines, in a scalar and a new mapping',
