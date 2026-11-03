@@ -43,6 +43,12 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['an anchor and its alias', 'a: &x {k: 1}  # c\nb: *x\n', v => v.a.k = 2],
   [
+    'values of several lines written before a comment that stays',
+    'a: &d |-\n  x\n  y\nb: *d  # c\nc:\n  "p\\nq"  # e\nd: {k: 1}  # f\n',
+    v => (v.a = 'x\nz', v.c = {k: 'p\nq'}, v.d = '\u0007\nr'),
+    'a: &d |-\n  x\n  z\nb: |-  # c\n  x\n  y\nc:\n  k: |-  # e\n    p\n    q\nd: "\\a\n\n  r"  # f\n'
+  ],
+  [
     'empty values set to lists and a scalar, and a key added after one',
     'a:  # c\nb:  # d\nc:\ne: 1\nf: {g: , h: 1}\n', v => {
       Object.assign(v, {a: [{k: 1}], b: 'x'});

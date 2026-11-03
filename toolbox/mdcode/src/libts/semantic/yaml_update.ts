@@ -515,7 +515,11 @@ function block(
   const moved = prefix.endsWith(':') ? movedText(u, key, value, col) : undefined;
   if (moved) return [pad + prefix + moved[0], ...moved.slice(1)];
   if (!isFull(value)) {
-    return [`${pad}${prefix} ${scalarText(u, value, col, false)}`];
+    // A block scalar's header is a line of its own, so that a comment after
+    // it stays out of the text.
+    const s = scalarText(u, value, col, false);
+    const line = `${pad}${prefix} ${s}`;
+    return /^[|>]/.test(s) ? line.split(u.nl) : [line];
   }
   if (prefix === '-' && isRecord(value)) {
     const [first, ...rest] = items(u, value, col + u.itemIndent);
