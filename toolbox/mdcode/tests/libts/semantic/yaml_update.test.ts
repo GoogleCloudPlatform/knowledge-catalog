@@ -41,30 +41,30 @@ test.each<[string, string, (value: any) => void, string?]>([
   [
     'block scalars above blank lines set to text that ends in more or fewer line breaks',
     'a: |-\n  x\n\nb: |\n  y\n\n\nc: |+\n  v\n\nd: 1\n',
-    v => (v.a = 'z\n\n', v.b = 'w\n\n', v.c = 'u\n'),
-    'a: "z\n\n  \\n"\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\nd: 1\n'
+    v => (v.a = ' z\n\n', v.b = 'w\n\n', v.c = 'u\n'),
+    'a: " z\n\n  \\n"\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\nd: 1\n'
   ],
   [
     '`|+` block scalars moved, and text that ends in two line breaks added',
-    'a:\n  m: |+  # h\n    x\n\n  w: |+\n    y\n  k: 1\n\nc:\n  - 1\n',
+    'a:\n  m: |+  # h\n    x\n\n  w:\n    v: |+\n      y\n  k: 1\n\nc:\n  - 1\n',
     v => (v.a = {k: 1, c: {m: v.a.m, w: v.a.w}}, v.c.push('y\n\n'), v.d = 'x\n\n'),
-    'a:\n  k: 1\n  c:\n    m: "x\n\n      \\n"\n    w: |\n      y\n\nc:\n  - 1\n  - "y\n\n    \\n"\n' +
+    'a:\n  k: 1\n  c:\n    m: "x\n\n      \\n"\n    w:\n      v: |\n        y\n\nc:\n  - 1\n  - "y\n\n    \\n"\n' +
         'd: "x\n\n  \\n"\n'
   ],
   [
     'items that end in an empty value with a comment or in a deeper comment, removed or moved',
     'l:\n  - k: 1\n\n  - k: 2\n    e:  # c\n\n  - k: 3\n\n  - k: 4\n    # deep\n\n  - k: 5\n' +
-        'a:\n  team:\n    notes:  # n\n\n  s: 1\nb: 1\n',
-    v => (v.l.splice(3, 1), v.l.splice(1, 1), v.a = {s: 1, custom: {team: v.a.team}}),
-    'l:\n  - k: 1\n\n  - k: 3\n\n  - k: 5\na:\n  s: 1\n  custom:\n    team:\n      notes:  # n\nb: 1\n'
+        'a:\n  team:\n    notes:  # n\n\n  s: 1\nb: 1\nm:\n  - d: |\n      x\n        \n  - k: 2\n  - k: 3\n',
+    v => (v.l.splice(3, 1), v.l.splice(1, 1), v.a = {s: 1, custom: {team: v.a.team}}, v.m.splice(1, 1)),
+    'l:\n  - k: 1\n\n  - k: 3\n\n  - k: 5\na:\n  s: 1\n  custom:\n    team:\n      notes:  # n\nb: 1\nm:\n  - d: |\n      x\n        \n  - k: 3\n'
   ],
   [
     'items removed and replaced after `|+` block scalars that stay',
     'l:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\n' +
-        'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\n',
-    v => (v.l.splice(1, 1), v.r.splice(1, 1, {k: 9}), v.a.m.splice(1, 1), delete v.a.n),
+        'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\nb:\n  - >2+\n    x\n\nc: 1\nd: 1\n',
+    v => (v.l.splice(1, 1), v.r.splice(1, 1, {k: 9}), v.a.m.splice(1, 1), delete v.a.n, delete v.c),
     'l:\n  - e: |+\n      x\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 9\n\n  - k: 3\n' +
-        'a:\n  m:\n    - e: |+\n        x\n\n  o: 2\n'
+        'a:\n  m:\n    - e: |+\n        x\n\n  o: 2\nb:\n  - >2+\n    x\n\nd: 1\n'
   ],
   [
     'text that starts with a space, written as block scalars in a file indented by four',
@@ -242,9 +242,9 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   [
     'values of two lines and flow collections replaced by other kinds',
-    'a: x\n  y  # c\nb: [1,\n  2]  # d\nm: {b: 1}  # e\nl: [1, 2]\n',
-    v => (v.a = {k: 1}, v.b = 'z', v.m = {c: 1}, v.l = {a: 1}),
-    'a:  # c\n  k: 1\nb: z  # d\nm: {c: 1}  # e\nl: {a: 1}\n'
+    'a: x\n  y  # c\nb: [1,\n  2]  # d\nm: {b: 1}  # e\nl: [1, 2]\np: |+\n  x\n\nq: 1\n',
+    v => (v.a = {k: 1}, v.b = 'z', v.m = {c: 1}, v.l = {a: 1}, v.p = {k: 1}),
+    'a:  # c\n  k: 1\nb: z  # d\nm: {c: 1}  # e\nl: {a: 1}\np:\n  k: 1\nq: 1\n'
   ],
 ])('%s reads back as the new value', (_, input, change, ...[expected]) => {
   const {document, text} = parseForUpdate(input);
