@@ -1092,21 +1092,21 @@ ${metrics}# end of model
     const version = google ? '0.2.0.dev0/google' : '0.2.0.dev0';
     const list = google ? 'entities' : 'datasets';
     return [
-      `${HEADER}\n\nversion: "${version}" # format version\n`,
+      `${HEADER}\n\nversion: "${version}"  # format version\n`,
       '      # prefer net revenue\n      instructions: Prefer net revenue\n',
       `  - name: retail\n    ${list}:\n      # one row per order\n`,
       '      # one row per order\n      - name: orders\n',
-      `        source: ${source} # the orders table\n`,
+      `        source: ${source}  # the orders table\n`,
       '          # the order key\n          - name: order_id\n',
-      '            datatype: Integer # a whole number\n',
-      '                - dialect: SNOWFLAKE # as written\n',
-      `    metrics: # every metric\n${ORDER_COUNT}`,
+      '            datatype: Integer  # a whole number\n',
+      '                - dialect: SNOWFLAKE  # as written\n',
+      `    metrics:  # every metric\n${ORDER_COUNT}`,
       counts,
       '\n# end of model\n',
     ];
   }
-  const ABOVE = '        expression: # counts orders\n          dialects:';
-  const INLINE = '        expression: COUNT(orders.order_id) # counts orders\n';
+  const ABOVE = '        expression:  # counts orders\n          dialects:';
+  const INLINE = '        expression: COUNT(orders.order_id)  # counts orders\n';
   const TRANSPILED =
       '# as written\n                  expression: orders.order_id\n                - dialect: BIGQUERY\n';
 
@@ -1148,7 +1148,7 @@ ${metrics}# end of model
                      '- name', '- datatype: Opaque\n\n        name') +
             '        expression: COUNT(orders.order_id)\n',
       }),
-      {}, [`    metrics: # every metric\n${ORDER_COUNT}`]
+      {}, [`    metrics:  # every metric\n${ORDER_COUNT}`]
     ],
   ])('keeps comments in place through %s', async (_, input, opts, lines) => {
     const res = await importSemanticModelYaml(input, opts);
@@ -1165,7 +1165,7 @@ ${metrics}# end of model
     expect(res.files[0].content).not.toContain('metrics');
   });
 
-  test('writes a changed CRLF file with LF line endings only', async () => {
+  test('writes a changed CRLF file with CRLF line endings only', async () => {
     const input =
         thirdParty
             .replace(
@@ -1175,8 +1175,8 @@ ${metrics}# end of model
     const res = await importSemanticModelYaml(input);
 
     expect(res.files[0].content)
-        .toContain('# the order key\n          # second line\n');
-    expect(res.files[0].content).not.toContain('\r');
+        .toContain('# the order key\r\n          # second line\r\n');
+    expect(res.files[0].content).not.toMatch(/[^\r]\n/);
   });
 
   test('drops the blank lines after `{` and `[` of a JSON file', async () => {
@@ -1209,6 +1209,7 @@ ${metrics}# end of model
 
     const res = await importSemanticModelYaml(json);
 
+    expect(res.warnings).toContain('Converted the JSON file to YAML.');
     expect(res.files[0].content).toBe(`version: 0.2.0.dev0
 
 semantic_model:
@@ -1232,27 +1233,15 @@ semantic_model:
 `);
   });
 
-  test('keeps every comment of the Apache Ossie TPC-DS example', async () => {
+  test('changes only the removed metrics of the Apache Ossie TPC-DS example', async () => {
     const raw = readFileSync(
         join(__dirname, 'fixtures/ossie/tpcds_semantic_model.yaml'), 'utf8');
-    // Every comment the parser finds in `text`, in order.
-    const comments = (text: string) => {
-      const doc = yaml.parseDocument(text);
-      const found: Array<string|null|undefined> = [doc.commentBefore];
-      yaml.visit(
-          doc, {Node: (_, n) => void found.push(n.commentBefore, n.comment)});
-      return [...found, doc.comment].filter(c => c);
-    };
-
-    const instructions = raw.split('\n').find(l => l.includes('instructions'));
 
     const res = await importSemanticModelYaml(raw);
 
-    expect(res.files[0].content).not.toContain('customer_lifetime_value');
-    expect(comments(res.files[0].content)).toEqual(comments(raw));
-    expect(res.files[0].content)
-        .toContain(
-            '        primary_key: [ss_item_sk, ss_ticket_number] # Composite primary key\n');
-    expect(res.files[0].content).toContain(`${instructions}\n`);
+    // Each metric goes with the blank line above it.
+    const metric =
+        /\n\n      - name: (customer_lifetime_value|store_productivity)\n( {8}.*\n)*/g;
+    expect(res.files[0].content).toBe(raw.replace(metric, '\n'));
   });
 });

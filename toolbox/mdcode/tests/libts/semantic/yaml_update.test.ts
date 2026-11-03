@@ -1,11 +1,10 @@
-// Tests for changing a parsed YAML document in place (yaml_update.ts).
+// Tests for changing the text of a YAML document (yaml_update.ts).
 
 import {expect, test} from 'bun:test';
 import * as yaml from 'yaml';
 
 import {plainCopy} from '../../../src/libts/semantic/resolve_profiles';
-import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
-import {linkNodes, updateDocument} from '../../../src/libts/semantic/yaml_update';
+import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic/yaml_update';
 
 // Each row changes a plain copy of `input`. The nodes kept from the input keep
 // their quoting and flow style, and the text must still read back as the new
@@ -22,14 +21,12 @@ test.each<[string, string, (value: any) => void]>([
     v => v.f[1].name = 'b, c'
   ],
 ])('%s reads back as the new value', (_, input, change) => {
-  const doc =
-      yaml.parseDocument(input, {...YAML_OPTIONS, keepSourceTokens: true});
-  const value = plainCopy(doc.toJS());
-  const links = linkNodes(value, doc.contents);
+  const {document, text} = parseForUpdate(input);
+  const value = plainCopy(document.toJS());
+  const links = linkNodes(value, document.contents);
   change(value);
 
-  updateDocument(doc, value, links);
+  const output = updateText(text, document, value, links);
 
-  const text = doc.toString({lineWidth: 0, flowCollectionPadding: false});
-  expect(yaml.parse(text)).toEqual(value);
+  expect(yaml.parse(output)).toEqual(value);
 });

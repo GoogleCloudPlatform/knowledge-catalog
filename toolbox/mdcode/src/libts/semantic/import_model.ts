@@ -13,7 +13,7 @@ import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
-import {linkNodes, updateDocument} from './yaml_update';
+import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
 export interface ImportSemanticModelOptions {
@@ -68,9 +68,11 @@ interface ParsedSourcePrefix {
 /** Mutable representation of a semantic model document during import. */
 interface ImportDocument {
   /**
-   * The parsed input. Import writes a changed file by changing it in place to
-   * hold the output, which keeps the input's comments.
+   * The input, or the block YAML a JSON input is rewritten as. Import writes
+   * a changed file by changing only the parts of it that change.
    */
+  text: string;
+  /** `text`, parsed. */
   document: yaml.Document.Parsed;
   /**
    * Maps each object and array in `root` to the node of `document` it copies.
@@ -262,13 +264,8 @@ function adaptAiContext(ai: Record<string, unknown>): void {
 function parseImportDocument(
     rawYaml: string, opts: ImportSemanticModelOptions): ImportDocument|string {
   // 1. Parse raw YAML with strict YAML 1.2 options (`YAML_OPTIONS`) so syntax
-  // errors and duplicate keys are caught immediately. The parser's tokens tell
-  // a comment on a key's line from one above the first item under it. Line
-  // endings are read as LF, because the library keeps the carriage returns
-  // of a comment of several lines and a changed file would mix the two.
-  const document = yaml.parseDocument(
-      rawYaml.replaceAll('\r\n', '\n'),
-      {...YAML_OPTIONS, keepSourceTokens: true});
+  // errors and duplicate keys are caught immediately.
+  const {document, text} = parseForUpdate(rawYaml);
   let parsedDoc: unknown;
   try {
     if (document.errors.length > 0) throw document.errors[0];
@@ -330,9 +327,12 @@ function parseImportDocument(
   const targetVersion: FormatVersion = opts.flavor ?
       (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
       inputVersion;
-  const warnings: string[] = [];
+  // A model file is YAML, so a JSON file is written as YAML.
+  const warnings =
+      text === rawYaml ? [] : ['Converted the JSON file to YAML.'];
   const errors: string[] = [];
   return {
+    text,
     document,
     links: linkNodes(root, document.contents),
     root,
@@ -1060,13 +1060,11 @@ async function generateConvertedFiles(
 
   // 4. Switch `model.version` to `doc.targetVersion` and serialize the files
   // with `serializeModelFiles`, each value on one line. The model file is
-  // written into the input document to keep its comments, with the
-  // serializer's YAML 1.1 quoting.
+  // written into the input's text to keep its comments.
   model.version = doc.targetVersion;
   const serialized = serializeModelFiles(model, {lineWidth: 0});
   doc.warnings.push(...serialized.warnings);
   const [modelFile, ...profiles] = serialized.files;
-  doc.document.setSchema('1.2', {...YAML_OPTIONS, compat: 'yaml-1.1'});
   const content =
       writeDocument(doc, yaml.parse(modelFile.content, YAML_OPTIONS));
   return [{...modelFile, content}, ...profiles];
@@ -1078,8 +1076,7 @@ async function generateConvertedFiles(
  * expressions via `transpileDocument`, and returns the adapted output file.
  */
 async function generateAdaptedFiles(
-    doc: ImportDocument, rawYaml: string,
-    transpile: boolean): Promise<SerializedFile[]> {
+    doc: ImportDocument, transpile: boolean): Promise<SerializedFile[]> {
   // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
   // or `0.2.0.dev0`).
   if (doc.inputVersion === OSSIE_VERSION &&
@@ -1095,16 +1092,15 @@ async function generateAdaptedFiles(
     await transpileDocument(doc);
   }
 
-  // 3. Write `doc.root` into the input document when modified or preserve
-  // `rawYaml` verbatim when unmodified.
-  const content = doc.modified ? writeDocument(doc, doc.root) : rawYaml;
+  // 3. Write `doc.root` into the input's text when modified or preserve the
+  // text verbatim when unmodified.
+  const content = doc.modified ? writeDocument(doc, doc.root) : doc.text;
   return [{fileName: `${doc.model.name}.yaml`, content}];
 }
 
 /**
- * Changes the input document in place to hold `root` and returns its text.
- * What survives from the input keeps its comments, quoting and key order, and
- * long SQL stays on one line.
+ * Returns the input's text changed to hold `root`. What survives from the
+ * input keeps its text, and long SQL stays on one line.
  */
 function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
   // The vanilla flavor lists a model's entities under `datasets:` and the
@@ -1120,23 +1116,7 @@ function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
                                      undefined;
     if (to && to in model && !(from in model)) pair.key.value = to;
   }
-  updateDocument(doc.document, root, doc.links);
-  // A JSON file is one flow mapping. It is written as block YAML, as before,
-  // and an empty list or mapping stays `[]` or `{}`.
-  // A blank line before a collection's first item is dropped. It would print
-  // as an empty first line, a line of spaces, or a `- ` alone on its line.
-  if (yaml.isMap(doc.document.contents) && doc.document.contents.flow) {
-    yaml.visit(doc.document, {
-      Collection: (_, n) => {
-        n.flow = n.items.length === 0;
-        const first = n.items[0];
-        const owner = yaml.isPair(first) ? first.key : first;
-        if (yaml.isNode(owner)) owner.spaceBefore = false;
-      },
-      Scalar: (_, n) => void delete n.type,
-    });
-  }
-  return doc.document.toString({lineWidth: 0, flowCollectionPadding: false});
+  return updateText(doc.text, doc.document, root, doc.links);
 }
 
 /**
@@ -1194,7 +1174,7 @@ export async function importSemanticModelYaml(
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
-      await generateAdaptedFiles(doc, rawYaml, !!opts.transpile);
+      await generateAdaptedFiles(doc, !!opts.transpile);
 
   // 4. Validate the primary output document and return the result.
   if (files.length > 0 && doc.errors.length === 0) {
