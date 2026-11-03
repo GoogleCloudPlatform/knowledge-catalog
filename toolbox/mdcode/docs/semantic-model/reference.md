@@ -103,9 +103,9 @@ blank lines, quoting, indentation and line endings. Comments on anything
 import removes or moves elsewhere in the file are dropped, such as those on a
 key that goes into or out of a `GOOGLE` block. A profile file's comments are
 dropped when its contents move into the model file. A JSON file is written as
-YAML, and import reports the conversion. Without `--out`, the files go into the scope's entry group folder, and an
-import that would leave one of the model's profile files there unwritten is
-refused.
+YAML, and import reports the conversion. Without `--out`, the files go into
+the scope's entry group folder, and an import that would leave one of the
+model's profile files there unwritten is refused.
 
 | Flag | Effect |
 |------|--------|
