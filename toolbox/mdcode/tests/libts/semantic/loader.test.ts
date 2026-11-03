@@ -201,6 +201,7 @@ describe('expression warnings judge each expression on the table that runs it', 
   const ALLOY = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/t';
   const MYSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/t';
   const PG = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/t';
+  const MSSQL = PG.replace('/instances/i/', '/instances/k/');
   const TP = 'projects/p/locations/us/entryGroups/g/entries/orders';
   const DBX = TP.replace('/orders', '/events');
   // The tables a lookup has not read, as in `kcmd import`.
@@ -209,7 +210,8 @@ describe('expression warnings judge each expression on the table that runs it', 
   const UNREAD_TP = TP.replace('/orders', '/items');
   const opts: LoadOptions = {
     bindingOptional: true,
-    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS']]),
+    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [MSSQL, 'SQLSERVER'],
+                             [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS']]),
   };
   const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
       ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
@@ -283,6 +285,9 @@ describe('expression warnings judge each expression on the table that runs it', 
      [['ANSI_SQL', '"x"']], quotedIn('MySQL', 'MYSQL')],
     ['a Cloud SQL for PostgreSQL table, a double-quoted name in ANSI_SQL', PG,
      [['ANSI_SQL', '"x"']], []],
+    ['a Cloud SQL for SQL Server table, a double-quoted name in ANSI_SQL', MSSQL,
+     [['ANSI_SQL', '"x"']], []],
+    ['an AlloyDB table, a double-quoted name in ANSI_SQL', ALLOY, [['ANSI_SQL', '"x"']], []],
     ['an entity with no source, Snowflake text', undefined, [['SNOWFLAKE', 'x']], []],
     ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
     ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
