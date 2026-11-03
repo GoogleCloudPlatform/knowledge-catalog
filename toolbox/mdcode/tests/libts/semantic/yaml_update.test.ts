@@ -32,6 +32,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'm:\n  a:\n    b:\n      - x\n      # c\n  d: 1\n', v => v.m.a = {e: v.m.a.b}
   ],
   [
+    'a mapping ending in a list and a comment replaced, above a commented key',
+    'a:\n  k:\n    - x\n    # deep\n# c\nb: 1\n', v => v.a = {c: v.a.k},
+    'a:\n  c:\n    - x\n# c\nb: 1\n'
+  ],
+  [
     'a block scalar in a CRLF text set to a mapping', 'a: |\r\n  x\r\nb: 1\r\n',
     v => v.a = {c: 1}, 'a:\r\n  c: 1\r\nb: 1\r\n'
   ],

@@ -409,8 +409,10 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
     return;
   }
   const keyLine = lineEnd(t, slot.after);
-  // A block collection's range can end in the next line's indentation.
-  const stop = t.slice(lineStart(t, to), to).trim() ? to : lineStart(t, to);
+  // A block collection's range can run over the comments after it and into
+  // the next line's indentation. The comments at its key's column or less
+  // stay.
+  const stop = blockEnd(t, to, slot.col);
   const end = lineEnd(t, Math.max(from, stop - 1));
   // A scalar on the line under its key becomes a collection there.
   const under = from > keyLine && yaml.isScalar(node) && isFull(value);
