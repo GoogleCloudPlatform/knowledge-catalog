@@ -585,10 +585,12 @@ function movedText(
   // An empty value moves as nothing after the key's `:`.
   const moved = own ? ['', ...lines] :
                       [lines[0] && ' ' + lines[0], ...lines.slice(1)];
+  // In the file, a line break ends the moved lines, and a `|+` block
+  // scalar's value holds it.
   const reads = col === undefined ?
       moved.length === 1 && readsInFlow(moved[0].trim(), value) :
       readsInBlock(
-          [' '.repeat(col) + '_:' + moved[0], ...moved.slice(1)].join('\n'),
+          [' '.repeat(col) + '_:' + moved[0], ...moved.slice(1), ''].join('\n'),
           value);
   if (!reads) return undefined;
   u.used.add(p);

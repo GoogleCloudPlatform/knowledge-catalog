@@ -104,6 +104,10 @@ test.each<[string, string, (value: any) => void, string?]>([
         'd:\n  w: |  # g\n    x\n      \n    y\n'
   ],
   [
+    'a moved block scalar that ends in an empty line', 'a:\n  w: |+  # h\n    x\n\n  k: 1\n',
+    v => (v.a = {k: 1, c: {w: v.a.w}}), 'a:\n  k: 1\n  c:\n    w: |+  # h\n      x\n\n'
+  ],
+  [
     'moved values written fresh: text over several lines in a flow mapping, and an alias',
     'b:\n  custom: {p: "a long text", m: "first\n    second", o: {\n      t: 1\n    }}\n' +
         'c:\n  team:\n    lead: &l ann  # c\n  other:\n    owner: *l\n',
