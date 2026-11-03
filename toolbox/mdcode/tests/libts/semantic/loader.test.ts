@@ -235,13 +235,13 @@ describe('expression warnings judge each expression on the table that runs it', 
   const readsX = (database: string, token = 'x') =>
       `${database} reads "${token}" in its 'ANSI_SQL' expression as text; `;
   // The double-quote warning on a table of `dialect`, in `database`, about
-  // `token`. Entity 't' has no field of that name, so metric 'm' gets the
-  // placeholder.
+  // `token`.
   const quotedIn = (
       database: string, dialect: string, hint = '', token = 'x') => [
     `field 't.f': ${readsX(database, token)}if you meant a column or a field, ` +
         `give it a '${dialect}' expression that names a column alone, in ` +
-        `backticks if it needs quoting, and a field as '<entity>.<field>'${hint}`,
+        `backticks if it needs quoting, and a field of its own entity as ` +
+        `'<entity>.<field>'${hint}`,
     `metric 'm': ${readsX(database, token)}if you meant a field, give it a '${
         dialect}' expression that names it as '<entity>.<field>'`,
   ];
@@ -297,12 +297,22 @@ describe('expression warnings judge each expression on the table that runs it', 
      quotedIn('BigQuery', 'BIGQUERY')],
     ['a BigQuery table, a double-quoted name beside a backticked qualified one', BQ,
      [['ANSI_SQL', 'CONCAT("x", `t`.`y`)']], quoted],
-    // The warning names every double-quoted name.
-    ['a BigQuery table, two double-quoted names', BQ, [['ANSI_SQL', '"f" || "y"']], [
+    // The warning names every double-quoted name, each once.
+    ['a BigQuery table, two double-quoted names', BQ, [['ANSI_SQL', '"f" || "y" || "f"']], [
        quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f" and "y')[0],
        `metric 'm': ${readsX('BigQuery', 'f" and "y')}if you meant fields, give it ` +
            `a 'BIGQUERY' expression that names each as '<entity>.<field>'`,
      ]],
+    // A metric's advice names no field, even one its entity declares.
+    ['a BigQuery table, a double-quoted name of a field of the metric\'s entity', BQ,
+     [['ANSI_SQL', '"f"']], quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f')],
+    // A double-quoted struct field, and text import refuses, get no import hint.
+    ['a BigQuery table, a double-quoted struct field', BQ, [['ANSI_SQL', 't.addr."x"']],
+     quotedIn('BigQuery', 'BIGQUERY')],
+    ['a BigQuery table, a double-quoted name in TO_CHAR', BQ,
+     [['ANSI_SQL', 'TO_CHAR("x", \'YYYY\')']], quotedIn('BigQuery', 'BIGQUERY')],
+    ['a BigQuery table, a double-quoted name in DATE_PART', BQ,
+     [['ANSI_SQL', 'DATE_PART(\'second\', "x")']], quotedIn('BigQuery', 'BIGQUERY')],
     ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
      [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
   ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(

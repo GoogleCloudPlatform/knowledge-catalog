@@ -18,7 +18,7 @@ import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
-import {doubleQuotedColumns, doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
+import {doubleQuotedColumns, doubleQuotedNames, hasDoubleQuotedColumn, translateExpression} from './transpile';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1997,16 +1997,20 @@ function expressionWarning(
           `it a '${dialect}' expression that names ${
                  several ? 'each' : 'it'} as '<entity>.<field>'`;
     }
-    // Import adds only BigQuery text, only outside a profile, and keeps each
-    // qualifier, which push reads as an entity.
-    const hint = dialect === DEFAULT_DIALECT &&
-            doubleQuotedColumns(ansi.expression)
-                .every(c => c.qualifier === undefined) ?
+    // Import adds only BigQuery text, only outside a profile, and only when
+    // it can translate the text. It keeps each qualifier, which push reads as
+    // an entity.
+    const columns = doubleQuotedColumns(ansi.expression);
+    const hint = dialect === DEFAULT_DIALECT && columns.length &&
+            columns.every(c => c.qualifier === undefined) &&
+            'sql' in translateExpression(
+                         ansi.expression, FALLBACK_DIALECT, dialect) ?
         `; outside a profile, '${IMPORT_TRANSPILE_COMMAND}' adds one` :
         '';
     return reads + `if you meant a column or a field, give it a '${
                dialect}' expression that names a column alone, in backticks ` +
-        `if it needs quoting, and a field as '<entity>.<field>'${hint}`;
+        `if it needs quoting, and a field of its own entity as ` +
+        `'<entity>.<field>'${hint}`;
   }
   if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);

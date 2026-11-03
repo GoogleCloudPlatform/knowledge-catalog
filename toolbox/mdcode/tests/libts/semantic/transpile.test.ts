@@ -503,6 +503,7 @@ test.each([
   ['"orders"."order_amount"', ['orders', 'order_amount']],
   ['`orders`."order_amount"', ['order_amount']],
   ['`status` = "open"', ['open']],
+  ['CONCAT("c""first", "c_last")', ['c"first', 'c_last']],
 ])('doubleQuotedNames(%s) is %p', (expression, names) => {
   expect(doubleQuotedNames(expression)).toEqual(names);
 });

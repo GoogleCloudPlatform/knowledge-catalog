@@ -109,7 +109,8 @@ export function hasDoubleQuotedColumn(expression: string): boolean {
  */
 export function doubleQuotedNames(expression: string): string[] {
   const names = quotedNames(sqlExpressionTree(expression, 'ANSI_SQL'));
-  const written = names.filter(n => expression.includes(`"${n}"`));
+  const written =
+      names.filter(n => expression.includes(`"${n.replaceAll('"', '""')}"`));
   return [...new Set(written.length ? written : names.slice(0, 1))];
 }
 
