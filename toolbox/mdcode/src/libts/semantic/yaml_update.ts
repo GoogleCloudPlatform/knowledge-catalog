@@ -118,6 +118,8 @@ interface Update {
   seqIndent: number;
   /** Columns from a `-` to the keys of the mapping after it. */
   itemIndent: number;
+  /** The space inside the brackets of the file's flow mappings and lists. */
+  pad: {map: string, seq: string};
 }
 
 /** Where a node sits in the text. */
@@ -432,6 +434,13 @@ function items(u: Update, value: object, col: number): string[] {
 function scalarText(
     u: Update, value: unknown, col: number, flow: boolean,
     type?: yaml.Scalar.Type): string {
+  if (flow && isFull(value)) {
+    const seq = Array.isArray(value);
+    const pad = seq ? u.pad.seq : u.pad.map;
+    const parts = entriesOf(value).map(([k, v]) =>
+        (seq ? '' : `${scalarText(u, k, 0, true)}: `) + scalarText(u, v, col, true));
+    return `${seq ? '[' : '{'}${pad}${parts.join(', ')}${pad}${seq ? ']' : '}'}`;
+  }
   const node =
       isObject(value) ? value : Object.assign(new yaml.Scalar(value), {type});
   const text = yaml.stringify(flow ? [node] : {_: node}, {
@@ -448,12 +457,25 @@ function scalarText(
       .join(u.nl);
 }
 
-/** The indentation of the file's first nested mapping, list and list item. */
+/**
+ * The indentation of the file's first nested mapping, list and list item, and
+ * the space after the bracket of its first flow mapping and flow list whose
+ * first item is on the bracket's line.
+ */
 function indents(doc: yaml.Document, text: string):
-    Pick<Update, 'step'|'seqIndent'|'itemIndent'> {
+    Pick<Update, 'step'|'seqIndent'|'itemIndent'|'pad'> {
   const col = (p: number) => p - lineStart(text, p);
   const found: Partial<Record<'step'|'seqIndent'|'itemIndent', number>> = {};
+  const pad: Partial<Update['pad']> = {};
   yaml.visit(doc, {
+    Collection: (_, v) => {
+      const first = v.items[0];
+      const at = (yaml.isPair(first) ? first.key : first) as yaml.Node|undefined;
+      const gap = v.flow && v.range && at?.range ?
+          text.slice(v.range[0] + 1, at.range[0]) :
+          '\n';
+      if (!gap.includes('\n')) pad[yaml.isMap(v) ? 'map' : 'seq'] ??= gap;
+    },
     Pair: (_, {key, value: v}) => {
       if (!yaml.isNode(key) || !yaml.isCollection(v) || v.flow ||
           v.items.length === 0) {
@@ -470,7 +492,7 @@ function indents(doc: yaml.Document, text: string):
       }
     },
   });
-  return {step: 2, seqIndent: 2, itemIndent: 2, ...found};
+  return {step: 2, seqIndent: 2, itemIndent: 2, ...found, pad: {map: '', seq: '', ...pad}};
 }
 
 /** The offset of each `-` of a block list. */

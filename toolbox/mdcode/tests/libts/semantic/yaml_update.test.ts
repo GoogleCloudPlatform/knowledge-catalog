@@ -38,6 +38,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\r\n  - x\r\n  - y', v => v.a.pop(), 'a:\r\n  - x'
   ],
   [
+    'a scalar in a padded flow mapping set to a mapping',
+    'g: {\n  k: 1}\nf: [{ name: a, e: x }]\n', v => v.f[0].e = {d: [{k: 'x'}]},
+    'g: {\n  k: 1}\nf: [{ name: a, e: { d: [{ k: x }] } }]\n'
+  ],
+  [
     'a value beside keys whose text is not their value',
     '~: a\n1.0: b\n0x10: c\n02: d\nx: e\n', v => v.x = 'f',
     '~: a\n1.0: b\n0x10: c\n02: d\nx: f\n'
