@@ -33,6 +33,7 @@ test.each<[string, string, (value: any) => void, string?]>([
       v.a = a;
     }
   ],
+  ['the last item removed from a flow list', 'f: [a, b]  # c\n', v => v.f.pop(), 'f: [a]  # c\n'],
   [
     'a flow list item renamed to "b, c"', 'f: [{name: a}, {name: b}]  # c\n',
     v => v.f[1].name = 'b, c'

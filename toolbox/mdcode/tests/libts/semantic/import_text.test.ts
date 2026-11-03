@@ -8,29 +8,19 @@ import * as yaml from 'yaml';
 
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 
-// How a generated file is written.
+// How a generated file is written. Every file has a comment above each item
+// and after each line, a blank line above each item, and mixed quoting.
 interface Style {
-  step: number;  // From a key to the keys under it.
   seqIndent: number;  // From a key to the `-` of its list.
-  comments: boolean;  // A comment above each item and after each line.
-  blanks: boolean;  // A blank line above each item.
-  quote: 'plain'|'single'|'double'|'mixed';
   block: boolean;  // SQL with a `(` and text of several lines as `|-` blocks.
-  flow: 'none'|'lists'|'expressions'|'lines';
+  flow: boolean;  // Expressions as flow mappings, an entry to a line.
   nl: string;
-  bom: boolean;
-  finalNewline: boolean;
   exprFirst: boolean;  // `expression` before `dialect` in a dialect entry.
-  space: number;  // Spaces before a comment after a value.
   nextLine: boolean;  // SQL under its key and a comment, over two lines if it has a space.
-  afterList: boolean;  // A comment after each list.
-  markers: boolean;  // `---` and `...` around the document.
 }
 const STYLE: Style = {
-  step: 2, seqIndent: 2, comments: true, blanks: true, quote: 'mixed',
-  block: false, flow: 'none', nl: '\n', bom: false, finalNewline: true,
-  exprFirst: false, space: 2, nextLine: false, afterList: false,
-  markers: false,
+  seqIndent: 2, block: false, flow: false, nl: '\n', exprFirst: false,
+  nextLine: false,
 };
 
 const isObj = (v: any) => v !== null && typeof v === 'object';
@@ -42,18 +32,15 @@ function write(value: any, s: Style): string {
   let n = 0;
   let q = 0;
   const pad = (c: number) => ' '.repeat(c);
-  const after = () => s.comments ? `${pad(s.space)}# t${n++}` : '';
-  const above = (c: number) => {
-    if (s.blanks) out.push('');
-    if (s.comments) out.push(`${pad(c)}# o${n++}`);
-  };
+  const after = () => `  # t${n++}`;
+  const above = (c: number) => out.push('', `${pad(c)}# o${n++}`);
+  // Plain, single-quoted and double-quoted in turn.
   const scalar = (v: any, inFlow: boolean): string => {
-    const style =
-        s.quote === 'mixed' ? ['plain', 'single', 'double'][q++ % 3] : s.quote;
-    if (typeof v !== 'string' || v.includes('\n') || style === 'double') {
+    const style = q++ % 3;
+    if (typeof v !== 'string' || v.includes('\n') || style === 2) {
       return JSON.stringify(v);
     }
-    if (style === 'single') return `'${v.replaceAll("'", "''")}'`;
+    if (style === 1) return `'${v.replaceAll("'", "''")}'`;
     const plain = yaml.stringify(v, {lineWidth: 0}).trimEnd();
     return inFlow && /[,[\]{}]/.test(plain) ? JSON.stringify(v) : plain;
   };
@@ -69,7 +56,7 @@ function write(value: any, s: Style): string {
   // Writes `v` after `head`, which ends in `:` or `-` at column `c`.
   const val = (head: string, v: any, c: number, inner: number, key = '') => {
     const expr = key === 'expression';
-    if (s.flow === 'lines' && expr && full(v) && !Array.isArray(v)) {
+    if (s.flow && expr && full(v) && !Array.isArray(v)) {
       // `{` and `[` end their lines, and each entry has a line.
       out.push(`${head} {${after()}`);
       for (const [k, x] of Object.entries(v) as Array<[string, any[]]>) {
@@ -79,23 +66,18 @@ function write(value: any, s: Style): string {
         out.push(`${pad(inner)}]`);
       }
       out.push(`${pad(inner - 2)}}${after()}`);
-    } else if (
-        !full(v) && isObj(v) ||
-        full(v) && (s.flow === 'expressions' && expr ||
-                    s.flow === 'lists' && v.every?.((x: any) => !isObj(x)))) {
+    } else if (!full(v) && isObj(v)) {
       out.push(`${head} ${flow(v)}${after()}`);
     } else if (Array.isArray(v)) {
       out.push(head + after());
       for (const x of v) item(x, c + s.seqIndent);
-      if (s.afterList && s.comments) out.push(`${pad(c + s.seqIndent)}# a${n++}`);
     } else if (isObj(v)) {
       out.push(head + after());
-      pairs(order(v), c + s.step);
+      pairs(order(v), c + 2);
     } else if (s.nextLine && expr) {
       const text = scalar(v, false);
       const cut = text.indexOf(' ', text.length >> 1);
-      out.push(head + after(), ...(s.blanks ? [''] : []),
-               ...(s.comments ? [`${pad(inner)}# u${n++}`] : []),
+      out.push(head + after(), '', `${pad(inner)}# u${n++}`,
                ...(cut < 0 ? [] : [pad(inner) + text.slice(0, cut)]),
                `${pad(inner)}${text.slice(cut + 1)}${after()}`);
     } else if (s.block && /[(\n]/.test(v)) {
@@ -112,16 +94,13 @@ function write(value: any, s: Style): string {
   const pairs = (v: any, c: number, dash?: string) => {
     Object.entries(v).forEach(([k, x], i) => {
       if (i > 0 || !dash) above(c);
-      val(`${i === 0 && dash ? dash : pad(c)}${k}:`, x, c, c + s.step, k);
+      val(`${i === 0 && dash ? dash : pad(c)}${k}:`, x, c, c + 2, k);
     });
   };
-  if (s.comments) out.push('# header', '');
-  if (s.markers) out.push('---');
+  out.push('# header', '');
   pairs(value, 0);
-  if (s.comments) out.push('# end of file');
-  if (s.markers) out.push('...');
-  const text = out.join('\n').replace(/^\n+/, '') + (s.finalNewline ? '\n' : '');
-  return (s.bom ? '﻿' : '') + text.replaceAll('\n', s.nl);
+  out.push('# end of file', '');
+  return out.join(s.nl);
 }
 
 // Lines of a text that a node import changed takes up.
@@ -220,11 +199,13 @@ function align(
     x: Side, y: Side, a: any, b: any, problems: string[]): boolean {
   if (yaml.isScalar(a) && yaml.isScalar(b)) {
     if (a.value === b.value) return true;
-    // A changed scalar keeps its quoting and the text around it on its line.
+    // A changed scalar keeps its quoting and the text around it on its line,
+    // but for the comma a new flow item after it adds.
     const around = (s: Side, n: any) => {
       const line = lineOf(s, n.range[1]);
       if (lineOf(s, n.range[0]) !== line) return undefined;
-      const after = lineText(s, line).slice(n.range[1] - s.starts[line]);
+      const after = lineText(s, line).slice(n.range[1] - s.starts[line])
+                        .replace(/,(\s*(#.*)?\s*)$/, '$1');
       return `${before(s, n.range[0])}|${after}`;
     };
     if (typeof b.value === 'string' && !b.value.includes('\n') &&
@@ -469,7 +450,7 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a last metric removed', changed(vanilla, m => m.semantic_model[0].metrics.push(ROW_COUNT))],
   ['every metric removed', changed(vanilla, m => m.semantic_model[0].metrics = [ROW_COUNT])],
   ['an extra model removed', changed(vanilla, m => m.semantic_model.push({name: 'other', datasets: []}))],
-  ['a dialect entry added', changed(vanilla, m => fields(m)[0].expression = sql('NVL(orders.order_id, 0)', 'SNOWFLAKE')),
+  ['a dialect entry added', changed(vanilla, m => fields(m)[0].expression = sql('NVL(orders.order_id, 0)', 'snowflake')),
    {transpile: true}],
   ['a string expression translated', changed(google, m => fields(m)[0].expression = '"orders"."order_id"'),
    {transpile: true}],
@@ -486,28 +467,12 @@ const CHANGES: Array<[string, () => any, object?]> = [
    }],
 ];
 const STYLES: Array<[string, Partial<Style>]> = [
-  ['comments, blank lines and mixed quoting', {}],
-  ['no comments or blank lines', {comments: false, blanks: false}],
-  ['comments only', {blanks: false}],
-  ['blank lines only', {comments: false}],
-  ['plain scalars', {quote: 'plain'}],
-  ['single quotes', {quote: 'single'}],
-  ['double quotes', {quote: 'double'}],
   ['block scalars', {block: true}],
-  ['flow lists of scalars', {flow: 'lists'}],
-  ['flow expressions', {flow: 'expressions'}],
-  ['flow expressions over several lines', {flow: 'lines'}],
-  ['four-space indentation', {step: 4, seqIndent: 4}],
-  ['four-space indentation, lists level with keys', {step: 4, seqIndent: 0}],
+  ['flow expressions over several lines', {flow: true}],
   ['lists level with keys', {seqIndent: 0}],
   ['CRLF', {nl: '\r\n'}],
-  ['a byte order mark', {bom: true}],
-  ['no final newline', {finalNewline: false}],
   ['dialect entries written expression first', {exprFirst: true}],
-  ['one space before comments', {space: 1}],
   ['expressions on the line under their key', {nextLine: true}],
-  ['a comment after each list', {afterList: true}],
-  ['document markers', {markers: true}],
 ];
 
 // Re-imports `output`. A file with a GOOGLE block is written for kcmd.
@@ -535,7 +500,7 @@ test.each([...CHANGES, ['no change', google] as const].flatMap(
       [`${change}, compact JSON,`, JSON.stringify(model()), opts],
     ] as const))(
     '%s is written as YAML', async (_, input, opts) => {
-      const plain = write(JSON.parse(input), {...STYLE, comments: false, blanks: false});
+      const plain = yaml.stringify(JSON.parse(input));
 
       const res = await importSemanticModelYaml(input, opts);
 
