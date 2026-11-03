@@ -1299,11 +1299,12 @@ function moveConstructs(
  * writes any newly added `BIGQUERY` dialect entries back onto `doc`, including
  * the field bindings of each BigQuery profile (`isBigQueryProfile`) in the
  * model's `GOOGLE` blocks. Translates the BigQuery profiles among
- * `profileFiles` the same way and returns every file.
+ * `profileFiles` the same way and returns every file. A warning about a JSON
+ * profile file names the matching file of `inputFiles`.
  */
 async function transpileDocument(
-    doc: ImportDocument,
-    profileFiles: SerializedFile[]): Promise<SerializedFile[]> {
+    doc: ImportDocument, profileFiles: SerializedFile[],
+    inputFiles = profileFiles): Promise<SerializedFile[]> {
   let preLoaded: ReturnType<typeof fromDocument>;
   try {
     preLoaded = fromDocument(
@@ -1337,7 +1338,8 @@ async function transpileDocument(
         transpiled.model.profiles?.find(p => p.name === name);
     translatedFiles = profileFiles.map((pf, i) => {
       const p = loaded[i] && profile(loaded[i].name);
-      return p ? {...pf, content: withDialects(pf, p, doc)} : pf;
+      const named = {...pf, fileName: inputFiles[i].fileName};
+      return p ? {...pf, content: withDialects(named, p, doc)} : pf;
     });
     for (const ds of doc.datasets) {
       const irEntity = transpiled.model.entities.find(e => e.name === ds.name);
@@ -1637,7 +1639,9 @@ async function generateAdaptedFiles(
   // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, in the model
   // and in each BigQuery profile, in its GOOGLE blocks or among `profiles`.
   if (transpile && doc.errors.length === 0) {
-    profiles = await transpileDocument(doc, profiles);
+    profiles = await transpileDocument(
+        doc, profiles,
+        doc.inputVersion === doc.targetVersion ? profileFiles : profiles);
   }
 
   // 3. Write `doc.root` into the input's text when modified or preserve the

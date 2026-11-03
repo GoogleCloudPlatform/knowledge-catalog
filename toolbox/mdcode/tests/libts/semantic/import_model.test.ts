@@ -375,13 +375,13 @@ describe('profile translation', () => {
   ])('reports writing %s JSON profile file as YAML only when it changes', async (_, profile, translated) => {
     const model = JSON.stringify(yaml.parse(googleDoc({fieldExpr})));
     const res = await importSemanticModelYaml(model, {
-      ...google, fileName: 'retail.yaml',
-      profileFiles: [{...prodFile, content: JSON.stringify(profile)}],
+      ...google, fileName: 'sales.yaml',
+      profileFiles: [{fileName: 'sales.profile.prod.yaml', content: JSON.stringify(profile)}],
     });
     expect(res.errors).toEqual([]);
     expect(res.warnings.filter(w => w.startsWith('Converted '))).toEqual([
-      "Converted 'retail.yaml' to YAML.",
-      ...translated ? ["Converted 'retail.profile.prod.yaml' to YAML."] : [],
+      "Converted 'sales.yaml' to YAML.",
+      ...translated ? ["Converted 'sales.profile.prod.yaml' to YAML."] : [],
     ]);
     expect(res.files[1].content.startsWith('name: prod\n')).toBe(translated);
   });
