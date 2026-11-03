@@ -34,6 +34,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => v.f[1].name = 'b, c'
   ],
   [
+    'a value beside keys whose text is not their value',
+    '~: a\n1.0: b\n0x10: c\n02: d\nx: e\n', v => v.x = 'f',
+    '~: a\n1.0: b\n0x10: c\n02: d\nx: f\n'
+  ],
+  [
     'a plain scalar and a flow list of two lines set to mappings',
     'a: x\n  y  # c\nb: [1,\n  2]  # d\n', v => (v.a = {k: 1}, v.b = {k: 2}),
     'a:  # c\n  k: 1\nb:  # d\n  k: 2\n'

@@ -220,7 +220,9 @@ function patchItems(
     const item = items[at[i]];
     if (yaml.isPair(item)) {
       const key = item.key;
-      if (yaml.isScalar(key) && key.source !== String(key.value)) {
+      // A key renamed in the document, such as `datasets` to `entities`.
+      if (yaml.isScalar(key) && typeof key.value === 'string' &&
+          key.source !== key.value) {
         setScalar(u, key, key.value, slotOf(at[i]));
       }
       patch(u, v, item.value, slotOf(at[i]));
