@@ -686,17 +686,23 @@ function unanchoredMetricProblem(
 }
 
 /**
- * Truncates `obj.description` to `MAX_ENTRY_DESCRIPTION` characters when it
- * exceeds the limit and records a warning (or error in `strict` mode).
+ * Truncates `obj.description`, without its surrounding whitespace, to at most
+ * `MAX_ENTRY_DESCRIPTION` characters when it exceeds the limit, and records a
+ * warning (or error in `strict` mode).
  */
 function truncateDescription(
     obj: Record<string, any>, label: string, doc: ImportDocument): void {
-  if (typeof obj.description === 'string' &&
-      obj.description.length > MAX_ENTRY_DESCRIPTION) {
+  // Push counts the description without its surrounding whitespace.
+  const text =
+      typeof obj.description === 'string' ? obj.description.trim() : '';
+  if (text.length > MAX_ENTRY_DESCRIPTION) {
+    // The cut never ends on the first half of a surrogate pair.
+    const cut =
+        text.slice(0, MAX_ENTRY_DESCRIPTION).replace(/[\uD800-\uDBFF]$/, '');
     doc.warnOrError(
-        `${label}: truncated 'description' from ${obj.description.length} ` +
-        `to ${MAX_ENTRY_DESCRIPTION} characters.`);
-    obj.description = obj.description.slice(0, MAX_ENTRY_DESCRIPTION);
+        `${label}: truncated 'description' from ${text.length} ` +
+        `to ${cut.length} characters.`);
+    obj.description = cut;
     doc.modified = true;
   }
 }

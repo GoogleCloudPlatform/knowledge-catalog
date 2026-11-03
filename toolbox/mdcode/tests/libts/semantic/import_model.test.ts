@@ -691,6 +691,26 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
         .toEqual(strict ? [] : ['d'.repeat(2000)]);
   });
 
+  test('counts a description without its surrounding whitespace, as push does', async () => {
+    const input = googleDoc({
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: |\n          ${'d'.repeat(2000)}\n`,
+    });
+    const res = await importSemanticModelYaml(input, {strict: true});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files.map(f => f.content)).toEqual([input]);
+  });
+
+  test('cuts a description before a surrogate pair it would split', async () => {
+    const res = await importSemanticModelYaml(googleDoc({
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: "${'d'.repeat(1999)}\u{1F600}${'d'.repeat(10)}"\n`,
+    }));
+
+    expect(res.warnings).toEqual(
+        [`relationship 'oc': truncated 'description' from 2011 to 1999 characters.`]);
+    expect(res.files[0].content).toContain(`description: "${'d'.repeat(1999)}"\n`);
+  });
+
   test.each([
     ['bare source in strict mode', googleDoc({source: 'orders'})],
     [
