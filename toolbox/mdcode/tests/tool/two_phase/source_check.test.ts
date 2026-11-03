@@ -20,6 +20,12 @@ const MYSQL_ENTRY = {
         'projects/dataplex-types/locations/global/entryTypes/cloudsql-mysql-table',
   },
 };
+// Entity Order, bound to table order in dataset d.
+const ORDER = {...CUSTOMER, name: 'Order', source: bqTable('order')};
+// Answers the read of a table in dataset eu as BigQuery answers for the EU
+// multi-region; other tables get the harness's `US`.
+const IN_EU = (_p: string, dataset: string) =>
+    dataset === 'eu' ? {status: 200, result: {location: 'EU'}} : undefined;
 const SKIPPING = 'Skipping the source existence check (--skip-source-check).';
 
 // The harness's log entry for the lookup of `resourceName`'s entry.
@@ -76,10 +82,7 @@ scenarios('push checks every source before it writes', [
     name: 'a BigQuery table is found in its location, not the push\'s, and push stops when its table does not exist',
     entities: [{...CUSTOMER, source: bqTable('customer', 'eu')}],
     flags: {deployment: false},
-    services: {
-      getTable: (_p: string, dataset: string) =>
-          dataset === 'eu' ? {status: 200, result: {location: 'EU'}} : undefined,
-    },
+    services: {getTable: IN_EU},
     code: 0,
     calls: [lookup('bigquery', 'eu', bqTable('customer', 'eu'))],
     then: [{
@@ -91,6 +94,19 @@ scenarios('push checks every source before it writes', [
       nothingWritten: true,
       check: r => expect(lookups(r)).toEqual([]),
     }],
+  },
+  {
+    name: 'a profile whose BigQuery tables sit in two locations stops the push before anything is written; --skip-source-check lets it through',
+    entities: [CUSTOMER, ORDER],
+    profiles: {x: {entities: {Customer: CUSTOMER, Order: {...ORDER, source: bqTable('order', 'eu')}}}},
+    flags: {deployment: false},
+    services: {getTable: IN_EU},
+    code: 1,
+    errors: [has(`profile 'x' of model 'commerce' binds tables in more than ` +
+                 'one BigQuery location: us (Customer), eu (Order).')],
+    nothingWritten: true,
+    then: [{flags: {deployment: false, skipSourceCheck: true}, code: 0,
+            events: ['preflight', 'apply']}],
   },
   {
     name: 'a Cloud SQL table is looked up once, for its dialect, and a missing one fails the push with or without --skip-source-check',

@@ -420,7 +420,8 @@ async function dialectLoad(
 
 // Checks that every source in the inline bindings and named profiles of
 // `models` names a table with a Knowledge Catalog entry (see
-// sourceEntryErrors), and gives one message per entity that does not. With
+// sourceEntryErrors), and gives one message per entity that does not, and per
+// profile whose BigQuery tables sit in more than one location. With
 // --skip-source-check, says so and checks nothing.
 async function sourceCheckErrors(
     models: LoadedModel[], ctx: context.ApiContext,

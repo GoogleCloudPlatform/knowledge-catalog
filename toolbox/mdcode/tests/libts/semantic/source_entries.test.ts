@@ -39,6 +39,14 @@ const FAILOVER_CATALOG = {
     {region: 'us-east1', state: 'STATE_PRIMARY_IN_PROGRESS'},
   ],
 };
+// Tables in a regional dataset. BigQuery writes a region in lower case and a
+// multi-region in upper case (the live US_TABLE writes `US`).
+const BQ_CENTRAL = `bigquery.googleapis.com/projects/${P}/datasets/us_ds/tables/orders`;
+const BQ_EU = `bigquery.googleapis.com/projects/${P}/datasets/eu_ds/tables/customers`;
+const tableIn = (dataset: string, table: string, location: string) => ({
+  ...US_TABLE, id: `${P}:${dataset}.${table}`,
+  tableReference: {projectId: P, datasetId: dataset, tableId: table}, location,
+});
 const ALLOYDB = `alloydb.googleapis.com/projects/${P}/locations/us-east4/clusters/kcmd-src-alloy/databases/sales/schemas/public/tables/orders`;
 
 // The lookup of `resourceName`'s entry in `@<group>` at `location`, as the
@@ -59,6 +67,8 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
   const calls: string[] = [];
   const answers: Record<string, ApiResult<any>> = {
     [`getTable ${P} kcmd_demo orders`]: ok(US_TABLE),
+    [`getTable ${P} us_ds orders`]: ok(tableIn('us_ds', 'orders', 'us-central1')),
+    [`getTable ${P} eu_ds customers`]: ok(tableIn('eu_ds', 'customers', 'europe-west1')),
     [`getInstance ${P} kcmd-src-reg`]: ok(REGIONAL_INSTANCE),
     [`getInstance ${P} kcmd-src-multi`]: ok(NAM3_INSTANCE),
     [`getInstanceConfig ${NAM3_INSTANCE.config}`]: ok(NAM3_CONFIG),
@@ -99,7 +109,10 @@ const entity = (name: string, source: string, extra: Partial<Entity> = {}) =>
     ({name, dataSource: '', authoredSource: source, keys: [], fields: [], ...extra}) as Entity;
 const profile = (name: string, entities: Array<[string, string?]>): ProfileSpec =>
     ({name, entities: entities.map(([e, source]) => ({name: e, source})), relationships: []});
-const inline = (source: string) => ({entities: [entity('orders', source)]});
+// Model commerce with `entities` and `profiles`.
+const model = (entities: Entity[], profiles: ProfileSpec[] = []) =>
+    ({name: 'commerce', entities, profiles});
+const inline = (source: string) => model([entity('orders', source)]);
 
 // The message for a source with no entry the check could read.
 const notFound = (entity: string, profile: string, source: string, hint = '') =>
@@ -107,16 +120,17 @@ const notFound = (entity: string, profile: string, source: string, hint = '') =>
     `table Knowledge Catalog knows about. The table may not exist, or you may ` +
     `not be allowed to read its catalog entry.${hint} Fix the source, or pass ` +
     `--skip-source-check.`;
-// The start of the messages for an inline source.
-const at = (source: string) => `entity 'orders' in profile 'default': source '${source}'`;
+// The start of the messages for an inline source of `entity`.
+const at = (source: string, entity = 'orders') =>
+    `entity '${entity}' in profile 'default': source '${source}'`;
 // The message for an inline source whose check failed for another reason.
 const couldNotCheck = (source: string, detail: string) =>
     `${at(source)} could not be checked; try again, or pass ` +
     `--skip-source-check: ${detail}`;
 // The message for an inline source whose location read `what` answered 404,
 // so the `kind` it names, such as `a table`, does not exist.
-const missing = (source: string, kind: string, what: string) =>
-    `${at(source)} names ${kind} that does not exist: ${what} found ` +
+const missing = (source: string, kind: string, what: string, entity?: string) =>
+    `${at(source, entity)} names ${kind} that does not exist: ${what} found ` +
     `nothing (HTTP 404). Fix the source, or pass --skip-source-check.`;
 // The message for an inline source whose location read `what` answered 403
 // with `message`.
@@ -254,15 +268,14 @@ describe('sourceEntryErrors', () => {
       lookup('biglake', 'us-central1', BIGLAKE_2),
     ];
     const {readers, calls} = fakeReaders(entries);
-    const model = {
-      entities: [entity('orders', BIGQUERY), entity('items', SPANNER_2)],
-      profiles: [
-        profile('a', [['orders', BIGQUERY], ['items', SPANNER_NAM3]]),
-        profile('b', [['orders', BIGQUERY]]),
-        profile('c', [['orders', BIGLAKE_GCS_US], ['items', BIGLAKE_2]]),
-      ],
-    };
-    expect(await sourceEntryErrors(model, readers)).toEqual([]);
+    const m = model(
+        [entity('orders', BIGQUERY), entity('items', SPANNER_2)],
+        [
+          profile('a', [['orders', BIGQUERY], ['items', SPANNER_NAM3]]),
+          profile('b', [['orders', BIGQUERY]]),
+          profile('c', [['orders', BIGLAKE_GCS_US], ['items', BIGLAKE_2]]),
+        ]);
+    expect(await sourceEntryErrors(m, readers)).toEqual([]);
     expect(calls.sort()).toEqual([
       `getTable ${P} kcmd_demo orders`,
       `getInstance ${P} kcmd-src-multi`,
@@ -274,11 +287,10 @@ describe('sourceEntryErrors', () => {
 
   test('every entity of a failing source is reported, in model order', async () => {
     const {readers} = fakeReaders([lookup('bigquery', 'us', BIGQUERY)]);
-    const model = {
-      entities: [entity('orders', SPANNER), entity('items', BIGQUERY)],
-      profiles: [profile('spanner', [['orders', SPANNER_NAM3], ['items', SPANNER]])],
-    };
-    expect(await sourceEntryErrors(model, readers)).toEqual([
+    const m = model(
+        [entity('orders', SPANNER), entity('items', BIGQUERY)],
+        [profile('spanner', [['orders', SPANNER_NAM3], ['items', SPANNER]])]);
+    expect(await sourceEntryErrors(m, readers)).toEqual([
       notFound('orders', 'default', SPANNER),
       notFound('orders', 'spanner', SPANNER_NAM3),
       notFound('items', 'spanner', SPANNER),
@@ -287,8 +299,8 @@ describe('sourceEntryErrors', () => {
 
   test('an entity with no table this check reads is skipped', async () => {
     const {readers, calls} = fakeReaders([]);
-    const model = {
-      entities: [
+    const m = model(
+      [
         entity('party', BIGQUERY, {abstract: true}),
         entity('unbound', ''),
         // A legacy bare name, which the load completes into `dataSource`.
@@ -296,11 +308,54 @@ describe('sourceEntryErrors', () => {
         // sourceDialects looks a Cloud SQL table up.
         entity('cloudsql', `cloudsql.googleapis.com/projects/${P}/locations/us-central1/instances/i/databases/d/tables/t`),
       ],
-      profiles: [profile('p', [['orders']])],
-    };
-    expect(await sourceEntryErrors(model, readers)).toEqual([]);
+      [profile('p', [['orders']])]);
+    expect(await sourceEntryErrors(m, readers)).toEqual([]);
     expect(calls).toEqual([]);
   });
+
+  // The message for profile `name`, whose tables sit at `locations`.
+  const spans = (name: string, locations: string) =>
+      `profile '${name}' of model 'commerce' binds tables in more than one ` +
+      `BigQuery location: ${locations}. BigQuery runs each query in one ` +
+      `location, so no query can join them. Bind them to tables in one ` +
+      `location, or pass --skip-source-check.`;
+  // Every table below has its entry.
+  const ENTRIES = [
+    lookup('bigquery', 'us', BIGQUERY),
+    lookup('bigquery', 'us-central1', BQ_CENTRAL),
+    lookup('bigquery', 'europe-west1', BQ_EU),
+    lookup('biglake', 'us-central1', BIGLAKE_GCS_US),
+    lookup('biglake', 'us', BIGLAKE_US),
+  ];
+  // [label, inline sources of orders and customers, profiles, the messages,
+  //  answers that replace the live ones]
+  const LOCATIONS: Array<[string, [string, string], ProfileSpec[], string[],
+                          Record<string, ApiResult<any>>?]> = [
+    // The bug's repro.
+    ['a profile binding datasets in two regions', [BQ_CENTRAL, BQ_CENTRAL],
+     [profile('prod', [['orders', BQ_CENTRAL], ['customers', BQ_EU]])],
+     [spans('prod', 'us-central1 (orders), europe-west1 (customers)')]],
+    ['inline sources in a region and the US multi-region', [BQ_CENTRAL, BIGQUERY], [],
+     [spans('default', 'us-central1 (orders), us (customers)')]],
+    // BigQuery queries a US BigLake catalog in its primary's region.
+    ['a US BigLake catalog whose primary is us-central1, with a us-central1 dataset',
+     [BIGLAKE_GCS_US, BQ_CENTRAL], [], []],
+    ['a US BigLake catalog whose primary is us-central1, with a US dataset',
+     [BIGLAKE_GCS_US, BIGQUERY], [],
+     [spans('default', 'us-central1 (orders), us (customers)')]],
+    // The table writes `US` and the federated catalog's replica `US`.
+    ['a US dataset and a federated US catalog', [BIGQUERY, BIGLAKE_US], [], []],
+    ['a table whose location read failed, which only its own message names', [BQ_CENTRAL, BQ_EU], [],
+     [missing(BQ_EU, 'a table', `reading table '${P}.eu_ds.customers'`, 'customers')],
+     {[`getTable ${P} eu_ds customers`]: NOT_FOUND}],
+  ];
+  for (const [label, [orders, customers], profiles, messages, override] of LOCATIONS) {
+    test(`${label}: ${messages.length ? 'fails' : 'passes'}`, async () => {
+      const m = model([entity('orders', orders), entity('customers', customers)], profiles);
+      expect(await sourceEntryErrors(m, fakeReaders(ENTRIES, override).readers))
+          .toEqual(messages);
+    });
+  }
 
   test('the GCP clients provide the reads', () => {
     // Compile-time check: each client fits its reader.
