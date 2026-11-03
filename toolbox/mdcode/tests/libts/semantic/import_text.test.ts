@@ -30,6 +30,12 @@ interface Style {
   // lines if they have a space.
   nextLine: boolean;
   empty: boolean;  // A null value as nothing after its key.
+  // A space inside each empty flow collection, or a comment on a line of its
+  // own inside it.
+  emptyFlow: '' | 'space' | 'comment';
+  // Each mapping in a list on the line after its `-`, with its keys one
+  // column in.
+  dashAlone: boolean;
   // An anchor on each string expression, and on each mapping and text of
   // several lines that repeats, which repeats as an alias.
   anchor: boolean;
@@ -37,7 +43,7 @@ interface Style {
 const STYLE: Style = {
   seqIndent: 2, block: false, chomp: '-', spaces: false, flow: false,
   tight: false, open: false, nl: '\n', exprFirst: false, nextLine: false,
-  empty: false, anchor: false,
+  empty: false, emptyFlow: '', dashAlone: false, anchor: false,
 };
 
 const isObj = (v: any) => v !== null && typeof v === 'object';
@@ -122,8 +128,13 @@ function write(value: any, s: Style): string {
         out.push(`${pad(inner)}]`);
       }
       out.push(`${pad(inner - 2)}}${after()}`);
+    } else if (!full(v) && isObj(v) && s.emptyFlow === 'comment') {
+      const [open, close] = flow(v);
+      out.push(`${head} ${open}`, `${pad(inner)}# i${n++}`,
+               `${pad(c)}${close}${after()}`);
     } else if (!full(v) && isObj(v)) {
-      out.push(`${head} ${flow(v)}${after()}`);
+      const [open, close] = flow(v);
+      out.push(`${head} ${open}${s.emptyFlow ? ' ' : ''}${close}${after()}`);
     } else if (v === null && s.empty) {
       out.push(head + after());
     } else if (anchor && anchors.has(anchor)) {
@@ -158,8 +169,14 @@ function write(value: any, s: Style): string {
   };
   const item = (v: any, c: number) => {
     above(c);
-    if (full(v) && !Array.isArray(v)) pairs(order(v), c + 2, `${pad(c)}- `);
-    else val(`${pad(c)}-`, v, c, c + 2);
+    if (full(v) && !Array.isArray(v) && s.dashAlone) {
+      out.push(`${pad(c)}-${after()}`);
+      pairs(order(v), c + 1);
+    } else if (full(v) && !Array.isArray(v)) {
+      pairs(order(v), c + 2, `${pad(c)}- `);
+    } else {
+      val(`${pad(c)}-`, v, c, c + 2);
+    }
   };
   const pairs = (v: any, c: number, dash?: string) => {
     Object.entries(v).forEach(([k, x], i) => {
@@ -600,12 +617,14 @@ const STYLES: Array<[string, Partial<Style>]> = [
   ['CRLF', {nl: '\r\n'}],
   ['dialect entries written expression first', {exprFirst: true}],
   ['expressions on the line under their key', {nextLine: true}],
-  ['empty values', {empty: true}],
+  ['empty values and empty flow collections with a space inside', {empty: true, emptyFlow: 'space'}],
   ['flow collections that close on an entry\'s line', {flow: true, tight: true}],
   ['clipped blocks with lines of spaces', {block: true, chomp: '', spaces: true}],
   ['kept blocks', {block: true, chomp: '+'}],
   ['anchors and aliases', {anchor: true}],
   ['flow lists that open on their first item\'s line', {flow: true, open: true}],
+  ['empty flow collections with a comment inside', {emptyFlow: 'comment'}],
+  ['list items on the line after their dash', {dashAlone: true}],
 ];
 
 // Re-imports `output`. A file with a GOOGLE block is written for kcmd.
