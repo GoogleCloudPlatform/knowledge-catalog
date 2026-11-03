@@ -167,8 +167,9 @@ bound for a graph MUST declare one (see [§4](#4-narrowings-and-relaxations) and
 String  Integer  Decimal  Float  Boolean  Date  Time  DateTime  DateTimeTz  Opaque
 ```
 
-The Google flavor also accepts a datatype in any letter case, and kcmd writes
-the canonical spelling.
+The Google flavor also accepts a datatype in any letter case. `kcmd import`
+keeps that spelling in a Google-flavor file, and `kcmd pull` writes the
+canonical one.
 
 `Date`, `Time`, `DateTime`, and `DateTimeTz` are the temporal subset (they default
 `dimension.is_time`). A value outside this set is not authorable directly; a type
