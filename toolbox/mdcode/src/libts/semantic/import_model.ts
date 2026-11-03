@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {catalogNameSegments, ENTRY_NAME_FORM, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, unquote} from './loader';
+import {bareNameSegments, dottedPartProblem, fillForm, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -103,16 +103,49 @@ const STANDARD_AI_CONTEXT_KEYS =
 const LOADER_SOURCE_WARNING =
     /^(.*?): source '(.*)' is not a valid GCP resource name\.$/s;
 
-// The warning for `source`, which import leaves as written. A source in no
-// Google Cloud form may be a third-party table, so the warning says how to
-// write one.
-function sourceWarning(ctx: string, source: string): string {
-  return `${ctx}: source '${source}' is not a valid GCP resource name; ` +
-      `'kcmd push' rejects the file until it is repointed, or until ` +
-      `'kcmd import' runs again with '--source-prefix'.` +
-      (isGoogleCloudForm(source) ? '' :
-           ` A table outside Google Cloud is written as the entry name of ` +
-               `its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`);
+// Why no name to write is given when the name holds a quote.
+const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote';
+
+// The warning for `source`, which import leaves as written after a run with
+// `prefix`, if any. It gives the name to write when the loader names one,
+// or another --source-prefix run when a prefix of that kind, or of any kind
+// when none ran, completes the name, or else why the table cannot be named.
+function sourceWarning(
+    ctx: string, source: string, prefix?: ParsedSourcePrefix): string {
+  const problem = oldSourceForm(source);
+  if (problem !== undefined) {
+    return `${ctx}: source '${source}' is ${problem}. 'kcmd push' rejects ` +
+        `the file until it is repointed.`;
+  }
+  const host = prefix?.base.split('/')[0];
+  const kinds = SOURCE_PREFIX_PATTERNS.filter(
+      k => host === undefined || k.form.startsWith(`${host}/`));
+  const bare = !/[/:]/.test(source);
+  const rerun = bare && completes(source, kinds);
+  const quoted = kinds.some(k => {
+    const parts = prefixSegments(source, k.form);
+    return !parts.length || parts.some(p => /[`"]/.test(p));
+  });
+  const cannot = !bare || rerun ? undefined :
+      /\s/.test(source)        ? NO_SPACE :
+      quoted                   ? NO_QUOTE :
+                                 undefined;
+  const dotted = !bare || rerun || cannot ?
+      undefined :
+      kinds.map(k => ({
+             form: k.form,
+             why: dottedPartProblem(prefixSegments(source, k.form), k.form),
+           }))
+          .find(d => d.why);
+  return `${ctx}: source '${source}' is not a valid GCP resource name` +
+      (cannot ? `, and ${cannot}. ` :
+           dotted ? `; ${dotted.why}. Write the table's GCP resource name ` +
+                   `instead, such as '${dotted.form}'. ` :
+                    '; ') +
+      `'kcmd push' rejects the file until it is repointed` +
+      (rerun ? `, or until 'kcmd import' runs again with '--source-prefix'.` :
+               '.') +
+      (isGoogleCloudForm(source) ? '' : ` ${THIRD_PARTY_SOURCE}`);
 }
 
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
@@ -124,31 +157,48 @@ const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
   TSQL: 'SQLSERVER',
 };
 
-const SOURCE_PREFIX_PATTERNS: ReadonlyArray<{re: RegExp; child?: string}> = [
-  {re: /^bigquery\.googleapis\.com\/projects\/([^/]+)$/, child: 'datasets'},
-  {re: /^bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)$/},
+// Each kind of --source-prefix: its pattern, the child container a bare name
+// adds under it, if any, and the resource name of a table under it.
+const SOURCE_PREFIX_PATTERNS:
+    ReadonlyArray<{re: RegExp; child?: string; form: string}> = [
+  {
+    re: /^bigquery\.googleapis\.com\/projects\/([^/]+)$/,
+    child: 'datasets',
+    form: TABLE_FORMS.bigquery,
+  },
+  {
+    re: /^bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)$/,
+    form: TABLE_FORMS.bigquery,
+  },
   {
     re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)$/,
     child: 'namespaces',
+    form: TABLE_FORMS.biglake,
   },
   {
     re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)$/,
+    form: TABLE_FORMS.biglake,
   },
   {
     re: /^spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)$/,
+    form: TABLE_FORMS.spanner,
   },
   {
     re: /^alloydb\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/clusters\/[^/]+\/databases\/([^/]+)$/,
     child: 'schemas',
+    form: TABLE_FORMS.alloydb,
   },
   {
     re: /^alloydb\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/clusters\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
+    form: TABLE_FORMS.alloydb,
   },
   {
     re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)$/,
+    form: TABLE_FORMS.cloudsql,
   },
   {
     re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
+    form: TABLE_FORMS.cloudsqlSchema,
   },
 ];
 
@@ -391,14 +441,8 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
   }
 
   // 2. Split the bare dot-separated table reference into unquoted segments
-  // (unwrapping a single-backticked BigQuery path like `` `p.d.t` `` first) and
-  // verify that any leading segments overlapping `prefix.known` match.
-  const unwrapped = prefix.base.startsWith('bigquery.googleapis.com/') &&
-          trimmed.startsWith('`') && trimmed.endsWith('`') &&
-          !trimmed.slice(1, -1).includes('`') ?
-      trimmed.slice(1, -1) :
-      trimmed;
-  const segs = catalogNameSegments(unwrapped).map(unquote);
+  // and verify that any leading segments overlapping `prefix.known` match.
+  const segs = prefixSegments(trimmed, prefix.base);
   if (!segs.length || segs.some(s => !s.length)) return undefined;
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
@@ -412,7 +456,39 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
   const qualified = prefix.child ?
       `${prefix.base}/${prefix.child}/${rest[0]}/tables/${rest[1]}` :
       `${prefix.base}/tables/${rest[0]}`;
-  return isAcceptedSource(qualified) ? qualified : undefined;
+  return oldSourceForm(qualified) === undefined && isAcceptedSource(qualified) ?
+      qualified :
+      undefined;
+}
+
+// The parts of the bare name `source` as a prefix that begins as `base` does
+// reads them. A BigQuery or BigLake prefix reads a path in one pair of
+// backticks, such as `` `p.d.t` ``, as its parts.
+function prefixSegments(source: string, base: string): string[] {
+  return bareNameSegments(
+      source.trim(), /^(bigquery|biglake)\.googleapis\.com\//.test(base));
+}
+
+// The prefix of `kind` whose containers are the leading parts of a bare name
+// with parts `parts`, or undefined when `kind` has no such prefix.
+function prefixFor(
+    kind: typeof SOURCE_PREFIX_PATTERNS[number],
+    parts: string[]): ParsedSourcePrefix|undefined {
+  const base =
+      fillForm(kind.form, parts)?.split('/').slice(0, kind.child ? -4 : -2)
+          .join('/');
+  const known = base?.match(kind.re)?.slice(1);
+  return base && known ? {base, known, child: kind.child} : undefined;
+}
+
+// True when a --source-prefix of one of `kinds` completes `source`.
+function completes(
+    source: string, kinds: typeof SOURCE_PREFIX_PATTERNS): boolean {
+  return kinds.some(kind => {
+    const prefix = prefixFor(kind, prefixSegments(source, kind.form));
+    return prefix !== undefined &&
+        qualifyTableSource(source, prefix) !== undefined;
+  });
 }
 
 /**
@@ -592,7 +668,7 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
       doc.modified = true;
     } else if (!(oldSourceForm(trimmed) === undefined &&
                  isAcceptedSource(trimmed))) {
-      doc.warnOrError(sourceWarning(dsLabel, trimmed));
+      doc.warnOrError(sourceWarning(dsLabel, trimmed, doc.sourcePrefix));
     }
   }
 
@@ -1016,7 +1092,7 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
         content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
     for (const raw of loaded.warnings) {
       const m = raw.match(LOADER_SOURCE_WARNING);
-      const w = m ? sourceWarning(m[1], m[2]) : raw;
+      const w = m ? sourceWarning(m[1], m[2], doc.sourcePrefix) : raw;
       if (!doc.warnings.includes(w) && !doc.errors.includes(w)) {
         doc.warnings.push(w);
       }

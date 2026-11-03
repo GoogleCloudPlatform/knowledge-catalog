@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument, writtenSource } from '../../../src/libts/semantic/loader';
+import { bareNameSegments, databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument, writtenSource } from '../../../src/libts/semantic/loader';
 import { googleDeploymentTargets } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
@@ -3095,6 +3095,7 @@ describe('strict entity sources', () => {
       [`//${SPANNER}`, 'uri', SPANNER],
       [`//${MYSQL}`, 'uri', MYSQL],
       ['bigquery:acme.raw.orders', 'fqn', BQ],
+      ['bigquery:acme.raw."orders"', 'fqn', BQ],
       ['bigquery:`acme-prod`.raw.orders', 'fqn', 'bigquery.googleapis.com/projects/acme-prod/datasets/raw/tables/orders'],
       ['spanner:acme.regional-us-central1.inst.db.orders', 'fqn', SPANNER],
       ['alloydb:acme.us-central1.cl.db.public.orders', 'fqn', ALLOYDB],
@@ -3289,11 +3290,69 @@ describe('strict entity sources', () => {
   });
 
   test('source rejections: query-valued source, bare table name, 4-part bare name, overlong source, and unknown prefix each produce their own message', () => {
-    // 1. Query-valued source
-    expect(() => load(GOOGLE, {
-      name: 'm',
-      datasets: [{ name: 'orders', source: 'SELECT * FROM orders', primary_key: ['id'], fields: [] }],
-    })).toThrow("dataset 'orders': source 'SELECT * FROM orders' looks like a SQL query; a query-valued source is not supported yet.");
+    // 1. Query-valued source. A space after a quote that never closes is
+    // unquoted.
+    const TABLE = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables';
+    for (const query of ['SELECT * FROM orders', 'public."order items', 'public.`order items',
+      `${TABLE}/"order items`, `${TABLE}/\`order items`]) {
+      expect(() => loadSource(query)).toThrow(`dataset 'orders': source '${query}' looks like a SQL query; a query-valued source is not supported yet.`);
+    }
+    // A space inside double quotes or backticks belongs to a table name, which
+    // kcmd cannot name. The message says how to write a table outside Google
+    // Cloud.
+    const NO_SPACE = 'kcmd cannot name a table whose name holds a space.';
+    for (const bare of ['public."order items"', 'public.`order items`', 'public."a "" b"',
+      'acme.cat.ns."order items"']) {
+      expect(() => loadSource(bare)).toThrow(`bare table name '${bare}' is not a valid source, and ${NO_SPACE} ` +
+        'A table outside Google Cloud is written as the entry name');
+    }
+    // A resource name or entry name takes no double quotes or backticks; the
+    // message gives the name without them.
+    const quotedNames = (q: string) => [`${TABLE}/${q}orders${q}`, `${TABLE}/${q}order items${q}`,
+      `biglake.googleapis.com/projects/acme/catalogs/c/namespaces/n/tables/${q}orders${q}`,
+      `spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/${q}orders${q}`,
+      `alloydb.googleapis.com/projects/acme/locations/l/clusters/c/databases/db/schemas/${q}public${q}/tables/orders`,
+      `cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables/${q}orders${q}`,
+      `projects/acme/locations/us/entryGroups/sf/entries/${q}orders${q}`];
+    const QUOTES = 'is a name with quotes in it; resource names and entry names take no quotes';
+    for (const quoted of [...quotedNames('"'), ...quotedNames('`')]) {
+      const plain = quoted.replace(/["`]/g, '');
+      expect(() => loadSource(quoted)).toThrow(`source '${quoted}' ${QUOTES}${
+        /\s/.test(plain) ? `, and ${NO_SPACE}` : `, so write '${plain}'.`}`);
+    }
+    // Quotes that fill a segment leave no name to write.
+    const CLOUDSQL_TABLES = 'cloudsql.googleapis.com/projects/acme/locations/l/instances/i/databases/db/tables';
+    for (const base of [TABLE, CLOUDSQL_TABLES]) {
+      for (const fill of ['""', '"', '``', '`']) {
+        expect(() => loadSource(`${base}/${fill}`)).toThrow(`source '${base}/${fill}' ${QUOTES}.`);
+      }
+    }
+    // A quoted system entry name gets the system entry message. It names the
+    // resource name without quotes, or says kcmd cannot name the table.
+    const SYSTEM = 'projects/acme/locations/us/entryGroups/@bigquery/entries';
+    for (const [id, end] of [
+      ['"orders"', "; write the table's resource name instead, such as"],
+      [`${TABLE}/"orders"`, `; write the table's resource name instead: '${TABLE}/orders'.`],
+      [`${TABLE}/"order items"`, `, and ${NO_SPACE}`],
+    ]) {
+      expect(() => loadSource(`${SYSTEM}/${id}`)).toThrow(`in the system entry group '@bigquery'${end}`);
+    }
+    // Every catalog name the loader reads is rejected, naming the resource
+    // name when it can.
+    for (const [fqn, end] of [
+      ['bigquery:acme.sales."a/b c"', `, and ${NO_SPACE}`],
+      ['bigquery:acme.sales.``` `', `, and ${NO_SPACE}`],
+      ['bigquery:acme.raw.`order items`', `, and ${NO_SPACE}`],
+      ['bigquery:acme.raw."order items"', `, and ${NO_SPACE}`],
+      ['bigquery:acme.raw.a/b', "; write the table's GCP resource name."],
+      ['bigquery:acme.raw.""', "; write the table's GCP resource name."],
+      ['biglake:table:acme.c.n.""', "; write the table's GCP resource name."],
+    ]) {
+      expect(() => loadSource(fqn)).toThrow(`source '${fqn}' is a Knowledge Catalog name${end}`);
+    }
+    // Under the legacy wrapper, a space inside double quotes still marks a query.
+    expect(() => loadSource('public."order items"', { allowLegacyBareSource: true, defaultProject: 'acme' }))
+      .toThrow('looks like a SQL query');
 
     // Each bare-name message also names the command that completes bare names.
     const VIA_IMPORT = "Or run 'kcmd import <file> --flavor <ossie|google> " +
@@ -3323,6 +3382,10 @@ describe('strict entity sources', () => {
       expect(models[0].entities[0].dataSource).toBe('acme.raw.orders');
     }
 
+    // A BigQuery path in one pair of backticks gives each of its parts.
+    expect(() => loadSource('`acme.raw.orders`')).toThrow(
+      'source: bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders\n');
+
     // 3. Four-part bare table name suggests its BigLake resource name
     expect(() => load(GOOGLE, {
       name: 'm',
@@ -3346,15 +3409,27 @@ describe('strict entity sources', () => {
     }
   });
 
-  // A bare name with an empty segment, or with five or more, gets the general
-  // error, since no hint can name its table.
+  // A bare name with an empty segment, with five or more, with a quote that
+  // does not wrap a whole part, or whose hint the loader would reject, such as
+  // a table name with a dot or a quote, gets the general error.
   test('a bare name the hint cannot read gets the general error', () => {
-    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c']) {
+    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c',
+      'public."or"ders', 'public."orders', 'public."a""b"']) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
       })).toThrow(`source '${bare}' is not a valid table reference`);
     }
+    // A quoted name is one name, dots included, and the error says so.
+    for (const [bare, name] of [['raw.`my.orders`', 'my.orders'], ['public."order.items"', 'order.items'],
+      ['"acme.sales.orders"', 'acme.sales.orders']]) {
+      expect(() => loadSource(bare)).toThrow(`source '${bare}' is not a valid table reference; the quoted name ` +
+        `'${name}' is one name, dot included. Expected a GCP resource name`);
+    }
+  });
+
+  test('a doubled quote in a quoted part of a bare name is one literal quote', () => {
+    expect(bareNameSegments('public."a""b".`c``d`', false)).toEqual(['public', 'a"b', 'c`d']);
   });
 });
 

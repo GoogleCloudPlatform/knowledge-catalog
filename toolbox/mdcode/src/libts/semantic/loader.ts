@@ -3020,6 +3020,9 @@ const CLOUDSQL_TABLE_URI =
 const CLOUDSQL_SCHEMA_TABLE_URI =
     /^\/\/cloudsql\.googleapis\.com\/projects\/([^/]+)\/locations\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/schemas\/[^/]+\/tables\/[^/]+$/;
 
+// A double quote or a backtick, which no resource name or entry name holds.
+const QUOTE = /["`]/;
+
 // A Cloud SQL table written as its resource name or resource URI: its
 // project, location and instance, and its resource name with no leading `//`,
 // which is also the id of its catalog entry in the `@cloudsql` entry group.
@@ -3030,10 +3033,12 @@ export interface CloudSqlTable {
   resourceName: string;
 }
 
-// The Cloud SQL table `source` names, or undefined when it names none.
+// The Cloud SQL table `source` names, or undefined when it names none. A name
+// with quotes names none, so push reports it without looking it up.
 export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
   const uri = asResourceUri(source.trim());
-  const m = uri.match(CLOUDSQL_TABLE_URI) ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
+  const m = QUOTE.test(uri) ? null :
+      uri.match(CLOUDSQL_TABLE_URI) ?? uri.match(CLOUDSQL_SCHEMA_TABLE_URI);
   return m ?
       {project: m[1], location: m[2], instance: m[3], resourceName: uri.slice(2)} :
       undefined;
@@ -3120,29 +3125,132 @@ function cloudSqlSchemaTable(s: string[]): string {
       s[1]}/instances/${s[2]}/databases/${s[3]}/schemas/${s[4]}/tables/${s[5]}`;
 }
 
-// What a source written as a resource URI or a Knowledge Catalog name of a
-// table kcmd reads is, and the resource name to write instead; undefined for
-// any other source. The loader rejects such a source, and pull warns for one
-// an older push stored.
+// What a source written as a resource URI, as a Knowledge Catalog name of a
+// table kcmd reads, or with quotes in a resource name or in an entry name
+// outside a system entry group is, and the name to write instead when there
+// is one; undefined for any other source. The loader rejects such a source,
+// and pull warns for one an older push stored.
 export function oldSourceForm(source: string): string|undefined {
+  const unquoted = unquotedName(source);
+  if (unquoted !== undefined) {
+    const quotes = 'a name with quotes in it; resource names and entry ' +
+        'names take no quotes';
+    return !unquoted ? quotes :
+        /\s/.test(unquoted) ? `${quotes}, and ${NO_SPACE}` :
+                              `${quotes}, so write '${unquoted}'`;
+  }
   const name = asResourceName(source);
   if (name !== source && isAcceptedSource(name)) return resourceUriFix(source);
-  const fromCatalog = catalogNameResourceName(source);
-  return fromCatalog === undefined ? undefined :
-      `a Knowledge Catalog name; write the table's GCP resource name: '${
-          fromCatalog}'`;
+  const built = catalogNameResourceName(source);
+  const plain = built === undefined ? undefined : unquotedName(built) ?? built;
+  const write = "a Knowledge Catalog name; write the table's GCP resource name";
+  if (plain && isAcceptedSource(plain)) return `${write}: '${plain}'`;
+  if (!/^[a-z_]+:/.test(source) ||
+      !(isAcceptedSource(source) || isAcceptedSource(built ?? ''))) {
+    return undefined;
+  }
+  return plain && /\s/.test(plain) ?
+      `a Knowledge Catalog name, and ${NO_SPACE}` :
+      write;
 }
 
-// The GCP resource name of the first-party table a Knowledge Catalog name
-// names, or undefined when `fqn` is not one in an accepted shape.
+// Why no name to write is given when that name would hold a space.
+export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
+
+// The resource name of a table in each Google Cloud service a source can
+// name, with a placeholder for each name in it. A Cloud SQL table has one
+// form without a schema and one with.
+export const TABLE_FORMS = {
+  bigquery:
+      'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>',
+  spanner:
+      'spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/tables/<table>',
+  alloydb:
+      'alloydb.googleapis.com/projects/<project>/locations/<location>/clusters/<cluster>/databases/<database>/schemas/<schema>/tables/<table>',
+  cloudsql:
+      'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/tables/<table>',
+  cloudsqlSchema:
+      'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/schemas/<schema>/tables/<table>',
+  biglake:
+      'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>',
+};
+
+// The databases each Cloud SQL form in TABLE_FORMS is for.
+const CLOUD_SQL_DATABASES: Record<string, string> = {
+  cloudsql: 'MySQL',
+  cloudsqlSchema: 'PostgreSQL, SQL Server',
+};
+
+// `form` with its last placeholders replaced by `parts`, in order, or
+// undefined when `form` has fewer placeholders than `parts`.
+export function fillForm(form: string, parts: string[]): string|undefined {
+  const skip = (form.match(/<\w+>/g) ?? []).length - parts.length;
+  if (skip < 0) return undefined;
+  let n = 0;
+  return form.replace(
+      /<\w+>/g, name => n++ < skip ? name : parts[n - 1 - skip]);
+}
+
+// The name of each service a table form starts with, as messages say it.
+const SERVICE_NAMES: Record<string, string> = {
+  bigquery: 'BigQuery',
+  biglake: 'BigLake',
+  spanner: 'Spanner',
+  alloydb: 'AlloyDB',
+  cloudsql: 'Cloud SQL',
+};
+
+// Why `parts`, a bare name's parts read into the last placeholders of `form`,
+// name no table there only because a part holds a dot. Such a part was
+// quoted, so it is one name, and `form` takes no dot in its place. Undefined
+// for any other name. When `service` is false, the reason names neither the
+// part's role nor the service.
+export function dottedPartProblem(
+    parts: string[], form: string, service = true): string|undefined {
+  const takes = (names: string[]) => {
+    const name = fillForm(form, names);
+    return name !== undefined && oldSourceForm(name) === undefined &&
+        isAcceptedSource(name);
+  };
+  const plain = parts.map(p => p.replaceAll('.', '_'));
+  if (takes(parts) || !takes(plain)) return undefined;
+  const i = parts.findIndex(
+      (p, j) => p !== plain[j] && !takes(plain.map((q, k) => k === j ? p : q)));
+  if (i < 0) return undefined;
+  if (!service) return `the quoted name '${parts[i]}' is one name, dot included`;
+  const placeholders = form.match(/<\w+>/g)!;
+  const role =
+      placeholders[placeholders.length - parts.length + i].slice(1, -1);
+  return `the quoted name '${parts[i]}' is one ${role} name, and a ${
+      SERVICE_NAMES[form.split('.')[0]]} ${role} name cannot hold a dot`;
+}
+
+// `source` with its quotes removed, written as a resource name, when it is a
+// table's resource name, resource URI or entry name outside a system entry
+// group, holding them; '' when removing them leaves no such name; undefined
+// for any other source.
+function unquotedName(source: string): string|undefined {
+  if (!QUOTE.test(source)) return undefined;
+  const name = source.replace(/["`]/g, '');
+  const named = (s: string) =>
+      !s.match(ENTRY_NAME)?.[1].startsWith('@') &&
+      (ENTRY_NAME.test(s) ||
+       [
+         BIGQUERY_TABLE_URI, BIGLAKE_TABLE_URI, SPANNER_TABLE_URI,
+         ALLOYDB_TABLE_URI, CLOUDSQL_TABLE_URI, CLOUDSQL_SCHEMA_TABLE_URI,
+       ].some(re => re.test(asResourceUri(s))));
+  return named(name) ? asResourceName(name) : named(source) ? '' : undefined;
+}
+
+// The GCP resource name a Knowledge Catalog name of a first-party table
+// builds, accepted or not, or undefined when `fqn` is in no such shape.
 function catalogNameResourceName(fqn: string): string|undefined {
   const form = CATALOG_NAME_FORMS.find(([prefix]) => fqn.startsWith(prefix));
   if (!form || fqn.length > MAX_CATALOG_NAME_LENGTH) return undefined;
   const [prefix, count, resourceName] = form;
   const segs = catalogNameSegments(fqn.slice(prefix.length));
   if (segs.length !== count || segs.some(seg => seg === '')) return undefined;
-  const name = resourceName(segs);
-  return isAcceptedSource(name) ? name : undefined;
+  return resourceName(segs);
 }
 
 // A catalog name's dot-separated segments. A segment containing a reserved
@@ -3210,21 +3318,32 @@ export function catalogNameSegments(path: string, colons = false): string[] {
   return out;
 }
 
-export function hasUnquotedWhitespace(source: string): boolean {
-  let quoted = false;
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === '`') {
-      if (quoted && source[i + 1] === '`') {
-        i++;
-      } else {
-        quoted = !quoted;
-      }
-      continue;
+// The pairs of backticks or double quotes in `text`, as the index of each
+// pair's opening and closing quote, in order. A quote opens a pair only when
+// the same character follows later, and the next such character closes it.
+// Inside a pair, the other quote character is ordinary.
+function quotePairs(text: string): Array<[number, number]> {
+  const pairs: Array<[number, number]> = [];
+  for (let i = 0; i < text.length; i++) {
+    const close =
+        text[i] === '`' || text[i] === '"' ? text.indexOf(text[i], i + 1) : -1;
+    if (close >= 0) {
+      pairs.push([i, close]);
+      i = close;
     }
-    if (!quoted && /\s/.test(ch)) return true;
   }
-  return false;
+  return pairs;
+}
+
+// True when `source` holds whitespace outside a pair of backticks or double
+// quotes, which marks it as a query.
+export function hasUnquotedWhitespace(source: string): boolean {
+  let from = 0;
+  for (const [open, close] of quotePairs(source)) {
+    if (/\s/.test(source.slice(from, open))) return true;
+    from = close + 1;
+  }
+  return /\s/.test(source.slice(from));
 }
 
 // The database a source lives in, for the one-database rule and source
@@ -3344,6 +3463,9 @@ const ENTRY_NAME =
 // The entry name form, as messages show it.
 export const ENTRY_NAME_FORM =
     'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>';
+// How a source names a table outside Google Cloud, as messages say it.
+export const THIRD_PARTY_SOURCE = 'A table outside Google Cloud is written ' +
+    `as the entry name of its Knowledge Catalog entry, '${ENTRY_NAME_FORM}'.`;
 
 // The Knowledge Catalog entry of a table outside Google Cloud. Its entry group
 // is not a system one. `name` is the entry name the source writes.
@@ -3353,11 +3475,12 @@ export interface ThirdPartyEntry {
   name: string;
 }
 
-// The third-party entry `source` names, or undefined when it names none.
+// The third-party entry `source` names, or undefined when it names none, as
+// an entry name with quotes does.
 export function thirdPartyEntryOf(source: string): ThirdPartyEntry|undefined {
   const name = source.trim();
   const m = name.match(ENTRY_NAME);
-  if (!m || m[1].startsWith('@')) return undefined;
+  if (!m || m[1].startsWith('@') || QUOTE.test(name)) return undefined;
   const [, project, , location] = name.split('/');
   return {project, location, name};
 }
@@ -3380,18 +3503,20 @@ export function dialectLookupKey(source: string): string|undefined {
 // system entry group, one whose id starts with `@`, such as `@bigquery`.
 // Undefined for any other source. The entry id of a Google Cloud table in a
 // system entry group is its GCP resource name, so the message names it as the
-// source to write. Any other id, such as a dataset's, gets an example.
+// source to write, without quotes. Any other id, such as a dataset's, gets an
+// example. An id that holds a space gets no name to write.
 function systemEntrySourceError(source: string, ctx: string): string|undefined {
   const entry = source.match(ENTRY_NAME);
   if (!entry?.[1].startsWith('@')) return undefined;
-  const id = entry[2].replace(/^\/\//, '');
+  const id = entry[2].replace(/^\/\//, '').replace(/["`]/g, '');
+  const where = `Semantic model load error: ${ctx}: source '${source}' is a ` +
+      `Knowledge Catalog entry name in the system entry group '${entry[1]}'`;
+  if (/\s/.test(id)) return `${where}, and ${NO_SPACE}.`;
   const write = RESOURCE_NAME.test(id) && /\/tables\/[^/]+$/.test(id) ?
       `: '${id}'` :
       `, such as ` +
           `'bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>'`;
-  return `Semantic model load error: ${ctx}: source '${source}' is a ` +
-      `Knowledge Catalog entry name in the system entry group '${entry[1]}'; ` +
-      `write the table's resource name instead${write}.`;
+  return `${where}; write the table's resource name instead${write}.`;
 }
 
 // Google Cloud services whose tables the preview does not support yet, each
@@ -3456,7 +3581,9 @@ export function parseSource(
     warnings?: string[], importHint = false): ParsedSource {
   const trimmed = source.trim();
 
-  if (hasUnquotedWhitespace(trimmed)) {
+  // Under the legacy wrapper, a space inside double quotes also marks a query.
+  if (hasUnquotedWhitespace(trimmed) || (opts.allowLegacyBareSource &&
+      hasUnquotedWhitespace(trimmed.replaceAll('"', '')))) {
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source '${trimmed}' looks like a ` +
         `SQL query; a query-valued source is not supported yet. Bind 'source' ` +
@@ -3512,13 +3639,14 @@ export function parseSource(
 
   // Bare table name: no `/`, which every resource URI and resource name has,
   // and no `:` scheme or prefix.
-  const rawSegs = catalogNameSegments(trimmed);
   const isBareTableName = trimmed.length > 0 && !trimmed.includes('/') &&
-      !trimmed.includes(':') && rawSegs.length > 0;
+      !trimmed.includes(':');
+  let dotted: string|undefined;
   if (isBareTableName) {
-    const segs = rawSegs.map(unquote);
-    if (opts.allowLegacyBareSource) {
-      const parts = [...segs];
+    // The legacy wrapper splits at every dot outside backticks.
+    const rawSegs = catalogNameSegments(trimmed);
+    if (opts.allowLegacyBareSource && rawSegs.length > 0) {
+      const parts = rawSegs.map(unquote);
       if (parts.length === 1 && opts.defaultDataset) {
         parts.unshift(opts.defaultDataset);
       }
@@ -3530,51 +3658,97 @@ export function parseSource(
         dataSource: parts.join('.'),
       };
     }
-    // A name with an empty segment, or with more than four, gets the general
-    // error below. With `importHint`, both bare-name messages below also name
-    // the command that completes a model file's bare names.
+    // With `importHint`, the example also names the command that completes a
+    // model file's bare names.
     const viaImport = importHint ?
         `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
             `--source-prefix <prefix>' to complete each bare table name ` +
             `from the database that <prefix> names.` :
         '';
-    if (segs.length <= 4 && segs.every(s => s.length > 0)) {
-      if (segs.length === 4) {
+    // A name holding a space gets no name to write. Any other name gets an
+    // example built from its parts when the loader accepts the example, and
+    // the general error below otherwise, which says so when only a quoted
+    // name's dot keeps the example out. A path in one pair of backticks counts
+    // as its parts, as import reads it under a BigQuery or BigLake prefix.
+    const segs = bareNameSegments(trimmed, true);
+    if (segs.length > 0 && segs.length <= 4 && segs.every(s => s.length > 0)) {
+      if (segs.some(s => /\s/.test(s))) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-            `is not a valid source. Write its BigLake resource name ` +
-            `instead:\n` +
-            `  source: biglake.googleapis.com/projects/${segs[0]}/catalogs/${
-                segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}${viaImport}`);
+            `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
       }
-      const p = segs.length >= 3 ? segs[0] : '<project>';
-      const d = segs.length >= 3 ? segs[1] :
-          segs.length === 2 ? segs[0] : '<dataset>';
-      const t = segs[segs.length - 1];
-      throw new SemanticModelError(
-          `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
-          `is not a valid source. Write the table's GCP resource name ` +
-          `instead, for example:\n` +
-          `  source: bigquery.googleapis.com/projects/${p}/datasets/${d}/` +
-          `tables/${t}${viaImport}`);
+      const form =
+          segs.length === 4 ? TABLE_FORMS.biglake : TABLE_FORMS.bigquery;
+      const write = segs.length === 4 ?
+          'Write its BigLake resource name instead:' :
+          "Write the table's GCP resource name instead, for example:";
+      const example = fillForm(form, segs)!;
+      if (oldSourceForm(example) === undefined && isAcceptedSource(example)) {
+        throw new SemanticModelError(
+            `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
+            `is not a valid source. ${write}\n  source: ${example}${viaImport}`);
+      }
+      dotted = dottedPartProblem(segs, form, false);
     }
   }
 
+  // Each table form with its placeholders shortened, such as <p> for
+  // <project>, and the databases a Cloud SQL form is for.
+  const forms = Object.entries(TABLE_FORMS).map(([kind, form]) => {
+    const short = form.replace(
+        /<(\w+)>/g,
+        (_, name: string) => `<${name === 'database' ? 'db' : name[0]}>`);
+    const databases = CLOUD_SQL_DATABASES[kind];
+    return `'${short}'${databases ? ` (${databases})` : ''}`;
+  });
   throw new SemanticModelError(
       `Semantic model load error: ${ctx}: source '${trimmed}' is not a valid ` +
-      `table reference. Expected a GCP resource name ` +
-      `('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
-      `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
-      `'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
-      `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
-      `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
-      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'), ` +
+      `table reference${dotted ? `; ${dotted}` : ''}. Expected a GCP ` +
+      `resource name (${forms.slice(0, -1).join(', ')}, or ${forms.at(-1)}), ` +
       `or, for a table outside Google Cloud, the entry name of its ` +
       `Knowledge Catalog entry ('${ENTRY_NAME_FORM}').`);
 }
 
 export function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
+}
+
+// The parts of a bare table name, without their quotes. A part in backticks
+// or double quotes is one name, dots included, and a doubled quote character
+// in it, as in "a""b", is one literal quote. The quotes are those
+// hasUnquotedWhitespace reads. Returns [] when a quote does not wrap a whole
+// part. With `bigQuery`, a path in one pair of backticks, as BigQuery writes
+// `p.d.t`, has the parts of the same path written without them. A path in one
+// pair of double quotes is one name.
+export function bareNameSegments(name: string, bigQuery: boolean): string[] {
+  const pairs = quotePairs(name);
+  if (bigQuery && name[0] === '`' && pairs.length === 1 && pairs[0][0] === 0 &&
+      pairs[0][1] === name.length - 1) {
+    return bareNameSegments(name.slice(1, -1), false);
+  }
+  const closeOf = new Map(pairs);
+  const parts: string[] = [];
+  let start = 0;
+  while (true) {
+    let part = /^[^.`"]*/.exec(name.slice(start))![0];
+    let end = start + part.length;
+    const firstClose = part ? undefined : closeOf.get(start);
+    if (firstClose !== undefined) {
+      let close = firstClose;
+      part = name.slice(start + 1, close);
+      // Pairs that touch, as in "a""b", are one name.
+      while (name[close + 1] === name[start] && closeOf.has(close + 1)) {
+        const next: number = closeOf.get(close + 1)!;
+        part += name.slice(close + 1, next);
+        close = next;
+      }
+      end = close + 1;
+    }
+    parts.push(part);
+    if (end === name.length) return parts;
+    if (name[end] !== '.') return [];
+    start = end + 1;
+  }
 }
 
 

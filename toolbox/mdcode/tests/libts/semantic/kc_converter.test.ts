@@ -750,6 +750,8 @@ describe('data source resource-path parsing', () => {
       [{resources: [], importedResource: mysql}, mysql,
        `a Knowledge Catalog name; write the table's GCP resource name: ` +
            `'cloudsql.googleapis.com/projects/acme/locations/us/instances/inst/databases/shop/tables/payments'`],
+      [{resources: [bq.replace('tbl', '"tbl"')]}, bq.replace('tbl', '"tbl"'),
+       `a name with quotes in it; resource names and entry names take no quotes, so write '${bq}'`],
     ] as const) {
       const {models, warnings} = read(source, graph);
       expect(models[0].entities[0].authoredSource).toBe(stored);

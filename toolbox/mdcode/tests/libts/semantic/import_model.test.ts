@@ -146,6 +146,16 @@ describe('conversion, strict mode, and translation', () => {
       {strict: true}, 'orders'
     ],
     [
+      'catalog name a resource name cannot be built from',
+      googleDoc({source: `'bigquery:acme.sales."a/b c"'`}), {strict: true},
+      'is a Knowledge Catalog name'
+    ],
+    [
+      'resource name with quotes in strict mode',
+      googleDoc({source: `'${BQ_PREFIX}/tables/"orders"'`}), {strict: true},
+      `so write '${BQ_TABLE}'. 'kcmd push' rejects the file until it is repointed.`
+    ],
+    [
       'loader error in Check step (blank SQL)', googleDoc({fieldExpr: '"   "'}),
       {}, 'blank'
     ],
@@ -289,33 +299,90 @@ describe('sources', () => {
         .toBe(BQ_TABLE);
   });
 
-  // Only a source in no Google Cloud form gets the entry name advice.
+  // A path in one pair of backticks gives its parts under a BigLake prefix,
+  // and a part in double quotes keeps its dot.
+  const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
+  const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
+  const ALLOYDB =
+      'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/app';
   test.each([
-    ['no sourcePrefix', 'orders', {}, true],
-    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, true],
+    ['`acme.lake.sales.orders`', LAKE, LAKE_TABLE],
+    ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
+    ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
+    ['public."order.items"', ALLOYDB, `${ALLOYDB}/schemas/public/tables/order.items`],
+  ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: `'${bare}'`}), {sourcePrefix});
+    expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
+               .models[0]
+               .entities[0]
+               .authoredSource)
+        .toBe(table);
+  });
+
+  // Each warning ends with what to do: the entry name advice for a source in
+  // no Google Cloud form, the name to write when the loader gives one, a run
+  // with --source-prefix when a prefix of that kind completes the name, or why
+  // kcmd cannot name the table.
+  const ADVICE = 'A table outside Google Cloud is written as the entry name of ' +
+      "its Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
+  const PUSH = "'kcmd push' rejects the file until it is repointed.";
+  const RERUN = "or until 'kcmd import' runs again with '--source-prefix'.";
+  const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote.';
+  test.each([
+    ['no sourcePrefix', 'orders', {}, ADVICE],
+    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, `${RERUN} ${ADVICE}`],
     [
       'backtick-quoted table with dot',
       '\'sales.`my.table`\'',
       {sourcePrefix: BQ_PREFIX},
-      true,
+      ADVICE,
     ],
-    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, true],
-    ['resource URI', `//${BQ_TABLE}`, {}, false],
-    ['first-party catalog name', 'bigquery:acme.sales.orders', {}, false],
-    ['system entry name', 'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {}, false],
+    [
+      'double-quoted table with a space',
+      'public."order items"',
+      {sourcePrefix: CLOUDSQL_PREFIX},
+      `kcmd cannot name a table whose name holds a space. ${PUSH} ${ADVICE}`,
+    ],
+    ['3P source', 'trino:cat.sch.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
+    ['resource URI', `//${BQ_TABLE}`, {}, `'//': '${BQ_TABLE}'. ${PUSH}`],
+    [
+      'resource name with quotes', `'${BQ_PREFIX}/tables/"orders"'`, {},
+      `so write '${BQ_TABLE}'. ${PUSH}`
+    ],
+    [
+      'first-party catalog name', 'bigquery:acme.sales.orders', {},
+      `resource name: '${BQ_TABLE}'. ${PUSH}`
+    ],
+    [
+      'system entry name',
+      'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {},
+      `is not a valid GCP resource name; ${PUSH}`
+    ],
+    ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
+    ['bare name with an unclosed quote', `'sales."orders'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
+    // Only a BigQuery or BigLake prefix reads it as `orders`.
+    ['backticked name with quotes', `'\`"orders"\`'`, {sourcePrefix: CLOUDSQL_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
+    [
+      'path in double quotes', `'"acme.sales.orders"'`, {sourcePrefix: BQ_PREFIX},
+      "the quoted name 'acme.sales.orders' is one table name, and a BigQuery table name cannot hold a dot. " +
+          "Write the table's GCP resource name instead, such as " +
+          `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
+    [
+      'dotted namespace', '\'lake.`my.ns`.orders\'', {sourcePrefix: LAKE},
+      "the quoted name 'my.ns' is one namespace name, and a BigLake namespace name cannot hold a dot. " +
+          "Write the table's GCP resource name instead, such as " +
+          `'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
   ])('leaves %s as written with a warning and writes the file',
-     async (_, src, opts, advice) => {
+     async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
        const cleanSrc = src.replace(/^'|'$/g, '');
 
-       expect(res.ok).toBe(true);
-       const warning = res.warnings.find(
-           w => w.includes(cleanSrc) && w.includes('--source-prefix'));
-       expect(warning?.endsWith(
-                  'A table outside Google Cloud is written as the entry name ' +
-                  "of its Knowledge Catalog entry, 'projects/<p>/locations/" +
-                  "<l>/entryGroups/<g>/entries/<id>'."))
-           .toBe(advice);
+       const found = res.warnings.filter(w => w.includes(cleanSrc));
+       expect([res.ok, found.length]).toEqual([true, 1]);
+       expect(found[0]).toEndWith(tail);
      });
 
   test('keeps a third-party entry name as written, with no warning', async () => {

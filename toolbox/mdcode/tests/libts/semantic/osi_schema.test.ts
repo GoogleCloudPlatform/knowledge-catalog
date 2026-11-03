@@ -276,7 +276,8 @@ type Case = [label: string, doc: any, valid: boolean, loaderBug?: string];
 // The loader accepts an empty name or description here; the schema does not.
 const EMPTY_TEXT_BUG = 'b/577102892';
 
-// One valid and one malformed case per source form, and the '//' URI form.
+// One valid and one malformed case per source form, the '//' URI form, and
+// a name with double quotes or backticks.
 function sourceCases(withSource: (source: string) => any): Case[] {
   return [
     ...(Object.keys(SOURCE) as (keyof typeof SOURCE)[]).flatMap((form): Case[] => [
@@ -284,6 +285,8 @@ function sourceCases(withSource: (source: string) => any): Case[] {
       [`a malformed ${form} source`, withSource(BAD_SOURCE[form]), false],
     ]),
     ['a source with a leading //', withSource(`//${SOURCE.bigquery}`), false],
+    ['a source with double quotes', withSource(SOURCE.bigquery.replace('orders', '"orders"')), false],
+    ['a source with backticks', withSource(SOURCE.bigquery.replace('orders', '`orders`')), false],
   ];
 }
 
