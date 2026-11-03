@@ -281,17 +281,29 @@ export async function transpileModel(
     // the exact case the emitter needs. Comparing the output against itself
     // (rather than the vendor input) avoids false positives from dialect-
     // specific identifier quoting.
-    const recased = recasedEntities(res.sql, target, entityNames);
-    if (recased === undefined) {
+    const cols = columnReferences(res.sql, target);
+    if (cols === undefined) {
       warnings.push(
           `${ctx}: transpiled '${request.dialect}' -> '${target}' could not ` +
           `be parsed; qualifier check was skipped`);
-    } else if (recased) {
-      warnings.push(
-          `${ctx}: transpiled '${request.dialect}' -> '${
-              target}' but it re-cased an entity qualifier the emitter matches ` +
-          `case-sensitively (${recased}); left untranslated`);
-      continue;
+    } else {
+      const emitterVisible = entitiesReached(cols, entityNames);
+      const anyCase = [
+        ...new Set(
+            cols.flatMap(c => {
+              if (!c.qualifier) return [];
+              const lower = c.qualifier.toLowerCase();
+              return entityNames.filter(n => n.toLowerCase() === lower);
+            })),
+      ];
+      if (!sameSet(emitterVisible, anyCase)) {
+        warnings.push(
+            `${ctx}: transpiled '${request.dialect}' -> '${
+                target}' but it re-cased an entity qualifier the emitter matches ` +
+            `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
+            `left untranslated`);
+        continue;
+      }
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
@@ -304,26 +316,6 @@ export async function transpileModel(
   }
 
   return {model: clone, warnings};
-}
-
-/**
- * Says which entities `sql`, written in `target`, names only in another letter
- * case than `entityNames` gives, as `{reached} vs {any case}`, or '' when it
- * names each at least once in its own case. Undefined when `sql` cannot be
- * parsed.
- */
-function recasedEntities(
-    sql: string, target: string, entityNames: string[]): string|undefined {
-  const cols = columnReferences(sql, target);
-  if (cols === undefined) return undefined;
-  const emitterVisible = entitiesReached(cols, entityNames);
-  const anyCase = [...new Set(cols.flatMap(c => {
-    const lower = c.qualifier?.toLowerCase();
-    return lower ? entityNames.filter(n => n.toLowerCase() === lower) : [];
-  }))];
-  return sameSet(emitterVisible, anyCase) ?
-      '' :
-      `${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}`;
 }
 
 function sameSet(a: string[], b: string[]): boolean {
