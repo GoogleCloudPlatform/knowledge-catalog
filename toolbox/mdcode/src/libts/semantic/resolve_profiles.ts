@@ -4,8 +4,7 @@
 // A model is authored as ONE logical declaration (entities, fields,
 // relationships, metrics, the grain, and the graph shape) plus zero or more
 // BINDING PROFILES that supply the physical facets it leaves open: each entity's
-// `source`, each field's column (`expression`) and each action's `executor`. An
-// old-style `semantic_model:` profile may also name a deployment target.
+// `source`, each field's column (`expression`) and each action's `executor`.
 // `kcmd push` applies the profile each deployment names to the logical model
 // BY NAME and deploys the result. See docs/semantic-model/profiles.md.
 //
@@ -27,7 +26,8 @@
 //     metrics, and may not add elements or change what anything means. It runs
 //     on the parsed authoring documents (the readable, sugared form) before
 //     schema validation, so a profile is written in the same syntax as the
-//     model. Only the legacy `semantic_model:` wrapper still goes through it.
+//     model. Nothing in production merges a profile any more; the tests still
+//     merge the legacy `semantic_model:` wrapper fixtures with it.
 //   - pruneUnavailable runs over the loaded IR and drops each field left unbound
 //     or excluded, every field that reads one of those, and every metric whose
 //     expression reads any of them, returning the pruned model and a
@@ -77,8 +77,8 @@ export type ProfileExclusion = {
 // profile can move data but never change what the model means.
 //
 // A profile file is a top-level profile object (`name`, `entities`, ...). The
-// older form, a `semantic_model:` wrapper around partial models, is still
-// accepted until legacy profile selection is removed; LEGACY_MODEL_KEYS
+// older form, a `semantic_model:` wrapper around partial models, is read only
+// by mergeProfile, which no command calls any more; LEGACY_MODEL_KEYS
 // describes it. It takes the keys the new form takes, plus the
 // `deployment_target` and `version` it always has.
 const PROFILE_FILE_KEYS = new Set([
@@ -944,43 +944,17 @@ function connectingRelationshipKept(
 }
 
 
-// Whether a profile text is in the profile file form (a top-level profile
-// object) rather than the legacy `semantic_model:` wrapper.
-export function isProfileFileForm(text: string): boolean {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
-        (doc as any).semantic_model === undefined;
-  } catch {
-    return false;
-  }
-}
-
-// Whether `text` reads as a legacy `semantic_model:` wrapper: a mapping with a
-// `semantic_model` list and no key but `version` beside it, as mergeProfile
-// reads one. A text that does not parse is not one, so loadProfileFile
-// reports it.
-export function isLegacyWrapper(text: string): boolean {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
-        Array.isArray(doc.semantic_model) &&
-        Object.keys(doc).every(k => k === 'semantic_model' || k === 'version');
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Parses a logical model document and a binding profile document, merges the
  * profile onto the model by name, and returns the merged authoring text plus
- * any merge warnings. Push, `profiles` and creating a runtime use it for the
- * legacy `semantic_model:` wrapper, and apply a profile file with
- * applyProfileFile. The tests merge profile files too, as the result
- * applyProfile must match. On a parse error or a binding-contract violation it
- * returns `error` for the caller to surface. `deploymentTarget` is set when
- * the merged model names its target with a `deployment_target` key, which the
- * loader turns into a deployment named `default`.
+ * any merge warnings. Nothing in production merges a profile any more: push,
+ * `profiles` and creating a runtime apply a profile file with
+ * applyProfileFile. The tests merge profile files and the legacy
+ * `semantic_model:` wrapper fixtures, as the result applyProfile must match.
+ * On a parse error or a binding-contract violation it returns `error` for the
+ * caller to surface. `deploymentTarget` is set when the merged model names its
+ * target with a `deployment_target` key, which the loader turns into a
+ * deployment named `default`.
  */
 export function mergeProfileOntoDoc(
     logicalText: string, profileText: string, profileName: string): {
@@ -1103,8 +1077,7 @@ export function applyProfile(
  * error that stops it, naming the profile. The warnings are those of the
  * model file's load (`opts.from`), less the ones about values the profile
  * replaces, followed by those for the values it sets, each prefixed with the
- * document name. Callers use it for a text in profile-file form (see
- * isProfileFileForm).
+ * document name.
  */
 export function applyProfileFile(
     model: SemanticModel, text: string, profileName: string,
@@ -1202,8 +1175,8 @@ function applyToDocument(
 }
 
 /**
- * A profile a model declares: the text of a profile file or a legacy wrapper,
- * or a profile already read, such as one a vanilla model carries in its GOOGLE
+ * A profile a model declares: the text of a profile file, or a profile already
+ * read, such as one a vanilla model carries in its GOOGLE
  * block.
  */
 export type DeclaredProfile = {name: string; text: string}|
@@ -1235,17 +1208,9 @@ export function declaredProfiles(
   ];
 }
 
-/** A profile, in either form, applied to one model document. */
-export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
-  // A legacy `semantic_model:` wrapper, merged into the document's text.
-  // `deploymentTarget` is set when the merged model names its target with a
-  // `deployment_target` key.
-  kind: 'wrapper';
-  text: string;
-  excluded: ProfileExclusion[];
-  warnings: string[];
-  deploymentTarget: boolean;
-}|{kind: 'error'; error: string; stage: 'load'|'apply'}|{
+/** A profile applied to one model document. */
+export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|
+    {kind: 'error'; error: string; stage: 'load'|'apply'}|{
   // The document declares no profile by that name.
   kind: 'missing';
   declared: string[];
@@ -1254,24 +1219,17 @@ export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
 /**
  * Finds the profile `profileName` among `profiles`, the ones the model
  * document `doc` declares, and applies it, as push, `kcmd profiles` and the
- * runtime do. A profile file, or a profile already read, applies to the
- * document loaded on its own. A legacy `semantic_model:` wrapper merges into
- * the document's text until b/568186042 stops selecting it.
+ * runtime do. It applies to the document loaded on its own.
  */
 export function profileForDocument(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
     profileName: string, load: DialectLoad = {}): DocumentProfile {
   const chosen = profiles.find(p => p.name === profileName);
   if (!chosen) return {kind: 'missing', declared: profiles.map(p => p.name)};
-  if ('spec' in chosen || isProfileFileForm(chosen.text)) {
-    const res = 'spec' in chosen ?
-        applyProfileToDocument(doc, chosen.spec, load) :
-        applyProfileFileToDocument(doc, chosen.text, profileName, load);
-    return 'error' in res ? {kind: 'error', ...res} : {kind: 'file', ...res};
-  }
-  const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
-  if ('error' in res) return {kind: 'error', error: res.error, stage: 'apply'};
-  return {kind: 'wrapper', ...res};
+  const res = 'spec' in chosen ?
+      applyProfileToDocument(doc, chosen.spec, load) :
+      applyProfileFileToDocument(doc, chosen.text, profileName, load);
+  return 'error' in res ? {kind: 'error', ...res} : {kind: 'file', ...res};
 }
 
 /**
@@ -1292,8 +1250,8 @@ function modelFileAloneMessage(
 /**
  * The error a command gives when a profile cannot be applied to the model
  * document `docName`, whose profile files are `profileFiles`. An error applying
- * a profile file names that file, as the profile checks do. An error merging a
- * legacy wrapper names the model document.
+ * a profile file names that file, as the profile checks do. An error applying
+ * a profile from a GOOGLE block names the model document.
  */
 export function profileErrorMessage(
     docName: string, res: Extract<DocumentProfile, {kind: 'error'}>,
@@ -1303,8 +1261,7 @@ export function profileErrorMessage(
   if (res.stage === 'load') {
     return modelFileAloneMessage(res.error, profileName);
   }
-  const file = profileFiles.find(
-      p => p.name === profileName && !isLegacyWrapper(p.text));
+  const file = profileFiles.find(p => p.name === profileName);
   return `[${file?.fileName ?? docName}] ${res.error}`;
 }
 

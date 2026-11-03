@@ -115,16 +115,6 @@ describe('SemanticModelLayout profile discovery', () => {
     fs.writeFileSync(path.join(dir, `${name}.yaml`), `# ${name}\n`);
   }
 
-  test('profileDocuments reads <model>.profiles/*.yaml by name', async () => {
-    writeModel('eg', 'commerce', 'version: x\n');
-    writeProfile('eg', 'commerce', 'analytical');
-    writeProfile('eg', 'commerce', 'operational');
-    const l = await layout('eg');
-    expect(l.profileDocuments('commerce').map(p => p.name)).toEqual(
-        ['analytical', 'operational']);
-    expect(l.profileDocuments('commerce')[0].text).toBe('# analytical\n');
-  });
-
   test('a model with no profiles directory yields none', async () => {
     writeModel('eg', 'commerce', 'version: x\n');
     const l = await layout('eg');
@@ -175,12 +165,14 @@ describe('SemanticModelLayout sibling profile files', () => {
     expect(docs[0].text).toBe('name: prod\n');
   });
 
-  test('the legacy directory is read only when no sibling file exists', async () => {
+  // Push, `kcmd profiles` and `kcmd skills-generate` reject the directory
+  // before they read a profile (see legacyProfileDirs).
+  test('profileDocuments never reads the legacy directory', async () => {
     write('retail.yaml', GOOGLE);
     fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
     fs.writeFileSync(path.join(groupDir(), 'retail.profiles', 'old.yaml'), '# old\n');
     let l = await layout('eg');
-    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['old']);
+    expect(l.profileDocuments('retail')).toEqual([]);
 
     write('retail.profile.prod.yaml', 'name: prod\n');
     l = await layout('eg');
@@ -232,18 +224,6 @@ describe('SemanticModelLayout sibling profile files', () => {
     write('retail.profile.prod.yaml', 'name: prod\n');
     const l = await layout('eg');
     expect(() => l.profileDocuments('retail')).toThrow(/Google-flavor only/);
-    expect(() => l.profilePaths('retail')).toThrow(/Google-flavor only/);
-  });
-
-  test('a legacy profile directory beside a vanilla model is an error', async () => {
-    write('retail.yaml', 'version: 0.2.0.dev0\n');
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    write('retail.profiles/prod.yaml', 'name: prod\n');
-    const l = await layout('eg');
-    const message = "Profile directory 'retail.profiles/' sits beside " +
-        "'retail.yaml', which is a 0.2.0.dev0 document";
-    expect(() => l.profileDocuments('retail')).toThrow(message);
-    expect(() => l.profilePaths('retail')).toThrow(message);
   });
 
   test('profileDocuments gives each file\'s path', async () => {
@@ -272,30 +252,28 @@ describe('SemanticModelLayout sibling profile files', () => {
          ]);
        });
 
-  test('a legacy profile directory beside a Google-flavor model is read', async () => {
-    write('retail.yaml', GOOGLE);
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    write('retail.profiles/prod.yaml', 'name: prod\n');
-    const l = await layout('eg');
-    expect(l.profileDocuments('retail').map(d => d.name)).toEqual(['prod']);
-  });
-
+  // An editor lock file (Emacs `.#<file>`, macOS `._<file>`) is no orphan.
   test('orphanProfilePaths lists profile files with no model', async () => {
     write('retail.yaml', GOOGLE);
     write('retail.profile.prod.yaml', 'name: prod\n');
     write('gone.profile.prod.yaml', 'name: prod\n');
+    write('.#retail.profile.prod.yaml', '');
     const l = await layout('eg');
     expect(l.orphanProfilePaths()).toEqual(
         [path.join(groupDir(), 'gone.profile.prod.yaml')]);
   });
 
-  test('legacyProfileDirs lists <model>.profiles directories', async () => {
-    write('retail.yaml', GOOGLE);
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    const l = await layout('eg');
-    expect(l.legacyProfileDirs()).toEqual(
-        [path.join(groupDir(), 'retail.profiles')]);
-  });
+  // `mv` and `pull --force-remove` leave an emptied directory behind.
+  test('legacyProfileDirs lists <model>.profiles directories with a profile file',
+       async () => {
+         write('retail.yaml', GOOGLE);
+         fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+         write('retail.profiles/old.yaml', '# old\n');
+         fs.mkdirSync(path.join(groupDir(), 'shop.profiles'));
+         const l = await layout('eg');
+         expect(l.legacyProfileDirs()).toEqual(
+             [path.join(groupDir(), 'retail.profiles')]);
+       });
 
   test('profilePath, writeProfileDocument and removeProfileDocument', async () => {
     write('retail.yaml', GOOGLE);

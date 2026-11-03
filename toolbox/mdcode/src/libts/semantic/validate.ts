@@ -184,7 +184,8 @@ export function validateDeployments(
   // them.
   let referenced: Set<string>|undefined;
   for (const d of model.deployments ?? []) {
-    // A legacy wrapper is not in `model.profiles`, and is left out.
+    // A profile file that does not load is not in `model.profiles`, and is
+    // left out; push reports the file.
     const named = model.profiles?.find(p => p.name === d.profile);
     if ((d.profile ?? DEFAULT_PROFILE) !== DEFAULT_PROFILE && !named) continue;
     const resolved = resolveModelDeployments(model, [d.name]);
@@ -1668,7 +1669,8 @@ export function deploymentTableErrors(
   let bindings = 'the model file';
   if (deployment.profile !== DEFAULT_PROFILE) {
     const profile = model.profiles?.find(p => p.name === deployment.profile);
-    // `model.profiles` lacks a legacy wrapper, so it is not checked.
+    // `model.profiles` lacks a profile file that does not load, which push
+    // reports instead.
     if (!profile) return [];
     const bound = new Map(profile.entities.map(pe => [pe.name, pe.source]));
     sourceOf = e => bound.get(e.name);

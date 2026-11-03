@@ -20,9 +20,9 @@
 // expression, action or constraint still gets a store and a skill. So does a
 // model whose deployment breaks the rules of its engine, or whose model file
 // binds a field with no text in the dialect of its entity's source. Like push,
-// the runtime loads every profile file except a legacy wrapper of a profile
-// it does not read. It does not run push's checks that every named profile
-// applies to the model, is complete and has valid keys and join columns. So a
+// the runtime loads every profile file. It does not run push's checks that
+// every named profile applies to the model, is complete and has valid keys
+// and join columns. So a
 // model whose profile file or GOOGLE block profile those checks refuse still
 // gets a store and a skill under the default profile. The runtime skips the
 // checks of push's Knowledge Catalog leg: one model per entry group, and with
@@ -370,39 +370,6 @@ semantic_model:
 });
 
 
-// A legacy wrapper that sets `deployment_target` to an empty string. Push
-// reads no graph target and publishes to Knowledge Catalog only, and the
-// loader makes no deployment of it.
-describe('a legacy wrapper with an empty deployment_target', () => {
-  test('push accepts it, so skills-generate does too', async () => {
-    writeScope({
-      'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-      'commerce.profiles/prod.yaml': `semantic_model:
-  - name: commerce
-    deployment_target: ""
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/OrdersProd
-`,
-    });
-    const r = await runAll('prod');
-    expect(r.push.code).toBe(0);
-    expect(r.report.code).toBe(0);
-    expect(r.skills.out).not.toContain('Error:');
-    expect(r.skills.code).toBe(0);
-  });
-});
-
-
 // An entity extends one the model does not declare. The loader lets it
 // through, and push reports it when it resolves inheritance.
 describe('an entity that extends an unknown entity', () => {
@@ -670,42 +637,6 @@ entities:
          }
        });
 
-  test('a legacy profile named default in any letter case: every command refuses',
-       async () => {
-         const reserved = "a binding profile may not be named 'default'";
-         for (const file of ['Default.yaml', 'default.yaml']) {
-           fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
-           writeScope({
-             'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployments:
-      - name: prod
-        target: ${SPANNER_DB}/graphs/commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-             [`commerce.profiles/${file}`]: `semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-`,
-           });
-           for (const profile of [undefined, 'Default']) {
-             const r = await runAll(profile);
-             expect(codes(r))
-                 .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-             expect(r.printStore.out).toContain(reserved);
-             expect(r.skills.out).toContain(reserved);
-           }
-         }
-       });
-
   // The report throws on a profile file whose `name:` does not match its file
   // name, and the CLI prints the error and exits 1. Push prints the same error
   // and exits 1.
@@ -777,45 +708,6 @@ entities:
              "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
              "'Nope' is not in the logical model");
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
-       });
-
-  // Push and the runtime load every profile file except a legacy wrapper,
-  // whichever profile they read. A file in <model>.profiles/ takes its
-  // profile name from its file name, and loading it checks the `name:`
-  // inside it.
-  test('a file in <model>.profiles/ whose name does not match its file name: every command refuses',
-       async () => {
-         writeScope({
-           'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployments:
-      - name: prod
-        target: ${SPANNER_DB}/graphs/commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-           'commerce.profiles/prod.yaml': `name: prd
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`,
-         });
-         const mismatch = "[commerce.profiles/prod.yaml] profile 'prod' " +
-             "declares name 'prd', which does not match its file's profile " +
-             "name 'prod'";
-         for (const profile of [undefined, 'prod']) {
-           const r = await runAll(profile);
-           expect(codes(r))
-               .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-           expect(r.push.out).toContain(`Error: ${mismatch}`);
-           expect(r.printStore.out).toBe(`Error: ${mismatch}`);
-           expect(r.skills.out).toContain(`Error: ${mismatch}`);
-         }
        });
 
   test('a profile file that sets a key a profile may not set: every command refuses',

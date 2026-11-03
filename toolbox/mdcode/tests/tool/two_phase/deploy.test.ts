@@ -93,6 +93,16 @@ scenarios('push writes nothing when a check fails', [
           'own tables and columns, so it belongs in the profile that ' +
           'binds them, not in the model. Move the executor into each ' +
           'profile that performs this write as DML.')],
+    }, {
+      actions: [{name: 'refund', executor: {mcp: {server: 's', tool: 't'}}}],
+      profiles: {p: {...boundTo('p'), actions: [
+        {name: 'refund', executor: {mcp: {server: 's', tool: ' '}}},
+      ]}},
+      code: 1,
+      nothingWritten: true,
+      errors: [err(
+          "action 'refund' in model 'commerce' (commerce, deployment 'g') has " +
+          "an mcp executor whose 'tool' is missing or blank.")],
     }],
   },
   spannerAnswers('does not exist', 404, 'Not found', 'not found'),
