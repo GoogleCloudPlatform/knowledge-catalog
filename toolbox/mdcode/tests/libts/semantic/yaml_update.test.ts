@@ -8,13 +8,17 @@ import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic
 
 // Each row changes a plain copy of `input`. The nodes kept from the input keep
 // their quoting and flow style, and the text must still read back as the new
-// value. A row with a fourth column must give that text.
+// value, under YAML 1.1 as well. A row with a fourth column must give that
+// text.
 test.each<[string, string, (value: any) => void, string?]>([
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   ['a plain scalar set to two lines', 'a: x  # c\n', v => v.a = 'x\ny'],
   ['a quoted string set to a number', 'a: "x"  # c\n', v => v.a = 5],
-  ['a JSON file', '{"a": "x", "b": [1, 2]}', v => (v.a = 'true', v.b[1] = 3)],
+  [
+    'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
+    v => (v.a = 'true', v.b[1] = 3)
+  ],
   ['an anchor and its alias', 'a: &x {k: 1}  # c\nb: *x\n', v => v.a.k = 2],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
@@ -43,5 +47,6 @@ test.each<[string, string, (value: any) => void, string?]>([
   const output = updateText(text, document, value, links);
 
   expect(yaml.parse(output)).toEqual(value);
+  expect(yaml.parse(output, {version: '1.1'})).toEqual(value);
   if (expected) expect(output).toBe(expected);
 });

@@ -22,7 +22,8 @@ export function parseForUpdate(text: string):
   }
   // An empty list or mapping stays `[]` or `{}`. A blank line before a
   // collection's first item is dropped, since it would print as a line of
-  // spaces or a `- ` alone on its line.
+  // spaces or a `- ` alone on its line. A string a YAML 1.1 reader takes for
+  // another type, such as `yes`, is quoted, as in every changed part.
   yaml.visit(document, {
     Collection: (_, n) => {
       n.flow = n.items.length === 0;
@@ -32,6 +33,7 @@ export function parseForUpdate(text: string):
     },
     Scalar: (_, n) => void delete n.type,
   });
+  document.setSchema('1.2', {...YAML_OPTIONS, compat: 'yaml-1.1'});
   const yamlText = document.toString({lineWidth: 0});
   return {document: parse(yamlText), text: yamlText};
 }
