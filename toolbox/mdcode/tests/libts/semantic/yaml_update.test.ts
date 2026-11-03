@@ -47,6 +47,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\n  t: [x, z]\n  u: \'z\'\n  "k: 1": \'x\'\n  w:\n    - p  # q\n\n    - r\nc: \'p\'\nd:\n  c: p\n'
   ],
   [
+    'moved values with a comment above their first key or item',
+    'a:\n  custom:\n    m:\n      # c\n      k: 1\n    l:\n      # d\n      - x\n',
+    v => v.a = {...v.a.custom}, 'a:\n  m:\n    # c\n    k: 1\n  l:\n    # d\n    - x\n'
+  ],
+  [
     'moved values in flow mappings, one that a flow mapping would read differently',
     'a:\n  custom: {t: 1}\n  m: a, b\n  o: \'x\'\nb: {i: 1, o: \'z\'}\n',
     v => (v.a.custom.m = v.a.m, v.a.custom.o = v.a.o, delete v.a.m, delete v.a.o,

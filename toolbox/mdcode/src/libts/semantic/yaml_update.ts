@@ -497,8 +497,14 @@ function movedText(
   const [from, to] = v.range;
   const shift = col - (p.key.range![0] - lineStart(t, p.key.range![0]));
   const own = t.slice(lineStart(t, from), from).trim() === '';
+  // A mapping or list on the lines under its key starts on the line after the
+  // key, so the comments above its first key or item move with it. The
+  // comments above a scalar under its key stay with the key.
+  const start = !own ? from :
+      yaml.isCollection(v) ? nextLine(t, p.key.range![1]) :
+                             lineStart(t, from);
   const stop = t.slice(lineStart(t, to), to).trim() ? to : lineStart(t, to);
-  const lines = t.slice(own ? lineStart(t, from) : from, stop)
+  const lines = t.slice(start, stop)
                     .replace(/\r?\n$/, '')
                     .split(/\r?\n/)
                     .map((l, i) => !own && i === 0 ? l :
