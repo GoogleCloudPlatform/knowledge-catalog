@@ -35,10 +35,6 @@ const outside = (target: string) => `'${ENTRY}', which is not ${
 // Push's refusal of deployment 'd', which targets `target`.
 const refused = (target: string) => `[commerce] deployment 'd' targets ${
     target}, but the model file binds entity 'Customer' to ${outside(target)}`;
-// The refusal for a model with no deployments list, in the document `doc`.
-const singlePhase = (target: string, doc = 'commerce') =>
-    `model 'commerce' (${doc}) targets ${target}, but binds entity ` +
-    `'Customer' to ${outside(target)}`;
 const BIGQUERY = refused(BQ);
 const ORDER = {
   name: 'Order', source: bqTable('order'), primary_key: ['id'],
@@ -64,24 +60,12 @@ scenarios('a third-party table', [
        errors: [err(refused(ALLOYDB_DB))],
        nothingWritten: true},
       {
-        deployments: [], flags: {deployment: false}, code: 0,
+        deployments: [], code: 0,
         events: ['preflight', 'apply'], calls: [`lookupEntry ${ENTRY}`],
         check: r => expect(r.published.entities[0]).toMatchObject(
             {authoredSource: ENTRY, sourceDialect: 'SNOWFLAKE'}),
       },
-      {deployments: [], code: 0, events: ['deployKc']},
     ],
-  },
-  {
-    // A model with no deployments list pushes in one phase, with the target
-    // of a legacy profile folder.
-    name: 'a model with no deployments list is refused before anything is written when its legacy profile names a graph',
-    flags: {profile: 'sf'},
-    legacy: {sf: `semantic_model:\n  - name: commerce\n    deployment_target: ${
-        spannerGraph('g')}\n    entities: [{name: Customer, source: ${ENTRY}}]\n`},
-    services: LOOKUP,
-    code: 1, nothingWritten: true,
-    errors: [err(singlePhase(SPANNER, "commerce, profile 'sf'"))],
   },
   {
     name: 'a missing entry stops the push before anything is written, with or without --skip-source-check, and stops kcmd profiles',

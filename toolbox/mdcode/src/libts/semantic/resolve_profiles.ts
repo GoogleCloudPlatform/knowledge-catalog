@@ -4,10 +4,9 @@
 // A model is authored as ONE logical declaration (entities, fields,
 // relationships, metrics, the grain, and the graph shape) plus zero or more
 // BINDING PROFILES that supply the physical facets it leaves open: each entity's
-// `source`, each field's column (`expression`) and each action's `executor`. An
-// old-style `semantic_model:` profile may also name a deployment target.
-// `kcmd push --profile <name>` applies the selected profile to the logical
-// model BY NAME and deploys the result. See docs/semantic-model/profiles.md.
+// `source`, each field's column (`expression`) and each action's `executor`.
+// `kcmd push` applies the profile each deployment names to the logical model
+// BY NAME and deploys the result. See docs/semantic-model/profiles.md.
 //
 // Three passes live here:
 //   - applyProfile applies a profile, read into a ProfileSpec, to a loaded
@@ -27,7 +26,8 @@
 //     metrics, and may not add elements or change what anything means. It runs
 //     on the parsed authoring documents (the readable, sugared form) before
 //     schema validation, so a profile is written in the same syntax as the
-//     model. Only the legacy `semantic_model:` wrapper still goes through it.
+//     model. Nothing in production merges a profile any more; the tests still
+//     merge the legacy `semantic_model:` wrapper fixtures with it.
 //   - pruneUnavailable runs over the loaded IR and drops each field left unbound
 //     or excluded, every field that reads one of those, and every metric whose
 //     expression reads any of them, returning the pruned model and a
@@ -77,8 +77,8 @@ export type ProfileExclusion = {
 // profile can move data but never change what the model means.
 //
 // A profile file is a top-level profile object (`name`, `entities`, ...). The
-// older form, a `semantic_model:` wrapper around partial models, is still
-// accepted until legacy profile selection is removed; LEGACY_MODEL_KEYS
+// older form, a `semantic_model:` wrapper around partial models, is read only
+// by mergeProfile, which no command calls any more; LEGACY_MODEL_KEYS
 // describes it. It takes the keys the new form takes, plus the
 // `deployment_target` and `version` it always has.
 const PROFILE_FILE_KEYS = new Set([
@@ -944,43 +944,17 @@ function connectingRelationshipKept(
 }
 
 
-// Whether a profile text is in the profile file form (a top-level profile
-// object) rather than the legacy `semantic_model:` wrapper.
-export function isProfileFileForm(text: string): boolean {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
-        (doc as any).semantic_model === undefined;
-  } catch {
-    return false;
-  }
-}
-
-// Whether `text` reads as a legacy `semantic_model:` wrapper: a mapping with a
-// `semantic_model` list and no key but `version` beside it, as mergeProfile
-// reads one. A text that does not parse is not one, so loadProfileFile
-// reports it.
-export function isLegacyWrapper(text: string): boolean {
-  try {
-    const doc = yaml.parse(text, YAML_OPTIONS);
-    return !!doc && typeof doc === 'object' && !Array.isArray(doc) &&
-        Array.isArray(doc.semantic_model) &&
-        Object.keys(doc).every(k => k === 'semantic_model' || k === 'version');
-  } catch {
-    return false;
-  }
-}
-
 /**
  * Parses a logical model document and a binding profile document, merges the
  * profile onto the model by name, and returns the merged authoring text plus
- * any merge warnings. Push, `profiles` and creating a runtime use it for the
- * legacy `semantic_model:` wrapper, and apply a profile file with
- * applyProfileFile. The tests merge profile files too, as the result
- * applyProfile must match. On a parse error or a binding-contract violation it
- * returns `error` for the caller to surface. `deploymentTarget` is set when
- * the merged model names its target with a `deployment_target` key, which the
- * loader turns into a deployment named `default`.
+ * any merge warnings. Nothing in production merges a profile any more: push,
+ * `profiles` and creating a runtime apply a profile file with
+ * applyProfileFile. The tests merge profile files and the legacy
+ * `semantic_model:` wrapper fixtures, as the result applyProfile must match.
+ * On a parse error or a binding-contract violation it returns `error` for the
+ * caller to surface. `deploymentTarget` is set when the merged model names its
+ * target with a `deployment_target` key, which the loader turns into a
+ * deployment named `default`.
  */
 export function mergeProfileOntoDoc(
     logicalText: string, profileText: string, profileName: string): {
@@ -1103,8 +1077,7 @@ export function applyProfile(
  * error that stops it, naming the profile. The warnings are those of the
  * model file's load (`opts.from`), less the ones about values the profile
  * replaces, followed by those for the values it sets, each prefixed with the
- * document name. Callers use it for a text in profile-file form (see
- * isProfileFileForm).
+ * document name.
  */
 export function applyProfileFile(
     model: SemanticModel, text: string, profileName: string,
@@ -1157,14 +1130,11 @@ function applyProfileSpec(
 
 /** A profile applied to a model document loaded on its own. */
 export interface AppliedProfile {
-  // The model document as it loads on its own, and with the profile applied.
-  base: SemanticModel;
+  // The model document with the profile applied.
   model: SemanticModel;
   // The document's load warnings, less those the profile settles, then those
   // its values give, each prefixed with the document name.
   warnings: string[];
-  // Each concrete entity left with no source, which a pruned push rejects.
-  sourceless: string[];
 }
 
 /**
@@ -1198,18 +1168,15 @@ function applyToDocument(
   const loaded = loadSemanticModels(
       [{name: doc.name, text: doc.text}], {bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error, stage: 'load'};
-  const base = loaded.models[0].model;
-  const res = apply(base, {document: doc.name, warnings: loaded.warnings});
+  const res = apply(
+      loaded.models[0].model, {document: doc.name, warnings: loaded.warnings});
   if ('error' in res) return {error: res.error, stage: 'apply'};
-  const sourceless = (res.model.entities ?? [])
-                         .filter(e => !e.abstract && !e.dataSource)
-                         .map(e => e.name);
-  return {base, model: res.model, warnings: res.warnings, sourceless};
+  return {model: res.model, warnings: res.warnings};
 }
 
 /**
- * A profile a model declares: the text of a profile file or a legacy wrapper,
- * or a profile already read, such as one a vanilla model carries in its GOOGLE
+ * A profile a model declares: the text of a profile file, or a profile already
+ * read, such as one a vanilla model carries in its GOOGLE
  * block.
  */
 export type DeclaredProfile = {name: string; text: string}|
@@ -1241,17 +1208,9 @@ export function declaredProfiles(
   ];
 }
 
-/** A profile, in either form, applied to one model document. */
-export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
-  // A legacy `semantic_model:` wrapper, merged into the document's text.
-  // `deploymentTarget` is set when the merged model names its target with a
-  // `deployment_target` key.
-  kind: 'wrapper';
-  text: string;
-  excluded: ProfileExclusion[];
-  warnings: string[];
-  deploymentTarget: boolean;
-}|{kind: 'error'; error: string; stage: 'load'|'apply'}|{
+/** A profile applied to one model document. */
+export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|
+    {kind: 'error'; error: string; stage: 'load'|'apply'}|{
   // The document declares no profile by that name.
   kind: 'missing';
   declared: string[];
@@ -1260,24 +1219,17 @@ export type DocumentProfile = ({kind: 'file'}&AppliedProfile)|{
 /**
  * Finds the profile `profileName` among `profiles`, the ones the model
  * document `doc` declares, and applies it, as push, `kcmd profiles` and the
- * runtime do. A profile file, or a profile already read, applies to the
- * document loaded on its own. A legacy `semantic_model:` wrapper merges into
- * the document's text until b/568186042 stops selecting it.
+ * runtime do. It applies to the document loaded on its own.
  */
 export function profileForDocument(
     doc: {name: string; text: string}, profiles: DeclaredProfile[],
     profileName: string, load: DialectLoad = {}): DocumentProfile {
   const chosen = profiles.find(p => p.name === profileName);
   if (!chosen) return {kind: 'missing', declared: profiles.map(p => p.name)};
-  if ('spec' in chosen || isProfileFileForm(chosen.text)) {
-    const res = 'spec' in chosen ?
-        applyProfileToDocument(doc, chosen.spec, load) :
-        applyProfileFileToDocument(doc, chosen.text, profileName, load);
-    return 'error' in res ? {kind: 'error', ...res} : {kind: 'file', ...res};
-  }
-  const res = mergeProfileOntoDoc(doc.text, chosen.text, profileName);
-  if ('error' in res) return {kind: 'error', error: res.error, stage: 'apply'};
-  return {kind: 'wrapper', ...res};
+  const res = 'spec' in chosen ?
+      applyProfileToDocument(doc, chosen.spec, load) :
+      applyProfileFileToDocument(doc, chosen.text, profileName, load);
+  return 'error' in res ? {kind: 'error', ...res} : {kind: 'file', ...res};
 }
 
 /**
@@ -1286,7 +1238,7 @@ export function profileForDocument(
  * complete, such as one with a half-given join, fails that load. Names
  * `profileName` when one profile is selected.
  */
-export function modelFileAloneMessage(
+function modelFileAloneMessage(
     error: string, profileName?: string): string {
   return profileName === undefined ?
       `${error} (the model file must load on its own before a profile file ` +
@@ -1298,8 +1250,8 @@ export function modelFileAloneMessage(
 /**
  * The error a command gives when a profile cannot be applied to the model
  * document `docName`, whose profile files are `profileFiles`. An error applying
- * a profile file names that file, as the profile checks do. An error merging a
- * legacy wrapper names the model document.
+ * a profile file names that file, as the profile checks do. An error applying
+ * a profile from a GOOGLE block names the model document.
  */
 export function profileErrorMessage(
     docName: string, res: Extract<DocumentProfile, {kind: 'error'}>,
@@ -1309,8 +1261,7 @@ export function profileErrorMessage(
   if (res.stage === 'load') {
     return modelFileAloneMessage(res.error, profileName);
   }
-  const file = profileFiles.find(
-      p => p.name === profileName && !isLegacyWrapper(p.text));
+  const file = profileFiles.find(p => p.name === profileName);
   return `[${file?.fileName ?? docName}] ${res.error}`;
 }
 
@@ -1336,12 +1287,6 @@ export function reservedProfileNameError(
   return `[${docName}] a binding profile may not be named '${
              DEFAULT_PROFILE}' -- that name refers to the model's inline ` +
       `bindings. Rename the profile.`;
-}
-
-/** The error for a concrete entity no profile file or model file binds. */
-export function profileSourceMessage(entity: string): string {
-  return `entity '${entity}' has no source in this profile or in the model ` +
-      `file`;
 }
 
 // The warnings a load of the applied model would give, each prefixed with the
@@ -1961,26 +1906,14 @@ function dialectOfSources(
 
 /** What the caller of validateProfileCompleteness checks itself. */
 export interface CompletenessOptions extends DialectLoad {
-  // The caller checks the model the profile gives, as push does for the
-  // profile it selects. The rules the caller's check covers are left out:
-  // whether the hierarchy still resolves, what the profile's field
-  // expressions read, and whether its key and join columns are column names.
-  // No warning is given for SQL the parser cannot read, since the caller's
-  // check gives it. When the hierarchy does not resolve with the profile
-  // applied, the caller stops reading what the SQL reads. This check then
-  // reads what the profile's field expressions read, and gives the warning.
-  applied?: boolean;
   // The caller warns about the model file's SQL that it reads, which it does
   // only when the hierarchy of the model it checks resolves. It reads an
   // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
-  // every other entry in its own dialect. It does not read the model file's
-  // text of a field in `rebound`, written as 'Entity.field', because the
-  // profile it applies rebinds or excludes that field. A warning about the
-  // model file's SQL is left out when the field is not in `rebound` and the
-  // caller also warns about each text this check cannot read: an entry in a
-  // dialect other than ANSI_SQL, or an ANSI_SQL text when this profile's
-  // dialect is `dialect` or the caller cannot read it either.
-  ownSqlOnly?: {dialect?: string; rebound?: string[]};
+  // every other entry in its own dialect. A warning about the model file's SQL
+  // is left out when the caller also warns about each text this check cannot
+  // read: an entry in a dialect other than ANSI_SQL, or an ANSI_SQL text when
+  // this profile's dialect is `dialect` or the caller cannot read it either.
+  ownSqlOnly?: {dialect?: string};
 }
 
 /**
@@ -2000,7 +1933,6 @@ export interface CompletenessOptions extends DialectLoad {
 export function validateProfileCompleteness(
     baseModel: SemanticModel, profile: ProfileSpec, warnings: string[] = [],
     opts: CompletenessOptions = {}): string[] {
-  const applied = !!opts.applied;
   const errors: string[] = [];
   // Each field or metric whose SQL the parser cannot read, reported once, by
   // the label fieldLabel or metricLabel gives it.
@@ -2016,11 +1948,10 @@ export function validateProfileCompleteness(
   // left off the entity that names it. Push reports a broken hierarchy in the
   // model file. A profile breaks the hierarchy itself when it binds a field on
   // two unrelated branches. That is reported here once the model file's
-  // hierarchy resolves, unless `applied`, since push then reports it. The
-  // rules below still run on a broken hierarchy, apart from the check that
-  // each inherited field holds SQL, which push also skips then. An entity
-  // whose own ancestors do not resolve shows only its declared fields, so the
-  // rules that need what it inherits leave it out.
+  // hierarchy resolves. The rules below still run on a broken hierarchy, apart
+  // from the check that each inherited field holds SQL, which push also skips
+  // then. An entity whose own ancestors do not resolve shows only its declared
+  // fields, so the rules that need what it inherits leave it out.
   const fieldsOf = fieldsByEntity(baseModel);
   // The entities whose own ancestors do not resolve in the model file, so
   // what they inherit is not known.
@@ -2030,7 +1961,7 @@ export function validateProfileCompleteness(
           baseModel, profile, {load: {sourceDialects: opts.sourceDialects}});
   errors.push(...unread.map(e => `${at}: ${e}`));
   const profiledError = inheritanceErrorOf(profiled);
-  if (profiledError && !inheritanceErrorOf(baseModel) && !applied) {
+  if (profiledError && !inheritanceErrorOf(baseModel)) {
     errors.push(`${at}: ${profiledError}`);
   }
   // A field the profile binds is checked on each entity that inherits it, as
@@ -2101,9 +2032,8 @@ export function validateProfileCompleteness(
   const dialect = dialectOfSources(stated);
 
 
-  // The expressions of each entity the profile may bind, unless `applied` and
-  // the hierarchy resolves, when the caller reads them.
-  for (const pe of applied && !profiledError ? [] : profile.entities) {
+  // The expressions of each entity the profile may bind.
+  for (const pe of profile.entities) {
     const e = byName.get(pe.name);
     if (!e || e.abstract) continue;
     const known = fieldsOf.get(pe.name)!;
@@ -2146,8 +2076,8 @@ export function validateProfileCompleteness(
     }
   }
 
-  // A profile's key columns are physical column names, unless `applied`.
-  for (const pe of applied ? [] : profile.entities) {
+  // A profile's key columns are physical column names.
+  for (const pe of profile.entities) {
     const keyColumns = [...(pe.primaryKey ?? []), ...(pe.uniqueKeys ?? []).flat()];
     const bad = keyColumns.filter(c => !isColumnName(c));
     if (bad.length) {
@@ -2189,7 +2119,7 @@ export function validateProfileCompleteness(
     } else if (from.length !== to.length) {
       errors.push(
           `${at}: ${joinLengthMessage(r.name, from.length, to.length)}`);
-    } else if (!applied) {
+    } else {
       const bad = [...from, ...to].filter(c => !isColumnName(c));
       if (bad.length) {
         errors.push(
@@ -2372,13 +2302,9 @@ export function validateProfileCompleteness(
   // Whether the caller warns itself about this model file SQL.
   const caller = opts.ownSqlOnly;
   const callerWarns = (what: string) => !!caller &&
-      (caller.dialect === dialect || !readOtherwise.has(what)) &&
-      !(caller.rebound ?? []).some(f => {
-        const dot = f.indexOf('.');
-        return what === fieldLabel(f.slice(0, dot), f.slice(dot + 1));
-      });
+      (caller.dialect === dialect || !readOtherwise.has(what));
   for (const what of unreadable) {
-    if (applied ? !profiledError : !own.has(what) && callerWarns(what)) {
+    if (!own.has(what) && callerWarns(what)) {
       continue;
     }
     warnings.push(

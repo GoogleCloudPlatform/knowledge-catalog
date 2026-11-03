@@ -24,7 +24,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {applyProfileExclusions, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, isLegacyWrapper, loadProfileFile, ProfileExclusion, profileErrorMessage, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
+import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -94,8 +94,8 @@ export interface CreateRuntimeOptions {
   /** Directory holding `catalog.yaml`. Defaults to the current directory. */
   path?: string;
   /**
-   * Binding profile to apply to each model. Defaults to the scope's
-   * `default_profile`, and failing that to the model's inline bindings.
+   * Binding profile to apply to each model. Defaults to the model's inline
+   * bindings.
    */
   profile?: string;
   ctx?: context.ApiContext;
@@ -111,6 +111,8 @@ export interface CreateRuntimeOptions {
    * the number of models and returns the error.
    */
   oneModel?: boolean|((count: number) => string);
+  /** The scope, already loaded. Defaults to a load of `path`. */
+  snapshot?: CatalogSnapshot;
 }
 
 
@@ -131,7 +133,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   let snapshot: CatalogSnapshot;
   try {
-    snapshot = await CatalogSnapshot.fromPath(base, ctx);
+    snapshot = options.snapshot ?? await CatalogSnapshot.fromPath(base, ctx);
   } catch (err: any) {
     return {error: `${err?.message ?? err}`};
   }
@@ -140,8 +142,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   }
   const layout = snapshot.layout as SemanticModelLayout;
   const source = snapshot.manifest.source as SemanticModelSource;
-  const profile =
-      options.profile ?? snapshot.manifest.defaultProfile ?? DEFAULT_PROFILE;
+  const profile = options.profile ?? DEFAULT_PROFILE;
 
   const docs = layout.modelDocuments();
   if (!docs.length) return {error: 'no semantic model documents found.'};
@@ -154,9 +155,9 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     return {error: `${err?.message ?? err}`};
   }
 
-  // The runtime reads every model's profiles first, as
-  // `kcmd push --profile <name>` does: its profile files, then the profiles
-  // a vanilla model carries in its GOOGLE block. It refuses the scope when
+  // The runtime reads every model's profiles first, as `kcmd push` does: its
+  // profile files, then the profiles a vanilla model carries in its GOOGLE
+  // block. It refuses the scope when
   // profileDocuments rejects a file, such as a `<model>.profile.<name>.yaml`
   // file whose `name:` does not match its file name, or when a GOOGLE block
   // profile does not load. It also refuses it when a model declares a profile
@@ -191,23 +192,17 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   if (lookup.errors.length) return {error: lookup.errors.join('\n')};
   const load = {sourceDialects: lookup.dialects};
 
-  const merged: Array<{
-    name: string; text: string; allowLegacyBareSource?: boolean;
-    excluded?: ProfileExclusion[];
-  }> = [];
-  const excludedByDoc = new Map<string, ProfileExclusion[]>();
-  // A profile file applies to its model file loaded on its own, with its
+  // The model files the inline bindings are used for, loaded together.
+  const inline: Array<{name: string; text: string}> = [];
+  // A profile applies to its model file loaded on its own, with its
   // exclusions already marked.
   const appliedByDoc = new Map<string, SemanticModel>();
-  // The warnings applying each profile file gave.
+  // The warnings applying each profile gave.
   const fileWarnings = new Map<string, string[]>();
-  // The documents a legacy `semantic_model:` wrapper was merged into, each
-  // with whether the merged model names its target with `deployment_target`.
-  const wrapped = new Map<string, boolean>();
   const defaultProject = source.project ?? ctx.project;
   for (const doc of docs) {
     if (profile === DEFAULT_PROFILE) {
-      merged.push({name: doc.name, text: doc.text});
+      inline.push({name: doc.name, text: doc.text});
       continue;
     }
     const available = profilesByDoc.get(doc.name) ?? [];
@@ -220,26 +215,12 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
           p => ({...p, fileName: fileNameOf(layout, doc.name, p.path)}));
       return {error: profileErrorMessage(doc.name, res, profile, files)};
     }
-    if (res.kind === 'file') {
-      fileWarnings.set(doc.name, res.warnings);
-      appliedByDoc.set(doc.name, res.model);
-      continue;
-    }
-    for (const w of res.warnings) warn(`Warning: [${doc.name}] ${w}`);
-    merged.push({
-      name: doc.name,
-      text: res.text,
-      // A legacy `semantic_model:` wrapper may still carry
-      // `deployment_target:` and bare sources.
-      allowLegacyBareSource: true,
-      excluded: res.excluded,
-    });
-    excludedByDoc.set(doc.name, res.excluded);
-    wrapped.set(doc.name, res.deploymentTarget);
+    fileWarnings.set(doc.name, res.warnings);
+    appliedByDoc.set(doc.name, res.model);
   }
 
   const loaded = loadSemanticModels(
-      merged, {defaultProject, bindingOptional: true, ...load});
+      inline, {defaultProject, bindingOptional: true, ...load});
   if (loaded.error) return {error: loaded.error};
   // In the order of the documents, as one load of them all gives. The load
   // prefixes each warning with its document's name.
@@ -263,11 +244,9 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   }
 
   // Push then loads every profile file, whichever profile it deploys, and
-  // refuses one that does not load. It merges a legacy `semantic_model:`
-  // wrapper only when that wrapper's profile applies.
+  // refuses one that does not load.
   for (const doc of docs) {
     for (const p of filesByDoc.get(doc.name) ?? []) {
-      if (isLegacyWrapper(p.text)) continue;
       try {
         loadProfileFile(p.text, p.name, {skipActions: true});
       } catch (err) {
@@ -311,10 +290,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
   // String, pass, and let the store take the mismatch instead.
   const runtimes: SemanticRuntime[] = [];
   const alloyDb = new AlloyDbClient(ctx);
-  for (const {document, model: loadedModel} of models) {
-    // A profile's exclusions apply to the entity that names each one.
-    const authored = applyProfileExclusions(
-        loadedModel, excludedByDoc.get(document) ?? []);
+  for (const {document, model: authored} of models) {
     // An excluded metric is not available under the profile.
     const excludedMetrics = new Set(authored.excludedMetrics ?? []);
     if (excludedMetrics.size) {
@@ -324,10 +300,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     // The store is the one the profile's deployments name. Finding it reads
     // only the deployment targets and the tables the model binds, which
     // inheritance does not change.
-    const chosen = resolveStore(authored, profile, {
-      legacyWrapper: wrapped.has(document),
-      deploymentTarget: wrapped.get(document),
-    });
+    const chosen = resolveStore(authored, profile);
     // Resolving throws on an `extends` that names an entity the model does
     // not declare, on a cycle, on a field inherited from two unrelated
     // ancestors, and on two fields of one entity whose names differ only in

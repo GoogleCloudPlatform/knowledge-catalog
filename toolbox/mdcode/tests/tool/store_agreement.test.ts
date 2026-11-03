@@ -6,11 +6,11 @@
 // rejects, and none rejects a model push accepts, apart from a few cases. The
 // docs describe a profile file that no deployment uses. Push refuses a Spanner
 // deployment that names no profile in a model with metrics, which the runtime
-// accepts. The `kcmd profiles` report gives the errors a plain push gives, so
-// it accepts `--profile` on a model that lists deployments, which push
-// refuses. Push refuses a deployment that binds a table outside the database
-// it deploys to. The runtime checks the tables against the one store it
-// picks, so it accepts a model whose other deployment binds such a table.
+// accepts. The `kcmd profiles` report gives the errors a plain push gives, and
+// it and the runtime accept `--profile`, which push no longer takes, so push
+// always runs plain. Push refuses a deployment that binds a table outside the
+// database it deploys to. The runtime checks the tables against the one store
+// it picks, so it accepts a model whose other deployment binds such a table.
 // skills-generate also accepts a model whose picked deployment binds one,
 // unless the model has actions and that deployment is Spanner or AlloyDB.
 //
@@ -20,9 +20,9 @@
 // expression, action or constraint still gets a store and a skill. So does a
 // model whose deployment breaks the rules of its engine, or whose model file
 // binds a field with no text in the dialect of its entity's source. Like push,
-// the runtime loads every profile file except a legacy wrapper of a profile
-// it does not read. It does not run push's checks that every named profile
-// applies to the model, is complete and has valid keys and join columns. So a
+// the runtime loads every profile file. It does not run push's checks that
+// every named profile applies to the model, is complete and has valid keys
+// and join columns. So a
 // model whose profile file or GOOGLE block profile those checks refuse still
 // gets a store and a skill under the default profile. The runtime skips the
 // checks of push's Knowledge Catalog leg: one model per entry group, and with
@@ -41,7 +41,6 @@ import * as yaml from 'yaml';
 import {AlloyDbClient} from '../../src/libts/gcp/alloydb';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
-import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as validateMod from '../../src/libts/semantic/validate';
 import {profiles, push, skillsGenerate} from '../../src/tool/commands';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
@@ -85,12 +84,14 @@ function writeScope(files: Record<string, string>): void {
 
 type Outcome = {code: number|string; out: string};
 
-// Runs the four commands over the scope, under `profile` when given.
+// Runs the four commands over the scope. The three runtime commands run under
+// `profile` when given. Push takes no --profile, since each deployment names
+// its own, so it always runs plain.
 async function runAll(profile?: string): Promise<Record<string, Outcome>> {
   const p = profile ? {profile} : {};
   const out = path.join(dir, 'skills-out');
   const commands: Array<[string, () => Promise<number>]> = [
-    ['push', () => push({validateOnly: true, ...p})],
+    ['push', () => push({validateOnly: true})],
     ['report', () => profiles({...p})],
     ['printStore', () => profiles({printStore: true, ...p})],
     ['skills', () => skillsGenerate({out, ...p})],
@@ -130,9 +131,9 @@ beforeEach(() => {
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new Error('a test made a network call');
   }) as any);
-  // Push's live checks and its Knowledge Catalog leg. Their local checks run
-  // before them: in checkBeforeWrites for a model that lists deployments, and
-  // in prepareModels otherwise.
+  // Push's live checks, and the custom entry and aspect types its Knowledge
+  // Catalog preflight looks up. Their local checks run before them, in
+  // checkBeforeWrites.
   spyOn(CatalogClient.prototype, 'getEntryType')
       .mockResolvedValue({status: 200, result: {}} as any);
   spyOn(CatalogClient.prototype, 'getAspectType')
@@ -142,14 +143,6 @@ beforeEach(() => {
   passGraphChecks();
   passSourceCheck();
   spyOn(validateMod, 'validateSpannerActionStatements').mockResolvedValue([]);
-  spyOn(kc, 'deployKnowledgeCatalog').mockResolvedValue({
-    success: true,
-    warnings: [],
-    plan: [],
-    created: 0,
-    updated: 0,
-    deleted: 0,
-  } as any);
 });
 
 afterEach(() => {
@@ -374,39 +367,6 @@ semantic_model:
          expect(r.printStore.out).toContain(fix);
          expect(r.skills.out).toContain(fix);
        });
-});
-
-
-// A legacy wrapper that sets `deployment_target` to an empty string. Push
-// reads no graph target and publishes to Knowledge Catalog only, and the
-// loader makes no deployment of it.
-describe('a legacy wrapper with an empty deployment_target', () => {
-  test('push accepts it, so skills-generate does too', async () => {
-    writeScope({
-      'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-      'commerce.profiles/prod.yaml': `semantic_model:
-  - name: commerce
-    deployment_target: ""
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/OrdersProd
-`,
-    });
-    const r = await runAll('prod');
-    expect(r.push.code).toBe(0);
-    expect(r.report.code).toBe(0);
-    expect(r.skills.out).not.toContain('Error:');
-    expect(r.skills.code).toBe(0);
-  });
 });
 
 
@@ -672,45 +632,8 @@ entities:
          });
          const r = await runAll('prod');
          expect(codes(r)).toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-         expect(r.push.out).toContain(msg.flag.profile);
-         expect(r.report.out).toContain("deployment 'dev' targets");
-         expect(r.printStore.out).toContain("deployment 'dev' targets");
-         expect(r.skills.out).toContain("deployment 'dev' targets");
-       });
-
-  test('a legacy profile named default in any letter case: every command refuses',
-       async () => {
-         const reserved = "a binding profile may not be named 'default'";
-         for (const file of ['Default.yaml', 'default.yaml']) {
-           fs.rmSync(path.join(dir, 'catalog'), {recursive: true, force: true});
-           writeScope({
-             'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployments:
-      - name: prod
-        target: ${SPANNER_DB}/graphs/commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-             [`commerce.profiles/${file}`]: `semantic_model:
-  - name: commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-`,
-           });
-           for (const profile of [undefined, 'Default']) {
-             const r = await runAll(profile);
-             expect(codes(r))
-                 .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-             expect(r.printStore.out).toContain(reserved);
-             expect(r.skills.out).toContain(reserved);
-           }
+         for (const name of ['push', 'report', 'printStore', 'skills']) {
+           expect(r[name].out).toContain("deployment 'dev' targets");
          }
        });
 
@@ -785,47 +708,6 @@ entities:
              "Error: [commerce.profile.prod.yaml] profile 'prod': entity " +
              "'Nope' is not in the logical model");
          expect(r.report.out).toContain("entity 'Nope' is not in the logical model");
-       });
-
-  // Push and the runtime load every profile file except a legacy wrapper,
-  // whichever profile they read. A file in <model>.profiles/ takes its
-  // profile name from its file name, and loading it checks the `name:`
-  // inside it.
-  test('a file in <model>.profiles/ whose name does not match its file name: every command refuses',
-       async () => {
-         writeScope({
-           'commerce.yaml': `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: commerce
-    deployments:
-      - name: prod
-        target: ${SPANNER_DB}/graphs/commerce
-    entities:
-      - name: Order
-        source: ${SPANNER_DB}/tables/Orders
-        primary_key: [key]
-        fields:
-          - { name: key, expression: OrderId }
-`,
-           'commerce.profiles/prod.yaml': `name: prd
-entities:
-  - name: Order
-    source: ${SPANNER_DB}/tables/Orders
-`,
-         });
-         const mismatch = "[commerce.profiles/prod.yaml] profile 'prod' " +
-             "declares name 'prd', which does not match its file's profile " +
-             "name 'prod'";
-         for (const [r, pushError] of [
-                [await runAll(), mismatch],
-                [await runAll('prod'), msg.flag.profile],
-              ] as const) {
-           expect(codes(r))
-               .toEqual({push: 1, report: 1, printStore: 1, skills: 1});
-           expect(r.push.out).toContain(`Error: ${pushError}`);
-           expect(r.printStore.out).toBe(`Error: ${mismatch}`);
-           expect(r.skills.out).toContain(`Error: ${mismatch}`);
-         }
        });
 
   test('a profile file that sets a key a profile may not set: every command refuses',
@@ -937,7 +819,7 @@ semantic_model:
          expect(r.printStore.out).toBe('acme-ops/prod/commerce');
        });
 
-  test('a profile file no deployment uses: push accepts it without --profile, --print-store gives no store, skills-generate accepts it',
+  test('a profile file no deployment uses: push accepts it, --print-store under it gives no store, skills-generate accepts it',
        async () => {
          writeScope({
            'commerce.yaml': `version: "0.2.0.dev0/google"
@@ -956,9 +838,7 @@ semantic_model:
            'commerce.profile.prod.yaml': PROD_PROFILE,
          });
          const r = await runAll('prod');
-         expect(codes(r)).toEqual({push: 1, report: 0, printStore: 1, skills: 0});
-         expect(r.push.out).toContain(msg.flag.profile);
-         expect(await push({validateOnly: true})).toBe(0);
+         expect(codes(r)).toEqual({push: 0, report: 0, printStore: 1, skills: 0});
        });
 
   test('a logical model with no deployments: push and skills-generate accept it',
@@ -1145,13 +1025,12 @@ ${dataset}        fields:
          expect(google.printStore.out).toBe('acme-ops/prod/commerce');
        });
 
-  test('a deployment for a declared profile, under it: push takes no --profile, the runtime uses it',
+  test('a deployment for a declared profile, under it: push accepts it, the runtime uses it',
        async () => {
          const {google, vanilla} = await bothFlavors(
              [prod(`${SPANNER_DB}2/graphs/commerce`)], 'prod');
          expect(codes(google))
-             .toEqual({push: 1, report: 0, printStore: 0, skills: 0});
-         expect(google.push.out).toContain(msg.flag.profile);
+             .toEqual({push: 0, report: 0, printStore: 0, skills: 0});
          expect(google.printStore.out).toBe('acme-ops/prod/commerce2');
          expect(codes(vanilla)).toEqual(codes(google));
          expect(vanilla.printStore.out.split('\n').pop())

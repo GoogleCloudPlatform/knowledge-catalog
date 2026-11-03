@@ -6,15 +6,12 @@ import {expect, mock, spyOn} from 'bun:test';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as YAML from 'yaml';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, pushed, scenarios, Scope, SNOWFLAKE_METRIC, writeScope} from './harness';
+import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, writeScope} from './harness';
 
 const PROD = boundTo('prod');
-const legacy = (model: string, entities?: object[], actions?: object[]) =>
-    YAML.stringify({semantic_model: [{name: model, entities, actions}]});
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
 
 // A catalog preflight that plans one line and gives `result`.
@@ -165,68 +162,4 @@ scenarios('push --no-deployment refuses a scope before any network call', [
     entities: [{...CUSTOMER, colour: 'red'}],
     errors: [has('Semantic model load error')],
   },
-  {
-    name: '--no-deployment refuses a legacy profile file named default',
-    legacy: {default: legacy('commerce')},
-    errors: [err(
-        "[commerce] a binding profile may not be named 'default' -- that " +
-        "name refers to the model's inline bindings. Rename the profile.")],
-  },
-  sameAsRuntime({
-    name: '--no-deployment refuses a default_profile the model does not declare',
-    profiles: {prod: PROD},
-    defaultProfile: 'prd',
-    errors: [err(
-        "unknown binding profile 'prd' for model 'commerce'; defined " +
-        'profiles: prod.')],
-    then: ['prod', 'default'].map(p => ({defaultProfile: p, code: 0})),
-  }),
-  sameAsRuntime({
-    name: '--no-deployment refuses a default_profile the runtime refuses: the profile file has an action that does not load',
-    profiles: {
-      prod: {...PROD, actions: [{name: 'refund', executor: {bogus: {}}}]},
-    },
-    defaultProfile: 'prod',
-    errors: [has("action 'refund'")],
-  }),
-  {
-    name: '--no-deployment refuses a default_profile whose action push refuses',
-    deployments: ['g'],
-    actions: [{name: 'refund', executor: {mcp: {server: 's', tool: 't'}}}],
-    profiles: {prod: {...PROD, actions: [
-      {name: 'refund', executor: {mcp: {server: 's', tool: ' '}}},
-    ]}},
-    defaultProfile: 'prod',
-    errors: [err(
-        "action 'refund' in model 'commerce' (commerce, profile 'prod') has " +
-        "an mcp executor whose 'tool' is missing or blank.")],
-    then: [{
-      profiles: {},
-      legacy: {prod: legacy('commerce', undefined, [
-        {name: 'refund', executor: {mcp: {server: 's', tool: ' '}}},
-      ])},
-      code: 1, rejects: [pushed()],
-    }],
-    report: {code: 1, rejects: {'prod (default)': [pushed()]}},
-  },
-  sameAsRuntime({
-    name: '--no-deployment refuses a default_profile the runtime refuses: the profile is a legacy wrapper that does not merge',
-    legacy: {
-      prod: legacy(
-          'shop', [{name: 'Customer', source: bqTable('customer', 'prod')}]),
-    },
-    defaultProfile: 'prod',
-    errors: [has("model 'shop' is not in the logical model")],
-  }),
-  sameAsRuntime({
-    name: '--no-deployment refuses a default_profile the runtime refuses: the profile is a legacy wrapper that merges but does not load',
-    deployments: ['g'],
-    legacy: {
-      prod: legacy(
-          'commerce', [{name: 'Customer', source: 'not a table at all'}]),
-    },
-    defaultProfile: 'prod',
-    errors: [has("source 'not a table at all' looks like a SQL query")],
-    report: {code: 1, rejects: {'prod (default)': [pushed()]}},
-  }),
 ], {flags: {deployment: false}, code: 1, noNetwork: true});

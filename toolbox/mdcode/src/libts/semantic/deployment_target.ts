@@ -20,8 +20,8 @@
 // created. What an AlloyDB target says is where the model's rows live -- which
 // is the whole of what a runtime needs in order to read an entity and carry out
 // an action. A model bound to it deploys to Knowledge Catalog and runs; it does
-// not deploy a graph, and `validatePushRequirements` says so in those words
-// rather than reporting the URI as a typo.
+// not deploy a graph, and push says so in a note rather than reporting the URI
+// as a typo.
 //
 // The deploy legs (deploy_bigquery, deploy_spanner) and the push-time validator
 // all derive their targets from this one reader, so a multi-destination push
@@ -216,17 +216,6 @@ export function googleBlockTargetError(
       target);
 }
 
-/**
- * Why the target in a `deployment_target` key is not accepted. The loader
- * turns the key into a deployment named `default`, which the author did not
- * write.
- */
-export function deploymentTargetKeyError(
-    model: SemanticModel, target: string): string {
-  return targetError(
-      `Model '${model.name}' sets 'deployment_target' to '${target}'`, target);
-}
-
 // The Dataplex name of a Spanner graph `target` names with `propertyGraphs`,
 // or undefined for any other target.
 function spannerGraphName(target: string): string|undefined {
@@ -243,7 +232,7 @@ export function targetProblem(at: string, target: string): string|undefined {
 }
 
 /** Why `target` is not accepted. `at` says where it is written. */
-export function targetError(at: string, target: string): string {
+function targetError(at: string, target: string): string {
   const legacy = asResourceUri(target).match(LEGACY_ALLOYDB_TARGET);
   if (legacy) {
     return `${at}, the instance-based AlloyDB name, which names no real ` +
@@ -485,12 +474,4 @@ export function alloyDbTargets(model: SemanticModel):
     {targets: AlloyDbTarget[]; malformed: string[]} {
   const {alloyDb, malformed} = googleDeploymentTargets(model);
   return {targets: alloyDb, malformed};
-}
-
-
-// Every deploymentTarget URI a model declares, regardless of whether each
-// parses as a supported target. Validation uses this to require that a model
-// declares exactly one deployment target. Throws on malformed extension JSON.
-export function deploymentTargetUris(model: SemanticModel): string[] {
-  return googleDeploymentTargets(model).uris;
 }

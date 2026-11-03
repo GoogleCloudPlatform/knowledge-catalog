@@ -17,7 +17,7 @@
 
 import {AlloyDbClient, Instance} from '../../gcp/alloydb';
 import {ApiResult} from '../../gcp/api';
-import {AlloyDbTarget, deploymentTargetError, deploymentTargetKeyError, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
+import {AlloyDbTarget, deploymentTargetError, googleBlockTargetError, GoogleDeploymentTargets, googleDeploymentTargets} from '../deployment_target';
 import {SemanticModel} from '../ir';
 import {asResourceName, databaseOf, OSSIE_VERSION, writtenSource} from '../loader';
 import {DEFAULT_PROFILE} from '../resolve_profiles';
@@ -193,11 +193,6 @@ export interface StoreError {
  * With several targets, the store is the single operational one, Spanner or
  * AlloyDB.
  *
- * Set `legacyWrapper` for a model a legacy `semantic_model:` wrapper was
- * merged into. Set `deploymentTarget` when the model's deployment comes from a
- * `deployment_target` key, which the loader names `default`, so that a
- * message names the key instead.
- *
  * Fails six ways:
  *
  * 1. A GOOGLE block's data is not valid JSON, so its targets cannot be read.
@@ -213,9 +208,8 @@ export interface StoreError {
  *    for a BigQuery store the error is not named.
  */
 export function resolveStore(
-    model: SemanticModel, profile: string = DEFAULT_PROFILE,
-    opts: {legacyWrapper?: boolean; deploymentTarget?: boolean} = {}):
-    ChosenStore|StoreError {
+    model: SemanticModel, profile: string = DEFAULT_PROFILE): ChosenStore|
+    StoreError {
   // Push checks the target of every deployment the model declares, so the
   // targets of every deployment are read before the profile's are picked.
   let all: GoogleDeploymentTargets;
@@ -239,20 +233,14 @@ export function resolveStore(
   if (all.malformed.length) {
     const unparsed =
         model.deployments?.find(d => d.target === all.malformed[0]);
-    let error: string;
-    if (!unparsed) {
-      error = googleBlockTargetError(model, all.malformed[0]);
-    } else if (opts.deploymentTarget) {
-      error = deploymentTargetKeyError(model, unparsed.target);
-    } else {
-      error = deploymentTargetError(model, unparsed);
-    }
+    const error = unparsed ? deploymentTargetError(model, unparsed) :
+                             googleBlockTargetError(model, all.malformed[0]);
     return {error, named: true, rejected: true};
   }
 
-  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+  const used = deploymentsFor(model, profile);
   if ('error' in used) return used;
-  const {model: scoped, owner} = used;
+  const scoped = used.model;
   // The profile's targets are among those read above. So this does not
   // throw, and none of them is in no accepted form.
   const targets = googleDeploymentTargets(scoped);
@@ -271,7 +259,7 @@ export function resolveStore(
         `deployment targets on two operational backends (${
             counted.join(' and ')})` :
         `${counted[0]} deployment targets`;
-    const names = deploymentNames(scoped, contenders.map(t => t.uri), owner);
+    const names = deploymentNames(scoped, contenders.map(t => t.uri), profile);
     return {
       error: `Model '${model.name}' declares ${what} in ${where}${
                  names}, so which store it runs against is ambiguous; the ` +
@@ -313,32 +301,21 @@ export function resolveStore(
 
 
 // The model with only the deployments `profile` uses, or why there are none.
-// `owner` is the profile those deployments are for: `profile` itself, or
-// `default` when a legacy wrapper that no deployment names falls back to the
-// model file's own, as push deploys it. A wrapper that names its own
-// `deployment_target` has replaced the model file's deployments with it. A
-// model with no `deployments` list keeps every target in its GOOGLE block for
-// `default` and for a legacy wrapper. An empty list names no deployment.
-// Either way, any other profile has none.
-function deploymentsFor(
-    model: SemanticModel, profile: string, legacyWrapper: boolean):
-    {model: SemanticModel; owner: string}|{error: string} {
+// A model with no `deployments` list keeps every target in its GOOGLE block
+// for `default`. An empty list names no deployment. Either way, any other
+// profile has none.
+function deploymentsFor(model: SemanticModel, profile: string):
+    {model: SemanticModel}|{error: string} {
   const nothingToRun = `so there is no database to run it against`;
   const namedProfile = `binding profile '${profile}' is a named profile, ` +
       `which names no deployment target`;
   if (!model.deployments?.length) {
-    return profile === DEFAULT_PROFILE || legacyWrapper ?
-        {model, owner: DEFAULT_PROFILE} :
+    return profile === DEFAULT_PROFILE ?
+        {model} :
         {error: `${namedProfile}, ${nothingToRun}`};
   }
-  const usedBy = (name: string) => model.deployments!.filter(
-      d => (d.profile ?? DEFAULT_PROFILE) === name);
-  let owner = profile;
-  let used = usedBy(profile);
-  if (!used.length && legacyWrapper) {
-    owner = DEFAULT_PROFILE;
-    used = usedBy(DEFAULT_PROFILE);
-  }
+  const used = model.deployments.filter(
+      d => (d.profile ?? DEFAULT_PROFILE) === profile);
   if (!used.length) {
     // A vanilla model lists its deployments in its GOOGLE block.
     const listed = model.version === OSSIE_VERSION ?
@@ -349,45 +326,39 @@ function deploymentsFor(
       error = `Model '${model.name}' declares no deployment without a ` +
           `'profile' in ${listed}, so there is no store to run against ` +
           `under binding profile '${DEFAULT_PROFILE}'.`;
-    } else if (legacyWrapper) {
-      error = `legacy binding profile '${profile}' names no ` +
-          `'deployment_target', and every deployment in 'deployments' names ` +
-          `another profile, ${nothingToRun}`;
     } else {
       error = `${namedProfile}, and no deployment in ${listed} uses it, ${
           nothingToRun}`;
     }
     return {error};
   }
-  return {model: {...model, deployments: used}, owner};
+  return {model: {...model, deployments: used}};
 }
 
 
 /**
  * The targets binding profile `profile` uses, as resolveStore reads them: its
- * deployments' targets, or every target in a GOOGLE block for `default` and
- * for a legacy wrapper when the model has no `deployments` list. Empty when no
- * deployment is for the profile. Set `legacyWrapper` as for resolveStore.
- * Throws when a GOOGLE block's data is not valid JSON.
+ * deployments' targets, or every target in a GOOGLE block for `default` when
+ * the model has no `deployments` list. Empty when no deployment is for the
+ * profile. Throws when a GOOGLE block's data is not valid JSON.
  */
-export function profileTargets(
-    model: SemanticModel, profile: string,
-    opts: {legacyWrapper?: boolean} = {}): string[] {
-  const used = deploymentsFor(model, profile, opts.legacyWrapper ?? false);
+export function profileTargets(model: SemanticModel, profile: string):
+    string[] {
+  const used = deploymentsFor(model, profile);
   return 'error' in used ? [] : googleDeploymentTargets(used.model).uris;
 }
 
 
 // The deployments whose targets are `uris`, for a message, or nothing when
-// the targets come from a GOOGLE block, which names none. `owner` is the
+// the targets come from a GOOGLE block, which names none. `profile` is the
 // profile they are for.
 function deploymentNames(
-    model: SemanticModel, uris: string[], owner: string): string {
+    model: SemanticModel, uris: string[], profile: string): string {
   const deployments = model.deployments;
   if (!deployments) return '';
   const names =
       uris.map(uri => deployments.find(d => d.target === uri)?.name ?? uri);
-  return ` for profile '${owner}' (${names.join(', ')})`;
+  return ` for profile '${profile}' (${names.join(', ')})`;
 }
 
 

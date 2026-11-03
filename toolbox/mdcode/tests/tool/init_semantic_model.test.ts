@@ -91,9 +91,10 @@ describe('init --semantic-model: entry-group provisioning', () => {
             .toContain('scope: semantic-model.proj.us.sales-group');
       });
 
-  // Every workspace re-runs init once after an upgrade, and a bare push uses
-  // default_profile.
-  test('re-running init keeps default_profile and the file\'s comments',
+  // Every workspace re-runs init once after an upgrade. Init keeps every key,
+  // even a `default_profile` that push now refuses, so it still works on an
+  // old catalog.yaml.
+  test('re-running init keeps every key and the file\'s comments',
        async () => {
          spyOn(CatalogClient.prototype, 'createEntryGroup')
              .mockImplementation(async () => err(409, 'already exists'));
@@ -106,7 +107,7 @@ describe('init --semantic-model: entry-group provisioning', () => {
          expect(fs.readFileSync('catalog.yaml', 'utf8')).toBe(before);
        });
 
-  // A profile chosen for another entry group's model does not apply here.
+  // A key written for another entry group's scope does not carry over.
   test('init for another scope writes a new catalog.yaml', async () => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
         .mockImplementation(async () => ok({name: 'sales-group'}));

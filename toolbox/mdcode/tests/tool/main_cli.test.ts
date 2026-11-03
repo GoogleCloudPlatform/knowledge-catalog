@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import pkg from '../../package.json';
+import {msg} from './two_phase/harness';
 
 // bun test runs from the package root; fail loudly rather than silently
 // spawning nothing if that ever stops being true.
@@ -162,14 +163,27 @@ describe('kcmd import', () => {
   }, 30000);
 });
 
-describe('kcmd push --transpile', () => {
-  test('is still an option, so push can say it is no longer supported', () => {
-    const {code, out} = run('push', '--transpile');
-    expect(code).toBe(1);
-    expect(out).not.toContain('Unknown option');
-    expect(out).toContain(
-        "'--transpile' is no longer supported on 'kcmd push'; use 'kcmd import " +
-        "<file> --input first-party --flavor <ossie|google> --transpile' to " +
-        "translate SQL dialects when importing a model.");
-  }, 30000);  // Spawning a command takes longer than the default timeout.
+// Each flag push no longer takes is still an option, so push can say what
+// replaces it rather than cac refusing it as unknown.
+describe('kcmd push refuses a retired flag', () => {
+  for (const [args, message] of [
+    [['--transpile'],
+     "'--transpile' is no longer supported on 'kcmd push'; use 'kcmd import " +
+         "<file> --input first-party --flavor <ossie|google> --transpile' to " +
+         'translate SQL dialects when importing a model.'],
+    [['--profile', 'prod'], msg.retired['--profile']],
+    [['--profile'], msg.retired['--profile']],
+    [['--profile='], msg.retired['--profile']],
+    [['--all-profiles'], msg.retired['--all-profiles']],
+    [['--no-profile'], msg.retired['--no-profile']],
+    [['--emit-expressions'], msg.retired['--emit-expressions']],
+    [['--no-kc'], msg.retired['--no-kc']],
+  ] as const) {
+    test(args.join(' '), () => {
+      const {code, out} = run('push', ...args);
+      expect(code).toBe(1);
+      expect(out).not.toContain('Unknown option');
+      expect(out).toContain(`Error: ${message}`);
+    }, 30000);  // Spawning a command takes longer than the default timeout.
+  }
 });
