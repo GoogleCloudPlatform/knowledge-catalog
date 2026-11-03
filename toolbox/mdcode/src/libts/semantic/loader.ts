@@ -35,8 +35,8 @@ export interface LoadOptions {
   // abstract+source contradiction stays enforced regardless.
   bindingOptional?: boolean;
   // Temporary opt-in for existing test fixtures and legacy profile files while
-  // they are migrated (b/568184815, b/568186042): accepts bare table names, the
-  // legacy instance-based AlloyDB URI, and the legacy `deployment_target:` key.
+  // they are migrated (b/568184815, b/568186042): accepts bare table names and
+  // the legacy `deployment_target:` key.
   allowLegacyBareSource?: boolean;
   // The fields and metrics a legacy `semantic_model:` profile wrapper
   // excludes, which the text merged from it cannot say. The check that each
@@ -503,7 +503,6 @@ const aiContextSchema = googleAiContextSchema;
 // `vendor_name`. The spec allows these at every level (model, dataset, field,
 // relationship, metric). A vanilla document's GOOGLE blocks on a model,
 // dataset, relationship or metric are read into the IR (see readGoogleBlocks).
-// A model also keeps the GOOGLE block that carries `deploymentTargets`.
 // rejectGoogleBlock says where a GOOGLE block is rejected. Every other block is
 // kept verbatim.
 const customExtensionSchema = z.object({
@@ -1378,10 +1377,8 @@ interface GoogleBlockValues {
 // an object keeps its third-party blocks. Throws, naming the object, on data
 // that is not a JSON object, a key one block sets twice, a key the level does
 // not take, `abstract` included, a key two blocks both set, a value the Google
-// flavor rejects, and `deployments` beside `deploymentTargets`. The deploy code
-// still reads a model's `deploymentTargets`, so the model keeps the block that
-// carries it, after reading any other key the block sets. Its value must be a
-// list, and only one block may set it. Push checks each target in the list.
+// flavor rejects, and a model's `deploymentTargets`, which `deployments`
+// replaces.
 function readGoogleBlocks(
     exts: CustomExtensionDoc[]|undefined, version: FormatVersion,
     level: BlockLevel, ctx: string):
@@ -1394,7 +1391,6 @@ function readGoogleBlocks(
       Record<string, ConstructPlacement>;
   const values: Record<string, unknown> = {};
   const kept: CustomExtension[] = [];
-  let hasTargets = false;
   for (const e of exts ?? []) {
     if (!isGoogleVendor(e.vendor_name)) {
       kept.push({vendorName: e.vendor_name, data: e.data});
@@ -1415,19 +1411,12 @@ function readGoogleBlocks(
       throw error(
           `the 'data' of a ${block} sets a key twice; set each key once.`);
     }
-    let keep = false;
     for (const [key, value] of Object.entries(data)) {
       if (level === 'model' && key === 'deploymentTargets') {
-        if (hasTargets) {
-          throw error(`two ${block}s both set '${key}'; set it in one block.`);
-        }
-        const parsed = z.array(z.unknown()).safeParse(value);
-        if (!parsed.success) {
-          throw error(`'${key}' in a ${block}: ${issueList(parsed.error)}`);
-        }
-        keep = true;
-        hasTargets = true;
-        continue;
+        throw error(
+            `'${key}' is no longer supported; use 'deployments' inside the ` +
+            `${block} instead, for example ` +
+            `{"deployments": [{"name": "default", "target": "<target>"}]}.`);
       }
       if (level === 'dataset' && key === 'abstract') {
         throw error(
@@ -1458,12 +1447,6 @@ function readGoogleBlocks(
       }
       values[key] = parsed.data;
     }
-    if (keep) kept.push({vendorName: GOOGLE_VENDOR, data: e.data});
-  }
-  if (hasTargets && values.deployments !== undefined) {
-    throw error(
-        `set either 'deployments' or 'deploymentTargets' in its ${block}s, ` +
-        `not both.`);
   }
   return {
     values: values as GoogleBlockValues,
@@ -3500,20 +3483,11 @@ export function parseSource(
     throw new SemanticModelError(`Semantic model load error: ${ctx}: source '${
         trimmed}' is ${problem}.`);
   }
-  const name = asResourceName(trimmed);
-
-  // Legacy instance-based AlloyDB name: accepted under opt-in, written as a
-  // resource name; otherwise, and in any spelling, reported with the
+  // Legacy instance-based AlloyDB name: reported in any spelling with the
   // cluster-based name to write.
   const legacyAlloy =
       asResourceUri(trimmed).match(LEGACY_ALLOYDB_INSTANCE_URI);
   if (legacyAlloy) {
-    if (opts.allowLegacyBareSource && name === trimmed) {
-      return {
-        authoredSource: trimmed,
-        dataSource: asResourceUri(trimmed),
-      };
-    }
     throw new SemanticModelError(
         `Semantic model load error: ${ctx}: source '${trimmed}' uses the ` +
         `legacy instance-based AlloyDB URI. An AlloyDB database belongs to ` +

@@ -483,7 +483,7 @@ describe('the binding is one section', () => {
     profile: 'alloydb',
     store: {
       kind: 'alloydb',
-      name: 'projects/q/locations/us-central1/clusters/j/instances/inst/databases/e',
+      name: 'projects/q/locations/us-central1/clusters/j/databases/e',
       project: 'q',
       location: 'us-central1',
       cluster: 'j',

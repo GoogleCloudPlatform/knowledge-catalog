@@ -82,7 +82,7 @@
 import type {Aspect, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
-import {googleDeploymentTargets, unnamedDeployments} from './deployment_target';
+import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
@@ -940,12 +940,9 @@ function extensionsAspectData(extensions: CustomExtension[]|undefined):
   return blocks.length ? {customExtensions: blocks} : undefined;
 }
 
-// The semantic-model aspect of the second-generation types. A vanilla
-// model's GOOGLE-block `deploymentTargets` become deployments named as a pull
-// names them.
+// The semantic-model aspect of the second-generation types.
 function modelAspectDataV2(model: SemanticModel): Record<string, any> {
-  const declared: DeploymentSpec[] = model.deployments ??
-      unnamedDeployments(googleDeploymentTargets(model).uris);
+  const declared: DeploymentSpec[] = model.deployments ?? [];
   const deployments = declared.map(d => compact({
     name: d.name,
     target: d.target,

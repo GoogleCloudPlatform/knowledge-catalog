@@ -71,9 +71,8 @@ const ALLOYDB_TARGET =
     /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)$/;
 
 // The instance-based AlloyDB URI kcmd used before. It names no real resource,
-// so resolveModelDeployments rejects it. The loader turns a legacy
-// `deployment_target:` that may hold it into a deployment, so
-// googleDeploymentTargets keeps reading it, from a list too.
+// and no target parses as it. It exists only so targetError can name the
+// cluster-based form to write instead.
 const LEGACY_ALLOYDB_TARGET =
     /^\/\/alloydb\.googleapis\.com\/projects\/([A-Za-z0-9_-]+)\/locations\/([A-Za-z0-9_-]+)\/clusters\/([A-Za-z0-9_-]+)\/instances\/([A-Za-z0-9_-]+)\/databases\/([A-Za-z0-9_-]+)$/;
 
@@ -116,9 +115,6 @@ export interface AlloyDbTarget {
   project: string;
   location: string;
   cluster: string;
-  // Set only by the legacy instance-based URI. Otherwise the runtime finds the
-  // cluster's primary instance.
-  instance?: string;
   database: string;
   uri: string;
 }
@@ -156,10 +152,8 @@ export type ResolvedDeployment = ParsedDeploymentTarget&{
 
 // Parses a deployment target written as a GCP resource name. Returns undefined
 // for any other form, the resource URI with its leading `//` included. `uri`
-// in the result is the target as written. The legacy instance-based AlloyDB
-// name parses only when `legacyAlloyDb` is set.
-function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
-    ParsedDeploymentTarget|undefined {
+// in the result is the target as written.
+function parseTarget(uri: string): ParsedDeploymentTarget|undefined {
   if (uri.startsWith('//')) return undefined;
   const resource = asResourceUri(uri);
   const bq = resource.match(BQ_GRAPH_TARGET);
@@ -195,21 +189,6 @@ function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
       },
     };
   }
-  const legacy =
-      opts.legacyAlloyDb ? resource.match(LEGACY_ALLOYDB_TARGET) : null;
-  if (legacy) {
-    return {
-      engine: 'alloydb',
-      coordinates: {
-        project: legacy[1],
-        location: legacy[2],
-        cluster: legacy[3],
-        instance: legacy[4],
-        database: legacy[5],
-        uri,
-      },
-    };
-  }
   return undefined;
 }
 
@@ -218,17 +197,6 @@ function parseTarget(uri: string, opts: {legacyAlloyDb: boolean}):
 function clusterUri(legacy: RegExpMatchArray): string {
   return `//alloydb.googleapis.com/projects/${legacy[1]}/locations/${
       legacy[2]}/clusters/${legacy[3]}/databases/${legacy[5]}`;
-}
-
-/**
- * The destination a target names: its resource URI, so a resource name and
- * its URI give the same key. The legacy instance-based AlloyDB URI names its
- * database by the cluster-based URI.
- */
-export function destinationKey(target: string): string {
-  const resource = asResourceUri(target);
-  const legacy = resource.match(LEGACY_ALLOYDB_TARGET);
-  return legacy ? clusterUri(legacy) : resource;
 }
 
 /** Why a deployment's target is not accepted in a `deployments:` list. */
@@ -271,8 +239,7 @@ function spannerGraphName(target: string): string|undefined {
  * where it is written.
  */
 export function targetProblem(at: string, target: string): string|undefined {
-  return parseTarget(target, {legacyAlloyDb: false}) ? undefined :
-                                                       targetError(at, target);
+  return parseTarget(target) ? undefined : targetError(at, target);
 }
 
 /** Why `target` is not accepted. `at` says where it is written. */
@@ -284,7 +251,7 @@ export function targetError(at: string, target: string): string {
                asResourceName(clusterUri(legacy))}'.`;
   }
   const name = asResourceName(target);
-  if (name !== target && parseTarget(name, {legacyAlloyDb: false})) {
+  if (name !== target && parseTarget(name)) {
     return `${at}, which is ${resourceUriFix(target)}.`;
   }
   const graph = spannerGraphName(target);
@@ -363,7 +330,7 @@ export function resolveModelDeployments(
   }
   const deployments: ResolvedDeployment[] = [];
   for (const d of chosen) {
-    const parsed = parseTarget(d.target, {legacyAlloyDb: false});
+    const parsed = parseTarget(d.target);
     if (!parsed) return {error: deploymentTargetError(model, d)};
     deployments.push({
       ...parsed,
@@ -430,10 +397,10 @@ export function googleBlockTargets(
 }
 
 // Deployments for targets whose names are not known: a pull reads only the
-// targets back from the catalog, and a vanilla model lists only targets in
-// its GOOGLE block. One target is `default`; several are `deployment_1`,
-// `deployment_2`, and so on. Targets are trimmed, and blank ones dropped. A
-// repeated target is dropped too, so the list loads as a `deployments:` list.
+// targets back from the catalog. One target is `default`; several are
+// `deployment_1`, `deployment_2`, and so on. Targets are trimmed, and blank
+// ones dropped. A repeated target is dropped too, so the list loads as a
+// `deployments:` list.
 export function unnamedDeployments(targets: readonly string[]):
     Array<{name: string; target: string}> {
   const seen = new Set<string>();
@@ -467,7 +434,7 @@ export function googleDeploymentTargets(model: SemanticModel):
   const malformed: string[] = [];
 
   for (const uri of uris) {
-    const parsed = parseTarget(uri, {legacyAlloyDb: true});
+    const parsed = parseTarget(uri);
     if (parsed?.engine === 'bigquery') {
       bigQuery.push(parsed.coordinates);
     } else if (parsed?.engine === 'spanner') {

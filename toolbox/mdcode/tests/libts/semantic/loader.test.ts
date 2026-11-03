@@ -788,27 +788,6 @@ describe('richer IR fields carry through from the format', () => {
     expect(models[0].entities[0].uniqueKeys).toEqual([['sku', 'region'], ['external_id']]);
   });
 
-  test('the GOOGLE block is carried verbatim, not interpreted at load time', () => {
-    const { models } = fromDocument({ version: '0.2.0.dev0',
-      semantic_model: [{
-        name: 'm',
-        custom_extensions: [
-          { vendor_name: 'OTHER', data: '{"ignored": true}' },
-          { vendor_name: 'GOOGLE', data: JSON.stringify({
-            deploymentTargets: ['projects/p/locations/us/graphs/g'] }) },
-        ],
-        datasets: [{ name: 'a', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/a', primary_key: ['id'], fields: [] }],
-      }],
-    });
-    // GOOGLE gets no special treatment -- it rides along in customExtensions like
-    // any other vendor block; a typed deployment view is a consumer concern.
-    expect(models[0].customExtensions).toEqual([
-      { vendorName: 'OTHER', data: '{"ignored": true}' },
-      { vendorName: 'GOOGLE', data: JSON.stringify({
-        deploymentTargets: ['projects/p/locations/us/graphs/g'] }) },
-    ]);
-  });
-
   test('a malformed GOOGLE block is rejected, naming the model', () => {
     expect(() => fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{
@@ -856,6 +835,7 @@ describe('richer IR fields carry through from the format', () => {
 
 
 describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
+  const GRAPH = 'bigquery.googleapis.com/projects/proj/datasets/ds/propertyGraphs/g';
   // A maximal document exercising every field the OSI core schema defines,
   // including nested custom_extensions at every level and the required version
   // const. It must load without throwing and without spurious warnings, and the
@@ -867,7 +847,7 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
       description: 'Sales semantic model',
       ai_context: { instructions: 'Prefer net.', synonyms: ['commerce'], examples: ['revenue by month'] },
       custom_extensions: [{ vendor_name: 'GOOGLE', data: JSON.stringify({
-        deploymentTargets: ['projects/p/locations/us/graphs/g'] }) }],
+        deployments: [{ name: 'main', target: GRAPH }] }) }],
       datasets: [
         {
           name: 'orders',
@@ -922,11 +902,9 @@ describe('Apache OSI v0.2.0.dev0 spec coverage', () => {
   test('nested custom_extensions are preserved verbatim at every level', () => {
     const { models } = fromDocument(doc);
     const m = models[0];
-    // Model level: the raw GOOGLE block is kept verbatim, uninterpreted.
-    expect(m.customExtensions).toEqual([
-      { vendorName: 'GOOGLE', data: JSON.stringify({
-        deploymentTargets: ['projects/p/locations/us/graphs/g'] }) },
-    ]);
+    // Model level: the GOOGLE block is read into the model and removed.
+    expect(m.deployments).toEqual([{ name: 'main', target: GRAPH }]);
+    expect(m.customExtensions).toBeUndefined();
     // Dataset / field / relationship / metric levels: kept verbatim, data opaque.
     expect(m.entities[0].customExtensions).toEqual([{ vendorName: 'DBT', data: '{"model":"orders"}' }]);
     expect(m.entities[0].fields[0].customExtensions).toEqual([{ vendorName: 'SNOWFLAKE', data: '{}' }]);
@@ -1907,20 +1885,11 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       "dataset needs a 'source'. A model that needs an abstract entity uses '0.2.0.dev0/google'.");
   });
 
-  test('deploymentTargets that is not a list, or that two blocks set, fails', () => {
-    const cases = [
-      [google({ deploymentTargets: G }), 'expected array, received string'],
-      [google({ deploymentTargets: null }), 'expected array, received null'],
-    ] as const;
-    for (const [block, problem] of cases) {
-      expect(() => load(VANILLA, atLevel('model', block))).toThrow(
-        "model 'm': 'deploymentTargets' in a GOOGLE custom_extensions block: " +
-        `Invalid input: ${problem}`);
-    }
-    const twice = atLevel('model', google({ deploymentTargets: [G] }), google({ deploymentTargets: [G] }));
-    expect(() => load(VANILLA, twice)).toThrow(
-      "model 'm': two GOOGLE custom_extensions blocks both set 'deploymentTargets'; " +
-      'set it in one block.');
+  test("a model's deploymentTargets fails, naming deployments as its replacement", () => {
+    expect(() => load(VANILLA, atLevel('model', google({ deploymentTargets: [G] })))).toThrow(
+      "Semantic model load error: model 'm': 'deploymentTargets' is no longer supported; use " +
+      "'deployments' inside the GOOGLE custom_extensions block instead, for example " +
+      '{"deployments": [{"name": "default", "target": "<target>"}]}.');
   });
 
   test('a value the Google flavor rejects for the same key fails', () => {
@@ -2013,19 +1982,6 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       'received null');
   });
 
-  test('deploymentTargets stays in its block on the model, and deployments beside it fail', () => {
-    const targets = google({ deploymentTargets: [G] });
-    const m = load(VANILLA, atLevel('model', targets)).models[0];
-    expect(m.customExtensions).toEqual([{ vendorName: 'GOOGLE', data: targets.data }]);
-    expect(m.deployments).toBeUndefined();
-    expect(deploymentTargetUris(m)).toEqual([G]);
-    const deployments = { deployments: [{ name: 'a', target: G }] };
-    for (const blocks of [[google({ deploymentTargets: [G], ...deployments })], [targets, google(deployments)]]) {
-      expect(() => load(VANILLA, atLevel('model', ...blocks))).toThrow(
-        "model 'm': set either 'deployments' or 'deploymentTargets' in its GOOGLE custom_extensions blocks, not both.");
-    }
-  });
-
   test("a metric's block entity fills authoredEntity and entity, so COUNT(*) gives no warning", () => {
     const { models, warnings } = load(VANILLA, fullModel('metric', {
       expression: expr('COUNT(*)'), custom_extensions: [google({ entity: 'orders' })],
@@ -2080,14 +2036,11 @@ describe('vanilla: GOOGLE blocks are read into the model', () => {
       'expected array, received string');
   });
 
-  test("a 'Google' or 'google' block is read as a GOOGLE block, and kept as 'GOOGLE'", () => {
+  test("a 'Google' or 'google' block is read as a GOOGLE block", () => {
     for (const vendor_name of ['Google', 'google']) {
       const metric = load(VANILLA, atLevel('metric', { ...google({ entity: 'orders' }), vendor_name })).models[0];
       expect(metric.metrics[0].authoredEntity).toBe('orders');
       expect(metric.metrics[0].customExtensions).toBeUndefined();
-      const targets = { ...google({ deploymentTargets: [G] }), vendor_name };
-      expect(load(VANILLA, atLevel('model', targets)).models[0].customExtensions)
-        .toEqual([{ vendorName: 'GOOGLE', data: targets.data }]);
     }
   });
 
@@ -3287,7 +3240,7 @@ describe('strict entity sources', () => {
     })).toThrow(/is not a valid table reference/);
   });
 
-  test('the instance-based AlloyDB name is rejected with a migration hint by default and loads when allowLegacyBareSource is set', () => {
+  test('the instance-based AlloyDB name is rejected with a migration hint in any spelling, under allowLegacyBareSource too', () => {
     const legacy =
         'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/instances/inst/databases/db/tables/orders';
     const doc = {
@@ -3299,19 +3252,16 @@ describe('strict entity sources', () => {
         "cluster and a table to a schema in it; write 'alloydb.googleapis.com/projects/acme/" +
         "locations/us-central1/clusters/cl/databases/db/schemas/<schema>/tables/orders'.");
 
-    // Under the flag it loads, with the `dataSource` the runtime reads as a URI.
-    const { models } = load(GOOGLE, doc, { allowLegacyBareSource: true });
-    expect(models[0].entities[0].authoredSource).toBe(legacy);
-    expect(models[0].entities[0].dataSource).toBe(`//${legacy}`);
-    expect(writtenSource(models[0].entities[0])).toBe(legacy);
-
-    // Written as a resource URI, it gets the same message, under the flag too.
+    // Written as a name or a resource URI, it gets the same message, under the
+    // flag too.
     const uriDoc = {
       name: 'm',
       datasets: [{ name: 'orders', source: `//${legacy}`, primary_key: ['id'], fields: [] }],
     };
-    for (const opts of [{}, { allowLegacyBareSource: true }]) {
-      expect(() => load(GOOGLE, uriDoc, opts)).toThrow('uses the legacy instance-based AlloyDB URI');
+    for (const d of [doc, uriDoc]) {
+      for (const opts of [{}, { allowLegacyBareSource: true }]) {
+        expect(() => load(GOOGLE, d, opts)).toThrow('uses the legacy instance-based AlloyDB URI');
+      }
     }
   });
 

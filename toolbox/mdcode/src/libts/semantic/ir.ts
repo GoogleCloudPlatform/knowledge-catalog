@@ -77,8 +77,8 @@ export interface SemanticModel {
   // absent on models authored before constraints existed, so consumers read it
   // as `constraints ?? []`. See Constraint.
   constraints?: Constraint[];
-  // Vendor extension blocks carried verbatim (round-trip fidelity), including a
-  // vanilla model's GOOGLE block that holds `deploymentTargets`.
+  // Vendor extension blocks carried verbatim (round-trip fidelity), and the
+  // GOOGLE block the loader folds a Google-flavor model's `deployments` into.
   customExtensions?: CustomExtension[];
   version?: '0.2.0.dev0'|'0.2.0.dev0/google';  // the flavor the document declared
   // Named profiles. A Google-flavor model's come from its

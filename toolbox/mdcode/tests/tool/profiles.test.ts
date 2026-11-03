@@ -20,7 +20,6 @@ import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import {profiles, push} from '../../src/tool/commands';
 import {passGraphChecks, passSourceCheck, stubCloudSqlEntry} from '../libts/mocks';
 
-import {modelFile} from './two_phase/harness';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -2275,23 +2274,6 @@ semantic_model:
       const unread = warn.mock.calls.map(c => String(c[0])).filter(
           w => w.includes("profile 'b': kcmd could not read"));
       expect(unread).toHaveLength(1);
-    });
-
-    // Under --no-kc, a model that deploys no graph is checked before any
-    // graph deploys, so its profile errors leave every graph as it was.
-    test('before any graph deploys, under --no-kc with two models', async () => {
-      writeScope({
-        'commerce.yaml':
-            modelFile({google: {deploymentTargets: [`${GRAPH}_prod`]}}),
-        'inventory.yaml': commerce().replace('name: commerce', 'name: inventory'),
-        'inventory.profile.staging.yaml': STAGING,
-      });
-      const deploy = spyOn(bigQueryDeploy, 'deployBigQuery');
-      expect(await push({validateOnly: true, kc: false, profile: 'default'}))
-          .toBe(1);
-      expect(deploy).not.toHaveBeenCalled();
-      expect(logs).toEqual(expect.arrayContaining(
-          incomplete('inventory.profile.staging.yaml').map(e => `Error: ${e}`)));
     });
 
     // A model in which customer and supplier extend the abstract party, and

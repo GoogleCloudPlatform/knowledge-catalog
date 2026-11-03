@@ -3376,47 +3376,6 @@ semantic_model:
         .toBeLessThan(report.indexOf("  profile 'prod'"));
   });
 
-  // Profile prod beside a graph target, outside any deployments list.
-  test('a graph push of one is refused as a named profile, alone, under --all-profiles, in the report or as default_profile, where the refusal points at --profile default', async () => {
-    const targeted = JSON.stringify({
-      deploymentTargets: [`${BQ}/raw/propertyGraphs/g`],
-      profiles: [binding('prod', PROD_SOURCE)],
-    });
-    writeModel(targeted);
-    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
-    spyOn(console, 'log').mockImplementation(() => {});
-    const bqSpy = mockBigQuery();
-
-    expect(await push({validateOnly: true, profile: 'prod'})).toBe(1);
-    expect(messages(errorSpy)).toContain(`[commerce] ${NO_TARGET}`);
-    errorSpy.mockClear();
-    expect(await push({validateOnly: true, allProfiles: true})).toBe(1);
-    expect(messages(errorSpy)).toContain(`[commerce] ${NO_TARGET}`);
-    errorSpy.mockClear();
-    expect(await profiles({profile: 'prod'})).toBe(1);
-    expect(messages(errorSpy)).toContain(`[commerce] ${NO_TARGET}`);
-
-    // Without --profile, push takes default_profile.
-    writeModel(targeted, 'default_profile: prod\n');
-    errorSpy.mockClear();
-    expect(await push({validateOnly: true, kc: false})).toBe(1);
-    expect(messages(errorSpy)).toContain(
-        "Run 'kcmd push --profile default' to deploy the model file's own " +
-        "bindings, or 'kcmd push --no-profile' to publish to Knowledge " +
-        "Catalog without deploying a graph. Both need the model file's own " +
-        'bindings to be complete.');
-    expect(bqSpy).not.toHaveBeenCalled();
-
-    // The command it names deploys the model file's own bindings.
-    errorSpy.mockClear();
-    expect(await push({validateOnly: true, kc: false, profile: 'default'}))
-        .toBe(0);
-    expect(messages(errorSpy)).not.toContain('is a named profile');
-    expect(bqSpy).toHaveBeenCalledTimes(1);
-    expect(bqSpy.mock.calls[0][0][0].model.entities?.[0].dataSource)
-        .toBe('test-project.raw.customer');
-  });
-
   test('default_profile naming one applies it to a push with no --profile', async () => {
     writeModel(prod(PROD_SOURCE), 'default_profile: prod\n');
     const deploySpy = spyOn(kc, 'deployKnowledgeCatalog');
@@ -3472,8 +3431,7 @@ semantic_model:
     expect('error' in opened && opened.error).toContain(error);
   });
 
-  // The loader keeps a GOOGLE block on the model only when it lists
-  // deploymentTargets, so the runtime names that key only for such a block.
+  // A vanilla model with no target is told to declare one in 'deployments'.
   const noTarget = [
     ['no GOOGLE block', '{}', (text: string) => text.replace(
         "    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '{}'\n", ''),
@@ -3484,8 +3442,6 @@ semantic_model:
      (text: string) => text.replace(
          '    datasets:\n', "      - vendor_name: ACME\n        data: '{}'\n    datasets:\n"),
      "'deployments'"],
-    ['only deploymentTargets', '{"deploymentTargets": []}', (text: string) => text,
-     "its GOOGLE block's 'deploymentTargets'"],
   ] as const;
   for (const [what, block, edit, where] of noTarget) {
     test(`the runtime's no-target error names ${where} for ${what}`, async () => {

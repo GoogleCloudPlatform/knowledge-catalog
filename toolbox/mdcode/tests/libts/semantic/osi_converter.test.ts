@@ -123,27 +123,6 @@ describe('serialized document structure', () => {
     fields: [{name: 'id', expression: 'id'}],
   };
 
-  function vanillaTargetsYaml(targets: string[]): string {
-    return [
-      'version: "0.2.0.dev0"',
-      'semantic_model:',
-      '  - name: sales',
-      '    custom_extensions:',
-      '      - vendor_name: GOOGLE',
-      `        data: '${JSON.stringify({deploymentTargets: targets})}'`,
-      '    datasets:',
-      '      - name: orders',
-      '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
-      '        primary_key: [id]',
-      '        fields:',
-      '          - name: id',
-      '            expression:',
-      '              dialects:',
-      '                - dialect: ANSI_SQL',
-      '                  expression: id',
-    ].join('\n');
-  }
-
   test('keeps a deployment profile and omits deploymentTargets', () => {
     const withProfile: SemanticModel = {
       name: 'sales',
@@ -170,49 +149,17 @@ describe('serialized document structure', () => {
     expect(text).not.toContain('deploymentTargets');
   });
 
-  test('keeps a GOOGLE block verbatim under 0.2.0.dev0', () => {
-    const [vanillaModel] = loadModels(vanillaTargetsYaml([bqTarget])).models;
-
-    const serialized = serializeModel(vanillaModel);
-    const parsed = yaml.parse(serialized.yaml);
-
-    expect(vanillaModel.deployments).toBeUndefined();
-    expect(serialized.warnings).toEqual([]);
-    expect(parsed.version).toBe('0.2.0.dev0');
-    expect(parsed.semantic_model[0].deployments).toBeUndefined();
-    expect(parsed.semantic_model[0].custom_extensions).toEqual([
-      {
-        vendor_name: 'GOOGLE',
-        data: JSON.stringify({deploymentTargets: [bqTarget]}),
-      },
-    ]);
-  });
-
-  test(
-      'serializes a single GOOGLE target as default under 0.2.0.dev0/google',
-      () => {
-        const [vanillaModel] =
-            loadModels(vanillaTargetsYaml([bqTarget])).models;
-        const googleModel: SemanticModel = {
-          ...vanillaModel,
-          version: '0.2.0.dev0/google',
-        };
-
-        const serialized = serializeModel(googleModel);
-        const parsed = yaml.parse(serialized.yaml);
-
-        expect(serialized.warnings).toEqual([]);
-        expect(parsed.semantic_model[0].deployments).toEqual([
-          {name: 'default', target: bqTarget},
-        ]);
-      });
-
   test('numbers multiple GOOGLE targets under 0.2.0.dev0/google', () => {
-    const [vanillaModel] =
-        loadModels(vanillaTargetsYaml([spTarget, bqTarget])).models;
     const googleModel: SemanticModel = {
-      ...vanillaModel,
+      name: 'sales',
       version: '0.2.0.dev0/google',
+      customExtensions: [{
+        vendorName: 'GOOGLE',
+        data: JSON.stringify({deploymentTargets: [spTarget, bqTarget]}),
+      }],
+      entities: [ordersEntity],
+      relationships: [],
+      metrics: [],
     };
 
     const serialized = serializeModel(googleModel);
@@ -1154,38 +1101,6 @@ describe('dual-version model serialization', () => {
     ]);
   });
 
-  // A GOOGLE block the model keeps, such as one that lists deploymentTargets,
-  // is written as it is, with any profiles in it; when profiles were in a
-  // separate block, the serializer writes them back into a GOOGLE block.
-  test('does not warn about profiles in a GOOGLE block the model keeps under 0.2.0.dev0', () => {
-    const block = (data: object) =>
-        `      - vendor_name: GOOGLE\n        data: '${JSON.stringify(data)}'\n`;
-    const text = (blocks: string) => `version: "0.2.0.dev0"
-semantic_model:
-  - name: m
-    custom_extensions:
-${blocks}    datasets:
-      - name: orders
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-`;
-    const target = 'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-    const prod = {name: 'prod'};
-
-    const [kept] = loadModels(text(block({deploymentTargets: [target], profiles: [prod]}))).models;
-    const written = serializeModel(kept);
-    expect(written.warnings).toEqual([]);
-    expect(loadModels(written.yaml).models[0]).toEqual(kept);
-
-    const [own] = loadModels(text(block({deploymentTargets: [target]}) + block({profiles: [prod]}))).models;
-    const ownWritten = serializeModel(own);
-    expect(ownWritten.warnings).toEqual([]);
-    expect(loadModels(ownWritten.yaml).models[0]).toEqual(own);
-  });
-
   test('warns that abstract is dropped under 0.2.0.dev0', () => {
     const model: SemanticModel = {
       ...emptyModel,
@@ -1809,51 +1724,6 @@ describe('serializeModelFiles and profile sidecar files', () => {
         expect(reloaded.metrics[0].authoredEntity).toBe('orders');
         expect(reloaded.customExtensions).toBeUndefined();
       });
-
-  // Kept `deploymentTargets` blocks (including empty `[]`, blank `["  "]`, and
-  // hand-authored `profiles` with non-canonical key order or empty arrays) are
-  // preserved verbatim.
-  test('preserves kept deploymentTargets blocks verbatim', () => {
-    const vanillaWithBlock = (data: object) =>
-        ['version: "0.2.0.dev0"',
-         'semantic_model:',
-         '  - name: m',
-         '    custom_extensions:',
-         `      - vendor_name: GOOGLE`,
-         `        data: '${JSON.stringify(data)}'`,
-         '    datasets:',
-         '      - name: orders',
-         '        source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
-         '        primary_key: [id]',
-         '        fields:',
-         '          - name: id',
-         '            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}',
-    ].join('\n');
-
-    for (const payload
-             of [{deploymentTargets: []},
-                 {deploymentTargets: ['  ']},
-                 {
-                   deploymentTargets: [],
-                   profiles: [{
-                     entities: [{
-                       source: 'bigquery.googleapis.com/projects/x/datasets/y/tables/z',
-                       name: 'orders',
-                       fields: [{name: 'id', expression: 'oid'}]
-                     }],
-                     name: 'prod',
-                     relationships: [],
-                   }],
-                 },
-    ]) {
-      const [loaded] = loadModels(vanillaWithBlock(payload)).models;
-      const {yaml: out, warnings} = serializeModel(loaded);
-      expect(warnings).toEqual([]);
-      expect(yaml.parse(out).semantic_model[0].custom_extensions[0].data)
-          .toBe(JSON.stringify(payload));
-      expect(loadModels(out).models[0]).toEqual(loaded);
-    }
-  });
 
   // In-memory raw GOOGLE blocks on non-field objects (other than the model's
   // kept `deploymentTargets` block) are dropped with a warning under

@@ -6,7 +6,7 @@ import {expect} from 'bun:test';
 
 import {entryDenied} from '../../libts/gcp/location_responses';
 
-import {ALLOYDB, bqGraph, bqTable, CUSTOMER, err, modelFile, scenarios, spannerGraph} from './harness';
+import {ALLOYDB, bqTable, CUSTOMER, err, scenarios, spannerGraph} from './harness';
 
 const entry = (group: string, id: string) =>
     `projects/test-project/locations/us/entryGroups/${group}/entries/${id}`;
@@ -49,23 +49,6 @@ const DATABRICKS = {
   ...THIRD_PARTY,
   fields: [{name: 'key', expression: {dialects: [{dialect: 'DATABRICKS', expression: 'c_key'}]}}],
 };
-// A vanilla commerce.yaml whose GOOGLE block targets an AlloyDB database, with
-// Customer bound to `source`.
-const alloyDbModel = (source: string) => ({
-  'commerce.yaml': modelFile({google: {deploymentTargets: [ALLOYDB]}})
-                       .replace(bqTable('customer'), source),
-});
-// The AlloyDB target error of a plain push. With `advice` set, it advises a
-// graph target or a catalog-only push.
-const alloyDbTarget = (advice: boolean) => err(
-    `model 'commerce' (commerce) target '${ALLOYDB}' is an AlloyDB database, ` +
-    'which a model runs against rather than deploys to; AlloyDB has no ' +
-    'property graph for a push to publish.' +
-    (advice ? ' Declare a BigQuery or Spanner Graph target (list ' +
-         "'deployments' in a GOOGLE custom_extensions block on the model, or " +
-         "set version: '0.2.0.dev0/google' and use 'deployments:'), or run " +
-         "'kcmd push --no-profile' to publish to Knowledge Catalog only." : ''));
-
 scenarios('a third-party table', [
   {
     name: 'a BigQuery, Spanner or AlloyDB deployment that binds one is refused before anything is written, and a push with no deployment publishes it, looked up once for its dialect',
@@ -91,38 +74,14 @@ scenarios('a third-party table', [
   },
   {
     // A model with no deployments list pushes in one phase, with the target
-    // of its GOOGLE block or of a legacy profile folder. A catalog-only
-    // push, in one phase or two, is refused too, since the catalog keeps the
-    // GOOGLE block target.
-    name: 'a model with no deployments list is refused before anything is written when its GOOGLE block or legacy profile names a graph or an AlloyDB database',
-    files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g')]}})
-                                 .replace(bqTable('customer'), ENTRY)},
+    // of a legacy profile folder.
+    name: 'a model with no deployments list is refused before anything is written when its legacy profile names a graph',
+    flags: {profile: 'sf'},
+    legacy: {sf: `semantic_model:\n  - name: commerce\n    deployment_target: ${
+        spannerGraph('g')}\n    entities: [{name: Customer, source: ${ENTRY}}]\n`},
     services: LOOKUP,
-    code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))],
-    report: {code: 1, rejects: {'no profiles': [singlePhase(BQ)]}},
-    then: [{
-      files: {}, flags: {profile: 'sf'},
-      legacy: {sf: `semantic_model:\n  - name: commerce\n    deployment_target: ${
-          spannerGraph('g')}\n    entities: [{name: Customer, source: ${ENTRY}}]\n`},
-      code: 1, nothingWritten: true,
-      errors: [err(singlePhase(SPANNER, "commerce, profile 'sf'"))],
-    },
-    {flags: {deployment: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
-    {flags: {profile: false}, code: 1, nothingWritten: true, errors: [err(singlePhase(BQ))]},
-    {files: alloyDbModel(ENTRY), flags: {profile: false}, code: 1,
-     nothingWritten: true, errors: [err(singlePhase(ALLOYDB_DB))]},
-    // A plain push also gives the AlloyDB target error. It gives advice only
-    // when the model binds no third-party table.
-    {files: alloyDbModel(ENTRY), code: 1, nothingWritten: true,
-     errors: [alloyDbTarget(false), err(singlePhase(ALLOYDB_DB))]},
-    {files: alloyDbModel(bqTable('customer')), code: 1, nothingWritten: true,
-     errors: [alloyDbTarget(true)]},
-    // Two graph targets give the deployment count error, with no advice.
-    {files: {'commerce.yaml': modelFile({google: {deploymentTargets: [bqGraph('g'), spannerGraph('g')]}})
-                                  .replace(bqTable('customer'), ENTRY)},
-     code: 1, nothingWritten: true,
-     errors: [err("model 'commerce' (commerce) declares 2 deployments; push uses exactly one deployment for now."),
-              err(singlePhase(BQ)), err(singlePhase(SPANNER))]}],
+    code: 1, nothingWritten: true,
+    errors: [err(singlePhase(SPANNER, "commerce, profile 'sf'"))],
   },
   {
     name: 'a missing entry stops the push before anything is written, with or without --skip-source-check, and stops kcmd profiles',

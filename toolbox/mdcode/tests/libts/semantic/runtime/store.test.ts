@@ -21,7 +21,8 @@ import {AlloyDbDatabase, resolveStore, storeLine, withPrimaryInstance} from '../
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';
 const DATASET = 'bigquery.googleapis.com/projects/p/datasets/s';
 const PG =
-    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/d';
+    'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d';
+const PG_TABLE = `${PG}/schemas/public/tables/customer`;
 
 function model(body: string): SemanticModel {
   const loaded = loadModels(
@@ -67,61 +68,16 @@ describe('where a model says it lives', () => {
   });
 
   test('an AlloyDB target is a store, down to the database', () => {
-    const store = resolveStore(bound(PG, `${PG}/tables/customer`));
+    const store = resolveStore(bound(PG, PG_TABLE));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('alloydb');
     if (store.kind !== 'alloydb') return;
     expect(store.project).toBe('p');
     expect(store.location).toBe('us-central1');
     expect(store.cluster).toBe('c');
-    expect(store.instance).toBe('i');
     expect(store.database).toBe('d');
-    // The instance-based URI names the same database as the cluster-based
-    // one, so the store takes the same name.
     expect(store.name).toBe(
         'projects/p/locations/us-central1/clusters/c/databases/d');
-  });
-
-  // The instance-based URI names the instance to connect through, so it is
-  // kept in either order.
-  test('one AlloyDB database named by both of its URIs is one store', () => {
-    const byInstance = `      - {name: by_instance, target: "${PG}"}\n`;
-    const byCluster =
-        `      - {name: by_cluster, target: "alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d"}\n`;
-    for (const listed of [byInstance + byCluster, byCluster + byInstance]) {
-      const store = resolveStore(model(
-          `    deployments:\n` + listed +
-          `    entities:\n` +
-          `      - name: Customer\n` +
-          `        primary_key: [id]\n` +
-          `        source: ${PG}/tables/customer\n` +
-          `        fields:\n` +
-          `          - {name: id, datatype: Integer, expression: id}\n`));
-      if ('error' in store) throw new Error(store.error);
-      expect(store.kind === 'alloydb' && store.instance).toBe('i');
-    }
-  });
-
-  // Two profiles that name one AlloyDB database describe one store, whichever
-  // URI each uses.
-  test('one AlloyDB database has one store name in every profile', () => {
-    const m = model(
-        `    deployments:\n` +
-        `      - {name: old, target: "${PG}", profile: legacy}\n` +
-        `      - {name: new, target: "alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/d"}\n` +
-        `    entities:\n` +
-        `      - name: Customer\n` +
-        `        primary_key: [id]\n` +
-        `        source: ${PG}/tables/customer\n` +
-        `        fields:\n` +
-        `          - {name: id, datatype: Integer, expression: id}\n`);
-    const byInstance = resolveStore(m, 'legacy');
-    const byCluster = resolveStore(m, 'default');
-    if ('error' in byInstance) throw new Error(byInstance.error);
-    if ('error' in byCluster) throw new Error(byCluster.error);
-    expect(byInstance.name)
-        .toBe('projects/p/locations/us-central1/clusters/c/databases/d');
-    expect(byCluster.name).toBe(byInstance.name);
   });
 
   // An AlloyDB target names a DATABASE, not a graph, because AlloyDB has no
@@ -129,7 +85,7 @@ describe('where a model says it lives', () => {
   // nothing that could be created, so it is not quietly accepted.
   test('an AlloyDB target with a graph segment is not a target at all', () => {
     const store =
-        resolveStore(bound(`${PG}/propertyGraphs/g`, `${PG}/tables/customer`));
+        resolveStore(bound(`${PG}/propertyGraphs/g`, PG_TABLE));
     expect('error' in store).toBe(true);
     if (!('error' in store)) return;
     expect(store.error).toContain(
@@ -244,8 +200,6 @@ describe('a model that declares more than one deployment target', () => {
          expect('error' in store).toBe(true);
          if (!('error' in store)) return;
          expect(store.error).toContain('2 Spanner deployment targets');
-         expect(store.error)
-             .toContain("in its GOOGLE block's 'deploymentTargets'");
          expect(store.error).toContain('the runtime uses exactly one deployment for now.');
        });
 
@@ -260,14 +214,12 @@ describe('a model that declares more than one deployment target', () => {
     if (!('error' in store)) return;
     expect(store.error).toContain('1 Spanner and 1 AlloyDB');
     expect(store.error).toContain('two operational backends');
-    expect(store.error)
-        .toContain("in its GOOGLE block's 'deploymentTargets'");
     expect(store.error).toContain('the runtime uses exactly one deployment for now.');
   });
 
   test('AlloyDB alongside BigQuery resolves to the AlloyDB store', () => {
     const store = resolveStore(
-        targets([PG, `${DATASET}/propertyGraphs/g`], `${PG}/tables/customer`));
+        targets([PG, `${DATASET}/propertyGraphs/g`], PG_TABLE));
     if ('error' in store) throw new Error(store.error);
     expect(store.kind).toBe('alloydb');
   });
@@ -281,44 +233,8 @@ describe('a model that declares more than one deployment target', () => {
     expect(store.error).toContain('2 BigQuery deployment targets');
   });
 
-  // Only the two URIs of one AlloyDB database are merged. A target listed
-  // twice in a GOOGLE block is a duplicate, which every push refuses.
-  test('one Spanner graph listed twice is a duplicate target', () => {
-    const store = resolveStore(targets(
-        [`${DB}/graphs/g`, `${DB}/graphs/g`],
-        `${DB}/tables/Customer`));
-    expect('error' in store && store.error)
-        .toContain(`declares duplicate deployment target '${DB}/graphs/g'`);
-  });
-
-  test('one AlloyDB URI listed twice is a duplicate target', () => {
-    const store = resolveStore(targets([PG, PG], `${PG}/tables/customer`));
-    expect('error' in store && store.error)
-        .toContain(`declares duplicate deployment target '${PG}'`);
-  });
-
-  test('two instances of one AlloyDB database are ambiguous', () => {
-    const store = resolveStore(targets(
-        [PG, PG.replace('/instances/i/', '/instances/i2/')],
-        `${PG}/tables/customer`));
-    expect('error' in store && store.error)
-        .toContain('2 AlloyDB deployment targets');
-  });
-
-  // A vanilla model whose GOOGLE block lists 'deploymentTargets' is told about
-  // that key, and how to list a deployment in the block.
-  test('a GOOGLE block with no target names the block', () => {
-    expect(resolveStore(targets([], `${DB}/tables/Customer`))).toEqual({
-      error: "Model 'm' declares no deployment target in its GOOGLE block's " +
-          "'deploymentTargets', so there is no store to run against. In a " +
-          "GOOGLE custom_extensions block on the model, declare a " +
-          "deployment in 'deployments' whose target names a database.",
-    });
-  });
-
-  // The loader removes a GOOGLE block that lists no 'deploymentTargets', so a
-  // vanilla model with no target and no such block is told about
-  // 'deployments'.
+  // The loader removes every GOOGLE block, so a vanilla model with no target is
+  // told about 'deployments'.
   test('a vanilla model with no deploymentTargets block is told about deployments', () => {
     const none = {...targets([], `${DB}/tables/Customer`), customExtensions: undefined};
     expect(resolveStore(none)).toEqual({
@@ -421,7 +337,7 @@ describe('the store a profile uses', () => {
     expect(store.kind).toBe('alloydb');
     if (store.kind !== 'alloydb') return;
     // A cluster target names no instance; the runtime finds it.
-    expect(store.instance).toBeUndefined();
+    expect('instance' in store).toBe(false);
     expect(store.name).toBe('projects/p/locations/us-central1/clusters/c/databases/d');
   });
 
@@ -559,19 +475,6 @@ describe('the store a profile uses', () => {
     });
   });
 
-  // Every AlloyDB target pushed before the cluster form holds the
-  // instance-based URI, so the runtime still reads it in a list.
-  test('an instance-based AlloyDB target in a list is still read', () => {
-    const store = resolveStore(
-        deployed(
-            `      - {name: alloy_old, target: "${PG}"}\n`,
-            'alloydb.googleapis.com/projects/p/locations/us-central1/' +
-                'clusters/c/databases/d/schemas/public/tables/customer'),
-        'default');
-    if ('error' in store) throw new Error(store.error);
-    expect(store.kind === 'alloydb' && store.instance).toBe('i');
-  });
-
   // A vanilla model keeps its targets in a GOOGLE block, which names no
   // profile, so they are for the model's own bindings.
   test('a GOOGLE block gives no store to a named profile', () => {
@@ -685,16 +588,6 @@ describe('an AlloyDB source', () => {
         `${CLUSTER}/databases/other/schemas/public/tables/customer`));
     expect('error' in store && store.error)
         .toContain("'Customer' to " + `${CLUSTER}/databases/other`);
-  });
-
-  // The instance is compute. The database belongs to the cluster, so a legacy
-  // source's instance takes no part in the match.
-  test('written as a legacy instance-based name, matches on cluster and database', () => {
-    const store = resolveStore(alloyModel(
-        `${CLUSTER}/databases/d`,
-        `${CLUSTER}/instances/any/databases/d/tables/customer`));
-    if ('error' in store) throw new Error(store.error);
-    expect(store.kind).toBe('alloydb');
   });
 });
 
@@ -868,12 +761,5 @@ describe('the instance an AlloyDB store connects through', () => {
               CLUSTER}': the AlloyDB API returned page token 'same' twice`,
         });
     expect(calls).toBe(2);
-  });
-
-  test('a store that names its instance is not looked up', async () => {
-    const client = clientListing({status: 500});
-    const legacy = {...store, instance: 'i'};
-    expect(await withPrimaryInstance(legacy, client)).toEqual(legacy);
-    expect(client.listInstances).not.toHaveBeenCalled();
   });
 });

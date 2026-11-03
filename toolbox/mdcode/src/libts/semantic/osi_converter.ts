@@ -905,11 +905,10 @@ interface GoogleBlockPayload {
 }
 
 // Serializes `custom_extensions` for one IR element. Under OSSIE_VERSION,
-// third-party extensions and a model's kept `deploymentTargets` GOOGLE block
-// (when `deployments` is not written) are emitted, followed by a synthesized
-// GOOGLE block when `blockPayload` carries any keys. Any other raw GOOGLE
-// block on the IR is dropped with a warning so it cannot collide with the
-// synthesized block or write keys the loader rejects. Under GOOGLE_VERSION,
+// third-party extensions are emitted, followed by a synthesized GOOGLE block
+// when `blockPayload` carries any keys. Any other raw GOOGLE block on the IR
+// is dropped with a warning so it cannot collide with the synthesized block or
+// write keys the loader rejects. Under GOOGLE_VERSION,
 // third-party extensions are written out unchanged without warning, while
 // `GOOGLE` blocks are skipped (silently for the model's `deploymentTargets`
 // block, and with a warning for any other `GOOGLE` block).
@@ -928,14 +927,10 @@ function customExtensionsDoc(
         kept.push({vendor_name: e.vendorName, data: e.data});
         continue;
       }
-      // The loader keeps a model's `deploymentTargets` block, since no IR field
-      // holds it, and rejects that block beside `deployments`.
-      if (isModel && isDeploymentTargetsBlock(e)) {
-        if (payload.deployments === undefined) {
-          // Profiles this block lists are the model's, as the loader read them.
-          if ('profiles' in JSON.parse(e.data)) delete payload.profiles;
-          kept.push({vendor_name: GOOGLE_VENDOR, data: e.data});
-        }
+      // The loader's copy of the model's `deployments`, which the GOOGLE
+      // block below writes in their own form.
+      if (isModel && payload.deployments !== undefined &&
+          isDeploymentTargetsBlock(e)) {
         continue;
       }
       droppedGoogle += 1;
@@ -982,9 +977,7 @@ function customExtensionsDoc(
  * Returns true if `e.data` is a JSON object with a `'deploymentTargets'`
  * property.
  *
- * Matches the check in `readGoogleBlocks` (`loader.ts`), which keeps any
- * model-level `GOOGLE` block that declares `'deploymentTargets'` (even when the
- * list is empty or whitespace-only).
+ * The loader folds a Google-flavor model's `deployments` into such a block.
  */
 function isDeploymentTargetsBlock(e: CustomExtension): boolean {
   try {

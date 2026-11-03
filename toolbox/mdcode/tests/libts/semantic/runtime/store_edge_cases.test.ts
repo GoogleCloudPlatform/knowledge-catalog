@@ -127,36 +127,17 @@ describe('targets', () => {
          });
        });
 
-  // Every push refuses a target listed twice. So does the runtime under every
-  // profile, even beside a Spanner target that alone would give the store.
-  test('a target a GOOGLE block lists twice fails the store under every profile',
-       () => {
-         const graph =
-             'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/g';
-         const m = vanilla(
-             JSON.stringify({deploymentTargets: [SPANNER_GRAPH, graph, graph]}));
-         for (const profile of ['default', 'prod']) {
-           expect(resolveStore(m, profile)).toEqual({
-             error: `Model 'm' declares duplicate deployment target '${
-                        graph}' in its GOOGLE block's 'deploymentTargets'; ` +
-                 `each deployment must target a distinct resource.`,
-             named: true,
-             rejected: true,
-           });
-         }
-       });
-
-  // The instance-based AlloyDB URI in a `deployments:` list.
-  // resolveModelDeployments rejects it, and resolveStore reads it until the
-  // legacy forms go.
-  test('an instance-based AlloyDB URI in a list: resolveStore reads it, resolveModelDeployments rejects it',
+  // The instance-based AlloyDB URI in a `deployments:` list. resolveStore
+  // refuses it as resolveModelDeployments does.
+  test('an instance-based AlloyDB URI in a list: resolveStore and resolveModelDeployments both reject it',
        () => {
          const m = deployed(
              `      - {name: old, target: "${CLUSTER}/instances/i/databases/d"}\n`,
              `${CLUSTER}/databases/d/schemas/public/tables/customer`);
-         const store = resolveStore(m);
-         expect('error' in store).toBe(false);
-         expect('error' in resolveModelDeployments(m)).toBe(true);
+         const resolved = resolveModelDeployments(m);
+         if (!('error' in resolved)) throw new Error('expected an error');
+         expect(resolveStore(m))
+             .toEqual({error: resolved.error, named: true, rejected: true});
        });
 
   // A programmatic empty list hides the GOOGLE block, the same way push

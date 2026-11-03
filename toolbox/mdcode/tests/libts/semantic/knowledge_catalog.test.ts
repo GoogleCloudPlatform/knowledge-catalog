@@ -84,21 +84,6 @@ const ENTITY_YAML = (name: string, key = '[id]') => `      - name: ${name}
         primary_key: ${key}
         fields:
           - { name: id, expression: id }`;
-// A vanilla model `shop` over table p.d.orders, with the given data in its
-// GOOGLE block and the given YAML lines at the end of the model.
-const vanilla = (block: object, more = '') => load(`version: "0.2.0.dev0"
-semantic_model:
-  - name: shop
-    custom_extensions:
-      - {vendor_name: GOOGLE, data: '${JSON.stringify(block)}'}
-    datasets:
-      - name: orders
-        source: ${TABLE('orders')}
-        primary_key: [id]
-        fields:
-          - name: id
-            expression: {dialects: [{dialect: ANSI_SQL, expression: id}]}
-${more}`);
 // A one-entity model whose single field carries the given IR type + dimension,
 // so a test can read back the emitted schema aspect for that field.
 function modelWithField(
@@ -514,7 +499,7 @@ describe('model-level structure', () => {
         const spannerUri =
             'spanner.googleapis.com/projects/p/instances/i/databases/db/graphs/g';
         const alloyUri =
-            'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/instances/i/databases/db';
+            'alloydb.googleapis.com/projects/p/locations/us-central1/clusters/c/databases/db';
         const model: SemanticModel = {
           name: 'm',
           relationships: [],
@@ -1461,25 +1446,6 @@ ${ENTITY_YAML('orders')}
          bare.version = '0.2.0.dev0';
          expect(data(bare, 'bare', 'semantic-model'))
              .toEqual({specVersion: '0.2.0.dev0'});
-       });
-
-  test('a vanilla model\'s deploymentTargets become deployments named ' +
-           'default or deployment_<n>',
-       () => {
-         const targets = (...graphs: string[]) => data(
-             vanilla({deploymentTargets: graphs.map(GRAPH)}), 'shop',
-             'semantic-model');
-         expect(targets('g')).toEqual({
-           specVersion: '0.2.0.dev0',
-           deployments: [{name: 'default', target: GRAPH('g')}],
-         });
-         expect(targets('g', 'h')).toEqual({
-           specVersion: '0.2.0.dev0',
-           deployments: [
-             {name: 'deployment_1', target: GRAPH('g')},
-             {name: 'deployment_2', target: GRAPH('h')},
-           ],
-         });
        });
 
   test('a metric records its canonical data type with the metadataType it ' +

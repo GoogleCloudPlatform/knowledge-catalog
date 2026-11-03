@@ -472,9 +472,9 @@ ${deployments}    entities:
          }
        });
 
-  // A vanilla model lists its targets in a GOOGLE block. Push rejects a target
-  // in no accepted form and a block that is not JSON, so no skill is written
-  // that says the model has no store.
+  // A vanilla model lists its deployments in a GOOGLE block. Push rejects a
+  // target in no accepted form and a block that is not JSON, so no skill is
+  // written that says the model has no store.
   test('skills-generate fails when a GOOGLE block lists a target in no accepted form or is not JSON',
        async () => {
          const typo = `${SPANNER}/database/commerce/graphs/commerce`;
@@ -492,16 +492,16 @@ semantic_model:
           - name: key
             expression: {dialects: [{dialect: ANSI_SQL, expression: OrderId}]}
 `;
-         const listed = (uris: string[]) =>
-             JSON.stringify({deploymentTargets: uris});
-         const notAccepted = `Error: Model 'commerce': the GOOGLE ` +
-             `custom_extension's 'deploymentTargets' lists '${typo}', which ` +
-             'is not a BigQuery graph, a Spanner graph or an AlloyDB database';
+         const listed = (uris: string[]) => JSON.stringify(
+             {deployments: uris.map((target, i) => ({name: `d${i + 1}`, target}))});
+         const notAccepted = (name: string) =>
+             `Error: Model 'commerce': deployment '${name}' targets '${typo}', ` +
+             'which is not a BigQuery graph, a Spanner graph or an AlloyDB database';
          for (const [data, error] of [
-                [listed([typo]), notAccepted],
+                [listed([typo]), notAccepted('d1')],
                 [
                   listed([`${SPANNER_DB}/graphs/commerce`, typo]),
-                  notAccepted,
+                  notAccepted('d2'),
                 ],
                 [
                   '{not-json',

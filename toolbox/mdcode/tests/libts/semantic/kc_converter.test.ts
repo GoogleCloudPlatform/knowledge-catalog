@@ -836,24 +836,6 @@ semantic_model:
         .toEqual(model.entities.map(e => e.authoredSource));
     expect(again.deployments).toEqual([{name: 'default', target}]);
   });
-
-  test('a legacy instance-based AlloyDB source written as a name is stored as written', () => {
-    const source = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/instances/i/databases/db/tables/orders';
-    const [model] = loadModels(`version: "0.2.0.dev0/google"
-semantic_model:
-  - name: m
-    entities:
-      - name: orders
-        source: ${source}
-        primary_key: [id]
-        fields:
-          - { name: id, expression: id }
-`, {allowLegacyBareSource: true}).models;
-    const {entries} = generateCatalogResources(model, OPTS);
-    const entry = entries.find(e => e.entrySource?.displayName === 'orders')!;
-    expect(entry.aspects!['dataplex-types.global.semantic-entity'].data!.source)
-        .toEqual({resources: [source]});
-  });
 });
 
 

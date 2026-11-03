@@ -243,10 +243,10 @@ describe('vanilla output, extensions, and targets', () => {
       'bigquery:graph:acme.sales.retail',
     ],
     [
-      'GOOGLE-block deploymentTargets URI',
+      'GOOGLE-block deployments URI',
       ossieDoc({
         extra:
-            '    custom_extensions:\n      - vendor_name: GOOGLE\n        data: \'{"deploymentTargets":["//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail"]}\'\n',
+            '    custom_extensions:\n      - vendor_name: GOOGLE\n        data: \'{"deployments":[{"name":"prod","target":"//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail"}]}\'\n',
       }),
       '//bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail',
     ],
@@ -793,7 +793,7 @@ semantic_model:
 `,
       }),
       {flavor: 'google' as const, strict: true},
-      `model 'retail': 'deploymentTargets' is no longer supported; use 'deployments:' inside the GOOGLE block instead.`,
+      `model 'retail': 'deploymentTargets' is no longer supported; use 'deployments' inside the GOOGLE custom_extensions block instead, for example {"deployments": [{"name": "default", "target": "<target>"}]}.`,
     ],
     [
       'non-JSON YAML alias in GOOGLE block data',
