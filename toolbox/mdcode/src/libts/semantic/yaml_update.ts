@@ -600,8 +600,8 @@ function fits(u: Update, s: string, next?: number): boolean {
 }
 
 /**
- * The number of blank lines from offset `p`, a line's start, in the text that
- * the edits so far leave. None when `p` is undefined.
+ * The number of blank lines from offset `from`, a line's start, in the text
+ * that the edits so far leave. None when `from` is undefined.
  */
 function blankLines(u: Update, from?: number): number {
   const t = u.text;
