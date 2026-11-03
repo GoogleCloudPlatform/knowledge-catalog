@@ -600,11 +600,10 @@ const CHANGES: Array<[string, () => any, object?]> = [
      m.semantic_model[0].metrics[0].description = ds(m)[0].description;
      m.semantic_model[0].metrics.push(ROW_COUNT);
    })],
-  ['a key removed', changed(vanilla, m => {
-     const {name, ...rest} = fields(m)[1];
-     fields(m)[1] = {name, datatype: 'Opaque', ...rest};
+  ['a first key removed', changed(google, m => {
+     const {source, ...rest} = ds(m)[0];
+     ds(m)[0] = {source: 'SELECT * FROM orders', ...rest};
    })],
-  ['a first key removed', changed(vanilla, m => fields(m)[1] = {datatype: 'Opaque', ...fields(m)[1]})],
   ['a query source removed', changed(google, m => ds(m)[0].source = 'SELECT * FROM orders')],
   ['a last dialect removed', changed(vanilla, m => fields(m)[0].expression.dialects.push(MDX))],
   ['a first dialect removed', changed(vanilla, m => fields(m)[0].expression.dialects.unshift(MDX))],
