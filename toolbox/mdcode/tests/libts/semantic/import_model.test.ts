@@ -600,11 +600,21 @@ describe('profile checks', () => {
         expect(res.errors).toEqual([error]);
       });
 
-  test('checks no deployment when a profile file breaks a file rule, as push does', async () => {
-    const [input, opts] = DEPLOYED[0][2](
-        {name: 'g', target: BQ_GRAPH, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG));
-    expect((await importSemanticModelYaml(input, opts)).errors)
-        .toEqual(["Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."]);
+  // [label, input and options, push's one message]
+  test.each([
+    ['a profile file breaks a file rule', DEPLOYED[0][2](
+        {name: 'g', target: BQ_GRAPH, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG)),
+     "Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."],
+    ['the loader warns about a source',
+     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_GRAPH}}]\n`}),
+      {flavor: 'google'}],
+     "dataset 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
+     "the file until it is repointed, or until 'kcmd import' runs again with '--source-prefix'. A " +
+     'table outside Google Cloud is written as the entry name of its Knowledge Catalog entry, ' +
+     "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'."],
+  ] as const)('checks no deployment when %s, as push does', async (_, [input, opts], message) => {
+    const res = await importSemanticModelYaml(input, opts);
+    expect([...res.errors, ...res.warnings]).toEqual([message]);
   });
 });
 

@@ -1738,6 +1738,8 @@ function validateOutputDocument(
       if (errors.some(e => e.profile === name)) continue;
       doc.warnings.push(...appliedProfileWarnings(model, profiles, name, own));
     }
+    // Push stops at a source its loader rejects.
+    if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) return;
 
     // 4. Check each deployment with push's offline checks, under the profile
     // it names. A profile file that does not load is reported above. Push
