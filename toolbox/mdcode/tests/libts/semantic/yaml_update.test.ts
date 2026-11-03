@@ -33,6 +33,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: |+\n  z\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\n\nd: 1\n'
   ],
   [
+    'block scalars ending in a line of spaces set to other text',
+    'a: |-\n  x\n    \nb: |+\n  x\n    \n\nc: 1\n', v => (v.a = 'y', v.b = 'y\n\n'),
+    'a: |-\n  y\nb: |+\n  y\n\nc: 1\n'
+  ],
+  [
     'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
     v => (v.a = 'true', v.b[1] = 3)
   ],

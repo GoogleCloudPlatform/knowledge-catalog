@@ -421,10 +421,11 @@ function setScalar(
   const t = u.text;
   const [from, end, lead] = rangeOf(u, node);
   // A block scalar that keeps its final line breaks ends in the blank lines
-  // after its text. The edit stops before them, so they stay.
+  // after its text. The edit stops before the empty ones, so they stay. A
+  // line of spaces can be text, so the edit replaces it.
   let to = end;
   while (/^BLOCK/.test(node.type ?? '') && lineStart(t, to - 1) > from &&
-         !t.slice(lineStart(t, to - 1), to).trim()) {
+         lineStart(t, to - 1) === lineEnd(t, to - 1)) {
     to = lineStart(t, to - 1);
   }
   const kept = typeof node.value === 'string' && typeof value === 'string';
