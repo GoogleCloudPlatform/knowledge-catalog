@@ -106,6 +106,8 @@ export function updateText(
   let at = 0;
   for (const [from, to, s] of u.edits.sort(
            (a, b) => a[0] - b[0] || a[1] - b[1])) {
+    // An edit inside another would write part of the text twice.
+    if (from < at) throw new Error(`Overlapping edits at offset ${from}.`);
     out += text.slice(at, from) + s;
     at = to;
   }
@@ -197,6 +199,14 @@ function patchItems(
   const follows = at.map((j, i) => j < 0 ? Math.max(-1, ...at.slice(0, i)) : NaN);
   const g = geometry(u, node, flow);
   const col = g[0].start - lineStart(t, g[0].start);
+  // In a flow collection whose items each have their lines, removed and new
+  // items take whole lines. In any other flow collection, they take the text
+  // between items. One choice for both keeps their edits apart.
+  const lines = flow && g.every(i => i.ownLines);
+  // The text between two items, without its comments.
+  const sep =
+      g.length > 1 ? t.slice(g[0].end, g[1].start).replace(/[ \t]*#.*/g, '') :
+                     ', ';
   const slotOf = (i: number): Slot => {
     const item = items[i];
     const sep = yaml.isPair(item) ?
@@ -211,7 +221,7 @@ function patchItems(
     let b = a;
     while (b + 1 < items.length && !at.includes(b + 1)) b++;
     const next = g[b + 1];
-    if (flow && g.slice(a, b + 1).every(i => i.ownLines)) {
+    if (lines) {
       u.edits.push([lineStart(t, g[a].start), nextLine(t, g[b].end), '']);
       // The comma after the item that becomes last goes, unless a new entry
       // comes after it.
@@ -219,9 +229,16 @@ function patchItems(
       if (!next && a > 0 && !follows.includes(a - 1)) {
         u.edits.push([comma, comma + 1, '']);
       }
+    } else if (flow && next) {
+      u.edits.push([g[a].start, next.start, '']);
     } else if (flow) {
+      // The comma after the item that becomes last goes, unless a new entry
+      // comes after it, and a comment after that comma stays.
+      const gap = t.slice(g[a - 1].end, g[a].start);
       u.edits.push(
-          next ? [g[a].start, next.start, ''] : [g[a - 1].end, g[b].end, '']);
+          follows.includes(a - 1) ? [g[a].start, g[b].end, ''] :
+                                    [g[a - 1].end, g[b].end,
+                                     gap.includes('#') ? gap.replace(',', '') : '']);
     } else if (g[a].inline && next) {
       // The next item moves up onto the `- ` line, and its comments go above
       // that line. A comment indented deeper than that line takes its
@@ -261,15 +278,15 @@ function patchItems(
     } else {
       const before = follows[i];
       const key = yaml.isMap(node) ? `${scalarText(u, k, 0, flow)}:` : '-';
-      const lines = !flow ? block(u, key, v, col, String(k)) :
+      const text = !flow ? block(u, key, v, col, String(k)) :
           yaml.isMap(node) ? [`${key} ${flowValue(u, String(k), v)}`] :
                              [scalarText(u, v, 0, true)];
-      added.set(before, [...(added.get(before) ?? []), ...lines]);
+      added.set(before, [...(added.get(before) ?? []), ...text]);
     }
   });
-  for (const [j, lines] of added) {
+  for (const [j, parts] of added) {
     const near = g[Math.max(j, 0)];
-    if (flow && near.ownLines) {
+    if (lines) {
       // Each new item gets a line, indented as the item near it.
       const pad = t.slice(lineStart(t, near.start), near.start);
       const last = !at.some(i => i > j);
@@ -277,20 +294,23 @@ function patchItems(
         u.edits.push([near.end, near.end, ',']);
       }
       const pos = j < 0 ? lineStart(t, near.start) : nextLine(t, near.end);
-      const text = lines.map(l => pad + l).join(',' + u.nl);
+      const text = parts.map(l => pad + l).join(',' + u.nl);
       u.edits.push([pos, pos, text + (last ? '' : ',') + u.nl]);
     } else if (flow) {
-      const sep = g.length > 1 ? t.slice(g[0].end, g[1].start) : ', ';
-      const text = lines.join(sep);
+      // New items go before the item after the one they follow, so that a
+      // comment after the comma stays on its line.
+      const text = parts.join(sep);
+      const next = g[j + 1];
+      const last = !at.some(i => i > j);
       u.edits.push(
-          j < 0 ? [near.start, near.start, text + sep] :
-                  [near.end, near.end, sep + text]);
+          next ? [next.start, next.start, last ? text : text + sep] :
+                 [near.end, near.end, sep + text]);
     } else if (j < 0 && near.inline) {
-      const text = lines.join(u.nl).slice(col) + u.nl + ' '.repeat(col);
+      const text = parts.join(u.nl).slice(col) + u.nl + ' '.repeat(col);
       u.edits.push([near.start, near.start, text]);
     } else {
       const pos = j < 0 ? near.head : near.end;
-      const text = lines.join(u.nl);
+      const text = parts.join(u.nl);
       u.edits.push(
           pos === t.length && !t.endsWith('\n') ? [pos, pos, u.nl + text] :
                                                   [pos, pos, text + u.nl]);

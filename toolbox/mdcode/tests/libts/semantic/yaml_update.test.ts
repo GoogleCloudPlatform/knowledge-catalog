@@ -85,6 +85,12 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: {\n  i: x,\n  o: y\n}\n', v => (delete v.a.o, v.a.c = 'z'), 'a: {\n  i: x,\n  c: z\n}\n'
   ],
   [
+    'flow collections over several lines with a `}` or comment on an entry\'s line',
+    'a: {\n  i: p,\n  o: q}\nl: [p,  # c\n  q]\nm: [p,  # d\n  q]\n',
+    v => (delete v.a.o, v.a.c = 'r', v.l.push('r'), v.m.pop()),
+    'a: {\n  i: p,\n  c: r}\nl: [p,  # c\n  q,\n  r]\nm: [p  # d\n  ]\n'
+  ],
+  [
     'a flow mapping given text of several lines, in a scalar and a new mapping',
     'f: [{name: a, d: x}]\n', v => {
       const text = 'Owned by the analytics team in the main office.\n\nAsk first.';
