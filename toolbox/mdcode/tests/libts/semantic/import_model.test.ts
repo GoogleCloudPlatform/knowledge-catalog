@@ -364,6 +364,7 @@ describe('profile translation', () => {
     expect(res.warnings.filter(w => w.startsWith("profile 'prod': field"))).toEqual(translated ? [
       "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
     ] : []);
+    expect(res.warnings).not.toContain('Converted the JSON file to YAML.');
   });
 
   // A profile file that changes is written as YAML, as a model file is. One
