@@ -418,9 +418,12 @@ describe('profile translation', () => {
   const REVERSED = '\n          dialects:\n            # Snowflake only\n' +
       "            - expression: 'NVL(order_id, 0)' # fallback to 0\n" +
       '              dialect: SNOWFLAKE # source warehouse';
-  // A blank line after every line, and a comment inside a flow expression.
-  const BLANKS = profileFile('orders.total', ` {\n          dialects: [  # Snowflake only\n` +
-      `            ${SF}\n          ]\n        }`).replaceAll('\n', '\n\n');
+  // A blank line after every line, and a comment inside a flow expression over
+  // several lines. Import writes that expression again in block style, without
+  // the comment.
+  const FLOW = ` {\n          dialects: [  # Snowflake only\n` +
+      `            ${SF}\n          ]\n        }`;
+  const BLANKS = profileFile('orders.total', FLOW).replaceAll('\n', '\n\n');
   // The texts of each field of orders in profile file `text`.
   const texts = (text: string) =>
       loadProfileFile(text, 'prod').entities[1].fields!.map(f => f.dialects);
@@ -437,7 +440,9 @@ describe('profile translation', () => {
      profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`,
                  ` {dialects: [${SF}, ${BQ}]}`)],
     ['a blank line at each position and a comment inside a flow expression', BLANKS,
-     BLANKS.replace(`${SF}\n`, `${SF},\n            ${BQ}\n`)],
+     BLANKS.replace(FLOW.replaceAll('\n', '\n\n'), '\n          dialects:\n' +
+         '            - dialect: SNOWFLAKE\n              expression: "NVL(order_id, 0)"\n' +
+         '            - dialect: BIGQUERY\n              expression: COALESCE(order_id, 0)')],
     ['an entry that writes expression before dialect', profileFile('orders.total', REVERSED),
      profileFile('orders.total', `${REVERSED}
             - dialect: BIGQUERY
