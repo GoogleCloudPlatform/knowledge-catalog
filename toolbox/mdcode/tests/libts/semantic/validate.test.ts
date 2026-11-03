@@ -3238,7 +3238,7 @@ ${extra}`);
           dialect} or ANSI_SQL, and the model file binds entity '${
           entity}' to ${a} ${dialect} source${hint}.`;
   const HINT = "; give it one, or add one with 'kcmd import <file> " +
-      "--input first-party --flavor <ossie|google> --transpile'";
+      "--input first-party --flavor google --transpile'";
 
   // A bound field needs a text for its source's dialect, an ANSI_SQL text, or
   // the string form. An inherited field is judged by the source of the entity

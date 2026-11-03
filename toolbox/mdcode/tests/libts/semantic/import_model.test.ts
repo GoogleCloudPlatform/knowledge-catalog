@@ -465,12 +465,14 @@ describe('profile checks', () => {
     ['a profile file, to google', p => [google, {strict: true, flavor: 'google', profileFiles: file(p)}], 'retail.profile.pg.yaml', true],
     ['a third-party profile file, to google', p => [google, {flavor: 'google', profileFiles: file(p)}], 'retail.profile.pg.yaml', true],
   ];
-  // [problem, profile, push's error with the label, whether only a kept profile
-  // file reaches it]. A double-quoted name gets push's warning on every path.
-  const QUOTED = `profile 'pg': [retail] field 'orders.order_id': BigQuery reads "Order ID" in its ` +
-      "'ANSI_SQL' expression as text; if you meant a column, give it a 'BIGQUERY' expression without " +
-      "the double quotes; 'kcmd import <file> --input first-party --flavor <ossie|google> --transpile' adds one";
-  const PROBLEMS: Array<[string, Profile, ((label: string) => string)|undefined, boolean]> = [
+  // [problem, profile, push's error with the label and the written flavor,
+  // whether only a kept profile file reaches it]. A double-quoted name gets
+  // push's warning on every path.
+  const quoted = (_: string, flavor: string) => `profile 'pg': [retail] field 'orders.order_id': ` +
+      `BigQuery reads "Order ID" in its 'ANSI_SQL' expression as text; if you meant a column, give ` +
+      `it a 'BIGQUERY' expression without the double quotes; 'kcmd import <file> --input ` +
+      `first-party --flavor ${flavor} --transpile' adds one`;
+  const PROBLEMS: Array<[string, Profile, ((label: string, flavor: string) => string)|undefined, boolean]> = [
     ['nothing', PG, undefined, false],
     ['no name', (({name: _, ...rest}) => rest)(PG),
      () => "Profile file 'retail.profile.pg.yaml' declares no name; add 'name: pg'.", true],
@@ -482,15 +484,17 @@ describe('profile checks', () => {
      l => `[${l}] profile 'pg': entity 'orders': bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders`, false],
     ['a field reference', orders({fields: [{name: 'order_id', expression: 'orders.nope'}]}),
      l => `[${l}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
-    ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}), () => QUOTED, false],
+    ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}), quoted, false],
   ];
 
   test.each(PROBLEMS.flatMap(([problem, profile, error, keptOnly]) => PATHS.flatMap(
-      ([path, build, label, kept]) => !keptOnly || kept ?
-          [[problem, path, ...build(profile), error?.(label)] as const] : [])))(
-      'reports %s in %s', async (_, __, input, opts, error) => {
+      ([path, build, label, kept]) => {
+        const [input, opts] = build(profile);
+        return !keptOnly || kept ? [[problem, path, input, opts, error?.(label, opts.flavor)]] : [];
+      })))(
+      'reports %s in %s', async (problem, __, input, opts, error) => {
         const res = await importSemanticModelYaml(input, opts);
-        const warned = !opts.strict || error === QUOTED;
+        const warned = !opts.strict || problem === 'a double-quoted name';
         expect(res.errors).toEqual(!warned && error ? [error] : []);
         expect(res.warnings).toEqual(warned && error ? [error] : []);
         if (!opts.strict) expect(res.files.slice(1)).toEqual(opts.profileFiles);

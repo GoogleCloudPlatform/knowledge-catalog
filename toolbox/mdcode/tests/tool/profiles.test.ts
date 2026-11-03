@@ -718,10 +718,11 @@ relationships:
       `field '${name}' in model 'commerce' (commerce) has no expression for ` +
       `${dialect} or ANSI_SQL, and the model file binds entity '${
           name.split('.')[0]}' to a ${dialect} source`;
-  // The end of the error for a field whose text kcmd import --transpile can
-  // translate.
-  const HINT = "; give it one, or add one with 'kcmd import <file> " +
-      "--input first-party --flavor <ossie|google> --transpile'.";
+  // The end of the error for a field, in a model file of `flavor`, whose text
+  // kcmd import --transpile can translate.
+  const hint = (flavor = 'google') => "; give it one, or add one with 'kcmd " +
+      `import <file> --input first-party --flavor ${flavor} --transpile'.`;
+  const HINT = hint();
   // The same hint at the end of a profile's error, which has no closing period.
   const PROFILE_HINT = HINT.slice(0, -1);
   // Field amount, whose one text is `text` in `dialect`.
@@ -1835,7 +1836,7 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
               "'positive_spend' has no expression for BIGQUERY or ANSI_SQL, " +
               "and this profile's sources are BIGQUERY; give it one, add " +
               "one with 'kcmd import <file> --input first-party --flavor " +
-              "<ossie|google> --transpile', or add it to 'metrics_exclude'",
+              "google --transpile', or add it to 'metrics_exclude'",
         ],
       });
     });
@@ -2031,7 +2032,7 @@ semantic_model:
             vanilla([profile], {deploy})
                 .replace('expression: p_id}]}\n',
                          p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`);
-        const error = modelNoText('purchase.amount') + HINT;
+        const error = modelNoText('purchase.amount') + hint('ossie');
         writeScope({'commerce.yaml': withAmount(complete('prod'), 'prod')});
         expect(await pushResult()).toEqual({code: 1, errors: [error]});
         // Profile prod's error for amount on `dialect`, ending in `hint`.
@@ -2051,7 +2052,7 @@ semantic_model:
         };
         for (const [label, profile, prod] of [
                ['inherited', complete('prod'), []],
-               ['rebound', rebound, [blockError('BIGQUERY', PROFILE_HINT)]],
+               ['rebound', rebound, [blockError('BIGQUERY', hint('ossie').slice(0, -1))]],
                ['on Spanner', onSpanner, [blockError('SPANNER')]],
              ] as const) {
           writeScope({'commerce.yaml': withAmount(profile)});

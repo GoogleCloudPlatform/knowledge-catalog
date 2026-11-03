@@ -2641,8 +2641,7 @@ semantic_model:
     expect(prints(console.error).join('\n')).toContain(
         "targets a BigQuery graph with only a 'SNOWFLAKE' expression; supply " +
         "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +
-        "import <file> --input first-party --flavor <ossie|google> " +
-        "--transpile'.");
+        "import <file> --input first-party --flavor google --transpile'.");
     expect(kcSpy).not.toHaveBeenCalled();
   });
 

@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {DEFAULT_PROFILE, fieldsOnTables, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
+import {DEFAULT_PROFILE, fieldsOnTables, importCommand, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
@@ -2386,7 +2386,7 @@ function convertDataset(
   // dataSource) and no key -- both are meaningless for a class never
   // materialized. Only a concrete entity is parsed/warned for those.
   const parsedSource = ds.source !== undefined ?
-      parseSource(ds.source, opts, ctxLabel, warnings, /* importHint= */ true) :
+      parseSource(ds.source, opts, ctxLabel, warnings, version) :
       undefined;
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
@@ -3691,12 +3691,12 @@ function thirdPartyNameError(source: string, ctx: string): string|undefined {
 // Reads an entity's `source` into the dotted name the generators use and the
 // source as written. Throws on a form the loader does not accept. A profile
 // file's sources are read here too, so they follow the same rules. With
-// `importHint`, for a model file's source, a bare table name's error also
-// names `kcmd import`, which completes a model file's bare names but not a
-// profile file's.
+// `importVersion`, the version of the model file the source is in, a bare
+// table name's error also names `kcmd import`, which completes a model file's
+// bare names but not a profile file's.
 export function parseSource(
-    source: string, opts: LoadOptions, ctx: string,
-    warnings?: string[], importHint = false): ParsedSource {
+    source: string, opts: LoadOptions, ctx: string, warnings?: string[],
+    importVersion?: FormatVersion): ParsedSource {
   const trimmed = source.trim();
 
   // Under the legacy wrapper, a space inside double quotes also marks a query.
@@ -3776,13 +3776,13 @@ export function parseSource(
         dataSource: parts.join('.'),
       };
     }
-    // With `importHint`, the example also names the command that completes a
-    // model file's bare names.
-    const viaImport = importHint ?
-        `\nOr run 'kcmd import <file> --input first-party --flavor ` +
-            `<ossie|google> --source-prefix <prefix>' to complete each bare ` +
-            `table name from the database or Knowledge Catalog entry group ` +
-            `that <prefix> names.` :
+    // With `importVersion`, the example also names the command that completes
+    // a model file's bare names.
+    const viaImport = importVersion ?
+        `\nOr run '${
+            importCommand('--source-prefix <prefix>', importVersion)}' to ` +
+            `complete each bare table name from the database or Knowledge ` +
+            `Catalog entry group that <prefix> names.` :
         '';
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and

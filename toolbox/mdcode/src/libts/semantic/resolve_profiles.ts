@@ -30,7 +30,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
@@ -1335,10 +1335,16 @@ export function fieldsOnTables(model: SemanticModel, withUnread = false):
   });
 }
 
-// The import command that adds BigQuery SQL to a model file. Push reads only
-// files written for kcmd, so `--input first-party` fits each of them.
-export const IMPORT_TRANSPILE_COMMAND =
-    'kcmd import <file> --input first-party --flavor <ossie|google> --transpile';
+// The import command, ending in `flags`, that keeps a model file of `version`
+// in its own flavor: `--flavor google` for a Google model, `--flavor ossie` for
+// a vanilla one, and both flavors when no model is known. Push reads only files
+// written for kcmd, so `--input first-party` fits each of them.
+export function importCommand(flags: string, version?: string): string {
+  const flavor = version === GOOGLE_VERSION ? 'google' :
+      version === OSSIE_VERSION             ? 'ossie' :
+                                              '<ossie|google>';
+  return `kcmd import <file> --input first-party --flavor ${flavor} ${flags}`;
+}
 
 // Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
 // with no text for `dialect`: true when `dialect` is BIGQUERY and its only
@@ -1349,11 +1355,14 @@ export function importTranspiles(
       transpilesFrom(f.importedDialect ?? '');
 }
 
-// The hint that import can add a text in `dialect` to `f`, or ''.
+// The hint that import can add a text in `dialect` to `f`, a field of a model
+// file of `version`, or ''.
 export function importHint(
-    f: Parameters<typeof textsFor>[0], dialect: string): string {
-  return importTranspiles(f, dialect) ?
-      `; give it one, or add one with '${IMPORT_TRANSPILE_COMMAND}'` : '';
+    f: Parameters<typeof textsFor>[0], dialect: string,
+    version: string|undefined): string {
+  if (!importTranspiles(f, dialect)) return '';
+  return `; give it one, or add one with '${
+      importCommand('--transpile', version)}'`;
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -1713,7 +1722,7 @@ export function validateProfileCompleteness(
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}${importHint(f, dialect)}`);
+                  dialect}${importHint(f, dialect, baseModel.version)}`);
         }
       }
     }
@@ -1722,7 +1731,9 @@ export function validateProfileCompleteness(
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
           const viaImport = importTranspiles(m as Field, dialect) ?
-              ` add one with '${IMPORT_TRANSPILE_COMMAND}',` : '';
+              ` add one with '${
+                  importCommand('--transpile', baseModel.version)}',` :
+              '';
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
               `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +

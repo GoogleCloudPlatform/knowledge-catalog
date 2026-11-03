@@ -20,7 +20,7 @@ import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthP
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, importHint, inheritanceErrorOf, inheritedNamesOf, noTextFor, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, fieldsOnTables, importCommand, importHint, inheritanceErrorOf, inheritedNamesOf, noTextFor, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, referencedEntityNames} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn, withoutComments} from './sql_parser';
@@ -320,7 +320,7 @@ export function validateInlineDialects(
             document}) has no expression for ${dialect} or ANSI_SQL, and ` +
         `the model file binds entity '${e.name}' to ${
             /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${
-            importHint(f, dialect)}.`);
+            importHint(f, dialect, model.version)}.`);
   }
   return errors;
 }
@@ -1707,7 +1707,7 @@ function validateBigQueryMetrics(
           `${prefix} targets a BigQuery graph with only a '${
               metric.importedDialect ?? 'vendor'}' expression; supply a ` +
           `'BIGQUERY' or 'ANSI_SQL' expression, or add one with '${
-              IMPORT_TRANSPILE_COMMAND}'.`);
+              importCommand('--transpile', model.version)}'.`);
       continue;
     }
     // The generator reads the resolved BigQuery expression (`bqText`) with its
