@@ -295,7 +295,8 @@ semantic_model:
     expect(messages(warn).split('\n')).toEqual([
       "Warning: field 'Customer.odd' in model 'commerce' (commerce): kcmd " +
           'could not read its SQL, so the fields it reads were not checked.',
-      "Note: profile 'bq' leaves 1 field(s) unbound.",
+      "Note: model 'commerce' (commerce, deployment 'bq') excludes field " +
+          "'Customer.ltv'.",
     ]);
   });
 });
@@ -607,7 +608,8 @@ relationships:
 // A Spanner graph reads a field's SPANNER text, else its ANSI_SQL one, and a
 // BigQuery graph its BIGQUERY text, else its ANSI_SQL one. Pruning, and the
 // check of what a profile excludes, read the text each deployment's graph
-// reads.
+// reads. Entity big_orders extends orders, so a graph deployment of the model
+// file's own bindings may leave field tax of orders without an expression.
 describe('a model with a Spanner graph target is pruned in the Spanner dialect', () => {
   test('push drops a field, and a profile must exclude one, by the text its graph reads', async () => {
     fs.writeFileSync(
@@ -620,7 +622,7 @@ describe('a model with a Spanner graph target is pruned in the Spanner dialect',
         'bigquery.googleapis.com/projects/test-project/datasets/ds/tables/orders';
     const bqGraph =
         'bigquery.googleapis.com/projects/test-project/datasets/ds/propertyGraphs/g';
-    const writeModel = (deployments: string) =>
+    const writeModel = (deployments: string, more = '') =>
         fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -644,15 +646,34 @@ ${deployments}
               dialects:
                 - { dialect: SPANNER, expression: "orders.gross" }
                 - { dialect: ANSI_SQL, expression: "orders.gross - orders.tax" }
+${more}`);
+    // Entity big_orders extends orders and binds tax.
+    writeModel(`      - { name: sp, target: ${spDb}/graphs/g }`, `      - name: big_orders
+        extends: [orders]
+        source: ${spDb}/tables/BigOrders
+        primary_key: [order_id]
+        fields:
+          - { name: order_id, expression: order_id }
+          - { name: gross, expression: gross }
+          - { name: tax, expression: tax }
 `);
-    writeModel(`      - { name: sp, target: ${spDb}/graphs/g }`);
-    spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const deploySpy = spyOn(spannerLeg, 'deploySpanner');
 
     expect(await push({validateOnly: true})).toBe(0);
+    const omits = (field: string, why: string) =>
+        `Warning: field 'orders.${field}' in model 'commerce' (commerce, ` +
+        `deployment 'sp') ${why}, so the graph omits it.`;
+    expect(messages(warnSpy).split('\n').filter(
+               w => w.startsWith('Warning: field')))
+        .toEqual([
+          omits('tax', 'has no expression'),
+          omits('net', 'reads orders.tax, which is unavailable'),
+        ]);
+    // Orders keeps the fields big_orders inherits, and marks them excluded.
     const orders = deploySpy.mock.calls[0][0][0].model.entities[0];
-    expect(orders.fields.map(f => f.name)).toEqual(['order_id', 'gross', 'total']);
+    expect(orders.excludedFields).toEqual(['tax', 'net']);
 
     // Each profile leaves field tax out.
     const profileFile = (name: string, source: string) => `name: ${name}
@@ -2443,16 +2464,27 @@ ${deployments.map(d => `      - { name: ${d}, target: "${BQ}/propertyGraphs/${d}
           - { name: ltv }
 `;
 
-  test('a pruned push that fails a source check gives its pruning note', async () => {
-    writeModel(ltvUnbound(['g']));
+  test('a pruned push that fails a source check still notes the field its profile excludes', async () => {
+    const eg = writeModel(ltvUnbound(['g']).replace(
+        'propertyGraphs/g" }', 'propertyGraphs/g", profile: prod }'));
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
+entities:
+  - name: customer
+    source: ${BQ}/tables/customer
+    primary_key: [c_id]
+    fields: [{ name: c_id, expression: c_id }]
+    fields_exclude: [ltv]
+`);
     spyOn(validateMod, 'validateBigQueryDataSources')
         .mockResolvedValue(['the table is gone']);
     const bqSpy = spyOn(bqLeg, 'deployBigQuery').mockResolvedValue(
         {success: true, deployed: 0, ddl: [], warnings: []} as any);
     expect(await push({validateOnly: true})).toBe(1);
     expect(prints(console.error)).toEqual(['Error: the table is gone']);
-    expect(prints(console.warn))
-        .toEqual(["Note: profile 'default' leaves 1 field(s) unbound."]);
+    expect(prints(console.warn)).toEqual([
+      "Note: model 'commerce' (commerce, deployment 'g') excludes field " +
+          "'customer.ltv'.",
+    ]);
     expect(bqSpy).toHaveBeenCalledTimes(1);
   });
 
@@ -2488,7 +2520,10 @@ entities:
                '122918 bytes, and one aspect holds at most 122880.',
          ]);
          expect(prints(console.warn))
-             .toEqual(["Note: profile 'staging' leaves 1 field(s) unbound."]);
+             .toEqual([
+               "Note: model 'commerce' (commerce, deployment 'staging') " +
+                   "excludes field 'customer.ltv'.",
+             ]);
          // Each push generates the graph offline; neither deploys it.
          expect(bqSpy.mock.calls.map(c => c[2])).toEqual([
            {validateOnly: true}, {validateOnly: true},

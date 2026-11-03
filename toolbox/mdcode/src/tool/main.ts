@@ -55,7 +55,7 @@ cli.command('pull', 'Pull catalog entries')
     .action((options) => run(() => commands.pull(options)));
 
 cli.command('push', 'Push catalog entries')
-    .option('--force', 'Force push changes')
+    .option('--force', 'Has no effect')
     .option(
         '--force-remove',
         'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')

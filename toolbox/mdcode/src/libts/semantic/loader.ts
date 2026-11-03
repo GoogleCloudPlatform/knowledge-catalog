@@ -899,12 +899,11 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
               });
             }
             // A field with no `expression` is unbound -- there is no separate
-            // flag. A graph leg does not reject it: the availability pass
-            // (pruneUnavailable) drops each unbound field, and whatever depends
-            // on it, before generation, so a deployed graph presents only what
-            // its binding answers. This is how one logical model serves several
-            // stores from different profiles, so it is not a load error under
-            // either `bindingOptional`. An `expression` with no SQL is an
+            // flag. One logical model serves several stores from different
+            // profiles, so it is not a load error under either
+            // `bindingOptional`. validateDeployments rejects one on a concrete
+            // leaf entity when a graph deployment uses the model file's own
+            // bindings. An `expression` with no SQL is an
             // error: it binds the field to nothing. A vanilla document's string
             // form is reported by convertExpression instead, since that form is
             // the first thing to fix.
@@ -2477,10 +2476,12 @@ function convertField(
   }
   // else: an unbound field. It carries meaning (label, description, AI context)
   // but names no physical column. A field is unbound exactly when it has no
-  // `expression` -- there is no separate flag. A graph leg does not reject it:
-  // the availability pass (pruneUnavailable) drops each unbound field, and
-  // whatever depends on it, before generation, so one logical model can serve
-  // stores that bind different subsets of columns.
+  // `expression` -- there is no separate flag. The availability pass
+  // (pruneUnavailable) drops each unbound field, and whatever depends on it,
+  // before generation, so one logical model can serve stores that bind
+  // different subsets of columns. validateDeployments rejects one on a
+  // concrete leaf entity when a graph deployment uses the model file's own
+  // bindings.
   const type = resolveDataType(f.datatype, version, ctx);
   if (type) field.type = type;
   if (f.label) field.label = f.label;

@@ -1192,7 +1192,7 @@ actions:
         .toBe('*');
   });
 
-  test('a logical key, "*" in a list, a wrong name and the old wrapper are rejected', () => {
+  test('a logical key, "*" in a list, a wrong name, datasets and the old wrapper are rejected', () => {
     for (const key of ['description', 'datatype']) {
       expect(() => loadProfileFile(
                  `name: prod\nentities:\n  - {name: orders, ${key}: x}\n`, 'prod'))
@@ -1201,6 +1201,9 @@ actions:
     expect(() => loadProfileFile('name: prod\nmetrics_exclude: ["*"]\n', 'prod'))
         .toThrow(/on its own/);
     expect(() => loadProfileFile('name: staging\n', 'prod')).toThrow(/does not match/);
+    expect(() => loadProfileFile('name: prod\ndatasets: []\n', 'prod'))
+        .toThrow("profile 'prod' lists its bindings under 'datasets'; a " +
+                 "profile lists them under 'entities'");
     expect(() => loadProfileFile('semantic_model: []\n', 'prod'))
         .toThrow(/not a profile file/);
   });

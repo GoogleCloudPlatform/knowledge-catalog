@@ -52,7 +52,8 @@ A model that lists `deployments:`, and a push with `--deployment` or
 `--no-deployment`, run in two phases. So does a push of a model with a sibling
 profile file, without `--profile`, `--all-profiles` or `--no-profile`. The first
 runs every check, for Knowledge Catalog and for each deployment, and writes
-nothing. The second publishes the model to Knowledge Catalog, then deploys each
+nothing. It also prints each graph's warnings, such as a metric the graph leaves
+out. The second publishes the model to Knowledge Catalog, then deploys each
 deployment in order with the profile it names. An AlloyDB deployment deploys no
 graph. The first phase dry-runs each BigQuery graph's DDL. Spanner cannot check
 a graph's DDL without running it, so a Spanner deployment whose DDL Spanner
@@ -664,12 +665,23 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deployment that names no profile uses the model file's own bindings. They
   must give every concrete entity a source and every relationship both join
   column lists. They must also bind every field that each deployed metric
-  reads, directly or through another field. An AlloyDB deployment reads only
+  reads, directly or through another field. On a BigQuery or Spanner
+  deployment, they must give every field of a concrete leaf entity an
+  expression, inherited fields included, since the model file has no
+  `fields_exclude`. An AlloyDB deployment reads only
   the `ALLOYDB` or `ANSI_SQL` text of each metric and field. A Spanner
   deployment deploys no metric. A BigQuery deployment turns each metric into a
   measure, so each metric must be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over
   one operand, and the entity it belongs to needs a primary key or a unique
-  key. The measure rule skips a metric that has only a vendor text.
+  key. The measure rule skips a metric that has only a vendor text. A
+  BigQuery or Spanner graph cannot hold an entity and a relationship whose
+  names match ignoring case. A BigQuery graph also cannot hold a metric named
+  like a field of another entity, ignoring case. BigQuery limits the options
+  kcmd writes on each label and property, too. The description holds at most
+  1,024 characters, counting the field label, the time-dimension line, and the
+  instructions and examples kcmd adds to it. An element holds at most eight
+  synonyms of one to 300 characters each. No two of them may match ignoring
+  case, and none may match the element's own name.
   A deployment that names a profile is held to the measure rule under that
   profile, with the keys it states, except for the metrics it leaves
   unavailable. On Spanner, that profile must leave every metric unavailable.

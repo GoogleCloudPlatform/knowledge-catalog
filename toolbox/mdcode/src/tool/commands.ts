@@ -26,7 +26,7 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, r
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, loadProfileFile, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
@@ -85,11 +85,7 @@ export function kcV2Aspects(): boolean {
 
 
 export interface PushOptions {
-  // Generic push flag for non-semantic-model (CatalogSync) scopes;
-  // forwarded to CatalogSync.push. The semantic-model legs ignore it.
-  // The catch-all "force the push" toggle -- distinct from
-  // `forceRemove` below, which specifically authorizes deleting models
-  // this push no longer includes.
+  // `--force`, which has no effect beyond a warning.
   force?: boolean;
   // Run every validation check and report pass/fail, but write nothing
   // to any destination (a dry run). Applies to both push paths.
@@ -100,8 +96,6 @@ export interface PushOptions {
   // Delete Knowledge Catalog models already in the entry group that this push
   // does not include (a removed or renamed model). Without it, an unrecognized
   // model in the group fails the push. Semantic-model KC push only.
-  // Unlike `force` above, this authorizes a destructive delete rather
-  // than overriding a conflict.
   forceRemove?: boolean;
   // Skip the check that every source names a table with a Knowledge Catalog
   // entry. The lookup of a Cloud SQL or third-party table's entry, which push
@@ -621,23 +615,35 @@ function namedProfileErrors(
   return errors;
 }
 
-// What a pruned profile leaves unavailable, or undefined when it leaves
-// nothing. It counts fields, metrics and actions, since pruning never removes
-// an entity or a relationship.
-function pruningNote(r: AvailabilityReport): string|undefined {
-  const dropped = r.droppedMetrics.length + r.droppedActions.length;
-  if (!r.unboundFields.length && !r.droppedFields.length && !dropped) {
-    return undefined;
-  }
-  return `profile '${r.profile}' leaves ${
-             r.unboundFields.length} field(s) unbound` +
-      (r.droppedFields.length ?
-           `; ${r.droppedFields.length} field(s) that read them unavailable` :
-           '') +
-      (dropped ? `; ${r.droppedMetrics.length} metric(s) and ${
-                     r.droppedActions.length} action(s) unavailable` :
-                 '') +
-      '.';
+// The warnings and the note push prints on what pruning leaves out of model
+// `model`. Each line names the model, and `at` its document and the
+// deployment. `outcome` says what becomes of a field left out.
+function pruningLines(
+    r: AvailabilityReport, model: string, at: string,
+    outcome = 'the graph omits it'): string[] {
+  const where = `model '${model}' (${at})`;
+  const excluded = new Set(r.excludedFields);
+  const omits = (field: string, why: string) =>
+      `Warning: field '${field}' in ${where} ${why}, so ${outcome}.`;
+  // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
+  const named = (kind: string, names: string[]) => names.length ?
+      `${plural(names.length, kind, `${kind}s`)} ${
+          listed(names.map(n => `'${n}'`))}` :
+      '';
+  const unavailable = [
+    named('metric', r.droppedMetrics.map(m => m.name)),
+    named('action', r.droppedActions.map(a => a.name)),
+  ].filter(n => n).join(r.droppedMetrics.length > 1 ? ', and ' : ' and ');
+  const note = [
+    excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
+    unavailable && `leaves ${unavailable} unavailable.`,
+  ].filter(p => p).join(' It ');
+  return [
+    ...r.unboundFields.filter(f => !excluded.has(f))
+        .map(f => omits(f, 'has no expression')),
+    ...r.droppedFields.map(d => omits(d.name, d.reason)),
+    ...note ? [`Note: ${where} ${note}`] : [],
+  ];
 }
 
 // Warns about each model whose model file is not named after it, when push
@@ -989,6 +995,7 @@ export async function push(options: PushOptions): Promise<number> {
   }
 
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  if (options.force) console.warn('Warning: --force has no effect.');
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
     // The semantic-model source always resolves to the SemanticModel layout
@@ -1108,7 +1115,7 @@ async function pushInTwoPhases(
   if (!load) return 1;
   const checked = await checkBeforeWrites(options, {...scope, load});
   if ('errors' in checked) return fail(...checked.errors.map(e => e.error));
-  const {plans, kcModels, fileCopies, notes, overviews} = checked;
+  const {plans, kcModels, fileCopies, leftOut, overviews} = checked;
   const sourceErrors = await sourceCheckErrors(kcModels, ctx, options);
   if (sourceErrors.length) return fail(...sourceErrors);
   if (fileCopies.length) {
@@ -1129,7 +1136,7 @@ async function pushInTwoPhases(
   }
   // The local checks and the catalog preflight have passed, so what pruning
   // leaves out is worth reading now.
-  for (const n of new Set(notes)) console.warn(`Note: ${n}`);
+  for (const line of leftOut) console.warn(line);
   const locationWarnings: string[] = [];
   let errors: string[] = [];
   for (const plan of plans) {
@@ -1137,11 +1144,10 @@ async function pushInTwoPhases(
         plan, ctx, source.project ?? ctx.project, locationWarnings);
     if (errors.length) break;
   }
-  // A push that deploys reads each dataset's location again and prints the
-  // same warning with the graph.
-  if (errors.length || options.validateOnly) {
-    for (const w of new Set(locationWarnings)) console.warn(`Warning: ${w}`);
-  }
+  // Every warning about a graph prints before the first write, and phase 2
+  // does not print it again.
+  const printed = new Set(locationWarnings);
+  for (const w of printed) console.warn(`Warning: ${w}`);
   if (errors.length) return fail(...errors);
   const header = (d: ResolvedDeployment) => {
     if (plans.length > 1) console.log(`\n-- Deployment '${d.name}' --`);
@@ -1155,6 +1161,10 @@ async function pushInTwoPhases(
           options);
     }
     return reportCatalogResult(preflight.result!, options);
+  }
+  for (const w of new Set(plans.flatMap(p => p.generated?.warnings ?? []))) {
+    console.warn(`Warning: ${w}`);
+    printed.add(w);
   }
   console.log('Pushing semantic model (Knowledge Catalog)...');
   const published =
@@ -1172,8 +1182,8 @@ async function pushInTwoPhases(
       continue;
     }
     const code = deployment.engine === 'bigquery' ?
-        await pushBigQuery([model], ctx, options) :
-        await pushSpanner([model], ctx, options);
+        await pushBigQuery([model], ctx, options, printed) :
+        await pushSpanner([model], ctx, options, printed);
     if (code !== 0) return code;
   }
   return 0;
@@ -1187,7 +1197,7 @@ async function pushInTwoPhases(
 async function checkBeforeWrites(
     options: PushOptions, scope: TwoPhaseScope, quiet = false): Promise<{
   plans: DeploymentPlan[]; kcModels: LoadedModel[]; fileCopies: FileCopy[];
-  notes: string[];
+  leftOut: string[];
   overviews?: Map<string, OverviewSidecar>;
 }|{errors: LocalCheckError[]}> {
   const {ctx, layout, source, docs, profileDocs, load} = scope;
@@ -1321,12 +1331,11 @@ async function checkBeforeWrites(
   if (tableErrors.length) return stop(tableErrors);
 
   const plans: DeploymentPlan[] = [];
-  const notes: string[] = [];
+  const leftOut: string[] = [];
   for (const base of models) {
     for (const deployment of selectedByDoc.get(base.document) ?? []) {
       const plan = await deploymentPlan(
-          base, profileDocs(base.document), deployment, ctx, warn,
-          notes);
+          base, profileDocs(base.document), deployment, ctx, warn, leftOut);
       if ('errors' in plan) {
         return stop(
             ofProfile(base.document, deployment.profile, ...plan.errors));
@@ -1334,7 +1343,7 @@ async function checkBeforeWrites(
       plans.push(plan);
     }
   }
-  return {plans, kcModels: models, fileCopies, notes, overviews};
+  return {plans, kcModels: models, fileCopies, leftOut, overviews};
 }
 
 // Adds the profile files of the model in `base` to `model.profiles`, without
@@ -1370,7 +1379,7 @@ async function deploymentPlan(
     base: LoadedModel, files: ReturnType<ProfileDocs>,
     deployment: ResolvedDeployment, ctx: context.ApiContext,
     warn: (w: string) => void,
-    notes: string[]): Promise<DeploymentPlan|{errors: string[]}> {
+    leftOut: string[]): Promise<DeploymentPlan|{errors: string[]}> {
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
   const fail = (...errors: string[]) => ({errors});
@@ -1414,8 +1423,9 @@ async function deploymentPlan(
   ];
   const {model: pruned, report} =
       pruneUnavailable(checked.model, deployment.profile);
-  const note = pruningNote(report);
-  if (note) notes.push(note);
+  leftOut.push(...pruningLines(
+      report, model.name, label,
+      deployment.engine === 'alloydb' ? 'it is unavailable there' : undefined));
   // Keeps only this deployment, so every reader sees its target alone.
   const narrowed: LoadedModel = {
     document: checked.document,
@@ -1564,11 +1574,9 @@ function printProfileReport(model: SemanticModel, name: string): void {
   }
 
   const withheld: string[] = [];
-  const excludedHere = new Set((model.entities ?? []).flatMap(
-      e => (e.excludedFields ?? []).map(f => `${e.name}.${f}`)));
+  const excluded = new Set(report.excludedFields);
   for (const f of report.unboundFields) {
-    withheld.push(
-        `field ${f} (${excludedHere.has(f) ? 'excluded' : 'unbound'})`);
+    withheld.push(`field ${f} (${excluded.has(f) ? 'excluded' : 'unbound'})`);
   }
   for (const d of report.droppedFields) {
     withheld.push(`field ${d.name} (${d.reason})`);
@@ -1825,11 +1833,14 @@ async function sqlParserError(): Promise<string|undefined> {
 }
 
 
-// Prints a graph leg's warnings, and under --print its DDL.
+// Prints a graph leg's warnings, less those in `printed`, and under --print
+// its DDL.
 function printGraph(
     engine: 'BigQuery'|'Spanner', result: {warnings: string[]; ddl: string[]},
-    options: PushOptions): void {
-  for (const w of result.warnings) console.warn(`Warning: ${w}`);
+    options: PushOptions, printed?: ReadonlySet<string>): void {
+  for (const w of result.warnings) {
+    if (!printed?.has(w)) console.warn(`Warning: ${w}`);
+  }
   if (!options.print) return;
   console.log(`-- ${engine} Graph --`);
   for (const block of result.ddl) console.log(`${block}\n`);
@@ -1839,13 +1850,13 @@ function printGraph(
 // Deploys the semantic model's BigQuery Graph leg (over the pre-loaded models)
 // and prints the result. Returns a process exit code (0 on success).
 async function pushBigQuery(
-    models: LoadedModel[], ctx: context.ApiContext,
-    options: PushOptions): Promise<number> {
+    models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
+    printed?: ReadonlySet<string>): Promise<number> {
   console.log(
       options.validateOnly ? 'Validating semantic model for BigQuery Graph...' :
                              'Pushing semantic model (BigQuery Graph)...');
   const result = await deploy.deployBigQuery(models, ctx, options);
-  printGraph('BigQuery', result, options);
+  printGraph('BigQuery', result, options, printed);
 
   if (!result.success) {
     console.error('Error pushing semantic model to BigQuery:', result.details);
@@ -1862,13 +1873,13 @@ async function pushBigQuery(
 // and prints the result. Sibling to pushBigQuery. Returns a process exit code
 // (0 on success).
 async function pushSpanner(
-    models: LoadedModel[], ctx: context.ApiContext,
-    options: PushOptions): Promise<number> {
+    models: LoadedModel[], ctx: context.ApiContext, options: PushOptions,
+    printed?: ReadonlySet<string>): Promise<number> {
   console.log(
       options.validateOnly ? 'Validating semantic model for Spanner Graph...' :
                              'Pushing semantic model (Spanner Graph)...');
   const result = await deploySpannerLeg.deploySpanner(models, ctx, options);
-  printGraph('Spanner', result, options);
+  printGraph('Spanner', result, options, printed);
 
   if (!result.success) {
     console.error('Error pushing semantic model to Spanner:', result.details);

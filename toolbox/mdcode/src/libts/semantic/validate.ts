@@ -11,12 +11,13 @@
 import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
+import {elementDescription, fieldDescription} from './bigquery';
 import {googleDeploymentTargets} from './deploy_bigquery';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS} from './ir';
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
-import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
+import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, IMPORT_TRANSPILE_COMMAND, importTranspiles, inheritanceErrorOf, inheritedNamesOf, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, textsFor} from './resolve_profiles';
@@ -180,6 +181,7 @@ export function validateDeployments(
   const add = (deployment: string, problem: string) =>
       problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
   const unbound = unboundInline(model);
+  const unboundFields = unboundGraphFields(model);
   // The metrics the reference rules report, which the BigQuery rule leaves to
   // them.
   let referenced: Set<string>|undefined;
@@ -199,6 +201,9 @@ export function validateDeployments(
         model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
     if (!bound) continue;
     const available = bound.model.metrics ?? [];
+    if (engine === 'bigquery' || engine === 'spanner') {
+      for (const p of graphNameProblems(bound.model, engine)) add(d.name, p);
+    }
     if (named) {
       if (engine === 'spanner' && available.length) {
         add(d.name,
@@ -207,11 +212,16 @@ export function validateDeployments(
                 listed(available.map(m => `'${m.name}'`))} available; name ` +
                 `them in its 'metrics_exclude', or set it to "*".`);
       }
-    } else if (unbound) {
-      add(d.name,
-          `uses the model file's own bindings, which leave ${
-              unbound}; a deployment needs every entity and relationship ` +
-              `bound.`);
+    } else {
+      if (unbound) {
+        add(d.name,
+            `uses the model file's own bindings, which leave ${
+                unbound}; a deployment needs every entity and relationship ` +
+                `bound.`);
+      }
+      if (unboundFields && (engine === 'bigquery' || engine === 'spanner')) {
+        add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+      }
     }
     // A Spanner deployment deploys no metric.
     if (engine === 'spanner') continue;
@@ -240,6 +250,7 @@ export function validateDeployments(
                 problem}.`);
       }
     }
+    for (const p of bigQueryOptionProblems(bound.model)) add(d.name, p);
   }
   // The verb that starts each problem agrees with the number of deployments.
   return [...problems].map(([problem, names]) => {
@@ -383,6 +394,26 @@ function unboundInline(model: SemanticModel): string {
   ].filter(p => p).join(' and ');
 }
 
+// The fields the model file's own bindings leave without an expression on
+// each concrete leaf entity, counting the fields it inherits, as the end of a
+// deployment's error, or undefined when there are none.
+function unboundGraphFields(model: SemanticModel): string|undefined {
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const fields = resolvedEntities(model)
+                     .filter(e => !e.abstract && !extended.has(e.name))
+                     .flatMap(e => (e.fields ?? [])
+                                       .filter(f => !isFieldBound(f))
+                                       .map(f => `'${e.name}.${f.name}'`));
+  if (!fields.length) return undefined;
+  const many = fields.length > 1;
+  return `which leave ${many ? 'fields' : 'field'} ${
+             listed(fields)} without an expression; a graph deployment ` +
+      `needs every field of a concrete leaf entity bound. Give ${
+             many ? 'each field' : 'the field'} an expression, or use a ` +
+      `named profile that lists ${many ? 'them' : 'it'} in 'fields_exclude'.`;
+}
+
 // The error for a metric whose name matches, ignoring case, a declared or
 // inherited field of `owner`, or undefined.
 function metricFieldCollisionError(
@@ -398,6 +429,105 @@ function metricFieldCollisionError(
              document}) collides with field '${match}' on entity '${
              owner}'; metrics and fields on the same entity share a ` +
       `namespace.`;
+}
+
+// The names a graph on `engine` cannot hold in `model`, compared ignoring
+// case, each as the end of a sentence about a deployment. A metric named like
+// a field of its own entity is left to metricFieldCollisionError.
+function graphNameProblems(
+    model: SemanticModel, engine: 'bigquery'|'spanner'): string[] {
+  const at = `targets ${engine === 'bigquery' ? 'BigQuery' : 'Spanner'}, where`;
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
+  const problems: string[] = [];
+  for (const r of model.relationships ?? []) {
+    const e = model.entities?.find(e => same(e.name, r.name));
+    if (!e) continue;
+    problems.push(
+        `${at} entity '${e.name}' and relationship '${r.name}' cannot both ` +
+        `name a table: node and edge tables share one set of names, ` +
+        `compared ignoring case; rename one.`);
+  }
+  if (engine === 'spanner') return problems;
+  const tables =
+      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
+  for (const m of model.metrics ?? []) {
+    const owner = m.authoredEntity ?? m.entity;
+    for (const e of tables.filter(e => e.name !== owner)) {
+      const f = e.fields.find(f => same(f.name, m.name));
+      if (!f) continue;
+      problems.push(
+          `${at} metric '${m.name}' cannot share its name with field '${
+              e.name}.${f.name}': a measure's name must differ from every ` +
+          `property name in the graph, compared ignoring case; rename one.`);
+    }
+  }
+  return problems;
+}
+
+// What a BigQuery graph rejects in the OPTIONS kcmd writes for `model`, each
+// as the end of a sentence about a deployment. It reads only the labels and
+// properties the generator writes OPTIONS for.
+function bigQueryOptionProblems(model: SemanticModel): string[] {
+  const problems: string[] = [];
+  const check =
+      (kind: string, name: string, description: string|undefined,
+       synonyms: string[] = [], entity?: string) => {
+        const what = `${kind} '${entity ? `${entity}.` : ''}${name}'`;
+        if (description && description.length > MAX_BIGQUERY_DESCRIPTION) {
+          problems.push(
+              `the description kcmd writes for ${what} is ${
+                  description.length} characters long; a label or ` +
+              `property's description holds at most ${
+                  MAX_BIGQUERY_DESCRIPTION}.`);
+        }
+        if (synonyms.length > MAX_BIGQUERY_SYNONYM_COUNT) {
+          problems.push(
+              `${what} has ${synonyms.length} synonyms; a label or property ` +
+              `holds at most ${MAX_BIGQUERY_SYNONYM_COUNT}.`);
+        }
+        const firstByLower = new Map<string, string>();
+        for (const s of synonyms) {
+          const lower = s.toLowerCase();
+          if (!s) problems.push(`${what} has an empty synonym; remove it.`);
+          if (s.length > MAX_BIGQUERY_SYNONYM_LENGTH) {
+            problems.push(
+                `a synonym of ${what} is ${s.length} characters long; a ` +
+                `synonym holds at most ${MAX_BIGQUERY_SYNONYM_LENGTH}.`);
+          }
+          if (lower === name.toLowerCase()) {
+            problems.push(
+                `${what} has the synonym '${s}', which BigQuery treats as ` +
+                `the ${kind}'s own name; remove it.`);
+          }
+          const first = firstByLower.get(lower);
+          if (first === undefined) {
+            firstByLower.set(lower, s);
+          } else {
+            problems.push(
+                `${what} has the synonyms '${first}' and '${s}', which ` +
+                `BigQuery treats as one; remove one.`);
+          }
+        }
+      };
+  const element =
+      (kind: string, x: Pick<Entity, 'name'|'description'|'aiContext'>) =>
+          check(
+              kind, x.name, elementDescription(x.description, x.aiContext),
+              x.aiContext?.synonyms);
+  const tables =
+      resolvedEntities(model).filter(e => statesKey(e.keys, e.uniqueKeys));
+  const extended = new Set(tables.flatMap(e => e.extends ?? []));
+  for (const e of tables) {
+    if (!extended.has(e.name)) element('entity', e);
+    for (const f of e.fields) {
+      if (expressionForDialect(f, 'BIGQUERY') === undefined) continue;
+      check(
+          'field', f.name, fieldDescription(f), f.aiContext?.synonyms, e.name);
+    }
+  }
+  for (const r of model.relationships ?? []) element('relationship', r);
+  for (const m of model.metrics ?? []) element('metric', m);
+  return problems.map(p => `targets BigQuery, where ${p}`);
 }
 
 // Static, target-independent checks for a model's actions. Returns one message
@@ -1348,7 +1478,8 @@ function metricNoSqlError(
 //        fields on one entity share a namespace. This runs before pruning, so
 //        a graph push catches it even when pruning drops either side.
 //   - For each field on each entity E:
-//     1. Reject any reference to an entity other than E.
+//     1. Reject any reference to an entity other than E, and a qualifier that
+//        differs only in case from a declared entity.
 //     2. For references to E itself, every field named must be declared or
 //        inherited on E (gated on `!fieldsPruned`, and run before pruning).
 //
@@ -1425,6 +1556,10 @@ export function validateExpressionReferences(
                 `table.`);
           }
         }
+        const where = `field '${entity.name}.${field.name}' in model '${
+            model.name}' (${document})`;
+        errors.push(...new Set(allColumns.flatMap(
+            c => qualifierCaseError(where, c, entityNames) ?? [])));
         if (!fieldsPruned) {
           for (const ref of fieldsReadOn(allColumns, entity.name)) {
             if (!knownFields.has(ref)) {
@@ -1538,22 +1673,13 @@ export function validateExpressionReferences(
                   document}): '${token}' must be written as ` +
               `'entity.field'; a metric reads fields, never columns.`);
         } else {
-          const sameNameOtherCase = entityNames.find(
-              n => n.toLowerCase() === col.qualifier!.toLowerCase());
-          if (sameNameOtherCase) {
-            errors.push(
-                `metric '${metric.name}' in model '${model.name}' (${
-                    document}): '${token}' uses qualifier '${
-                    col.qualifier}', which differs in case from entity '${
-                    sameNameOtherCase}'; entity names are case-sensitive.`);
-          } else {
-            errors.push(
-                `metric '${metric.name}' in model '${model.name}' (${
-                    document}): '${token}' has qualifier '${
-                    col.qualifier}', which is not a declared entity in ` +
-                `model '${model.name}'; write 'entity.field' starting with ` +
-                `a declared entity.`);
-          }
+          const where =
+              `metric '${metric.name}' in model '${model.name}' (${document})`;
+          errors.push(
+              qualifierCaseError(where, col, entityNames) ??
+              `${where}: '${token}' has qualifier '${col.qualifier}', which ` +
+                  `is not a declared entity in model '${model.name}'; write ` +
+                  `'entity.field' starting with a declared entity.`);
         }
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);

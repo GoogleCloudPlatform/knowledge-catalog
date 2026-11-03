@@ -1797,19 +1797,22 @@ ${metricBlock}`).models[0];
             ]);
       }
 
+      // A field gets the same message.
       const caseMismatch = model({
-        entities: [orders()],
+        entities: [{
+          ...orders(),
+          fields: [...orders().fields, {name: 'net', expression: 'Orders.net_amount'}],
+        }],
         metrics: [{
           name: 'net_revenue',
           expression: 'SUM(Orders.net_amount)',
         }],
       });
       expect(validatePushRequirements([loaded(caseMismatch)]))
-          .toEqual([
-            "metric 'net_revenue' in model 'm' (doc): 'Orders.net_amount' " +
-            "uses qualifier 'Orders', which differs in case from entity " +
-            "'orders'; entity names are case-sensitive.",
-          ]);
+          .toEqual(["field 'orders.net'", "metric 'net_revenue'"].map(
+              what => `${what} in model 'm' (doc): 'Orders.net_amount' ` +
+                  "uses qualifier 'Orders', which differs in case from " +
+                  "entity 'orders'; entity names are case-sensitive."));
     });
 
     test('accepts function names, date parts, leading date units, NET.HOST namespaces, UNNEST/subquery/lambda bindings, and COUNT(*)', () => {
@@ -2621,28 +2624,34 @@ describe('validateDeployments', () => {
       (profile ? `        profile: ${profile}\n` : '');
   const BQ = deployment('bigquery');
   // Purchases join customers, with the customer table and the join bound
-  // unless `customer` or `join` is false. `deployments` holds deployment
-  // entries and `metric` one metric, as YAML.
-  const commerce =
-      ({customer = true, join = true, deployments = '', metric = ''} = {}) =>
-          loadOne('commerce', `${deployments && `    deployments:\n${deployments}`}\
+  // unless `customer` or `join` is false, and fields c_name and note bound
+  // unless `unbound` is true. `deployments` holds deployment entries and
+  // `metric` one metric, as YAML.
+  const commerce = ({
+    customer = true, join = true, unbound = false, deployments = '',
+    metric = '',
+  } = {}) => {
+    const field = (name: string) =>
+        `{ name: ${name}${unbound ? '' : `, expression: ${name}`} }`;
+    return loadOne('commerce', `${deployments && `    deployments:\n${deployments}`}\
     entities:
       - name: customer
 ${customer ? `        source: ${BQ_TABLE('customer')}\n` : ''}\
         primary_key: [c_id]
-        fields: [{ name: c_id, expression: c_id }, { name: c_name }]
+        fields: [{ name: c_id, expression: c_id }, ${field('c_name')}]
       - name: purchase
         source: ${BQ_TABLE('purchase')}
         primary_key: [p_id]
         fields:
           - { name: p_id, expression: p_id }
           - { name: amount, expression: amt }
-          - { name: note }
+          - ${field('note')}
           - { name: noted, expression: "purchase.note || '!'" }
     relationships:
       - { name: placed_by, from: purchase, to: customer${
           join ? ', from_columns: [p_customer], to_columns: [c_id]' : ''} }
 ${metric && `    metrics:\n      - ${metric}\n`}`);
+  };
   const check = (m: SemanticModel) => validateDeployments(m, 'commerce');
   // The start of the error saying deployment `engine` uses the model file's
   // own bindings. A list of engines gives the plural form that names each.
@@ -2666,6 +2675,18 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
                        'reads a field with no expression, directly or ' +
                            'through other fields'}; a deployment needs ` +
       'every field its metrics read bound.';
+  // The error for deployment `engine` leaving `fields` without an expression.
+  // With several fields, `each` and `them` give the plural advice.
+  const NO_EXPRESSION = (engine: Engine|Engine[], fields: string,
+                         each = 'the field', them = 'it') =>
+      `${OWN(engine)}which leave ${fields} without an expression; a graph ` +
+      'deployment needs every field of a concrete leaf entity bound. Give ' +
+      `${each} an expression, or use a named profile that lists ${them} in ` +
+      "'fields_exclude'.";
+  // The error for fields c_name and note, which commerce leaves unbound.
+  const NAME_AND_NOTE = (engine: Engine|Engine[]) => NO_EXPRESSION(
+      engine, "fields 'customer.c_name' and 'purchase.note'", 'each field',
+      'them');
 
   // Every engine needs the bindings complete. A Spanner deployment of the
   // model file's own bindings deploys no metric, so only the others need the
@@ -2680,12 +2701,61 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
                {customer: false, deployments: deployment('bigquery', 'default')})))
         .toEqual([UNBOUND('bigquery')]);
     const notes = '{ name: m, expression: "COUNT(purchase.note)" }';
-    expect(check(commerce({deployments: all, metric: notes}))).toEqual([
-      READS(['bigquery', 'alloydb'], 'm', 'purchase.note'),
-    ]);
+    expect(check(commerce({unbound: true, deployments: all, metric: notes})))
+        .toEqual([
+          NAME_AND_NOTE(['bigquery', 'spanner']),
+          READS(['bigquery', 'alloydb'], 'm', 'purchase.note'),
+        ]);
     const noted = '{ name: m, expression: "COUNT(purchase.noted)" }';
-    expect(check(commerce({deployments: BQ, metric: noted})))
-        .toEqual([READS('bigquery', 'm', 'purchase.noted', false)]);
+    expect(check(commerce({unbound: true, deployments: BQ, metric: noted})))
+        .toEqual([
+          NAME_AND_NOTE('bigquery'),
+          READS('bigquery', 'm', 'purchase.noted', false),
+        ]);
+  });
+
+  // A graph gives a node table only to a concrete leaf entity, so a BigQuery
+  // or Spanner deployment of the model file's own bindings needs an
+  // expression for each of its fields, inherited ones included. A field that
+  // reads one with no expression, such as noted, is bound once that one is.
+  test('names every field of a concrete leaf entity with no expression, on a graph deployment of the model file\'s own bindings', () => {
+    const all = BQ + deployment('spanner') + deployment('alloydb');
+    expect(check(commerce({unbound: true, deployments: all})))
+        .toEqual([NAME_AND_NOTE(['bigquery', 'spanner'])]);
+    // A named profile accounts for each field itself.
+    const named =
+        commerce({unbound: true, deployments: deployment('bigquery', 'ops')});
+    named.profiles = [{name: 'ops', entities: [], relationships: []}];
+    expect(check(named)).toEqual([]);
+    // An abstract entity that nothing extends has no table either.
+    const lone = commerce({deployments: BQ});
+    lone.entities.push({
+      name: 'party', abstract: true, dataSource: '', keys: [],
+      fields: [{name: 'label'}],
+    });
+    expect(check(lone)).toEqual([]);
+    // Vip extends party and states `vip` among its fields. Party is abstract
+    // when `abstract`, and otherwise has a table.
+    const parties = (abstract: boolean, vip = '') =>
+        loadOne('commerce', `    deployments:\n${BQ}\
+    entities:
+      - name: party
+${abstract ? '        abstract: true\n' : `        source: ${BQ_TABLE('party')}
+        primary_key: [id]\n`}\
+        fields:
+          - { name: id${abstract ? '' : ', expression: id'} }
+          - { name: label }
+      - name: vip
+        extends: [party]
+        source: ${BQ_TABLE('vip')}
+        primary_key: [id]
+        fields: [{ name: id, expression: id }${vip}]
+`);
+    const LABEL = NO_EXPRESSION('bigquery', "field 'vip.label'");
+    expect(check(parties(true))).toEqual([LABEL]);
+    expect(check(parties(false))).toEqual([LABEL]);
+    expect(check(parties(true, ', { name: label, expression: v_label }')))
+        .toEqual([]);
   });
 
   // An AlloyDB database runs a metric's ALLOYDB text, or its ANSI_SQL one,
@@ -2718,21 +2788,25 @@ ${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id]
         texts(['BIGQUERY', bigQuery], ['ALLOYDB', alloyDbText]);
     const [NOTE, C_ID] = ['COUNT(customer.note)', 'COUNT(customer.c_id)'];
     const noteInBigQuery = both(NOTE, C_ID);
-    const bigQueryOnly = [READS('bigquery', 'm', 'customer.note')];
-    expect(check(alloyDb(noteInBigQuery))).toEqual([]);
-    expect(check(alloyDb(noteInBigQuery, {shop: true}))).toEqual(bigQueryOnly);
+    // The BigQuery deployment also needs field note bound.
+    const NO_NOTE = NO_EXPRESSION('bigquery', "field 'customer.note'");
+    expect(check(alloyDb(noteInBigQuery))).toEqual([NO_NOTE]);
+    expect(check(alloyDb(noteInBigQuery, {shop: true})))
+        .toEqual([NO_NOTE, READS('bigquery', 'm', 'customer.note')]);
     expect(check(alloyDb(texts(['BIGQUERY', NOTE], ['ANSI_SQL', C_ID]))))
-        .toEqual([]);
-    expect(check(alloyDb(both(C_ID, NOTE))))
-        .toEqual([READS(['alloydb', 'bigquery'], 'm', 'customer.note')]);
+        .toEqual([NO_NOTE]);
+    expect(check(alloyDb(both(C_ID, NOTE)))).toEqual([
+      READS(['alloydb', 'bigquery'], 'm', 'customer.note'), NO_NOTE,
+    ]);
     // A field the metric reads is read the same way. A field reads a sibling
     // field as `entity.field`.
     const viaLabel = '"COUNT(customer.label)"';
     expect(check(alloyDb(viaLabel, {label: both('customer.note', 'c_id')})))
-        .toEqual([]);
+        .toEqual([NO_NOTE]);
     expect(check(alloyDb(viaLabel, {label: both('c_id', 'customer.note')})))
-        .toEqual(
-            [READS(['alloydb', 'bigquery'], 'm', 'customer.label', false)]);
+        .toEqual([
+          READS(['alloydb', 'bigquery'], 'm', 'customer.label', false), NO_NOTE,
+        ]);
   });
 
   test('names every concrete entity and relationship left unbound', () => {
@@ -2783,7 +2857,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     // count. Neither do incomplete bindings a deployment uses, which the
     // deployment rules reject.
     for (const [i, m] of [
-           commerce(), commerce({deployments: BQ}),
+           commerce({unbound: true}), commerce({deployments: BQ}),
            commerce({customer: false, deployments: BQ}),
          ].entries()) {
       expect({i, warnings: [...warned(m), ...warned(m, true)]})
@@ -2886,8 +2960,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       // The reference rules: a field the entity does not declare.
       expect(bigQuery(anchored('SUM(purchase.amt) / 2'))).toEqual([]);
       // The binding rule: a field with no expression.
-      expect(bigQuery('{ name: m, expression: "SUM(purchase.note) / 2" }'))
-          .toEqual([READS('bigquery', 'm', 'purchase.note')]);
+      expect(check(commerce({
+        unbound: true,
+        deployments: BQ,
+        metric: '{ name: m, expression: "SUM(purchase.note) / 2" }',
+      }))).toEqual([
+        NAME_AND_NOTE('bigquery'), READS('bigquery', 'm', 'purchase.note'),
+      ]);
       // The inheritance rules: an abstract entity, and one that another extends.
       expect(bigQuery(anchored('SUM(purchase.amount) / 2'), {abstract: true}))
           .toEqual([]);
@@ -2952,6 +3031,181 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       const m = commerce(
           {customer: false, deployments: deployment('bigquery', 'old')});
       expect(check(m)).toEqual([]);
+    });
+  });
+
+  // The names a BigQuery or Spanner graph holds once, and the OPTIONS BigQuery
+  // limits on each label and property kcmd writes.
+  describe('graph names and BigQuery OPTIONS', () => {
+    const x = (n: number) => 'x'.repeat(n);
+    const synonyms = (n: number) => [...Array(n).keys()].map(String);
+    // The errors of the model with metric revenue on `deployments`, after
+    // `change`.
+    const errorsAfter =
+        (change: (m: SemanticModel) => void, deployments = BQ) => {
+          const m = commerce({
+            deployments,
+            metric: '{ name: revenue, entity: purchase, expression: ' +
+                '"SUM(purchase.amount)" }',
+          });
+          change(m);
+          return check(m);
+        };
+    const IN = (problem: string, engine = 'BigQuery',
+                deployment = engine.toLowerCase()) =>
+        `model 'commerce' (commerce) deployment '${deployment}' targets ` +
+        `${engine}, where ${problem}`;
+    const NINE = "field 'purchase.amount' has 9 synonyms; a label or " +
+        'property holds at most 8.';
+
+    test('rejects an entity and a relationship named alike ignoring case on a BigQuery or Spanner graph', () => {
+      expect(errorsAfter(m => m.relationships[0].name = 'Customer',
+                          BQ + deployment('spanner') + deployment('alloydb')))
+          .toEqual(['BigQuery', 'Spanner'].map(
+              engine => IN("entity 'customer' and relationship 'Customer' " +
+                               'cannot both name a table: node and edge ' +
+                               'tables share one set of names, compared ' +
+                               'ignoring case; rename one.',
+                           engine)));
+    });
+
+    // A field of the metric's own entity is left to another check. A field
+    // the deployment's profile excludes, or one of an entity with no key, is
+    // not in the graph.
+    test('rejects on BigQuery a metric named like a field of another entity', () => {
+      // Under profile ops, which excludes `excluded` from customer, when
+      // `excluded` is given.
+      const named =
+          (name: string, customerKeys = ['c_id'], excluded?: string[]) =>
+              errorsAfter(m => {
+                m.metrics![0].name = name;
+                m.entities[0].keys = customerKeys;
+                m.profiles = [{
+                  name: 'ops', relationships: [],
+                  entities: [{name: 'customer', fieldsExclude: excluded}],
+                }];
+              }, excluded ? deployment('bigquery', 'ops') : BQ);
+      const SHARED = (metric: string, field: string) => IN(
+          `metric '${metric}' cannot share its name with field '${field}': ` +
+          "a measure's name must differ from every property name in the " +
+          'graph, compared ignoring case; rename one.');
+      expect(named('C_ID')).toEqual([SHARED('C_ID', 'customer.c_id')]);
+      expect(named('C_NAME', ['c_id'], []))
+          .toEqual([SHARED('C_NAME', 'customer.c_name')]);
+      for (const [name, keys, excluded] of [
+             ['Amount'], ['C_NAME', ['c_id'], ['c_name']], ['C_ID', []],
+           ] as Array<[string, string[]?, string[]?]>) {
+        expect({name, errors: named(name, keys, excluded)})
+            .toEqual({name, errors: []});
+      }
+    });
+
+    // With the catalog check's errors after the graph checks'.
+    const withCatalog = (change: (m: SemanticModel) => void) => {
+      let model: SemanticModel;
+      const errors = errorsAfter(m => change(model = m));
+      return [
+        ...errors, ...validatePushRequirements([loaded(model!, 'commerce')]),
+      ];
+    };
+    const LONG = (what: string, n = 1025) => IN(
+        `the description kcmd writes for ${what} is ${n} characters long; ` +
+        "a label or property's description holds at most 1024.");
+    // 1001 characters and an instruction, or 1012 and an example, give 1025.
+    const instructed = {
+      description: x(1001),
+      aiContext: {instructions: 'Exclude test accounts.'},
+    };
+    const timeField = {dimension: {isTime: true}, description: x(1000)};
+    test.each<[string, (m: SemanticModel) => void, string[]]>([
+      ['past 1024 characters with what kcmd adds', m => {
+        Object.assign(m.entities[0], instructed);
+        Object.assign(
+            m.entities[1].fields[1], {label: 'Amount', description: x(1017)});
+        Object.assign(
+            m.relationships[0],
+            {description: x(1012), aiContext: {examples: ['a']}});
+        Object.assign(m.metrics![0], instructed);
+      }, [
+        "entity 'customer'", "field 'purchase.amount'",
+        "relationship 'placed_by'", "metric 'revenue'",
+      ].map(what => LONG(what))],
+      ['of 1001 characters with no instruction', m => {
+        m.entities[0].description = x(1001);
+      }, []],
+      ['of a field with a label and a time role', m => {
+        Object.assign(m.entities[1].fields[1], {...timeField, label: 'Amount'});
+      }, [LONG("field 'purchase.amount'")]],
+      ['of a field with a time role and no label', m => {
+        Object.assign(m.entities[1].fields[1], timeField);
+      }, []],
+      ['of 2001 characters, which Knowledge Catalog rejects too', m => {
+        m.entities[0].description = x(2001);
+      }, [
+        LONG("entity 'customer'", 2001),
+        "model 'commerce' (commerce): the description of entity 'customer' " +
+            "is 2001 characters long; a Knowledge Catalog entry's " +
+            'description holds at most 2000.',
+      ]],
+    ])('a description %s', (_, change, errors) =>
+        expect(withCatalog(change)).toEqual(errors));
+
+    test('rejects too many, too long, empty, repeated and self-naming synonyms', () => {
+      expect(errorsAfter(m => {
+        m.entities[0].aiContext = {synonyms: ['Customer']};
+        m.entities[1].fields[1].aiContext = {synonyms: synonyms(9)};
+        m.relationships[0].aiContext = {synonyms: ['Placed_By']};
+        m.metrics![0].aiContext =
+            {synonyms: [x(301), '', 'sales', 'Revenue', 'SALES']};
+      })).toEqual([
+        "entity 'customer' has the synonym 'Customer', which BigQuery treats " +
+            "as the entity's own name; remove it.",
+        NINE,
+        "relationship 'placed_by' has the synonym 'Placed_By', which " +
+            "BigQuery treats as the relationship's own name; remove it.",
+        "a synonym of metric 'revenue' is 301 characters long; a synonym " +
+            'holds at most 300.',
+        "metric 'revenue' has an empty synonym; remove it.",
+        "metric 'revenue' has the synonym 'Revenue', which BigQuery treats " +
+            "as the metric's own name; remove it.",
+        "metric 'revenue' has the synonyms 'sales' and 'SALES', which " +
+            'BigQuery treats as one; remove one.',
+      ].map(p => IN(p)));
+    });
+
+    // An abstract entity has no node table, a label another entity extends
+    // carries no OPTIONS, and a field with no BigQuery text is left out.
+    test('passes values at the limits and elements the graph writes no OPTIONS for', () => {
+      expect(errorsAfter(m => {
+        m.relationships[0].description = x(1024);
+        m.entities[1].fields[1].aiContext = {synonyms: synonyms(8)};
+        m.metrics![0].aiContext = {synonyms: [x(300)]};
+        m.entities.push({
+          name: 'party', abstract: true, dataSource: '', keys: [], fields: [],
+          description: x(2000),
+        }, {...m.entities[0], name: 'vip', extends: ['customer']});
+        m.entities[0].description = x(2000);
+        m.entities[1].fields.push({
+          name: 'sf', dialects: [{dialect: 'SNOWFLAKE', expression: 'x'}],
+          aiContext: {synonyms: synonyms(9)},
+        });
+      })).toEqual([]);
+    });
+
+    test('checks only BigQuery deployments, each without the fields its profile excludes', () => {
+      const nine = (m: SemanticModel) => {
+        m.entities[1].fields[1].aiContext = {synonyms: synonyms(9)};
+        m.profiles = [{
+          name: 'ops', relationships: [],
+          entities: [{name: 'purchase', fieldsExclude: ['amount']}],
+        }];
+      };
+      expect(errorsAfter(nine, '')).toEqual([]);
+      expect(errorsAfter(nine, deployment('spanner'))).toEqual([]);
+      expect(errorsAfter(
+                 nine, deployment('bigquery', 'ops') +
+                     `      - name: dev\n        target: ${BQ_TARGET}2\n`))
+          .toEqual([IN(NINE, 'BigQuery', 'dev')]);
     });
   });
 });

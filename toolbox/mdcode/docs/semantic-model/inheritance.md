@@ -354,6 +354,9 @@ fails. Push also rejects a model that breaks any of these rules:
   model file when it gives the entity a source. A field whose ancestor's
   expression reads only other fields carries over.
 - An abstract entity declares no `source`, no keys and no field expressions.
+- When a BigQuery or Spanner deployment uses the model file's own bindings, a
+  concrete leaf entity restates each field it inherits with no expression,
+  such as each field of an abstract supertype.
 - Relationships and metrics attach only to concrete leaf entities.
 - No field is declared or rebound by two supertypes that do not extend each
   other.

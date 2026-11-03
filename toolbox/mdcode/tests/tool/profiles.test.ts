@@ -2161,8 +2161,9 @@ semantic_model:
       expect(console.warn).not.toHaveBeenCalled();
     });
 
-    // A push that fails this check prints no pruning note. An AlloyDB
-    // deployment reads a metric's ALLOYDB or ANSI_SQL text.
+    // A push that fails this check prints nothing about what pruning leaves
+    // out. An AlloyDB deployment reads a metric's ALLOYDB or ANSI_SQL text,
+    // and builds no graph, so it needs only the fields its metrics read.
     test('rejects a deployment whose metric reads a field with no expression, as its engine reads the metric', async () => {
       // The error for `metric` reading `field`, which has no expression if
       // `direct` and otherwise reads a field with none.
@@ -2172,6 +2173,12 @@ semantic_model:
                        'reads a field with no expression, directly or ' +
                            'through other fields'}; a deployment needs every ` +
           'field its metrics read bound.';
+      // The error for a graph deployment leaving `field` without one.
+      const unbound = (field: string) =>
+          `${OWN}which leave field '${field}' without an expression; a ` +
+          'graph deployment needs every field of a concrete leaf entity ' +
+          'bound. Give the field an expression, or use a named profile that ' +
+          "lists it in 'fields_exclude'.";
       writeScope({
         'commerce.yaml': withMetric(
             '{ name: notes, expression: "COUNT(purchase.note)" }',
@@ -2181,8 +2188,10 @@ semantic_model:
       const pushed = await pushResult();
       expect(warn.mock.calls.filter(c => c.join(' ').startsWith('Note:')))
           .toEqual([]);
-      expect(pushed)
-          .toEqual({code: 1, errors: [reads('notes', 'purchase.note')]});
+      expect(pushed).toEqual({
+        code: 1,
+        errors: [unbound('purchase.note'), reads('notes', 'purchase.note')],
+      });
       expect(await profiles()).toBe(1);
       expect(rejects(section(NO_PROFILES))).toEqual(pushed.errors);
 
@@ -2192,8 +2201,10 @@ semantic_model:
             '{ name: net, expression: "purchase.tax + 1" }',
             '{ name: total, expression: "purchase.net * 2" }'),
       });
-      expect(await pushResult())
-          .toEqual({code: 1, errors: [reads('m', 'purchase.total', false)]});
+      expect(await pushResult()).toEqual({
+        code: 1,
+        errors: [unbound('purchase.tax'), reads('m', 'purchase.total', false)],
+      });
 
       // The model on one AlloyDB database, where metric m's BigQuery and
       // AlloyDB texts each count a field of purchase.

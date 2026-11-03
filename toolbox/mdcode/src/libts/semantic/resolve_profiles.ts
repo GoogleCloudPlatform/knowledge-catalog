@@ -39,6 +39,7 @@ import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
@@ -623,6 +624,7 @@ function findLogicalSqlExecutor(models: any[]):
 export interface AvailabilityReport {
   profile: string;
   unboundFields: string[];  // "Entity.field"
+  excludedFields: string[];  // The unbound fields the profile excludes.
   // No pruning rule drops an entity or a relationship, so droppedEntities and
   // droppedRelationships are always empty (see the file header).
   droppedEntities: {name: string; reason: string}[];
@@ -663,6 +665,7 @@ export function pruneUnavailable(
   const report: AvailabilityReport = {
     profile: profileName,
     unboundFields: [],
+    excludedFields: [],
     droppedEntities: [],
     droppedMetrics: [],
     droppedRelationships: [],
@@ -695,6 +698,7 @@ export function pruneUnavailable(
     }
     for (const name of e.excludedFields ?? []) {
       unbound.add(`${e.name}.${name}`);
+      report.excludedFields.push(`${e.name}.${name}`);
     }
   }
   report.unboundFields = [...unbound];
@@ -1664,6 +1668,11 @@ export function profileSpecOf(doc: any, profileName: string): ProfileSpec {
         `${where} sets 'version'; a profile file takes its version from the ` +
         `model file beside it, so remove the line`);
   }
+  if (doc.datasets !== undefined) {
+    throw new SemanticModelError(
+        `${where} lists its bindings under 'datasets'; a profile lists them ` +
+        `under 'entities'`);
+  }
   // The profile's own name is checked against the file name below.
   requireKeys(doc, PROFILE_FILE_KEYS, where, false);
   if (doc.name !== profileName) {
@@ -2039,10 +2048,10 @@ export function validateProfileCompleteness(
     const known = fieldsOf.get(pe.name)!;
     // A profile field's expression may be anything the model file's could be:
     // its own table's columns and its own entity's fields, never another
-    // entity's fields.
+    // entity's fields, with each qualifier in its entity's case.
     // A name after a dot is a struct path segment, such as `customer` in
     // `details.customer.id`, and reads no entity.
-    // These two rules check every text the profile wrote, since each must be a
+    // These rules check every text the profile wrote, since each must be a
     // valid field expression wherever it runs; the dependency rules below read
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
     // as the profile's own SQL.
@@ -2065,6 +2074,9 @@ export function validateProfileCompleteness(
                     other}'; a field expression reads only its own entity`);
           }
         }
+        errors.push(...new Set(columns.flatMap(
+            c => qualifierCaseError(`${at}: field '${pe.name}.${pf.name}'`, c,
+                                    entities.map(x => x.name)) ?? [])));
         for (const ref of fieldsReadOn(columns, pe.name)) {
           if (!known.has(ref) && !unknownAncestry.has(pe.name)) {
             errors.push(
