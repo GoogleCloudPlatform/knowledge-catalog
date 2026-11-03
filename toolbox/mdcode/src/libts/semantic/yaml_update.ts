@@ -203,11 +203,12 @@ function patchItems(
       u.edits.push(
           [above, above, comments], [g[a].start, next.start, '']);
     } else {
-      // A new first item drops the blank lines above it.
-      const to = a === 0 && next && at[0] >= 0 ?
-          skipBlank(t, g[b].end, next.start) :
-          g[b].end;
-      u.edits.push([g[a].head, to, '']);
+      // The blank lines above an old first item stay, and those above the
+      // item that becomes first go.
+      const first = a === 0 && at[0] >= 0;
+      const from = first ? skipBlank(t, g[a].head, g[a].start) : g[a].head;
+      const to = first && next ? skipBlank(t, g[b].end, next.start) : g[b].end;
+      u.edits.push([from, to, '']);
     }
     a = b;
   }

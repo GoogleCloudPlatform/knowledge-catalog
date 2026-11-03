@@ -187,7 +187,8 @@ function span(s: Side, node: any, item: any): number[] {
 }
 
 // Marks a removed item: its lines, and those of the comments and blank lines
-// above it. A first item also takes the blank lines under it.
+// above it. A first item keeps the blank lines above its comments, and takes
+// the blank lines under it.
 function removed(s: Side, node: any, i: number) {
   const [a, b] = span(s, node, node.items[i]);
   const start = startOf(node, node.items[i]);
@@ -202,7 +203,10 @@ function removed(s: Side, node: any, i: number) {
   if (!isBlank(before(s, start))) return;
   const floor = i > 0 ? span(s, node, node.items[i - 1])[1] : -1;
   const quiet = (k: number) => isBlank(lineText(s, k)) || isComment(lineText(s, k));
-  for (let k = a - 1; k > floor && quiet(k); k--) s.gone.add(k);
+  let top = a;
+  while (top - 1 > floor && quiet(top - 1)) top--;
+  while (i === 0 && top < a && isBlank(lineText(s, top))) top++;
+  mark(s.gone, [top, a - 1]);
   const last = s.starts.length - 1;
   for (let k = b + 1; i === 0 && k <= last && isBlank(lineText(s, k)); k++) {
     s.gone.add(k);
