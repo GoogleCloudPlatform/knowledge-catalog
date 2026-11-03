@@ -515,7 +515,8 @@ function release(u: Update, value: object): void {
  * The text of the input value that `value` moved from, for `key` at column
  * `col`, or in a flow mapping when `col` is undefined: what follows the key's
  * `:` on its line, then each line under it, re-indented. An object or array
- * moves from the node `links` maps it to. A scalar under `key` moves from a
+ * moves from the node `links` maps it to, unless another value keeps that
+ * node in place. A scalar under `key` moves from a
  * pair with the same key and value whose text the new value does not keep.
  * Undefined when nothing moved, or when the text would not read back as
  * `value` at its new place, as when it holds an alias of an anchor outside it.
@@ -528,7 +529,7 @@ function movedText(
     col?: number): string[]|undefined {
   const node = isObject(value) ? u.links.get(value) : undefined;
   const found = u.pairs.find(([p, parent]) => !u.used.has(p) &&
-      (node ? p.value === node :
+      (node ? p.value === node && u.held.get(node) === value :
               key !== undefined && keyOf(p) === key && yaml.isScalar(p.value) &&
               p.value.value === value &&
               (u.held.get(parent) as Record<string, unknown>|undefined)?.[key] !==

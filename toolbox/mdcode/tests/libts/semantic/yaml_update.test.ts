@@ -147,6 +147,13 @@ test.each<[string, string, (value: any) => void, string?]>([
         "f: {k: 1, g: {t: 'e'}}\na:\n  k: 1\n  h: |-  # c\n    p\nb:\n  k: 1\n  h: p\n  z: 1\n"
   ],
   [
+    'a mapping moved under a new mapping that keeps its place',
+    "ai:\n  custom:  # outer\n    # above inner\n    custom: 'x'  # inner\n    note: |-  # note\n      hello\n",
+    v => v.ai = {custom: {custom: v.ai.custom}},
+    "ai:\n  custom:  # outer\n    # above inner\n    custom:  # inner\n      custom: 'x'\n      note: |-  # note\n" +
+        '        hello\n'
+  ],
+  [
     'an empty value moved to a new key', 'a:\n  k: 1\n  e:  # c\n',
     v => (delete v.a.e, v.b = {e: null}), 'a:\n  k: 1\nb:\n  e:\n'
   ],
