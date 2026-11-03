@@ -19,6 +19,10 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['a quoted string set to a number', 'a: "x"  # c\n', v => v.a = 5],
   [
+    'a single-quoted string set to two lines', "a: 'x\n\n  y'  # c\n", v => v.a = 'p\nq',
+    "a: 'p\n\n  q'  # c\n"
+  ],
+  [
     'block scalars set to a number and a mapping', 'a: |-  # c\n  x\nb: |-  # d\n  y\n',
     v => (v.a = 5, v.b = {k: 1}), 'a: 5  # c\nb:  # d\n  k: 1\n'
   ],
