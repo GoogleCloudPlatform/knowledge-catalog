@@ -3186,9 +3186,10 @@ const SERVICE_NAMES: Record<string, string> = {
 // Why `parts`, a bare name's parts read into the last placeholders of `form`,
 // name no table there only because a part holds a dot. Such a part was
 // quoted, so it is one name, and `form` takes no dot in its place. Undefined
-// for any other name.
-export function dottedPartProblem(parts: string[], form: string): string|
-    undefined {
+// for any other name. When `service` is false, the reason names neither the
+// part's role nor the service.
+export function dottedPartProblem(
+    parts: string[], form: string, service = true): string|undefined {
   const takes = (names: string[]) => {
     const name = fillForm(form, names);
     return name !== undefined && oldSourceForm(name) === undefined &&
@@ -3199,6 +3200,7 @@ export function dottedPartProblem(parts: string[], form: string): string|
   const i = parts.findIndex(
       (p, j) => p !== plain[j] && !takes(plain.map((q, k) => k === j ? p : q)));
   if (i < 0) return undefined;
+  if (!service) return `the quoted name '${parts[i]}' is one name, dot included`;
   const placeholders = form.match(/<\w+>/g)!;
   const role =
       placeholders[placeholders.length - parts.length + i].slice(1, -1);
@@ -3668,7 +3670,7 @@ export function parseSource(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
             `is not a valid source. ${write}\n  source: ${example}${viaImport}`);
       }
-      dotted = dottedPartProblem(segs, form);
+      dotted = dottedPartProblem(segs, form, false);
     }
   }
 

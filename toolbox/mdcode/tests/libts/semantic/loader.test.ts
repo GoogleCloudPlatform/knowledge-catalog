@@ -3424,7 +3424,7 @@ describe('strict entity sources', () => {
     for (const [bare, name] of [['raw.`my.orders`', 'my.orders'], ['public."order.items"', 'order.items'],
       ['"acme.sales.orders"', 'acme.sales.orders']]) {
       expect(() => loadSource(bare)).toThrow(`source '${bare}' is not a valid table reference; the quoted name ` +
-        `'${name}' is one table name, and a BigQuery table name cannot hold a dot. Expected a GCP resource name`);
+        `'${name}' is one name, dot included. Expected a GCP resource name`);
     }
   });
 
