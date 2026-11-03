@@ -100,19 +100,24 @@ scenarios('push --no-deployment', [
       warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
     }, {
       // Push rejects a model-file field its Spanner table cannot run, with
-      // no warning beside the error, on both push paths.
+      // no warning beside the error, with and without --no-deployment.
       entities: [keyAt(SPANNER_CUSTOMER, 'c_key', 'BIGQUERY')], metrics: [],
       code: 1, warnings: [],
     }, {
       entities: [keyAt(SPANNER_CUSTOMER, 'c_key', 'BIGQUERY')], metrics: [],
       flags: {deployment: undefined, validateOnly: true}, code: 1, warnings: [],
     }, {
-      // Under a profile on Spanner, push's errors are the only messages.
+      // Push's errors are the only messages about profile ops on Spanner. The
+      // one warning is the model file's own.
       profiles: {ops: {entities: {Customer: keyAt(SPANNER_CUSTOMER, 'c_key', 'SNOWFLAKE')}}},
       metrics: [SNOWFLAKE_METRIC],
-      flags: {deployment: undefined, validateOnly: true, profile: 'ops'},
+      flags: {deployment: undefined, validateOnly: true},
       code: 1,
-      warnings: [],
+      errors: [
+        has("profile 'ops': field 'Customer.key' has no expression for SPANNER"),
+        has("profile 'ops': metric 'positive_keys' has no expression for SPANNER"),
+      ],
+      warnings: [has('needs transpilation')],
     }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
