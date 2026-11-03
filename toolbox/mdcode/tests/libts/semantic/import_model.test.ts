@@ -1151,8 +1151,15 @@ ${lines}`;
       googleDoc({
         modelAiContext:
             '    ai_context:\n      instructions: i\n      custom:\n        team: sales\n      synonyms: [s]\n',
+        source: `${BQ_TABLE}\n        ai_context: {instructions: d, custom: {k: d}}`,
+        fieldExpr: 'order_id\n            ai_context: {instructions: f, custom: {k: f}}',
+        extra: selfJoin('        ai_context: {instructions: r, custom: {k: r}}\n') +
+            '    metrics:\n      - name: n\n        expression: COUNT(orders.order_id)\n        ai_context: {instructions: m, custom: {k: m}}\n',
       }),
-      '    ai_context:\n      instructions: i\n      team: sales\n      synonyms: [s]\n',
+      [
+        '    ai_context:\n      instructions: i\n      team: sales\n      synonyms: [s]\n',
+        ...['d', 'f', 'r', 'm'].map(x => `ai_context: {instructions: ${x}, k: ${x}}\n`),
+      ],
     ],
     [
       'no empty value, abstract: false or empty actions', 'ossie',
@@ -1211,6 +1218,16 @@ ${lines}`;
 
     expect(res.errors).toEqual(
         [expect.stringContaining('inline \'profiles\' are not supported')]);
+  });
+
+  test('keeps a GOOGLE block when a strict import into vanilla completes a source', async () => {
+    const block = `    custom_extensions: [{vendor_name: GOOGLE, data: '{"deployments": [{"name": "prod", "target": "${BQ_PREFIX}/propertyGraphs/retail"}]}'}]\n`;
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: 'orders', modelAiContext: block}),
+        {strict: true, sourcePrefix: BQ_PREFIX});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toContain(block);
   });
 
   test('ignores profileFiles when target flavor is google', async () => {
