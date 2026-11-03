@@ -261,16 +261,9 @@ function patchItems(
     } else {
       const before = follows[i];
       const key = yaml.isMap(node) ? `${scalarText(u, k, 0, flow)}:` : '-';
-      // In a flow mapping, a value that moved keeps its text when that is one
-      // line that reads the same there.
-      const moved = flow && yaml.isMap(node) ?
-          movedText(u, String(k), v, col)?.join('\n').trim() :
-          undefined;
-      const text = moved !== undefined && readsInFlow(moved, v) ?
-          moved :
-          scalarText(u, v, 0, true);
       const lines = !flow ? block(u, key, v, col, String(k)) :
-                            [`${yaml.isMap(node) ? `${key} ` : ''}${text}`];
+          yaml.isMap(node) ? [`${key} ${flowValue(u, String(k), v)}`] :
+                             [scalarText(u, v, 0, true)];
       added.set(before, [...(added.get(before) ?? []), ...lines]);
     }
   });
@@ -513,6 +506,18 @@ function movedText(
   return own ? ['', ...lines] : [' ' + lines[0], ...lines.slice(1)];
 }
 
+/**
+ * `value` under `key` in a flow mapping. A value that moved keeps its text
+ * when that is one line that reads the same there.
+ */
+function flowValue(u: Update, key: string, value: unknown): string {
+  const moved = movedText(u, key, value, 0);
+  const text = moved?.length === 1 ? moved[0].trim() : undefined;
+  return text !== undefined && readsInFlow(text, value) ?
+      text :
+      scalarText(u, value, 0, true);
+}
+
 /** Whether `text` reads as `value` in a flow collection. */
 function readsInFlow(text: string, value: unknown): boolean {
   try {
@@ -533,8 +538,9 @@ function scalarText(
   if (flow && isFull(value)) {
     const seq = Array.isArray(value);
     const pad = seq ? u.pad.seq : u.pad.map;
-    const parts = entriesOf(value).map(([k, v]) =>
-        (seq ? '' : `${scalarText(u, k, 0, true)}: `) + scalarText(u, v, col, true));
+    const parts = entriesOf(value).map(([k, v]) => seq ?
+        scalarText(u, v, col, true) :
+        `${scalarText(u, k, 0, true)}: ${flowValue(u, String(k), v)}`);
     return `${seq ? '[' : '{'}${pad}${parts.join(', ')}${pad}${seq ? ']' : '}'}`;
   }
   const lines = flow && typeof value === 'string' && value.includes('\n');

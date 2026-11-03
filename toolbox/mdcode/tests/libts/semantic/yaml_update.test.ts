@@ -39,9 +39,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\n  t: [x, z]\n  u: \'z\'\n  "k: 1": \'x\'\n  w:\n    - p  # q\n\n    - r\n'
   ],
   [
-    'a moved value that a flow mapping would read differently',
-    'a:\n  custom: {t: 1}\n  m: a, b\n', v => (v.a.custom.m = v.a.m, delete v.a.m),
-    'a:\n  custom: {t: 1, m: "a, b"}\n'
+    'moved values in flow mappings, one that a flow mapping would read differently',
+    'a:\n  custom: {t: 1}\n  m: a, b\n  o: \'x\'\nb: {i: 1, o: \'z\'}\n',
+    v => (v.a.custom.m = v.a.m, v.a.custom.o = v.a.o, delete v.a.m, delete v.a.o,
+          v.b = {i: 1, custom: {o: v.b.o}}),
+    'a:\n  custom: {t: 1, m: "a, b", o: \'x\'}\nb: {i: 1, custom: {o: \'z\'}}\n'
   ],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
