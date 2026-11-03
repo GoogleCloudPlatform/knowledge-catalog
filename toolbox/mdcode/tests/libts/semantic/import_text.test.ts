@@ -22,7 +22,7 @@ interface Style {
   finalNewline: boolean;
   exprFirst: boolean;  // `expression` before `dialect` in a dialect entry.
   space: number;  // Spaces before a comment after a value.
-  nextLine: boolean;  // An expression's text on the line under its key.
+  nextLine: boolean;  // SQL under its key and a comment, over two lines if it has a space.
   afterList: boolean;  // A comment after each list.
   markers: boolean;  // `---` and `...` around the document.
 }
@@ -92,8 +92,12 @@ function write(value: any, s: Style): string {
       out.push(head + after());
       pairs(order(v), c + s.step);
     } else if (s.nextLine && expr) {
+      const text = scalar(v, false);
+      const cut = text.indexOf(' ', text.length >> 1);
       out.push(head + after(), ...(s.blanks ? [''] : []),
-               `${pad(inner)}${scalar(v, false)}${after()}`);
+               ...(s.comments ? [`${pad(inner)}# u${n++}`] : []),
+               ...(cut < 0 ? [] : [pad(inner) + text.slice(0, cut)]),
+               `${pad(inner)}${text.slice(cut + 1)}${after()}`);
     } else if (s.block && /[(\n]/.test(v)) {
       out.push(`${head} |-${after()}`, ...v.split('\n').map((l: string) => l && pad(inner) + l));
     } else {

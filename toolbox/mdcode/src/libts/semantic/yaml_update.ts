@@ -371,18 +371,20 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   }
   const keyLine = lineEnd(t, slot.after);
   const end = lineEnd(t, Math.max(from, to - 1));
-  const oneLine = end === lineEnd(t, from);
-  if (from > keyLine && yaml.isScalar(node) && isFull(value) && oneLine) {
+  // The text after the node on its last line stays, or after a block
+  // scalar's header. A block collection of several lines keeps none.
+  const after = headerTail(t, from) ??
+      (end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
+           t.slice(to, end) :
+           '');
+  if (from > keyLine && yaml.isScalar(node) && isFull(value)) {
     // A scalar on the line under its key becomes a collection there.
     const col = from - lineStart(t, from);
     const [first, ...rest] = items(u, value, col);
-    const text = [first.slice(col) + t.slice(to, end), ...rest].join(u.nl);
-    u.edits.push([from, end, text]);
+    u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
-  const tail = from > keyLine ? t.slice(slot.after, keyLine) :
-      oneLine                 ? t.slice(to, end) :
-                                headerTail(t, from) ?? '';
+  const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
   const [first, ...rest] = block(u, slot.prefix, value, slot.col);
   const head = first.slice(slot.col + slot.prefix.length);
   u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);

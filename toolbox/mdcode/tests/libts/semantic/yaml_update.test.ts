@@ -8,8 +8,8 @@ import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic
 
 // Each row changes a plain copy of `input`. The nodes kept from the input keep
 // their quoting and flow style, and the text must still read back as the new
-// value.
-test.each<[string, string, (value: any) => void]>([
+// value. A row with a fourth column must give that text.
+test.each<[string, string, (value: any) => void, string?]>([
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   ['a plain scalar set to two lines', 'a: x  # c\n', v => v.a = 'x\ny'],
@@ -29,7 +29,12 @@ test.each<[string, string, (value: any) => void]>([
     'a flow list item renamed to "b, c"', 'f: [{name: a}, {name: b}]  # c\n',
     v => v.f[1].name = 'b, c'
   ],
-])('%s reads back as the new value', (_, input, change) => {
+  [
+    'a plain scalar and a flow list of two lines set to mappings',
+    'a: x\n  y  # c\nb: [1,\n  2]  # d\n', v => (v.a = {k: 1}, v.b = {k: 2}),
+    'a:  # c\n  k: 1\nb:  # d\n  k: 2\n'
+  ],
+])('%s reads back as the new value', (_, input, change, ...[expected]) => {
   const {document, text} = parseForUpdate(input);
   const value = plainCopy(document.toJS());
   const links = linkNodes(value, document.contents);
@@ -38,4 +43,5 @@ test.each<[string, string, (value: any) => void]>([
   const output = updateText(text, document, value, links);
 
   expect(yaml.parse(output)).toEqual(value);
+  if (expected) expect(output).toBe(expected);
 });
