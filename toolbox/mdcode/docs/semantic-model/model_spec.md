@@ -417,13 +417,14 @@ still declare a `source` — the corresponding narrowing in
 [§4.1](#41-narrowings-stricter-than-ossie). An omitted field `expression` or
 relationship join column is not an error: the field is unbound and the
 availability pass prunes it, and a relationship with no join columns is a
-logical edge.
+logical edge. A graph deployment that uses the model's own bindings needs every
+field of a concrete leaf dataset bound.
 
 - **`source` on a dataset** — required in Ossie; optional in `kcmd`. A non-abstract
   dataset bound for a graph MUST still declare one.
 - **`expression` on a field** — required in Ossie; optional in `kcmd`. A field
-  with no `expression` is unbound and is pruned at graph generation; supply
-  the column in a binding profile to bind it.
+  with no `expression` is unbound; supply the column in a binding profile to
+  bind it.
 - **`from_columns` / `to_columns` on a relationship** — both required in Ossie;
   `kcmd` allows both omitted (a logical edge).
 

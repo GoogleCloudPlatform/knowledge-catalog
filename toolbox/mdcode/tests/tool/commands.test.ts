@@ -606,11 +606,12 @@ relationships:
 
 
 // A Spanner graph reads a field's SPANNER text, else its ANSI_SQL one, and a
-// BigQuery graph its BIGQUERY text, else its ANSI_SQL one. Pruning, and the
-// check of what a profile excludes, read the text each deployment's graph
-// reads.
+// BigQuery graph its BIGQUERY text, else its ANSI_SQL one. The check of what a
+// profile excludes reads the text each deployment's graph reads. A graph
+// deployment of the model file's own bindings cannot leave field tax out, so
+// push refuses it.
 describe('a model with a Spanner graph target is pruned in the Spanner dialect', () => {
-  test('push drops a field, and a profile must exclude one, by the text its graph reads', async () => {
+  test('push refuses a graph deployment of the model file\'s own bindings that leaves a field out, and a profile must exclude a field by the text its graph reads', async () => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
         'scope: semantic-model.test-project.us.commerce_eg\n');
@@ -651,9 +652,11 @@ ${deployments}
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const deploySpy = spyOn(spannerLeg, 'deploySpanner');
 
-    expect(await push({validateOnly: true})).toBe(0);
-    const orders = deploySpy.mock.calls[0][0][0].model.entities[0];
-    expect(orders.fields.map(f => f.name)).toEqual(['order_id', 'gross', 'total']);
+    expect(await push({validateOnly: true})).toBe(1);
+    expect(messages(errorSpy)).toContain(
+        "leave field 'orders.tax' without an expression");
+    expect(deploySpy).not.toHaveBeenCalled();
+    errorSpy.mockClear();
 
     // Each profile leaves field tax out.
     const profileFile = (name: string, source: string) => `name: ${name}
@@ -2444,20 +2447,27 @@ ${deployments.map(d => `      - { name: ${d}, target: "${BQ}/propertyGraphs/${d}
           - { name: ltv }
 `;
 
-  // The warning that `at`, a profile or a deployment, leaves field ltv out.
-  const LTV_OMITTED = (at: string) =>
-      `Warning: field 'customer.ltv' in model 'commerce' (commerce, ${at}) ` +
-      'has no expression, so the graph omits it.';
-
-  test('a pruned push that fails a source check still warns about the field it leaves out', async () => {
-    writeModel(ltvUnbound(['g']));
+  test('a pruned push that fails a source check still notes the field its profile excludes', async () => {
+    const eg = writeModel(ltvUnbound(['g']).replace(
+        'propertyGraphs/g" }', 'propertyGraphs/g", profile: prod }'));
+    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'), `name: prod
+entities:
+  - name: customer
+    source: ${BQ}/tables/customer
+    primary_key: [c_id]
+    fields: [{ name: c_id, expression: c_id }]
+    fields_exclude: [ltv]
+`);
     spyOn(validateMod, 'validateBigQueryDataSources')
         .mockResolvedValue(['the table is gone']);
     const bqSpy = spyOn(bqLeg, 'deployBigQuery').mockResolvedValue(
         {success: true, deployed: 0, ddl: [], warnings: []} as any);
     expect(await push({validateOnly: true})).toBe(1);
     expect(prints(console.error)).toEqual(['Error: the table is gone']);
-    expect(prints(console.warn)).toEqual([LTV_OMITTED("deployment 'g'")]);
+    expect(prints(console.warn)).toEqual([
+      "Note: model 'commerce' (commerce, deployment 'g') excludes field " +
+          "'customer.ltv'.",
+    ]);
     expect(bqSpy).toHaveBeenCalledTimes(1);
   });
 

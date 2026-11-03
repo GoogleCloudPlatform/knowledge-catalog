@@ -181,6 +181,7 @@ export function validateDeployments(
   const add = (deployment: string, problem: string) =>
       problems.set(problem, [...(problems.get(problem) ?? []), deployment]);
   const unbound = unboundInline(model);
+  const unboundFields = unboundGraphFields(model);
   // The metrics the reference rules report, which the BigQuery rule leaves to
   // them.
   let referenced: Set<string>|undefined;
@@ -211,11 +212,16 @@ export function validateDeployments(
                 listed(available.map(m => `'${m.name}'`))} available; name ` +
                 `them in its 'metrics_exclude', or set it to "*".`);
       }
-    } else if (unbound) {
-      add(d.name,
-          `uses the model file's own bindings, which leave ${
-              unbound}; a deployment needs every entity and relationship ` +
-              `bound.`);
+    } else {
+      if (unbound) {
+        add(d.name,
+            `uses the model file's own bindings, which leave ${
+                unbound}; a deployment needs every entity and relationship ` +
+                `bound.`);
+      }
+      if (unboundFields && (engine === 'bigquery' || engine === 'spanner')) {
+        add(d.name, `uses the model file's own bindings, ${unboundFields}`);
+      }
     }
     // A Spanner deployment deploys no metric.
     if (engine === 'spanner') continue;
@@ -386,6 +392,26 @@ function unboundInline(model: SemanticModel): string {
     part(sourceless, 'entity', 'entities', 'a source'),
     part(unjoined, 'relationship', 'relationships', 'join columns'),
   ].filter(p => p).join(' and ');
+}
+
+// The fields the model file's own bindings leave without an expression on
+// each concrete leaf entity, counting the fields it inherits, as the end of a
+// deployment's error, or undefined when there are none.
+function unboundGraphFields(model: SemanticModel): string|undefined {
+  const extended =
+      new Set((model.entities ?? []).flatMap(e => e.extends ?? []));
+  const fields = resolvedEntities(model)
+                     .filter(e => !e.abstract && !extended.has(e.name))
+                     .flatMap(e => (e.fields ?? [])
+                                       .filter(f => !isFieldBound(f))
+                                       .map(f => `'${e.name}.${f.name}'`));
+  if (!fields.length) return undefined;
+  const many = fields.length > 1;
+  return `which leave ${many ? 'fields' : 'field'} ${
+             listed(fields)} without an expression; a graph deployment ` +
+      `needs every field of a concrete leaf entity bound. Give ${
+             many ? 'each field' : 'the field'} an expression, or use a ` +
+      `named profile that lists ${many ? 'them' : 'it'} in 'fields_exclude'.`;
 }
 
 // The error for a metric whose name matches, ignoring case, a declared or

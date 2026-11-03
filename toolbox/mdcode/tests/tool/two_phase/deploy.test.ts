@@ -7,7 +7,7 @@ import {expect} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -187,10 +187,6 @@ const failedDeploy = when(
 
 const WITH_LTV = {...CUSTOMER, fields: [...CUSTOMER.fields, {name: 'ltv'}]};
 const LTV2 = {name: 'ltv2', expression: 'Customer.ltv * 2'};
-// The warning that deployment `d` leaves field `field` out of its graph.
-const OMITTED = (field: string, d: string, why = 'has no expression') =>
-    `Warning: field 'Customer.${field}' in model 'commerce' (commerce, ` +
-    `deployment '${d}') ${why}, so the graph omits it.`;
 const NO_LTV = {
   entities: {
     Customer: {
@@ -342,14 +338,20 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     }],
   },
   {
-    name: 'an AlloyDB deployment says a field it leaves out is unavailable there',
+    name: 'an AlloyDB deployment says a field it leaves out, and one that reads it, is unavailable there',
     deployments: [{name: 'ad', target: ALLOYDB}],
     entities: [{
       ...WITH_LTV, source: `${ALLOYDB}/schemas/public/tables/customer`,
+      fields: [...WITH_LTV.fields, LTV2],
     }],
     flags: {validateOnly: true},
-    warnings: ["Warning: field 'Customer.ltv' in model 'commerce' (commerce, " +
-               "deployment 'ad') has no expression, so it is unavailable there."],
+    warnings: [
+      "Warning: field 'Customer.ltv' in model 'commerce' (commerce, " +
+          "deployment 'ad') has no expression, so it is unavailable there.",
+      "Warning: field 'Customer.ltv2' in model 'commerce' (commerce, " +
+          "deployment 'ad') reads Customer.ltv, which is unavailable, so it " +
+          'is unavailable there.',
+    ],
   },
   {
     name: 'an AlloyDB deployment deploys no graph and prints a note naming it, under its own header, and under --validate-only prints nothing',
@@ -423,18 +425,44 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
+    name: 'rejects before any write, also in the report, deployments of the model file\'s own bindings that leave a field of a concrete leaf entity without an expression, and deploys once the field has one or the deployment uses a profile that excludes it',
+    entities: [WITH_LTV],
+    code: 1,
+    errors: [err(
+        "model 'commerce' (commerce) deployments 'g1' and 'g2' use the model " +
+        "file's own bindings, which leave field 'Customer.ltv' without an " +
+        'expression; a graph deployment needs every field of a concrete leaf ' +
+        'entity bound. Give the field an expression, or use a named profile ' +
+        "that lists it in 'fields_exclude'.")],
+    warnings: [],
+    nothingWritten: true,
+    then: [{
+      entities: [{
+        ...CUSTOMER,
+        fields: [...CUSTOMER.fields, {name: 'ltv', expression: 'ltv'}],
+      }],
+      code: 0,
+      warnings: [],
+    }, {
+      deployments: [{name: 'g1', profile: 'prod'}],
+      profiles: {prod: NO_LTV},
+      code: 0,
+      warnings: ["Note: model 'commerce' (commerce, deployment 'g1') " +
+                 "excludes field 'Customer.ltv'."],
+    }],
+    report: {code: 1, rejects: {'no profiles': [pushed()]}},
+  },
+  {
     // Both deployments deploy a graph named g, in datasets d and s.
-    name: 'warns once per deployment about a field it leaves out, and prints once a warning the catalog\'s model gave and one both graphs give',
+    name: 'prints once a warning the catalog\'s model gave and one both graphs give',
     deployments: [
       {name: 'g1', target: bqGraph('g')},
       {name: 'g2', target: bqGraph('g', 's')},
     ],
-    entities: [WITH_LTV],
     metrics: [{name: 'broken', entity: 'Customer', expression: 'SUM((x'}],
     warnings: [
       "Warning: metric 'broken' in model 'commerce' (commerce): kcmd could " +
           'not read its SQL, so the fields it reads were not checked.',
-      ...['g1', 'g2'].map(g => OMITTED('ltv', g)),
       "Warning: [commerce -> g] metric 'broken' expression 'SUM((x' is not " +
           'a single supported aggregate (SUM, AVG, COUNT, MIN, MAX) over one ' +
           'operand; skipped (cannot be a single MEASURE)',
@@ -463,7 +491,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     }],
   },
   {
-    name: 'names in a note what a profile excludes and leaves unavailable, and in a warning each field the model file leaves unbound or that reads one',
+    name: 'names in a note what a profile excludes and leaves unavailable',
     deployments: [{name: 'g1', profile: 'prod'}],
     entities: [{...WITH_LTV, fields: [...WITH_LTV.fields, LTV2]}],
     metrics: ['total', 'top'].map(
@@ -496,13 +524,12 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       ],
     }, {
       deployments: ['g'],
+      entities: [CUSTOMER],
       metrics: undefined,
-      warnings: [
-        OMITTED('ltv', 'g'),
-        OMITTED('ltv2', 'g', 'reads Customer.ltv, which is unavailable'),
-        "Note: model 'commerce' (commerce, deployment 'g') leaves action " +
-            "'refund' unavailable.",
-      ],
+      profiles: undefined,
+      code: 0,
+      warnings: ["Note: model 'commerce' (commerce, deployment 'g') leaves " +
+                 "action 'refund' unavailable."],
     }],
   },
   {

@@ -2624,28 +2624,34 @@ describe('validateDeployments', () => {
       (profile ? `        profile: ${profile}\n` : '');
   const BQ = deployment('bigquery');
   // Purchases join customers, with the customer table and the join bound
-  // unless `customer` or `join` is false. `deployments` holds deployment
-  // entries and `metric` one metric, as YAML.
-  const commerce =
-      ({customer = true, join = true, deployments = '', metric = ''} = {}) =>
-          loadOne('commerce', `${deployments && `    deployments:\n${deployments}`}\
+  // unless `customer` or `join` is false, and fields c_name and note bound
+  // unless `unbound` is true. `deployments` holds deployment entries and
+  // `metric` one metric, as YAML.
+  const commerce = ({
+    customer = true, join = true, unbound = false, deployments = '',
+    metric = '',
+  } = {}) => {
+    const field = (name: string) =>
+        `{ name: ${name}${unbound ? '' : `, expression: ${name}`} }`;
+    return loadOne('commerce', `${deployments && `    deployments:\n${deployments}`}\
     entities:
       - name: customer
 ${customer ? `        source: ${BQ_TABLE('customer')}\n` : ''}\
         primary_key: [c_id]
-        fields: [{ name: c_id, expression: c_id }, { name: c_name }]
+        fields: [{ name: c_id, expression: c_id }, ${field('c_name')}]
       - name: purchase
         source: ${BQ_TABLE('purchase')}
         primary_key: [p_id]
         fields:
           - { name: p_id, expression: p_id }
           - { name: amount, expression: amt }
-          - { name: note }
+          - ${field('note')}
           - { name: noted, expression: "purchase.note || '!'" }
     relationships:
       - { name: placed_by, from: purchase, to: customer${
           join ? ', from_columns: [p_customer], to_columns: [c_id]' : ''} }
 ${metric && `    metrics:\n      - ${metric}\n`}`);
+  };
   const check = (m: SemanticModel) => validateDeployments(m, 'commerce');
   // The start of the error saying deployment `engine` uses the model file's
   // own bindings. A list of engines gives the plural form that names each.
@@ -2669,6 +2675,18 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
                        'reads a field with no expression, directly or ' +
                            'through other fields'}; a deployment needs ` +
       'every field its metrics read bound.';
+  // The error for deployment `engine` leaving `fields` without an expression.
+  // With several fields, `each` and `them` give the plural advice.
+  const NO_EXPRESSION = (engine: Engine|Engine[], fields: string,
+                         each = 'the field', them = 'it') =>
+      `${OWN(engine)}which leave ${fields} without an expression; a graph ` +
+      'deployment needs every field of a concrete leaf entity bound. Give ' +
+      `${each} an expression, or use a named profile that lists ${them} in ` +
+      "'fields_exclude'.";
+  // The error for fields c_name and note, which commerce leaves unbound.
+  const NAME_AND_NOTE = (engine: Engine|Engine[]) => NO_EXPRESSION(
+      engine, "fields 'customer.c_name' and 'purchase.note'", 'each field',
+      'them');
 
   // Every engine needs the bindings complete. A Spanner deployment of the
   // model file's own bindings deploys no metric, so only the others need the
@@ -2683,12 +2701,61 @@ ${metric && `    metrics:\n      - ${metric}\n`}`);
                {customer: false, deployments: deployment('bigquery', 'default')})))
         .toEqual([UNBOUND('bigquery')]);
     const notes = '{ name: m, expression: "COUNT(purchase.note)" }';
-    expect(check(commerce({deployments: all, metric: notes}))).toEqual([
-      READS(['bigquery', 'alloydb'], 'm', 'purchase.note'),
-    ]);
+    expect(check(commerce({unbound: true, deployments: all, metric: notes})))
+        .toEqual([
+          NAME_AND_NOTE(['bigquery', 'spanner']),
+          READS(['bigquery', 'alloydb'], 'm', 'purchase.note'),
+        ]);
     const noted = '{ name: m, expression: "COUNT(purchase.noted)" }';
-    expect(check(commerce({deployments: BQ, metric: noted})))
-        .toEqual([READS('bigquery', 'm', 'purchase.noted', false)]);
+    expect(check(commerce({unbound: true, deployments: BQ, metric: noted})))
+        .toEqual([
+          NAME_AND_NOTE('bigquery'),
+          READS('bigquery', 'm', 'purchase.noted', false),
+        ]);
+  });
+
+  // A graph gives a node table only to a concrete leaf entity, so a BigQuery
+  // or Spanner deployment of the model file's own bindings needs an
+  // expression for each of its fields, inherited ones included. A field that
+  // reads one with no expression, such as noted, is bound once that one is.
+  test('names every field of a concrete leaf entity with no expression, on a graph deployment of the model file\'s own bindings', () => {
+    const all = BQ + deployment('spanner') + deployment('alloydb');
+    expect(check(commerce({unbound: true, deployments: all})))
+        .toEqual([NAME_AND_NOTE(['bigquery', 'spanner'])]);
+    // A named profile accounts for each field itself.
+    const named =
+        commerce({unbound: true, deployments: deployment('bigquery', 'ops')});
+    named.profiles = [{name: 'ops', entities: [], relationships: []}];
+    expect(check(named)).toEqual([]);
+    // An abstract entity that nothing extends has no table either.
+    const lone = commerce({deployments: BQ});
+    lone.entities.push({
+      name: 'party', abstract: true, dataSource: '', keys: [],
+      fields: [{name: 'label'}],
+    });
+    expect(check(lone)).toEqual([]);
+    // Vip extends party and states `vip` among its fields. Party is abstract
+    // when `abstract`, and otherwise has a table.
+    const parties = (abstract: boolean, vip = '') =>
+        loadOne('commerce', `    deployments:\n${BQ}\
+    entities:
+      - name: party
+${abstract ? '        abstract: true\n' : `        source: ${BQ_TABLE('party')}
+        primary_key: [id]\n`}\
+        fields:
+          - { name: id${abstract ? '' : ', expression: id'} }
+          - { name: label }
+      - name: vip
+        extends: [party]
+        source: ${BQ_TABLE('vip')}
+        primary_key: [id]
+        fields: [{ name: id, expression: id }${vip}]
+`);
+    const LABEL = NO_EXPRESSION('bigquery', "field 'vip.label'");
+    expect(check(parties(true))).toEqual([LABEL]);
+    expect(check(parties(false))).toEqual([LABEL]);
+    expect(check(parties(true, ', { name: label, expression: v_label }')))
+        .toEqual([]);
   });
 
   // An AlloyDB database runs a metric's ALLOYDB text, or its ANSI_SQL one,
@@ -2721,21 +2788,25 @@ ${shop ? `      - { name: shop, source: ${BQ_TABLE('shop')}, primary_key: [s_id]
         texts(['BIGQUERY', bigQuery], ['ALLOYDB', alloyDbText]);
     const [NOTE, C_ID] = ['COUNT(customer.note)', 'COUNT(customer.c_id)'];
     const noteInBigQuery = both(NOTE, C_ID);
-    const bigQueryOnly = [READS('bigquery', 'm', 'customer.note')];
-    expect(check(alloyDb(noteInBigQuery))).toEqual([]);
-    expect(check(alloyDb(noteInBigQuery, {shop: true}))).toEqual(bigQueryOnly);
+    // The BigQuery deployment also needs field note bound.
+    const NO_NOTE = NO_EXPRESSION('bigquery', "field 'customer.note'");
+    expect(check(alloyDb(noteInBigQuery))).toEqual([NO_NOTE]);
+    expect(check(alloyDb(noteInBigQuery, {shop: true})))
+        .toEqual([NO_NOTE, READS('bigquery', 'm', 'customer.note')]);
     expect(check(alloyDb(texts(['BIGQUERY', NOTE], ['ANSI_SQL', C_ID]))))
-        .toEqual([]);
-    expect(check(alloyDb(both(C_ID, NOTE))))
-        .toEqual([READS(['alloydb', 'bigquery'], 'm', 'customer.note')]);
+        .toEqual([NO_NOTE]);
+    expect(check(alloyDb(both(C_ID, NOTE)))).toEqual([
+      READS(['alloydb', 'bigquery'], 'm', 'customer.note'), NO_NOTE,
+    ]);
     // A field the metric reads is read the same way. A field reads a sibling
     // field as `entity.field`.
     const viaLabel = '"COUNT(customer.label)"';
     expect(check(alloyDb(viaLabel, {label: both('customer.note', 'c_id')})))
-        .toEqual([]);
+        .toEqual([NO_NOTE]);
     expect(check(alloyDb(viaLabel, {label: both('c_id', 'customer.note')})))
-        .toEqual(
-            [READS(['alloydb', 'bigquery'], 'm', 'customer.label', false)]);
+        .toEqual([
+          READS(['alloydb', 'bigquery'], 'm', 'customer.label', false), NO_NOTE,
+        ]);
   });
 
   test('names every concrete entity and relationship left unbound', () => {
@@ -2786,7 +2857,7 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     // count. Neither do incomplete bindings a deployment uses, which the
     // deployment rules reject.
     for (const [i, m] of [
-           commerce(), commerce({deployments: BQ}),
+           commerce({unbound: true}), commerce({deployments: BQ}),
            commerce({customer: false, deployments: BQ}),
          ].entries()) {
       expect({i, warnings: [...warned(m), ...warned(m, true)]})
@@ -2889,8 +2960,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       // The reference rules: a field the entity does not declare.
       expect(bigQuery(anchored('SUM(purchase.amt) / 2'))).toEqual([]);
       // The binding rule: a field with no expression.
-      expect(bigQuery('{ name: m, expression: "SUM(purchase.note) / 2" }'))
-          .toEqual([READS('bigquery', 'm', 'purchase.note')]);
+      expect(check(commerce({
+        unbound: true,
+        deployments: BQ,
+        metric: '{ name: m, expression: "SUM(purchase.note) / 2" }',
+      }))).toEqual([
+        NAME_AND_NOTE('bigquery'), READS('bigquery', 'm', 'purchase.note'),
+      ]);
       // The inheritance rules: an abstract entity, and one that another extends.
       expect(bigQuery(anchored('SUM(purchase.amount) / 2'), {abstract: true}))
           .toEqual([]);
@@ -2994,21 +3070,33 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     });
 
     // A field of the metric's own entity is left to another check. A field
-    // the deployment leaves unbound, or one of an entity with no key, is not
-    // in the graph.
+    // the deployment's profile excludes, or one of an entity with no key, is
+    // not in the graph.
     test('rejects on BigQuery a metric named like a field of another entity', () => {
-      const named = (name: string, customerKeys = ['c_id']) =>
-          errorsAfter(m => {
-            m.metrics![0].name = name;
-            m.entities[0].keys = customerKeys;
-          });
-      expect(named('C_ID')).toEqual([IN(
-          "metric 'C_ID' cannot share its name with field 'customer.c_id': " +
+      // Under profile ops, which excludes `excluded` from customer, when
+      // `excluded` is given.
+      const named =
+          (name: string, customerKeys = ['c_id'], excluded?: string[]) =>
+              errorsAfter(m => {
+                m.metrics![0].name = name;
+                m.entities[0].keys = customerKeys;
+                m.profiles = [{
+                  name: 'ops', relationships: [],
+                  entities: [{name: 'customer', fieldsExclude: excluded}],
+                }];
+              }, excluded ? deployment('bigquery', 'ops') : BQ);
+      const SHARED = (metric: string, field: string) => IN(
+          `metric '${metric}' cannot share its name with field '${field}': ` +
           "a measure's name must differ from every property name in the " +
-          'graph, compared ignoring case; rename one.')]);
-      for (const [name, keys] of [['Amount'], ['c_name'], ['C_ID', []]] as
-           Array<[string, string[]?]>) {
-        expect({name, errors: named(name, keys)}).toEqual({name, errors: []});
+          'graph, compared ignoring case; rename one.');
+      expect(named('C_ID')).toEqual([SHARED('C_ID', 'customer.c_id')]);
+      expect(named('C_NAME', ['c_id'], []))
+          .toEqual([SHARED('C_NAME', 'customer.c_name')]);
+      for (const [name, keys, excluded] of [
+             ['Amount'], ['C_NAME', ['c_id'], ['c_name']], ['C_ID', []],
+           ] as Array<[string, string[]?, string[]?]>) {
+        expect({name, errors: named(name, keys, excluded)})
+            .toEqual({name, errors: []});
       }
     });
 

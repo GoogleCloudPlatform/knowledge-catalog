@@ -665,7 +665,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deployment that names no profile uses the model file's own bindings. They
   must give every concrete entity a source and every relationship both join
   column lists. They must also bind every field that each deployed metric
-  reads, directly or through another field. An AlloyDB deployment reads only
+  reads, directly or through another field. On a BigQuery or Spanner
+  deployment, they must give every field of a concrete leaf entity an
+  expression, inherited fields included, since the model file has no
+  `fields_exclude`. An AlloyDB deployment reads only
   the `ALLOYDB` or `ANSI_SQL` text of each metric and field. A Spanner
   deployment deploys no metric. A BigQuery deployment turns each metric into a
   measure, so each metric must be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over

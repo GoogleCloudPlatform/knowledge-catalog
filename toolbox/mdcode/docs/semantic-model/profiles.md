@@ -548,7 +548,9 @@ writes nothing.
   [statements use your database names](actions.md#statements-use-your-database-names).
 - **Availability summary** — push resolves the dependency graph and prints a
   warning naming each field the binding leaves without an expression, and each
-  field that reads one. A note names the fields the profile excludes and the
+  field that reads one. A BigQuery or Spanner deployment that uses the model
+  file's own bindings fails instead when such a field belongs to a concrete
+  leaf entity. A note names the fields the profile excludes and the
   metrics and actions left unavailable. Entities and relationships stay available,
   since their key and join columns are physical columns rather than fields. `kcmd profiles` lists each one with the reason that stops
   it, so withheld coverage is stated rather than discovered later. Actions are
