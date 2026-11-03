@@ -53,9 +53,9 @@ export function profileFilesBeside(dir: string, model: string):
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// Each `<model>.profile.*.yaml` in `dir`, whatever its profile name. Push
-// checks the nameless file first, then any whose profile name is empty or has
-// a dot, then the rest by profile name, and the list is in that order.
+// Each `<model>.profile.*.yaml` in `dir`, whatever its profile name: the
+// nameless file first, then those whose profile name is empty or has a dot, by
+// file name, then the rest by profile name.
 export function profileFileNamesBeside(dir: string, model: string): string[] {
   if (!fs.existsSync(dir)) return [];
   const named = profileFilesBeside(dir, model).map(p => path.basename(p.path));
