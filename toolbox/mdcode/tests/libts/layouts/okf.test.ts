@@ -115,4 +115,83 @@ describe('OkfLayout (CatalogLayout)', () => {
     );
     expect(fs.existsSync(path.join(dir, 'evil.md'))).toBe(false);
   });
+
+  test('skips untyped .md files, subdirectory log.md, dot-paths, and outside symlinks per OKF v0.3 §§3.1-3.2 while keeping typed agents.md', async () => {
+    const bundlePath = path.join(dir, 'bundle');
+    fs.mkdirSync(path.join(bundlePath, 'tables'), {recursive: true});
+    fs.mkdirSync(path.join(bundlePath, 'references/skills'), {recursive: true});
+    fs.mkdirSync(path.join(bundlePath, '.drafts'), {recursive: true});
+
+    // Bundle-root index.md with OKF v0.3 bundle metadata (no `type`) alongside typed `agents.md`.
+    fs.writeFileSync(
+      path.join(bundlePath, 'index.md'),
+      '---\nokf_version: "0.3"\ntitle: Bundle\ndescription: Desc\nlicense: Apache-2.0\n---\n# Index\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(bundlePath, 'agents.md'),
+      '---\ntype: Knowledge Base Root\ntitle: Router\n---\n# Router\n',
+      'utf8',
+    );
+
+    // Untyped non-concept `.md` files allowed by OKF v0.3 §3.2(2).
+    fs.writeFileSync(path.join(bundlePath, 'README.md'), '# Repo readme\n', 'utf8');
+    fs.writeFileSync(
+      path.join(bundlePath, 'CONTRIBUTING.md'),
+      '# Contributing\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(bundlePath, 'SKILL.md'),
+      '---\nname: my-skill\ndescription: Skill without OKF type\n---\n# Skill\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(bundlePath, 'references/skills/run-on-bq.md'),
+      '---\nname: run-on-bq\n---\n# Run on BQ\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(bundlePath, 'tables/AGENTS.md'),
+      '# Local agent instructions\n',
+      'utf8',
+    );
+
+    // Reserved `log.md` at root and subdirectory levels (OKF v0.3 §§3.1, 9).
+    fs.writeFileSync(path.join(bundlePath, 'log.md'), '## 2026-11-03\n', 'utf8');
+    fs.writeFileSync(
+      path.join(bundlePath, 'tables/log.md'),
+      '---\ntype: Ignored\n---\n## 2026-11-03\n',
+      'utf8',
+    );
+
+    // Dot-files and dot-directories (OKF v0.3 §3.2(4)).
+    fs.writeFileSync(
+      path.join(bundlePath, '.hidden.md'),
+      '---\ntype: Metric\n---\n# Hidden\n',
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(bundlePath, '.drafts/wip.md'),
+      '---\ntype: Metric\n---\n# WIP\n',
+      'utf8',
+    );
+
+    // Symlink escaping outside `bundle/` (OKF v0.3 §3.2(5)).
+    const outsideFile = path.join(dir, 'outside.md');
+    fs.writeFileSync(outsideFile, '---\ntype: Metric\n---\n# Outside\n', 'utf8');
+    fs.symlinkSync(outsideFile, path.join(bundlePath, 'escaped-link.md'));
+
+    // Valid typed concept under `tables/`.
+    fs.writeFileSync(
+      path.join(bundlePath, 'tables/orders.md'),
+      '---\ntype: BigQuery Table\ntitle: Orders\n---\n# Orders\n',
+      'utf8',
+    );
+
+    const layout = new OkfLayout(bundlePath, GROUP);
+    await layout.init();
+
+    expect(layout.listEntries()).toEqual(['agents', 'tables/orders']);
+  });
 });

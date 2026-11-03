@@ -8,8 +8,17 @@ import {
 
 const FULL = {
   tags: ['bikeshare'],
-  status: 'reviewed',
+  status: 'deprecated',
+  superseded_by: '/metrics/gross-margin.md',
   stale_after: '2027-01-01',
+  runtime: 'bigquery',
+  parameters: [{name: 'year', type: 'integer', required: true}],
+  computation: '/references/computations/lib/revenue.sql',
+  executor: {
+    resource: '/references/skills/run-on-bq.md',
+    receipt: ['job_id', 'executed_sql', 'result'],
+  },
+  attester: {resource: '/references/attesters/sql-equality.py'},
   generated: {by: 'enrichment-agent'},
   verified: [{by: 'human:atharvaph'}],
   sources: ['docs/ops-sop.md'],
@@ -30,16 +39,35 @@ describe('appendOkfMetadata', () => {
     );
   });
 
-  test('carries only OKF keys, not title or residue', () => {
+  test('carries only OKF keys and producer extensions, not title, extra, links, or residue', () => {
     const out = appendOkfMetadata('body', {
       title: 'T',
+      description: 'D',
+      resource: 'bq://p.d.t',
       type: 'knowledge-base',
       'x-kcmd': {v: 1},
+      extra: {resource: {parent: 'agents'}},
+      links: [{type: 'related', entries: ['a', 'b']}],
       tags: ['a'],
+      'x-acme-owner': 'team:data',
+      custom_key: 'keep-me',
     });
     expect(out).toContain('tags:');
+    expect(out).toContain('x-acme-owner: team:data');
+    expect(out).toContain('custom_key: keep-me');
     expect(out).not.toContain('title');
+    expect(out).not.toContain('description');
+    expect(out).not.toContain('resource');
     expect(out).not.toContain('x-kcmd');
+    expect(out).not.toContain('extra');
+    expect(out).not.toContain('links');
+
+    const {metadata} = splitOkfMetadata(out);
+    expect(metadata).toEqual({
+      tags: ['a'],
+      'x-acme-owner': 'team:data',
+      custom_key: 'keep-me',
+    });
   });
 });
 

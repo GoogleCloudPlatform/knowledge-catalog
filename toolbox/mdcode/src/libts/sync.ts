@@ -348,6 +348,23 @@ async function fetchEntryLinks(
   return [...byKey.values()];
 }
 
+async function withLinkRateLimitRetry<T extends { status: number }>(
+  fn: () => Promise<T>,
+): Promise<T> {
+  const baseDelay =
+    process.env.GCP_RETRY_DELAY_MS !== undefined
+      ? Math.max(0, Number(process.env.GCP_RETRY_DELAY_MS) || 0)
+      : 500;
+  let delay = baseDelay;
+  let res = await fn();
+  for (let attempt = 1; attempt < 4 && res.status === 429; attempt++) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    delay = Math.min(delay * 2, 5000);
+    res = await fn();
+  }
+  return res;
+}
+
 /** Reconciles `bundle/_links.yaml` against the entry group's EntryLinks. */
 async function reconcileLinks(
   catalog: gcp.CatalogClient,
@@ -371,7 +388,16 @@ async function reconcileLinks(
       const res = await catalog.lookupEntryLinks(target.project, target.location, {
         entry: entryName,
       });
-      if (res.status === 404 || res.status === 501) return [] as gcp.EntryLink[];
+      // A brand-new entry created milliseconds earlier in batchChangeMetadata
+      // can return 403 ("or it may not exist") during regional read-after-create
+      // IAM propagation and has no pre-existing links to delete.
+      if (
+        res.status === 404 ||
+        res.status === 501 ||
+        (res.status === 403 && !existingEntries.has(entryName))
+      ) {
+        return [] as gcp.EntryLink[];
+      }
       if (res.status !== 200) {
         console.error(
           `  lookupEntryLinks(${entryName}): HTTP ${res.status} ${res.message ?? ''}`,
@@ -417,11 +443,13 @@ async function reconcileLinks(
   for (const [id, prev] of existingLinks) {
     const desired = desiredById.get(id);
     if (!desired || isStaleEntryLink(prev, desired)) {
-      const del = await catalog.deleteEntryLink(
-        target.project,
-        target.location,
-        target.groupId,
-        id,
+      const del = await withLinkRateLimitRetry(() =>
+        catalog.deleteEntryLink(
+          target.project,
+          target.location,
+          target.groupId,
+          id,
+        ),
       );
       if (del.status !== 200 && del.status !== 404) {
         console.error(`  ${id}: HTTP ${del.status} ${del.message ?? ''}`);
@@ -436,27 +464,33 @@ async function reconcileLinks(
     const id = entryLinkId(link);
     const prev = existingLinks.get(id);
     if (!prev) {
-      const res = await catalog.createEntryLink(
-        target.project,
-        target.location,
-        target.groupId,
-        id,
-        link,
-      );
-      if (res.status === 409) {
-        const del = await catalog.deleteEntryLink(
+      const res = await withLinkRateLimitRetry(() =>
+        catalog.createEntryLink(
           target.project,
           target.location,
           target.groupId,
           id,
-        );
-        if (del.status === 200 || del.status === 404) {
-          const retry = await catalog.createEntryLink(
+          link,
+        ),
+      );
+      if (res.status === 409) {
+        const del = await withLinkRateLimitRetry(() =>
+          catalog.deleteEntryLink(
             target.project,
             target.location,
             target.groupId,
             id,
-            link,
+          ),
+        );
+        if (del.status === 200 || del.status === 404) {
+          const retry = await withLinkRateLimitRetry(() =>
+            catalog.createEntryLink(
+              target.project,
+              target.location,
+              target.groupId,
+              id,
+              link,
+            ),
           );
           if (retry.status !== 200) {
             console.error(
@@ -475,9 +509,11 @@ async function reconcileLinks(
     } else if (
       JSON.stringify(prev.aspects ?? {}) !== JSON.stringify(link.aspects ?? {})
     ) {
-      const upd = await catalog.updateEntryLink(
-        link,
-        Object.keys(link.aspects ?? {}),
+      const upd = await withLinkRateLimitRetry(() =>
+        catalog.updateEntryLink(
+          link,
+          Object.keys(link.aspects ?? {}),
+        ),
       );
       if (upd.status !== 200) {
         console.error(`  ${id}: HTTP ${upd.status} ${upd.message ?? ''}`);

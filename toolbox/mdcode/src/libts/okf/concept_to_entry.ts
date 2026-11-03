@@ -34,6 +34,19 @@ function headingTitle(body: string): string | undefined {
   return undefined;
 }
 
+/** Valid Dataplex `query-template` aspect `parameters[].type` enum values. */
+export const VALID_QUERY_TEMPLATE_PARAM_TYPES = new Set([
+  'BOOLEAN',
+  'NUMBER',
+  'STRING',
+  'BYTES',
+  'DATETIME',
+  'TIMESTAMP',
+  'GEOSPATIAL',
+  'STRUCT',
+  'RANGE',
+]);
+
 /** Maps OKF human-readable `type` labels to Dataplex `document.type` slugs. */
 export function normalizeOkfDocType(rawType: string): string {
   const norm = rawType
@@ -41,6 +54,12 @@ export function normalizeOkfDocType(rawType: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
+  if (norm === 'context-set' || norm === 'knowledge-base-root') {
+    return 'context-set';
+  }
+  if (norm === 'knowledge-base-index' || norm === 'index') {
+    return 'knowledge-base-index';
+  }
   if (
     norm === 'table' ||
     norm === 'bigquery-table' ||
@@ -251,6 +270,12 @@ export function conceptToEntry(
             `[kcmd] ${concept.id}: stripping unsupported parameter key(s) ${stripped.join(', ')} on parameters[${idx}]`,
           );
         }
+        const paramType = text(cleaned['type']);
+        if (paramType && !VALID_QUERY_TEMPLATE_PARAM_TYPES.has(paramType)) {
+          throw new ConceptError(
+            `${concept.id}: ${QUERY_TEMPLATE_ASPECT_KEY}.parameters[${idx}].type '${paramType}' is invalid; must be one of ${[...VALID_QUERY_TEMPLATE_PARAM_TYPES].join(', ')}`,
+          );
+        }
         return cleaned;
       });
     }
@@ -267,7 +292,13 @@ export function conceptToEntry(
     (facetKey === DOCUMENT_ASPECT_KEY ||
       normalizeOkfDocType(conceptType) !== shortEntryType)
   ) {
-    aspects[facetKey] = {data: {type: conceptType, ...aspects[facetKey].data}};
+    const resolvedType =
+      facetKey === DOCUMENT_ASPECT_KEY
+        ? normalizeOkfDocType(conceptType)
+        : conceptType;
+    aspects[facetKey] = {
+      data: {...aspects[facetKey].data, type: resolvedType},
+    };
   } else if (
     conceptType &&
     !residueEntryType &&

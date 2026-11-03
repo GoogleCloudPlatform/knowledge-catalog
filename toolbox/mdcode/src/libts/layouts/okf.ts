@@ -35,13 +35,32 @@ function text(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value : undefined;
 }
 
-function conceptFiles(dir: string): string[] {
+function conceptFiles(dir: string, realRoot?: string): string[] {
+  const root = realRoot ?? fs.realpathSync(dir);
   return fs
     .readdirSync(dir, {withFileTypes: true})
     .sort((a, b) => a.name.localeCompare(b.name))
     .flatMap((e) => {
+      // OKF v0.3 §3.2(4): dot-prefixed files and directories are not part of the bundle.
+      if (e.name.startsWith('.')) return [];
       const p = path.join(dir, e.name);
-      if (e.isDirectory()) return conceptFiles(p);
+      if (e.isSymbolicLink()) {
+        // OKF v0.3 §3.2(5): do not follow symlinks that resolve outside the bundle root.
+        let realTarget: string;
+        let stat: fs.Stats;
+        try {
+          realTarget = fs.realpathSync(p);
+          stat = fs.statSync(p);
+        } catch {
+          return [];
+        }
+        if (realTarget !== root && !realTarget.startsWith(root + path.sep)) {
+          return [];
+        }
+        if (stat.isDirectory()) return conceptFiles(p, root);
+        return e.name.endsWith('.md') ? [p] : [];
+      }
+      if (e.isDirectory()) return conceptFiles(p, root);
       return e.name.endsWith('.md') ? [p] : [];
     });
 }
@@ -52,8 +71,9 @@ function toPosixId(root: string, file: string): string {
 
 /**
  * Resolves the catalog entry ID a concept file maps to, or `undefined` when the
- * file should be skipped (`<group>_entry`, append-only `log.md`, or a generated
- * `index.md` shadowed by an explicit `agents.md` / `<dir>.md`).
+ * file should be skipped (`<group>_entry`, reserved `log.md` at any level,
+ * untyped non-concept `.md` files per OKF v0.3 §3.2, or a generated `index.md`
+ * shadowed by an explicit `agents.md` / `<dir>.md`).
  */
 function resolvedEntryName(
   id: string,
@@ -69,15 +89,25 @@ function resolvedEntryName(
     return undefined;
   }
 
+  const hasConceptType =
+    text(frontmatter['type']) !== undefined ||
+    text(residue['entryType']) !== undefined ||
+    text(extra['type']) !== undefined;
   const hasExplicitMeta =
     frontmatter[RESIDUE_KEY] !== undefined ||
     frontmatter[EXTRA_KEY] !== undefined ||
-    frontmatter['type'] !== undefined;
+    hasConceptType;
 
-  // Skip append-only operation logs (`log.md`) that carry no concept frontmatter.
-  if (id === 'log' && !hasExplicitMeta) {
+  // OKF v0.3 §§3.1, 9: `log.md` at any level is a reserved history file, never
+  // a concept, unless it is a pulled remote entry carrying `x-kcmd` / `extra`.
+  if (
+    (id === 'log' || id.endsWith('/log')) &&
+    frontmatter[RESIDUE_KEY] === undefined &&
+    frontmatter[EXTRA_KEY] === undefined
+  ) {
     return undefined;
   }
+
   // When `agents.md` or `<dir>.md` already exists alongside a directory-listing
   // `index.md` that has no explicit concept metadata, prefer the explicit file.
   if (
@@ -92,6 +122,14 @@ function resolvedEntryName(
     !hasExplicitMeta &&
     fs.existsSync(path.join(bundlePath, `${id.slice(0, -'/index'.length)}.md`))
   ) {
+    return undefined;
+  }
+
+  // OKF v0.3 §3.2(2): a non-index `.md` file with no `type` in frontmatter
+  // (e.g. `README.md`, `AGENTS.md`, `CONTRIBUTING.md`, `SKILL.md`) is not a
+  // concept; consumers skip it rather than rejecting the bundle.
+  const isIndex = id === 'index' || id.endsWith('/index');
+  if (!isIndex && !hasConceptType) {
     return undefined;
   }
 
@@ -287,10 +325,18 @@ export class OkfLayout implements CatalogLayout {
   }
 
   async saveEntry(name: string, entry: md.Entry): Promise<void> {
+    const prevFile = this._index.get(name);
     const file = this.resolveConceptPath(name);
     const concept = this.previewConcept(name, entry);
     await fs.promises.mkdir(path.dirname(file), {recursive: true});
     await fs.promises.writeFile(file, conceptToFileContent(concept), 'utf8');
+    if (
+      prevFile &&
+      path.resolve(prevFile) !== path.resolve(file) &&
+      fs.existsSync(prevFile)
+    ) {
+      await fs.promises.unlink(prevFile);
+    }
     this._index.set(name, file);
   }
 
