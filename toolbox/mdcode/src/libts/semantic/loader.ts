@@ -3157,6 +3157,23 @@ export function oldSourceForm(source: string): string|undefined {
 // Why no name to write is given when that name would hold a space.
 export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
 
+// The resource name of a BigQuery and of a BigLake table, with a placeholder
+// for each name in it.
+export const BIGQUERY_TABLE_FORM =
+    'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>';
+export const BIGLAKE_TABLE_FORM =
+    'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>';
+
+// `form` with its last placeholders replaced by `parts`, in order, or
+// undefined when `form` has fewer placeholders than `parts`.
+export function fillForm(form: string, parts: string[]): string|undefined {
+  const skip = (form.match(/<\w+>/g) ?? []).length - parts.length;
+  if (skip < 0) return undefined;
+  let n = 0;
+  return form.replace(
+      /<\w+>/g, name => n++ < skip ? name : parts[n - 1 - skip]);
+}
+
 // `source` with its quotes removed, written as a resource name, when it is a
 // table's resource name, resource URI or entry name outside a system entry
 // group, holding them; '' when removing them leaves no such name; undefined

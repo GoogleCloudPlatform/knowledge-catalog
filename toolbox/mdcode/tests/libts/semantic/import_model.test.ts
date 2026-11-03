@@ -321,14 +321,17 @@ describe('sources', () => {
   });
 
   // Each warning ends with what to do: the entry name advice for a source in
-  // no Google Cloud form, the name to write when the loader gives one, or else
-  // a run with --source-prefix.
+  // no Google Cloud form, the name to write when the loader gives one, a run
+  // with --source-prefix when a prefix of that kind completes the name, or why
+  // kcmd cannot name the table.
   const ADVICE = 'A table outside Google Cloud is written as the entry name of ' +
       "its Knowledge Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
   const PUSH = "'kcmd push' rejects the file until it is repointed.";
+  const RERUN = "or until 'kcmd import' runs again with '--source-prefix'.";
+  const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote.';
   test.each([
     ['no sourcePrefix', 'orders', {}, ADVICE],
-    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, ADVICE],
+    ['disagreeing prefix', 'raw.orders', {sourcePrefix: BQ_PREFIX}, `${RERUN} ${ADVICE}`],
     [
       'backtick-quoted table with dot',
       '\'sales.`my.table`\'',
@@ -356,8 +359,8 @@ describe('sources', () => {
       'projects/acme/locations/us/entryGroups/@bigquery/entries/orders', {},
       `is not a valid GCP resource name; ${PUSH}`
     ],
-    ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, ADVICE],
-    ['bare name with an unclosed quote', `'sales."orders'`, {sourcePrefix: BQ_PREFIX}, ADVICE],
+    ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
+    ['bare name with an unclosed quote', `'sales."orders'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
