@@ -131,16 +131,22 @@ describe('kcmd import', () => {
     });
   }
 
-  // Found by the input file's name, `.yaml` or `.yml`, and always `.yaml`.
+  // Found by the input file's name, `.yaml` or `.yml`, and always `.yaml`, in
+  // the order push checks them.
   for (const input of ['in/retail.yaml', 'in/retail.yml']) {
     test(`passes the engine the profile files beside ${input}, and no other file`, async () => {
       write(input, model());
       write('in/retail.profile.prod.yaml', 'name: prod\n');
       write('in/retail.profile.dev.yaml', 'name: dev\n');
+      write('in/retail.profile.prod.v2.yaml', 'name: prod\n');
+      write('in/retail.profile.yaml', 'name: prod\n');
+      write('in/retail.profile.qa.yml', 'name: qa\n');
       write('in/other.profile.qa.yaml', 'name: qa\n');
       const call = spyOn(engine, 'importSemanticModelYaml');
       await importModel(input, {flavor: 'ossie', out: 'out'});
       expect(call.mock.calls[0][1]!.profileFiles).toEqual([
+        {fileName: 'retail.profile.yaml', content: 'name: prod\n'},
+        {fileName: 'retail.profile.prod.v2.yaml', content: 'name: prod\n'},
         {fileName: 'retail.profile.dev.yaml', content: 'name: dev\n'},
         {fileName: 'retail.profile.prod.yaml', content: 'name: prod\n'},
       ]);
@@ -310,6 +316,39 @@ describe('kcmd import', () => {
       expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
       expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(PROFILE);
     });
+
+    // Push refuses a profile file whose name has a dot or is empty. Import
+    // gives push's text: an error naming the input under --input first-party,
+    // and a warning naming the file it writes otherwise.
+    // [the profile file of model `m`, push's text about it]
+    const MISNAMED: Array<[(m: string) => string, (m: string) => string]> = [
+      [m => `${m}.profile.prod.v2.yaml`,
+       m => `Profile file '${m}.profile.prod.v2.yaml' has profile name 'prod.v2'; a profile ` +
+           'name is a letter followed by letters, digits, underscores and hyphens.'],
+      [m => `${m}.profile.yaml`,
+       m => `Profile file '${m}.profile.yaml' names no profile; rename it ` +
+           `'${m}.profile.<name>.yaml'.`],
+    ];
+    for (const [file, error] of MISNAMED) {
+      for (const flavor of ['google', 'ossie']) {
+        test(`${file('sales')} gets push's error under --input first-party, to ${flavor}`, async () => {
+          write('in/sales.yaml', google);
+          write(`in/${file('sales')}`, PROFILE);
+          expect(await importModel('in/sales.yaml', {flavor, input: 'first-party', out: 'out'}))
+              .toBe(1);
+          expect(errors).toEqual([`Error: ${error('sales')}`]);
+          expect(filesIn('out')).toEqual([]);
+        });
+      }
+
+      test(`${file('sales')} is written with push's warning in third-party mode`, async () => {
+        write('in/sales.yaml', google);
+        write(`in/${file('sales')}`, PROFILE);
+        expect(await importModel('in/sales.yaml', {flavor: 'google', out: 'out'})).toBe(0);
+        expect(warnings).toEqual([`Warning: ${error('retail')}`]);
+        expect(filesIn('out')).toEqual([file('retail'), 'retail.yaml']);
+      });
+    }
 
     test('imported as Google flavor to --out with --transpile brings its profile files translated', async () => {
       write('in/retail.yaml', google);

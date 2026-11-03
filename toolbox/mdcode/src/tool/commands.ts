@@ -2351,14 +2351,26 @@ export async function importModel(
 
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
-  // inside it.
+  // inside it. The engine gets every `<name>.profile.*.yaml` there, so it
+  // reports a file name push refuses. Push checks the nameless file first,
+  // then any whose profile name is empty or has a dot, then the rest by
+  // profile name, and the engine gets them in that order.
+  const dir = path.dirname(file);
+  const stem = path.basename(file).replace(YAML_FILE, '');
+  const named = profileFilesBeside(dir, stem).map(p => path.basename(p.path));
+  const nameless = `${stem}.profile.yaml`;
+  const dotted = fs.readdirSync(dir).filter(
+      f => f.startsWith(`${stem}.profile.`) && f.endsWith('.yaml') &&
+          f !== nameless && !named.includes(f));
   const profileFiles =
-      profileFilesBeside(
-          path.dirname(file), path.basename(file).replace(YAML_FILE, ''))
-          .map(p => ({
-                 fileName: path.basename(p.path),
-                 content: fs.readFileSync(p.path, 'utf8'),
-               }));
+      [
+        ...(fs.existsSync(path.join(dir, nameless)) ? [nameless] : []),
+        ...dotted.sort(),
+        ...named,
+      ].map(f => ({
+              fileName: f,
+              content: fs.readFileSync(path.join(dir, f), 'utf8'),
+            }));
   const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
     flavor: flavor as 'ossie' | 'google',
     sourcePrefix: options.sourcePrefix,

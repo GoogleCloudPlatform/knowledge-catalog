@@ -219,9 +219,7 @@ export class SemanticModelLayout implements CatalogLayout {
         path.join(this._groupDir(), `${model}.profile.yaml`) :
         undefined;
     if (nameless && fs.existsSync(nameless)) {
-      throw new Error(
-          `Profile file '${path.basename(nameless)}' names no profile; ` +
-          `rename it '${model}.profile.<name>.yaml'.`);
+      throw new Error(profileNameError(path.basename(nameless), '')!);
     }
     const prefix = `${model}.profile.`;
     const badName = this._entryGroup && fs.existsSync(this._groupDir()) ?
@@ -561,8 +559,13 @@ export function checkProfileFileName(
 }
 
 // Push's error for the profile file `file` whose profile name `name` breaks
-// the naming rule, or undefined.
+// the naming rule, or undefined. A `<model>.profile.yaml` names no profile.
 export function profileNameError(file: string, name: string): string|undefined {
+  const nameless = file.match(/^(.*)\.profile\.yaml$/);
+  if (nameless && name === '') {
+    return `Profile file '${file}' names no profile; rename it ` +
+        `'${nameless[1]}.profile.<name>.yaml'.`;
+  }
   if (nameProblem('profile', name) === undefined) return undefined;
   return `Profile file '${file}' has profile name '${name}'; a profile name ` +
       `is a letter followed by letters, digits, underscores and hyphens.`;
