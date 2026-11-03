@@ -13,14 +13,24 @@ import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model'
 interface Style {
   seqIndent: number;  // From a key to the `-` of its list.
   block: boolean;  // SQL with a `(` and text of several lines as `|-` blocks.
+  chomp: string;  // The chomping indicator of a block of several lines.
+  spaces: boolean;  // A line of spaces after the first `(` or line break of a block.
   flow: boolean;  // Expressions as flow mappings, an entry to a line.
+  // With flow, `ai_context` in flow too, and each `}` or `]` on the line of
+  // the entry before it.
+  tight: boolean;
   nl: string;
   exprFirst: boolean;  // `expression` before `dialect` in a dialect entry.
   nextLine: boolean;  // SQL under its key and a comment, over two lines if it has a space.
+  empty: boolean;  // A null value as nothing after its key.
+  // An anchor on each string expression and on each mapping that repeats,
+  // which repeats as an alias.
+  anchor: boolean;
 }
 const STYLE: Style = {
-  seqIndent: 2, block: false, flow: false, nl: '\n', exprFirst: false,
-  nextLine: false,
+  seqIndent: 2, block: false, chomp: '-', spaces: false, flow: false,
+  tight: false, nl: '\n', exprFirst: false, nextLine: false, empty: false,
+  anchor: false,
 };
 
 const isObj = (v: any) => v !== null && typeof v === 'object';
@@ -46,6 +56,17 @@ function write(value: any, s: Style): string {
   };
   const order = (v: any) =>
       s.exprFirst && 'dialect' in v ? {expression: v.expression, ...v} : v;
+  // Each mapping that `value` holds twice, with the anchor it gets.
+  const seen = new Map<string, number>();
+  const anchors = new Map<string, string>();
+  const scan = (v: any) => {
+    if (!isObj(v)) return;
+    if (full(v) && !Array.isArray(v)) {
+      seen.set(canonical(v), (seen.get(canonical(v)) ?? 0) + 1);
+    }
+    Object.values(v).forEach(scan);
+  };
+  scan(value);
   const flow = (v: any): string => Array.isArray(v) ?
       `[${v.map(flow).join(', ')}]` :
       isObj(v) ? `{${
@@ -53,10 +74,35 @@ function write(value: any, s: Style): string {
                          .map(([k, x]) => `${k}: ${flow(x)}`)
                          .join(', ')}}` :
                  scalar(v, true);
+  // `v` as a flow collection over several lines with its entries at column
+  // `c`. The `}` or `]` and then `close` end the last entry's line. A list's
+  // items are one line each.
+  const tight = (v: any, c: number, close = ''): string[] => {
+    const seq = Array.isArray(v);
+    const entries = Object.entries(v);
+    const lines = [seq ? '[' : '{'];
+    entries.forEach(([k, x], i) => {
+      const end = i < entries.length - 1 ? ',' : (seq ? ']' : '}') + close;
+      const lead = pad(c) + (seq ? '' : `${k}: `);
+      if (!seq && full(x)) {
+        const [first, ...rest] = tight(x, c + 2, end);
+        lines.push(lead + first + after(), ...rest);
+      } else {
+        lines.push(lead + flow(x) + end + after());
+      }
+    });
+    return lines;
+  };
   // Writes `v` after `head`, which ends in `:` or `-` at column `c`.
   const val = (head: string, v: any, c: number, inner: number, key = '') => {
     const expr = key === 'expression';
-    if (s.flow && expr && full(v) && !Array.isArray(v)) {
+    const anchor = s.anchor && isObj(v) && (seen.get(canonical(v)) ?? 0) > 1 ?
+        canonical(v) : undefined;
+    if (s.flow && s.tight && (expr || key === 'ai_context') && full(v) &&
+        !Array.isArray(v)) {
+      const [first, ...rest] = tight(v, inner);
+      out.push(`${head} ${first}${after()}`, ...rest);
+    } else if (s.flow && expr && full(v) && !Array.isArray(v)) {
       // `{` and `[` end their lines, and each entry has a line.
       out.push(`${head} {${after()}`);
       for (const [k, x] of Object.entries(v) as Array<[string, any[]]>) {
@@ -68,11 +114,16 @@ function write(value: any, s: Style): string {
       out.push(`${pad(inner - 2)}}${after()}`);
     } else if (!full(v) && isObj(v)) {
       out.push(`${head} ${flow(v)}${after()}`);
+    } else if (v === null && s.empty) {
+      out.push(head + after());
+    } else if (anchor && anchors.has(anchor)) {
+      out.push(`${head} *${anchors.get(anchor)}${after()}`);
     } else if (Array.isArray(v)) {
       out.push(head + after());
       for (const x of v) item(x, c + s.seqIndent);
     } else if (isObj(v)) {
-      out.push(head + after());
+      if (anchor) anchors.set(anchor, `m${anchors.size}`);
+      out.push(head + (anchor ? ` &${anchors.get(anchor)}` : '') + after());
       pairs(order(v), c + 2);
     } else if (s.nextLine && expr) {
       const text = scalar(v, false);
@@ -81,9 +132,15 @@ function write(value: any, s: Style): string {
                ...(cut < 0 ? [] : [pad(inner) + text.slice(0, cut)]),
                `${pad(inner)}${text.slice(cut + 1)}${after()}`);
     } else if (s.block && /[(\n]/.test(v)) {
-      out.push(`${head} |-${after()}`, ...v.split('\n').map((l: string) => l && pad(inner) + l));
+      // With `|+`, the blank line above the next key is the text's last line
+      // break.
+      const text =
+          s.spaces ? v.replace(/\(|\n/, (m: string) => `${m.trim()}\n  \n`) : v;
+      out.push(`${head} |${v.includes('\n') ? s.chomp : '-'}${after()}`,
+               ...text.split('\n').map((l: string) => l && pad(inner) + l));
     } else {
-      out.push(`${head} ${scalar(v, false)}${after()}`);
+      const a = s.anchor && expr && typeof v === 'string' ? `&s${n} ` : '';
+      out.push(`${head} ${a}${scalar(v, false)}${after()}`);
     }
   };
   const item = (v: any, c: number) => {
@@ -147,7 +204,8 @@ function startOf(node: any, item: any): number {
 }
 
 // The lines of `item`. Comment lines after a block item at its column or
-// less are above the next item.
+// less are above the next item, and so are the blank lines a block scalar
+// that keeps its line breaks ends in.
 function span(s: Side, node: any, item: any): number[] {
   const start = startOf(node, item);
   const last = yaml.isPair(item) ? item.value ?? item.key : item;
@@ -160,7 +218,7 @@ function span(s: Side, node: any, item: any): number[] {
   for (; i > lineOf(s, start); i--) {
     const line = lineText(s, i);
     if (!isBlank(line) && (!isComment(line) || line.search(/\S/) > col)) break;
-    cut ||= !isBlank(line);
+    cut ||= !isBlank(line) || yaml.isScalar(last);
   }
   return [lineOf(s, start), cut && !node.flow ? i : end];
 }
@@ -172,11 +230,15 @@ function removed(s: Side, node: any, i: number) {
   const [a, b] = span(s, node, node.items[i]);
   const start = startOf(node, node.items[i]);
   if (node.flow) {
-    const own = isBlank(before(s, start)) &&
-        /^\s*,?\s*(#.*)?\s*$/.test(lineText(s, b).slice(
-            (yaml.isPair(node.items[i]) ? node.items[i].value : node.items[i])
-                .range[1] - s.starts[b]));
-    return mark(own ? s.gone : s.changed, [a, b]);
+    // A flow item that starts its line takes its lines, but for the brackets
+    // and comment after it on its last line.
+    const own = isBlank(before(s, start));
+    const tail = /^\s*,?\s*(#.*)?\s*$/.test(lineText(s, b).slice(
+        (yaml.isPair(node.items[i]) ? node.items[i].value : node.items[i])
+            .range[1] - s.starts[b]));
+    const last = own && b > a && !tail ? b - 1 : b;
+    if (last < b) s.changed.add(b);
+    return mark(own ? s.gone : s.changed, [a, last]);
   }
   mark(s.gone, [a, b]);
   if (!isBlank(before(s, start))) return;
@@ -200,12 +262,13 @@ function align(
   if (yaml.isScalar(a) && yaml.isScalar(b)) {
     if (a.value === b.value) return true;
     // A changed scalar keeps its quoting and the text around it on its line,
-    // but for the comma a new flow item after it adds.
+    // but for the commas, brackets and comment that end the line, which a new
+    // flow item after it can take.
     const around = (s: Side, n: any) => {
       const line = lineOf(s, n.range[1]);
       if (lineOf(s, n.range[0]) !== line) return undefined;
       const after = lineText(s, line).slice(n.range[1] - s.starts[line])
-                        .replace(/,(\s*(#.*)?\s*)$/, '$1');
+                        .replace(/[\s,\]}]*(#.*)?\s*$/, '');
       return `${before(s, n.range[0])}|${after}`;
     };
     if (typeof b.value === 'string' && !b.value.includes('\n') &&
@@ -314,16 +377,17 @@ function widths(s: Side): Set<string> {
 function comments(s: Side) {
   let at = 0;
   let last = 0;
+  let close = false;
   return [...new yaml.Lexer().lex(s.text)].flatMap(token => {
     const p = at;
     if (!['\u0002', '\u0018', '\u001f'].includes(token)) at += token.length;
     if (token[0] !== '#') {
-      if (token.trim()) last = p;
+      if (token.trim()) [last, close] = [p, token === '}' || token === ']'];
       return [];
     }
     const line = lineOf(s, p);
     const key = /^\s*(?:-\s+)?([\w"']+)\s*:/.exec(lineText(s, lineOf(s, last)))?.[1] ?? '';
-    return [{token, line, key, after: !isBlank(before(s, p))}];
+    return [{token, line, key, close, after: !isBlank(before(s, p))}];
   });
 }
 
@@ -348,9 +412,10 @@ function check(input: string, output: string) {
     // A comment after a value stays after its key, or after what takes the
     // place of the value it follows.
     const d = inOut.find(d => d.token === c.token);
+    // A comment after a `}` or `]` stays after one.
     const kept = d && (!c.after || d.after &&
         (c.key === d.key || RENAMED[c.key] === d.key ||
-         c.key === '' && y.changed.has(d.line)));
+         (c.key === '' || c.close && d.close) && y.changed.has(d.line)));
     if (!kept) problems.push(`${c.token} moved`);
   }
   const wx = [...widths(x)];
@@ -362,8 +427,12 @@ function check(input: string, output: string) {
   if (input.includes('\r\n') && /(^|[^\r])\n/.test(output)) problems.push('LF');
   if (input[0] !== output[0]) problems.push('first character');
   for (const i of y.changed) {
-    if (/[ \t]\r?\n?$/.test(lineText(y, i))) problems.push('trailing space');
+    if (/\S[ \t]+\r?\n?$/.test(lineText(y, i))) problems.push('trailing space');
   }
+  // A line of only spaces is text inside a block scalar the input has too.
+  const spaces = (s: Side) =>
+      s.starts.filter((_, i) => /^[ \t]+\r?\n?$/.test(lineText(s, i))).length;
+  if (spaces(y) > spaces(x)) problems.push('a line of only spaces');
   return {input: rest(x), output: rest(y), problems};
 }
 
@@ -372,6 +441,8 @@ const BQ = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders';
 const CASE = "CASE WHEN orders.status = 'open' THEN 1 ELSE 0 END";
 const sql = (expression: string, dialect = 'ANSI_SQL') =>
     ({dialects: [{dialect, expression}]});
+// The `ai_context` members a conversion moves, one of them empty.
+const CUSTOM = {team: {lead: 'ann'}, backup: {owner: {lead: 'ann'}}, notes: null};
 const vanilla = (): any => ({
   version: '0.2.0.dev0',
   semantic_model: [{
@@ -389,7 +460,7 @@ const vanilla = (): any => ({
     }],
     relationships: [],
     metrics: [{name: 'order_count', expression: sql('COUNT(orders.order_id)')}],
-    ai_context: {instructions: 'Prefer net revenue'},
+    ai_context: {instructions: 'Prefer net revenue', ...CUSTOM},
   }],
 });
 const google = (): any => {
@@ -397,7 +468,8 @@ const google = (): any => {
   for (const f of datasets[0].fields) {
     f.expression = f.expression.dialects[0].expression;
   }
-  const {relationships, metrics, ai_context, ...head} = model;
+  const {relationships, metrics, ai_context: ai, ...head} = model;
+  const ai_context = {instructions: ai.instructions, custom: CUSTOM};
   return {
     version: '0.2.0.dev0/google',
     semantic_model: [{
@@ -442,7 +514,8 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a datatype rewritten', changed(vanilla, m => fields(m)[0].datatype = 'integer')],
   ['a source completed', changed(vanilla, m => ds(m)[0].source = 'orders'),
    {sourcePrefix: BQ.replace('/tables/orders', '')}],
-  ['a description cut', changed(vanilla, m => ds(m)[0].description = `Orders.${' Orders.'.repeat(129)}\n\n`.repeat(2))],
+  // Cut to text that ends in two line breaks.
+  ['a description cut', changed(vanilla, m => ds(m)[0].description = `${'Orders. '.repeat(249)}Order.\n\nMore.`)],
   ['a key removed', changed(vanilla, m => {
      const {name, ...rest} = fields(m)[1];
      fields(m)[1] = {name, datatype: 'Opaque', ...rest};
@@ -462,7 +535,7 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a string expression wrapped', changed(vanilla, m => fields(m)[0].expression = 'orders.order_id')],
   ['a third-party file adapted to Google', changed(vanilla, m => m.semantic_model[0].ai_context.owner = 'analytics'),
    {flavor: 'google'}],
-  ['a relationship description moved', related(vanilla, {description: 'One customer.'})],
+  ['a relationship description moved', related(vanilla, {description: 'One customer.', custom_extensions: null})],
   ['a conversion to Google', related(vanilla, {custom_extensions: [{vendor_name: 'GOOGLE', data: '{"description":"One customer."}'}]}),
    STRICT],
   ['a conversion to vanilla', google, {...STRICT, flavor: 'ossie'}],
@@ -478,6 +551,11 @@ const STYLES: Array<[string, Partial<Style>]> = [
   ['CRLF', {nl: '\r\n'}],
   ['dialect entries written expression first', {exprFirst: true}],
   ['expressions on the line under their key', {nextLine: true}],
+  ['empty values', {empty: true}],
+  ['flow collections that close on an entry\'s line', {flow: true, tight: true}],
+  ['clipped blocks with a line of spaces', {block: true, chomp: '', spaces: true}],
+  ['kept blocks', {block: true, chomp: '+'}],
+  ['anchors and aliases', {anchor: true}],
 ];
 
 // Re-imports `output`. A file with a GOOGLE block is written for kcmd.
@@ -497,6 +575,17 @@ test.each(CHANGES.flatMap(
       expect(problems).toEqual([]);
       expect((await again(res.files[0].content, opts)).files[0].content)
           .toBe(res.files[0].content);
+      // The output holds what the same change makes of the input's value with
+      // each string on one line.
+      const plain = await importSemanticModelYaml(
+          yaml.stringify(yaml.parse(input), {
+            defaultStringType: 'QUOTE_DOUBLE',
+            doubleQuotedMinMultiLineLength: Infinity,
+            lineWidth: 0,
+          }),
+          opts);
+      expect(canonical(yaml.parse(res.files[0].content)))
+          .toBe(canonical(yaml.parse(plain.files[0].content)));
     });
 
 test.each([...CHANGES, ['no change', google] as const].flatMap(
