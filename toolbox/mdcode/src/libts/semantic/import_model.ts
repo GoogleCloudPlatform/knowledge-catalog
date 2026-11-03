@@ -879,6 +879,16 @@ function repairDocument(doc: ImportDocument): void {
   if (Array.isArray(doc.model.metrics)) {
     doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
   }
+
+  // 4. Cap each relationship's `description`. A `GOOGLE` block comes only in
+  // strict mode, which writes nothing, so its description is only reported.
+  for (const r of doc.relationships) {
+    const rLabel = `relationship '${r.name}'`;
+    truncateDescription(r, rLabel, doc);
+    for (const b of parseGoogleBlocks(r.custom_extensions)) {
+      truncateDescription(b, rLabel, doc);
+    }
+  }
 }
 
 /**

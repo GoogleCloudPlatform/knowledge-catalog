@@ -675,6 +675,22 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
         ]);
       });
 
+  // A GOOGLE block comes only in strict mode, which writes no file.
+  test.each([
+    ['written natively', googleDoc, 'description: %s', false],
+    ['in a GOOGLE block', ossieDoc, `custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "%s"}'}]`, true],
+  ])('reports a relationship description over 2,000 characters %s', async (_, build, line, strict) => {
+    const res = await importSemanticModelYaml(build({
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        ${line.replace('%s', 'd'.repeat(2005))}\n`,
+    }), {strict});
+
+    expect([...res.warnings, ...res.errors]).toEqual([
+      `relationship 'oc': truncated 'description' from 2005 to 2000 characters.`,
+    ]);
+    expect(res.files.map(f => loadModels(f.content).models[0].relationships[0].description))
+        .toEqual(strict ? [] : ['d'.repeat(2000)]);
+  });
+
   test.each([
     ['bare source in strict mode', googleDoc({source: 'orders'})],
     [
