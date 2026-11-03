@@ -1733,8 +1733,9 @@ function validateOutputDocument(
         profiles.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE)));
 
     // 4. Check each deployment with push's offline checks, under the profile
-    // it names. A profile file that does not load is reported above. Push
-    // checks a deployment's tables only once its profile has no error.
+    // it names. A profile file that does not load is reported above. A
+    // deployment whose profile has an error gets no table check, so a bad
+    // source is reported once.
     const withFiles = {...loaded.models[0]};
     withFiles.profiles = [
       ...withFiles.profiles ?? [],
