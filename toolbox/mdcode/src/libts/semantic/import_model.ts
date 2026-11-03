@@ -3,7 +3,7 @@
 
 import * as yaml from 'yaml';
 
-import {checkProfileFileName} from '../layouts/semantic-model';
+import {checkProfileFileName, profileParseError} from '../layouts/semantic-model';
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
@@ -1822,8 +1822,7 @@ export async function importSemanticModelYaml(
     const input = opts.profileFiles?.[i];
     doc.errors.push(
         input?.content === f.content ?
-            `Profile file '${input.fileName}' does not parse: ${
-                problem.message}` :
+            profileParseError(input.fileName, problem.message) :
             `the import writes '${f.fileName}', which does not parse: ${
                 problem.message}`);
   }

@@ -568,6 +568,12 @@ export function profileNameError(file: string, name: string): string|undefined {
       `is a letter followed by letters, digits, underscores and hyphens.`;
 }
 
+// Push's error for the profile file `file`, which does not parse, with the
+// parser's `message`.
+export function profileParseError(file: string, message: string): string {
+  return `Profile file '${file}' does not parse: ${message}`;
+}
+
 // The `name` a profile file declares at its top level, or undefined when it
 // declares none. A file that does not parse or that uses the legacy
 // `semantic_model:` wrapper throws, naming the file.
@@ -577,8 +583,7 @@ function parseProfileName(text: string, file: string, name: string):
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    throw new Error(
-        `Profile file '${file}' does not parse: ${err?.message ?? err}`);
+    throw new Error(profileParseError(file, err?.message ?? err));
   }
   if (doc?.semantic_model !== undefined) {
     throw new Error(
