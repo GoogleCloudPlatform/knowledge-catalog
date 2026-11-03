@@ -818,7 +818,9 @@ function repairMetric(
   }
   const problem = unanchoredMetricProblem(mt, entityNames, impliedDialect);
   if (problem) {
-    const how = doc.targetVersion === OSSIE_VERSION ?
+    // In strict mode nothing is written, so the author edits the input.
+    const flavor = doc.strict ? doc.inputVersion : doc.targetVersion;
+    const how = flavor === OSSIE_VERSION ?
         `with 'entity' in a ${GOOGLE_VENDOR} custom_extensions block on the ` +
             `metric (or use version '${GOOGLE_VERSION}' and set 'entity' on ` +
             `the metric)` :

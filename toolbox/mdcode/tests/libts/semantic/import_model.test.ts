@@ -638,6 +638,8 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
             ossieDoc({modelDescription: 'x'.repeat(2105), extra}));
         const googleRes = await importSemanticModelYaml(
             ossieDoc({extra}), {flavor: 'google'});
+        const strictRes = await importSemanticModelYaml(
+            ossieDoc({extra}), {flavor: 'google', strict: true});
 
         expect(res.ok).toBe(true);
         expect(res.warnings.some(w => w.includes('extra_model'))).toBe(true);
@@ -649,6 +651,10 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
         expect(googleRes.warnings.some(
                    w => w.includes('row_count') &&
                        w.includes('with an \'entity\' anchor')))
+            .toBe(true);
+        expect(strictRes.errors.some(
+                   e => e.includes('row_count') &&
+                       e.includes('GOOGLE custom_extensions block')))
             .toBe(true);
         const loaded = loadModels(res.files[0].content);
         expect(loaded.models).toHaveLength(1);
