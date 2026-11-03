@@ -105,8 +105,9 @@ agree on every structural row and differ only where a Spanner target has no
     their tables.
     On a table in another database, it warns about a field or metric with no
     text that table runs. Push rejects such a field in the model file with an
-    error in place of the warning. When a profile binds that table, push
-    rejects the field or metric instead. `kcmd import` does not look up a
+    error in place of the warning. `kcmd import` gives push's message in place
+    of the warning on a Spanner or AlloyDB table. When a profile binds that
+    table, push rejects the field or metric instead. `kcmd import` does not look up a
     Cloud SQL or third-party table's dialect, and `kcmd skills-generate` and
     `kcmd profiles --print-store` do not look up a third-party table's.
     Import reads a Cloud SQL table whose name has no schema as MySQL. On any
