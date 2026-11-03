@@ -108,8 +108,10 @@ a `GOOGLE` block for it, and drops an empty `custom`, with its `ai_context`
 when nothing else is left in it. A file written for kcmd converts between
 flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
 `<file>` go in with it. A profile's sources stay as written, even with
-`--source-prefix`. Import checks the model file's own bindings, each profile it
-writes, and each deployment with the profile it names, as push does. It reports
+`--source-prefix`. Import runs push's checks on the model file's own bindings,
+on each profile it writes, and on each deployment's profile, bindings, metrics
+and tables. Push's other model checks, such as whether a metric reads a known
+field or has SQL for its deployment's target, stay with push. Import reports
 what push rejects as an error under `--input first-party` and as a warning
 otherwise, and push's warnings as warnings. Under `--input first-party`, a
 message about the model file's bindings, a profile or a deployment names the
