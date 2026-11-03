@@ -366,13 +366,13 @@ describe('profile translation', () => {
     ] : []);
   });
 
-  test('reports a profile file it writes that does not parse', async () => {
+  test.each([false, true])('names a profile file that does not parse, strict: %p', async strict => {
     const res = await importSemanticModelYaml(googleDoc(), {
-      flavor: 'google',
-      profileFiles: [{fileName: 'retail.profile.prod.yaml', content: 'name: [prod\n'}],
+      flavor: 'google', strict, fileName: 'sales.yaml',
+      profileFiles: [{fileName: 'sales.profile.prod.yaml', content: 'name: [prod\n'}],
     });
     expect(res.errors).toEqual([expect.stringContaining(
-        "the import writes 'retail.profile.prod.yaml', which does not parse: ")]);
+        "Profile file 'sales.profile.prod.yaml' does not parse: ")]);
     expect(res.warnings).toEqual([]);
   });
 

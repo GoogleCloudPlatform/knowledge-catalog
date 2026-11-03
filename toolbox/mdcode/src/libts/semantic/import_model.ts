@@ -1822,12 +1822,17 @@ export async function importSemanticModelYaml(
 
   // 4. Check that each profile file the import writes parses, validate the
   // output files, and return the result.
-  for (const f of files.slice(1)) {
+  for (const [i, f] of files.slice(1).entries()) {
     const [problem] = yaml.parseDocument(f.content, YAML_OPTIONS).errors;
-    if (problem) {
-      doc.errors.push(`the import writes '${f.fileName}', which does not ` +
-                      `parse: ${problem.message}`);
-    }
+    if (!problem) continue;
+    // A file import passes through unchanged is the input's own file.
+    const input = opts.profileFiles?.[i];
+    doc.errors.push(
+        input?.content === f.content ?
+            `Profile file '${input.fileName}' does not parse: ${
+                problem.message}` :
+            `the import writes '${f.fileName}', which does not parse: ${
+                problem.message}`);
   }
   if (files.length > 0 && doc.errors.length === 0) {
     validateOutputDocument(files, doc, opts);
