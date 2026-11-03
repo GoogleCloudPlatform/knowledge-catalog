@@ -575,13 +575,17 @@ function completes(
 }
 
 /**
- * Writes `obj.datatype` in its canonical casing, such as `Integer` for
- * `integer`, and deletes `Opaque` in any casing. A change to a value the
- * input's flavor rejects goes through `warnOrError`.
+ * When the output's flavor rejects `obj.datatype`, writes it in its canonical
+ * casing, such as `Integer` for `integer`, or deletes an `Opaque` in another
+ * casing. The change goes through `warnOrError` when the input's flavor
+ * rejects the value too.
  */
 function normalizeDatatype(
     obj: Record<string, any>, label: string, doc: ImportDocument): void {
-  if (typeof obj.datatype !== 'string') return;
+  if (typeof obj.datatype !== 'string' ||
+      normalizeDataType(obj.datatype, doc.targetVersion).ok) {
+    return;
+  }
   const res = normalizeDataType(obj.datatype, GOOGLE_VERSION);
   if (!res.ok) return;
   if (!normalizeDataType(obj.datatype, doc.inputVersion).ok) {
@@ -592,11 +596,10 @@ function normalizeDatatype(
   }
   if (res.type === undefined) {
     delete obj.datatype;
-    doc.modified = true;
-  } else if (obj.datatype !== res.type) {
+  } else {
     obj.datatype = res.type;
-    doc.modified = true;
   }
+  doc.modified = true;
 }
 
 /**
@@ -903,26 +906,32 @@ function adaptToGoogleVersion(doc: ImportDocument): void {
 /**
  * Adapts `doc` to the vanilla (`0.2.0.dev0`) version: wraps short-form string
  * expressions into a single-entry `ANSI_SQL` dialect list, and moves plain
- * relationship `description`s into a `GOOGLE` `custom_extensions` block.
+ * relationship `description`s into a `GOOGLE` `custom_extensions` block. The
+ * vanilla flavor rejects both forms, so in a vanilla file each change is a
+ * repair and goes through `warnOrError`.
  */
 function adaptToOssieVersion(doc: ImportDocument): void {
   // 1. Wrap any short-form string `expression: "<sql>"` on a field or metric
   // into `{dialects: [{dialect: 'ANSI_SQL', expression: "<sql>"}]}`, since
   // `0.2.0.dev0` requires the `expression.dialects` object form.
-  // Wraps a short-form string `expression` on `obj` into a single-entry
-  // `ANSI_SQL` `dialects` list so the node conforms to `0.2.0.dev0`.
-  const wrapShortForm = (obj: Record<string, any>) => {
-    if (typeof obj.expression === 'string') {
-      obj.expression = {
-        dialects: [{dialect: 'ANSI_SQL', expression: obj.expression}],
-      };
-      doc.modified = true;
+  const wrapShortForm = (obj: Record<string, any>, label: string) => {
+    if (typeof obj.expression !== 'string') return;
+    obj.expression = {
+      dialects: [{dialect: 'ANSI_SQL', expression: obj.expression}],
+    };
+    doc.modified = true;
+    if (doc.inputVersion === OSSIE_VERSION) {
+      doc.warnOrError(
+          `${label}: wrote the string expression as an 'ANSI_SQL' ` +
+          `dialects entry.`);
     }
   };
   for (const ds of doc.datasets) {
-    for (const f of asRecords(ds.fields)) wrapShortForm(f);
+    for (const f of asRecords(ds.fields)) {
+      wrapShortForm(f, `field '${ds.name}.${f.name}'`);
+    }
   }
-  for (const mt of doc.metrics) wrapShortForm(mt);
+  for (const mt of doc.metrics) wrapShortForm(mt, `metric '${mt.name}'`);
 
   // 2. Relocate any top-level `description` on a relationship into a `GOOGLE`
   // `custom_extensions` block. The vanilla `0.2.0.dev0` schema does not allow
@@ -943,9 +952,11 @@ function adaptToOssieVersion(doc: ImportDocument): void {
       // Remove the native `description` key so `0.2.0.dev0` validation passes.
       delete r.description;
       doc.modified = true;
-      doc.warnOrError(
-          `relationship '${r.name}': moved 'description' into a ` +
-          `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`);
+      if (doc.inputVersion === OSSIE_VERSION) {
+        doc.warnOrError(
+            `relationship '${r.name}': moved 'description' into a ` +
+            `${GOOGLE_VENDOR} custom_extensions block for '${OSSIE_VERSION}'.`);
+      }
     }
   }
 }
@@ -1164,9 +1175,34 @@ async function generateConvertedFiles(
   const serialized = serializeModelFiles(model, {lineWidth: 0});
   doc.warnings.push(...serialized.warnings);
   const [modelFile, ...profiles] = serialized.files;
-  const content =
-      writeDocument(doc, yaml.parse(modelFile.content, YAML_OPTIONS));
+  const written = yaml.parse(modelFile.content, YAML_OPTIONS);
+  keepDatatypes(doc, written);
+  const content = writeDocument(doc, written);
   return [{...modelFile, content}, ...profiles];
+}
+
+/**
+ * Sets each field's and metric's datatype in the serialized model `written` to
+ * the value `doc` holds after repair. The serializer omits `Opaque`, which
+ * both flavors accept.
+ */
+function keepDatatypes(doc: ImportDocument, written: Record<string, any>): void {
+  const model = asRecords(written.semantic_model)[0] ?? {};
+  const named = (list: unknown, name: unknown) =>
+      asRecords(list).find(x => x.name === name);
+  const pairs = [
+    ...doc.datasets.flatMap(ds => {
+      const entity = named(model.entities ?? model.datasets, ds.name);
+      return asRecords(ds.fields)
+          .map(f => [f, named(entity?.fields, f.name)] as const);
+    }),
+    ...doc.metrics.map(mt => [mt, named(model.metrics, mt.name)] as const),
+  ];
+  for (const [authored, out] of pairs) {
+    if (out && typeof authored.datatype === 'string') {
+      out.datatype = authored.datatype;
+    }
+  }
 }
 
 /**

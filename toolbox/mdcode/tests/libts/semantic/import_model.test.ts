@@ -171,8 +171,7 @@ describe('conversion, strict mode, and translation', () => {
     ],
     [
       'vanilla datatype in another casing in strict mode',
-      ossieDoc({extra: '            datatype: integer\n'}),
-      {flavor: 'google' as const, strict: true},
+      ossieDoc({extra: '            datatype: integer\n'}), {strict: true},
       `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
     ],
     [
@@ -261,6 +260,9 @@ describe('vanilla output, extensions, and targets', () => {
             ossieDoc({fieldExpr: '"orders.order_id"', extra}));
 
         expect(res.ok).toBe(true);
+        expect(res.warnings).toContain(
+            `field 'orders.order_id': wrote the string expression as an ` +
+            `'ANSI_SQL' dialects entry.`);
         expect(res.warnings.some(w => w.includes('order_customer'))).toBe(true);
         expect(res.warnings.some(w => w.includes('--source-prefix')))
             .toBe(true);
@@ -547,7 +549,7 @@ describe('sources', () => {
 
 describe('dialects and datatypes', () => {
   test(
-      'maps dialect aliases, drops non-SQL dialects, canonicalizes datatypes, and drops Opaque',
+      'maps dialect aliases and drops non-SQL dialects',
       async () => {
         const extra =
             `          - name: amount\n            datatype: Opaque\n            expression:\n              dialects:\n                - {dialect: GOOGLESQL, expression: "orders.amount"}\n                - {dialect: POSTGRESQL, expression: "orders.amount"}\n                - {dialect: TSQL, expression: "orders.amount"}\n          - name: bi_only\n            datatype: datetimetz\n            expression:\n              dialects:\n                - {dialect: MDX, expression: "[Measures].[BiOnly]"}\n`;
@@ -560,10 +562,9 @@ describe('dialects and datatypes', () => {
             {flavor: 'google'});
 
         expect(res.ok).toBe(true);
-        expect(res.warnings).toEqual(expect.arrayContaining([
-          `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`,
-          `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`,
-        ]));
+        expect(res.warnings).toContain(
+            `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`);
+        expect(res.files[0].content).toContain('datatype: integer');
         const fields =
             loadModels(res.files[0].content).models[0].entities[0].fields;
         expect(fields[0].type).toBe('Integer');
@@ -578,14 +579,21 @@ describe('dialects and datatypes', () => {
         expect(fields[2].expression).toBeUndefined();
       });
 
-  test('canonicalizes a Google-flavor datatype and drops Opaque in strict mode', async () => {
+  test.each([
+    ['a Google file', {strict: true}, ['datatype: integer', 'datatype: Opaque']],
+    [
+      'a Google file converted to vanilla',
+      {flavor: 'ossie' as const, strict: true},
+      ['datatype: Integer', 'datatype: Opaque', 'dialect: ANSI_SQL'],
+    ],
+  ])('keeps each datatype the output flavor accepts in %s', async (_, opts, lines) => {
     const res = await importSemanticModelYaml(
         googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: Opaque\n            expression: amount\n'}),
-        {strict: true});
+        opts);
 
     expect(res.errors).toEqual([]);
-    expect(res.files[0].content).toContain('datatype: Integer');
-    expect(res.files[0].content).not.toContain('Opaque');
+    expect(res.warnings.filter(w => w.startsWith('field '))).toEqual([]);
+    for (const line of lines) expect(res.files[0].content).toContain(line);
   });
 
   test(
