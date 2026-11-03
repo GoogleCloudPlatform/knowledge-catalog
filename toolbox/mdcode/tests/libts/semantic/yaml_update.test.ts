@@ -24,6 +24,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => (v.a = 'true', v.b[1] = 3)
   ],
   ['an anchor and its alias', 'a: &x {k: 1}  # c\nb: *x\n', v => v.a.k = 2],
+  [
+    'a mapping whose keys all change, ending in a comment',
+    'm:\n  a:\n    b:\n      - x\n      # c\n  d: 1\n', v => v.m.a = {e: v.m.a.b}
+  ],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',

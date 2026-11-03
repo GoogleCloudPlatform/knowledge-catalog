@@ -388,7 +388,9 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
     return;
   }
   const keyLine = lineEnd(t, slot.after);
-  const end = lineEnd(t, Math.max(from, to - 1));
+  // A block collection's range can end in the next line's indentation.
+  const stop = t.slice(lineStart(t, to), to).trim() ? to : lineStart(t, to);
+  const end = lineEnd(t, Math.max(from, stop - 1));
   // The text after the node on its last line stays, or after a block
   // scalar's header. A block collection of several lines keeps none.
   const after = headerTail(t, from) ??
