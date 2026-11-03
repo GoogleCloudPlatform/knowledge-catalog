@@ -198,12 +198,14 @@ function patchItems(
           next ? [g[a].start, next.start, ''] : [g[a - 1].end, g[b].end, '']);
     } else if (g[a].inline && next) {
       // The next item moves up onto the `- ` line, and its comments go above
-      // that line, indented as it is.
+      // that line. A comment indented deeper than that line takes its
+      // indentation.
       const above = lineStart(t, g[a].start);
       const own = lineStart(t, next.start);
       const indent = /^[ \t]*/.exec(t.slice(above))![0];
       const comments = t.slice(skipBlank(t, next.head, own), own)
-                           .replace(/^[ \t]*(?=#)/gm, indent);
+                           .replace(/^[ \t]*(?=#)/gm,
+                                    w => w.length > indent.length ? indent : w);
       u.edits.push(
           [above, above, comments], [g[a].start, next.start, '']);
     } else {

@@ -43,6 +43,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'g: {\n  k: 1}\nf: [{ name: a, e: { d: [{ k: x }] } }]\n'
   ],
   [
+    'a first key removed above a comment at column 0',
+    'l:\n  - a: 1\n# c\n    b: 2\n', v => delete v.l[0].a, 'l:\n# c\n  - b: 2\n'
+  ],
+  [
     'a value beside keys whose text is not their value',
     '~: a\n1.0: b\n0x10: c\n02: d\nx: e\n', v => v.x = 'f',
     '~: a\n1.0: b\n0x10: c\n02: d\nx: f\n'
