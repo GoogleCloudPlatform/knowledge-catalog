@@ -3588,8 +3588,8 @@ export function parseSource(
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and
     // the general error below otherwise. A path in one pair of backticks
-    // counts as its parts here. Import splits such a path only under a
-    // BigQuery prefix.
+    // counts as its parts, as import reads it under a BigQuery or BigLake
+    // prefix.
     const segs = bareNameSegments(trimmed, true);
     if (segs.length <= 4 && segs.every(s => s.length > 0)) {
       if (segs.some(s => /\s/.test(s))) {

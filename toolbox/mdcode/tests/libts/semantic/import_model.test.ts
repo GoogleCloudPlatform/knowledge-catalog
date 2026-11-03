@@ -299,6 +299,16 @@ describe('sources', () => {
         .toBe(BQ_TABLE);
   });
 
+  const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
+  test.each([LAKE, `${LAKE}/namespaces/sales`])(
+      'qualifies a single-backticked 4-part name from %s', async sourcePrefix => {
+        const res = await importSemanticModelYaml(
+            ossieDoc({source: '\'`acme.lake.sales.orders`\''}), {sourcePrefix});
+        expect(
+            loadModels(res.files[0].content).models[0].entities[0].authoredSource)
+            .toBe(`${LAKE}/namespaces/sales/tables/orders`);
+      });
+
   // Each warning ends with what to do: the entry name advice for a source in
   // no Google Cloud form, the name to write when the loader gives one, or else
   // a run with --source-prefix.
