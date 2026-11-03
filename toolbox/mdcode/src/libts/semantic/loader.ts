@@ -3157,12 +3157,29 @@ export function oldSourceForm(source: string): string|undefined {
 // Why no name to write is given when that name would hold a space.
 export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
 
-// The resource name of a BigQuery and of a BigLake table, with a placeholder
-// for each name in it.
-export const BIGQUERY_TABLE_FORM =
-    'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>';
-export const BIGLAKE_TABLE_FORM =
-    'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>';
+// The resource name of a table in each Google Cloud service a source can
+// name, with a placeholder for each name in it. A Cloud SQL table has one
+// form without a schema and one with.
+export const TABLE_FORMS = {
+  bigquery:
+      'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>',
+  spanner:
+      'spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/tables/<table>',
+  alloydb:
+      'alloydb.googleapis.com/projects/<project>/locations/<location>/clusters/<cluster>/databases/<database>/schemas/<schema>/tables/<table>',
+  cloudsql:
+      'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/tables/<table>',
+  cloudsqlSchema:
+      'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/schemas/<schema>/tables/<table>',
+  biglake:
+      'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>',
+};
+
+// The databases each Cloud SQL form in TABLE_FORMS is for.
+const CLOUD_SQL_DATABASES: Record<string, string> = {
+  cloudsql: 'MySQL',
+  cloudsqlSchema: 'PostgreSQL, SQL Server',
+};
 
 // `form` with its last placeholders replaced by `parts`, in order, or
 // undefined when `form` has fewer placeholders than `parts`.
@@ -3660,7 +3677,8 @@ export function parseSource(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
             `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
       }
-      const form = segs.length === 4 ? BIGLAKE_TABLE_FORM : BIGQUERY_TABLE_FORM;
+      const form =
+          segs.length === 4 ? TABLE_FORMS.biglake : TABLE_FORMS.bigquery;
       const write = segs.length === 4 ?
           'Write its BigLake resource name instead:' :
           "Write the table's GCP resource name instead, for example:";
@@ -3674,16 +3692,19 @@ export function parseSource(
     }
   }
 
+  // Each table form with its placeholders shortened, such as <p> for
+  // <project>, and the databases a Cloud SQL form is for.
+  const forms = Object.entries(TABLE_FORMS).map(([kind, form]) => {
+    const short = form.replace(
+        /<(\w+)>/g,
+        (_, name: string) => `<${name === 'database' ? 'db' : name[0]}>`);
+    const databases = CLOUD_SQL_DATABASES[kind];
+    return `'${short}'${databases ? ` (${databases})` : ''}`;
+  });
   throw new SemanticModelError(
       `Semantic model load error: ${ctx}: source '${trimmed}' is not a valid ` +
       `table reference${dotted ? `; ${dotted}` : ''}. Expected a GCP ` +
-      `resource name ` +
-      `('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
-      `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
-      `'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
-      `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), ` +
-      `'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' (PostgreSQL, SQL Server), or ` +
-      `'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>'), ` +
+      `resource name (${forms.slice(0, -1).join(', ')}, or ${forms.at(-1)}), ` +
       `or, for a table outside Google Cloud, the entry name of its ` +
       `Knowledge Catalog entry ('${ENTRY_NAME_FORM}').`);
 }

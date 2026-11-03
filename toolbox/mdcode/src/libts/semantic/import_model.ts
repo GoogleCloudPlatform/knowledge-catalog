@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameSegments, BIGLAKE_TABLE_FORM, BIGQUERY_TABLE_FORM, dottedPartProblem, fillForm, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameSegments, dottedPartProblem, fillForm, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -157,15 +157,6 @@ const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
   TSQL: 'SQLSERVER',
 };
 
-const SPANNER_TABLE_FORM =
-    'spanner.googleapis.com/projects/<project>/instances/<instance>/databases/<database>/tables/<table>';
-const ALLOYDB_TABLE_FORM =
-    'alloydb.googleapis.com/projects/<project>/locations/<location>/clusters/<cluster>/databases/<database>/schemas/<schema>/tables/<table>';
-const CLOUDSQL_TABLE_FORM =
-    'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/tables/<table>';
-const CLOUDSQL_SCHEMA_TABLE_FORM =
-    'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/schemas/<schema>/tables/<table>';
-
 // Each kind of --source-prefix: its pattern, the child container a bare name
 // adds under it, if any, and the resource name of a table under it.
 const SOURCE_PREFIX_PATTERNS:
@@ -173,41 +164,41 @@ const SOURCE_PREFIX_PATTERNS:
   {
     re: /^bigquery\.googleapis\.com\/projects\/([^/]+)$/,
     child: 'datasets',
-    form: BIGQUERY_TABLE_FORM,
+    form: TABLE_FORMS.bigquery,
   },
   {
     re: /^bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)$/,
-    form: BIGQUERY_TABLE_FORM,
+    form: TABLE_FORMS.bigquery,
   },
   {
     re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)$/,
     child: 'namespaces',
-    form: BIGLAKE_TABLE_FORM,
+    form: TABLE_FORMS.biglake,
   },
   {
     re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)$/,
-    form: BIGLAKE_TABLE_FORM,
+    form: TABLE_FORMS.biglake,
   },
   {
     re: /^spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)$/,
-    form: SPANNER_TABLE_FORM,
+    form: TABLE_FORMS.spanner,
   },
   {
     re: /^alloydb\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/clusters\/[^/]+\/databases\/([^/]+)$/,
     child: 'schemas',
-    form: ALLOYDB_TABLE_FORM,
+    form: TABLE_FORMS.alloydb,
   },
   {
     re: /^alloydb\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/clusters\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
-    form: ALLOYDB_TABLE_FORM,
+    form: TABLE_FORMS.alloydb,
   },
   {
     re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)$/,
-    form: CLOUDSQL_TABLE_FORM,
+    form: TABLE_FORMS.cloudsql,
   },
   {
     re: /^cloudsql\.googleapis\.com\/projects\/[^/]+\/locations\/[^/]+\/instances\/[^/]+\/databases\/([^/]+)\/schemas\/([^/]+)$/,
-    form: CLOUDSQL_SCHEMA_TABLE_FORM,
+    form: TABLE_FORMS.cloudsqlSchema,
   },
 ];
 
