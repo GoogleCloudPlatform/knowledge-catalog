@@ -606,12 +606,12 @@ relationships:
 
 
 // A Spanner graph reads a field's SPANNER text, else its ANSI_SQL one, and a
-// BigQuery graph its BIGQUERY text, else its ANSI_SQL one. The check of what a
-// profile excludes reads the text each deployment's graph reads. A graph
-// deployment of the model file's own bindings cannot leave field tax out, so
-// push refuses it.
+// BigQuery graph its BIGQUERY text, else its ANSI_SQL one. Pruning, and the
+// check of what a profile excludes, read the text each deployment's graph
+// reads. Entity big_orders extends orders, so a graph deployment of the model
+// file's own bindings may leave field tax of orders without an expression.
 describe('a model with a Spanner graph target is pruned in the Spanner dialect', () => {
-  test('push refuses a graph deployment of the model file\'s own bindings that leaves a field out, and a profile must exclude a field by the text its graph reads', async () => {
+  test('push drops a field, and a profile must exclude one, by the text its graph reads', async () => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
         'scope: semantic-model.test-project.us.commerce_eg\n');
@@ -622,7 +622,7 @@ describe('a model with a Spanner graph target is pruned in the Spanner dialect',
         'bigquery.googleapis.com/projects/test-project/datasets/ds/tables/orders';
     const bqGraph =
         'bigquery.googleapis.com/projects/test-project/datasets/ds/propertyGraphs/g';
-    const writeModel = (deployments: string) =>
+    const writeModel = (deployments: string, more = '') =>
         fs.writeFileSync(path.join(eg, 'commerce.yaml'), `version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
@@ -646,17 +646,34 @@ ${deployments}
               dialects:
                 - { dialect: SPANNER, expression: "orders.gross" }
                 - { dialect: ANSI_SQL, expression: "orders.gross - orders.tax" }
+${more}`);
+    // Entity big_orders extends orders and binds tax.
+    writeModel(`      - { name: sp, target: ${spDb}/graphs/g }`, `      - name: big_orders
+        extends: [orders]
+        source: ${spDb}/tables/BigOrders
+        primary_key: [order_id]
+        fields:
+          - { name: order_id, expression: order_id }
+          - { name: gross, expression: gross }
+          - { name: tax, expression: tax }
 `);
-    writeModel(`      - { name: sp, target: ${spDb}/graphs/g }`);
-    spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
     const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
     const deploySpy = spyOn(spannerLeg, 'deploySpanner');
 
-    expect(await push({validateOnly: true})).toBe(1);
-    expect(messages(errorSpy)).toContain(
-        "leave field 'orders.tax' without an expression");
-    expect(deploySpy).not.toHaveBeenCalled();
-    errorSpy.mockClear();
+    expect(await push({validateOnly: true})).toBe(0);
+    const omits = (field: string, why: string) =>
+        `Warning: field 'orders.${field}' in model 'commerce' (commerce, ` +
+        `deployment 'sp') ${why}, so the graph omits it.`;
+    expect(messages(warnSpy).split('\n').filter(
+               w => w.startsWith('Warning: field')))
+        .toEqual([
+          omits('tax', 'has no expression'),
+          omits('net', 'reads orders.tax, which is unavailable'),
+        ]);
+    // Orders keeps the fields big_orders inherits, and marks them excluded.
+    const orders = deploySpy.mock.calls[0][0][0].model.entities[0];
+    expect(orders.excludedFields).toEqual(['tax', 'net']);
 
     // Each profile leaves field tax out.
     const profileFile = (name: string, source: string) => `name: ${name}

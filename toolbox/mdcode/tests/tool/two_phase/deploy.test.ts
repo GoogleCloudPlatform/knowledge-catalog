@@ -354,6 +354,20 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
   },
   {
+    // Vip extends Customer and binds ltv, so Customer is no leaf.
+    name: 'a BigQuery deployment says the graph omits a field with no expression of an entity another entity extends',
+    deployments: ['g'],
+    entities: [WITH_LTV, {
+      ...CUSTOMER, name: 'Vip', extends: ['Customer'], source: bqTable('vip'),
+      fields: [...CUSTOMER.fields, {name: 'ltv', expression: 'ltv'}],
+    }],
+    flags: {validateOnly: true},
+    warnings: [
+      "Warning: field 'Customer.ltv' in model 'commerce' (commerce, " +
+          "deployment 'g') has no expression, so the graph omits it.",
+    ],
+  },
+  {
     name: 'an AlloyDB deployment deploys no graph and prints a note naming it, under its own header, and under --validate-only prints nothing',
     deployments: [
       {name: 'bq', target: bqGraph('g')},
