@@ -655,38 +655,15 @@ describe('action statement pre-flight', () => {
       expect(errs[0]).toContain('statement 1');
     });
 
-    // Spanner's error body, shaped after a live PLAN of a bad statement. Two
-    // things about it are load-bearing and neither is obvious. The top-level
-    // `message` is DOUBLY escaped -- one round of JSON escaping survives the
-    // parse, so its newlines arrive as a literal backslash and an n, and a
-    // statement it quotes back reads `Unexpected \"$1\"`. The LocalizedMessage
-    // detail carries the same text with nothing escaped.
-    function spannerErrorBody(diagnosis: string, echo: string): string {
-      const plain = `${diagnosis}\n${echo}\n     ^`;
-      return JSON.stringify({
-        error: {
-          code: 400,
-          // JSON.stringify minus its surrounding quotes is exactly the extra
-          // round of escaping Spanner applies.
-          message: JSON.stringify(plain).slice(1, -1),
-          status: 'INVALID_ARGUMENT',
-          details: [{
-            '@type': 'type.googleapis.com/google.rpc.LocalizedMessage',
-            locale: 'en-US',
-            message: plain,
-          }],
-        },
-      });
-    }
-
     test('reports the diagnosis without the statement echo', async () => {
       const spanner = new SpannerClientMock();
+      // The message the client gives for a live PLAN of a bad statement: the
+      // diagnosis, the statement echoed back, and a caret under the token.
       spanner.planDml = (async () => ({
                            status: 400,
-                           message: spannerErrorBody(
-                               'Unrecognized name: accountId; Did you mean ' +
-                                   'account_id? [at 1:54]',
-                               'UPDATE account SET balance = @amount'),
+                           message: 'Unrecognized name: accountId; Did you ' +
+                               'mean account_id? [at 1:54]\n' +
+                               'UPDATE account SET balance = @amount\n     ^',
                          })) as any;
       const errs = await validateSpannerActionStatements(
           [spannerModel([sqlAction([GOOD])])], spanner);
@@ -699,44 +676,32 @@ describe('action statement pre-flight', () => {
       expect(errs[0]).not.toContain('^');
     });
 
-    test('unescapes a statement the store quotes back', async () => {
-      const spanner = new SpannerClientMock();
-      spanner.planDml = (async () => ({
-                           status: 400,
-                           message: spannerErrorBody(
-                               'Syntax error: Unexpected "$1" [at 1:40]',
-                               'UPDATE account SET balance = $1'),
-                         })) as any;
-      const errs = await validateSpannerActionStatements(
-          [spannerModel([sqlAction([GOOD])])], spanner);
-      expect(errs[0]).toContain('Syntax error: Unexpected "$1" [at 1:40].');
-      expect(errs[0]).not.toContain('\\"');
-    });
-
-    // BigQuery sends no LocalizedMessage, so the top-level message is the
-    // normal path there rather than a fallback.
+    // Spanner's top-level `error.message` escapes its newlines, so the client
+    // gives this form when the body has no LocalizedMessage detail.
     test(
-        'falls back to the top-level message when there is no detail',
+        'reports the first line of a message whose newlines are escaped',
         async () => {
-          // What BigQuery sends: no LocalizedMessage, and the escaped newline
-          // Spanner uses at the top level, which is why the first line has to
-          // be found in both forms rather than by splitting on a real one.
           const spanner = new SpannerClientMock();
           spanner.planDml =
               (async () => ({
                  status: 404,
-                 message: JSON.stringify({
-                   error: {
-                     message: 'Not found: Table orders was not found\\n' +
-                         'UPDATE orders SET x = 1',
-                   },
-                 }),
+                 message: 'Not found: Table orders was not found\\n' +
+                     'UPDATE orders SET x = 1',
                })) as any;
           const errs = await validateSpannerActionStatements(
               [spannerModel([sqlAction([GOOD])])], spanner);
           expect(errs[0]).toContain('Not found: Table orders was not found.');
           expect(errs[0]).not.toContain('UPDATE orders');
         });
+
+    test('shows a long message whole', async () => {
+      const spanner = new SpannerClientMock();
+      const long = `Syntax error: ${'x'.repeat(2500)}`;
+      spanner.planDml = (async () => ({status: 400, message: long})) as any;
+      const errs = await validateSpannerActionStatements(
+          [spannerModel([sqlAction([GOOD])])], spanner);
+      expect(errs[0]).toContain(`${long}.`);
+    });
 
     test('shows a non-JSON body rather than swallowing it', async () => {
       const spanner = new SpannerClientMock();

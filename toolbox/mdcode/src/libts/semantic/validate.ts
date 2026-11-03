@@ -8,7 +8,6 @@
 // schema -- because these are deployment requirements, not schema rules, and
 // they read the GOOGLE deployment-target extension the BigQuery leg owns.
 
-import {errorMessage} from '../gcp/api';
 import {BigQueryClient} from '../gcp/bigquery';
 import {SpannerClient} from '../gcp/spanner';
 
@@ -2045,12 +2044,11 @@ function firstLine(message: string): string {
 }
 
 
-// An API error's message, or an error body, reduced to its first line as a
-// sentence, such as "Unrecognized name: accountId; Did you mean account_id?
-// [at 1:54]."
+// An API error's message reduced to its first line as a sentence, such as
+// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]."
 export function storeMessage(
     message: string|undefined, status: number): string {
-  const text = errorMessage(message ?? '');
+  const text = (message ?? '').trim();
   return text ? sentence(firstLine(text)) : `HTTP ${status}.`;
 }
 

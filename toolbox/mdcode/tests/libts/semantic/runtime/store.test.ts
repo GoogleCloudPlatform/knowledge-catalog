@@ -774,8 +774,7 @@ describe('the instance an AlloyDB store connects through', () => {
   test('a failed listing says why', async () => {
     const found = await withPrimaryInstance(store, clientListing({
       status: 404,
-      message: JSON.stringify(
-          {error: {code: 404, message: "Resource 'clusters/c' was not found"}}),
+      message: "Resource 'clusters/c' was not found",
     }));
     expect('error' in found && found.error)
         .toBe(
@@ -836,15 +835,21 @@ describe('the instance an AlloyDB store connects through', () => {
             nextPageToken: 'T',
           },
         })
-        .mockResolvedValueOnce({
-          status: 403,
-          message: JSON.stringify({error: {message: 'Permission denied'}}),
-        });
+        .mockResolvedValueOnce({status: 403, message: 'Permission denied'});
     expect(await withPrimaryInstance(store, client))
         .toEqual({
           error: `Could not list the instances of AlloyDB cluster '${
               CLUSTER}': 403 Permission denied`,
         });
+  });
+
+  test('a failed listing gives its message whole', async () => {
+    const message = `Invalid cluster: ${'x'.repeat(2500)}`;
+    const found = await withPrimaryInstance(
+        store, clientListing({status: 400, message}));
+    expect('error' in found && found.error)
+        .toBe(`Could not list the instances of AlloyDB cluster '${
+            CLUSTER}': 400 ${message}`);
   });
 
   test('a listing that repeats a page token stops and says why', async () => {

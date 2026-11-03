@@ -21,15 +21,15 @@ const ONE_MODEL = err(
     "entry group 'commerce_eg' would receive 2 models, but only one model " +
     'per entry group is supported; split them into separate entry groups.');
 const spannerAnswers =
-    (what: string, status: number, body: string, error: string): Case => ({
+    (what: string, status: number, message: string, error: string): Case => ({
       name: `a Spanner deployment whose database ${what} writes nothing`,
       deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
       profiles: {ops: boundAt(SPANNER_CUSTOMER)},
-      services: {getDatabase: {status, message: body}},
+      services: {getDatabase: {status, message}},
       errors: [err(`${at('sp')}: database test-project/i/db ${error}`)],
       called: {spannerDml: 0},
     });
-const DISABLED = {code: 403, message: 'Cloud Spanner API is disabled.'};
+const DISABLED = 'Cloud Spanner API is disabled.';
 // Every dataset's location is unreadable, the sources' too, so a push that
 // uses it passes --skip-source-check (SKIP) to reach the graph's checks.
 const DENIED = {getDataset: {status: 403, message: 'Access Denied'}};
@@ -108,8 +108,7 @@ scenarios('push writes nothing when a check fails', [
   },
   spannerAnswers('does not exist', 404, 'Not found', 'not found'),
   spannerAnswers(
-      'answers 403', 403, JSON.stringify({error: DISABLED}),
-      `could not be read: ${DISABLED.message}`),
+      'answers 403', 403, DISABLED, `could not be read: ${DISABLED}`),
   {
     name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write',
     deployments: [{
