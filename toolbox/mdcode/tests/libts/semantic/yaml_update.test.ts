@@ -13,8 +13,12 @@ import {linkNodes, parseForUpdate, updateText} from '../../../src/libts/semantic
 test.each<[string, string, (value: any) => void, string?]>([
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
-  ['a plain scalar set to two lines', 'a: x  # c\n', v => v.a = 'x\ny'],
+  [
+    'a plain scalar set to two lines, the first ending in a space', 'a: x  # c\n',
+    v => v.a = 'x \ny'
+  ],
   ['a quoted string set to a number', 'a: "x"  # c\n', v => v.a = 5],
+  ['a block scalar set to a number', 'a: |-  # c\n  x\n', v => v.a = 5, 'a: 5  # c\n'],
   [
     'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
     v => (v.a = 'true', v.b[1] = 3)
@@ -45,6 +49,19 @@ test.each<[string, string, (value: any) => void, string?]>([
   [
     'a first key removed above a comment at column 0',
     'l:\n  - a: 1\n# c\n    b: 2\n', v => delete v.l[0].a, 'l:\n# c\n  - b: 2\n'
+  ],
+  [
+    'a new first key and a new last item in a text with no final newline',
+    'l:\n  - b: 1', v => {
+      const {b} = v.l[0];
+      delete v.l[0].b;
+      Object.assign(v.l[0], {a: 0, b});
+      v.l.push('y');
+    }
+  ],
+  [
+    'a list item removed between comments at its key column',
+    'a:\n  - k: 1\n    # c1\n  - k: 2\n    # c2\n  - k: 3\n', v => v.a.splice(1, 1)
   ],
   [
     'a value beside keys whose text is not their value',

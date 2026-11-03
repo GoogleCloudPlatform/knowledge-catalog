@@ -355,8 +355,9 @@ function setScalar(
   const kept = typeof node.value === 'string' && typeof value === 'string';
   const type = kept ? node.type : undefined;
   let s = scalarText(u, value, slot.col, slot.flow, type);
-  // A value of several lines in place of a one-line scalar is one quoted
-  // line, so the comment after it stays on its line.
+  // A value of several lines in place of a scalar that is not a block scalar
+  // is double-quoted. As a block scalar it would take the comment after it
+  // into its text.
   if (!/^BLOCK/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
