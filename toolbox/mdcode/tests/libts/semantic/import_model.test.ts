@@ -477,6 +477,7 @@ describe('profile checks', () => {
   // reaches it]. A double-quoted name gets push's warning on every path.
   const PROBLEMS: Array<[string, Profile[], ((at: At) => string)|undefined, boolean]> = [
     ['nothing', [PG], undefined, false],
+    ['nothing for a profile named profile', [{...PG, name: 'profile'}], undefined, true],
     ['no name', [(({name: _, ...rest}) => rest)(PG)],
      at => `Profile file '${at.label}' declares no name; add 'name: pg'.`, true],
     ['names that differ only in letter case', [PG, {...PG, name: 'PG'}],

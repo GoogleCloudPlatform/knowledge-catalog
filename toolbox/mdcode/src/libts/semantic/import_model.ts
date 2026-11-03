@@ -1615,7 +1615,8 @@ async function generateAdaptedFiles(
   // nameless `<file>.profile.yaml` stays nameless, so push reports it.
   let profiles = doc.inputVersion === doc.targetVersion ?
       profileFiles.map(pf => ({
-        fileName: /\.profile\.ya?ml$/i.test(pf.fileName) ?
+        fileName: /\.profile\.ya?ml$/i.test(pf.fileName) &&
+                parseProfileName(pf.fileName) === '' ?
             `${doc.model.name}.profile.yaml` :
             `${doc.model.name}.profile.${parseProfileName(pf.fileName)}.yaml`,
         content: pf.content,
