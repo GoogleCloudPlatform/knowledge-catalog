@@ -654,7 +654,10 @@ function scalarText(
   if (!flow && /^_: [|>][0-9]*\+/.test(text)) {
     return scalarText(u, value, col, flow, 'QUOTE_DOUBLE');
   }
-  return (flow ? text.slice(1, -2) : text.slice(3, -1))
+  // A block scalar's indentation indicator, which yaml writes as 2, is the
+  // file's.
+  return (flow ? text.slice(1, -2) :
+                 text.slice(3, -1).replace(/^([|>])2/, `$1${u.step}`))
       .split('\n')
       .map((line, i) => i > 0 && line ? ' '.repeat(col) + line : line)
       .join(u.nl);

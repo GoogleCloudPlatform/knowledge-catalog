@@ -52,6 +52,11 @@ test.each<[string, string, (value: any) => void, string?]>([
         'd: "x\n\n  \\n"\n'
   ],
   [
+    'text that starts with a space, written as block scalars in a file indented by four',
+    'a:\n    k: |-  # c\n        x\n    l:\n        - x\n', v => (v.a.k = '  y\nz', v.a.l.push('  p\nq')),
+    'a:\n    k: |4-  # c\n          y\n        z\n    l:\n        - x\n        - |4-\n              p\n            q\n'
+  ],
+  [
     'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
     v => (v.a = 'true', v.b[1] = 3)
   ],
