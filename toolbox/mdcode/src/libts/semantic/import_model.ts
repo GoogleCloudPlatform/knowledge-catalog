@@ -1337,7 +1337,7 @@ async function transpileDocument(
         transpiled.model.profiles?.find(p => p.name === name);
     translatedFiles = profileFiles.map((pf, i) => {
       const p = loaded[i] && profile(loaded[i].name);
-      return p ? {...pf, content: withDialects(pf.content, p)} : pf;
+      return p ? {...pf, content: withDialects(pf.content, p, doc)} : pf;
     });
     for (const ds of doc.datasets) {
       const irEntity = transpiled.model.entities.find(e => e.name === ds.name);
@@ -1425,15 +1425,18 @@ function syncProfile(
 
 /**
  * Returns the profile file `content` with each field expression that gained a
- * dialect entry in the translated `profile`, written as the model file is.
+ * dialect entry in the translated `profile`, written as the model file is. A
+ * JSON file that changes is written as YAML, and the conversion is reported
+ * on `doc`.
  */
-function withDialects(content: string, profile: ProfileSpec): string {
+function withDialects(
+    content: string, profile: ProfileSpec, doc: ImportDocument): string {
   const {document, text} = parseForUpdate(content);
   const root = plainCopy(document.toJS()) as Record<string, any>;
   const links = linkNodes(root, document.contents);
-  return syncProfile(root, profile) ?
-      writeDocument({document, links, text}, root) :
-      content;
+  if (!syncProfile(root, profile)) return content;
+  if (text !== content) doc.warnings.push('Converted the JSON file to YAML.');
+  return writeDocument({document, links, text}, root);
 }
 
 /**

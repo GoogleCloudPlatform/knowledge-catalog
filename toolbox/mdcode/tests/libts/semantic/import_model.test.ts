@@ -366,6 +366,21 @@ describe('profile translation', () => {
     ] : []);
   });
 
+  // A profile file that changes is written as YAML, as a model file is. One
+  // that does not change stays as written.
+  test.each([
+    ['a BigQuery', PROD, true],
+    ['a Snowflake', prodOn(sfEntry), false],
+  ])('reports writing %s JSON profile file as YAML only when it changes', async (_, profile, translated) => {
+    const json = JSON.stringify(profile);
+    const res = await importSemanticModelYaml(googleDoc({fieldExpr}), {
+      ...google, profileFiles: [{...prodFile, content: json}],
+    });
+    expect(res.errors).toEqual([]);
+    expect(res.warnings.includes('Converted the JSON file to YAML.')).toBe(translated);
+    expect(res.files[1].content.startsWith('name: prod\n')).toBe(translated);
+  });
+
   test('names a profile file that does not parse', async () => {
     const res = await importSemanticModelYaml(googleDoc(), {
       flavor: 'google', fileName: 'sales.yaml',
