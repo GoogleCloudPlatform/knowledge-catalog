@@ -227,7 +227,21 @@ export async function init(options: InitOptions): Promise<number> {
 
   if (okf) {
     (manifest as any).okfRemoteExists = okfRemoteExists;
-    return await initOkfWorkspace(ctx, manifest, {pull: options.pull});
+    const code = await initOkfWorkspace(ctx, manifest, {pull: options.pull});
+    // A workspace init pulls (see initOkfWorkspace) also takes the context
+    // set's display name and description, as `kcmd pull` sets them.
+    const ref = entryGroupOf(manifest.source.type, manifest.source.name);
+    const pulled = okfRemoteExists && options.pull !== false;
+    if (code !== 0 || !ref || !pulled || !fs.existsSync('catalog.yaml')) {
+      return code;
+    }
+    const {changed, error} = await pullContextSetMetadata(
+        new dataplex.CatalogClient(ctx), ref, 'catalog.yaml');
+    if (error) return printErrors(error);
+    if (changed.length) {
+      console.log(`Updated ${describeChanged(changed)} in catalog.yaml.`);
+    }
+    return 0;
   }
 
   // Re-running init for the same scope leaves catalog.yaml as it was, so
@@ -299,7 +313,7 @@ export async function pull(options: PullOptions = {}): Promise<number> {
     if (!result.success) {
       throw new Error(result.details || 'Error pulling OKF bundle');
     }
-    return 0;
+    return await pullContextSet(ctx, snapshot, options);
   }
 
   if (snapshot.manifest.source.type === Sources.SEMANTIC_MODEL) {
@@ -479,29 +493,16 @@ function catalogAspects(
   });
 }
 
-const EG_DESCRIPTION_MAX_CHARS = 1024;
-const EG_DISPLAY_NAME_MAX_CHARS = 500;
-
-function extractOkfRootMetadata(
+// The markdown body of an OKF bundle's root concept, which push writes as the
+// context set's overview: the first of the root candidates that has one, with
+// the bundle's OKF metadata section left out. The context set's display name
+// and description come from catalog.yaml (see context_set.ts), not from here.
+function okfRootOverview(
   basePath: string,
   project: string,
   location: string,
   groupId: string,
-): {displayName?: string; description?: string; overviewContent?: string} {
-  const manifestPath = path.join(basePath, 'catalog.yaml');
-  const rawManifest = fs.existsSync(manifestPath)
-    ? (yaml.parse(fs.readFileSync(manifestPath, 'utf8')) ?? {})
-    : {};
-  let displayName =
-    typeof rawManifest.displayName === 'string' && rawManifest.displayName.trim()
-      ? rawManifest.displayName.trim()
-      : undefined;
-  let description =
-    typeof rawManifest.description === 'string' && rawManifest.description.trim()
-      ? rawManifest.description.trim()
-      : undefined;
-  let overviewContent: string | undefined;
-
+): string | undefined {
   const bundleRoot = path.join(basePath, 'bundle');
   const candidates = [
     path.join(bundleRoot, `${groupId}_entry.md`),
@@ -517,43 +518,15 @@ function extractOkfRootMetadata(
         fs.readFileSync(cand, 'utf8'),
         path.basename(cand, '.md'),
       );
-      const fmTitle =
-        typeof concept.frontmatter['title'] === 'string'
-          ? concept.frontmatter['title'].trim()
-          : '';
-      const fmDesc =
-        typeof concept.frontmatter['description'] === 'string'
-          ? concept.frontmatter['description'].trim()
-          : '';
-      const bodyClean = concept.body
+      const body = concept.body
         .replace(/\n*##\s+OKF\s+Metadata\b[\s\S]*$/i, '')
         .trim();
-      const h1Match = bodyClean.match(/^#\s+(.+?)\s*$/m);
-      const headingTitle = h1Match?.[1]?.trim() ?? '';
-      const firstPara = bodyClean
-        .split(/\n\s*\n/)
-        .map((p) => p.trim())
-        .find((p) => p && !/^([#*|-]|\d+\.)/.test(p));
-      if (!displayName && (fmTitle || headingTitle)) {
-        displayName = fmTitle || headingTitle;
-      }
-      if (!description && (fmDesc || firstPara)) {
-        description = (fmDesc || firstPara || '').replace(/\s+/g, ' ').trim();
-      }
-      if (!overviewContent && bodyClean) {
-        overviewContent = bodyClean;
-      }
+      if (body) return body;
     } catch {
       // Ignore unparseable candidate here; CatalogSync reports concept errors.
     }
   }
-  if (displayName) {
-    displayName = displayName.slice(0, EG_DISPLAY_NAME_MAX_CHARS);
-  }
-  if (description) {
-    description = description.slice(0, EG_DESCRIPTION_MAX_CHARS);
-  }
-  return {displayName, description, overviewContent};
+  return undefined;
 }
 
 // The error for each flag `options` carries that push no longer takes, naming
@@ -614,8 +587,14 @@ export async function push(options: PushOptions): Promise<number> {
   const ctx = context.ApiContext.default();
 
   if (okf) {
+    const contextSet = readContextSetMetadata('catalog.yaml');
+    const contextSetErrors = metadataErrors(contextSet);
+    if (contextSetErrors.length) return printErrors(...contextSetErrors);
     let snapshot: kcmd.CatalogSnapshot;
     let createdEg = false;
+    // The entry group does not exist yet, and a --validate-only push leaves it
+    // uncreated.
+    let pendingEg = false;
     try {
       snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
     } catch (err: any) {
@@ -644,17 +623,14 @@ export async function push(options: PushOptions): Promise<number> {
           'okf',
         );
         snapshot = await kcmd.CatalogSnapshot.fromManifest('.', pendingManifest, ctx);
+        pendingEg = true;
       } else {
-        const rootMeta = extractOkfRootMetadata('.', project, location, groupId);
         const created = await dataplex.createContextSet(
           new dataplex.CatalogClient(ctx),
           project,
           location,
           groupId,
-          {
-            ...(rootMeta.displayName ? {displayName: rootMeta.displayName} : {}),
-            ...(rootMeta.description ? {description: rootMeta.description} : {}),
-          },
+          contextSet,
         );
         if (created.error) return printErrors(created.error);
         createdEg = true;
@@ -665,54 +641,13 @@ export async function push(options: PushOptions): Promise<number> {
     const {project, location, entryGroup: groupId} = entryGroupCoordinates(
       snapshot.manifest.source,
     );
-    const rootMeta = extractOkfRootMetadata(
+    const overviewContent = okfRootOverview(
       snapshot.basePath || '.',
       project,
       location,
       groupId,
     );
     const catalog = new dataplex.CatalogClient(ctx);
-
-    if (
-      !options.validateOnly &&
-      !createdEg &&
-      (rootMeta.displayName || rootMeta.description)
-    ) {
-      const egRes = await catalog.getEntryGroup(project, location, groupId);
-      if (egRes.status === 200 && egRes.result) {
-        const patchBody: Record<string, any> = {};
-        const updateMask: string[] = [];
-        if (
-          rootMeta.displayName &&
-          egRes.result.displayName !== rootMeta.displayName
-        ) {
-          patchBody.displayName = rootMeta.displayName;
-          updateMask.push('displayName');
-        }
-        if (
-          rootMeta.description &&
-          egRes.result.description !== rootMeta.description
-        ) {
-          patchBody.description = rootMeta.description;
-          updateMask.push('description');
-        }
-        if (updateMask.length) {
-          const patchRes = await catalog.updateEntryGroup(
-            project,
-            location,
-            groupId,
-            patchBody,
-            updateMask,
-          );
-          if (
-            patchRes.status === 200 &&
-            patchRes.result?.name?.includes('/operations/')
-          ) {
-            await catalog.awaitOperation(patchRes.result, 'updateEntryGroup');
-          }
-        }
-      }
-    }
 
     const sync = new kcmd.CatalogSync(catalog, snapshot);
     const result = await sync.push({
@@ -724,7 +659,16 @@ export async function push(options: PushOptions): Promise<number> {
       return 1;
     }
 
-    if (!options.validateOnly && rootMeta.overviewContent) {
+    // A context set this push created took catalog.yaml's display name and
+    // description in the create; one --validate-only leaves uncreated has
+    // none to compare with.
+    if (!createdEg && !pendingEg) {
+      const code = await pushContextSet(
+        ctx, {project, location, entryGroup: groupId}, contextSet, options);
+      if (code !== 0) return code;
+    }
+
+    if (!options.validateOnly && overviewContent) {
       const pnum = await crm.projectNumber(project, ctx);
       const repCandidates: string[] = [];
       if (pnum) {
@@ -749,7 +693,7 @@ export async function push(options: PushOptions): Promise<number> {
               aspects: {
                 [ovKey]: {
                   data: {
-                    content: rootMeta.overviewContent,
+                    content: overviewContent,
                     contentType: 'MARKDOWN',
                   },
                 },

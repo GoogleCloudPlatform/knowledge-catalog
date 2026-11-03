@@ -1,6 +1,6 @@
 // Tests that pull and push move the context set's display name and
-// description between catalog.yaml and the entry group, in a semantic-model
-// workspace and in a standard entry-group workspace (src/tool/commands.ts).
+// description between catalog.yaml and the entry group, in semantic-model,
+// standard entry-group and OKF workspaces (src/tool/commands.ts).
 
 import {afterEach, beforeEach, describe, expect, Mock, mock, spyOn, test} from 'bun:test';
 import * as fs from 'node:fs';
@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import * as kcmd from '../../src/libts';
 import {readContextSetMetadata} from '../../src/libts/context_set';
 import {ApiContext} from '../../src/libts/gcp/context';
+import * as crm from '../../src/libts/gcp/crm';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import * as kc from '../../src/libts/semantic/deploy_knowledge_catalog';
 import * as pullKc from '../../src/libts/semantic/pull_kc';
@@ -189,5 +190,97 @@ describe('entry-group workspace', () => {
     expect(await commands.pull()).toBe(0);
     expect(readContextSetMetadata('catalog.yaml'))
         .toEqual({displayName: 'Commerce', description: 'In KC.'});
+  });
+});
+
+
+describe('OKF workspace', () => {
+  const OKF_SCOPE = ENTRY_GROUP_SCOPE + 'layout: okf\n';
+  // A bundle root whose own title, description and body differ from
+  // catalog.yaml's, which push no longer reads for the context set.
+  const INDEX = '---\nokf_version: "0.2"\ntitle: Bundle title\n' +
+      'description: Bundle description.\n---\n# Bundle title\n\n' +
+      'The bundle overview.\n';
+  let updateEntry: Mock<(...a: any[]) => any>;
+
+  beforeEach(() => {
+    fs.mkdirSync('bundle', {recursive: true});
+    fs.writeFileSync(path.join('bundle', 'index.md'), INDEX);
+    spyOn(kcmd.CatalogSync.prototype, 'push').mockImplementation(async () => {
+      events.push('sync.push');
+      return {success: true} as any;
+    });
+    spyOn(crm, 'projectNumber').mockImplementation(async () => '123');
+    updateEntry = spyOn(CatalogClient.prototype, 'updateEntry')
+                      .mockImplementation(async () => {
+                        events.push('updateEntry');
+                        return {status: 200, result: {} as any};
+                      });
+  });
+
+  test('push writes catalog.yaml\'s values, not the bundle root\'s, after the entries',
+       async () => {
+         fs.writeFileSync(
+             'catalog.yaml', OKF_SCOPE + 'description: From catalog.yaml.\n');
+         expect(await commands.push({})).toBe(0);
+         expect(updateGroup.mock.calls.map(c => c.slice(3))).toEqual(
+             [[{description: 'From catalog.yaml.'}, ['description']]]);
+         expect(events.indexOf('sync.push'))
+             .toBeLessThan(events.indexOf('updateEntryGroup'));
+         // The bundle root's body is still the context set's overview.
+         expect(JSON.stringify(updateEntry.mock.calls[0][0]))
+             .toContain('The bundle overview.');
+       });
+
+  test('without the keys, push leaves the context set\'s name and description alone',
+       async () => {
+         fs.writeFileSync('catalog.yaml', OKF_SCOPE);
+         expect(await commands.push({})).toBe(0);
+         expect(updateGroup).not.toHaveBeenCalled();
+       });
+
+  test('a push that creates the context set gives it catalog.yaml\'s values',
+       async () => {
+         fs.writeFileSync(
+             'catalog.yaml',
+             OKF_SCOPE + 'displayName: Shop\ndescription: From catalog.yaml.\n');
+         let created = false;
+         spyOn(CatalogClient.prototype, 'getEntryGroup')
+             .mockImplementation(async () => created ?
+                                     {status: 200, result: group as any} :
+                                     {status: 404, message: 'not found'});
+         const create = spyOn(CatalogClient.prototype, 'createEntryGroup')
+                            .mockImplementation(async () => {
+                              created = true;
+                              return {status: 200, result: {name: GROUP}};
+                            });
+         expect(await commands.push({})).toBe(0);
+         expect<unknown>(create.mock.calls[0][3]).toEqual({
+           type: 'context-set',
+           displayName: 'Shop',
+           description: 'From catalog.yaml.',
+         });
+         expect(updateGroup).not.toHaveBeenCalled();
+       });
+
+  test('init of an existing context set sets the keys', async () => {
+    fs.rmSync('bundle', {recursive: true, force: true});
+    spyOn(kcmd.CatalogSync.prototype, 'pull')
+        .mockImplementation(async () => ({success: true} as any));
+    expect(await commands.init(
+               {format: 'okf', entryGroup: 'test-project.us.commerce_eg'}))
+        .toBe(0);
+    expect(readContextSetMetadata('catalog.yaml'))
+        .toEqual({displayName: 'Commerce', description: 'In KC.'});
+  });
+
+  test('pull sets the keys after the bundle', async () => {
+    fs.writeFileSync('catalog.yaml', OKF_SCOPE);
+    spyOn(kcmd.CatalogSync.prototype, 'pull')
+        .mockImplementation(async () => ({success: true} as any));
+    expect(await commands.pull()).toBe(0);
+    expect(readContextSetMetadata('catalog.yaml'))
+        .toEqual({displayName: 'Commerce', description: 'In KC.'});
+    expect(fs.readFileSync('catalog.yaml', 'utf8')).toContain('layout: okf');
   });
 });
