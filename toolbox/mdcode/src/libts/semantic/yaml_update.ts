@@ -577,7 +577,9 @@ function movedText(
                     .map((l, i) => !own && i === 0 || l === '' ? l :
                              shift >= 0 ? ' '.repeat(shift) + l :
                                           l.slice(Math.min(-shift, indentOf(l))));
-  const moved = own ? ['', ...lines] : [' ' + lines[0], ...lines.slice(1)];
+  // An empty value moves as nothing after the key's `:`.
+  const moved = own ? ['', ...lines] :
+                      [lines[0] && ' ' + lines[0], ...lines.slice(1)];
   const reads = col === undefined ?
       moved.length === 1 && readsInFlow(moved[0].trim(), value) :
       readsInBlock(

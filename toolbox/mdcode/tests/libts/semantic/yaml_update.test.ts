@@ -101,6 +101,10 @@ test.each<[string, string, (value: any) => void, string?]>([
         'c:\n  custom:\n    team:\n      lead: &l ann  # c\n    other:\n      owner: ann\n'
   ],
   [
+    'an empty value moved to a new key', 'a:\n  k: 1\n  e:  # c\n',
+    v => (delete v.a.e, v.b = {e: null}), 'a:\n  k: 1\nb:\n  e:\n'
+  ],
+  [
     'a new list item beside an equal item that stays',
     'l:\n  - d: S\n    e: |-  # h\n      x\n', v => v.l = [{d: 'S', e: 'x'}, {d: 'B', e: 'x'}],
     'l:\n  - d: S\n    e: |-  # h\n      x\n  - d: B\n    e: x\n'
