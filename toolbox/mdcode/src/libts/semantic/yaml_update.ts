@@ -210,7 +210,9 @@ function patchItems(
       const first = a === 0 && at[0] >= 0;
       const from = first ? skipBlank(t, g[a].head, g[a].start) : g[a].head;
       const to = first && next ? skipBlank(t, g[b].end, next.start) : g[b].end;
-      u.edits.push([from, to, '']);
+      // With no final newline, the line break before the last item goes too.
+      const eof = to === t.length && !t.endsWith('\n') && from > 0;
+      u.edits.push([eof ? lineEnd(t, lineStart(t, from - 1)) : from, to, '']);
     }
     a = b;
   }

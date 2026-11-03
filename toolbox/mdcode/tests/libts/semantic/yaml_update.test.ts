@@ -34,6 +34,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => v.f[1].name = 'b, c'
   ],
   [
+    'the last item removed from a CRLF text with no final newline',
+    'a:\r\n  - x\r\n  - y', v => v.a.pop(), 'a:\r\n  - x'
+  ],
+  [
     'a value beside keys whose text is not their value',
     '~: a\n1.0: b\n0x10: c\n02: d\nx: e\n', v => v.x = 'f',
     '~: a\n1.0: b\n0x10: c\n02: d\nx: f\n'
@@ -53,5 +57,6 @@ test.each<[string, string, (value: any) => void, string?]>([
 
   expect(yaml.parse(output)).toEqual(value);
   expect(yaml.parse(output, {version: '1.1'})).toEqual(value);
+  expect(output.endsWith('\n')).toBe(text.endsWith('\n'));
   if (expected) expect(output).toBe(expected);
 });
