@@ -75,10 +75,19 @@ export function updateText(
     copies: new Map([...links].map(([v, n]) => [n, v])),
     edits: [],
     dirty: new Set(),
+    aliases: [],
     nl: /\r?\n/.exec(text)?.[0] ?? '\n',
     ...indents(doc, text),
   };
   patch(u, value, doc.contents, {col: 0, prefix: '', flow: false});
+  // An alias whose anchor changed or went is written out.
+  for (const [alias, v, slot] of u.aliases) {
+    const anchor = alias.resolve(doc) as yaml.Node;
+    const [a, b] = anchor.range!;
+    if (u.dirty.has(anchor) || u.edits.some(([p, q]) => p < b && q > a)) {
+      replace(u, v, alias, slot);
+    }
+  }
   let out = '';
   let at = 0;
   for (const [from, to, s] of u.edits.sort(
@@ -97,8 +106,10 @@ interface Update {
   copies: ReadonlyMap<unknown, object>;
   /** Each edit replaces the text from one offset to another. */
   edits: Array<[number, number, string]>;
-  /** Nodes whose text changed. An alias of one is written out. */
+  /** Nodes whose text changed. */
   dirty: Set<unknown>;
+  /** Each alias whose value stays, with that value and where it sits. */
+  aliases: Array<[yaml.Alias, unknown, Slot]>;
   nl: string;
   /** Columns from a key to its keys under it, and to its list's `-`. */
   step: number;
@@ -127,8 +138,9 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   } else if (yaml.isScalar(node) && !isObject(value)) {
     if (node.value !== value) setScalar(u, node, value, slot);
   } else if (
-      !yaml.isAlias(node) || u.dirty.has(node.resolve(u.doc)) ||
-      canonical(node.toJS(u.doc)) !== canonical(value)) {
+      yaml.isAlias(node) && canonical(node.toJS(u.doc)) === canonical(value)) {
+    u.aliases.push([node, value, slot]);
+  } else {
     replace(u, value, node, slot);
   }
   if (u.edits.length > edits) u.dirty.add(node);

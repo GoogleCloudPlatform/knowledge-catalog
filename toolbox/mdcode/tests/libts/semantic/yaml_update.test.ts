@@ -16,6 +16,15 @@ test.each<[string, string, (value: any) => void]>([
   ['a quoted string set to a number', 'a: "x"  # c\n', v => v.a = 5],
   ['a JSON file', '{"a": "x", "b": [1, 2]}', v => (v.a = 'true', v.b[1] = 3)],
   ['an anchor and its alias', 'a: &x {k: 1}  # c\nb: *x\n', v => v.a.k = 2],
+  ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
+  [
+    'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',
+    v => {
+      const a = [...v.a, 2];
+      delete v.a;
+      v.a = a;
+    }
+  ],
   [
     'a flow list item renamed to "b, c"', 'f: [{name: a}, {name: b}]  # c\n',
     v => v.f[1].name = 'b, c'
