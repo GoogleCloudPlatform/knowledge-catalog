@@ -103,7 +103,9 @@ export function updateText(
   // `|+` does, are its text. An edit that removes the text right after one
   // also removes the blank lines it would leave there.
   const ends = new Set<number>();
-  yaml.visit(doc, {Scalar: (_, n) => void (keepsBreaks(text, n) && ends.add(n.range![1]))});
+  yaml.visit(doc, {
+    Scalar: (_, n) => void (keepsBreaks(text, n) && ends.add(n.range![1])),
+  });
   const edits = u.edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
   edits.forEach(([from, to, s], i) => {
     const [p, q, inserted] = edits[i - 1] ?? [];
