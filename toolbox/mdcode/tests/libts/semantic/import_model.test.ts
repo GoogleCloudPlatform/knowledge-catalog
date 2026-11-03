@@ -299,15 +299,26 @@ describe('sources', () => {
         .toBe(BQ_TABLE);
   });
 
+  // A path in one pair of backticks gives its parts under a BigLake prefix,
+  // and a part in double quotes keeps its dot.
   const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
-  test.each([LAKE, `${LAKE}/namespaces/sales`])(
-      'qualifies a single-backticked 4-part name from %s', async sourcePrefix => {
-        const res = await importSemanticModelYaml(
-            ossieDoc({source: '\'`acme.lake.sales.orders`\''}), {sourcePrefix});
-        expect(
-            loadModels(res.files[0].content).models[0].entities[0].authoredSource)
-            .toBe(`${LAKE}/namespaces/sales/tables/orders`);
-      });
+  const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
+  const ALLOYDB =
+      'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/app';
+  test.each([
+    ['`acme.lake.sales.orders`', LAKE, LAKE_TABLE],
+    ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
+    ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
+    ['public."order.items"', ALLOYDB, `${ALLOYDB}/schemas/public/tables/order.items`],
+  ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: `'${bare}'`}), {sourcePrefix});
+    expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
+               .models[0]
+               .entities[0]
+               .authoredSource)
+        .toBe(table);
+  });
 
   // Each warning ends with what to do: the entry name advice for a source in
   // no Google Cloud form, the name to write when the loader gives one, or else
@@ -346,6 +357,7 @@ describe('sources', () => {
       `is not a valid GCP resource name; ${PUSH}`
     ],
     ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, ADVICE],
+    ['bare name with an unclosed quote', `'sales."orders'`, {sourcePrefix: BQ_PREFIX}, ADVICE],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);

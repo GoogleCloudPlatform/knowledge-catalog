@@ -401,9 +401,9 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
   }
 
   // 2. Split the bare dot-separated table reference into unquoted segments
-  // (reading a path in one pair of backticks, such as `` `p.d.t` ``, as its
-  // parts under a BigQuery or BigLake prefix) and verify that any leading
-  // segments overlapping `prefix.known` match.
+  // (reading a path in one pair of backticks or double quotes, such as
+  // `` `p.d.t` ``, as its parts under a BigQuery or BigLake prefix) and verify
+  // that any leading segments overlapping `prefix.known` match.
   const segs = bareNameSegments(
       trimmed, /^(bigquery|biglake)\.googleapis\.com\//.test(prefix.base));
   if (!segs.length || segs.some(s => !s.length)) return undefined;

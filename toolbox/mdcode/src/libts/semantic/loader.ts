@@ -3250,22 +3250,32 @@ export function catalogNameSegments(path: string, colons = false): string[] {
   return out;
 }
 
-// True when `source` holds whitespace outside a closed pair of backticks or
-// double quotes, which marks it as a query.
-export function hasUnquotedWhitespace(source: string): boolean {
-  let quote = '';
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i];
-    if (ch === quote) {
-      quote = '';
-    } else if (!quote && (ch === '`' || ch === '"') &&
-               source.includes(ch, i + 1)) {
-      quote = ch;
-    } else if (!quote && /\s/.test(ch)) {
-      return true;
+// The pairs of backticks or double quotes in `text`, as the index of each
+// pair's opening and closing quote, in order. A quote opens a pair only when
+// the same character follows later, and the next such character closes it.
+// Inside a pair, the other quote character is ordinary.
+function quotePairs(text: string): Array<[number, number]> {
+  const pairs: Array<[number, number]> = [];
+  for (let i = 0; i < text.length; i++) {
+    const close =
+        text[i] === '`' || text[i] === '"' ? text.indexOf(text[i], i + 1) : -1;
+    if (close >= 0) {
+      pairs.push([i, close]);
+      i = close;
     }
   }
-  return false;
+  return pairs;
+}
+
+// True when `source` holds whitespace outside a pair of backticks or double
+// quotes, which marks it as a query.
+export function hasUnquotedWhitespace(source: string): boolean {
+  let from = 0;
+  for (const [open, close] of quotePairs(source)) {
+    if (/\s/.test(source.slice(from, open))) return true;
+    from = close + 1;
+  }
+  return /\s/.test(source.slice(from));
 }
 
 // The database a source lives in, for the one-database rule and source
@@ -3561,11 +3571,12 @@ export function parseSource(
 
   // Bare table name: no `/`, which every resource URI and resource name has,
   // and no `:` scheme or prefix.
-  const rawSegs = catalogNameSegments(trimmed);
   const isBareTableName = trimmed.length > 0 && !trimmed.includes('/') &&
-      !trimmed.includes(':') && rawSegs.length > 0;
+      !trimmed.includes(':');
   if (isBareTableName) {
-    if (opts.allowLegacyBareSource) {
+    // The legacy wrapper splits at every dot outside backticks.
+    const rawSegs = catalogNameSegments(trimmed);
+    if (opts.allowLegacyBareSource && rawSegs.length > 0) {
       const parts = rawSegs.map(unquote);
       if (parts.length === 1 && opts.defaultDataset) {
         parts.unshift(opts.defaultDataset);
@@ -3587,11 +3598,11 @@ export function parseSource(
         '';
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and
-    // the general error below otherwise. A path in one pair of backticks
-    // counts as its parts, as import reads it under a BigQuery or BigLake
-    // prefix.
+    // the general error below otherwise. A path in one pair of backticks or
+    // double quotes counts as its parts, as import reads it under a BigQuery
+    // or BigLake prefix.
     const segs = bareNameSegments(trimmed, true);
-    if (segs.length <= 4 && segs.every(s => s.length > 0)) {
+    if (segs.length > 0 && segs.length <= 4 && segs.every(s => s.length > 0)) {
       if (segs.some(s => /\s/.test(s))) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
@@ -3632,12 +3643,42 @@ export function unquote(part: string): string {
   return part.replace(/^[`"]/, '').replace(/[`"]$/, '');
 }
 
-// The parts of a bare table name, without their quotes. With `bigQuery`, a
-// path in one pair of backticks, as BigQuery writes `p.d.t`, has the parts of
-// the same path written without them.
+// The parts of a bare table name, without their quotes. A part in backticks
+// or double quotes is one name, dots included, and a doubled quote character
+// in it, as in "a""b", is one literal quote. The quotes are those
+// hasUnquotedWhitespace reads. Returns [] when a quote does not wrap a whole
+// part. With `bigQuery`, a path in one pair of backticks or double quotes, as
+// BigQuery writes `p.d.t`, has the parts of the same path written without
+// them.
 export function bareNameSegments(name: string, bigQuery: boolean): string[] {
-  const path = bigQuery && /^`[^`]*`$/.test(name) ? name.slice(1, -1) : name;
-  return catalogNameSegments(path).map(unquote);
+  const pairs = quotePairs(name);
+  if (bigQuery && pairs.length === 1 && pairs[0][0] === 0 &&
+      pairs[0][1] === name.length - 1) {
+    return bareNameSegments(name.slice(1, -1), false);
+  }
+  const closeOf = new Map(pairs);
+  const parts: string[] = [];
+  let start = 0;
+  while (true) {
+    let part = /^[^.`"]*/.exec(name.slice(start))![0];
+    let end = start + part.length;
+    const firstClose = part ? undefined : closeOf.get(start);
+    if (firstClose !== undefined) {
+      let close = firstClose;
+      part = name.slice(start + 1, close);
+      // Pairs that touch, as in "a""b", are one name.
+      while (name[close + 1] === name[start] && closeOf.has(close + 1)) {
+        const next: number = closeOf.get(close + 1)!;
+        part += name.slice(close + 1, next);
+        close = next;
+      }
+      end = close + 1;
+    }
+    parts.push(part);
+    if (end === name.length) return parts;
+    if (name[end] !== '.') return [];
+    start = end + 1;
+  }
 }
 
 

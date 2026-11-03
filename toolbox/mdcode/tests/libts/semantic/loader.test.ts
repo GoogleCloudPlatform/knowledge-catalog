@@ -9,7 +9,7 @@
 //
 
 import { describe, test, expect } from 'bun:test';
-import { databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument, writtenSource } from '../../../src/libts/semantic/loader';
+import { bareNameSegments, databaseOf, googleBlockProfiles, loadModels, LoadOptions, loadSemanticModels, fromDocument, writtenSource } from '../../../src/libts/semantic/loader';
 import { googleDeploymentTargets } from '../../../src/libts/semantic/deployment_target';
 import { isTimeDimension, DATA_TYPES } from '../../../src/libts/semantic/ir';
 import { resolveInheritance } from '../../../src/libts/semantic/resolve_inheritance';
@@ -3409,16 +3409,21 @@ describe('strict entity sources', () => {
     }
   });
 
-  // A bare name with an empty segment, with five or more, or whose hint the
-  // loader would reject, such as a table name with a dot, gets the general
-  // error.
+  // A bare name with an empty segment, with five or more, with a quote that
+  // does not wrap a whole part, or whose hint the loader would reject, such as
+  // a table name with a dot or a quote, gets the general error.
   test('a bare name the hint cannot read gets the general error', () => {
-    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c', 'raw.`my.orders`', 'public."or"ders']) {
+    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c', 'raw.`my.orders`',
+      'public."order.items"', 'public."or"ders', 'public."orders', 'public."a""b"']) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
       })).toThrow(`source '${bare}' is not a valid table reference`);
     }
+  });
+
+  test('a doubled quote in a quoted part of a bare name is one literal quote', () => {
+    expect(bareNameSegments('public."a""b".`c``d`', false)).toEqual(['public', 'a"b', 'c`d']);
   });
 });
 
