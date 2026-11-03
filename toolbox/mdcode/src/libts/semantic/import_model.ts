@@ -3,12 +3,13 @@
 
 import * as yaml from 'yaml';
 
+import {checkProfileFileName} from '../layouts/semantic-model';
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {DEFAULT_PROFILE, loadProfileFile, plainCopy, readerMessage, sourcesDialect} from './resolve_profiles';
+import {appliedProfileWarnings, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, namedProfileErrors, plainCopy, readerMessage, sourcesDialect} from './resolve_profiles';
 import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
@@ -1078,43 +1079,6 @@ function repairDocument(doc: ImportDocument): void {
 }
 
 /**
- * Reports each source push rejects in the profiles import writes: those in
- * the model's GOOGLE blocks and `profileFiles`. Push reads a profile's source
- * only for an entity the model declares that is not abstract. Each profile
- * stays as written.
- */
-function reportProfileSources(
-    doc: ImportDocument, profileFiles: SerializedFile[]): void {
-  const concrete =
-      new Set(doc.datasets.filter(ds => !ds.abstract).map(ds => ds.name));
-  const profiles = [
-    ...parseGoogleBlocks(doc.model.custom_extensions)
-        .flatMap(g => asRecords(g.profiles)),
-    ...profileFiles.flatMap(pf => {
-      try {
-        return [loadProfileFile(
-            pf.content, parseProfileName(pf.fileName), {skipActions: true})];
-      } catch (err) {
-        if (!(err instanceof SemanticModelError)) throw err;
-        return [];
-      }
-    }),
-  ];
-  for (const p of profiles) {
-    for (const pe of asRecords(p.entities)) {
-      const problem = concrete.has(pe.name) && typeof pe.source === 'string' ?
-          sourceError(pe.source, `entity '${pe.name}'`) :
-          undefined;
-      if (problem) {
-        doc.warnOrError(
-            `profile '${p.name}': ${problem}\n'kcmd import' leaves a ` +
-            `profile's sources as written, even with '--source-prefix'.`);
-      }
-    }
-  }
-}
-
-/**
  * Sets `version` to `doc.targetVersion`, and names the model's entity list as
  * that flavor does: `entities:` in the Google flavor, `datasets:` in vanilla.
  * The renamed key keeps its place among the model's keys.
@@ -1688,11 +1652,13 @@ function writeDocument(
 }
 
 /**
- * Phase 5 (Post-validation): Validates the serialized output YAML with
- * `loadModels` (`warnUnacceptedSource: !doc.strict`) and checks deployment
- * targets.
+ * Phase 5 (Post-validation): Validates the output model file with `loadModels`
+ * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and checks
+ * each profile the output declares as push does.
  */
-function validateOutputDocument(content: string, doc: ImportDocument): void {
+function validateOutputDocument(
+    files: SerializedFile[], doc: ImportDocument): void {
+  const [{fileName, content}, ...profileFiles] = files;
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
@@ -1712,6 +1678,33 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
     // `validateDeploymentTargets`.
     for (const m of loaded.models) {
       validateDeploymentTargets(m, doc);
+    }
+
+    // 3. Check each profile file, under the layout's file rules, and each
+    // GOOGLE block profile with push's offline profile checks. What push
+    // rejects is an error in strict mode and a warning otherwise.
+    const model = {name: fileName.replace(/\.yaml$/, ''), text: content};
+    const profileDocs = () => profileFiles.map(f => {
+      const name = parseProfileName(f.fileName);
+      checkProfileFileName(fileName, f.fileName, name, f.content);
+      return {name, text: f.content, fileName: f.fileName};
+    });
+    const declared = () => declaredProfiles(model, profileDocs());
+    const errors = namedProfileErrors(
+        [model], new Map([[model.name, loaded.models[0]]]), profileDocs,
+        declared, doc.warnings, {});
+    for (const e of errors) doc.warnOrError(e.error);
+    // Push also warns about the values each profile without an error sets.
+    let profiles: DeclaredProfile[] = [];
+    try {
+      profiles = declared();
+    } catch {
+      // namedProfileErrors reports a profile file that breaks a file rule.
+    }
+    const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
+    for (const {name} of profiles) {
+      if (errors.some(e => e.profile === name)) continue;
+      doc.warnings.push(...appliedProfileWarnings(model, profiles, name, own));
     }
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
@@ -1735,9 +1728,8 @@ export async function importSemanticModelYaml(
   }
   validateInputDocument(doc, opts.profileFiles);
 
-  // 2. Read the `--source-prefix` entry group, if needed, run third-party
-  // repairs, and report each profile source push rejects (which record errors
-  // in `strict` mode).
+  // 2. Read the `--source-prefix` entry group, if needed, and run third-party
+  // repairs (which record errors in `strict` mode).
   const listError = await listEntryTables(doc);
   if (listError) {
     return {
@@ -1748,10 +1740,6 @@ export async function importSemanticModelYaml(
     };
   }
   repairDocument(doc);
-  // Import writes the profile files of a Google-flavor model only.
-  const profileFiles =
-      doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
-  reportProfileSources(doc, profileFiles);
 
   // 3. Generate the converted or adapted output file(s). A conversion to
   // `0.2.0.dev0` writes the sibling profile files inside the model file, and
@@ -1764,17 +1752,17 @@ export async function importSemanticModelYaml(
       await generateAdaptedFiles(
           doc, !!opts.transpile, googleToGoogle ? opts.profileFiles ?? [] : []);
 
-  // 4. Validate the primary output document, check that each profile file
-  // the import writes parses, and return the result.
-  if (files.length > 0 && doc.errors.length === 0) {
-    validateOutputDocument(files[0].content, doc);
-  }
+  // 4. Check that each profile file the import writes parses, validate the
+  // output files, and return the result.
   for (const f of files.slice(1)) {
     const [problem] = yaml.parseDocument(f.content, YAML_OPTIONS).errors;
     if (problem) {
       doc.errors.push(`the import writes '${f.fileName}', which does not ` +
                       `parse: ${problem.message}`);
     }
+  }
+  if (files.length > 0 && doc.errors.length === 0) {
+    validateOutputDocument(files, doc);
   }
   return {
     ok: doc.errors.length === 0,

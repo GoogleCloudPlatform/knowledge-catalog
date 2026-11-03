@@ -24,12 +24,12 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
-import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
+import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, loadProfileFile, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
@@ -519,102 +519,6 @@ function checkedFileCopies(
   const files = read.map(f => ({...f, pushId, pushFileCount: read.length}));
   const error = kc.checkFileCopies(files);
   return error ? {files: [], error} : {files};
-}
-
-// An error of a two-phase push's checks, and what it belongs to: the whole
-// push when `document` is unset, the model in `document` when `profile` is
-// unset, and that profile of the model otherwise. A deployment's errors belong
-// to the profile it uses, which is 'default' when it names none.
-interface LocalCheckError {
-  error: string;
-  document?: string;
-  profile?: string;
-}
-
-// The errors the named profiles of each model in `docs` give: each profile
-// file, and each profile a vanilla model carries in its GOOGLE block, checked
-// on its own for completeness. An error about a profile file names that file,
-// and one about a block profile names the model document.
-// A model's profiles are checked against its model file as loaded on its own,
-// which `baseByDoc` holds. A file under the reserved name 'default', which no
-// push deploys, is not read here. Push also checks the
-// keys and join columns of the model file and of each named profile. The
-// warnings go to `warnings`.
-function namedProfileErrors(
-    docs: Array<{name: string; text: string}>,
-    baseByDoc: Map<string, SemanticModel>, profileDocs: ProfileDocs,
-    declared: DeclaredProfiles, warnings: string[],
-    load: DialectLoad): LocalCheckError[] {
-  const errors: LocalCheckError[] = [];
-  for (const d of docs) {
-    // Each named profile, with the label its errors carry and a function that
-    // reads it. declared() lists the profile files too, so only its block
-    // profiles are taken from it. A block profile is already read. Its actions
-    // are dropped, as loadProfileFile skips a profile file's.
-    let named: Array<{name: string; label: string; read: () => ProfileSpec}>;
-    try {
-      named = [
-        ...profileDocs(d.name).map(p => ({
-          name: p.name,
-          label: p.fileName,
-          read: () => loadProfileFile(p.text, p.name, {skipActions: true}),
-        })),
-        ...declared(d).flatMap(p => 'spec' in p ? [{
-          name: p.name,
-          label: d.name,
-          read: () => {
-            const {actions: _, ...spec} = p.spec;
-            return spec;
-          },
-        }] : []),
-      ].filter(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
-    } catch (err: any) {
-      // A profile file that breaks one of the layout's file rules, or block
-      // profiles a load rejects.
-      errors.push({error: `${err.message || err}`, document: d.name});
-      continue;
-    }
-    // A document that holds no model has nothing to check its profiles
-    // against.
-    const base = baseByDoc.get(d.name);
-    if (!base) continue;
-    // Actions are out of scope for the preview. Push checks a profile's
-    // actions only when it applies the profile, so these checks leave them
-    // out.
-    const logical = {...base, actions: []};
-    // Push warns about the SQL it cannot read in the model file, so these
-    // checks leave out a warning about model file SQL that push reads in the
-    // same dialect. Push stops reading what the SQL reads when the model's
-    // hierarchy does not resolve, and these checks then give every warning.
-    const ownSqlOnly = !inheritanceErrorOf(base) ?
-        {dialect: sourcesDialect(base)} :
-        undefined;
-    const specs: ProfileSpec[] = [];
-    for (const p of named) {
-      const at = (m: string) => `[${p.label}] ${m}`;
-      const tag = (m: string) =>
-          ({error: at(m), document: d.name, profile: p.name});
-      let spec: ProfileSpec;
-      try {
-        spec = p.read();
-      } catch (err) {
-        if (!(err instanceof SemanticModelError)) throw err;
-        errors.push(tag(err.message));
-        continue;
-      }
-      specs.push(spec);
-      const profileWarnings: string[] = [];
-      errors.push(
-          ...validateProfileCompleteness(logical, spec, profileWarnings, {
-            ownSqlOnly,
-            ...load,
-          }).map(tag));
-      warnings.push(...profileWarnings.map(at));
-    }
-    errors.push(...validateProfileConsistency(logical, specs, DEFAULT_PROFILE)
-                    .map(e => ({error: `[${d.name}] ${e}`, document: d.name})));
-  }
-  return errors;
 }
 
 // The warnings and the note push prints on what pruning leaves out of model
@@ -1323,11 +1227,8 @@ async function checkBeforeWrites(
               e => e.document === document && e.profile === name)) {
         continue;
       }
-      const res = profileForDocument(doc, declared, name, load);
-      if (res.kind !== 'file') continue;
       profileWarnings.push(
-          ...res.warnings.filter(w => !loaded.warnings.includes(w))
-              .map(w => `profile '${name}': ${w}`));
+          ...appliedProfileWarnings(doc, declared, name, loaded.warnings, load));
     }
   }
   const kcWarnings: string[] = [];

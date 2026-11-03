@@ -273,29 +273,7 @@ export class SemanticModelLayout implements CatalogLayout {
         throw new Error(vanillaSiblingError(file, model));
       }
       const text = fs.readFileSync(p, 'utf8');
-      const declared = parseProfileName(text, file, name);
-      const reserved = (n?: string) =>
-          n?.toLowerCase() === DEFAULT_PROFILE_NAME;
-      if (reserved(name)) {
-        throw new Error(
-            `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
-            `inline bindings in '${modelFile}'; remove '${file}'.`);
-      }
-      if (reserved(declared)) {
-        throw new Error(
-            `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
-            `inline bindings in '${modelFile}'; change the name in '${
-                file}' to '${name}'.`);
-      }
-      if (declared === undefined) {
-        throw new Error(
-            `Profile file '${file}' declares no name; add 'name: ${name}'.`);
-      }
-      if (declared !== name) {
-        throw new Error(
-            `Profile file '${file}' declares name '${declared}', which ` +
-            `does not match filename suffix '${name}'.`);
-      }
+      checkProfileFileName(modelFile, file, name, text);
       docs.push({name, text, path: p});
     }
     return docs;
@@ -548,6 +526,36 @@ export function formatOverviewSidecar(
   return Object.keys(rest).length || body.split(/\r?\n/, 1)[0] === '---' ?
       joinFrontmatter(rest, body) :
       body;
+}
+
+// Throws when the profile file `file`, holding `text` for profile `name` beside
+// the model file `modelFile`, does not parse, uses the legacy `semantic_model:`
+// wrapper, takes the name reserved for the inline bindings, or declares no name
+// or another name.
+export function checkProfileFileName(
+    modelFile: string, file: string, name: string, text: string): void {
+  const declared = parseProfileName(text, file, name);
+  const reserved = (n?: string) => n?.toLowerCase() === DEFAULT_PROFILE_NAME;
+  if (reserved(name)) {
+    throw new Error(
+        `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
+        `inline bindings in '${modelFile}'; remove '${file}'.`);
+  }
+  if (reserved(declared)) {
+    throw new Error(
+        `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
+        `inline bindings in '${modelFile}'; change the name in '${file}' to ` +
+        `'${name}'.`);
+  }
+  if (declared === undefined) {
+    throw new Error(
+        `Profile file '${file}' declares no name; add 'name: ${name}'.`);
+  }
+  if (declared !== name) {
+    throw new Error(
+        `Profile file '${file}' declares name '${declared}', which does not ` +
+        `match filename suffix '${name}'.`);
+  }
 }
 
 // The `name` a profile file declares at its top level, or undefined when it

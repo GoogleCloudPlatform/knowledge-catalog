@@ -1818,8 +1818,9 @@ describe('completeness sees the model as the profile does', () => {
     expect(errorsFor(`${inst}/databases/sales/tables/c`,
                      'cloudsql.googleapis.com/projects/acme/locations/us/instances/other/databases/sales/tables/v'))
         .toContain('more than one database');
-    // With a schema: one database is one; two on one instance are two, unless
-    // the lookup names SQL Server, whose instance one query reaches whole.
+    // With a schema: one database is one; two on one instance are two when
+    // the lookup names another engine than SQL Server, whose instance one
+    // query reaches whole. With no lookup they may be one.
     expect(errorsFor(`${inst}/databases/db1/schemas/public/tables/c`,
                      `${inst}/databases/db1/schemas/sales/tables/v`))
         .toEqual('');
@@ -1829,7 +1830,7 @@ describe('completeness sees the model as the profile does', () => {
     ] as const;
     const lookedUp = (dialect: string) =>
         ({sourceDialects: new Map(twoDatabases.map(s => [s, dialect]))});
-    expect(errorsFor(...twoDatabases)).toContain('more than one database');
+    expect(errorsFor(...twoDatabases)).toEqual('');
     expect(errorsFor(...twoDatabases, lookedUp('POSTGRES')))
         .toContain('more than one database');
     expect(errorsFor(...twoDatabases, lookedUp('SQLSERVER'))).toEqual('');

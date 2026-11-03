@@ -209,7 +209,8 @@ describe('kcmd import', () => {
     const vanilla = model('orders') +
         "    custom_extensions:\n      - vendor_name: GOOGLE\n" +
         `        data: '{"profiles": [{"name": "prod", "entities": [{"name": "orders", "source": "${
-            PREFIX}/tables/orders_prod"}]}]}'\n`;
+            PREFIX}/tables/orders_prod", "primary_key": ["order_id"], "fields": ` +
+        `[{"name": "order_id", "expression": "order_id"}]}]}]}'\n`;
     write('retail.yaml', vanilla);
     expect(await importModel('retail.yaml', {
       flavor: 'ossie', input: 'first-party', sourcePrefix: PREFIX, out: 'out',
@@ -272,7 +273,8 @@ describe('kcmd import', () => {
       write(path.join(GROUP, `${stem}.profile.prod.yaml`), PROFILE);
     };
 
-    // [label, the model file, --flavor]
+    // [label, the model file, --flavor]. With --transpile, PROFILE has the
+    // BigQuery SQL push requires.
     for (const [label, text, flavor] of [
       ['a Google model converted to vanilla', google, 'ossie'],
       ['a vanilla model converted to Google', model(), 'google'],
@@ -280,7 +282,8 @@ describe('kcmd import', () => {
       test(`${label} in place is refused, naming the profile file`, async () => {
         setUp();
         write(MODEL_FILE, text);
-        expect(await importModel(MODEL_FILE, {flavor, input: 'first-party'})).toBe(1);
+        expect(await importModel(MODEL_FILE, {flavor, input: 'first-party', transpile: true}))
+            .toBe(1);
         expect(errors).toEqual([expect.stringContaining(
             `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
         expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(text);
@@ -296,12 +299,13 @@ describe('kcmd import', () => {
       expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(TRANSLATED);
     });
 
-    // Under the model's name, which the input file's name need not be.
+    // Under the model's name, which the input file's name need not be. A
+    // third-party import warns that PROFILE lacks BigQuery SQL.
     test('imported as Google flavor from another folder brings its profile file', async () => {
       workspace();
       write('in/sales.yaml', google);
       write('in/sales.profile.prod.yaml', PROFILE);
-      expect(await importModel('in/sales.yaml', {flavor: 'google', input: 'first-party'})).toBe(0);
+      expect(await importModel('in/sales.yaml', {flavor: 'google'})).toBe(0);
       expect(errors).toEqual([]);
       expect(filesIn(GROUP)).toEqual(['retail.profile.prod.yaml', 'retail.yaml']);
       expect(fs.readFileSync(path.join(dir, PROFILE_FILE), 'utf8')).toBe(PROFILE);
@@ -310,11 +314,12 @@ describe('kcmd import', () => {
     test('imported as Google flavor to --out with --transpile brings its profile files translated', async () => {
       write('in/retail.yaml', google);
       write('in/retail.profile.prod.yaml', PROFILE);
-      // Written as they are: dev gains no entry, and qa does not load.
+      // Written as they are, with warnings: dev gains no entry, and qa does not
+      // load.
       write('in/retail.profile.dev.yaml', 'name:  dev\nentities:\n  - name: orders\n');
       write('in/retail.profile.qa.yaml', 'name: staging\n');
       expect(await importModel('in/retail.yaml', {
-        flavor: 'google', input: 'first-party', transpile: true, out: 'out',
+        flavor: 'google', transpile: true, out: 'out',
       })).toBe(0);
       expect(filesIn('out')).toEqual([
         'retail.profile.dev.yaml', 'retail.profile.prod.yaml', 'retail.profile.qa.yaml',
