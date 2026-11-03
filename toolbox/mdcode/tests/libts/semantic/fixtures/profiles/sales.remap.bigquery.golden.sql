@@ -25,6 +25,6 @@ EDGE TABLES (
 
 -- availability --
 unbound field: Order.discount
-dropped metric: total_discount (field Order.discount is unbound)
+dropped metric: total_discount (excluded)
 -- warnings --
 -- (none)

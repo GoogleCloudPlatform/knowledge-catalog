@@ -6,6 +6,13 @@
 version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
+    deployments:
+      - name: analytical
+        target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/commerce
+        profile: analytical
+      - name: operational
+        target: bigquery.googleapis.com/projects/acme-ops/datasets/ops/propertyGraphs/commerce
+        profile: operational
     entities:
       - name: Customer
         primary_key: [id]

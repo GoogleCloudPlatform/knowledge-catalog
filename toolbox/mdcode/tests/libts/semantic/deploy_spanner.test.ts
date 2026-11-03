@@ -18,10 +18,8 @@ import {loadSemanticModels} from '../../../src/libts/semantic/loader';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
-function models(
-    docs: {name: string; text: string}[], defaultProject = 'test-project') {
-  const r = loadSemanticModels(
-      docs, {defaultProject, allowLegacyBareSource: true});
+function models(docs: {name: string; text: string}[]) {
+  const r = loadSemanticModels(docs);
   if (r.error) throw new Error(r.error);
   return r.models;
 }
@@ -226,7 +224,7 @@ describe('deploySpanner', () => {
     const typo = 'spanner.googleapis.com/projects/demo/instance/i/databases/d/graphs/g';
     for (const [text, details] of [
       [bqDoc, 'no Spanner Graph deploymentTarget'],
-      [bqDoc.replace(/deployment_target: \S+/, `deployment_target: ${typo}`),
+      [bqDoc.replace(/target: \S+/, `target: ${typo}`),
        `could not be parsed: ${typo}. Expected spanner.googleapis.com/` +
            `projects/<p>/instances/<i>/databases/<db>/graphs/<g>.`],
     ]) {

@@ -25,6 +25,6 @@ EDGE TABLES (
 
 -- availability --
 unbound field: Customer.segment
-dropped metric: segment_count (field Customer.segment is unbound)
+dropped metric: segment_count (excluded)
 -- warnings --
 -- (none)

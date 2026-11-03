@@ -21,7 +21,9 @@ version: "0.2.0.dev0/google"
 semantic_model:
   - name: people
     description: People and organizations, as a class hierarchy
-    deployment_target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people
+    deployments:
+      - name: default
+        target: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/propertyGraphs/people
     entities:
       - name: Person
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/person
