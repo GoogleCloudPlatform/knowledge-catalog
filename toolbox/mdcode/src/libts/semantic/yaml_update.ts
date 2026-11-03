@@ -122,8 +122,11 @@ export function updateText(
     at = to;
   }
   out += text.slice(at);
-  // A text with no final newline keeps none.
-  return text.endsWith('\n') ? out : out.replace(/\r?\n$/, '');
+  // A text with no final newline keeps none, unless the text of a block scalar
+  // that keeps its final line breaks reaches its end.
+  return text.endsWith('\n') || ends.has(text.length) ?
+      out :
+      out.replace(/\r?\n$/, '');
 }
 
 interface Update {

@@ -223,6 +223,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'l:\n  - a: 1\n# c\n    b: 2\n', v => delete v.l[0].a, 'l:\n# c\n  - b: 2\n'
   ],
   [
+    'the last item removed after a `|+` block scalar in a text with no final newline',
+    'l:\n  - e: |+\n      x\n\n  - k: 2', v => v.l.pop(), 'l:\n  - e: |+\n      x\n\n'
+  ],
+  [
     'a new first key and a new last item in a text with no final newline',
     'l:\n  - b: 1', v => {
       const {b} = v.l[0];
@@ -256,6 +260,20 @@ test.each<[string, string, (value: any) => void, string?]>([
 
   expect(yaml.parse(output)).toEqual(value);
   expect(yaml.parse(output, {version: '1.1'})).toEqual(value);
-  expect(output.endsWith('\n')).toBe(text.endsWith('\n'));
+  // A text with no final newline keeps none, unless a block scalar that keeps
+  // its final line breaks ends it.
+  expect(output.endsWith('\n'))
+      .toBe(text.endsWith('\n') || endsInKeptBlock(output));
   if (expected) expect(output).toBe(expected);
 });
+
+// Whether a block scalar that keeps its final line breaks, as `|+` does, ends
+// `text`.
+function endsInKeptBlock(text: string): boolean {
+  let found = false;
+  yaml.visit(yaml.parseDocument(text), {
+    Scalar: (_, n) => void (found ||= n.range![1] === text.length &&
+        /^[|>][0-9]*\+/.test(text.slice(n.range![0]))),
+  });
+  return found;
+}
