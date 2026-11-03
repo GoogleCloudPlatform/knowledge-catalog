@@ -115,7 +115,10 @@ export class SemanticModelLayout implements CatalogLayout {
       nodir: true,
     });
 
-    for (const localPath of matches) {
+    // glob returns files in directory order, which differs between
+    // filesystems. Sorted, push and `kcmd profiles` visit models in the same
+    // order everywhere.
+    for (const localPath of matches.sort()) {
       if (SIDECAR_SUFFIXES.some(s => localPath.endsWith(s))) {
         continue;
       }
