@@ -68,19 +68,10 @@ export function linkNodes(
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
     links: ReadonlyMap<object, yaml.Node>): string {
-  const claimed = new Set<yaml.Node>();
-  const claim = (v: unknown) => {
-    if (!isObject(v)) return;
-    const node = links.get(v);
-    if (node) claimed.add(node);
-    Object.values(v).forEach(claim);
-  };
-  claim(value);
   const u: Update = {
     text,
     doc,
     links,
-    claimed,
     copies: new Map([...links].map(([v, n]) => [n, v])),
     edits: [],
     dirty: new Set(),
@@ -102,8 +93,6 @@ interface Update {
   text: string;
   doc: yaml.Document;
   links: ReadonlyMap<object, yaml.Node>;
-  /** Nodes linked to an object of the new value. Only it keeps them. */
-  claimed: ReadonlySet<unknown>;
   /** The reverse of `links`. */
   copies: ReadonlyMap<unknown, object>;
   /** Each edit replaces the text from one offset to another. */
@@ -132,12 +121,10 @@ interface Slot {
 
 function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const edits = u.edits.length;
-  const linked = isObject(value) ? u.links.get(value) : undefined;
-  const keep = linked ? linked === node : !u.claimed.has(node);
-  if (keep && isFull(value) && yaml.isCollection(node) &&
-      node.items.length > 0 && Array.isArray(value) === yaml.isSeq(node)) {
+  if (isFull(value) && yaml.isCollection(node) &&
+      Array.isArray(value) === yaml.isSeq(node)) {
     patchItems(u, value, node, slot);
-  } else if (keep && yaml.isScalar(node) && !isObject(value)) {
+  } else if (yaml.isScalar(node) && !isObject(value)) {
     if (node.value !== value) setScalar(u, node, value, slot);
   } else if (
       !yaml.isAlias(node) || u.dirty.has(node.resolve(u.doc)) ||
@@ -280,7 +267,7 @@ function matchItems(
     const linked = isObject(v) ? u.links.get(v) : undefined;
     return linked ? items.indexOf(linked) : -2;
   });
-  const free = items.flatMap((n, j) => at.includes(j) || u.claimed.has(n) ?
+  const free = items.flatMap((n, j) => at.includes(j) ?
       [] :
       [{j, key: itemKey(u.copies.get(n) ?? (n as yaml.Node).toJS(u.doc))}]);
   let last = -1;
