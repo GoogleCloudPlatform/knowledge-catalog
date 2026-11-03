@@ -361,6 +361,8 @@ describe('sources', () => {
     ],
     ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
     ['bare name with an unclosed quote', `'sales."orders'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
+    // Only a BigQuery or BigLake prefix reads it as `orders`.
+    ['backticked name with quotes', `'\`"orders"\`'`, {sourcePrefix: CLOUDSQL_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
     [
       'path in double quotes', `'"acme.sales.orders"'`, {sourcePrefix: BQ_PREFIX},
       "the quoted name 'acme.sales.orders' is one table name, and a BigQuery table name cannot hold a dot. " +
