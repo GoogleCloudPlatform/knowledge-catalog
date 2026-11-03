@@ -51,7 +51,9 @@ export interface LoadOptions {
   // repointed yet.
   warnUnacceptedSource?: boolean;
   // The caller rejects a field its own table cannot run, as push does for a
-  // model file, so the load gives no warning for it.
+  // model file, so the load gives no warning for it. A Cloud SQL or
+  // third-party table no lookup has read keeps the warning, since the caller
+  // does not check it.
   fieldTextChecked?: boolean;
 }
 
@@ -2020,8 +2022,9 @@ function runsDialect(
 }
 
 // The warning `item` gives on `table`, the table of `entity`:
-// expressionWarning's when the load knows the table's dialect, or, unless
-// `profiled`, one saying the table has no text to run. On a table of the
+// expressionWarning's when the load knows the table's dialect, or one saying
+// the table has no text to run. With `profiled`, the second is given only on a
+// Cloud SQL or third-party table no lookup has read. On a table of the
 // `preferred` dialect, expressionWarning's transpilation warning already says
 // so.
 function tableWarning(
@@ -2031,7 +2034,10 @@ function tableWarning(
   const w = table.unread ?
       undefined :
       expressionWarning(item, subject, table.name, preferred);
-  if (w || profiled || !noTextFor(item, table.dialects)) return w;
+  if (w || (profiled && !table.unread && !table.guessed) ||
+      !noTextFor(item, table.dialects)) {
+    return w;
+  }
   const own = table.dialects.map(d => `'${d}'`).join(', ');
   return `${subject.ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
              table.name} table of entity '${entity}' cannot run it`;

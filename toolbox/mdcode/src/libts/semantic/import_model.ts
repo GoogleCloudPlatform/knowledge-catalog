@@ -1687,9 +1687,15 @@ function validateOutputDocument(
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
     // validation while turning unaccepted table sources into warnings in
-    // non-strict mode, deduplicating warnings already recorded.
+    // non-strict mode, deduplicating warnings already recorded. Step 3 gives
+    // push's error for a field its table cannot run, so the load does not
+    // warn about it too.
     const loaded = loadModels(
-        content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
+        content, {
+          bindingOptional: true,
+          warnUnacceptedSource: !doc.strict,
+          fieldTextChecked: true,
+        });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;

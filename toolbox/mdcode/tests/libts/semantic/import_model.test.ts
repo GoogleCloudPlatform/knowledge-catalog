@@ -234,13 +234,16 @@ describe('conversion, strict mode, and translation', () => {
         expect(offRes.warnings.map(w => w.split(/:| in /)[0])).toEqual([
           "field 'orders.order_id'", "metric 'total_orders'", "field 'orders.order_id'",
         ]);
-        // On a Spanner table, the vendor field warns that the table cannot
-        // run it.
+        // On a Spanner table, the vendor field gets push's error alone.
         const onSpanner = await importSemanticModelYaml(
             raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
-        expect(onSpanner.warnings[0]).toBe(
-            "field 'orders.order_id': no 'SPANNER' or 'ANSI_SQL' dialect, so " +
-            "the SPANNER table of entity 'orders' cannot run it");
+        expect(onSpanner.errors).toEqual([
+          "field 'orders.order_id' in model 'retail' (retail) has no expression for SPANNER " +
+              "or ANSI_SQL, and the model file binds entity 'orders' to a SPANNER source.",
+        ]);
+        expect(onSpanner.warnings.map(w => w.split(/:| in /)[0])).toEqual([
+          "metric 'total_orders'",
+        ]);
         expect(onStrictRes.ok).toBe(true);
         expect(onStrictRes.warnings).toEqual([
           "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
@@ -602,6 +605,15 @@ describe('profile checks', () => {
       "add one with 'kcmd import <file> --input first-party --flavor google --transpile'."],
      ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' " +
       "expression as imported_expression (needs transpilation to 'BIGQUERY')"]],
+    ['warns about a model field with no text for a MySQL table read from its name',
+     model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'), MYSQL('orders')), [],
+     [], ["field 'orders.amount': no 'MYSQL' or 'ANSI_SQL' dialect, so the MYSQL table of " +
+          "entity 'orders' cannot run it"]],
+    ['warns about a model field with no text for a Cloud SQL table import cannot read',
+     model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'),
+           `${CLOUDSQL_PREFIX}/tables/orders`), [],
+     [], ["field 'orders.amount': no 'POSTGRES', 'SQLSERVER' or 'ANSI_SQL' dialect, so the " +
+          "Cloud SQL table of entity 'orders' cannot run it"]],
     ['reports a field that reads the column of the entity it is inherited from',
      model(`      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n        primary_key: [order_id]\n`), [],
      ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +

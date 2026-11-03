@@ -1319,6 +1319,8 @@ export interface TableDialects {
   name: string;
   dialects: string[];
   unread?: boolean;
+  // Set for a Cloud SQL table read as MySQL from a name with no schema.
+  guessed?: boolean;
 }
 
 // The table of `entity`, or undefined when the load does not know its
@@ -1335,7 +1337,7 @@ export function tableDialects(
   if (table) {
     // Only a MySQL table's name has no schema.
     const mysql = DIALECT_OF_SYSTEM.cloudsql_mysql;
-    if (!table.inSchema) return {name: mysql, dialects: [mysql]};
+    if (!table.inSchema) return {name: mysql, dialects: [mysql], guessed: true};
     const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))].filter(
         d => d !== mysql);
     return {name: 'Cloud SQL', dialects, unread: true};
