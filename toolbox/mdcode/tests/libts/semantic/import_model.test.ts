@@ -708,7 +708,7 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
 
   test('cuts a description before a surrogate pair it would split', async () => {
     const res = await importSemanticModelYaml(googleDoc({
-      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: "${'d'.repeat(1999)}\u{1F600}${'d'.repeat(10)}"\n`,
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: " ${'d'.repeat(1999)}\u{1F600}${'d'.repeat(10)} "\n`,
     }));
 
     expect(res.warnings).toEqual(
