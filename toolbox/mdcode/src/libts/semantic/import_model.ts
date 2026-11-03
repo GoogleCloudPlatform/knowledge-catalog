@@ -1740,7 +1740,8 @@ function validateOutputDocument(
     }
 
     // 4. Check each deployment with push's offline checks, under the profile
-    // it names. A profile file that does not load is reported above.
+    // it names. A profile file that does not load is reported above. Push
+    // checks a deployment's tables only once its profile has no error.
     const withFiles = {...loaded.models[0]};
     withFiles.profiles = [
       ...withFiles.profiles ?? [],
@@ -1765,8 +1766,9 @@ function validateOutputDocument(
                  deployments: withFiles.deployments?.filter(
                      d => (d.profile ?? DEFAULT_PROFILE) === profile),
                }, model.name)),
-           ...deployments.flatMap(
-               d => deploymentTableErrors(model.name, withFiles, d)),
+           ...deployments
+               .filter(d => !errors.some(e => e.profile === d.profile))
+               .flatMap(d => deploymentTableErrors(model.name, withFiles, d)),
          ].flat()) {
       doc.warnOrError(e);
     }

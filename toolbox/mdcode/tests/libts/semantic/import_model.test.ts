@@ -473,6 +473,8 @@ describe('profile checks', () => {
     ['a profile file, to google', ps => [google, {...strict, flavor: 'google', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', true],
     ['a third-party profile file, to google', ps => [google, {flavor: 'google', fileName: 'sales.yaml', profileFiles: files(ps)}], 'retail', 'retail.profile.pg.yaml', true],
   ];
+  // Push's error about pg, labeled `label`, binding orders to 'orders'.
+  const badSource = (label: string) => `[${label}] profile 'pg': entity 'orders': bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders`;
   // [problem, profiles, push's message, whether only a kept profile file
   // reaches it]. A double-quoted name gets push's warning on every path.
   const PROBLEMS: Array<[string, Profile[], ((at: At) => string)|undefined, boolean]> = [
@@ -486,8 +488,7 @@ describe('profile checks', () => {
      at => `[${at.label}] profile 'pg': entity 'ghost' is not in the logical model`, false],
     ['an abstract entity', also('party'),
      at => `[${at.label}] profile 'pg': entity 'party' is abstract, so a profile cannot bind it`, true],
-    ['a bad source', orders({source: 'orders'}),
-     at => `[${at.label}] profile 'pg': entity 'orders': bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders`, false],
+    ['a bad source', orders({source: 'orders'}), at => badSource(at.label), false],
     ['a field reference', orders({fields: [{name: 'order_id', expression: 'orders.nope'}]}),
      at => `[${at.label}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
     ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}),
@@ -565,19 +566,20 @@ describe('profile checks', () => {
   const SPANNER_GRAPH = 'spanner.googleapis.com/projects/acme/instances/i/databases/db/graphs/g';
   const onSpanner = (more = {}) =>
       ({...orders({source: SPANNER_TABLE})[0], ...more});
-  const DEPLOYED: Array<[string, (d: object, p: Profile) => [string, any]]> = [
-    ['a profile file', (d, p) => [googleDoc({extra:
+  // [path, the label of pg's errors, its input and options]
+  const DEPLOYED: Array<[string, string, (d: object, p: Profile) => [string, any]]> = [
+    ['a profile file', 'sales.profile.pg.yaml', (d, p) => [googleDoc({extra:
         `    deployments: [${JSON.stringify(d)}]\n` +
         "    metrics:\n      - {name: total, entity: orders, expression: 'COUNT(orders.order_id)'}\n"}),
      {...strict, flavor: 'google', profileFiles: files([p])}]],
-    ['a GOOGLE block', (d, p) => [ossieDoc({extra:
+    ['a GOOGLE block', 'sales', (d, p) => [ossieDoc({extra:
         "    metrics:\n      - name: total\n        expression: {dialects: [{dialect: ANSI_SQL, expression: 'COUNT(orders.order_id)'}]}\n" +
         `        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]\n` +
         `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d], profiles: [p]})}'\n`}),
      {...strict, flavor: 'ossie'}]],
   ];
-  // [problem, deployment, profile, push's error]
-  const DEPLOYMENT_PROBLEMS: Array<[string, object, Profile, string]> = [
+  // [problem, deployment, profile, push's error, or that error for pg's label]
+  const DEPLOYMENT_PROBLEMS: Array<[string, object, Profile, string|((label: string) => string)]> = [
     ['a deployment that names an unknown profile', {name: 'g', target: BQ_GRAPH, profile: 'nope'}, PG,
      "[sales] model 'retail': deployment 'g' names unknown binding profile 'nope'; defined profiles: pg."],
     ['a Spanner graph whose profile keeps a metric', {name: 's', target: SPANNER_GRAPH, profile: 'pg'}, onSpanner(),
@@ -587,16 +589,19 @@ describe('profile checks', () => {
      onSpanner({metrics_exclude: '*'}),
      `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
      `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
+    ['a profile with a bad source once', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
+     orders({source: 'orders'})[0], badSource],
   ];
   test.each(DEPLOYMENT_PROBLEMS.flatMap(([problem, d, p, error]) => DEPLOYED.map(
-      ([path, build]) => [problem, path, ...build(d, p), error] as const)))(
+      ([path, label, build]) => [problem, path, ...build(d, p),
+                                 typeof error === 'string' ? error : error(label)] as const)))(
       'reports %s, in %s', async (_, __, input, opts, error) => {
         const res = await importSemanticModelYaml(input, opts);
         expect(res.errors).toEqual([error]);
       });
 
   test('checks no deployment when a profile file breaks a file rule, as push does', async () => {
-    const [input, opts] = DEPLOYED[0][1](
+    const [input, opts] = DEPLOYED[0][2](
         {name: 'g', target: BQ_GRAPH, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG));
     expect((await importSemanticModelYaml(input, opts)).errors)
         .toEqual(["Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."]);
