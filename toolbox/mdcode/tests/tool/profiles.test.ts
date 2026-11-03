@@ -2031,7 +2031,7 @@ semantic_model:
         const withAmount = (profile: object, deploy?: string) =>
             vanilla([profile], {deploy})
                 .replace('expression: p_id}]}\n',
-                         p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`);
+                         p => `${p}          - ${amount('SNOWFLAKE', '"NVL(NULL, 0)"')}\n`);
         const error = modelNoText('purchase.amount') + hint('ossie');
         writeScope({'commerce.yaml': withAmount(complete('prod'), 'prod')});
         expect(await pushResult()).toEqual({code: 1, errors: [error]});
@@ -2274,10 +2274,11 @@ semantic_model:
 
       const missing = modelNoText('purchase.amount');
       for (const targets of [0, 1]) {
-        for (const [dialect, text] of [
-               ['SNOWFLAKE', 'amount'],
-               ['SNOWFLAKE', '"amount +"'],
-               ['SPANNER', 'amount'],
+        // The translator cannot read `amount +`, so no hint suggests it.
+        for (const [dialect, text, end] of [
+               ['SNOWFLAKE', 'amount', HINT],
+               ['SNOWFLAKE', '"amount +"', '.'],
+               ['SPANNER', 'amount', HINT],
              ]) {
           writeScope({
             'commerce.yaml':
@@ -2285,7 +2286,7 @@ semantic_model:
           });
           const label = {targets, dialect, text};
           expect({...label, ...await pushResult()})
-              .toEqual({...label, code: 1, errors: [missing + HINT]});
+              .toEqual({...label, code: 1, errors: [missing + end]});
         }
       }
     });
@@ -2393,7 +2394,7 @@ semantic_model:
           BQ('prod', ''), `${SPANNER_DB}/tables/`);
       // Profile prod rebinds purchase's amount to another SNOWFLAKE text.
       const rebound = profileFile('prod').replace(
-          '{ name: p_id, expression: p_id }', `$&, ${amount('SNOWFLAKE', '"amount -"')}`);
+          '{ name: p_id, expression: p_id }', `$&, ${amount('SNOWFLAKE', '"NVL(NULL, 1)"')}`);
       // The profile rebinds the parent's amount, and purchase keeps its own.
       const child = commerce().replace(
           '      - name: purchase\n',
@@ -2420,7 +2421,7 @@ semantic_model:
          profileFile('prod'), [profileError('BIGQUERY', PROFILE_HINT)]],
       ];
       for (const [label, model, profile, errors] of cases) {
-        const text = withFields(model, amount('SNOWFLAKE', '"amount +"'));
+        const text = withFields(model, amount('SNOWFLAKE', '"NVL(NULL, 0)"'));
         // A push whose deployment applies prod, then one that applies none.
         for (const deployed of [true, false]) {
           writeScope({

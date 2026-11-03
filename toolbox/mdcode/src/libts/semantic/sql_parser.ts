@@ -69,6 +69,11 @@ export function loadSqlEngine(): Promise<PolyglotEngine> {
   return enginePromise;
 }
 
+// The engine loadSqlEngine has loaded, or undefined before it has.
+export function loadedSqlEngine(): PolyglotEngine|undefined {
+  return loadedEngine;
+}
+
 // The engine's dialect for each kcmd dialect. The engine has no Spanner
 // dialect, so Spanner's GoogleSQL is read as BigQuery's.
 const PARSER_DIALECTS: Record<string, string> = {

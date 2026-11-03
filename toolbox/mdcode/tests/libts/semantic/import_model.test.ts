@@ -622,6 +622,26 @@ describe('profile checks', () => {
     expect(res.warnings).toEqual(warnings);
   });
 
+  test('suggests no import for a field its own --transpile leaves untranslated', async () => {
+    const toChar = (fmt: string) =>
+        AMOUNT(`{dialects: [{dialect: POSTGRES, expression: "TO_CHAR(amount, '${fmt}')"}]}`);
+    const metric = '    metrics:\n      - {name: years, entity: orders, expression: ' +
+        `{dialects: [{dialect: POSTGRES, expression: "COUNT(TO_CHAR(orders.amount, 'YYYY'))"}]}}\n`;
+    const res = await importSemanticModelYaml(model(toChar('YYYY') + metric), {
+      ...strict, flavor: 'google', transpile: true,
+      profileFiles: pg(KEYED + toChar('YY').slice(4)),
+    });
+    expect(res.errors).toEqual([
+      "field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
+          "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source.",
+      "[sales.profile.pg.yaml] profile 'pg': field 'orders.amount' has no expression for " +
+          "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY",
+      "[sales.profile.pg.yaml] profile 'pg': metric 'years' has no expression for BIGQUERY " +
+          "or ANSI_SQL, and this profile's sources are BIGQUERY; give it one, or add it to " +
+          "'metrics_exclude'",
+    ]);
+  });
+
   // A model with metric total, deploying `deployment` with profile `profile`.
   const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
   const SPANNER_GRAPH = 'spanner.googleapis.com/projects/acme/instances/i/databases/db/graphs/g';

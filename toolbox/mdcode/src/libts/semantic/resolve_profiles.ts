@@ -35,7 +35,7 @@ import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
-import {transpilesFrom} from './transpile';
+import {translatesToBigQuery} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -1371,22 +1371,23 @@ export function importCommand(flags: string, version?: string): string {
 }
 
 // Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
-// with no text for `dialect`: true when `dialect` is BIGQUERY and its only
-// text is an imported one, in a dialect the translator reads.
+// of `model` with no text for `dialect`: true when `dialect` is BIGQUERY and
+// import's translator turns its imported text into BigQuery SQL.
 export function importTranspiles(
-    f: Parameters<typeof textsFor>[0], dialect: string|undefined): boolean {
+    f: Parameters<typeof textsFor>[0], dialect: string|undefined,
+    model: Pick<SemanticModel, 'entities'>): boolean {
   return dialect === 'BIGQUERY' && !!f.importedExpression &&
-      transpilesFrom(f.importedDialect ?? '');
+      translatesToBigQuery(f, (model.entities ?? []).map(e => e.name));
 }
 
-// The hint that import can add a text in `dialect` to `f`, a field of a model
-// file of `version`, or ''.
+// The hint that import can add a text in `dialect` to `f`, a field of
+// `model`, or ''.
 export function importHint(
     f: Parameters<typeof textsFor>[0], dialect: string,
-    version: string|undefined): string {
-  if (!importTranspiles(f, dialect)) return '';
+    model: Pick<SemanticModel, 'entities'|'version'>): string {
+  if (!importTranspiles(f, dialect, model)) return '';
   return `; give it one, or add one with '${
-      importCommand('--transpile', version)}'`;
+      importCommand('--transpile', model.version)}'`;
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
@@ -1756,7 +1757,7 @@ export function validateProfileCompleteness(
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}${importHint(f, dialect, baseModel.version)}`);
+                  dialect}${importHint(f, dialect, baseModel)}`);
         }
       }
     }
@@ -1764,7 +1765,7 @@ export function validateProfileCompleteness(
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
-          const viaImport = importTranspiles(m as Field, dialect) ?
+          const viaImport = importTranspiles(m as Field, dialect, baseModel) ?
               ` add one with '${
                   importCommand('--transpile', baseModel.version)}',` :
               '';

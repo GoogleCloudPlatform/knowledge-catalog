@@ -32,7 +32,7 @@
 import {Field, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
-import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
+import {loadedSqlEngine, loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -299,29 +299,18 @@ export async function transpileModel(
     // the exact case the emitter needs. Comparing the output against itself
     // (rather than the vendor input) avoids false positives from dialect-
     // specific identifier quoting.
-    const cols = columnReferences(res.sql, target);
-    if (cols === undefined) {
+    const reached = qualifiersReached(res.sql, target, entityNames);
+    if (!reached) {
       warnings.push(
           `${ctx}: transpiled '${request.dialect}' -> '${target}' could not ` +
           `be parsed; qualifier check was skipped`);
-    } else {
-      const emitterVisible = entitiesReached(cols, entityNames);
-      const anyCase = [
-        ...new Set(
-            cols.flatMap(c => {
-              if (!c.qualifier) return [];
-              const lower = c.qualifier.toLowerCase();
-              return entityNames.filter(n => n.toLowerCase() === lower);
-            })),
-      ];
-      if (!sameSet(emitterVisible, anyCase)) {
-        warnings.push(
-            `${ctx}: transpiled '${request.dialect}' -> '${
-                target}' but it re-cased an entity qualifier the emitter matches ` +
-            `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
-            `left untranslated`);
-        continue;
-      }
+    } else if (!sameSet(reached.exact, reached.anyCase)) {
+      warnings.push(
+          `${ctx}: transpiled '${request.dialect}' -> '${target}' but it ` +
+          `re-cased an entity qualifier the emitter matches case-sensitively ` +
+          `(${fmtSet(reached.exact)} vs ${fmtSet(reached.anyCase)}); left ` +
+          `untranslated`);
+      continue;
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
@@ -334,6 +323,37 @@ export async function transpileModel(
   }
 
   return {model: clone, warnings};
+}
+
+// The entities among `entityNames` that `sql`, in `target`, qualifies a
+// column with in their exact case and in any case, or undefined when the
+// parser cannot read `sql`.
+function qualifiersReached(sql: string, target: string, entityNames: string[]):
+    {exact: string[]; anyCase: string[]}|undefined {
+  const cols = columnReferences(sql, target);
+  if (cols === undefined) return undefined;
+  const anyCase = new Set(cols.flatMap(c => {
+    const lower = c.qualifier?.toLowerCase();
+    return entityNames.filter(n => n.toLowerCase() === lower);
+  }));
+  return {exact: entitiesReached(cols, entityNames), anyCase: [...anyCase]};
+}
+
+/**
+ * Whether `transpileModel`, with the default translator, gives `node` a
+ * BIGQUERY text in a model whose entities are `entityNames`. False until
+ * `loadSqlEngine()` has loaded the engine.
+ */
+export function translatesToBigQuery(
+    node: TranspileNode, entityNames: string[]): boolean {
+  const source = sourceToTranspile(node, DEFAULT_TARGET);
+  const engine = loadedSqlEngine();
+  if (!source || !engine) return false;
+  const {sql} = transpileWith(
+      engine, {id: '', ...source}, polyglotDialect(DEFAULT_TARGET)!);
+  if (sql === undefined) return false;
+  const reached = qualifiersReached(sql, DEFAULT_TARGET, entityNames);
+  return !reached || sameSet(reached.exact, reached.anyCase);
 }
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -409,35 +429,37 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
     return requests.map(r => ({id: r.id, error: reason}));
   }
 
-  return requests.map(r => {
-    const read = polyglotDialect(r.dialect);
-    if (read === undefined)
-      return {id: r.id, error: `unsupported source dialect '${r.dialect}'`};
-    try {
-      const res = engine.transpile(r.expression, read, write);
-      if (!res.success || !res.sql || res.sql.length === 0)
-        return {
-          id: r.id,
-          error: res.error ?? 'transpilation produced no output'
-        };
-      // A field/metric is a single scalar expression, so the engine should
-      // return exactly one statement. More than one means the input was not a
-      // lone expression; taking [0] would silently drop the rest, so reject it.
-      if (res.sql.length > 1)
-        return {
-          id: r.id,
-          error: `expected a single expression but got ${
-              res.sql.length} statements`
-        };
-      if (write !== 'bigquery') return {id: r.id, sql: res.sql[0]};
-      const repaired = repairForBigQuery(engine, res.sql[0], read);
-      return 'error' in repaired ? {id: r.id, error: repaired.error} :
-                                   {id: r.id, sql: repaired.sql};
-    } catch (err) {
-      return {id: r.id, error: errMessage(err)};
-    }
-  });
+  return requests.map(r => transpileWith(engine, r, write));
 };
+
+// The engine's answer to `r`, with `write` as the engine's target dialect.
+function transpileWith(
+    engine: PolyglotEngine, r: TranspileRequest,
+    write: string): TranspileResponse {
+  const read = polyglotDialect(r.dialect);
+  if (read === undefined)
+    return {id: r.id, error: `unsupported source dialect '${r.dialect}'`};
+  try {
+    const res = engine.transpile(r.expression, read, write);
+    if (!res.success || !res.sql || res.sql.length === 0)
+      return {id: r.id, error: res.error ?? 'transpilation produced no output'};
+    // A field/metric is a single scalar expression, so the engine should
+    // return exactly one statement. More than one means the input was not a
+    // lone expression; taking [0] would silently drop the rest, so reject it.
+    if (res.sql.length > 1)
+      return {
+        id: r.id,
+        error: `expected a single expression but got ${
+            res.sql.length} statements`
+      };
+    if (write !== 'bigquery') return {id: r.id, sql: res.sql[0]};
+    const repaired = repairForBigQuery(engine, res.sql[0], read);
+    return 'error' in repaired ? {id: r.id, error: repaired.error} :
+                                 {id: r.id, sql: repaired.sql};
+  } catch (err) {
+    return {id: r.id, error: errMessage(err)};
+  }
+}
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
