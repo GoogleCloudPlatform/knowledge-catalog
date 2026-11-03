@@ -13,9 +13,10 @@ export interface EntryLookup {
       }>>;
 }
 
-// What a read gave: its result; `unreadable`, when the service answered 403
-// or 404; or the message for any other failure.
-export type Read<T> = {result: T}|{unreadable: true}|{error: string};
+// What a read gave: its result; `unreadable`, with the status, when the
+// service answered 403 or 404; or the message for any other failure.
+export type Read<T> =
+    {result: T}|{unreadable: true; status: 403|404}|{error: string};
 
 // Makes the call `call`, which `what` names in a message. Never throws.
 export async function read<T>(
@@ -28,7 +29,9 @@ export async function read<T>(
   }
   // Dataplex answers 403 both when an entry does not exist and when the caller
   // may not read it; the admin APIs answer 404 for a missing resource.
-  if (res.status === 403 || res.status === 404) return {unreadable: true};
+  if (res.status === 403 || res.status === 404) {
+    return {unreadable: true, status: res.status};
+  }
   if (res.status !== 200 || !res.result) {
     return {error: `${what} failed (HTTP ${res.status}${
         res.message ? `: ${res.message}` : ''}).`};

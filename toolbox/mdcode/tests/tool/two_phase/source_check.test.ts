@@ -6,7 +6,7 @@
 
 import {expect} from 'bun:test';
 
-import {entryDenied} from '../../libts/gcp/location_responses';
+import {entryDenied, NOT_FOUND} from '../../libts/gcp/location_responses';
 
 import {boundAt, bqTable, CUSTOMER, has, PushRun, scenarios, SPANNER_CUSTOMER} from './harness';
 
@@ -73,15 +73,24 @@ scenarios('push checks every source before it writes', [
     ],
   },
   {
-    name: 'a BigQuery table is found in its dataset\'s location, not the push\'s',
+    name: 'a BigQuery table is found in its location, not the push\'s, and push stops when its table does not exist',
     entities: [{...CUSTOMER, source: bqTable('customer', 'eu')}],
     flags: {deployment: false},
     services: {
-      getDataset: (_p: string, dataset: string) =>
+      getTable: (_p: string, dataset: string) =>
           dataset === 'eu' ? {status: 200, result: {location: 'EU'}} : undefined,
     },
     code: 0,
     calls: [lookup('bigquery', 'eu', bqTable('customer', 'eu'))],
+    then: [{
+      // Every table read answers 404, as BigQuery answers a missing table.
+      services: {getTable: NOT_FOUND},
+      code: 1,
+      errors: [has(`source '${bqTable('customer', 'eu')}' names a table that ` +
+                   'does not exist')],
+      nothingWritten: true,
+      check: r => expect(lookups(r)).toEqual([]),
+    }],
   },
   {
     name: 'a Cloud SQL table is looked up once, for its dialect, and a missing one fails the push with or without --skip-source-check',

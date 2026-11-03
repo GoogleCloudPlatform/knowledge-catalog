@@ -7,7 +7,7 @@ import {expect} from 'bun:test';
 
 import {PushOptions} from '../../../src/tool/commands';
 
-import {ALLOYDB, boundAt, bqTable, Case, CUSTOMER, err, has, pushed, REAL, Scope, scenarios, Services, SPANNER, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {ALLOYDB, boundAt, bqTable, Case, CUSTOMER, err, has, pushed, REAL, Scope, scenarios, Services, SPANNER, SPANNER_CUSTOMER, spannerGraph} from './harness';
 
 const OTHER_ALLOYDB = 'alloydb.googleapis.com/projects/test-project/' +
     'locations/us-central1/clusters/c/databases/other/schemas/public/tables/' +
@@ -98,12 +98,9 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
     check: r => expect(r.fake.query.mock.calls.map(c => c[2] ?? null))
                     .toEqual(['us-central1', null]),
     then: [{
-      // The graph dataset's location cannot be read. The source check still
-      // reads table customer's dataset, eu.
-      services: {
-        getDataset: when((_p: string, dataset: string) => dataset === 'd',
-                         {status: 403, message: 'Access Denied'}),
-      },
+      // No dataset's location can be read. The source check reads table
+      // customer, not its dataset, so it still passes.
+      services: {getDataset: {status: 403, message: 'Access Denied'}},
       code: 0,
       check: r => expect(r.fake.query.mock.calls.map(c => c[2] ?? null))
                       .toEqual([null, null]),
