@@ -28,6 +28,18 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['an anchor and its alias', 'a: &x {k: 1}  # c\nb: *x\n', v => v.a.k = 2],
   [
+    'empty values set to lists and a scalar, and a key added after one',
+    'a:  # c\nb:  # d\nc:\ne: 1\nf: {g: , h: 1}\n', v => {
+      Object.assign(v, {a: [{k: 1}], b: 'x'});
+      v.f.g = [1];
+      const {e, f} = v;
+      delete v.e;
+      delete v.f;
+      Object.assign(v, {d: 2, e, f});
+    },
+    'a:  # c\n  - k: 1\nb: x  # d\nc:\nd: 2\ne: 1\nf: {g: [1], h: 1}\n'
+  ],
+  [
     'a mapping whose keys all change, ending in a comment',
     'm:\n  a:\n    b:\n      - x\n      # c\n  d: 1\n', v => v.m.a = {e: v.m.a.b}
   ],

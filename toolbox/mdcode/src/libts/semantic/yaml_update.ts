@@ -342,7 +342,10 @@ function geometry(
     const start = yaml.isPair(item) || flow ? first.range![0] : dash[i];
     const ls = lineStart(t, start);
     const inline = !flow && t.slice(ls, start).trim() !== '';
-    const end = flow ? last.range![1] : blockEnd(t, last.range![2], start - ls);
+    // An empty value, as in `a:`, ends on its key's line, and so does the item.
+    const end = flow ? last.range![1] :
+                       blockEnd(t, Math.max(last.range![2], nextLine(t, start)),
+                                start - ls);
     // The root's first item owns no comments: those above it are the file's.
     const floor = i > 0 ? prevEnd : node === u.doc.contents ? ls : 0;
     let head = inline || flow ? start : ls;
@@ -376,7 +379,7 @@ function blockEnd(t: string, end: number, col: number): number {
 
 function setScalar(
     u: Update, node: yaml.Scalar, value: unknown, slot: Slot): void {
-  const [from, to] = node.range!;
+  const [from, to, lead] = rangeOf(u, node);
   const kept = typeof node.value === 'string' && typeof value === 'string';
   const type = kept ? node.type : undefined;
   let s = scalarText(u, value, slot.col, slot.flow, type);
@@ -390,6 +393,7 @@ function setScalar(
   // the new header, or after the new value when it is not a block scalar.
   const tail = headerTail(u.text, from) ?? '';
   s = /^[|>]/.test(s) ? s.replace(/^[|>][-+0-9]*/, h => h + tail) : s + tail;
+  s = lead + s;
   u.edits.push([from, to, u.text[to - 1] === '\n' ? s + u.nl : s]);
 }
 
@@ -399,13 +403,13 @@ function setScalar(
  */
 function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const t = u.text;
-  const [from, to] = yaml.isNode(node) && node.range ?
-      node.range :
-      [slot.after ?? 0, slot.after ?? 0];
+  const [from, to, lead] = yaml.isNode(node) && node.range ?
+      rangeOf(u, node) :
+      [slot.after ?? 0, slot.after ?? 0, ''];
   // A flow collection stays flow.
   if (slot.flow || slot.after === undefined ||
       yaml.isCollection(node) && node.flow && isObject(value)) {
-    u.edits.push([from, to, scalarText(u, value, slot.col, true)]);
+    u.edits.push([from, to, lead + scalarText(u, value, slot.col, true)]);
     return;
   }
   const keyLine = lineEnd(t, slot.after);
@@ -612,6 +616,21 @@ function dashes(node: yaml.YAMLMap|yaml.YAMLSeq): number[] {
   return ((node.srcToken as yaml.CST.BlockSequence)?.items ?? [])
       .flatMap(it => it.start.filter(s => s.type === 'seq-item-ind'))
       .map(s => s.offset);
+}
+
+/**
+ * Where the text of `node` starts and ends, and the text that a value written
+ * there starts with. An empty scalar, such as the value of `a:  # c`, starts
+ * right after the `:`, `-`, anchor or tag before it, and also takes the spaces
+ * after that when no comment follows. A value written there starts with a
+ * space.
+ */
+function rangeOf(u: Update, node: yaml.Node): [number, number, string] {
+  const [from, to] = node.range!;
+  if (from !== to || !yaml.isScalar(node)) return [from, to, ''];
+  let p = from;
+  while (p > 0 && /[ \t]/.test(u.text[p - 1])) p--;
+  return [p, u.text[from] === '#' ? p : from, ' '];
 }
 
 /**
