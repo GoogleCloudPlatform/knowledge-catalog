@@ -202,6 +202,10 @@ function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   } else if (yaml.isScalar(node) && !isObject(value)) {
     if (node.value !== value) setScalar(u, node, value, slot);
   } else if (
+      isObject(value) && !isFull(value) && yaml.isCollection(node) &&
+      node.items.length === 0 && Array.isArray(value) === yaml.isSeq(node)) {
+    // An empty list or mapping that stays empty keeps its text.
+  } else if (
       yaml.isAlias(node) && canonical(node.toJS(u.doc)) === canonical(value)) {
     u.aliases.push([node, value, slot]);
   } else {

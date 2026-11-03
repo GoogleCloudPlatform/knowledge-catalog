@@ -19,6 +19,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a mapping added to a list whose items start on the line after their dash, two columns in',
     'a:\n  -\n    k: 1\n', v => v.a.push({k: 2}), 'a:\n  -\n    k: 1\n  -\n    k: 2\n'
   ],
+  [
+    'empty flow collections with a space or a comment inside, beside a changed key',
+    'a: [ ]\nb: {\n  # c\n}\nd: 1\n', v => v.d = 2, 'a: [ ]\nb: {\n  # c\n}\nd: 2\n'
+  ],
   ['a plain scalar set to "true"', 'a: x  # c\n', v => v.a = 'true'],
   ['a plain scalar set to "a: b #c"', 'a: x  # c\n', v => v.a = 'a: b #c'],
   [
