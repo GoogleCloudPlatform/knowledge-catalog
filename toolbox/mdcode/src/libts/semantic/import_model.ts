@@ -1070,7 +1070,9 @@ function moveConstructs(
             was[key] === 'file' ?
             profileFiles.map(pf => yaml.parse(pf.content, YAML_OPTIONS)) :
             obj[key];
-        delete obj[key];
+        // A third-party file can write natively a key its flavor keeps in a
+        // GOOGLE block. That key stays as written.
+        if (was[key] === 'native') delete obj[key];
         if (value === undefined) continue;
         if (place === 'native') {
           setAfter(obj, NATIVE_KEY_AFTER[key], key, value);

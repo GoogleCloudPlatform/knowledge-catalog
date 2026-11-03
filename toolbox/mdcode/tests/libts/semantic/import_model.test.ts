@@ -1171,13 +1171,40 @@ ${lines}`;
     expect(again.files[0].content).toBe(res.files[0].content);
   });
 
-  test('keeps a key vanilla has no place for when it writes a third-party file as Google', async () => {
-    const res = await importSemanticModelYaml(
-        ossieDoc({source: `${BQ_TABLE}\n        abstract: false`}),
-        {flavor: 'google'});
+  test.each([
+    ['abstract: false', {source: `${BQ_TABLE}\n        abstract: false`}, '        abstract: false\n'],
+    [
+      'extends', {
+        source: `${BQ_TABLE}\n        extends: [base]`,
+        extra: `      - name: base\n        source: ${BQ_TABLE}\n        fields: []\n`,
+      },
+      '        extends: [base]\n',
+    ],
+    ['a relationship description', {extra: selfJoin('        description: Self join.\n')}, '        description: Self join.\n'],
+    [
+      'a metric entity',
+      {extra: '    metrics:\n      - name: n\n        entity: orders\n        expression: {dialects: [{dialect: BIGQUERY, expression: COUNT(orders.order_id)}]}\n'},
+      '        entity: orders\n',
+    ],
+    [
+      'deployments',
+      {modelAiContext: `    deployments:\n      - name: prod\n        target: ${BQ_PREFIX}/propertyGraphs/retail\n`},
+      '    deployments:\n      - name: prod\n',
+    ],
+  ])('keeps %s that a third-party vanilla file writes as a native key, writing it as Google', async (_, overrides, line) => {
+    const res = await importSemanticModelYaml(ossieDoc(overrides), {flavor: 'google'});
 
     expect(res.errors).toEqual([]);
-    expect(res.files[0].content).toContain(`${BQ_TABLE}\n        abstract: false\n`);
+    expect(res.files[0].content).toContain(line);
+  });
+
+  test('refuses a native profiles key in a third-party vanilla file written as Google', async () => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({modelAiContext: '    profiles:\n      - name: prod\n'}),
+        {flavor: 'google'});
+
+    expect(res.errors).toEqual(
+        [expect.stringContaining('inline \'profiles\' are not supported')]);
   });
 
   test('ignores profileFiles when target flavor is google', async () => {
