@@ -14,7 +14,7 @@ import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
-import {deploymentTableErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
+import {deploymentTableErrors, spannerMetricsErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -1771,6 +1771,8 @@ function validateOutputDocument(
            ...deployments
                .filter(d => !errors.some(e => e.profile === d.profile))
                .flatMap(d => deploymentTableErrors(model.name, withFiles, d)),
+           ...deployments.flatMap(
+               d => spannerMetricsErrors(model.name, withFiles, d)),
          ].flat()) {
       doc.warnOrError(e);
     }

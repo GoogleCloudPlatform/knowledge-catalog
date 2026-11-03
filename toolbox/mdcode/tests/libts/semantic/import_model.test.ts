@@ -581,8 +581,9 @@ describe('profile checks', () => {
         `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d].flat(), profiles: [p]})}'\n`}),
      {...strict, flavor: 'ossie'}]],
   ];
-  // [problem, deployment, profile, push's error, or that error for pg's label]
-  const DEPLOYMENT_PROBLEMS: Array<[string, object, Profile, string|((label: string) => string)]> = [
+  // [problem, deployment, profile, push's errors, or its error for pg's label]
+  const DEPLOYMENT_PROBLEMS:
+      Array<[string, object, Profile, string|string[]|((label: string) => string)]> = [
     ['a deployment that names an unknown profile', {name: 'g', target: BQ_GRAPH, profile: 'nope'}, PG,
      "[sales] model 'retail': deployment 'g' names unknown binding profile 'nope'; defined profiles: pg."],
     ['a Spanner graph whose profile keeps a metric', {name: 's', target: SPANNER_GRAPH, profile: 'pg'}, onSpanner(),
@@ -594,13 +595,20 @@ describe('profile checks', () => {
      `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
     ['a profile with a bad source once', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
      orders({source: 'orders'})[0], badSource],
+    ["a Spanner graph on the model file's own bindings, whose model declares metrics",
+     {name: 's', target: SPANNER_GRAPH}, PG, [
+       "[sales] deployment 's' targets Spanner database 'acme/i/db', but the model file binds " +
+       `entity 'orders' to '${BQ_TABLE}', which is not a table in that database.`,
+       "[sales] deployment 's' targets a Spanner graph and uses the model file's own bindings, " +
+       'but the model declares metrics, which a Spanner graph cannot hold; name a profile with ' +
+       'metrics_exclude: "*".']],
   ];
   test.each(DEPLOYMENT_PROBLEMS.flatMap(([problem, d, p, error]) => DEPLOYED.map(
       ([path, label, build]) => [problem, path, ...build(d, p),
-                                 typeof error === 'string' ? error : error(label)] as const)))(
-      'reports %s, in %s', async (_, __, input, opts, error) => {
+                                 typeof error === 'function' ? [error(label)] : [error].flat()] as const)))(
+      'reports %s, in %s', async (_, __, input, opts, errors) => {
         const res = await importSemanticModelYaml(input, opts);
-        expect(res.errors).toEqual([error]);
+        expect(res.errors).toEqual(errors);
       });
 
   test.each(DEPLOYED)('checks the deployments of each profile apart, in %s', async (_, __, build) => {

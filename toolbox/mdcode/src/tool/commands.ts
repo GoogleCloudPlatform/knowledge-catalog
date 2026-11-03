@@ -36,7 +36,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {deploymentTableErrors, inlineBindingWarnings, spannerMetricsErrors, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -1305,13 +1305,8 @@ async function deploymentPlan(
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
   const fail = (...errors: string[]) => ({errors});
-  if (deployment.engine === 'spanner' &&
-      deployment.profile === DEFAULT_PROFILE && model.metrics?.length) {
-    return fail(
-        `${at} targets a Spanner graph and uses the model file's own ` +
-        `bindings, but the model declares metrics, which a Spanner graph ` +
-        `cannot hold; name a profile with metrics_exclude: "*".`);
-  }
+  const spanner = spannerMetricsErrors(document, model, deployment);
+  if (spanner.length) return fail(...spanner);
   let applied = model;
   if (deployment.profile !== DEFAULT_PROFILE) {
     // checkBeforeWrites has checked that the model declares the profile and

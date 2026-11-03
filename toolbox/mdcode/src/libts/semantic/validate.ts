@@ -1810,6 +1810,23 @@ export function deploymentTableErrors(
   return errors;
 }
 
+// The error for a Spanner `deployment` on the model file's own bindings when
+// `model` declares metrics, which a Spanner graph cannot hold.
+export function spannerMetricsErrors(
+    document: string, model: SemanticModel,
+    deployment: ResolvedDeployment): string[] {
+  if (deployment.engine !== 'spanner' ||
+      deployment.profile !== DEFAULT_PROFILE || !model.metrics?.length) {
+    return [];
+  }
+  return [
+    `[${document}] deployment '${deployment.name}' targets a Spanner graph ` +
+    `and uses the model file's own bindings, but the model declares ` +
+    `metrics, which a Spanner graph cannot hold; name a profile with ` +
+    `metrics_exclude: "*".`,
+  ];
+}
+
 // The database the tables of a deployment target must be in, as databaseOf
 // gives it, and how an error names the target and a table outside it.
 function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
