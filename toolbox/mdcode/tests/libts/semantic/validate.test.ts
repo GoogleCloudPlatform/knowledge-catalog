@@ -707,11 +707,11 @@ describe('action statement pre-flight', () => {
       const spanner = new SpannerClientMock();
       spanner.planDml = (async () => ({
                            status: 502,
-                           message: '<html>Bad Gateway</html>',
+                           message: 'Bad Gateway',
                          })) as any;
       const errs = await validateSpannerActionStatements(
           [spannerModel([sqlAction([GOOD])])], spanner);
-      expect(errs[0]).toContain('<html>Bad Gateway</html>');
+      expect(errs[0]).toContain('Bad Gateway');
     });
 
     test('opens one session for every statement on a database', async () => {

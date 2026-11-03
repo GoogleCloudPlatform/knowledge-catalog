@@ -29,7 +29,8 @@ const MAX_MESSAGE_LENGTH = 2000;
 // LocalizedMessage detail, which Spanner leaves unescaped, or else
 // `error.message`. Each BadRequest field violation that the message does not
 // state is appended, with its line breaks replaced by semicolons. Any other
-// body comes back trimmed and cut to 2,000 characters.
+// body comes back trimmed and cut to 2,000 characters. An HTML page comes back
+// as its text.
 export function errorMessage(body: string): string {
   const text = body.trim();
   try {
@@ -54,8 +55,14 @@ export function errorMessage(body: string): string {
   } catch {
     // Not JSON, such as a proxy's HTML error page.
   }
-  return text.length > MAX_MESSAGE_LENGTH ?
-      `${text.slice(0, MAX_MESSAGE_LENGTH)}...` : text;
+  const plain = text.startsWith('<') ?
+      text.replace(/<(style|script)\b[\s\S]*?<\/\1>/gi, ' ')
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim() :
+      text;
+  return plain.length > MAX_MESSAGE_LENGTH ?
+      `${plain.slice(0, MAX_MESSAGE_LENGTH)}...` : plain;
 }
 
 function isText(value: unknown): value is string {
