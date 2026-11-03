@@ -325,7 +325,7 @@ export function withoutExclusions(model: SemanticModel): SemanticModel {
 // Each entity resolved for inheritance, or as declared when the hierarchy is
 // broken, which push reports elsewhere. `extends` is expanded to every
 // ancestor.
-function resolvedEntities(model: SemanticModel): Entity[] {
+export function resolvedEntities(model: SemanticModel): Entity[] {
   const entities = model.entities ?? [];
   if (!entities.some(e => e.extends?.length)) return entities;
   try {
