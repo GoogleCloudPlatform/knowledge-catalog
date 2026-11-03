@@ -3,7 +3,7 @@
 
 import * as yaml from 'yaml';
 
-import {checkProfileFileName, profileParseError} from '../layouts/semantic-model';
+import {checkProfileFileName, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
@@ -1452,6 +1452,24 @@ function validateDeploymentTargets(
 }
 
 /**
+ * Records push's error for the profile files `profileFiles` beside a vanilla
+ * input in `modelFile`, which keeps its profiles in its `GOOGLE` block. Push
+ * checks the name of each file first. The message is an error in strict mode
+ * and a warning otherwise.
+ */
+function checkVanillaProfileFiles(
+    doc: ImportDocument, profileFiles: SerializedFile[],
+    modelFile: string): void {
+  if (doc.inputVersion !== OSSIE_VERSION || profileFiles.length === 0) return;
+  const badName =
+      profileFiles
+          .map(pf => profileNameError(pf.fileName, parseProfileName(pf.fileName)))
+          .find(e => e !== undefined);
+  doc.warnOrError(
+      badName ?? vanillaSiblingError(profileFiles[0].fileName, modelFile));
+}
+
+/**
  * Loads each sibling `<model>.profile.<name>.yaml` entry in `profileFiles` via
  * `loadProfileFile` and attaches the resulting `ProfileSpec` list to
  * `model.profiles`. Records in `doc.errors` push's error for the first file
@@ -1784,13 +1802,16 @@ function validateOutputDocument(
 export async function importSemanticModelYaml(
     rawYaml: string,
     opts: ImportSemanticModelOptions = {}): Promise<ImportSemanticModelResult> {
-  // 1. Initialize the SQL parser and parse/pre-validate the input document.
+  // 1. Initialize the SQL parser and parse/pre-validate the input document,
+  // and report any profile file beside a vanilla input as push does.
   await loadSqlEngine();
   const doc = parseImportDocument(rawYaml, opts);
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
   validateInputDocument(doc);
+  checkVanillaProfileFiles(
+      doc, opts.profileFiles ?? [], opts.fileName ?? `${doc.model.name}.yaml`);
 
   // 2. Read the `--source-prefix` entry group, if needed, and run third-party
   // repairs (which record errors in `strict` mode).

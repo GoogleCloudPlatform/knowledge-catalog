@@ -72,10 +72,10 @@ const DEFAULT_PROFILE_NAME = 'default';
 const VANILLA_VERSION = '0.2.0.dev0';
 
 
-// The error for a sibling profile file beside a vanilla model, which keeps its
-// profiles in its GOOGLE block.
-function vanillaSiblingError(file: string, model: string): string {
-  return `Profile file '${file}' sits beside '${model}.yaml', which is a ` +
+// Push's error for the profile file `file` beside the vanilla model file
+// `modelFile`, which keeps its profiles in its GOOGLE block.
+export function vanillaSiblingError(file: string, modelFile: string): string {
+  return `Profile file '${file}' sits beside '${modelFile}', which is a ` +
       `${VANILLA_VERSION} document; sibling profile files are Google-flavor ` +
       `only, and a ${VANILLA_VERSION} model keeps its profiles in its GOOGLE ` +
       `block.`;
@@ -257,7 +257,7 @@ export class SemanticModelLayout implements CatalogLayout {
         throw new Error(`Profile file '${file}' is not a file.`);
       }
       if (version === VANILLA_VERSION) {
-        throw new Error(vanillaSiblingError(file, model));
+        throw new Error(vanillaSiblingError(file, modelFile));
       }
       const text = fs.readFileSync(p, 'utf8');
       checkProfileFileName(modelFile, file, name, text, seen);

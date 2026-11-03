@@ -279,20 +279,51 @@ describe('kcmd import', () => {
       write(path.join(GROUP, `${stem}.profile.prod.yaml`), PROFILE);
     };
 
-    // [label, the model file, --flavor]. With --transpile, PROFILE has the
-    // BigQuery SQL push requires.
-    for (const [label, text, flavor] of [
-      ['a Google model converted to vanilla', google, 'ossie'],
-      ['a vanilla model converted to Google', model(), 'google'],
+    // Push's text about the profile file `file` beside the vanilla model file `modelFile`.
+    const besideVanilla = (file: string, modelFile: string) =>
+        `Profile file '${file}' sits beside '${modelFile}', which is a 0.2.0.dev0 document; ` +
+        'sibling profile files are Google-flavor only, and a 0.2.0.dev0 model keeps its ' +
+        'profiles in its GOOGLE block.';
+    // [label, the model file, --flavor, the error]. With --transpile, PROFILE
+    // has the BigQuery SQL push requires.
+    for (const [label, text, flavor, error] of [
+      ['a Google model converted to vanilla', google, 'ossie',
+       `the import does not write ${PROFILE_FILE}, which would stay beside the model`],
+      ['a vanilla model converted to Google', model(), 'google',
+       besideVanilla('retail.profile.prod.yaml', 'retail.yaml')],
     ]) {
       test(`${label} in place is refused, naming the profile file`, async () => {
         setUp();
         write(MODEL_FILE, text);
         expect(await importModel(MODEL_FILE, {flavor, input: 'first-party', transpile: true}))
             .toBe(1);
-        expect(errors).toEqual([expect.stringContaining(
-            `Error: the import does not write ${PROFILE_FILE}, which would stay beside the model`)]);
+        expect(errors).toEqual([expect.stringContaining(`Error: ${error}`)]);
         expect(fs.readFileSync(path.join(dir, MODEL_FILE), 'utf8')).toBe(text);
+      });
+    }
+
+    // A vanilla model keeps its profiles in its GOOGLE block, and push refuses a
+    // profile file beside it, after it checks the file's name. Import gives
+    // push's text, naming the input: an error under --input first-party, and a
+    // warning otherwise.
+    const PROD = besideVanilla('sales.profile.prod.yaml', 'sales.yaml');
+    // [--input, --flavor, the profile file, push's text]
+    const BESIDE_VANILLA: Array<[string, string, string, string]> = [
+      ['first-party', 'google', 'sales.profile.prod.yaml', PROD],
+      ['first-party', 'ossie', 'sales.profile.prod.yaml', PROD],
+      ['third-party', 'google', 'sales.profile.prod.yaml', PROD],
+      ['third-party', 'ossie', 'sales.profile.prod.yaml', PROD],
+      ['first-party', 'google', 'sales.profile.yaml',
+       "Profile file 'sales.profile.yaml' names no profile; rename it 'sales.profile.<name>.yaml'."],
+    ];
+    for (const [input, flavor, file, message] of BESIDE_VANILLA) {
+      test(`${file} beside a vanilla model gets push's text, ${input} to ${flavor}`, async () => {
+        write('in/sales.yaml', model());
+        write(`in/${file}`, PROFILE);
+        const strict = input === 'first-party';
+        expect(await importModel('in/sales.yaml', {flavor, input, out: 'out'})).toBe(strict ? 1 : 0);
+        expect([...errors, ...warnings]).toEqual([`${strict ? 'Error' : 'Warning'}: ${message}`]);
+        expect(filesIn('out')).toEqual(strict ? [] : ['retail.yaml']);
       });
     }
 

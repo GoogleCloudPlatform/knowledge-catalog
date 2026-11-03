@@ -1829,7 +1829,7 @@ ${lines}`;
     expect(res.files[0].content).toContain(block);
   });
 
-  test('ignores profileFiles when target flavor is google', async () => {
+  test('refuses profileFiles beside a vanilla model when target flavor is google, as push does', async () => {
     const googleRes = await importSemanticModelYaml(ossieDoc(), {
       flavor: 'google',
       strict: true,
@@ -1841,9 +1841,12 @@ ${lines}`;
       ],
     });
 
-    expect(googleRes.ok).toBe(true);
-    expect(googleRes.errors).toEqual([]);
-    expect(googleRes.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+    expect(googleRes.ok).toBe(false);
+    expect(googleRes.errors).toEqual([
+      "Profile file 'retail.profile.default.yaml' sits beside 'retail.yaml', which is a " +
+      '0.2.0.dev0 document; sibling profile files are Google-flavor only, and a 0.2.0.dev0 ' +
+      'model keeps its profiles in its GOOGLE block.',
+    ]);
   });
 });
 
