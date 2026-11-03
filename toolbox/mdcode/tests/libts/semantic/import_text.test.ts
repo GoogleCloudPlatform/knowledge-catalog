@@ -14,23 +14,30 @@ interface Style {
   seqIndent: number;  // From a key to the `-` of its list.
   block: boolean;  // SQL with a `(` and text of several lines as `|-` blocks.
   chomp: string;  // The chomping indicator of a block of several lines.
-  spaces: boolean;  // A line of spaces after the first `(` or line break of a block.
+  // A line of spaces after the first `(` or line break of a block, and one
+  // deeper than the block after the last line of text of several lines.
+  spaces: boolean;
   flow: boolean;  // Expressions as flow mappings, an entry to a line.
   // With flow, `ai_context` in flow too, and each `}` or `]` on the line of
   // the entry before it.
   tight: boolean;
+  // With flow, the first item of each list of several items on the line of
+  // its `[`, and the `]` on a line of its own.
+  open: boolean;
   nl: string;
   exprFirst: boolean;  // `expression` before `dialect` in a dialect entry.
-  nextLine: boolean;  // SQL under its key and a comment, over two lines if it has a space.
+  // SQL and a string `ai_context` under their key and a comment, over two
+  // lines if they have a space.
+  nextLine: boolean;
   empty: boolean;  // A null value as nothing after its key.
-  // An anchor on each string expression and on each mapping that repeats,
-  // which repeats as an alias.
+  // An anchor on each string expression, and on each mapping and text of
+  // several lines that repeats, which repeats as an alias.
   anchor: boolean;
 }
 const STYLE: Style = {
   seqIndent: 2, block: false, chomp: '-', spaces: false, flow: false,
-  tight: false, nl: '\n', exprFirst: false, nextLine: false, empty: false,
-  anchor: false,
+  tight: false, open: false, nl: '\n', exprFirst: false, nextLine: false,
+  empty: false, anchor: false,
 };
 
 const isObj = (v: any) => v !== null && typeof v === 'object';
@@ -56,15 +63,15 @@ function write(value: any, s: Style): string {
   };
   const order = (v: any) =>
       s.exprFirst && 'dialect' in v ? {expression: v.expression, ...v} : v;
-  // Each mapping that `value` holds twice, with the anchor it gets.
+  // Each mapping and text of several lines that `value` holds twice, with the
+  // anchor it gets.
   const seen = new Map<string, number>();
   const anchors = new Map<string, string>();
+  const repeats = (v: any) => full(v) && !Array.isArray(v) ||
+      typeof v === 'string' && v.includes('\n');
   const scan = (v: any) => {
-    if (!isObj(v)) return;
-    if (full(v) && !Array.isArray(v)) {
-      seen.set(canonical(v), (seen.get(canonical(v)) ?? 0) + 1);
-    }
-    Object.values(v).forEach(scan);
+    if (repeats(v)) seen.set(canonical(v), (seen.get(canonical(v)) ?? 0) + 1);
+    if (isObj(v)) Object.values(v).forEach(scan);
   };
   scan(value);
   const flow = (v: any): string => Array.isArray(v) ?
@@ -96,7 +103,7 @@ function write(value: any, s: Style): string {
   // Writes `v` after `head`, which ends in `:` or `-` at column `c`.
   const val = (head: string, v: any, c: number, inner: number, key = '') => {
     const expr = key === 'expression';
-    const anchor = s.anchor && isObj(v) && (seen.get(canonical(v)) ?? 0) > 1 ?
+    const anchor = s.anchor && repeats(v) && (seen.get(canonical(v)) ?? 0) > 1 ?
         canonical(v) : undefined;
     if (s.flow && s.tight && (expr || key === 'ai_context') && full(v) &&
         !Array.isArray(v)) {
@@ -106,9 +113,12 @@ function write(value: any, s: Style): string {
       // `{` and `[` end their lines, and each entry has a line.
       out.push(`${head} {${after()}`);
       for (const [k, x] of Object.entries(v) as Array<[string, any[]]>) {
-        out.push(`${pad(inner)}${k}: [${after()}`);
-        x.forEach((y, i) => out.push(`${pad(inner + 2)}${flow(y)}${
-                                         i < x.length - 1 ? ',' : ''}${after()}`));
+        const open = s.open && x.length > 1;
+        const line = (y: any, i: number) =>
+            `${flow(y)}${i < x.length - 1 ? ',' : ''}${after()}`;
+        out.push(`${pad(inner)}${k}: [${open ? line(x[0], 0) : after()}`);
+        x.forEach((y, i) => (i > 0 || !open) &&
+                      out.push(`${pad(inner + 2)}${line(y, i)}`));
         out.push(`${pad(inner)}]`);
       }
       out.push(`${pad(inner - 2)}}${after()}`);
@@ -125,7 +135,7 @@ function write(value: any, s: Style): string {
       if (anchor) anchors.set(anchor, `m${anchors.size}`);
       out.push(head + (anchor ? ` &${anchors.get(anchor)}` : '') + after());
       pairs(order(v), c + 2);
-    } else if (s.nextLine && expr) {
+    } else if (s.nextLine && (expr || key === 'ai_context')) {
       const text = scalar(v, false);
       const cut = text.indexOf(' ', text.length >> 1);
       out.push(head + after(), '', `${pad(inner)}# u${n++}`,
@@ -137,10 +147,13 @@ function write(value: any, s: Style): string {
       const text =
           s.spaces ? v.replace(/\(|\n/, (m: string) => `${m.trim()}\n  \n`) : v;
       out.push(`${head} |${v.includes('\n') ? s.chomp : '-'}${after()}`,
-               ...text.split('\n').map((l: string) => l && pad(inner) + l));
+               ...text.split('\n').map((l: string) => l && pad(inner) + l),
+               ...s.spaces && v.includes('\n') ? [pad(inner + 2)] : []);
     } else {
-      const a = s.anchor && expr && typeof v === 'string' ? `&s${n} ` : '';
-      out.push(`${head} ${a}${scalar(v, false)}${after()}`);
+      const name = anchor ? `m${anchors.size}` :
+          s.anchor && expr && typeof v === 'string' ? `s${n}` : '';
+      if (anchor) anchors.set(anchor, name);
+      out.push(`${head} ${name && `&${name} `}${scalar(v, false)}${after()}`);
     }
   };
   const item = (v: any, c: number) => {
@@ -168,12 +181,21 @@ interface Side {
   gone: Set<number>;
   /** Lines of changed or added nodes, whose comments must stay. */
   changed: Set<number>;
+  /** Lines whose comment goes with the removed flow item before it. */
+  taken: Set<number>;
+  /** Lines whose comment may go with the removed flow item before it. */
+  dropped: Set<number>;
+  /** Where each new flow item starts and ends. */
+  added: number[][];
 }
 const side = (text: string): Side => ({
   text,
   starts: [0, ...[...text.matchAll(/\n/g)].map(m => m.index! + 1)],
   gone: new Set(),
   changed: new Set(),
+  taken: new Set(),
+  dropped: new Set(),
+  added: [],
 });
 const lineOf = (s: Side, p: number) =>
     s.starts.filter(start => start <= p).length - 1;
@@ -204,8 +226,9 @@ function startOf(node: any, item: any): number {
 }
 
 // The lines of `item`. Comment lines after a block item at its column or
-// less are above the next item, and so are the blank lines a block scalar
-// that keeps its line breaks ends in.
+// less are above the next item, and so are the empty lines that a block
+// scalar that keeps its line breaks ends in, at any depth. A line of spaces
+// is text.
 function span(s: Side, node: any, item: any): number[] {
   const start = startOf(node, item);
   const last = yaml.isPair(item) ? item.value ?? item.key : item;
@@ -214,13 +237,11 @@ function span(s: Side, node: any, item: any): number[] {
   const end = lineOf(s, at - 1);
   const col = before(s, start).length;
   let i = end;
-  let cut = false;
   for (; i > lineOf(s, start); i--) {
-    const line = lineText(s, i);
-    if (!isBlank(line) && (!isComment(line) || line.search(/\S/) > col)) break;
-    cut ||= !isBlank(line) || yaml.isScalar(last);
+    const line = lineText(s, i).replace(/\r?\n$/, '');
+    if (line && (!isComment(line) || line.search(/\S/) > col)) break;
   }
-  return [lineOf(s, start), cut && !node.flow ? i : end];
+  return [lineOf(s, start), node.flow ? end : i];
 }
 
 // Marks a removed item: its lines, and those of the comments and blank lines
@@ -231,13 +252,15 @@ function removed(s: Side, node: any, i: number) {
   const start = startOf(node, node.items[i]);
   if (node.flow) {
     // A flow item that starts its line takes its lines, but for the brackets
-    // and comment after it on its last line.
+    // and comment after it on its last line. A comment after only its comma
+    // goes with it, and may go with one after other text.
     const own = isBlank(before(s, start));
     const tail = /^\s*,?\s*(#.*)?\s*$/.test(lineText(s, b).slice(
         (yaml.isPair(node.items[i]) ? node.items[i].value : node.items[i])
             .range[1] - s.starts[b]));
     const last = own && b > a && !tail ? b - 1 : b;
     if (last < b) s.changed.add(b);
+    if (tail) (own ? s.taken : s.dropped).add(b);
     return mark(own ? s.gone : s.changed, [a, last]);
   }
   mark(s.gone, [a, b]);
@@ -337,7 +360,11 @@ function align(
     }
   }
   bs.forEach((q, j) => {
-    if (!pairs.some(([, k]) => k === j)) mark(y.changed, span(y, b, q));
+    if (pairs.some(([, k]) => k === j)) return;
+    mark(y.changed, span(y, b, q));
+    if (b.flow) {
+      y.added.push([startOf(b, q), (yaml.isPair(q) ? q.value : q).range[1]]);
+    }
   });
   const touched = pairs.length !== as.length || pairs.length !== bs.length ||
       pairs.some(([i, j]) => canonical(as[i].toJSON()) !==
@@ -387,7 +414,7 @@ function comments(s: Side) {
     }
     const line = lineOf(s, p);
     const key = /^\s*(?:-\s+)?([\w"']+)\s*:/.exec(lineText(s, lineOf(s, last)))?.[1] ?? '';
-    return [{token, line, key, close, after: !isBlank(before(s, p))}];
+    return [{token, line, key, close, after: !isBlank(before(s, p)), last}];
   });
 }
 
@@ -408,15 +435,22 @@ function check(input: string, output: string) {
   for (const d of new Set(tokens.filter((d, i) => tokens.indexOf(d) !== i))) {
     problems.push(`${d} repeated`);
   }
-  for (const c of comments(x).filter(c => !x.gone.has(c.line))) {
-    // A comment after a value stays after its key, or after what takes the
-    // place of the value it follows.
+  for (const c of comments(x)) {
     const d = inOut.find(d => d.token === c.token);
+    if (x.taken.has(c.line) && d) {
+      problems.push(`${c.token} kept with a removed item`);
+    }
+    if (x.gone.has(c.line) || x.dropped.has(c.line)) continue;
+    // A comment after a value stays after its key, or after what takes the
+    // place of the value it follows, and never follows a new flow item.
     // A comment after a `}` or `]` stays after one.
     const kept = d && (!c.after || d.after &&
         (c.key === d.key || RENAMED[c.key] === d.key ||
          (c.key === '' || c.close && d.close) && y.changed.has(d.line)));
     if (!kept) problems.push(`${c.token} moved`);
+    if (d && y.added.some(([a, b]) => a <= d.last && d.last < b)) {
+      problems.push(`${c.token} moved after a new item`);
+    }
   }
   const wx = [...widths(x)];
   for (const w of widths(y)) {
@@ -427,7 +461,8 @@ function check(input: string, output: string) {
   if (input.includes('\r\n') && /(^|[^\r])\n/.test(output)) problems.push('LF');
   if (input[0] !== output[0]) problems.push('first character');
   for (const i of y.changed) {
-    if (/\S[ \t]+\r?\n?$/.test(lineText(y, i))) problems.push('trailing space');
+    // A space after a backslash in a double-quoted scalar is text.
+    if (/[^\s\\][ \t]+\r?\n?$/.test(lineText(y, i))) problems.push('trailing space');
   }
   // A line of only spaces is text inside a block scalar the input has too.
   const spaces = (s: Side) =>
@@ -514,8 +549,11 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a datatype rewritten', changed(vanilla, m => fields(m)[0].datatype = 'integer')],
   ['a source completed', changed(vanilla, m => ds(m)[0].source = 'orders'),
    {sourcePrefix: BQ.replace('/tables/orders', '')}],
-  // Cut to text that ends in two line breaks.
-  ['a description cut', changed(vanilla, m => ds(m)[0].description = `${'Orders. '.repeat(249)}Order.\n\nMore.`)],
+  // Cut to text that ends in two line breaks, also where a metric repeats it.
+  ['a description cut', changed(vanilla, m => {
+     ds(m)[0].description = `${'Orders. '.repeat(249)}Order.\n\nMore.`;
+     m.semantic_model[0].metrics[0].description = ds(m)[0].description;
+   })],
   ['a key removed', changed(vanilla, m => {
      const {name, ...rest} = fields(m)[1];
      fields(m)[1] = {name, datatype: 'Opaque', ...rest};
@@ -530,6 +568,10 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['an extra model removed', changed(vanilla, m => m.semantic_model.push({name: 'other', datasets: []}))],
   ['a dialect entry added', changed(vanilla, m => fields(m)[0].expression = sql('NVL(orders.order_id, 0)', 'snowflake')),
    {transpile: true}],
+  ['a dialect entry added after two', changed(vanilla, m => fields(m)[0].expression = {dialects: [
+     {dialect: 'POSTGRES', expression: 'CAST(orders.order_id AS INTEGER)'},
+     {dialect: 'SNOWFLAKE', expression: 'NVL(orders.order_id, 0)'},
+   ]}), {transpile: true}],
   ['a string expression translated', changed(google, m => fields(m)[0].expression = '"orders"."order_id"'),
    {transpile: true}],
   ['a string expression wrapped', changed(vanilla, m => fields(m)[0].expression = 'orders.order_id')],
@@ -538,6 +580,13 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a relationship description moved', related(vanilla, {description: 'One customer.', custom_extensions: null})],
   ['a conversion to Google', related(vanilla, {custom_extensions: [{vendor_name: 'GOOGLE', data: '{"description":"One customer."}'}]}),
    STRICT],
+  // A string `ai_context` that ends in two line breaks, above the next key.
+  ['a string ai_context converted to Google', changed(vanilla, m => {
+     const {ai_context, datasets, ...rest} = m.semantic_model[0];
+     m.semantic_model[0] = {
+       ...rest, ai_context: 'Prefer net revenue.\nAsk the data team first.\n\n', datasets,
+     };
+   }), STRICT],
   ['a conversion to vanilla', google, {...STRICT, flavor: 'ossie'}],
   ['a conversion to vanilla with a profile file', google, {
      ...STRICT, flavor: 'ossie',
@@ -553,9 +602,10 @@ const STYLES: Array<[string, Partial<Style>]> = [
   ['expressions on the line under their key', {nextLine: true}],
   ['empty values', {empty: true}],
   ['flow collections that close on an entry\'s line', {flow: true, tight: true}],
-  ['clipped blocks with a line of spaces', {block: true, chomp: '', spaces: true}],
+  ['clipped blocks with lines of spaces', {block: true, chomp: '', spaces: true}],
   ['kept blocks', {block: true, chomp: '+'}],
   ['anchors and aliases', {anchor: true}],
+  ['flow lists that open on their first item\'s line', {flow: true, open: true}],
 ];
 
 // Re-imports `output`. A file with a GOOGLE block is written for kcmd.
