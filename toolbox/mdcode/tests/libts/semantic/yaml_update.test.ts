@@ -18,7 +18,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => v.a = 'x \ny'
   ],
   ['a quoted string set to a number', 'a: "x"  # c\n', v => v.a = 5],
-  ['a block scalar set to a number', 'a: |-  # c\n  x\n', v => v.a = 5, 'a: 5  # c\n'],
+  [
+    'block scalars set to a number and a mapping', 'a: |-  # c\n  x\nb: |-  # d\n  y\n',
+    v => (v.a = 5, v.b = {k: 1}), 'a: 5  # c\nb:  # d\n  k: 1\n'
+  ],
   [
     'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
     v => (v.a = 'true', v.b[1] = 3)
@@ -34,9 +37,9 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   [
     'moved values keep their text',
-    'a:\n  custom:\n    t: [x, z]  # c\n    u: \'z\'\n    "k: 1": \'x\'\n    w:\n      - p  # q\n\n      - r\n',
-    v => v.a = {...v.a.custom},
-    'a:\n  t: [x, z]\n  u: \'z\'\n  "k: 1": \'x\'\n  w:\n    - p  # q\n\n    - r\n'
+    'a:\n  custom:\n    t: [x, z]  # c\n    u: \'z\'\n    "k: 1": \'x\'\n    w:\n      - p  # q\n\n      - r\nc: \'p\'\n',
+    v => (v.a = {...v.a.custom}, v.d = {c: 'p'}),
+    'a:\n  t: [x, z]\n  u: \'z\'\n  "k: 1": \'x\'\n  w:\n    - p  # q\n\n    - r\nc: \'p\'\nd:\n  c: p\n'
   ],
   [
     'moved values in flow mappings, one that a flow mapping would read differently',
@@ -107,10 +110,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     '~: a\n1.0: b\n0x10: c\n02: d\nx: f\n'
   ],
   [
-    'values of two lines and a flow mapping replaced by other kinds',
-    'a: x\n  y  # c\nb: [1,\n  2]  # d\nm: {b: 1}  # e\n',
-    v => (v.a = {k: 1}, v.b = 'z', v.m = {c: 1}),
-    'a:  # c\n  k: 1\nb: z  # d\nm: {c: 1}  # e\n'
+    'values of two lines and flow collections replaced by other kinds',
+    'a: x\n  y  # c\nb: [1,\n  2]  # d\nm: {b: 1}  # e\nl: [1, 2]\n',
+    v => (v.a = {k: 1}, v.b = 'z', v.m = {c: 1}, v.l = {a: 1}),
+    'a:  # c\n  k: 1\nb: z  # d\nm: {c: 1}  # e\nl: {a: 1}\n'
   ],
 ])('%s reads back as the new value', (_, input, change, ...[expected]) => {
   const {document, text} = parseForUpdate(input);
