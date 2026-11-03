@@ -42,29 +42,14 @@ test.each<[string, string, (value: any) => void, string?]>([
     'block scalars above blank lines set to text that ends in more or fewer line breaks',
     'a: |-\n  x\n\nb: |\n  y\n\n\nc: |+\n  v\n\nd: 1\n',
     v => (v.a = 'z\n\n', v.b = 'w\n\n', v.c = 'u\n'),
-    'a: |+\n  z\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\n\nd: 1\n'
+    'a: "z\n\n  \\n"\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\nd: 1\n'
   ],
   [
-    'text that ends in two line breaks written again, added and set before blank lines',
-    'b: {k: 1}\n\n\nc:\n  - 1\n\nd:\n  p: |-\n    o\n\n  q: 1\ne:\n  "z"\n\n\ng: {k: 1}\nh: 1\n',
-    v => (v.b = 'x\n\n', v.c.push('y\n\n'), v.d = {p: 'v\n\n', r: 2, q: 1}, v.e = {k: 'x\n\n'},
-          v.g = 'x\n\n'),
-    'b: "x\n\n  \\n"\n\n\nc:\n  - 1\n  - |+\n    y\n\nd:\n  p: |+\n    v\n\n  r: 2\n\n  q: 1\n' +
-        'e:\n  k: "x\n\n    \\n"\n\n\ng: |+\n  x\n\nh: 1\n'
-  ],
-  [
-    'text that ends in two line breaks moved or added before blank lines, one after a removed key',
-    'a:\n  m: |+  # h\n    x\n\n  k: 1\n\nb:\n  m: |+  # h\n    x\n\n  k: 1\n\n\n' +
-        'c:\n  k: 1\n\n  r: 2\n\n\nd: 1\n',
-    v => (v.a = {k: 1, c: {m: v.a.m}}, v.b = {k: 1, c: {m: v.b.m}}, delete v.c.r,
-          v.c.w = 'x\n\n'),
-    'a:\n  k: 1\n  c:\n    m: |+  # h\n      x\n\nb:\n  k: 1\n  c:\n    m: "x\n\n      \\n"\n\n\n' +
-        'c:\n  k: 1\n  w: "x\n\n    \\n"\n\n\nd: 1\n'
-  ],
-  [
-    'block scalars ending in a line of spaces set to other text',
-    'a: |-\n  x\n    \nb: |+\n  x\n    \n\nc: 1\n', v => (v.a = 'y', v.b = 'y\n\n'),
-    'a: |-\n  y\nb: |+\n  y\n\nc: 1\n'
+    '`|+` block scalars moved, and text that ends in two line breaks added',
+    'a:\n  m: |+  # h\n    x\n\n  w: |+\n    y\n  k: 1\n\nc:\n  - 1\n',
+    v => (v.a = {k: 1, c: {m: v.a.m, w: v.a.w}}, v.c.push('y\n\n'), v.d = 'x\n\n'),
+    'a:\n  k: 1\n  c:\n    m: "x\n\n      \\n"\n    w: |\n      y\n\nc:\n  - 1\n  - "y\n\n    \\n"\n' +
+        'd: "x\n\n  \\n"\n'
   ],
   [
     'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
@@ -133,10 +118,6 @@ test.each<[string, string, (value: any) => void, string?]>([
         'd:\n  w: |  # g\n    x\n      \n    y\n'
   ],
   [
-    'a moved block scalar that ends in an empty line', 'a:\n  w: |+  # h\n    x\n\n  k: 1\n',
-    v => (v.a = {k: 1, c: {w: v.a.w}}), 'a:\n  k: 1\n  c:\n    w: |+  # h\n      x\n\n'
-  ],
-  [
     'moved values written fresh: text over several lines in a flow mapping, and an alias',
     'b:\n  custom: {p: "a long text", m: "first\n    second", o: {\n      t: 1\n    }}\n' +
         'c:\n  team:\n    lead: &l ann  # c\n  other:\n    owner: *l\n',
@@ -180,20 +161,10 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['the last item removed from a flow list', 'f: [a, b]  # c\n', v => v.f.pop(), 'f: [a]  # c\n'],
   [
-    'the last entry of a flow mapping over several lines replaced by a new one',
-    'a: {\n  i: x,\n  o: y\n}\n', v => (delete v.a.o, v.a.c = 'z'), 'a: {\n  i: x,\n  c: z\n}\n'
-  ],
-  [
-    'flow collections over several lines with a `}` or comment on an entry\'s line',
-    'a: {\n  i: p,\n  o: q}\nl: [p,  # c\n  q]\nm: [p,  # d\n  q]\nk: [\n  p]\n',
-    v => (delete v.a.o, v.a.c = 'r', v.l.push('r'), v.m.pop(), v.k.push('r')),
-    'a: {\n  i: p,\n  c: r}\nl: [p,  # c\n  q,\n  r]\nm: [p  # d\n  ]\nk: [\n  p,\n  r]\n'
-  ],
-  [
-    'flow lists whose first item is on the `[` line and last item on lines of its own',
-    'a: [{k: 1},\n  {k: 2}  # c\n]\nb: [p,\n  q  # d\n]\nc: [p,  # e\n  q  # f\n]\nd: [p,  # g\n  q  # h\n]\n',
-    v => (v.a.pop(), v.b.push('r'), v.c[1] = 's', v.d.pop()),
-    'a: [{k: 1}\n]\nb: [p,\n  q,  # d\n  r\n]\nc: [p,  # e\n  s\n]\nd: [p  # g\n]\n'
+    'flow collections over several lines that change, written in block style',
+    'a: {  # c\n  i: x,\n  o: y\n}  # d\nl: [p,  # e\n  q]\nk: [\n  p]\n',
+    v => (delete v.a.o, v.a.c = 'z', v.l.push('r')),
+    'a:  # d\n  i: x\n  c: z\nl:\n  - p\n  - q\n  - r\nk: [\n  p]\n'
   ],
   [
     'a flow mapping given text of several lines, in a scalar and a new mapping',

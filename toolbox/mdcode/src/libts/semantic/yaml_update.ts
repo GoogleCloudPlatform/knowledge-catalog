@@ -65,7 +65,10 @@ export function linkNodes(
  * under the same key, or the list item with the same `name` or value. A kept
  * node whose value stays keeps its text and the comments and blank lines
  * around it. A changed scalar keeps its quoting, and a removed item takes its
- * comments and the blank lines above it.
+ * comments and the blank lines above it. A flow collection over several lines
+ * that changes is written again in block style. A value that would be written
+ * as a block scalar that keeps its final line breaks, as `|+` does, is
+ * double-quoted instead.
  */
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
@@ -96,31 +99,16 @@ export function updateText(
       replace(u, v, alias, slot);
     }
   }
-  const parts: string[] = [];
-  const empty: number[] = [];
+  let out = '';
   let at = 0;
-  for (const [from, to, s, n = 0] of u.edits.sort(
+  for (const [from, to, s] of u.edits.sort(
            (a, b) => a[0] - b[0] || a[1] - b[1])) {
     // An edit inside another would write part of the text twice.
     if (from < at) throw new Error(`Overlapping edits at offset ${from}.`);
-    parts.push(text.slice(at, from), s);
-    empty.push(0, n);
+    out += text.slice(at, from) + s;
     at = to;
   }
-  parts.push(text.slice(at));
-  // A block scalar that keeps its final line breaks, as `|+` does, takes the
-  // blank lines after it, and gives up as many of the empty lines it ends in.
-  // After its last line of text come that line's break, one for each empty
-  // line and one for each blank line.
-  for (let i = parts.length - 1; i > 0; i--) {
-    if (!empty[i]) continue;
-    const last = parts[i].replace(/(\r?\n)+$/, '').length;
-    const rest = parts[i].slice(last) + parts.slice(i + 1).join('');
-    const breaks = /^([ \t]*\r?\n)*/.exec(rest)![0].split('\n').length - 1;
-    const blank = Math.min(empty[i], Math.max(0, breaks - empty[i] - 1));
-    parts[i] = parts[i].slice(0, parts[i].length - u.nl.length * blank);
-  }
-  const out = parts.join('');
+  out += text.slice(at);
   // A text with no final newline keeps none.
   return text.endsWith('\n') ? out : out.replace(/\r?\n$/, '');
 }
@@ -140,12 +128,8 @@ interface Update {
   used: Set<yaml.Pair>;
   /** The reverse of `links`. */
   copies: ReadonlyMap<unknown, object>;
-  /**
-   * Each edit replaces the text from one offset to another. A text that ends
-   * in a block scalar that keeps its final line breaks also gives the number
-   * of empty lines it ends in.
-   */
-  edits: Array<[number, number, string, number?]>;
+  /** Each edit replaces the text from one offset to another. */
+  edits: Array<[number, number, string]>;
   /** Nodes whose text changed. */
   dirty: Set<unknown>;
   /** Each alias whose value stays, with that value and where it sits. */
@@ -196,7 +180,13 @@ function hold(u: Update, value: unknown, node: unknown): void {
 
 function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const edits = u.edits.length;
-  if (isFull(value) && yaml.isCollection(node) &&
+  // A flow collection over several lines that changes is written again in
+  // block style.
+  if (yaml.isCollection(node) && node.flow && spansLines(u, node) &&
+      canonical(node.toJS(u.doc)) !== canonical(value)) {
+    replace(u, value, node, slot);
+  } else if (
+      isFull(value) && yaml.isCollection(node) &&
       Array.isArray(value) === yaml.isSeq(node)) {
     patchItems(u, value, node, slot);
   } else if (yaml.isScalar(node) && !isObject(value)) {
@@ -224,8 +214,6 @@ interface Item {
   head: number;
   /** Whether it follows a `-` on its line. */
   inline: boolean;
-  /** Whether a flow item has its lines to itself, but for a `,` and comment. */
-  ownLines: boolean;
 }
 
 function patchItems(
@@ -241,19 +229,8 @@ function patchItems(
   const follows = at.map((j, i) => j < 0 ? Math.max(-1, ...at.slice(0, i)) : NaN);
   const g = geometry(u, node, flow);
   const col = g[0].start - lineStart(t, g[0].start);
-  // In a flow collection whose items each have their lines, removed and new
-  // items take whole lines. In any other flow collection, they take the text
-  // between items, which keeps their edits apart, but for the last items: a
-  // removed run of them and a new item after them take whole lines when the
-  // old items have their own.
-  const lines = flow && g.every(i => i.ownLines);
-  // The text between two items, without its comments. After a lone item that
-  // starts its line, a new item starts its own line too.
-  const indent = t.slice(lineStart(t, g[0].start), g[0].start);
-  const sep = g.length > 1 ?
-      t.slice(g[0].end, g[1].start).replace(/[ \t]*#.*/g, '') :
-      flow && !indent.trim() ? ',' + u.nl + indent :
-                               ', ';
+  // The text between two items.
+  const sep = g.length > 1 ? t.slice(g[0].end, g[1].start) : ', ';
   const slotOf = (i: number): Slot => {
     const item = items[i];
     const sep = yaml.isPair(item) ?
@@ -262,36 +239,19 @@ function patchItems(
     const prefix = yaml.isPair(item) ? ':' : '-';
     return {col, prefix, after: sep === undefined ? sep : sep + 1, flow};
   };
-  // Where new items of a block collection go after the item at `j`, or
-  // first when `j` is -1.
-  const place = (j: number) => j < 0 ? g[0].head : g[j].end;
   // Removes each run of items no entry keeps.
   for (let a = 0; a < items.length; a++) {
     if (at.includes(a)) continue;
     let b = a;
     while (b + 1 < items.length && !at.includes(b + 1)) b++;
     const next = g[b + 1];
-    if (lines || flow && !next && !follows.includes(a - 1) &&
-                     g.slice(a, b + 1).every(i => i.ownLines)) {
-      u.edits.push([lineStart(t, g[a].start), nextLine(t, g[b].end), '']);
-      // The comma after the item that becomes last goes, unless a new entry
-      // comes after it.
-      const comma = t.indexOf(',', g[a - 1]?.end);
-      if (!next && a > 0 && !follows.includes(a - 1)) {
-        u.edits.push([comma, comma + 1, '']);
-      }
-    } else if (flow && next) {
+    if (flow && next) {
       u.edits.push([g[a].start, next.start, '']);
     } else if (flow) {
       // The comma after the item that becomes last goes, unless a new entry
-      // comes after it, and a comment after that comma stays. A last item on
-      // its own line takes the comment after it.
-      const gap = t.slice(g[a - 1].end, g[a].start);
-      const kept = gap.includes('#') ? gap.replace(',', '') : '';
-      const end = g[b].ownLines ? lineEnd(t, g[b].end) : g[b].end;
+      // comes after it.
       u.edits.push(
-          follows.includes(a - 1) ? [g[a].start, end, ''] :
-                                    [g[a - 1].end, end, kept]);
+          [follows.includes(a - 1) ? g[a].start : g[a - 1].end, g[b].end, '']);
     } else if (g[a].inline && next) {
       // The next item moves up onto the `- ` line, and its comments go above
       // that line. A comment indented deeper than that line takes its
@@ -331,13 +291,7 @@ function patchItems(
     } else {
       const before = follows[i];
       const key = yaml.isMap(node) ? `${scalarText(u, k, 0, flow)}:` : '-';
-      // The last new entry before an item's place comes before the text
-      // there.
-      const next = flow || follows.includes(before, i + 1) ||
-              before < 0 && g[0].inline ?
-          undefined :
-          place(before);
-      const text = !flow ? block(u, key, v, col, String(k), next) :
+      const text = !flow ? block(u, key, v, col, String(k)) :
           yaml.isMap(node) ? [`${key} ${flowValue(u, String(k), v)}`] :
                              [scalarText(u, v, 0, true)];
       added.set(before, [...(added.get(before) ?? []), ...text]);
@@ -345,19 +299,8 @@ function patchItems(
   });
   for (const [j, parts] of added) {
     const near = g[Math.max(j, 0)];
-    if (lines || flow && !g[j + 1] && near.ownLines) {
-      // Each new item gets a line, indented as the item near it.
-      const pad = t.slice(lineStart(t, near.start), near.start);
-      const last = !at.some(i => i > j);
-      if (last && !/^\s*,/.test(t.slice(near.end))) {
-        u.edits.push([near.end, near.end, ',']);
-      }
-      const pos = j < 0 ? lineStart(t, near.start) : nextLine(t, near.end);
-      const text = parts.map(l => pad + l).join(',' + u.nl);
-      u.edits.push([pos, pos, text + (last ? '' : ',') + u.nl]);
-    } else if (flow) {
-      // New items go before the item after the one they follow, so that a
-      // comment after the comma stays on its line.
+    if (flow) {
+      // New items go before the item after the one they follow.
       const text = parts.join(sep);
       const next = g[j + 1];
       const last = !at.some(i => i > j);
@@ -368,12 +311,11 @@ function patchItems(
       const text = parts.join(u.nl).slice(col) + u.nl + ' '.repeat(col);
       u.edits.push([near.start, near.start, text]);
     } else {
-      const pos = place(j);
+      const pos = j < 0 ? near.head : near.end;
       const text = parts.join(u.nl);
       u.edits.push(
-          pos === t.length && !t.endsWith('\n') ?
-              [pos, pos, u.nl + text] :
-              [pos, pos, text + u.nl, emptyLines(parts)]);
+          pos === t.length && !t.endsWith('\n') ? [pos, pos, u.nl + text] :
+                                                  [pos, pos, text + u.nl]);
     }
   }
 }
@@ -434,9 +376,7 @@ function geometry(
       head = lineStart(t, head - 1);
     }
     prevEnd = end;
-    const ownLines = flow && t.slice(ls, start).trim() === '' &&
-        /^\s*,?\s*(#.*)?$/.test(t.slice(end, lineEnd(t, end)));
-    return {start, end, head, inline, ownLines};
+    return {start, end, head, inline};
   });
 }
 
@@ -459,16 +399,7 @@ function blockEnd(t: string, end: number, col: number): number {
 
 function setScalar(
     u: Update, node: yaml.Scalar, value: unknown, slot: Slot): void {
-  const t = u.text;
-  const [from, end, lead] = rangeOf(u, node);
-  // A block scalar that keeps its final line breaks ends in the blank lines
-  // after its text. The edit stops before the empty ones, so they stay. A
-  // line of spaces can be text, so the edit replaces it.
-  let to = end;
-  while (/^BLOCK/.test(node.type ?? '') && lineStart(t, to - 1) > from &&
-         lineStart(t, to - 1) === lineEnd(t, to - 1)) {
-    to = lineStart(t, to - 1);
-  }
+  const [from, to, lead] = rangeOf(u, node);
   const kept = typeof node.value === 'string' && typeof value === 'string';
   const type = kept ? node.type : undefined;
   let s = scalarText(u, value, slot.col, slot.flow, type);
@@ -478,17 +409,12 @@ function setScalar(
   if (!/^(BLOCK|QUOTE_SINGLE)/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
-  // So is a block scalar that would take more blank lines than it ends in.
-  if (!fits(u, s, to)) {
-    s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
-  }
   // The text after a block scalar's header, such as a comment, stays after
   // the new header, or after the new value when it is not a block scalar.
   const tail = headerTail(u.text, from) ?? '';
   s = /^[|>]/.test(s) ? s.replace(/^[|>][-+0-9]*/, h => h + tail) : s + tail;
-  const keep = emptyLines(s.split(u.nl));
   s = lead + s;
-  u.edits.push([from, to, u.text[to - 1] === '\n' ? s + u.nl : s, keep]);
+  u.edits.push([from, to, u.text[to - 1] === '\n' ? s + u.nl : s]);
 }
 
 /**
@@ -500,9 +426,10 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const [from, to, lead] = yaml.isNode(node) && node.range ?
       rangeOf(u, node) :
       [slot.after ?? 0, slot.after ?? 0, ''];
-  // A flow collection stays flow.
+  // A flow collection on one line stays flow.
   if (slot.flow || slot.after === undefined ||
-      yaml.isCollection(node) && node.flow && isObject(value)) {
+      yaml.isCollection(node) && node.flow && isObject(value) &&
+          !spansLines(u, node)) {
     u.edits.push([from, to, lead + scalarText(u, value, slot.col, true)]);
     return;
   }
@@ -515,10 +442,8 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // A scalar on the line under its key becomes a collection there.
   const under = from > keyLine && yaml.isScalar(node) && isFull(value);
   const col = under ? from - lineStart(t, from) : slot.col;
-  const next = nextLine(t, end);
-  const [first, ...rest] = under ?
-      items(u, value as object, col, next) :
-      block(u, slot.prefix, value, col, undefined, next);
+  const [first, ...rest] = under ? items(u, value as object, col) :
+                                   block(u, slot.prefix, value, col);
   // The text after the node on its last line stays, or after a block
   // scalar's header unless the scalar's text moved into the new value. A
   // block collection of several lines keeps none.
@@ -528,40 +453,35 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
       end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
                                        t.slice(to, end) :
                                        '';
-  const keep = emptyLines(rest);
   if (under) {
-    u.edits.push(
-        [from, end, [first.slice(col) + after, ...rest].join(u.nl), keep]);
+    u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
   const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
   const head = first.slice(col + slot.prefix.length);
-  u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl), keep]);
+  u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
 }
 
 /**
  * The lines of `prefix`, a key and `:` or a `-` at column `col`, and `value`
  * after it, in the file's indentation. `key` is the key `prefix` writes. A
- * value that moved keeps its text. `next` is the offset of the text that
- * follows the lines, if they end an edit.
+ * value that moved keeps its text.
  */
 function block(
-    u: Update, prefix: string, value: unknown, col: number, key?: string,
-    next?: number): string[] {
+    u: Update, prefix: string, value: unknown, col: number,
+    key?: string): string[] {
   const pad = ' '.repeat(col);
-  const moved =
-      prefix.endsWith(':') ? movedText(u, key, value, col, next) : undefined;
+  const moved = prefix.endsWith(':') ? movedText(u, key, value, col) : undefined;
   if (moved) return [pad + prefix + moved[0], ...moved.slice(1)];
   if (!isFull(value)) {
-    let s = scalarText(u, value, col, false);
-    if (!fits(u, s, next)) s = scalarText(u, value, col, false, 'QUOTE_DOUBLE');
+    const s = scalarText(u, value, col, false);
     // A block scalar's header is a line of its own, so that a comment after
     // it stays out of the text.
     const line = `${pad}${prefix} ${s}`;
     return /^[|>]/.test(s) ? line.split(u.nl) : [line];
   }
   if (prefix === '-' && isRecord(value)) {
-    const lines = items(u, value, col + u.itemIndent, next);
+    const lines = items(u, value, col + u.itemIndent);
     // In a file whose items start on the line after their '-', so do new ones.
     if (u.itemAlone) return [pad + '-', ...lines];
     const [first, ...rest] = lines;
@@ -569,22 +489,16 @@ function block(
   }
   const nested =
       prefix === '-' ? 2 : Array.isArray(value) ? u.seqIndent : u.step;
-  return [pad + prefix, ...items(u, value, col + nested, next)];
+  return [pad + prefix, ...items(u, value, col + nested)];
 }
 
-/**
- * The lines of each item of the collection `value`, at column `col`, before
- * the text at offset `next`.
- */
-function items(u: Update, value: object, col: number, next?: number): string[] {
+/** The lines of each item of the collection `value`, at column `col`. */
+function items(u: Update, value: object, col: number): string[] {
   release(u, value);
-  const entries = entriesOf(value);
-  return entries.flatMap(([k, v], i) => {
+  return entriesOf(value).flatMap(([k, v]) => {
     const prefix =
         Array.isArray(value) ? '-' : `${scalarText(u, k, 0, false)}:`;
-    return block(
-        u, prefix, v, col, String(k),
-        i === entries.length - 1 ? next : undefined);
+    return block(u, prefix, v, col, String(k));
   });
 }
 
@@ -598,40 +512,6 @@ function release(u: Update, value: object): void {
 }
 
 /**
- * Whether the block text `s` of a value, before the text at offset `next`,
- * reads as that value. A block scalar that keeps its final line breaks, as
- * `|+` does, takes the blank lines after it, and can give up only the empty
- * lines it ends in.
- */
-function fits(u: Update, s: string, next?: number): boolean {
-  return !/^[|>][0-9]*\+/.test(s) ||
-      emptyLines(s.split(u.nl)) >= blankLines(u, next);
-}
-
-/**
- * The number of blank lines from offset `from`, a line's start, in the text
- * that the edits so far leave. None when `from` is undefined.
- */
-function blankLines(u: Update, from?: number): number {
-  const t = u.text;
-  let n = 0;
-  for (let p = from ?? t.length; p < t.length;) {
-    const cut = u.edits.find(([a, b, s]) => a <= p && p < b && !s);
-    if (!cut && t.slice(p, nextLine(t, p)).trim()) break;
-    if (!cut) n++;
-    p = cut ? cut[1] : nextLine(t, p);
-  }
-  return n;
-}
-
-/** The number of empty lines that end `lines`. */
-function emptyLines(lines: string[]): number {
-  let n = 0;
-  while (lines[lines.length - 1 - n] === '') n++;
-  return n;
-}
-
-/**
  * The text of the input value that `value` moved from, for `key` at column
  * `col`, or in a flow mapping when `col` is undefined: what follows the key's
  * `:` on its line, then each line under it, re-indented. An object or array
@@ -639,10 +519,13 @@ function emptyLines(lines: string[]): number {
  * pair with the same key and value whose text the new value does not keep.
  * Undefined when nothing moved, or when the text would not read back as
  * `value` at its new place, as when it holds an alias of an anchor outside it.
+ * A value that is or holds a block scalar that keeps its final line breaks,
+ * as `|+` does, is written fresh, since its text would take the blank lines
+ * after its new place.
  */
 function movedText(
-    u: Update, key: string|undefined, value: unknown, col?: number,
-    next?: number): string[]|undefined {
+    u: Update, key: string|undefined, value: unknown,
+    col?: number): string[]|undefined {
   const node = isObject(value) ? u.links.get(value) : undefined;
   const found = u.pairs.find(([p, parent]) => !u.used.has(p) &&
       (node ? p.value === node :
@@ -652,7 +535,7 @@ function movedText(
                   value));
   const p = found?.[0];
   const v = p?.value as yaml.Node|undefined;
-  if (!p || !v?.range || !yaml.isNode(p.key)) return undefined;
+  if (!p || !v?.range || !yaml.isNode(p.key) || keeps(u, v)) return undefined;
   const t = u.text;
   const keyCol = p.key.range![0] - lineStart(t, p.key.range![0]);
   const from = v.range[0];
@@ -677,15 +560,10 @@ function movedText(
   // An empty value moves as nothing after the key's `:`.
   const moved = own ? ['', ...lines] :
                       [lines[0] && ' ' + lines[0], ...lines.slice(1)];
-  // In the file, a line break ends the moved lines, and the blank lines from
-  // `next` follow. A `|+` block scalar's value holds them, but for as many
-  // empty lines as it gives up.
-  const extra = Math.max(0, blankLines(u, next) - emptyLines(moved.slice(1)));
   const reads = col === undefined ?
       moved.length === 1 && readsInFlow(moved[0].trim(), value) :
       readsInBlock(
-          [' '.repeat(col) + '_:' + moved[0], ...moved.slice(1), ''].join('\n') +
-              '\n'.repeat(extra),
+          [' '.repeat(col) + '_:' + moved[0], ...moved.slice(1)].join('\n'),
           value);
   if (!reads) return undefined;
   u.used.add(p);
@@ -722,6 +600,21 @@ function readsInBlock(text: string, value: unknown): boolean {
   }
 }
 
+/** Whether the text of `node` holds a line break. */
+function spansLines(u: Update, node: yaml.Node): boolean {
+  return u.text.slice(node.range![0], node.range![1]).includes('\n');
+}
+
+/** Whether `node` is or holds a block scalar that keeps its final line breaks. */
+function keeps(u: Update, node: yaml.Node): boolean {
+  let found = false;
+  yaml.visit(node, {
+    Scalar: (_, n) => void (found ||= /^[|>][0-9]*\+/.test(
+        u.text.slice(n.range![0], lineEnd(u.text, n.range![0])))),
+  });
+  return found;
+}
+
 /** The number of spaces and tabs that start `line`. */
 function indentOf(line: string): number {
   return /^[ \t]*/.exec(line)![0].length;
@@ -756,6 +649,11 @@ function scalarText(
     flowCollectionPadding: false,
     collectionStyle: flow ? 'flow' : 'any',
   });
+  // A block scalar that keeps its final line breaks would take the blank
+  // lines after it, so such a value is double-quoted.
+  if (!flow && /^_: [|>][0-9]*\+/.test(text)) {
+    return scalarText(u, value, col, flow, 'QUOTE_DOUBLE');
+  }
   return (flow ? text.slice(1, -2) : text.slice(3, -1))
       .split('\n')
       .map((line, i) => i > 0 && line ? ' '.repeat(col) + line : line)

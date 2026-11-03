@@ -198,10 +198,13 @@ interface Side {
   gone: Set<number>;
   /** Lines of changed or added nodes, whose comments must stay. */
   changed: Set<number>;
-  /** Lines whose comment goes with the removed flow item before it. */
-  taken: Set<number>;
-  /** Lines whose comment may go with the removed flow item before it. */
+  /** Lines inside a flow collection written again, whose comment may go. */
   dropped: Set<number>;
+  /**
+   * Lines whose comment follows a flow collection written again, with the key
+   * on the line where that collection starts.
+   */
+  ends: Map<number, string>;
   /** Where each new flow item starts and ends. */
   added: number[][];
 }
@@ -210,8 +213,8 @@ const side = (text: string): Side => ({
   starts: [0, ...[...text.matchAll(/\n/g)].map(m => m.index! + 1)],
   gone: new Set(),
   changed: new Set(),
-  taken: new Set(),
   dropped: new Set(),
+  ends: new Map(),
   added: [],
 });
 const lineOf = (s: Side, p: number) =>
@@ -224,6 +227,8 @@ const mark = (set: Set<number>, [a, b]: number[]) => {
 };
 const isBlank = (line: string) => line.trim() === '';
 const isComment = (line: string) => /^\s*#/.test(line);
+const keyOn = (s: Side, i: number) =>
+    /^\s*(?:-\s+)?([\w"']+)\s*:/.exec(lineText(s, i))?.[1] ?? '';
 const canonical = (v: unknown) => JSON.stringify(
     v, (_, x) => isObj(x) && !Array.isArray(x) ?
         Object.fromEntries(Object.entries(x).sort(([a], [b]) => a < b ? -1 : 1)) :
@@ -261,25 +266,13 @@ function span(s: Side, node: any, item: any): number[] {
   return [lineOf(s, start), node.flow ? end : i];
 }
 
-// Marks a removed item: its lines, and those of the comments and blank lines
-// above it. A first item keeps the blank lines above its comments, and takes
-// the blank lines under it.
+// Marks a removed item. A flow item's line changes. A block item goes with
+// its lines and those of the comments and blank lines above it. A first item
+// keeps the blank lines above its comments, and takes the blank lines under it.
 function removed(s: Side, node: any, i: number) {
   const [a, b] = span(s, node, node.items[i]);
+  if (node.flow) return mark(s.changed, [a, b]);
   const start = startOf(node, node.items[i]);
-  if (node.flow) {
-    // A flow item that starts its line takes its lines, but for the brackets
-    // and comment after it on its last line. A comment after only its comma
-    // goes with it, and may go with one after other text.
-    const own = isBlank(before(s, start));
-    const tail = /^\s*,?\s*(#.*)?\s*$/.test(lineText(s, b).slice(
-        (yaml.isPair(node.items[i]) ? node.items[i].value : node.items[i])
-            .range[1] - s.starts[b]));
-    const last = own && b > a && !tail ? b - 1 : b;
-    if (last < b) s.changed.add(b);
-    if (tail) (own ? s.taken : s.dropped).add(b);
-    return mark(own ? s.gone : s.changed, [a, last]);
-  }
   mark(s.gone, [a, b]);
   if (!isBlank(before(s, start))) return;
   const floor = i > 0 ? span(s, node, node.items[i - 1])[1] : -1;
@@ -299,6 +292,21 @@ function removed(s: Side, node: any, i: number) {
 // style of a changed part goes into `problems`.
 function align(
     x: Side, y: Side, a: any, b: any, problems: string[]): boolean {
+  // A changed `|+` block scalar and a changed flow collection over several
+  // lines are written again. Only their value and a second import are checked.
+  // The comments inside the flow collection may go, and the one after it
+  // follows its key.
+  const [top, bottom] = [lineOf(x, a.range[0]), lineOf(x, a.range[1] - 1)];
+  if (/^[|>][0-9]*\+/.test(x.text.slice(a.range[0])) &&
+      !(yaml.isScalar(b) && a.value === b.value)) {
+    mark(x.changed, [top, bottom]);
+  }
+  if (yaml.isCollection(a) && a.flow && top < bottom &&
+      !(yaml.isCollection(b) && b.flow)) {
+    mark(x.dropped, [top, bottom - 1]);
+    x.ends.set(bottom, keyOn(x, top));
+    return false;
+  }
   if (yaml.isScalar(a) && yaml.isScalar(b)) {
     if (a.value === b.value) return true;
     // A changed scalar keeps its quoting and the text around it on its line,
@@ -386,12 +394,6 @@ function align(
   const touched = pairs.length !== as.length || pairs.length !== bs.length ||
       pairs.some(([i, j]) => canonical(as[i].toJSON()) !==
                      canonical(bs[j].toJSON()));
-  // In a flow list that gives each item a line, a new item gets one too.
-  const own = (s: Side, n: any) =>
-      n.items.every((it: any) => isBlank(before(s, startOf(n, it))));
-  if (touched && a.flow && b.flow && as.length > 0 && own(x, a) && !own(y, b)) {
-    problems.push('a flow item lost its line');
-  }
   return !(touched && a.flow) && as.length > 0 === bs.length > 0;
 }
 
@@ -430,7 +432,7 @@ function comments(s: Side) {
       return [];
     }
     const line = lineOf(s, p);
-    const key = /^\s*(?:-\s+)?([\w"']+)\s*:/.exec(lineText(s, lineOf(s, last)))?.[1] ?? '';
+    const key = keyOn(s, lineOf(s, last));
     return [{token, line, key, close, after: !isBlank(before(s, p)), last}];
   });
 }
@@ -454,16 +456,15 @@ function check(input: string, output: string) {
   }
   for (const c of comments(x)) {
     const d = inOut.find(d => d.token === c.token);
-    if (x.taken.has(c.line) && d) {
-      problems.push(`${c.token} kept with a removed item`);
-    }
     if (x.gone.has(c.line) || x.dropped.has(c.line)) continue;
     // A comment after a value stays after its key, or after what takes the
     // place of the value it follows, and never follows a new flow item.
-    // A comment after a `}` or `]` stays after one.
+    // A comment after a `}` or `]` stays after one, or after the key of a
+    // flow collection written again.
+    const key = x.ends.get(c.line) ?? c.key;
     const kept = d && (!c.after || d.after &&
-        (c.key === d.key || RENAMED[c.key] === d.key ||
-         (c.key === '' || c.close && d.close) && y.changed.has(d.line)));
+        (key === d.key || RENAMED[key] === d.key ||
+         (key === '' || c.close && d.close) && y.changed.has(d.line)));
     if (!kept) problems.push(`${c.token} moved`);
     if (d && y.added.some(([a, b]) => a <= d.last && d.last < b)) {
       problems.push(`${c.token} moved after a new item`);
