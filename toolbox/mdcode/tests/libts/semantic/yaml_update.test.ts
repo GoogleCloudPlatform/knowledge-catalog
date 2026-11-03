@@ -34,10 +34,11 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   [
     'text that ends in two line breaks written again, added and set before blank lines',
-    'b: {k: 1}\n\n\nc:\n  - 1\n\nd:\n  p: |-\n    o\n\n  q: 1\ne:\n  "z"\n\n\nf: 1\n',
-    v => (v.b = 'x\n\n', v.c.push('y\n\n'), v.d = {p: 'v\n\n', r: 2, q: 1}, v.e = {k: 'x\n\n'}),
+    'b: {k: 1}\n\n\nc:\n  - 1\n\nd:\n  p: |-\n    o\n\n  q: 1\ne:\n  "z"\n\n\ng: {k: 1}\nh: 1\n',
+    v => (v.b = 'x\n\n', v.c.push('y\n\n'), v.d = {p: 'v\n\n', r: 2, q: 1}, v.e = {k: 'x\n\n'},
+          v.g = 'x\n\n'),
     'b: "x\n\n  \\n"\n\n\nc:\n  - 1\n  - |+\n    y\n\nd:\n  p: |+\n    v\n\n  r: 2\n\n  q: 1\n' +
-        'e:\n  k: "x\n\n    \\n"\n\n\nf: 1\n'
+        'e:\n  k: "x\n\n    \\n"\n\n\ng: |+\n  x\n\nh: 1\n'
   ],
   [
     'text that ends in two line breaks moved or added before blank lines, one after a removed key',

@@ -110,13 +110,15 @@ export function updateText(
   parts.push(text.slice(at));
   // A block scalar that keeps its final line breaks, as `|+` does, takes the
   // blank lines after it, and gives up as many of the empty lines it ends in.
+  // After its last line of text come that line's break, one for each empty
+  // line and one for each blank line.
   for (let i = parts.length - 1; i > 0; i--) {
     if (!empty[i]) continue;
-    let rest = parts.slice(i + 1).join('');
-    if (!parts[i].endsWith('\n')) rest = rest.slice(nextLine(rest, 0));
-    const blank = /^([ \t]*\r?\n)*/.exec(rest)![0].split('\n').length - 1;
-    parts[i] = parts[i].slice(
-        0, parts[i].length - u.nl.length * Math.min(blank, empty[i]));
+    const last = parts[i].replace(/(\r?\n)+$/, '').length;
+    const rest = parts[i].slice(last) + parts.slice(i + 1).join('');
+    const breaks = /^([ \t]*\r?\n)*/.exec(rest)![0].split('\n').length - 1;
+    const blank = Math.min(empty[i], Math.max(0, breaks - empty[i] - 1));
+    parts[i] = parts[i].slice(0, parts[i].length - u.nl.length * blank);
   }
   const out = parts.join('');
   // A text with no final newline keeps none.
