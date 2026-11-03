@@ -99,10 +99,21 @@ export function updateText(
       replace(u, v, alias, slot);
     }
   }
+  // The empty lines after a block scalar that keeps its final line breaks, as
+  // `|+` does, are its text. An edit that removes the text right after one
+  // also removes the blank lines it would leave there.
+  const ends = new Set<number>();
+  yaml.visit(doc, {Scalar: (_, n) => void (keepsBreaks(text, n) && ends.add(n.range![1]))});
+  const edits = u.edits.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  edits.forEach(([from, to, s], i) => {
+    const [p, q, inserted] = edits[i - 1] ?? [];
+    if (s || !ends.has(from) || p === from && q === from && inserted) return;
+    edits[i][1] = skipBlank(text, to, edits[i + 1]?.[0] ?? text.length);
+    ends.add(edits[i][1]);
+  });
   let out = '';
   let at = 0;
-  for (const [from, to, s] of u.edits.sort(
-           (a, b) => a[0] - b[0] || a[1] - b[1])) {
+  for (const [from, to, s] of edits) {
     // An edit inside another would write part of the text twice.
     if (from < at) throw new Error(`Overlapping edits at offset ${from}.`);
     out += text.slice(at, from) + s;
@@ -609,11 +620,14 @@ function spansLines(u: Update, node: yaml.Node): boolean {
 /** Whether `node` is or holds a block scalar that keeps its final line breaks. */
 function keeps(u: Update, node: yaml.Node): boolean {
   let found = false;
-  yaml.visit(node, {
-    Scalar: (_, n) => void (found ||= /^[|>][0-9]*\+/.test(
-        u.text.slice(n.range![0], lineEnd(u.text, n.range![0])))),
-  });
+  yaml.visit(node, {Scalar: (_, n) => void (found ||= keepsBreaks(u.text, n))});
   return found;
+}
+
+/** Whether `node` is a block scalar that keeps its final line breaks. */
+function keepsBreaks(t: string, node: unknown): node is yaml.Scalar {
+  return yaml.isScalar(node) &&
+      /^[|>][0-9]*\+/.test(t.slice(node.range![0], lineEnd(t, node.range![0])));
 }
 
 /** The number of spaces and tabs that start `line`. */

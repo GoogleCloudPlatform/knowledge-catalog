@@ -52,6 +52,14 @@ test.each<[string, string, (value: any) => void, string?]>([
         'd: "x\n\n  \\n"\n'
   ],
   [
+    'items removed and replaced after `|+` block scalars that stay',
+    'l:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\n' +
+        'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\n',
+    v => (v.l.splice(1, 1), v.r.splice(1, 1, {k: 9}), v.a.m.splice(1, 1), delete v.a.n),
+    'l:\n  - e: |+\n      x\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 9\n\n  - k: 3\n' +
+        'a:\n  m:\n    - e: |+\n        x\n\n  o: 2\n'
+  ],
+  [
     'text that starts with a space, written as block scalars in a file indented by four',
     'a:\n    k: |-  # c\n        x\n    l:\n        - x\n', v => (v.a.k = '  y\nz', v.a.l.push('  p\nq')),
     'a:\n    k: |4-  # c\n          y\n        z\n    l:\n        - x\n        - |4-\n              p\n            q\n'
