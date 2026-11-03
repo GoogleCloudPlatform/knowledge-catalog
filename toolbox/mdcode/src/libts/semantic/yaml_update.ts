@@ -398,10 +398,10 @@ function geometry(
 
 /**
  * Where a block item at column `col` ends, given where its `node` ends: at a
- * line's start, before the empty lines and the comments at its column or less
+ * line's start, before the blank lines and the comments at its column or less
  * under it, since those are above the next item. When `node` ends in a block
- * scalar that keeps its final line breaks, as `|+` does, the empty lines that
- * end that scalar are its text and stay in the item.
+ * scalar, the lines of that scalar's text stay in the item, such as the empty
+ * lines that end a `|+` block scalar.
  */
 function blockEnd(t: string, end: number, col: number, node?: unknown): number {
   if (t.slice(lineStart(t, end), end).trim() === '') end = lineStart(t, end);
@@ -410,11 +410,13 @@ function blockEnd(t: string, end: number, col: number, node?: unknown): number {
     const item = last.items.at(-1);
     last = yaml.isPair(item) ? item.value : item;
   }
-  const floor = keepsBreaks(t, last) ? lineStart(t, last.range![1]) : 0;
+  const floor = yaml.isScalar(last) && /^BLOCK/.test(last.type ?? '') ?
+      lineStart(t, last.range![1]) :
+      0;
   let p = end;
   for (let q = lineStart(t, p - 1); p > floor; p = q, q = lineStart(t, p - 1)) {
     const line = t.slice(q, lineEnd(t, q));
-    if (line && (!/^\s*#/.test(line) || line.search(/\S/) > col)) break;
+    if (line.trim() && (!/^\s*#/.test(line) || line.search(/\S/) > col)) break;
   }
   return p;
 }

@@ -59,6 +59,12 @@ test.each<[string, string, (value: any) => void, string?]>([
     'l:\n  - k: 1\n\n  - k: 3\n\n  - k: 5\na:\n  s: 1\n  custom:\n    team:\n      notes:  # n\nb: 1\nm:\n  - d: |\n      x\n        \n  - k: 3\n'
   ],
   [
+    'items that end in a deeper comment above a comment and a line of spaces, removed or moved',
+    'l:\n  - k: 1\n    # deep\n  # c\n  \n  - k: 2\na:\n  t:\n    l: 1\n    # deep\n  # d\n  \n  i: 1\n',
+    v => (v.l.shift(), v.a = {i: 1, custom: {t: v.a.t}}),
+    'l:\n  # c\n  \n  - k: 2\na:\n  # d\n  \n  i: 1\n  custom:\n    t:\n      l: 1\n'
+  ],
+  [
     'items removed and replaced after `|+` block scalars that stay',
     'l:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\n' +
         'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\nb:\n  - >2+\n    x\n\nc: 1\nd: 1\n',
