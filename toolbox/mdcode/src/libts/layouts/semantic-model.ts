@@ -255,17 +255,9 @@ export class SemanticModelLayout implements CatalogLayout {
     }
     const version = header.version;
     const docs: {name: string; text: string; path: string}[] = [];
-    // Profile names are unique ignoring case.
-    const byLowerName = new Map<string, string>();
+    const seen = new Map<string, string>();
     for (const {name, path: p} of siblings) {
       const file = path.basename(p);
-      const twin = byLowerName.get(name.toLowerCase());
-      if (twin) {
-        throw new Error(
-            `Profile files '${twin}' and '${file}' name the same profile; ` +
-            `profile names are unique ignoring case.`);
-      }
-      byLowerName.set(name.toLowerCase(), file);
       if (!fs.statSync(p).isFile()) {
         throw new Error(`Profile file '${file}' is not a file.`);
       }
@@ -273,7 +265,7 @@ export class SemanticModelLayout implements CatalogLayout {
         throw new Error(vanillaSiblingError(file, model));
       }
       const text = fs.readFileSync(p, 'utf8');
-      checkProfileFileName(modelFile, file, name, text);
+      checkProfileFileName(modelFile, file, name, text, seen);
       docs.push({name, text, path: p});
     }
     return docs;
@@ -529,11 +521,22 @@ export function formatOverviewSidecar(
 }
 
 // Throws when the profile file `file`, holding `text` for profile `name` beside
-// the model file `modelFile`, does not parse, uses the legacy `semantic_model:`
+// the model file `modelFile`, names the same profile as a file in `seen`, which
+// maps each profile name read before, in lower case, to its file. It also
+// throws when the file does not parse, uses the legacy `semantic_model:`
 // wrapper, takes the name reserved for the inline bindings, or declares no name
-// or another name.
+// or another name. Adds the file to `seen`.
 export function checkProfileFileName(
-    modelFile: string, file: string, name: string, text: string): void {
+    modelFile: string, file: string, name: string, text: string,
+    seen: Map<string, string>): void {
+  // Profile names are unique ignoring case.
+  const twin = seen.get(name.toLowerCase());
+  if (twin) {
+    throw new Error(
+        `Profile files '${twin}' and '${file}' name the same profile; ` +
+        `profile names are unique ignoring case.`);
+  }
+  seen.set(name.toLowerCase(), file);
   const declared = parseProfileName(text, file, name);
   const reserved = (n?: string) => n?.toLowerCase() === DEFAULT_PROFILE_NAME;
   if (reserved(name)) {

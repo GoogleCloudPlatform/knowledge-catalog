@@ -108,9 +108,15 @@ a `GOOGLE` block for it, and drops an empty `custom`, with its `ai_context`
 when nothing else is left in it. A file written for kcmd converts between
 flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
 `<file>` go in with it. A profile's sources stay as written, even with
-`--source-prefix`. Import checks each profile it writes as push does, and
-reports what push rejects as an error under `--input first-party` and as a
-warning otherwise. Push's warnings about a profile are warnings. Nothing is
+`--source-prefix`. Import checks the model file's own bindings and each profile
+it writes as push does. It reports what push rejects as an error under
+`--input first-party` and as a warning otherwise, and push's warnings as
+warnings. Under `--input first-party`, a message about the model file's
+bindings or a profile names the input file that holds them. Push reads each
+Cloud SQL and third-party table's engine from its Knowledge Catalog entry, and
+import does not, so the checks that need the engine stay with push: whether a
+profile's tables in one Cloud SQL instance or one third-party system are in one
+database, and whether a field has SQL in its table's dialect. Nothing is
 written when the import reports an error. Import rewrites only the values it
 changes, and every other line of the file stays as written, with its comments,
 blank lines, quoting, indentation and line endings. Comments on anything import

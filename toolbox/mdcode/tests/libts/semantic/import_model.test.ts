@@ -214,7 +214,7 @@ describe('conversion, strict mode, and translation', () => {
   });
 
   test(
-      'returns a valid Google-flavor model unchanged in strict mode and runs transpileModel when requested',
+      'returns a Google-flavor model unchanged as a third-party file, and runs transpileModel in strict mode when requested',
       async () => {
         const raw = googleDoc({
           fieldExpr:
@@ -222,7 +222,8 @@ describe('conversion, strict mode, and translation', () => {
           extra:
               '    metrics:\n      - name: total_orders\n        entity: orders\n        expression: \'COUNT("orders"."order_id")\'\n',
         });
-        const offRes = await importSemanticModelYaml(raw, {strict: true});
+        // Push rejects the vendor field, so a strict import would fail.
+        const offRes = await importSemanticModelYaml(raw);
         const onStrictRes =
             await importSemanticModelYaml(raw, {strict: true, transpile: true});
 
@@ -230,8 +231,8 @@ describe('conversion, strict mode, and translation', () => {
         expect(offRes.files[0].content).toBe(raw);
         // Without translation, the BigQuery table's vendor field and its
         // double-quoted ANSI_SQL metric each warn.
-        expect(offRes.warnings.map(w => w.split(':')[0])).toEqual([
-          "field 'orders.order_id'", "metric 'total_orders'",
+        expect(offRes.warnings.map(w => w.split(/:| in /)[0])).toEqual([
+          "field 'orders.order_id'", "metric 'total_orders'", "field 'orders.order_id'",
         ]);
         // On a Spanner table, the vendor field warns that the table cannot
         // run it.
@@ -450,55 +451,114 @@ describe('profile checks', () => {
     name: 'orders', source: `${BQ_PREFIX}/tables/orders_prod`, primary_key: ['order_id'],
     fields: [{name: 'order_id', expression: 'order_id'}],
   }]};
-  const orders = (more: object) => ({...PG, entities: [{...PG.entities[0], ...more}]});
-  const also = (name: string) => ({...PG, entities: [...PG.entities, {name, source: BQ_TABLE}]});
-  const block = (p: Profile) =>
-      `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({profiles: [p]})}'\n`;
-  const file = (p: Profile) => [{fileName: 'retail.profile.pg.yaml', content: yaml.stringify(p)}];
+  const orders = (more: object) => [{...PG, entities: [{...PG.entities[0], ...more}]}];
+  const also = (name: string) => [{...PG, entities: [...PG.entities, {name, source: BQ_TABLE}]}];
+  const block = (ps: Profile[]) =>
+      `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({profiles: ps})}'\n`;
+  // The input file is sales.yaml, which holds model retail.
+  const files = (ps: Profile[]) =>
+      ps.map(p => ({fileName: `sales.profile.${p.name ?? 'pg'}.yaml`, content: yaml.stringify(p)}));
   const google = googleDoc({extra: '      - name: party\n        abstract: true\n'});
-  // [path, its input and options for profile p, the label of p's errors, whether
-  // the path keeps a Google model's profile file]
-  const PATHS: Array<[string, (p: Profile) => [string, any], string, boolean]> = [
-    ['a GOOGLE block, to ossie', p => [ossieDoc({extra: block(p)}), {strict: true, flavor: 'ossie'}], 'retail', false],
-    ['a GOOGLE block, to google', p => [ossieDoc({extra: block(p)}), {strict: true, flavor: 'google'}], 'retail.profile.pg.yaml', false],
-    ['a profile file, to ossie', p => [googleDoc(), {strict: true, flavor: 'ossie', profileFiles: file(p)}], 'retail', false],
-    ['a profile file, to google', p => [google, {strict: true, flavor: 'google', profileFiles: file(p)}], 'retail.profile.pg.yaml', true],
-    ['a third-party profile file, to google', p => [google, {flavor: 'google', profileFiles: file(p)}], 'retail.profile.pg.yaml', true],
+  const strict = {strict: true, fileName: 'sales.yaml'};
+  // Where a message says profile pg is: the document that holds the model, the
+  // label of pg's errors, and the flavor the import writes.
+  type At = {doc: string; label: string; flavor: string};
+  // [path, its input and options for profiles ps, the document and label a
+  // message names, whether the path keeps a Google model's profile files]. In
+  // strict mode a message names the input; otherwise it names what is written.
+  const PATHS: Array<[string, (ps: Profile[]) => [string, any], string, string, boolean]> = [
+    ['a GOOGLE block, to ossie', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'ossie'}], 'sales', 'sales', false],
+    ['a GOOGLE block, to google', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'google'}], 'sales', 'sales', false],
+    ['a profile file, to ossie', ps => [googleDoc(), {...strict, flavor: 'ossie', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', false],
+    ['a profile file, to google', ps => [google, {...strict, flavor: 'google', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', true],
+    ['a third-party profile file, to google', ps => [google, {flavor: 'google', fileName: 'sales.yaml', profileFiles: files(ps)}], 'retail', 'retail.profile.pg.yaml', true],
   ];
-  // [problem, profile, push's error with the label and the written flavor,
-  // whether only a kept profile file reaches it]. A double-quoted name gets
-  // push's warning on every path.
-  const quoted = (_: string, flavor: string) => `profile 'pg': [retail] field 'orders.order_id': ` +
-      `BigQuery reads "Order ID" in its 'ANSI_SQL' expression as text; if you meant a column, give ` +
-      `it a 'BIGQUERY' expression without the double quotes; 'kcmd import <file> --input ` +
-      `first-party --flavor ${flavor} --transpile' adds one`;
-  const PROBLEMS: Array<[string, Profile, ((label: string, flavor: string) => string)|undefined, boolean]> = [
-    ['nothing', PG, undefined, false],
-    ['no name', (({name: _, ...rest}) => rest)(PG),
-     () => "Profile file 'retail.profile.pg.yaml' declares no name; add 'name: pg'.", true],
+  // [problem, profiles, push's message, whether only a kept profile file
+  // reaches it]. A double-quoted name gets push's warning on every path.
+  const PROBLEMS: Array<[string, Profile[], ((at: At) => string)|undefined, boolean]> = [
+    ['nothing', [PG], undefined, false],
+    ['no name', [(({name: _, ...rest}) => rest)(PG)],
+     at => `Profile file '${at.label}' declares no name; add 'name: pg'.`, true],
+    ['names that differ only in letter case', [PG, {...PG, name: 'PG'}],
+     at => `Profile files '${at.doc}.profile.pg.yaml' and '${at.doc}.profile.PG.yaml' name the ` +
+         'same profile; profile names are unique ignoring case.', true],
     ['an unknown entity', also('ghost'),
-     l => `[${l}] profile 'pg': entity 'ghost' is not in the logical model`, false],
+     at => `[${at.label}] profile 'pg': entity 'ghost' is not in the logical model`, false],
     ['an abstract entity', also('party'),
-     l => `[${l}] profile 'pg': entity 'party' is abstract, so a profile cannot bind it`, true],
+     at => `[${at.label}] profile 'pg': entity 'party' is abstract, so a profile cannot bind it`, true],
     ['a bad source', orders({source: 'orders'}),
-     l => `[${l}] profile 'pg': entity 'orders': bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders`, false],
+     at => `[${at.label}] profile 'pg': entity 'orders': bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders`, false],
     ['a field reference', orders({fields: [{name: 'order_id', expression: 'orders.nope'}]}),
-     l => `[${l}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
-    ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}), quoted, false],
+     at => `[${at.label}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
+    ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}),
+     at => `profile 'pg': [${at.doc}] field 'orders.order_id': BigQuery reads "Order ID" in its ` +
+         `'ANSI_SQL' expression as text; if you meant a column, give it a 'BIGQUERY' expression ` +
+         `without the double quotes; 'kcmd import <file> --input first-party --flavor ${at.flavor} ` +
+         `--transpile' adds one`, false],
   ];
 
-  test.each(PROBLEMS.flatMap(([problem, profile, error, keptOnly]) => PATHS.flatMap(
-      ([path, build, label, kept]) => {
-        const [input, opts] = build(profile);
-        return !keptOnly || kept ? [[problem, path, input, opts, error?.(label, opts.flavor)]] : [];
+  test.each(PROBLEMS.flatMap(([problem, profiles, message, keptOnly]) => PATHS.flatMap(
+      ([path, build, doc, label, kept]) => {
+        const [input, opts] = build(profiles);
+        return !keptOnly || kept ?
+            [[problem, path, input, opts, message?.({doc, label, flavor: opts.flavor})]] : [];
       })))(
-      'reports %s in %s', async (problem, __, input, opts, error) => {
+      'reports %s in %s', async (problem, __, input, opts, message) => {
         const res = await importSemanticModelYaml(input, opts);
         const warned = !opts.strict || problem === 'a double-quoted name';
-        expect(res.errors).toEqual(!warned && error ? [error] : []);
-        expect(res.warnings).toEqual(warned && error ? [error] : []);
-        if (!opts.strict) expect(res.files.slice(1)).toEqual(opts.profileFiles);
+        expect(res.errors).toEqual(!warned && message ? [message] : []);
+        expect(res.warnings).toEqual(warned && message ? [message] : []);
+        if (!opts.strict) {
+          expect(res.files.slice(1).map(f => f.content))
+              .toEqual(opts.profileFiles.map((f: any) => f.content));
+        }
       });
+
+  // A Google model of `orders` on `source`, with `more` after its key field.
+  const model = (more: string, source = BQ_TABLE) => googleDoc({
+    source, fieldExpr: 'order_id', extra: more,
+  });
+  const KEYED = `    primary_key: [order_id]\n    fields:\n      - {name: order_id, expression: order_id}\n`;
+  const pg = (body: string) => [{fileName: 'sales.profile.pg.yaml', content:
+      `name: pg\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n${body}`}];
+  const READS = (database: string, dialect: string, hint = '') =>
+      `${database} reads "Order Amount" in its 'ANSI_SQL' expression as text; if you meant a ` +
+      `column, give it a '${dialect}' expression without the double quotes${hint}`;
+  const HINT = "; 'kcmd import <file> --input first-party --flavor google --transpile' adds one";
+  const AMOUNT = (expr: string) => `          - {name: amount, expression: ${expr}}\n`;
+  // [label, model, profile files, errors, warnings]
+  test.each([
+    ['warns once about a model field that a valid profile inherits',
+     model(AMOUNT(`'"Order Amount"'`)), pg(KEYED), [],
+     [`field 'orders.amount': ${READS('BigQuery', 'BIGQUERY', HINT)}`]],
+    ['gives no warning about a profile push rejects',
+     model(AMOUNT('amount')),
+     pg(`    fields:\n      - {name: order_id, expression: order_id}\n${AMOUNT(`'"Order Amount"'`).slice(4)}`),
+     ["[sales.profile.pg.yaml] profile 'pg': entity 'orders' has no primary_key in this " +
+      "profile; the model file's keys are columns of its own table, so state this profile's keys"], []],
+    ['names the model file\'s flavor in the hint about a profile\'s metric',
+     model(`    metrics:\n      - {name: total, entity: orders, expression: 'COUNT("Order Amount")'}\n`,
+           SPANNER_TABLE), pg(KEYED), [],
+     [`metric 'total': ${READS('Spanner', 'SPANNER')}`,
+      `profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', HINT)}`]],
+    ['reports a model field with no text for its table',
+     model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}')), [],
+     ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
+      "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; give it one, or " +
+      "add one with 'kcmd import <file> --input first-party --flavor google --transpile'."],
+     ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' " +
+      "expression as imported_expression (needs transpilation to 'BIGQUERY')"]],
+    ['reports a field that reads the column of the entity it is inherited from',
+     model(`      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n        primary_key: [order_id]\n`), [],
+     ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
+      "whose expression reads column 'order_id' of that entity's table; restate it with an " +
+      "expression for this entity's table."], []],
+  ])('%s', async (_, input, profileFiles, errors, warnings) => {
+    const res = await importSemanticModelYaml(
+        input, {...strict, flavor: 'google', profileFiles});
+    expect(res.errors).toEqual(errors);
+    expect(res.warnings).toEqual(warnings);
+  });
 });
 
 describe('vanilla output, extensions, and targets', () => {

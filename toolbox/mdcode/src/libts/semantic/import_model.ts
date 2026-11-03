@@ -14,6 +14,7 @@ import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
+import {validateInheritedColumns, validateInlineDialects} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -50,7 +51,9 @@ export interface ImportSemanticModelOptions {
   profileFiles?: SerializedFile[];
   /**
    * The input file's name. The warning that a JSON input was written as YAML
-   * names it. Defaults to `<model>.yaml`.
+   * names it, or `<model>.yaml` when it is unset. When set, in strict mode
+   * each message about the model's bindings names the input file or profile
+   * file that holds them.
    */
   fileName?: string;
 }
@@ -1654,10 +1657,12 @@ function writeDocument(
 /**
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
  * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and checks
- * each profile the output declares as push does.
+ * the model file's own bindings and each profile the output declares as push
+ * does.
  */
 function validateOutputDocument(
-    files: SerializedFile[], doc: ImportDocument): void {
+    files: SerializedFile[], doc: ImportDocument,
+    opts: ImportSemanticModelOptions): void {
   const [{fileName, content}, ...profileFiles] = files;
   try {
     // 1. Load the serialized output YAML with `loadModels`
@@ -1680,16 +1685,41 @@ function validateOutputDocument(
       validateDeploymentTargets(m, doc);
     }
 
-    // 3. Check each profile file, under the layout's file rules, and each
-    // GOOGLE block profile with push's offline profile checks. What push
-    // rejects is an error in strict mode and a warning otherwise.
-    const model = {name: fileName.replace(/\.yaml$/, ''), text: content};
-    const profileDocs = () => profileFiles.map(f => {
-      const name = parseProfileName(f.fileName);
-      checkProfileFileName(fileName, f.fileName, name, f.content);
-      return {name, text: f.content, fileName: f.fileName};
-    });
-    const declared = () => declaredProfiles(model, profileDocs());
+    // 3. Check the model file's own bindings, each profile file, under the
+    // layout's file rules, and each GOOGLE block profile with push's offline
+    // checks. What push rejects is an error in strict mode and a warning
+    // otherwise. Nothing is written on an error, so in strict mode each
+    // message names where the input holds the bindings.
+    const input = doc.strict ? opts.fileName : undefined;
+    const model = {
+      name: (input ?? fileName).replace(/\.ya?ml$/, ''),
+      text: content,
+    };
+    // Where the input holds profile `name`, which the output writes in
+    // `written`: its profile file, or the model file's GOOGLE block.
+    const inputFiles =
+        doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
+    const where = (name: string, written: string) => !input ? written :
+        inputFiles.find(pf => parseProfileName(pf.fileName) === name)
+                ?.fileName ??
+            model.name;
+    const profileDocs = () => {
+      const seen = new Map<string, string>();
+      return profileFiles.map(f => {
+        const name = parseProfileName(f.fileName);
+        const label = where(name, f.fileName);
+        checkProfileFileName(input ?? fileName, label, name, f.content, seen);
+        return {name, text: f.content, fileName: label};
+      });
+    };
+    const declared = () => declaredProfiles(model, profileDocs()).map(
+        p => 'spec' in p ? {...p, label: where(p.name, model.name)} : p);
+    for (const e of [
+           ...validateInlineDialects(loaded.models[0], model.name),
+           ...validateInheritedColumns(loaded.models[0], model.name),
+         ]) {
+      doc.warnOrError(e);
+    }
     const errors = namedProfileErrors(
         [model], new Map([[model.name, loaded.models[0]]]), profileDocs,
         declared, doc.warnings, {});
@@ -1762,7 +1792,7 @@ export async function importSemanticModelYaml(
     }
   }
   if (files.length > 0 && doc.errors.length === 0) {
-    validateOutputDocument(files, doc);
+    validateOutputDocument(files, doc, opts);
   }
   return {
     ok: doc.errors.length === 0,

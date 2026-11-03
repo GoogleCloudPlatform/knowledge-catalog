@@ -591,10 +591,12 @@ function applyToDocument(
 
 /**
  * A profile a model declares: the text of a profile file, or a profile already
- * read, such as one a vanilla model carries in its GOOGLE block.
+ * read, such as one a vanilla model carries in its GOOGLE block. A profile
+ * already read may carry `label`, the file that holds it, which
+ * namedProfileErrors names in place of the model document.
  */
 export type DeclaredProfile = {name: string; text: string}|
-    {name: string; spec: ProfileSpec};
+    {name: string; spec: ProfileSpec; label?: string};
 
 /**
  * The profiles the model document `doc` declares: `files`, its profile files,
@@ -1893,7 +1895,7 @@ export interface LocalCheckError {
 // The errors the named profiles of each model in `docs` give: each profile
 // file, and each profile a vanilla model carries in its GOOGLE block, checked
 // on its own for completeness. An error about a profile file names that file,
-// and one about a block profile names the model document.
+// and one about a block profile names its label or the model document.
 // A model's profiles are checked against its model file as loaded on its own,
 // which `baseByDoc` holds. A file under the reserved name 'default', which no
 // push deploys, is not read here. Push also checks the
@@ -1923,7 +1925,7 @@ export function namedProfileErrors(
         })),
         ...declared(d).flatMap(p => 'spec' in p ? [{
           name: p.name,
-          label: d.name,
+          label: p.label ?? d.name,
           read: () => {
             const {actions: _, ...spec} = p.spec;
             return spec;
