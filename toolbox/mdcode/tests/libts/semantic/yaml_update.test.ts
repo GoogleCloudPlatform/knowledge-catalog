@@ -73,6 +73,12 @@ test.each<[string, string, (value: any) => void, string?]>([
         'a:\n  m:\n    - e: |+\n        x\n\n  o: 2\nb:\n  - >2+\n    x\n\nd: 1\n'
   ],
   [
+    'items removed after a `|+` block scalar that changes and one in a value that changes',
+    'l:\n  - d: |+\n      x\n\n  - k: 2\n\n  - k: 3\nm:\n  - e:\n      d: |+\n        x\n\n  - k: 2\n\n  - k: 3\n',
+    v => (v.l[0].d = 'y', v.l.splice(1, 1), v.m[0].e = 5, v.m.splice(1, 1)),
+    'l:\n  - d: |-\n      y\n\n  - k: 3\nm:\n  - e: 5\n\n  - k: 3\n'
+  ],
+  [
     'text that starts with a space, written as block scalars in a file indented by four',
     'a:\n    k: |-  # c\n        x\n    l:\n        - x\n', v => (v.a.k = '  y\nz', v.a.l.push('  p\nq')),
     'a:\n    k: |4-  # c\n          y\n        z\n    l:\n        - x\n        - |4-\n              p\n            q\n'
