@@ -155,6 +155,29 @@ describe('a failed response', () => {
        details: [{'@type': 'google.rpc.LocalizedMessage', message: 'a "b"'}],
      }),
      'a "b"'],
+    ['a field violation the message lacks follows it',
+     google({
+       message: 'Invalid GetDatabase request.',
+       details: [{
+         '@type': 'type.googleapis.com/google.rpc.BadRequest',
+         fieldViolations: [{
+           field: 'name',
+           description: 'Got: databases/Retail\nError: Invalid database name.',
+         }],
+       }],
+     }),
+     'Invalid GetDatabase request. Got: databases/Retail; Error: Invalid ' +
+         'database name.'],
+    ['a field violation the message states is not repeated',
+     google({
+       message: 'Invalid value at \'view\', "NOPE"',
+       details: [{
+         '@type': 'type.googleapis.com/google.rpc.BadRequest',
+         fieldViolations:
+             [{field: 'view', description: 'Invalid value at \'view\', "NOPE"'}],
+       }],
+     }),
+     'Invalid value at \'view\', "NOPE"'],
     ['a JSON body with no error message comes back as it is',
      '{"error": "x"}', '{"error": "x"}'],
     ['a body that is not JSON comes back trimmed',

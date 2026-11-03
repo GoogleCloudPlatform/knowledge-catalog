@@ -25,10 +25,11 @@ const TRANSIENT_TRIES = 4;
 const TRANSIENT_DELAY_CAP_MS = 5000;
 const MAX_MESSAGE_LENGTH = 2000;
 
-// The message in a failed response's body: a Google API error's
-// LocalizedMessage detail, which Spanner leaves unescaped, or else its
-// `error.message`. Any other body comes back trimmed and cut to 2,000
-// characters.
+// The message in a failed response's body. For a Google API error it is the
+// LocalizedMessage detail, which Spanner leaves unescaped, or else
+// `error.message`. Each BadRequest field violation that the message does not
+// state is appended, with its line breaks replaced by semicolons. Any other
+// body comes back trimmed and cut to 2,000 characters.
 export function errorMessage(body: string): string {
   const text = body.trim();
   try {
@@ -37,7 +38,19 @@ export function errorMessage(body: string): string {
     const localized = details.find((d: any) =>
         d?.['@type']?.endsWith('LocalizedMessage') && isText(d.message));
     const message = localized?.message ?? error?.message;
-    if (isText(message)) return message.trim();
+    if (isText(message)) {
+      // Spanner states what is wrong with a name, such as an uppercase
+      // database ID, only in a field violation.
+      const violations = details
+          .filter((d: any) => d?.['@type']?.endsWith('BadRequest'))
+          .flatMap((d: any) =>
+              Array.isArray(d.fieldViolations) ? d.fieldViolations : [])
+          .map((v: any) => v?.description)
+          .filter((v: unknown): v is string =>
+              isText(v) && !message.includes(v.trim()))
+          .map((v: string) => v.trim().replace(/\s*\n\s*/g, '; '));
+      return [message.trim(), ...violations].join(' ');
+    }
   } catch {
     // Not JSON, such as a proxy's HTML error page.
   }
