@@ -33,6 +33,22 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: |+\n  z\n\nb: "w\n\n  \\n"\n\n\nc: |\n  u\n\nd: 1\n'
   ],
   [
+    'text that ends in two line breaks written again, added and set before blank lines',
+    'b: {k: 1}\n\n\nc:\n  - 1\n\nd:\n  p: |-\n    o\n\n  q: 1\ne:\n  "z"\n\n\nf: 1\n',
+    v => (v.b = 'x\n\n', v.c.push('y\n\n'), v.d = {p: 'v\n\n', r: 2, q: 1}, v.e = {k: 'x\n\n'}),
+    'b: "x\n\n  \\n"\n\n\nc:\n  - 1\n  - |+\n    y\n\nd:\n  p: |+\n    v\n\n  r: 2\n\n  q: 1\n' +
+        'e:\n  k: "x\n\n    \\n"\n\n\nf: 1\n'
+  ],
+  [
+    'text that ends in two line breaks moved or added before blank lines, one after a removed key',
+    'a:\n  m: |+  # h\n    x\n\n  k: 1\n\nb:\n  m: |+  # h\n    x\n\n  k: 1\n\n\n' +
+        'c:\n  k: 1\n\n  r: 2\n\n\nd: 1\n',
+    v => (v.a = {k: 1, c: {m: v.a.m}}, v.b = {k: 1, c: {m: v.b.m}}, delete v.c.r,
+          v.c.w = 'x\n\n'),
+    'a:\n  k: 1\n  c:\n    m: |+  # h\n      x\n\nb:\n  k: 1\n  c:\n    m: "x\n\n      \\n"\n\n\n' +
+        'c:\n  k: 1\n  w: "x\n\n    \\n"\n\n\nd: 1\n'
+  ],
+  [
     'block scalars ending in a line of spaces set to other text',
     'a: |-\n  x\n    \nb: |+\n  x\n    \n\nc: 1\n', v => (v.a = 'y', v.b = 'y\n\n'),
     'a: |-\n  y\nb: |+\n  y\n\nc: 1\n'
