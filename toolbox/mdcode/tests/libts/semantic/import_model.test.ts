@@ -1182,6 +1182,17 @@ ${lines}`;
       }),
       ossieDoc({extra: `${selfJoin('')}# end\n`}),
     ],
+    [
+      'the GOOGLE block after the entities that came before deployments', 'ossie',
+      googleDoc({
+        modelAiContext: '    # Entities\n',
+        extra: `    deployments:\n      - name: prod\n        target: ${BQ_PREFIX}/propertyGraphs/retail\n`,
+      }),
+      ossieDoc({
+        modelAiContext: '    # Entities\n',
+        extra: `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '{"deployments":[{"name":"prod","target":"${BQ_PREFIX}/propertyGraphs/retail"}]}'\n`,
+      }),
+    ],
   ]))('writes %s in a conversion to %s', async (_, flavor, input, lines) => {
     const res = await importSemanticModelYaml(
         input, {flavor: flavor as 'google' | 'ossie', strict: true});

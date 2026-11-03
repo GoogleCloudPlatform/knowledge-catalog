@@ -884,6 +884,7 @@ function repairDocument(doc: ImportDocument): void {
 /**
  * Sets `version` to `doc.targetVersion`, and names the model's entity list as
  * that flavor does: `entities:` in the Google flavor, `datasets:` in vanilla.
+ * The renamed key keeps its place among the model's keys.
  */
 function setTargetVersion(doc: ImportDocument): void {
   const [from, to] = doc.targetVersion === GOOGLE_VERSION ?
@@ -892,8 +893,9 @@ function setTargetVersion(doc: ImportDocument): void {
   doc.root.version = doc.targetVersion;
   doc.modified = true;
   if (doc.model[from] !== undefined && doc.model[to] === undefined) {
-    doc.model[to] = doc.model[from];
-    delete doc.model[from];
+    const entries = Object.entries(doc.model);
+    for (const k of Object.keys(doc.model)) delete doc.model[k];
+    for (const [k, v] of entries) doc.model[k === from ? to : k] = v;
   }
 }
 
