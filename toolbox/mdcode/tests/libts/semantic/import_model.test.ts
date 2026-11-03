@@ -491,6 +491,9 @@ describe('profile checks', () => {
     ['a bad source', orders({source: 'orders'}), at => badSource(at.label), false],
     ['a field reference', orders({fields: [{name: 'order_id', expression: 'orders.nope'}]}),
      at => `[${at.label}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
+    ['the reserved name', [{...PG, name: 'default'}],
+     at => `Profile name 'default' is reserved for the inline bindings in '${at.doc}.yaml'; ` +
+         `remove '${at.doc}.profile.default.yaml'.`, true],
     ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}),
      at => `profile 'pg': [${at.doc}] field 'orders.order_id': BigQuery reads "Order ID" in its ` +
          `'ANSI_SQL' expression as text; if you meant a column, give it a 'BIGQUERY' expression ` +
@@ -567,15 +570,15 @@ describe('profile checks', () => {
   const onSpanner = (more = {}) =>
       ({...orders({source: SPANNER_TABLE})[0], ...more});
   // [path, the label of pg's errors, its input and options]
-  const DEPLOYED: Array<[string, string, (d: object, p: Profile) => [string, any]]> = [
+  const DEPLOYED: Array<[string, string, (d: object|object[], p: Profile) => [string, any]]> = [
     ['a profile file', 'sales.profile.pg.yaml', (d, p) => [googleDoc({extra:
-        `    deployments: [${JSON.stringify(d)}]\n` +
+        `    deployments: ${JSON.stringify([d].flat())}\n` +
         "    metrics:\n      - {name: total, entity: orders, expression: 'COUNT(orders.order_id)'}\n"}),
      {...strict, flavor: 'google', profileFiles: files([p])}]],
     ['a GOOGLE block', 'sales', (d, p) => [ossieDoc({extra:
         "    metrics:\n      - name: total\n        expression: {dialects: [{dialect: ANSI_SQL, expression: 'COUNT(orders.order_id)'}]}\n" +
         `        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]\n` +
-        `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d], profiles: [p]})}'\n`}),
+        `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d].flat(), profiles: [p]})}'\n`}),
      {...strict, flavor: 'ossie'}]],
   ];
   // [problem, deployment, profile, push's error, or that error for pg's label]
@@ -599,6 +602,16 @@ describe('profile checks', () => {
         const res = await importSemanticModelYaml(input, opts);
         expect(res.errors).toEqual([error]);
       });
+
+  test.each(DEPLOYED)('checks the deployments of each profile apart, in %s', async (_, __, build) => {
+    const [input, opts] = build(
+        [{name: 'a', target: BQ_GRAPH}, {name: 'b', target: `${BQ_GRAPH}2`, profile: 'pg'}], PG);
+    const res = await importSemanticModelYaml(
+        input.replace('COUNT(orders.order_id)', 'COUNT(orders.order_id) / 2'), opts);
+    expect(res.errors).toEqual(['a', 'b'].map(d => `model 'retail' (sales) deployment '${d}' ` +
+        "targets BigQuery, where metric 'total' cannot be a measure: it is not SUM, AVG, COUNT, " +
+        'MIN or MAX over one operand.'));
+  });
 
   // [label, input and options, push's one message]
   test.each([
