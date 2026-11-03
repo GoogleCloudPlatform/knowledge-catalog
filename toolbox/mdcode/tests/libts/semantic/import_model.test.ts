@@ -195,6 +195,11 @@ describe('conversion, strict mode, and translation', () => {
       ossieDoc({extra: '            datatype: opaque\n'}), {strict: true},
       `field 'orders.order_id': removed datatype 'opaque'.`
     ],
+    [
+      'a vanilla string expression in strict mode',
+      ossieDoc({fieldExpr: '"orders.order_id"'}), {strict: true},
+      `field 'orders.order_id': wrote the string expression as an 'ANSI_SQL' dialects entry.`
+    ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
     const res = await importSemanticModelYaml(input, opts);
 
@@ -1164,6 +1169,8 @@ ${lines}`;
     ['a block description', '    description: |\n      Retail model.\n'],
     ['a string ai_context', '    ai_context: Retail model\n'],
     ['an empty metrics list', '    metrics: []  # none yet\n'],
+    ['repeated synonyms', '    ai_context:\n      synonyms: [shop, shop, store]\n'],
+    ['an empty ai_context', '    ai_context: {}\n'],
   ].flatMap(
       ([what, lines]): Array<[string, string, string, string | string[]]> => [
         [what, 'google', ossieDoc({modelAiContext: lines}), lines],
