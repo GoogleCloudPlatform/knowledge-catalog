@@ -161,6 +161,12 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a: {\n  i: p,\n  c: r}\nl: [p,  # c\n  q,\n  r]\nm: [p  # d\n  ]\nk: [\n  p,\n  r]\n'
   ],
   [
+    'flow lists whose first item is on the `[` line and last item on lines of its own',
+    'a: [{k: 1},\n  {k: 2}  # c\n]\nb: [p,\n  q  # d\n]\nc: [p,  # e\n  q  # f\n]\nd: [p,  # g\n  q  # h\n]\n',
+    v => (v.a.pop(), v.b.push('r'), v.c[1] = 's', v.d.pop()),
+    'a: [{k: 1}\n]\nb: [p,\n  q,  # d\n  r\n]\nc: [p,  # e\n  s\n]\nd: [p  # g\n]\n'
+  ],
+  [
     'a flow mapping given text of several lines, in a scalar and a new mapping',
     'f: [{name: a, d: x}]\n', v => {
       const text = 'Owned by the analytics team in the main office.\n\nAsk first.';

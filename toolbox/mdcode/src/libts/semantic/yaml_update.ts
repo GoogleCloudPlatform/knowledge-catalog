@@ -234,7 +234,9 @@ function patchItems(
   const col = g[0].start - lineStart(t, g[0].start);
   // In a flow collection whose items each have their lines, removed and new
   // items take whole lines. In any other flow collection, they take the text
-  // between items. One choice for both keeps their edits apart.
+  // between items, which keeps their edits apart, but for the last items: a
+  // removed run of them and a new item after them take whole lines when the
+  // old items have their own.
   const lines = flow && g.every(i => i.ownLines);
   // The text between two items, without its comments. After a lone item that
   // starts its line, a new item starts its own line too.
@@ -260,7 +262,8 @@ function patchItems(
     let b = a;
     while (b + 1 < items.length && !at.includes(b + 1)) b++;
     const next = g[b + 1];
-    if (lines) {
+    if (lines || flow && !next && !follows.includes(a - 1) &&
+                     g.slice(a, b + 1).every(i => i.ownLines)) {
       u.edits.push([lineStart(t, g[a].start), nextLine(t, g[b].end), '']);
       // The comma after the item that becomes last goes, unless a new entry
       // comes after it.
@@ -272,12 +275,14 @@ function patchItems(
       u.edits.push([g[a].start, next.start, '']);
     } else if (flow) {
       // The comma after the item that becomes last goes, unless a new entry
-      // comes after it, and a comment after that comma stays.
+      // comes after it, and a comment after that comma stays. A last item on
+      // its own line takes the comment after it.
       const gap = t.slice(g[a - 1].end, g[a].start);
       const kept = gap.includes('#') ? gap.replace(',', '') : '';
+      const end = g[b].ownLines ? lineEnd(t, g[b].end) : g[b].end;
       u.edits.push(
-          follows.includes(a - 1) ? [g[a].start, g[b].end, ''] :
-                                    [g[a - 1].end, g[b].end, kept]);
+          follows.includes(a - 1) ? [g[a].start, end, ''] :
+                                    [g[a - 1].end, end, kept]);
     } else if (g[a].inline && next) {
       // The next item moves up onto the `- ` line, and its comments go above
       // that line. A comment indented deeper than that line takes its
@@ -331,7 +336,7 @@ function patchItems(
   });
   for (const [j, parts] of added) {
     const near = g[Math.max(j, 0)];
-    if (lines) {
+    if (lines || flow && !g[j + 1] && near.ownLines) {
       // Each new item gets a line, indented as the item near it.
       const pad = t.slice(lineStart(t, near.start), near.start);
       const last = !at.some(i => i > j);
