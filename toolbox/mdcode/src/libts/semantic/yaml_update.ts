@@ -337,6 +337,10 @@ function setScalar(
   if (!/^BLOCK/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
+  // The text after a block scalar's header, such as a comment, stays after
+  // the new header, or after the new value when it is not a block scalar.
+  const tail = headerTail(u.text, from) ?? '';
+  s = /^[|>]/.test(s) ? s.replace(/^[|>][-+0-9]*/, h => h + tail) : s + tail;
   u.edits.push([from, to, u.text[to - 1] === '\n' ? s + u.nl : s]);
 }
 
@@ -364,11 +368,9 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
     u.edits.push([from, end, text]);
     return;
   }
-  const header = yaml.isScalar(node) && /^[|>][-+0-9]*/.exec(t.slice(from));
   const tail = from > keyLine ? t.slice(slot.after, keyLine) :
       oneLine                 ? t.slice(to, end) :
-      header ? t.slice(from + header[0].length, lineEnd(t, from)) :
-               '';
+                                headerTail(t, from) ?? '';
   const [first, ...rest] = block(u, slot.prefix, value, slot.col);
   const head = first.slice(slot.col + slot.prefix.length);
   u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
@@ -455,6 +457,14 @@ function dashes(node: yaml.YAMLMap|yaml.YAMLSeq): number[] {
   return ((node.srcToken as yaml.CST.BlockSequence)?.items ?? [])
       .flatMap(it => it.start.filter(s => s.type === 'seq-item-ind'))
       .map(s => s.offset);
+}
+
+/**
+ * The text on its line after the header of the block scalar at `from`, or
+ * undefined when no block scalar starts there.
+ */
+function headerTail(t: string, from: number): string|undefined {
+  return /^[|>][-+0-9]*(.*)/.exec(t.slice(from, lineEnd(t, from)))?.[1];
 }
 
 function lineStart(t: string, p: number): number {

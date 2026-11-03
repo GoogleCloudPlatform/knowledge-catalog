@@ -15,7 +15,7 @@ interface Style {
   comments: boolean;  // A comment above each item and after each line.
   blanks: boolean;  // A blank line above each item.
   quote: 'plain'|'single'|'double'|'mixed';
-  block: boolean;  // SQL with a `(` as a `|-` block scalar.
+  block: boolean;  // SQL with a `(` and text of several lines as `|-` blocks.
   flow: 'none'|'lists'|'expressions'|'lines';
   nl: string;
   bom: boolean;
@@ -94,8 +94,8 @@ function write(value: any, s: Style): string {
     } else if (s.nextLine && expr) {
       out.push(head + after(), ...(s.blanks ? [''] : []),
                `${pad(inner)}${scalar(v, false)}${after()}`);
-    } else if (s.block && v.includes?.('(')) {
-      out.push(`${head} |-${after()}`, pad(inner) + v);
+    } else if (s.block && /[(\n]/.test(v)) {
+      out.push(`${head} |-${after()}`, ...v.split('\n').map((l: string) => l && pad(inner) + l));
     } else {
       out.push(`${head} ${scalar(v, false)}${after()}`);
     }
