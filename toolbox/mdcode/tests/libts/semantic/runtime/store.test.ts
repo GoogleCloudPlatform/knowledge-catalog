@@ -852,6 +852,13 @@ describe('the instance an AlloyDB store connects through', () => {
             CLUSTER}': 400 ${message}`);
   });
 
+  test('a failed page comes back with its body', async () => {
+    const client = new AlloyDbClient(CTX);
+    const failed = {status: 403, message: 'Permission denied', body: '{}'};
+    spyOn(client as any, '_get').mockResolvedValue(failed);
+    expect(await client.listInstances('p', 'us-central1', 'c')).toEqual(failed);
+  });
+
   test('a listing that repeats a page token stops and says why', async () => {
     const client = new AlloyDbClient(CTX);
     let calls = 0;

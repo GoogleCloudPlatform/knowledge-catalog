@@ -43,7 +43,7 @@ export class AlloyDbClient extends api.ApiClient {
       const res: api.ApiResult<InstanceList> =
           await this._get<InstanceList>(parent, {pageToken});
       if (res.status != 200) {
-        return {status: res.status, message: res.message};
+        return {status: res.status, message: res.message, body: res.body};
       }
       instances.push(...(res.result?.instances ?? []));
       pageToken = res.result?.nextPageToken;

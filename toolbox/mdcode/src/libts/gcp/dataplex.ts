@@ -213,7 +213,7 @@ export class CatalogClient extends api.ApiClient {
     const container = `${catalogContainer(project, location)}:lookupEntry`;
     const res = await this._get<Entry>(container, { entry: name, view: 'FULL' });
     if (res.status != 200 || !res.result) {
-      return { status: res.status, message: res.message };
+      return { status: res.status, message: res.message, body: res.body };
     }
     // Each type is resolved once: crm caches only the projects it can read,
     // so several field-path keys of one unreadable type would each look it up.
@@ -508,7 +508,7 @@ export class CatalogClient extends api.ApiClient {
       };
       const res = await this._get<EntryLinkList>(container, params);
       if (res.status != 200) {
-        return { status: res.status, message: res.message };
+        return { status: res.status, message: res.message, body: res.body };
       }
       for (const link of res.result?.entryLinks ?? []) {
         links.push(link);
