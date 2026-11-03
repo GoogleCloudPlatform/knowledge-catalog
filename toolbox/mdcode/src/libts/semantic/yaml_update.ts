@@ -378,7 +378,7 @@ function geometry(
     // An empty value, as in `a:`, ends on its key's line, and so does the item.
     const end = flow ? last.range![1] :
                        blockEnd(t, Math.max(last.range![2], nextLine(t, start)),
-                                start - ls);
+                                start - ls, last);
     // The root's first item owns no comments: those above it are the file's.
     const floor = i > 0 ? prevEnd : node === u.doc.contents ? ls : 0;
     let head = inline || flow ? start : ls;
@@ -392,20 +392,26 @@ function geometry(
 }
 
 /**
- * Where a block item at column `col` ends, given where its node ends: at a
- * line's start, before the comments under it at its column or less, since
- * those are above the next item.
+ * Where a block item at column `col` ends, given where its `node` ends: at a
+ * line's start, before the empty lines and the comments at its column or less
+ * under it, since those are above the next item. When `node` ends in a block
+ * scalar that keeps its final line breaks, as `|+` does, the empty lines that
+ * end that scalar are its text and stay in the item.
  */
-function blockEnd(t: string, end: number, col: number): number {
+function blockEnd(t: string, end: number, col: number, node?: unknown): number {
   if (t.slice(lineStart(t, end), end).trim() === '') end = lineStart(t, end);
-  let p = end;
-  let cut = false;
-  for (let q = lineStart(t, p - 1); p > 0; p = q, q = lineStart(t, p - 1)) {
-    const line = t.slice(q, p);
-    if (line.trim() && (!/^\s*#/.test(line) || line.search(/\S/) > col)) break;
-    cut ||= line.trim() !== '';
+  let last = node;
+  while (yaml.isCollection(last) && last.items.length > 0) {
+    const item = last.items.at(-1);
+    last = yaml.isPair(item) ? item.value : item;
   }
-  return cut ? p : end;
+  const floor = keepsBreaks(t, last) ? lineStart(t, last.range![1]) : 0;
+  let p = end;
+  for (let q = lineStart(t, p - 1); p > floor; p = q, q = lineStart(t, p - 1)) {
+    const line = t.slice(q, lineEnd(t, q));
+    if (line && (!/^\s*#/.test(line) || line.search(/\S/) > col)) break;
+  }
+  return p;
 }
 
 function setScalar(
@@ -448,7 +454,7 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // A block collection's range can run over the comments after it and into
   // the next line's indentation. The comments at its key's column or less
   // stay.
-  const stop = blockEnd(t, to, slot.col);
+  const stop = blockEnd(t, to, slot.col, node);
   const end = lineEnd(t, Math.max(from, stop - 1));
   // A scalar on the line under its key becomes a collection there.
   const under = from > keyLine && yaml.isScalar(node) && isFull(value);

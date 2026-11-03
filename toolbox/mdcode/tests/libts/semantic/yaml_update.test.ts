@@ -52,6 +52,13 @@ test.each<[string, string, (value: any) => void, string?]>([
         'd: "x\n\n  \\n"\n'
   ],
   [
+    'items that end in an empty value with a comment or in a deeper comment, removed or moved',
+    'l:\n  - k: 1\n\n  - k: 2\n    e:  # c\n\n  - k: 3\n\n  - k: 4\n    # deep\n\n  - k: 5\n' +
+        'a:\n  team:\n    notes:  # n\n\n  s: 1\nb: 1\n',
+    v => (v.l.splice(3, 1), v.l.splice(1, 1), v.a = {s: 1, custom: {team: v.a.team}}),
+    'l:\n  - k: 1\n\n  - k: 3\n\n  - k: 5\na:\n  s: 1\n  custom:\n    team:\n      notes:  # n\nb: 1\n'
+  ],
+  [
     'items removed and replaced after `|+` block scalars that stay',
     'l:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\n' +
         'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\n',
