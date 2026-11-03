@@ -70,10 +70,22 @@ export function linkNodes(
 export function updateText(
     text: string, doc: yaml.Document, value: unknown,
     links: ReadonlyMap<object, yaml.Node>): string {
+  const pairs: Array<[yaml.Pair, unknown]> = [];
+  yaml.visit(doc, {Pair: (_, p, path) => void pairs.push([p, path.at(-1)])});
+  const held = new Set<unknown>();
+  const hold = (v: unknown) => {
+    if (!isObject(v)) return;
+    held.add(links.get(v));
+    Object.values(v).forEach(hold);
+  };
+  hold(value);
   const u: Update = {
     text,
     doc,
     links,
+    pairs,
+    held,
+    used: new Set(),
     copies: new Map([...links].map(([v, n]) => [n, v])),
     edits: [],
     dirty: new Set(),
@@ -104,6 +116,12 @@ interface Update {
   text: string;
   doc: yaml.Document;
   links: ReadonlyMap<object, yaml.Node>;
+  /** Each pair of `doc`, with the mapping that holds it. */
+  pairs: ReadonlyArray<[yaml.Pair, unknown]>;
+  /** Nodes linked to an object the new value holds. */
+  held: ReadonlySet<unknown>;
+  /** The pairs whose text a moved value took. */
+  used: Set<yaml.Pair>;
   /** The reverse of `links`. */
   copies: ReadonlyMap<unknown, object>;
   /** Each edit replaces the text from one offset to another. */
@@ -243,8 +261,16 @@ function patchItems(
     } else {
       const before = follows[i];
       const key = yaml.isMap(node) ? `${scalarText(u, k, 0, flow)}:` : '-';
-      const lines = !flow ? block(u, key, v, col) :
-          [`${yaml.isMap(node) ? `${key} ` : ''}${scalarText(u, v, 0, true)}`];
+      // In a flow mapping, a value that moved keeps its text when that is one
+      // line that reads the same there.
+      const moved = flow && yaml.isMap(node) ?
+          movedText(u, String(k), v, col)?.join('\n').trim() :
+          undefined;
+      const text = moved !== undefined && readsInFlow(moved, v) ?
+          moved :
+          scalarText(u, v, 0, true);
+      const lines = !flow ? block(u, key, v, col, String(k)) :
+                            [`${yaml.isMap(node) ? `${key} ` : ''}${text}`];
       added.set(before, [...(added.get(before) ?? []), ...lines]);
     }
   });
@@ -393,32 +419,40 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // A block collection's range can end in the next line's indentation.
   const stop = t.slice(lineStart(t, to), to).trim() ? to : lineStart(t, to);
   const end = lineEnd(t, Math.max(from, stop - 1));
+  // A scalar on the line under its key becomes a collection there.
+  const under = from > keyLine && yaml.isScalar(node) && isFull(value);
+  const col = under ? from - lineStart(t, from) : slot.col;
+  const [first, ...rest] = under ? items(u, value as object, col) :
+                                   block(u, slot.prefix, value, col);
   // The text after the node on its last line stays, or after a block
-  // scalar's header. A block collection of several lines keeps none.
-  const after = headerTail(t, from) ??
-      (end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
-           t.slice(to, end) :
-           '');
-  if (from > keyLine && yaml.isScalar(node) && isFull(value)) {
-    // A scalar on the line under its key becomes a collection there.
-    const col = from - lineStart(t, from);
-    const [first, ...rest] = items(u, value, col);
+  // scalar's header unless the scalar's text moved into the new value. A
+  // block collection of several lines keeps none.
+  const header = headerTail(t, from);
+  const moved = u.pairs.some(([p]) => p.value === node && u.used.has(p));
+  const after = header !== undefined ? (moved ? '' : header) :
+      end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
+                                       t.slice(to, end) :
+                                       '';
+  if (under) {
     u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
   }
   const tail = from > keyLine ? t.slice(slot.after, keyLine) : after;
-  const [first, ...rest] = block(u, slot.prefix, value, slot.col);
-  const head = first.slice(slot.col + slot.prefix.length);
+  const head = first.slice(col + slot.prefix.length);
   u.edits.push([slot.after, end, [head + tail, ...rest].join(u.nl)]);
 }
 
 /**
  * The lines of `prefix`, a key and `:` or a `-` at column `col`, and `value`
- * after it, in the file's indentation.
+ * after it, in the file's indentation. `key` is the key `prefix` writes. A
+ * value that moved keeps its text.
  */
 function block(
-    u: Update, prefix: string, value: unknown, col: number): string[] {
+    u: Update, prefix: string, value: unknown, col: number,
+    key?: string): string[] {
   const pad = ' '.repeat(col);
+  const moved = prefix.endsWith(':') ? movedText(u, key, value, col) : undefined;
+  if (moved) return [pad + prefix + moved[0], ...moved.slice(1)];
   if (!isFull(value)) {
     return [`${pad}${prefix} ${scalarText(u, value, col, false)}`];
   }
@@ -436,8 +470,56 @@ function items(u: Update, value: object, col: number): string[] {
   return entriesOf(value).flatMap(([k, v]) => {
     const prefix =
         Array.isArray(value) ? '-' : `${scalarText(u, k, 0, false)}:`;
-    return block(u, prefix, v, col);
+    return block(u, prefix, v, col, String(k));
   });
+}
+
+/**
+ * The text of the input value that `value` moved from, re-indented for a key
+ * at column `col`: what follows the key's `:` on its line, then each line
+ * under it. An object or array moves from the node `links` maps it to. A
+ * scalar under `key` moves from a pair with the same key and value whose
+ * mapping the new value no longer holds that way.
+ */
+function movedText(
+    u: Update, key: string|undefined, value: unknown,
+    col: number): string[]|undefined {
+  const node = isObject(value) ? u.links.get(value) : undefined;
+  const found = u.pairs.find(([p, parent]) => !u.used.has(p) &&
+      (node ? p.value === node :
+              key !== undefined && keyOf(p) === key && yaml.isScalar(p.value) &&
+              p.value.value === value &&
+              !(u.held.has(parent) &&
+                (u.copies.get(parent) as Record<string, unknown>)[key] === value)));
+  const p = found?.[0];
+  const v = p?.value as yaml.Node|undefined;
+  if (!p || !v?.range || !yaml.isNode(p.key) ||
+      canonical(v.toJS(u.doc)) !== canonical(value)) {
+    return undefined;
+  }
+  u.used.add(p);
+  const t = u.text;
+  const [from, to] = v.range;
+  const shift = col - (p.key.range![0] - lineStart(t, p.key.range![0]));
+  const own = t.slice(lineStart(t, from), from).trim() === '';
+  const stop = t.slice(lineStart(t, to), to).trim() ? to : lineStart(t, to);
+  const lines = t.slice(own ? lineStart(t, from) : from, stop)
+                    .replace(/\r?\n$/, '')
+                    .split(/\r?\n/)
+                    .map((l, i) => !own && i === 0 ? l :
+                             l.trim() === ''        ? '' :
+                             shift >= 0             ? ' '.repeat(shift) + l :
+                                                      l.slice(Math.min(-shift, l.search(/\S/))));
+  return own ? ['', ...lines] : [' ' + lines[0], ...lines.slice(1)];
+}
+
+/** Whether `text` reads as `value` in a flow collection. */
+function readsInFlow(text: string, value: unknown): boolean {
+  try {
+    return canonical(yaml.parse(`[${text}]`, YAML_OPTIONS)[0]) === canonical(value);
+  } catch {
+    return false;
+  }
 }
 
 /**

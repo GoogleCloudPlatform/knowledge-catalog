@@ -339,6 +339,11 @@ function check(input: string, output: string) {
                                 .filter(i => !s.gone.has(i) && !s.changed.has(i))
                                 .map(i => lineText(s, i));
   const inOut = comments(y);
+  // Every comment the generator writes is different.
+  const tokens = inOut.map(d => d.token);
+  for (const d of new Set(tokens.filter((d, i) => tokens.indexOf(d) !== i))) {
+    problems.push(`${d} repeated`);
+  }
   for (const c of comments(x).filter(c => !x.gone.has(c.line))) {
     // A comment after a value stays after its key, or after what takes the
     // place of the value it follows.

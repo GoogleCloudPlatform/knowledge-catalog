@@ -32,6 +32,17 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a block scalar in a CRLF text set to a mapping', 'a: |\r\n  x\r\nb: 1\r\n',
     v => v.a = {c: 1}, 'a:\r\n  c: 1\r\nb: 1\r\n'
   ],
+  [
+    'moved values keep their text',
+    'a:\n  custom:\n    t: [x, z]  # c\n    u: \'z\'\n    "k: 1": \'x\'\n    w:\n      - p  # q\n\n      - r\n',
+    v => v.a = {...v.a.custom},
+    'a:\n  t: [x, z]\n  u: \'z\'\n  "k: 1": \'x\'\n  w:\n    - p  # q\n\n    - r\n'
+  ],
+  [
+    'a moved value that a flow mapping would read differently',
+    'a:\n  custom: {t: 1}\n  m: a, b\n', v => (v.a.custom.m = v.a.m, delete v.a.m),
+    'a:\n  custom: {t: 1, m: "a, b"}\n'
+  ],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',
