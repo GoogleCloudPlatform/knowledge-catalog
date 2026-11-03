@@ -110,10 +110,11 @@ flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
 a Google-flavor `<file>` go in with it. A profile's sources stay as written,
 even with `--source-prefix`. Import runs push's checks on the model file's own
 bindings, on each profile it writes, on each deployment's profile, bindings,
-metrics and tables, and on any profile file beside a vanilla `<file>`. It
-reports what these checks reject as an error under `--input first-party` and as
-a warning otherwise, and their warnings as warnings. A profile file that does
-not parse is always an error. Under `--input first-party`, a message from these
+metrics and tables, on any profile file beside a vanilla `<file>`, and on a
+`<model>.profiles/` directory beside `<file>`. It reports what these checks
+reject as an error under `--input first-party` and as a warning otherwise, and
+their warnings as warnings. A profile file that does not parse is always an
+error. Under `--input first-party`, a message from these
 checks names the input file that holds what it reports. Push's other model
 checks, such as whether a metric reads a known field or has SQL for its
 deployment's target, stay with push. Push reads each Cloud SQL and third-party

@@ -303,10 +303,13 @@ describe('kcmd import', () => {
     }
 
     // A vanilla model keeps its profiles in its GOOGLE block, and push refuses a
-    // profile file beside it, after it checks the file's name. Import gives
-    // push's text, naming the input: an error under --input first-party, and a
-    // warning otherwise.
+    // profile file beside it, after it checks the file's name. Push also
+    // refuses a `<model>.profiles/` directory. Import gives push's text,
+    // naming the input: an error under --input first-party, and a warning
+    // otherwise.
     const PROD = besideVanilla('sales.profile.prod.yaml', 'sales.yaml');
+    const LEGACY_DIR = "Legacy profile directory 'sales.profiles/' is no longer supported; " +
+        "rename profile files to 'sales.profile.<name>.yaml' beside 'sales.yaml'.";
     // [--input, --flavor, the profile file, push's text]
     const BESIDE_VANILLA: Array<[string, string, string, string]> = [
       ['first-party', 'google', 'sales.profile.prod.yaml', PROD],
@@ -315,6 +318,8 @@ describe('kcmd import', () => {
       ['third-party', 'ossie', 'sales.profile.prod.yaml', PROD],
       ['first-party', 'google', 'sales.profile.yaml',
        "Profile file 'sales.profile.yaml' names no profile; rename it 'sales.profile.<name>.yaml'."],
+      ['first-party', 'google', 'sales.profiles/prod.yaml', LEGACY_DIR],
+      ['third-party', 'google', 'sales.profiles/prod.yaml', LEGACY_DIR],
     ];
     for (const [input, flavor, file, message] of BESIDE_VANILLA) {
       test(`${file} beside a vanilla model gets push's text, ${input} to ${flavor}`, async () => {

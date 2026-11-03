@@ -14,7 +14,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {fileNameOf, formatOverviewSidecar, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
 import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
@@ -359,11 +359,8 @@ function legacyProfileFormErrors(snapshot: kcmd.CatalogSnapshot): string[] {
         `'profile:' on each entry under 'deployments:' in your model YAML.`);
   }
   for (const dir of layout.legacyProfileDirs()) {
-    const model = path.basename(dir).slice(0, -'.profiles'.length);
     errors.push(
-        `Legacy profile directory '${model}.profiles/' is no longer ` +
-        `supported; rename profile files to '${model}.profile.<name>.yaml' ` +
-        `beside '${model}.yaml'.`);
+        legacyProfileDirError(path.basename(dir).slice(0, -'.profiles'.length)));
   }
   for (const orphan of layout.orphanProfilePaths()) {
     const file = path.basename(orphan);
@@ -2354,8 +2351,15 @@ export async function importModel(
   // inside it. The engine gets every `<name>.profile.*.yaml` there, in the
   // order push checks them, so it reports a file name push refuses.
   const dir = path.dirname(file);
+  const stem = path.basename(file).replace(YAML_FILE, '');
+  // Push refuses the older `<model>.profiles/` directory, which import does
+  // not read.
+  if (legacyProfileFiles(dir, stem).length) {
+    if (input === 'first-party') return fail(legacyProfileDirError(stem));
+    console.warn(`Warning: ${legacyProfileDirError(stem)}`);
+  }
   const profileFiles =
-      profileFileNamesBeside(dir, path.basename(file).replace(YAML_FILE, ''))
+      profileFileNamesBeside(dir, stem)
           .map(f => ({
                  fileName: f,
                  content: fs.readFileSync(path.join(dir, f), 'utf8'),

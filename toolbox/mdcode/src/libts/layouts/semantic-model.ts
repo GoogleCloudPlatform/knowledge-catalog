@@ -98,6 +98,29 @@ export function vanillaSiblingError(file: string, modelFile: string): string {
       `block.`;
 }
 
+// The profile files in the older `<model>.profiles/` directory in `dir`, each
+// named by its file basename.
+export function legacyProfileFiles(dir: string, model: string):
+    {name: string; path: string}[] {
+  const legacy = path.join(dir, `${model}.profiles`);
+  if (!fs.statSync(legacy, {throwIfNoEntry: false})?.isDirectory()) return [];
+  const out: {name: string; path: string}[] = [];
+  for (const entry of fs.readdirSync(legacy)) {
+    if (!entry.endsWith('.yaml')) continue;
+    if (SIDECAR_SUFFIXES.some(s => entry.endsWith(s))) continue;
+    out.push(
+        {name: path.basename(entry, '.yaml'), path: path.join(legacy, entry)});
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Push's error for the older `<model>.profiles/` directory.
+export function legacyProfileDirError(model: string): string {
+  return `Legacy profile directory '${model}.profiles/' is no longer ` +
+      `supported; rename profile files to '${model}.profile.<name>.yaml' ` +
+      `beside '${model}.yaml'.`;
+}
+
 export class SemanticModelLayout implements CatalogLayout {
   private readonly _catalogPath: string;
   private readonly _entryGroup?: string;
@@ -386,16 +409,7 @@ export class SemanticModelLayout implements CatalogLayout {
   // `..` segment, so such a name has no directory here.
   private _legacyProfilePaths(model: string): {name: string; path: string}[] {
     if (!this._entryGroup || /[\\/]/.test(model)) return [];
-    const dir = path.join(this._groupDir(), `${model}.profiles`);
-    if (!fs.existsSync(dir)) return [];
-    const out: {name: string; path: string}[] = [];
-    for (const entry of fs.readdirSync(dir)) {
-      if (!entry.endsWith('.yaml')) continue;
-      if (SIDECAR_SUFFIXES.some(s => entry.endsWith(s))) continue;
-      out.push(
-          {name: path.basename(entry, '.yaml'), path: path.join(dir, entry)});
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
+    return legacyProfileFiles(this._groupDir(), model);
   }
 
   // The `version` and model `name` a model document declares, each undefined
