@@ -109,7 +109,9 @@ export function updateText(
     out += text.slice(at, from) + s;
     at = to;
   }
-  return out + text.slice(at);
+  out += text.slice(at);
+  // A text with no final newline keeps none.
+  return text.endsWith('\n') ? out : out.replace(/\r?\n$/, '');
 }
 
 interface Update {
@@ -238,9 +240,7 @@ function patchItems(
       const first = a === 0 && at[0] >= 0;
       const from = first ? skipBlank(t, g[a].head, g[a].start) : g[a].head;
       const to = first && next ? skipBlank(t, g[b].end, next.start) : g[b].end;
-      // With no final newline, the line break before the last item goes too.
-      const eof = to === t.length && !t.endsWith('\n') && from > 0;
-      u.edits.push([eof ? lineEnd(t, lineStart(t, from - 1)) : from, to, '']);
+      u.edits.push([from, to, '']);
     }
     a = b;
   }

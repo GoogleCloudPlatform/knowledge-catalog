@@ -74,6 +74,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\r\n  - x\r\n  - y', v => v.a.pop(), 'a:\r\n  - x'
   ],
   [
+    'the last key of a text with no final newline moved under a new key',
+    'a:\n  k: 1\n  t: 2', v => (delete v.a.t, v.a.c = {t: 2}), 'a:\n  k: 1\n  c:\n    t: 2'
+  ],
+  [
     'a scalar in a padded flow mapping set to a mapping',
     'g: {\n  k: 1}\nf: [{ name: a, e: x }]\n', v => v.f[0].e = {d: [{k: 'x'}]},
     'g: {\n  k: 1}\nf: [{ name: a, e: { d: [{ k: x }] } }]\n'
