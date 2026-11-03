@@ -110,6 +110,14 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a:\n  c:\n    - x\n# c\nb: 1\n'
   ],
   [
+    'aliases and flow collections over several lines on the line under their key, written again',
+    'a: &e\n  k: 1\nb:\n  # b1\n  *e  # b2\nh: &s |-\n  p\n  q\ni:\n  # i1\n  *s  # i2\n' +
+        'f:\n  # f1\n  {i: x,\n    o: y}  # f2\ng:\n  # g1\n  [1,\n    2]  # g2\n',
+    v => (v.a.k = 2, v.h = 'r', delete v.f.o, v.f.c = 'z', v.g = 'z'),
+    'a: &e\n  k: 2\nb:\n  # b1\n  k: 1  # b2\nh: &s |-\n  r\ni:\n  # i1\n  "p\n\n  q"  # i2\n' +
+        'f:\n  # f1\n  i: x  # f2\n  c: z\ng:\n  # g1\n  z  # g2\n'
+  ],
+  [
     'a block scalar in a CRLF text set to a mapping', 'a: |\r\n  x\r\nb: 1\r\n',
     v => v.a = {c: 1}, 'a:\r\n  c: 1\r\nb: 1\r\n'
   ],

@@ -463,11 +463,13 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   // stay.
   const stop = blockEnd(t, to, slot.col, node);
   const end = lineEnd(t, Math.max(from, stop - 1));
-  // A scalar on the line under its key becomes a collection there.
-  const under = from > keyLine && yaml.isScalar(node) && isFull(value);
-  const col = under ? from - lineStart(t, from) : slot.col;
-  const [first, ...rest] = under ? items(u, value as object, col) :
-                                   block(u, slot.prefix, value, col);
+  // A scalar, alias or flow collection on the line under its key is replaced
+  // there, so the comments above it and after it stay.
+  const under = from > keyLine && (!yaml.isCollection(node) || node.flow);
+  const col = under && isFull(value) ? from - lineStart(t, from) : slot.col;
+  const [first, ...rest] = under && isFull(value) ?
+      items(u, value as object, col) :
+      block(u, slot.prefix, value, col);
   // The text after the node on its last line stays, or after a block
   // scalar's header unless the scalar's text moved into the new value. A
   // block collection of several lines keeps none.
@@ -477,6 +479,15 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
       end === lineEnd(t, from) || !yaml.isCollection(node) || node.flow ?
                                        t.slice(to, end) :
                                        '';
+  if (under && !isFull(value)) {
+    // As a block scalar, text of several lines would take the text after it.
+    const type = typeof value === 'string' && value.includes('\n') ?
+        'QUOTE_DOUBLE' :
+        undefined;
+    u.edits.push(
+        [from, end, scalarText(u, value, slot.col, false, type) + after]);
+    return;
+  }
   if (under) {
     u.edits.push([from, end, [first.slice(col) + after, ...rest].join(u.nl)]);
     return;
