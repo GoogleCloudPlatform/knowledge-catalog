@@ -7,14 +7,15 @@
 # customer was charged for shipping that should have been free.
 #
 # Nothing here says where the data lives, what the columns are called, or what
-# SQL performs the write. Those are physical facts, and they are in
-# commerce.profiles/. The one exception is the primary keys and join columns,
-# which the format defines as physical column names; both databases name them
-# alike. There are two profiles -- spanner.yaml and alloydb.yaml --
-# pointing this one model at two different databases, with different table
-# names, a differently named column and a different SQL dialect between them.
-# This file is the same bytes under both, which is the claim the pair exists to
-# make.
+# SQL performs the write. Those are physical facts, and they are in the two
+# profile files beside this one, commerce.profile.spanner.yaml and
+# commerce.profile.alloydb.yaml. They point this one model at two different
+# databases, with different table names, a differently named column and a
+# different SQL dialect between them. This file is the same bytes under both,
+# which is the claim the pair exists to make. The exceptions are the primary
+# keys and join columns, which the format defines as physical column names (both
+# databases name them alike), and `deployments:`, which says where each profile
+# is deployed.
 #
 # The policy is written in words. A constraint carries a `judgment`, a language
 # model settles it against the attempted call, and `IssueCredit` names the ones
@@ -45,6 +46,17 @@ version: "0.2.0.dev0/google"
 semantic_model:
   - name: commerce
     description: Customers, their orders, and the lines that make up an order
+
+    # Where the model is deployed, one entry per database, each with the
+    # profile that binds it there. `kcmd push` deploys every entry;
+    # `--deployment <name>` picks one.
+    deployments:
+      - name: spanner
+        target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/semantic_skill_demo/graphs/commerce
+        profile: spanner
+      - name: alloydb
+        target: alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/databases/semantic_skill_demo
+        profile: alloydb
 
     # How this business wants to be acted on. It is here rather than in the
     # agent's source because it is true of every agent that acts on this model,

@@ -1,0 +1,92 @@
+# The same commerce model, in AlloyDB.
+#
+# This is the whole of what it takes to move the demo to a different database.
+# There is no second model, no second agent and no second set of tools: read
+# this file beside commerce.profile.spanner.yaml and the differences are three
+# table names, one column name, and PostgreSQL in place of GoogleSQL in the two
+# statements, plus a deployment target in commerce.yaml. Everything the business
+# means is in commerce.yaml and is untouched.
+#
+# What each difference is:
+#
+#   * The `alloydb` deployment in commerce.yaml targets a DATABASE and stops
+#     there, where the Spanner one ends in `/graphs/commerce`. AlloyDB has no
+#     property-graph DDL, so there is no graph to deploy and `kcmd push` has
+#     nothing to do under this profile -- it will say so. The model still RUNS
+#     here, which is what a deployment target is for on this side.
+#
+#   * The tables are `customer`, `purchase_order` and `order_line`, because that
+#     is what somebody who only ever used PostgreSQL would have called them. The
+#     model calls the entities Customer, Order and LineItem in both deployments.
+#
+#   * `Order.total` is bound to `order_total` here and to `total` on Spanner. One
+#     renamed column is enough to show that a field is a logical name rather than
+#     a column with a nicer spelling.
+#
+#   * The statements are PostgreSQL. The runtime never rewrites SQL a profile
+#     author wrote -- it is handed to the database as typed -- so a profile is
+#     where dialect belongs. The parameters are still `@name`, because that is
+#     one syntax across every backend; the AlloyDB client rewrites them to `$1`,
+#     `$2` on the way out.
+#
+# If you are running against a different project, region, cluster or database,
+# those names appear in each `source` below and in the `alloydb` deployment's
+# `target` in commerce.yaml, and nowhere else.
+
+name: alloydb
+
+entities:
+  - name: Customer
+    source: alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/databases/semantic_skill_demo/schemas/public/tables/customer
+    primary_key: [customer_id]
+    fields:
+      - {name: customerId, expression: customer_id}
+      - {name: name, expression: name}
+      - {name: email, expression: email}
+
+  - name: Order
+    source: alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/databases/semantic_skill_demo/schemas/public/tables/purchase_order
+    primary_key: [order_id]
+    fields:
+      - {name: orderId, expression: order_id}
+      - {name: customerId, expression: customer_id}
+      - {name: placedOn, expression: placed_on}
+      - {name: total, expression: order_total}
+      - {name: status, expression: status}
+
+  - name: LineItem
+    source: alloydb.googleapis.com/projects/my-project/locations/us-central1/clusters/my-cluster/databases/semantic_skill_demo/schemas/public/tables/order_line
+    primary_key: [line_item_id]
+    fields:
+      - {name: lineItemId, expression: line_item_id}
+      - {name: orderId, expression: order_id}
+      - {name: type, expression: type}
+      - {name: amount, expression: amount}
+      - {name: memo, expression: memo}
+
+relationships:
+  - {name: PlacedBy, from_columns: [customer_id], to_columns: [customer_id]}
+  - {name: BelongsTo, from_columns: [order_id], to_columns: [order_id]}
+
+actions:
+  - name: IssueCredit
+    executor:
+      sql:
+        statements:
+          # Physical column names, not the model's field names, exactly as
+          # on the Spanner side. The new row's key comes from the statement
+          # here too, in this dialect's spelling: `gen_random_uuid()` cast
+          # to the text the column holds.
+          - >-
+            INSERT INTO order_line (line_item_id, order_id, type, amount, memo)
+            VALUES (gen_random_uuid()::text, @order, 'credit', -@amount, @memo)
+          # Recomputed from the lines, not adjusted by the credit amount --
+          # the same reasoning as on Spanner, and the same shape of
+          # statement. What differs is the table and column names and the
+          # dialect they are written in.
+          - >-
+            UPDATE purchase_order SET order_total = (
+              SELECT COALESCE(SUM(li.amount), 0)
+              FROM order_line AS li
+              WHERE li.order_id = @order
+            ) WHERE order_id = @order
