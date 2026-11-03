@@ -263,9 +263,15 @@ function align(
            (isBlank(lineText(x, k)) || isComment(lineText(x, k)));
            k--) {
         x.changed.add(k);
-        if (!isBlank(lineText(x, k))) moved.add(lineText(x, k));
+        if (!isBlank(lineText(x, k))) moved.add(lineText(x, k).trim());
       }
-      for (let k = ly - 1; moved.has(lineText(y, k)); k--) y.changed.add(k);
+      const indent = (line: string) => line.length - line.trimStart().length;
+      for (let k = ly - 1; moved.has(lineText(y, k).trim()); k--) {
+        y.changed.add(k);
+        if (indent(lineText(y, k)) !== indent(lineText(y, ly))) {
+          problems.push('a moved comment is not indented as its `- ` line');
+        }
+      }
     }
     if (yaml.isPair(p) && keyOf(p) !== keyOf(q)) {
       x.changed.add(lineOf(x, startOf(a, p)));

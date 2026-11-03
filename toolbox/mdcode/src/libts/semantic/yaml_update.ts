@@ -194,12 +194,15 @@ function patchItems(
       u.edits.push(
           next ? [g[a].start, next.start, ''] : [g[a - 1].end, g[b].end, '']);
     } else if (g[a].inline && next) {
-      // The next item moves up onto the `- ` line, and its comments go above.
+      // The next item moves up onto the `- ` line, and its comments go above
+      // that line, indented as it is.
       const above = lineStart(t, g[a].start);
       const own = lineStart(t, next.start);
+      const indent = /^[ \t]*/.exec(t.slice(above))![0];
+      const comments = t.slice(skipBlank(t, next.head, own), own)
+                           .replace(/^[ \t]*(?=#)/gm, indent);
       u.edits.push(
-          [above, above, t.slice(skipBlank(t, next.head, own), own)],
-          [g[a].start, next.start, '']);
+          [above, above, comments], [g[a].start, next.start, '']);
     } else {
       // A new first item drops the blank lines above it.
       const to = a === 0 && next && at[0] >= 0 ?
