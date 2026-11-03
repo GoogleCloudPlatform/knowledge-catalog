@@ -157,6 +157,11 @@ kcmd init --semantic-model <projectId>.<locationId>.<entryGroupId>
 # `kcmd push` creates it as a context set.
 kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format okf
 
+# For a scope backed by an entry group (entryGroup, kb, semantic-model), in any
+# layout, the context set's display name and description live in catalog.yaml
+# as `displayName:` and `description:`. Pull sets them from the entry group, and
+# push writes a changed one back; an absent key is left alone.
+
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 # Reports any conflicts if there are pending changes that have not been
 # pushed to the catalog.
