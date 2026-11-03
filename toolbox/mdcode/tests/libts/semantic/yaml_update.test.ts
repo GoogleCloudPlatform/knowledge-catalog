@@ -35,6 +35,14 @@ test.each<[string, string, (value: any) => void, string?]>([
   ],
   ['the last item removed from a flow list', 'f: [a, b]  # c\n', v => v.f.pop(), 'f: [a]  # c\n'],
   [
+    'a flow mapping given text of several lines, in a scalar and a new mapping',
+    'f: [{name: a, d: x}]\n', v => {
+      const text = `${'Owned by the analytics team. '.repeat(2)}\n\nAsk first.`;
+      v.f[0].d = text;
+      v.f[0].e = {k: text};
+    }
+  ],
+  [
     'a flow list item renamed to "b, c"', 'f: [{name: a}, {name: b}]  # c\n',
     v => v.f[1].name = 'b, c'
   ],

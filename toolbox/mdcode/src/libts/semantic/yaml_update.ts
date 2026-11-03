@@ -432,7 +432,8 @@ function items(u: Update, value: object, col: number): string[] {
 
 /**
  * `value` written as a scalar or flow collection. Each line after the first
- * that is not empty is indented under column `col`.
+ * that is not empty is indented under column `col`. In a flow collection, a
+ * string of several lines is one double-quoted line.
  */
 function scalarText(
     u: Update, value: unknown, col: number, flow: boolean,
@@ -444,13 +445,15 @@ function scalarText(
         (seq ? '' : `${scalarText(u, k, 0, true)}: `) + scalarText(u, v, col, true));
     return `${seq ? '[' : '{'}${pad}${parts.join(', ')}${pad}${seq ? ']' : '}'}`;
   }
-  const node =
-      isObject(value) ? value : Object.assign(new yaml.Scalar(value), {type});
+  const lines = flow && typeof value === 'string' && value.includes('\n');
+  const node = isObject(value) ? value : Object.assign(
+      new yaml.Scalar(value), {type: lines ? 'QUOTE_DOUBLE' : type});
   const text = yaml.stringify(flow ? [node] : {_: node}, {
     ...YAML_OPTIONS,
     compat: 'yaml-1.1',
     indent: u.step,
     lineWidth: 0,
+    doubleQuotedMinMultiLineLength: flow ? Infinity : undefined,
     flowCollectionPadding: false,
     collectionStyle: flow ? 'flow' : 'any',
   });
