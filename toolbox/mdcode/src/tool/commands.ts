@@ -616,8 +616,8 @@ function namedProfileErrors(
 }
 
 // The warnings and the note push prints on what pruning leaves out of model
-// `model`. `at` names its document and the profile or the deployment, and
-// `outcome` what becomes of a field left out.
+// `model`. Each line names the model, and `at` its document and the
+// deployment. `outcome` says what becomes of a field left out.
 function pruningLines(
     r: AvailabilityReport, model: string, at: string,
     outcome = 'the graph omits it'): string[] {
