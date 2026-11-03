@@ -28,6 +28,10 @@ test.each<[string, string, (value: any) => void, string?]>([
     'a mapping whose keys all change, ending in a comment',
     'm:\n  a:\n    b:\n      - x\n      # c\n  d: 1\n', v => v.m.a = {e: v.m.a.b}
   ],
+  [
+    'a block scalar in a CRLF text set to a mapping', 'a: |\r\n  x\r\nb: 1\r\n',
+    v => v.a = {c: 1}, 'a:\r\n  c: 1\r\nb: 1\r\n'
+  ],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',

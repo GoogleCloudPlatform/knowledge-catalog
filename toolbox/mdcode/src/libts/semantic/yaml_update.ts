@@ -532,7 +532,7 @@ function lineStart(t: string, p: number): number {
 function lineEnd(t: string, p: number): number {
   const i = t.indexOf('\n', p);
   const e = i < 0 ? t.length : i;
-  return t[e - 1] === '\r' && e - 1 >= p ? e - 1 : e;
+  return t[e - 1] === '\r' ? e - 1 : e;
 }
 
 /** The offset of the line after the one holding `p`. */
