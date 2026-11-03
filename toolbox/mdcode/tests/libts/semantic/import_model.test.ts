@@ -430,6 +430,15 @@ describe('sources', () => {
           `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
     ],
     [
+      'dotted name against a project prefix', `'"order.items"'`,
+      {sourcePrefix: 'bigquery.googleapis.com/projects/acme'},
+      "the quoted name 'order.items' is one table name, and a BigQuery table name cannot hold a dot. " +
+          "Write the table's GCP resource name instead, such as " +
+          `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
+    // A prefix of the database `other` completes it.
+    ['capitals against another AlloyDB database', 'OTHER.PUBLIC.Orders', {sourcePrefix: ALLOYDB_APP}, `${RERUN} ${ADVICE}`],
+    [
       'dotted namespace', '\'lake.`my.ns`.orders\'', {sourcePrefix: LAKE},
       "the quoted name 'my.ns' is one namespace name, and a BigLake namespace name cannot hold a dot. " +
           "Write the table's GCP resource name instead, such as " +

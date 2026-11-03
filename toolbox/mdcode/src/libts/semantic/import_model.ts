@@ -123,6 +123,15 @@ const LOADER_SOURCE_WARNING =
 // Why no name to write is given when the name holds a quote.
 const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote';
 
+// Each kind of --source-prefix for the service `prefix` names, or every kind
+// when there is no prefix.
+function prefixKinds(prefix?: ParsedSourcePrefix):
+    typeof SOURCE_PREFIX_PATTERNS {
+  const host = prefix?.base.split('/')[0];
+  return SOURCE_PREFIX_PATTERNS.filter(
+      k => host === undefined || k.form.startsWith(`${host}/`));
+}
+
 // The warning for `source`, which import leaves as written after a run with
 // `prefix`, if any. It gives the name to write when the loader names one,
 // or another --source-prefix run when a prefix of that kind, or of any kind
@@ -134,9 +143,7 @@ function sourceWarning(
     return `${ctx}: source '${source}' is ${problem}. 'kcmd push' rejects ` +
         `the file until it is repointed.`;
   }
-  const host = prefix?.base.split('/')[0];
-  const kinds = SOURCE_PREFIX_PATTERNS.filter(
-      k => host === undefined || k.form.startsWith(`${host}/`));
+  const kinds = prefixKinds(prefix);
   const bare = !/[/:]/.test(source);
   const rerun = bare && completes(source, kinds);
   const quoted = kinds.some(k => {
@@ -475,9 +482,18 @@ function lowerAscii(text: string): string {
   return text.replace(/[A-Z]/g, c => c.toLowerCase());
 }
 
-/** True when the database of `prefix` reads unquoted names in lower case. */
-function foldsUnquotedCase(prefix: ParsedSourcePrefix): boolean {
-  return prefix.base.startsWith('alloydb.googleapis.com/');
+/**
+ * True when a prefix that starts with `base` names a database that reads
+ * unquoted names in lower case.
+ */
+function foldsUnquotedCase(base: string): boolean {
+  return base.startsWith('alloydb.googleapis.com/');
+}
+
+/** `part` as the database of a prefix that starts with `base` reads it. */
+function readPart(base: string, part: {text: string; quoted: boolean}): string {
+  return foldsUnquotedCase(base) && !part.quoted ? lowerAscii(part.text) :
+                                                   part.text;
 }
 
 /**
@@ -489,7 +505,7 @@ function foldsUnquotedCase(prefix: ParsedSourcePrefix): boolean {
 function foldedPart(source: string, prefix: ParsedSourcePrefix):
     {kind: string; name: string; read: string}|undefined {
   const segs = sourceParts(source, prefix);
-  if (!segs || !foldsUnquotedCase(prefix)) return undefined;
+  if (!segs || !foldsUnquotedCase(prefix.base)) return undefined;
   const start = prefix.known.length - segs.length + (prefix.child ? 2 : 1);
   for (let i = start; i < prefix.known.length; i++) {
     const s = segs[i - start];
@@ -519,9 +535,7 @@ function qualifyTableSource(
   const needed = prefix.child ? 2 : 1;
   const overlap = segs.length - needed;
   if (overlap < 0 || overlap > prefix.known.length) return undefined;
-  const foldsCase = foldsUnquotedCase(prefix);
-  const read = (s: {text: string; quoted: boolean}) =>
-      foldsCase && !s.quoted ? lowerAscii(s.text) : s.text;
+  const read = (s: {text: string; quoted: boolean}) => readPart(prefix.base, s);
   const agrees = (s: {text: string; quoted: boolean}, k: string) =>
       read(s) === k || (ignoreCase && lowerAscii(s.text) === lowerAscii(k));
   const tail = prefix.known.slice(prefix.known.length - overlap);
@@ -564,11 +578,14 @@ function prefixFor(
   return base && known ? {base, known, child: kind.child} : undefined;
 }
 
-// True when a --source-prefix of one of `kinds` completes `source`.
+// True when a --source-prefix of one of `kinds` completes `source`. Each
+// prefix tried is built from the parts as that kind reads them.
 function completes(
     source: string, kinds: typeof SOURCE_PREFIX_PATTERNS): boolean {
   return kinds.some(kind => {
-    const prefix = prefixFor(kind, prefixSegments(source, kind.form));
+    const parts =
+        prefixParts(source, kind.form).map(p => readPart(kind.form, p));
+    const prefix = prefixFor(kind, parts);
     return prefix !== undefined &&
         qualifyTableSource(source, prefix) !== undefined;
   });
@@ -786,7 +803,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
         why = `differs from '--source-prefix' only in letter case, so ` +
             `import cannot complete it; correct the letter case of the ` +
             `source or of '--source-prefix'.`;
-      } else if (p?.child && sourceParts(trimmed, p)?.length === 1) {
+      } else if (p?.child && sourceParts(trimmed, p)?.length === 1 &&
+                 completes(trimmed, prefixKinds(p))) {
         // The container it lacks: a dataset, namespace or schema.
         const lacks = p.child.slice(0, -1);
         why = `names no ${lacks}, and neither does '--source-prefix', so ` +
