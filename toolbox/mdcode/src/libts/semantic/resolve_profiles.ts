@@ -325,7 +325,7 @@ export function withoutExclusions(model: SemanticModel): SemanticModel {
 // Each entity resolved for inheritance, or as declared when the hierarchy is
 // broken, which push reports elsewhere. `extends` is expanded to every
 // ancestor.
-export function resolvedEntities(model: SemanticModel): Entity[] {
+function resolvedEntities(model: SemanticModel): Entity[] {
   const entities = model.entities ?? [];
   if (!entities.some(e => e.extends?.length)) return entities;
   try {
@@ -1254,7 +1254,7 @@ export function expressionSources(
 // dialect list offers its imported text when that is in the profile's dialect,
 // and otherwise the text the loader picked. With no known dialect, every text
 // counts, each read in the dialect it is written in.
-export function textsFor(
+function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
