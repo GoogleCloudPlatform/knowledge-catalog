@@ -27,7 +27,8 @@ interface Style {
   nl: string;
   exprFirst: boolean;  // `expression` before `dialect` in a dialect entry.
   // SQL and a string `ai_context` under their key and a comment, over two
-  // lines if they have a space.
+  // lines if they have a space. With flow, each flow expression goes under
+  // its key and a comment too, and with anchor, each alias.
   nextLine: boolean;
   empty: boolean;  // A null value as nothing after its key.
   // A space inside each empty flow collection, or a comment on a line of its
@@ -36,6 +37,9 @@ interface Style {
   // Each mapping in a list on the line after its `-`, with its keys one
   // column in.
   dashAlone: boolean;
+  // A comment deeper than each list item's `-` after the item, and a line of
+  // spaces under the comment above each list item.
+  deep: boolean;
   // An anchor on each string expression, and on each mapping and text of
   // several lines that repeats, which repeats as an alias.
   anchor: boolean;
@@ -43,7 +47,7 @@ interface Style {
 const STYLE: Style = {
   seqIndent: 2, block: false, chomp: '-', spaces: false, flow: false,
   tight: false, open: false, nl: '\n', exprFirst: false, nextLine: false,
-  empty: false, emptyFlow: '', dashAlone: false, anchor: false,
+  empty: false, emptyFlow: '', dashAlone: false, anchor: false, deep: false,
 };
 
 const isObj = (v: any) => v !== null && typeof v === 'object';
@@ -116,18 +120,25 @@ function write(value: any, s: Style): string {
       const [first, ...rest] = tight(v, inner);
       out.push(`${head} ${first}${after()}`, ...rest);
     } else if (s.flow && expr && full(v) && !Array.isArray(v)) {
-      // `{` and `[` end their lines, and each entry has a line.
-      out.push(`${head} {${after()}`);
+      // `{` and `[` end their lines, and each entry has a line. With
+      // nextLine, the `{` is under the key and a comment.
+      const at = s.nextLine ? inner : c;
+      if (s.nextLine) {
+        out.push(head + after(), '', `${pad(at)}# u${n++}`,
+                 `${pad(at)}{${after()}`);
+      } else {
+        out.push(`${head} {${after()}`);
+      }
       for (const [k, x] of Object.entries(v) as Array<[string, any[]]>) {
         const open = s.open && x.length > 1;
         const line = (y: any, i: number) =>
             `${flow(y)}${i < x.length - 1 ? ',' : ''}${after()}`;
-        out.push(`${pad(inner)}${k}: [${open ? line(x[0], 0) : after()}`);
+        out.push(`${pad(at + 2)}${k}: [${open ? line(x[0], 0) : after()}`);
         x.forEach((y, i) => (i > 0 || !open) &&
-                      out.push(`${pad(inner + 2)}${line(y, i)}`));
-        out.push(`${pad(inner)}]`);
+                      out.push(`${pad(at + 4)}${line(y, i)}`));
+        out.push(`${pad(at + 2)}]`);
       }
-      out.push(`${pad(inner - 2)}}${after()}`);
+      out.push(`${pad(at)}}${after()}`);
     } else if (!full(v) && isObj(v) && s.emptyFlow === 'comment') {
       const [open, close] = flow(v);
       out.push(`${head} ${open}`, `${pad(inner)}# i${n++}`,
@@ -137,6 +148,9 @@ function write(value: any, s: Style): string {
       out.push(`${head} ${open}${s.emptyFlow ? ' ' : ''}${close}${after()}`);
     } else if (v === null && s.empty) {
       out.push(head + after());
+    } else if (anchor && anchors.has(anchor) && s.nextLine) {
+      out.push(head + after(), '', `${pad(inner)}# u${n++}`,
+               `${pad(inner)}*${anchors.get(anchor)}${after()}`);
     } else if (anchor && anchors.has(anchor)) {
       out.push(`${head} *${anchors.get(anchor)}${after()}`);
     } else if (Array.isArray(v)) {
@@ -169,6 +183,7 @@ function write(value: any, s: Style): string {
   };
   const item = (v: any, c: number) => {
     above(c);
+    if (s.deep) out.push(pad(c + 2));
     if (full(v) && !Array.isArray(v) && s.dashAlone) {
       out.push(`${pad(c)}-${after()}`);
       pairs(order(v), c + 1);
@@ -177,6 +192,7 @@ function write(value: any, s: Style): string {
     } else {
       val(`${pad(c)}-`, v, c, c + 2);
     }
+    if (s.deep) out.push(`${pad(c + 2)}# d${n++}`);
   };
   const pairs = (v: any, c: number, dash?: string) => {
     Object.entries(v).forEach(([k, x], i) => {
@@ -248,9 +264,10 @@ function startOf(node: any, item: any): number {
 }
 
 // The lines of `item`. Comment lines after a block item at its column or
-// less are above the next item, and so are the empty lines that a block
-// scalar that keeps its line breaks ends in, at any depth. A line of spaces
-// is text.
+// less are above the next item, and so are blank lines, but for the text of
+// a block scalar that ends the item, such as a line of spaces. The empty lines
+// that a block scalar that keeps its line breaks ends in, at any depth, are
+// above the next item too.
 function span(s: Side, node: any, item: any): number[] {
   const start = startOf(node, item);
   const last = yaml.isPair(item) ? item.value ?? item.key : item;
@@ -258,10 +275,19 @@ function span(s: Side, node: any, item: any): number[] {
   if (!node.flow && isBlank(before(s, at))) at = s.starts[lineOf(s, at)];
   const end = lineOf(s, at - 1);
   const col = before(s, start).length;
+  let tail = last;
+  while (yaml.isCollection(tail) && tail.items.length > 0) {
+    const x: any = tail.items.at(-1);
+    tail = yaml.isPair(x) ? x.value : x;
+  }
+  const kept = /^[|>][0-9]*\+/.test(s.text.slice(tail.range[0]));
+  const floor = yaml.isScalar(tail) && /^BLOCK/.test(tail.type ?? '') && !kept ?
+      lineOf(s, tail.range![1] - 1) :
+      lineOf(s, start);
   let i = end;
-  for (; i > lineOf(s, start); i--) {
+  for (; i > floor; i--) {
     const line = lineText(s, i).replace(/\r?\n$/, '');
-    if (line && (!isComment(line) || line.search(/\S/) > col)) break;
+    if (line.trim() && (!isComment(line) || line.search(/\S/) > col)) break;
   }
   return [lineOf(s, start), node.flow ? end : i];
 }
@@ -567,10 +593,12 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a datatype rewritten', changed(vanilla, m => fields(m)[0].datatype = 'integer')],
   ['a source completed', changed(vanilla, m => ds(m)[0].source = 'orders'),
    {sourcePrefix: BQ.replace('/tables/orders', '')}],
-  // Cut to text that ends in two line breaks, also where a metric repeats it.
+  // Cut to text that ends in two line breaks, also where a metric repeats it
+  // above a metric that goes.
   ['a description cut', changed(vanilla, m => {
      ds(m)[0].description = `${'Orders. '.repeat(249)}Order.\n\nMore.`;
      m.semantic_model[0].metrics[0].description = ds(m)[0].description;
+     m.semantic_model[0].metrics.push(ROW_COUNT);
    })],
   ['a key removed', changed(vanilla, m => {
      const {name, ...rest} = fields(m)[1];
@@ -618,6 +646,8 @@ const STYLES: Array<[string, Partial<Style>]> = [
   ['CRLF', {nl: '\r\n'}],
   ['dialect entries written expression first', {exprFirst: true}],
   ['expressions on the line under their key', {nextLine: true}],
+  ['flow expressions on the line under their key', {flow: true, nextLine: true}],
+  ['aliases on the line under their key', {anchor: true, nextLine: true}],
   ['empty values and empty flow collections with a space inside', {empty: true, emptyFlow: 'space'}],
   ['flow collections that close on an entry\'s line', {flow: true, tight: true}],
   ['clipped blocks with lines of spaces', {block: true, chomp: '', spaces: true}],
@@ -626,6 +656,7 @@ const STYLES: Array<[string, Partial<Style>]> = [
   ['flow lists that open on their first item\'s line', {flow: true, open: true}],
   ['empty flow collections with a comment inside', {emptyFlow: 'comment'}],
   ['list items on the line after their dash', {dashAlone: true}],
+  ['list items that end in a deeper comment, under a line of spaces', {deep: true}],
 ];
 
 // Re-imports `output`. A file with a GOOGLE block is written for kcmd.
