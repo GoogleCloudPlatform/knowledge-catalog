@@ -3174,6 +3174,38 @@ export function fillForm(form: string, parts: string[]): string|undefined {
       /<\w+>/g, name => n++ < skip ? name : parts[n - 1 - skip]);
 }
 
+// The name of each service a table form starts with, as messages say it.
+const SERVICE_NAMES: Record<string, string> = {
+  bigquery: 'BigQuery',
+  biglake: 'BigLake',
+  spanner: 'Spanner',
+  alloydb: 'AlloyDB',
+  cloudsql: 'Cloud SQL',
+};
+
+// Why `parts`, a bare name's parts read into the last placeholders of `form`,
+// name no table there only because a part holds a dot. Such a part was
+// quoted, so it is one name, and `form` takes no dot in its place. Undefined
+// for any other name.
+export function dottedPartProblem(parts: string[], form: string): string|
+    undefined {
+  const takes = (names: string[]) => {
+    const name = fillForm(form, names);
+    return name !== undefined && oldSourceForm(name) === undefined &&
+        isAcceptedSource(name);
+  };
+  const plain = parts.map(p => p.replaceAll('.', '_'));
+  if (takes(parts) || !takes(plain)) return undefined;
+  const i = parts.findIndex(
+      (p, j) => p !== plain[j] && !takes(plain.map((q, k) => k === j ? p : q)));
+  if (i < 0) return undefined;
+  const placeholders = form.match(/<\w+>/g)!;
+  const role =
+      placeholders[placeholders.length - parts.length + i].slice(1, -1);
+  return `the quoted name '${parts[i]}' is one ${role} name, and a ${
+      SERVICE_NAMES[form.split('.')[0]]} ${role} name cannot hold a dot`;
+}
+
 // `source` with its quotes removed, written as a resource name, when it is a
 // table's resource name, resource URI or entry name outside a system entry
 // group, holding them; '' when removing them leaves no such name; undefined
@@ -3590,6 +3622,7 @@ export function parseSource(
   // and no `:` scheme or prefix.
   const isBareTableName = trimmed.length > 0 && !trimmed.includes('/') &&
       !trimmed.includes(':');
+  let dotted: string|undefined;
   if (isBareTableName) {
     // The legacy wrapper splits at every dot outside backticks.
     const rawSegs = catalogNameSegments(trimmed);
@@ -3615,9 +3648,9 @@ export function parseSource(
         '';
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and
-    // the general error below otherwise. A path in one pair of backticks or
-    // double quotes counts as its parts, as import reads it under a BigQuery
-    // or BigLake prefix.
+    // the general error below otherwise, which says so when only a quoted
+    // name's dot keeps the example out. A path in one pair of backticks counts
+    // as its parts, as import reads it under a BigQuery or BigLake prefix.
     const segs = bareNameSegments(trimmed, true);
     if (segs.length > 0 && segs.length <= 4 && segs.every(s => s.length > 0)) {
       if (segs.some(s => /\s/.test(s))) {
@@ -3625,27 +3658,24 @@ export function parseSource(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
             `is not a valid source, and ${NO_SPACE}. ${THIRD_PARTY_SOURCE}`);
       }
-      const p = segs.length >= 3 ? segs[0] : '<project>';
-      const d = segs.length >= 3 ? segs[1] :
-          segs.length === 2 ? segs[0] : '<dataset>';
-      const t = segs[segs.length - 1];
-      const [write, example] = segs.length === 4 ?
-          ['Write its BigLake resource name instead:',
-           `biglake.googleapis.com/projects/${segs[0]}/catalogs/${
-               segs[1]}/namespaces/${segs[2]}/tables/${segs[3]}`] :
-          ["Write the table's GCP resource name instead, for example:",
-           `bigquery.googleapis.com/projects/${p}/datasets/${d}/tables/${t}`];
+      const form = segs.length === 4 ? BIGLAKE_TABLE_FORM : BIGQUERY_TABLE_FORM;
+      const write = segs.length === 4 ?
+          'Write its BigLake resource name instead:' :
+          "Write the table's GCP resource name instead, for example:";
+      const example = fillForm(form, segs)!;
       if (oldSourceForm(example) === undefined && isAcceptedSource(example)) {
         throw new SemanticModelError(
             `Semantic model load error: ${ctx}: bare table name '${trimmed}' ` +
             `is not a valid source. ${write}\n  source: ${example}${viaImport}`);
       }
+      dotted = dottedPartProblem(segs, form);
     }
   }
 
   throw new SemanticModelError(
       `Semantic model load error: ${ctx}: source '${trimmed}' is not a valid ` +
-      `table reference. Expected a GCP resource name ` +
+      `table reference${dotted ? `; ${dotted}` : ''}. Expected a GCP ` +
+      `resource name ` +
       `('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', ` +
       `'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', ` +
       `'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', ` +
@@ -3664,12 +3694,12 @@ export function unquote(part: string): string {
 // or double quotes is one name, dots included, and a doubled quote character
 // in it, as in "a""b", is one literal quote. The quotes are those
 // hasUnquotedWhitespace reads. Returns [] when a quote does not wrap a whole
-// part. With `bigQuery`, a path in one pair of backticks or double quotes, as
-// BigQuery writes `p.d.t`, has the parts of the same path written without
-// them.
+// part. With `bigQuery`, a path in one pair of backticks, as BigQuery writes
+// `p.d.t`, has the parts of the same path written without them. A path in one
+// pair of double quotes is one name.
 export function bareNameSegments(name: string, bigQuery: boolean): string[] {
   const pairs = quotePairs(name);
-  if (bigQuery && pairs.length === 1 && pairs[0][0] === 0 &&
+  if (bigQuery && name[0] === '`' && pairs.length === 1 && pairs[0][0] === 0 &&
       pairs[0][1] === name.length - 1) {
     return bareNameSegments(name.slice(1, -1), false);
   }

@@ -361,6 +361,12 @@ describe('sources', () => {
     ],
     ['bare name with a doubled quote', `'"a""b"'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
     ['bare name with an unclosed quote', `'sales."orders'`, {sourcePrefix: BQ_PREFIX}, `${NO_QUOTE} ${PUSH} ${ADVICE}`],
+    [
+      'path in double quotes', `'"acme.sales.orders"'`, {sourcePrefix: BQ_PREFIX},
+      "the quoted name 'acme.sales.orders' is one table name, and a BigQuery table name cannot hold a dot. " +
+          "Write the table's GCP resource name instead, such as " +
+          `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);

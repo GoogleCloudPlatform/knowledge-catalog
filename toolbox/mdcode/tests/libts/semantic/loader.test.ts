@@ -3413,12 +3413,18 @@ describe('strict entity sources', () => {
   // does not wrap a whole part, or whose hint the loader would reject, such as
   // a table name with a dot or a quote, gets the general error.
   test('a bare name the hint cannot read gets the general error', () => {
-    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c', 'raw.`my.orders`',
-      'public."order.items"', 'public."or"ders', 'public."orders', 'public."a""b"']) {
+    for (const bare of ['acme.us.inst.shop.orders', 'a..b', '.orders', 'orders.', 'a..b.c',
+      'public."or"ders', 'public."orders', 'public."a""b"']) {
       expect(() => load(GOOGLE, {
         name: 'm',
         datasets: [{ name: 'orders', source: bare, primary_key: ['id'], fields: [] }],
       })).toThrow(`source '${bare}' is not a valid table reference`);
+    }
+    // A quoted name is one name, dots included, and the error says so.
+    for (const [bare, name] of [['raw.`my.orders`', 'my.orders'], ['public."order.items"', 'order.items'],
+      ['"acme.sales.orders"', 'acme.sales.orders']]) {
+      expect(() => loadSource(bare)).toThrow(`source '${bare}' is not a valid table reference; the quoted name ` +
+        `'${name}' is one table name, and a BigQuery table name cannot hold a dot. Expected a GCP resource name`);
     }
   });
 

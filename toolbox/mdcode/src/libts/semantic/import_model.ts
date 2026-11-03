@@ -5,7 +5,7 @@ import * as yaml from 'yaml';
 
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameSegments, BIGLAKE_TABLE_FORM, BIGQUERY_TABLE_FORM, fillForm, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameSegments, BIGLAKE_TABLE_FORM, BIGQUERY_TABLE_FORM, dottedPartProblem, fillForm, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile, serializeModelFiles} from './osi_converter';
 import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
@@ -111,8 +111,9 @@ const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote';
 // For a bare name, it suggests another run with --source-prefix only when a
 // prefix of the kind that ran, or of any kind when none ran, completes the
 // name. Otherwise it says why kcmd cannot name the table when the name holds a
-// space or a quote. A source in no Google Cloud form may be a third-party
-// table, so the warning says how to write one.
+// space or a quote, or gives the form to write when only a quoted name's dot
+// keeps the prefix's kind from naming it. A source in no Google Cloud form may
+// be a third-party table, so the warning says how to write one.
 function sourceWarning(
     ctx: string, source: string, prefix?: ParsedSourcePrefix): string {
   const problem = oldSourceForm(source);
@@ -133,8 +134,18 @@ function sourceWarning(
       /\s/.test(source)        ? NO_SPACE :
       quoted                   ? NO_QUOTE :
                                  undefined;
+  const dotted = !bare || rerun || cannot ?
+      undefined :
+      kinds.map(k => ({
+             form: k.form,
+             why: dottedPartProblem(prefixSegments(source, k.form), k.form),
+           }))
+          .find(d => d.why);
   return `${ctx}: source '${source}' is not a valid GCP resource name` +
-      (cannot ? `, and ${cannot}. ` : '; ') +
+      (cannot ? `, and ${cannot}. ` :
+           dotted ? `; ${dotted.why}. Write the table's GCP resource name ` +
+                   `instead, such as '${dotted.form}'. ` :
+                    '; ') +
       `'kcmd push' rejects the file until it is repointed` +
       (rerun ? `, or until 'kcmd import' runs again with '--source-prefix'.` :
                '.') +
@@ -465,7 +476,7 @@ function qualifyTableSource(source: string, prefix: ParsedSourcePrefix): string|
 
 // The parts of the bare name `source` as a prefix that begins as `base` does
 // reads them. A BigQuery or BigLake prefix reads a path in one pair of
-// backticks or double quotes, such as `` `p.d.t` ``, as its parts.
+// backticks, such as `` `p.d.t` ``, as its parts.
 function prefixSegments(source: string, base: string): string[] {
   return bareNameSegments(
       source.trim(), /^(bigquery|biglake)\.googleapis\.com\//.test(base));
