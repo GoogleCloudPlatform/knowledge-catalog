@@ -175,9 +175,20 @@ describe('conversion, strict mode, and translation', () => {
       `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
     ],
     [
+      'vanilla datatype in another casing converted to Google in strict mode',
+      ossieDoc({extra: '            datatype: integer\n'}), {flavor: 'google' as const, strict: true},
+      `Semantic model load error: field 'orders.order_id': datatype 'integer' is not valid in a '0.2.0.dev0' document; expected exactly one of String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque.`
+    ],
+    [
       'one-part name against an AlloyDB database prefix in strict mode',
       googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
       `dataset 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
+    ],
+    [
+      'an unquoted part against an AlloyDB prefix with a capital letter in strict mode',
+      googleDoc({source: 'Sales.orders'}),
+      {strict: true, sourcePrefix: `${ALLOYDB_DB}/schemas/Sales`},
+      `dataset 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
     ],
     [
       'lowercase Opaque in strict mode',
