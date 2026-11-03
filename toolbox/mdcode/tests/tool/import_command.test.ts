@@ -267,8 +267,8 @@ describe('kcmd import', () => {
         '          dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]\n' +
         '    primary_key: [order_id]     # same key\n';
     // PROFILE translated by --transpile, written as the model file is: the
-    // flow list gains the entry, and one space stays before each comment.
-    const TRANSLATED = PROFILE.replaceAll('     #', ' #').replace(
+    // flow list gains the entry, and the rest of the file stays as written.
+    const TRANSLATED = PROFILE.replace(
         '"NVL(order_id, 0)"}]',
         '"NVL(order_id, 0)"}, {dialect: BIGQUERY, expression: "COALESCE(order_id, 0)"}]');
     // Writes the model and its profile file as `<stem>.yaml` and
@@ -327,8 +327,8 @@ describe('kcmd import', () => {
       });
     }
 
-    // Each is a profile file of the model. Push refuses the misnamed ones, and
-    // reads the file in the older directory as the model's profile.
+    // Each is a profile file of the model. Push refuses the misnamed ones and
+    // the legacy profile directory.
     for (const left of [
       'retail.profile.yaml', 'retail.profile.prod.v2.yaml', 'retail.profile.-us.yaml',
       path.join('retail.profiles', 'prod.yaml'),
@@ -424,7 +424,8 @@ describe('kcmd import', () => {
 
     test('under another name in the entry group is refused, saying to move its profile files too', async () => {
       setUp('shop');
-      expect(await importModel(IN_GROUP, {flavor: 'ossie', input: 'first-party'})).toBe(1);
+      expect(await importModel(IN_GROUP, {flavor: 'ossie', input: 'first-party', transpile: true}))
+          .toBe(1);
       expect(errors).toEqual([expect.stringContaining(
           'Move the input and its profile files out of the entry group')]);
     });

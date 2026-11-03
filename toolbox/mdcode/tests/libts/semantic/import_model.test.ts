@@ -413,24 +413,22 @@ describe('profile translation', () => {
   test.each([
     ['a folded block scalar and a commented block expression',
      profileFile('>-\n          orders.total\n          + 1', BLOCK),
-     profileFile('>-\n          orders.total + 1', `${BLOCK}
+     profileFile('>-\n          orders.total\n          + 1', `${BLOCK}
             - dialect: BIGQUERY
               expression: COALESCE(order_id, 0)`)],
     ['a double-quoted string with a line break',
      profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`, ` {dialects: [${SF}]}`),
-     profileFile(`"CONCAT(orders.total, 'a long enough text')\n\n          \\  || 'x'"`,
+     profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`,
                  ` {dialects: [${SF}, ${BQ}]}`)],
     ['a blank line at each position and a comment inside a flow expression', BLANKS,
-     BLANKS.replace('# bound fields\n\n', '# bound fields\n').replace(/ \{[^]*/,
-         '\n          {\n\n            dialects:\n              [\n                # Snowflake only\n\n' +
-         `                ${SF},\n                ${BQ}\n              ]\n          }\n`)],
+     BLANKS.replace(`${SF}\n`, `${SF},\n            ${BQ}\n`)],
     ['an entry that writes expression before dialect', profileFile('orders.total', REVERSED),
      profileFile('orders.total', `${REVERSED}
             - dialect: BIGQUERY
               expression: COALESCE(order_id, 0)`)],
     ['CRLF line endings and a single-quoted string',
      profileFile(SINGLE, `${COMMENTED} [${SF}]`).replaceAll('\n', '\r\n'),
-     profileFile(SINGLE, `${COMMENTED} [${SF}, ${BQ}]`)],
+     profileFile(SINGLE, `${COMMENTED} [${SF}, ${BQ}]`).replaceAll('\n', '\r\n')],
   ])('writes a profile file with %s as it writes the model file', async (_, input, output) => {
     const res = await importSemanticModelYaml(model, {
       ...google, profileFiles: [{fileName: 'retail.profile.prod.yaml', content: input}],
@@ -460,9 +458,9 @@ describe('profile checks', () => {
       ps.map(p => ({fileName: `sales.profile.${p.name ?? 'pg'}.yaml`, content: yaml.stringify(p)}));
   const google = googleDoc({extra: '      - name: party\n        abstract: true\n'});
   const strict = {strict: true, fileName: 'sales.yaml'};
-  // Where a message says profile pg is: the document that holds the model, the
-  // label of pg's errors, and the flavor the import writes.
-  type At = {doc: string; label: string; flavor: string};
+  // Where a message says profile pg is: the document that holds the model and
+  // the label of pg's errors.
+  type At = {doc: string; label: string};
   // [path, its input and options for profiles ps, the document and label a
   // message names, whether the path keeps a Google model's profile files]. In
   // strict mode a message names the input; otherwise it names what is written.
@@ -499,16 +497,16 @@ describe('profile checks', () => {
          'a letter followed by letters, digits, underscores and hyphens.', true],
     ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}),
      at => `profile 'pg': [${at.doc}] field 'orders.order_id': BigQuery reads "Order ID" in its ` +
-         `'ANSI_SQL' expression as text; if you meant a column, give it a 'BIGQUERY' expression ` +
-         `without the double quotes; 'kcmd import <file> --input first-party --flavor ${at.flavor} ` +
-         `--transpile' adds one`, false],
+         `'ANSI_SQL' expression as text; if you meant a column or a field, give it a 'BIGQUERY' ` +
+         'expression that names a column alone, in backticks if it needs quoting, and a field ' +
+         "of the entity whose fields list holds this expression as '<entity>.<field>'", false],
   ];
 
   test.each(PROBLEMS.flatMap(([problem, profiles, message, keptOnly]) => PATHS.flatMap(
       ([path, build, doc, label, kept]) => {
         const [input, opts] = build(profiles);
         return !keptOnly || kept ?
-            [[problem, path, input, opts, message?.({doc, label, flavor: opts.flavor})]] : [];
+            [[problem, path, input, opts, message?.({doc, label})]] : [];
       })))(
       'reports %s in %s', async (problem, __, input, opts, message) => {
         const res = await importSemanticModelYaml(input, opts);
@@ -528,27 +526,31 @@ describe('profile checks', () => {
   const KEYED = `    primary_key: [order_id]\n    fields:\n      - {name: order_id, expression: order_id}\n`;
   const pg = (body: string) => [{fileName: 'sales.profile.pg.yaml', content:
       `name: pg\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n${body}`}];
-  const READS = (database: string, dialect: string, hint = '') =>
-      `${database} reads "Order Amount" in its 'ANSI_SQL' expression as text; if you meant a ` +
-      `column, give it a '${dialect}' expression without the double quotes${hint}`;
-  const HINT = "; 'kcmd import <file> --input first-party --flavor google --transpile' adds one";
+  // The warning about "Order Amount" in a field, or with `metric` in a metric.
+  const READS = (database: string, dialect: string, metric = false) =>
+      `${database} reads "Order Amount" in its 'ANSI_SQL' expression as text; ` + (metric ?
+          `if you meant a field, give it a '${dialect}' expression that names it as ` +
+              "'<entity>.<field>'" :
+          `if you meant a column or a field, give it a '${dialect}' expression that names a ` +
+              'column alone, in backticks if it needs quoting, and a field of the entity whose ' +
+              "fields list holds this expression as '<entity>.<field>'");
   const AMOUNT = (expr: string) => `          - {name: amount, expression: ${expr}}\n`;
   const UNBOUND = model('').replace(/ +source: .*\n/, '');
   // [label, model, profile files, errors, warnings]
   test.each([
     ['warns once about a model field that a valid profile inherits',
      model(AMOUNT(`'"Order Amount"'`)), pg(KEYED), [],
-     [`field 'orders.amount': ${READS('BigQuery', 'BIGQUERY', HINT)}`]],
+     [`field 'orders.amount': ${READS('BigQuery', 'BIGQUERY')}`]],
     ['gives no warning about a profile push rejects',
      model(AMOUNT('amount')),
      pg(`    fields:\n      - {name: order_id, expression: order_id}\n${AMOUNT(`'"Order Amount"'`).slice(4)}`),
      ["[sales.profile.pg.yaml] profile 'pg': entity 'orders' has no primary_key in this " +
       "profile; the model file's keys are columns of its own table, so state this profile's keys"], []],
-    ['names the model file\'s flavor in the hint about a profile\'s metric',
+    ['warns about a double-quoted name in a profile\'s metric',
      model(`    metrics:\n      - {name: total, entity: orders, expression: 'COUNT("Order Amount")'}\n`,
            SPANNER_TABLE), pg(KEYED), [],
-     [`metric 'total': ${READS('Spanner', 'SPANNER')}`,
-      `profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', HINT)}`]],
+     [`metric 'total': ${READS('Spanner', 'SPANNER', true)}`,
+      `profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', true)}`]],
     ['reports a model field with no text for its table',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}')), [],
      ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
