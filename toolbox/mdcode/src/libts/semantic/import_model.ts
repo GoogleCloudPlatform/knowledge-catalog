@@ -882,7 +882,7 @@ function repairDocument(doc: ImportDocument): void {
   });
   doc.metrics = doc.metrics.filter(
       mt => repairMetric(mt, entityNames, impliedDialect, doc));
-  if (Array.isArray(doc.model.metrics)) {
+  if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
     doc.model.metrics = doc.metrics.length ? doc.metrics : undefined;
   }
 

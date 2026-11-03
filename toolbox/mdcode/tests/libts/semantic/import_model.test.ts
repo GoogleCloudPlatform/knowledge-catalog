@@ -1163,6 +1163,7 @@ ${lines}`;
     ['a padded description', '    description: "  Retail model  "\n'],
     ['a block description', '    description: |\n      Retail model.\n'],
     ['a string ai_context', '    ai_context: Retail model\n'],
+    ['an empty metrics list', '    metrics: []  # none yet\n'],
   ].flatMap(
       ([what, lines]): Array<[string, string, string, string | string[]]> => [
         [what, 'google', ossieDoc({modelAiContext: lines}), lines],
