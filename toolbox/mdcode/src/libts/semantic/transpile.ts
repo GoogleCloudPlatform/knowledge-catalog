@@ -32,7 +32,7 @@
 import {Field, Metric, SemanticModel, SqlDialect} from './ir';
 import {columnReferences, entitiesReached} from './sql_expr_utils';
 import {isSimpleIdentifier} from './sql_identifiers';
-import {loadedSqlEngine, loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
+import {loadSqlEngine, PolyglotEngine, sqlExpressionTree} from './sql_parser';
 
 // The target dialect this pass rewrites into. The whole point of the pass is to
 // reach GoogleSQL/BigQuery, so it is fixed rather than a knob; the polyglot
@@ -112,29 +112,6 @@ export function doubleQuotedNames(expression: string): string[] {
   const written =
       names.filter(n => expression.includes(`"${n.replaceAll('"', '""')}"`));
   return [...new Set(written.length ? written : names.slice(0, 1))];
-}
-
-/**
- * Returns each column reference that `expression` writes with its name or
- * its qualifier in double quotes, as the `ANSI_SQL` parser reads it: the
- * column's name, and its qualifier when it has one.
- */
-export function doubleQuotedColumns(expression: string):
-    Array<{name: string; qualifier?: string}> {
-  const inQuotes = (id: any) => id?.quoted === true &&
-      expression.includes(`"${id.name.replaceAll('"', '""')}"`);
-  return columnNodes(sqlExpressionTree(expression, 'ANSI_SQL'))
-      .filter(c => inQuotes(c.name) || inQuotes(c.table))
-      .map(c => c.table ? {name: c.name.name, qualifier: c.table.name} :
-                          {name: c.name.name});
-}
-
-// The `{column: {name, table?}}` nodes of a `@polyglot-sql/sdk` AST, in tree
-// order.
-function columnNodes(node: unknown): any[] {
-  if (!node || typeof node !== 'object') return [];
-  const obj = node as Record<string, any>;
-  return obj.column ? [obj.column] : Object.values(obj).flatMap(columnNodes);
 }
 
 /**
@@ -330,11 +307,12 @@ export async function transpileModel(
 }
 
 /**
- * Says which entities `sql`, written in `target`, names in another letter case
- * than `entityNames` gives, as `{reached} vs {any case}`, or '' when it names
- * each in its own case. Undefined when `sql` cannot be parsed.
+ * Says which entities `sql`, written in `target`, names only in another letter
+ * case than `entityNames` gives, as `{reached} vs {any case}`, or '' when it
+ * names each at least once in its own case. Undefined when `sql` cannot be
+ * parsed.
  */
-export function recasedEntities(
+function recasedEntities(
     sql: string, target: string, entityNames: string[]): string|undefined {
   const cols = columnReferences(sql, target);
   if (cols === undefined) return undefined;
@@ -421,46 +399,35 @@ export const polyglotTranspiler: SqlTranspiler = async (requests, target) => {
     return requests.map(r => ({id: r.id, error: reason}));
   }
 
-  return requests.map(r => ({
-                        id: r.id,
-                        ...translateExpression(
-                            r.expression, r.dialect, target, engine),
-                      }));
+  return requests.map(r => {
+    const read = polyglotDialect(r.dialect);
+    if (read === undefined)
+      return {id: r.id, error: `unsupported source dialect '${r.dialect}'`};
+    try {
+      const res = engine.transpile(r.expression, read, write);
+      if (!res.success || !res.sql || res.sql.length === 0)
+        return {
+          id: r.id,
+          error: res.error ?? 'transpilation produced no output'
+        };
+      // A field/metric is a single scalar expression, so the engine should
+      // return exactly one statement. More than one means the input was not a
+      // lone expression; taking [0] would silently drop the rest, so reject it.
+      if (res.sql.length > 1)
+        return {
+          id: r.id,
+          error: `expected a single expression but got ${
+              res.sql.length} statements`
+        };
+      if (write !== 'bigquery') return {id: r.id, sql: res.sql[0]};
+      const repaired = repairForBigQuery(engine, res.sql[0], read);
+      return 'error' in repaired ? {id: r.id, error: repaired.error} :
+                                   {id: r.id, sql: repaired.sql};
+    } catch (err) {
+      return {id: r.id, error: errMessage(err)};
+    }
+  });
 };
-
-/**
- * Translates one field or metric `expression` from `dialect` into `target`
- * with the loaded engine, as `transpileModel` does, or says why it cannot.
- */
-export function translateExpression(
-    expression: string, dialect: string, target: string,
-    engine = loadedSqlEngine()): {sql: string}|{error: string} {
-  const read = polyglotDialect(dialect);
-  const write = polyglotDialect(target);
-  if (read === undefined) {
-    return {error: `unsupported source dialect '${dialect}'`};
-  }
-  if (write === undefined) {
-    return {error: `unsupported target dialect '${target}'`};
-  }
-  try {
-    const res = engine.transpile(expression, read, write);
-    if (!res.success || !res.sql || res.sql.length === 0)
-      return {error: res.error ?? 'transpilation produced no output'};
-    // A field/metric is a single scalar expression, so the engine should
-    // return exactly one statement. More than one means the input was not a
-    // lone expression; taking [0] would silently drop the rest, so reject it.
-    if (res.sql.length > 1)
-      return {
-        error: `expected a single expression but got ${
-            res.sql.length} statements`
-      };
-    if (write !== 'bigquery') return {sql: res.sql[0]};
-    return repairForBigQuery(engine, res.sql[0], read);
-  } catch (err) {
-    return {error: errMessage(err)};
-  }
-}
 
 function errMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

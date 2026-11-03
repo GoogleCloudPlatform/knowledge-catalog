@@ -69,15 +69,6 @@ export function loadSqlEngine(): Promise<PolyglotEngine> {
   return enginePromise;
 }
 
-// The engine, once loadSqlEngine has loaded it. Throws when it has not.
-export function loadedSqlEngine(): PolyglotEngine {
-  if (!loadedEngine) {
-    throw new Error(
-        'the SQL parser is not loaded; call loadSqlEngine() first');
-  }
-  return loadedEngine;
-}
-
 // The engine's dialect for each kcmd dialect. The engine has no Spanner
 // dialect, so Spanner's GoogleSQL is read as BigQuery's.
 const PARSER_DIALECTS: Record<string, string> = {
@@ -123,7 +114,10 @@ export function sqlColumns(expression: string, dialect: string): SqlColumn[]|
 // keyword, such as `Order.amount`, is read again inside parentheses on lines
 // of their own, so a trailing `--` comment stays inside.
 export function sqlExpressionTree(expression: string, dialect: string): any {
-  loadedSqlEngine();
+  if (!loadedEngine) {
+    throw new Error(
+        'the SQL parser is not loaded; call loadSqlEngine() first');
+  }
   if (!expression.trim()) return undefined;
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
   const ast: any = oneExpression(engineDialect, `SELECT ${expression}`) ??
@@ -374,9 +368,12 @@ function isNamePath(node: unknown): boolean {
 // The tokens of `expression` in `dialect`, or undefined when the engine cannot
 // tokenize it. Throws when the engine is not loaded.
 function sqlTokens(expression: string, dialect: string): SqlToken[]|undefined {
-  const engine = loadedSqlEngine();
+  if (!loadedEngine) {
+    throw new Error(
+        'the SQL parser is not loaded; call loadSqlEngine() first');
+  }
   const engineDialect = PARSER_DIALECTS[dialect.toUpperCase()] ?? 'generic';
-  const res = engine.tokenize(expression, engineDialect);
+  const res = loadedEngine.tokenize(expression, engineDialect);
   return res.success ? res.tokens ?? [] : undefined;
 }
 
