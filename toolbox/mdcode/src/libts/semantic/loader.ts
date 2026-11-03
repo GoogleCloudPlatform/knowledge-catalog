@@ -18,7 +18,7 @@ import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
 import {DEFAULT_PROFILE, fieldsOnTables, IMPORT_TRANSPILE_COMMAND, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
-import {doubleQuotedColumns, doubleQuotedNames, hasDoubleQuotedColumn, translateExpression} from './transpile';
+import {doubleQuotedColumns, doubleQuotedNames, hasDoubleQuotedColumn, recasedEntities, translateExpression} from './transpile';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
 
 export interface LoadOptions {
@@ -1970,6 +1970,8 @@ const DOUBLE_QUOTES_AS_TEXT: Record<string, string> = {
 interface Subject {
   ctx: string;
   metric: boolean;
+  // The model's entity names, which import's qualifier check reads.
+  entities?: string[];
 }
 
 // The warning `item` gives on a table of `dialect`, in capitals, or undefined
@@ -1998,19 +2000,21 @@ function expressionWarning(
                  several ? 'each' : 'it'} as '<entity>.<field>'`;
     }
     // Import adds only BigQuery text, only outside a profile, and only when
-    // it can translate the text. It keeps each qualifier, which push reads as
-    // an entity.
+    // it can translate the text and the translation names each entity in its
+    // own letter case. It keeps each qualifier, which push reads as an entity.
     const columns = doubleQuotedColumns(ansi.expression);
-    const hint = dialect === DEFAULT_DIALECT && columns.length &&
-            columns.every(c => c.qualifier === undefined) &&
-            'sql' in translateExpression(
-                         ansi.expression, FALLBACK_DIALECT, dialect) ?
+    const sql = dialect === DEFAULT_DIALECT && columns.length &&
+            columns.every(c => c.qualifier === undefined) ?
+        translateExpression(ansi.expression, FALLBACK_DIALECT, dialect) :
+        undefined;
+    const hint = sql && 'sql' in sql &&
+            !recasedEntities(sql.sql, dialect, subject.entities ?? []) ?
         `; outside a profile, '${IMPORT_TRANSPILE_COMMAND}' adds one` :
         '';
     return reads + `if you meant a column or a field, give it a '${
                dialect}' expression that names a column alone, in backticks ` +
-        `if it needs quoting, and a field of its own entity as ` +
-        `'<entity>.<field>'${hint}`;
+        `if it needs quoting, and a field of the entity that declares this ` +
+        `field as '<entity>.<field>'${hint}`;
   }
   if (item.stringForm || dialect !== preferred.toUpperCase()) return undefined;
   if (fallsBackToAnsi(dialects, preferred)) return ansiFallbackNote(preferred);
@@ -2054,8 +2058,9 @@ function fieldWarnings(
     model: SemanticModel, preferred: string, profiled: boolean): string[] {
   return fieldsOnTables(model, true)
       .map(({entity: e, field: f, table}) => tableWarning(
-               f, {ctx: `field '${e.name}.${f.name}'`, metric: false}, table,
-               e.name, preferred, profiled))
+               f, {ctx: `field '${e.name}.${f.name}'`, metric: false,
+                   entities: (model.entities ?? []).map(x => x.name)},
+               table, e.name, preferred, profiled))
       .filter((w): w is string => w !== undefined);
 }
 

@@ -121,8 +121,8 @@ export function doubleQuotedNames(expression: string): string[] {
  */
 export function doubleQuotedColumns(expression: string):
     Array<{name: string; qualifier?: string}> {
-  const inQuotes = (id: any) =>
-      id?.quoted === true && expression.includes(`"${id.name}"`);
+  const inQuotes = (id: any) => id?.quoted === true &&
+      expression.includes(`"${id.name.replaceAll('"', '""')}"`);
   return columnNodes(sqlExpressionTree(expression, 'ANSI_SQL'))
       .filter(c => inQuotes(c.name) || inQuotes(c.table))
       .map(c => c.table ? {name: c.name.name, qualifier: c.table.name} :
@@ -304,29 +304,17 @@ export async function transpileModel(
     // the exact case the emitter needs. Comparing the output against itself
     // (rather than the vendor input) avoids false positives from dialect-
     // specific identifier quoting.
-    const cols = columnReferences(res.sql, target);
-    if (cols === undefined) {
+    const recased = recasedEntities(res.sql, target, entityNames);
+    if (recased === undefined) {
       warnings.push(
           `${ctx}: transpiled '${request.dialect}' -> '${target}' could not ` +
           `be parsed; qualifier check was skipped`);
-    } else {
-      const emitterVisible = entitiesReached(cols, entityNames);
-      const anyCase = [
-        ...new Set(
-            cols.flatMap(c => {
-              if (!c.qualifier) return [];
-              const lower = c.qualifier.toLowerCase();
-              return entityNames.filter(n => n.toLowerCase() === lower);
-            })),
-      ];
-      if (!sameSet(emitterVisible, anyCase)) {
-        warnings.push(
-            `${ctx}: transpiled '${request.dialect}' -> '${
-                target}' but it re-cased an entity qualifier the emitter matches ` +
-            `case-sensitively (${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}); ` +
-            `left untranslated`);
-        continue;
-      }
+    } else if (recased) {
+      warnings.push(
+          `${ctx}: transpiled '${request.dialect}' -> '${
+              target}' but it re-cased an entity qualifier the emitter matches ` +
+          `case-sensitively (${recased}); left untranslated`);
+      continue;
     }
     p.accept(res.sql);
     warnings.push(`${ctx}: transpiled '${request.dialect}' -> '${target}'`);
@@ -339,6 +327,25 @@ export async function transpileModel(
   }
 
   return {model: clone, warnings};
+}
+
+/**
+ * Says which entities `sql`, written in `target`, names in another letter case
+ * than `entityNames` gives, as `{reached} vs {any case}`, or '' when it names
+ * each in its own case. Undefined when `sql` cannot be parsed.
+ */
+export function recasedEntities(
+    sql: string, target: string, entityNames: string[]): string|undefined {
+  const cols = columnReferences(sql, target);
+  if (cols === undefined) return undefined;
+  const emitterVisible = entitiesReached(cols, entityNames);
+  const anyCase = [...new Set(cols.flatMap(c => {
+    const lower = c.qualifier?.toLowerCase();
+    return lower ? entityNames.filter(n => n.toLowerCase() === lower) : [];
+  }))];
+  return sameSet(emitterVisible, anyCase) ?
+      '' :
+      `${fmtSet(emitterVisible)} vs ${fmtSet(anyCase)}`;
 }
 
 function sameSet(a: string[], b: string[]): boolean {

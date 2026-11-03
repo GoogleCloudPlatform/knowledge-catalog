@@ -240,8 +240,8 @@ describe('expression warnings judge each expression on the table that runs it', 
       database: string, dialect: string, hint = '', token = 'x') => [
     `field 't.f': ${readsX(database, token)}if you meant a column or a field, ` +
         `give it a '${dialect}' expression that names a column alone, in ` +
-        `backticks if it needs quoting, and a field of its own entity as ` +
-        `'<entity>.<field>'${hint}`,
+        `backticks if it needs quoting, and a field of the entity that ` +
+        `declares this field as '<entity>.<field>'${hint}`,
     `metric 'm': ${readsX(database, token)}if you meant a field, give it a '${
         dialect}' expression that names it as '<entity>.<field>'`,
   ];
@@ -306,13 +306,20 @@ describe('expression warnings judge each expression on the table that runs it', 
     // A metric's advice names no field, even one its entity declares.
     ['a BigQuery table, a double-quoted name of a field of the metric\'s entity', BQ,
      [['ANSI_SQL', '"f"']], quotedIn('BigQuery', 'BIGQUERY', IMPORT_HINT, 'f')],
-    // A double-quoted struct field, and text import refuses, get no import hint.
+    // A double-quoted struct field, a qualified name with an escaped quote, text
+    // import refuses, and text it would re-case get no import hint.
     ['a BigQuery table, a double-quoted struct field', BQ, [['ANSI_SQL', 't.addr."x"']],
      quotedIn('BigQuery', 'BIGQUERY')],
+    ['a BigQuery table, a qualified name with an escaped quote', BQ,
+     [['ANSI_SQL', 'CONCAT(t."c""q", "c_last")']], [
+       quotedIn('BigQuery', 'BIGQUERY', '', 'c"q" and "c_last')[0],
+       `metric 'm': ${readsX('BigQuery', 'c"q" and "c_last')}if you meant fields, ` +
+           `give it a 'BIGQUERY' expression that names each as '<entity>.<field>'`,
+     ]],
     ['a BigQuery table, a double-quoted name in TO_CHAR', BQ,
      [['ANSI_SQL', 'TO_CHAR("x", \'YYYY\')']], quotedIn('BigQuery', 'BIGQUERY')],
-    ['a BigQuery table, a double-quoted name in DATE_PART', BQ,
-     [['ANSI_SQL', 'DATE_PART(\'second\', "x")']], quotedIn('BigQuery', 'BIGQUERY')],
+    ['a BigQuery table, a double-quoted name beside the entity in another case', BQ,
+     [['ANSI_SQL', '"x" || T.y']], quotedIn('BigQuery', 'BIGQUERY')],
     ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
      [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
   ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(

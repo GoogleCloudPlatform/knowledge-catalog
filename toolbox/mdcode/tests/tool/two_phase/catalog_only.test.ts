@@ -19,8 +19,9 @@ const quotedKey = (label: string) => `Warning: ${label}[commerce] field ` +
     `'Customer.key': BigQuery reads "c_key" in its 'ANSI_SQL' expression as ` +
     `text; if you meant a column or a field, give it a 'BIGQUERY' expression ` +
     `that names a column alone, in backticks if it needs quoting, and a field ` +
-    `of its own entity as '<entity>.<field>'; outside a profile, 'kcmd import ` +
-    `<file> --input first-party --flavor <ossie|google> --transpile' adds one`;
+    `of the entity that declares this field as '<entity>.<field>'; outside a ` +
+    `profile, 'kcmd import <file> --input first-party --flavor <ossie|google> ` +
+    `--transpile' adds one`;
 const NOTE = has("Warning: [commerce] note: no 'BIGQUERY' dialect");
 // Customer on `source`, its key field given as `text` in `dialect`.
 const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
