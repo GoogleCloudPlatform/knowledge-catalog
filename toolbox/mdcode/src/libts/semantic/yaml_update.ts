@@ -173,6 +173,8 @@ function patchItems(
   const entries = entriesOf(value);
   const at = matchItems(u, entries, node);
   if (at.every(i => i < 0)) return replace(u, value, node, slot);
+  // The kept item each new entry goes after, or -1.
+  const follows = at.map((j, i) => j < 0 ? Math.max(-1, ...at.slice(0, i)) : NaN);
   const g = geometry(u, node, flow);
   const col = g[0].start - lineStart(t, g[0].start);
   const slotOf = (i: number): Slot => {
@@ -191,8 +193,12 @@ function patchItems(
     const next = g[b + 1];
     if (flow && g.slice(a, b + 1).every(i => i.ownLines)) {
       u.edits.push([lineStart(t, g[a].start), nextLine(t, g[b].end), '']);
+      // The comma after the item that becomes last goes, unless a new entry
+      // comes after it.
       const comma = t.indexOf(',', g[a - 1]?.end);
-      if (!next && a > 0) u.edits.push([comma, comma + 1, '']);
+      if (!next && a > 0 && !follows.includes(a - 1)) {
+        u.edits.push([comma, comma + 1, '']);
+      }
     } else if (flow) {
       u.edits.push(
           next ? [g[a].start, next.start, ''] : [g[a - 1].end, g[b].end, '']);
@@ -235,7 +241,7 @@ function patchItems(
     } else if (at[i] >= 0) {
       patch(u, v, item, slotOf(at[i]));
     } else {
-      const before = Math.max(-1, ...at.slice(0, i));
+      const before = follows[i];
       const key = yaml.isMap(node) ? `${scalarText(u, k, 0, flow)}:` : '-';
       const lines = !flow ? block(u, key, v, col) :
           [`${yaml.isMap(node) ? `${key} ` : ''}${scalarText(u, v, 0, true)}`];
@@ -247,7 +253,7 @@ function patchItems(
     if (flow && near.ownLines) {
       // Each new item gets a line, indented as the item near it.
       const pad = t.slice(lineStart(t, near.start), near.start);
-      const last = j === g.length - 1;
+      const last = !at.some(i => i > j);
       if (last && !/^\s*,/.test(t.slice(near.end))) {
         u.edits.push([near.end, near.end, ',']);
       }
