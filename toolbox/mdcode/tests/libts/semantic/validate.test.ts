@@ -2466,11 +2466,60 @@ ${extraMetric}`;
             'entity, but not itself, directly or through other fields.',
         "field 'orders.total' in model 'm' (doc) names itself; a field " +
             'expression may name other fields of its entity, but not ' +
-            'itself, directly or through other fields.',
+            'itself, directly or through other fields; to read the column ' +
+            "of that name, write it without the qualifier: 'total'.",
         "field 'orders.c' in model 'm' (doc) names itself; a field " +
             'expression may name other fields of its entity, but not ' +
-            'itself, directly or through other fields.',
+            'itself, directly or through other fields; to read the column ' +
+            "of that name, write it without the qualifier: 'c'.",
       ]);
+    });
+
+    // A profile's exclusion leaves the field off the node table, but its
+    // expression is still the field's, and must still render where it is
+    // bound.
+    test('rejects a field that names itself on an entity that excludes it', () => {
+      const m = model({
+        entities: [{
+          ...orders(),
+          excludedFields: ['total'],
+          fields: [
+            ...orders().fields,
+            {name: 'total', expression: 'orders.total * 2'},
+          ],
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)]))
+          .toEqual([
+            "field 'orders.total' in model 'm' (doc) names itself; a field " +
+                'expression may name other fields of its entity, but not ' +
+                'itself, directly or through other fields; to read the ' +
+                "column of that name, write it without the qualifier: " +
+                "'total'.",
+          ]);
+    });
+
+    // The parser reserves `Date`, so it reads `Date.a` only with the qualifier
+    // renamed, as the graph generators read it.
+    test('rejects a field that names itself on an entity whose name the parser reserves', () => {
+      const m = model({
+        entities: [{
+          name: 'Date',
+          dataSource: 'p.d.dates',
+          keys: ['id'],
+          fields: [
+            {name: 'id', expression: 'id'},
+            {name: 'a', expression: 'Date.b + 1'},
+            {name: 'b', expression: 'Date.a - 1'},
+          ],
+        }],
+      });
+      expect(validatePushRequirements([loaded(m)])
+                 .map(e => e.slice(0, e.indexOf(';'))))
+          .toEqual([
+            "field 'Date.a' in model 'm' (doc) names itself through 'Date.b'",
+            "field 'Date.b' in model 'm' (doc) names itself through 'Date.a'",
+          ]);
     });
 
     // The cycle is in the subtype's own binding, so it is the subtype's error;
@@ -2505,7 +2554,8 @@ ${extraMetric}`;
       expect(errors).toEqual([
         "field 'party.total' in model 'm' (doc) names itself; a field " +
             'expression may name other fields of its entity, but not ' +
-            'itself, directly or through other fields.',
+            'itself, directly or through other fields; to read the column ' +
+            "of that name, write it without the qualifier: 'total'.",
         "field 'customer.b' in model 'm' (doc) names itself through " +
             "'customer.a'; a field expression may name other fields of its " +
             'entity, but not itself, directly or through other fields.',

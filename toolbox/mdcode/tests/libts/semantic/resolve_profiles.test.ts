@@ -1996,6 +1996,26 @@ describe('profile rules', () => {
     expect(errors).toContain("reads 'Customer.lifetimeValu', which is not a field of 'Customer'");
   });
 
+  // Every profile file is checked, whether or not a deployment applies it.
+  test('a profile field expression may not name its own field', () => {
+    const errors = validateProfileCompleteness(irModel(), {
+      name: 'prod',
+      entities: [
+        {name: 'Customer', source: BQ('customer'),
+         fields: [{name: 'lifetimeValue', expression: 'Customer.lifetimeValue * 2'}]},
+        {name: 'Order', source: BQ('orders')},
+      ],
+      relationships: [{name: 'PlacedBy', fromColumns: ['o_custkey'], toColumns: ['c_custkey']}],
+    });
+    const named = errors.filter(e => e.includes('names itself'));
+    expect(named).toHaveLength(1);
+    expect(named[0]).toEndWith(
+        ": field 'Customer.lifetimeValue' names itself; a field expression " +
+        'may name other fields of its entity, but not itself, directly or ' +
+        'through other fields; to read the column of that name, write it ' +
+        "without the qualifier: 'lifetimeValue'");
+  });
+
   // Only the allowlisted dialects, each once.
   test('a profile expression may use only allowlisted dialects, each once', () => {
     const file = (dialects: string) =>

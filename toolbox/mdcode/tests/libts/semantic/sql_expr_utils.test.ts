@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, requalified, singleAggregate, withoutQualifier} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -404,16 +404,54 @@ describe('withoutQualifier', () => {
   });
 });
 
-describe('withoutQualifier with replacements', () => {
-  test('puts each replacement in place of its column and its qualifier, and leaves the rest as written', () => {
+describe('withSiblingsSpliced', () => {
+  test('puts each sibling\'s SQL in place of its column and its qualifier, and leaves the rest as written', () => {
     const sql = new Map([['d', 'order_date'], ['n', '(x + 1)']]);
-    expect(withoutQualifier(
+    expect(withSiblingsSpliced(
                'EXTRACT(DAYOFWEEK FROM orders.d) + orders.n * orders.m',
-               'orders', undefined, sql))
+               'orders', sql))
         .toBe('EXTRACT(DAYOFWEEK FROM order_date) + (x + 1) * m');
-    expect(withoutQualifier('`orders`.`n`.f || "orders.n"', 'orders',
-                            undefined, sql))
+    expect(withSiblingsSpliced('`orders`.`n`.f || "orders.n"', 'orders', sql))
         .toBe('(x + 1).f || "orders.n"');
+  });
+
+  test('reads a qualifier the parser reserves', () => {
+    expect(withSiblingsSpliced('Date.days / 7', 'Date',
+                               new Map([['days', 'd_days']])))
+        .toBe('d_days / 7');
+  });
+});
+
+describe('qualifiedColumns', () => {
+  test('gives the column after each qualifier, unquoted, in the order written', () => {
+    expect(qualifiedColumns(
+               "orders.a + `orders`.`b`.c + other.d + 'orders.e' + orders.a",
+               'orders'))
+        .toEqual(['a', 'b', 'a']);
+    expect(qualifiedColumns('amount', 'orders')).toEqual([]);
+  });
+
+  test('reads a qualifier the parser reserves, and the dialect\'s quoting', () => {
+    expect(qualifiedColumns('Date.days / 7', 'Date')).toEqual(['days']);
+    expect(qualifiedColumns('"orders"."a" + 1', 'orders', 'POSTGRES'))
+        .toEqual(['a']);
+  });
+});
+
+describe('selfReferenceMessage', () => {
+  test('names the cycle, and how to read the column of a field that names itself directly', () => {
+    expect(selfReferenceMessage('orders', ['amount']))
+        .toBe(
+            `field 'orders.amount' names itself; a field expression may ` +
+            `name other fields of its entity, but not itself, directly or ` +
+            `through other fields; to read the column of that name, write ` +
+            `it without the qualifier: 'amount'`);
+    expect(selfReferenceMessage('orders', ['a', 'b', 'c'], ' in model \'m\''))
+        .toBe(
+            `field 'orders.a' in model 'm' names itself through ` +
+            `'orders.b', 'orders.c'; a field expression may name other ` +
+            `fields of its entity, but not itself, directly or through other ` +
+            `fields`);
   });
 });
 

@@ -21,7 +21,7 @@ import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNON
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, noTextFor, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
-import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities} from './sql_expr_utils';
+import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
 
@@ -1515,7 +1515,14 @@ function selfReferenceErrors(
   }
   const errors = new Set<string>();
   for (const dialect of dialects) {
-    // The fields of `entity` each field names, in this dialect.
+    // The fields of `entity` each field names, in this dialect, read as the
+    // graph generators read them (see graph_ddl.siblingsRead), so a qualifier
+    // the parser reserves, such as `Date` in `Date.days`, names them too. An
+    // ANSI_SQL text is read in the dialect the sources imply, as
+    // columnsForSource reads it, and not at all when their dialect is null.
+    if (dialect === 'ANSI_SQL' && impliedDialect === null) continue;
+    const readIn =
+        dialect === 'ANSI_SQL' && impliedDialect ? impliedDialect : dialect;
     const reads = new Map<string, string[]>();
     for (const f of fields) {
       const text = expressionForDialect(f, dialect as SqlDialect);
@@ -1523,22 +1530,19 @@ function selfReferenceErrors(
           noSqlReason(text, dialect, entity.name) !== undefined) {
         continue;
       }
-      const columns = columnsForSource(text, dialect, impliedDialect) ?? [];
       reads.set(
-          f.name, fieldsReadOn(columns, entity.name).filter(n => names.has(n)));
+          f.name,
+          [...new Set(qualifiedColumns(text, entity.name, readIn) ?? [])]
+              .filter(n => names.has(n)));
     }
     for (const f of fields) {
       const through = pathBack(f.name, reads);
       if (!through || ![f.name, ...through].some(n => bound.has(n))) continue;
       errors.add(
-          `field '${entity.name}.${f.name}' in model '${model.name}' (${
-              document}) names itself` +
-          (through.length ?
-               ` through ${
-                   through.map(n => `'${entity.name}.${n}'`).join(', ')}` :
-               '') +
-          `; a field expression may name other fields of its entity, but ` +
-          `not itself, directly or through other fields.`);
+          selfReferenceMessage(
+              entity.name, [f.name, ...through],
+              ` in model '${model.name}' (${document})`) +
+          '.');
     }
   }
   return [...errors];

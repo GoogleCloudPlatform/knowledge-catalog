@@ -24,7 +24,7 @@
 
 import {AiContext, Association, Entity, Field, isFieldBound, Metric, Relationship, SemanticModel, SqlDialect,} from './ir';
 import {resolveInheritance} from './resolve_inheritance';
-import {columnReferences, isColumnName, withoutQualifier} from './sql_expr_utils';
+import {isColumnName, qualifiedColumns, selfReferenceMessage, withSiblingsSpliced} from './sql_expr_utils';
 import {quoteIdentifier, quoteIfReserved} from './sql_identifiers';
 import {sqlExpressionTree} from './sql_parser';
 
@@ -46,12 +46,12 @@ export interface MetricPlacementInput {
   // When it has none there, `reads` is what a warning says it reads, as in
   // "field 'net', which reads field 'gross', which has no 'BIGQUERY' or
   // 'ANSI_SQL' expression".
-  fieldSql(entity: Entity, field: Field): {sql: string}|{reads: string};
+  renderedFieldSql(entity: Entity, field: Field): {sql: string}|{reads: string};
   // `sql`, written on `entity`'s table, as that table reads it: each field of
   // `entity` it names as `<entity>.<field>` reads as that field's own SQL, as
   // in a field expression (see fieldSql), and other columns lose the
   // `<entity>.` qualifier. When a field it names has no SQL, `reads` is as for
-  // fieldSql.
+  // renderedFieldSql.
   localSql(entity: Entity, sql: string): {sql: string}|{reads: string};
 }
 
@@ -231,7 +231,7 @@ export function generateGraphDdl(
         entityByName,
         skipped,
         ancestorsUsed,
-        fieldSql: (entity, field) =>
+        renderedFieldSql: (entity, field) =>
             readOf(entity, fieldSql(field, entity, engine), [field.name]),
         localSql: (entity, sql) => readOf(
             entity,
@@ -543,10 +543,10 @@ type FieldSql = {sql: string}|{noSql: true}|{through: string[]};
 
 // The SQL `field` of `owner` renders from on `engine`. The text is the
 // engine's (fieldExpression), and a field may name a sibling field in it as
-// `<owner>.<field>` (Model Spec 3.5.3). Each sibling it names is replaced with
-// that sibling's own SQL for the engine, in parentheses unless that SQL is a
-// lone column, and every other column loses the owner's qualifier; the rest
-// of the text stays as written. Both engines' SQL is read as BigQuery's.
+// `<owner>.<field>`. Each sibling it names is replaced with that sibling's
+// own SQL for the engine, in parentheses unless that SQL is a lone column, and
+// every other column loses the owner's qualifier; the rest of the text stays
+// as written. Both engines' SQL is read as BigQuery's.
 // Throws when the field names itself, directly or through its siblings, since
 // no SQL can render it; push validation rejects such a model first
 // (validateExpressionReferences).
@@ -573,35 +573,19 @@ function fieldSql(
 function siblingsRead(
     expr: string, owner: FieldOwner,
     read: (name: string) => FieldSql): {sql: string}|{through: string[]} {
-  const named = new Set(
-      (columnReferences(expr, 'BIGQUERY') ?? [])
-          .filter(
-              c => c.qualifier === owner.name &&
-                  owner.fields.some(f => f.name === c.name))
-          .map(c => c.name));
+  const named = new Set((qualifiedColumns(expr, owner.name) ?? [])
+                            .filter(c => owner.fields.some(f => f.name === c)));
   const replacements = new Map<string, string>();
   for (const name of named) {
     const sibling = read(name);
     if ('noSql' in sibling) return {through: [name]};
     if ('through' in sibling) return {through: [name, ...sibling.through]};
-    // A sibling bound to the column of its own name reads the same either way.
-    if (sibling.sql !== name) {
-      replacements.set(name, parenthesized(sibling.sql));
-    }
+    // A sibling bound to a reserved column, such as `order`, reads it quoted.
+    // One bound to the column of its own name reads the same either way.
+    const sql = quoteIfReserved(sibling.sql);
+    if (sql !== name) replacements.set(name, parenthesized(sql));
   }
-  return {sql: withoutQualifier(expr, owner.name, undefined, replacements)};
-}
-
-// The error for a field that names itself: `cycle` starts at that field and
-// runs through the siblings it reads back to it.
-function selfReferenceMessage(owner: string, cycle: string[]): string {
-  const [field, ...through] = cycle;
-  return `field '${owner}.${field}' names itself` +
-      (through.length ?
-           ` through ${through.map(n => `'${owner}.${n}'`).join(', ')}` :
-           '') +
-      `; a field expression may name other fields of its entity, but not ` +
-      `itself, directly or through other fields`;
+  return {sql: withSiblingsSpliced(expr, owner.name, replacements)};
 }
 
 // `sql` in parentheses, unless it is a lone column or already in them.

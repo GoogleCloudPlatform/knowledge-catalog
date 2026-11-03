@@ -262,10 +262,10 @@ export function resolveInheritance(
 // the same property and reject the graph.
 //
 // Given `into`, the descendant, the ancestor's qualifier is renamed to `into`'s
-// instead. `<Ancestor>.x` names the ancestor's field `x` (Model Spec 3.5.3),
-// and the graph renders such a name from that field's own SQL, so inherited it
-// must name the descendant's `x`, which may bind another column; stripped, it
-// would read a column `x` the descendant's table may not have. The graph
+// instead. `<Ancestor>.x` names the ancestor's field `x`, and the graph
+// renders such a name from that field's own SQL, so inherited it must name the
+// descendant's `x`, which may bind another column; stripped, it would read a
+// column `x` the descendant's table may not have. The graph
 // generators, and the checks that guard them, ask for this.
 //
 // This composes with (does not duplicate) the emitter's own qualifier

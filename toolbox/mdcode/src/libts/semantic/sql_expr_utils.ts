@@ -6,8 +6,10 @@
 // entity references across dialects for the loader, validator, profile checks,
 // pull reader, and transpiler. The graph generators read them with the parser
 // too: `measureEntities` places a measure, `singleAggregate` finds its
-// aggregate, `withoutQualifier` makes an expression table-local, and
-// `requalified` moves an inherited expression onto the entity inheriting it.
+// aggregate, `withoutQualifier` makes an expression table-local,
+// `qualifiedColumns` finds the sibling fields it names and
+// `withSiblingsSpliced` puts their SQL in their place, and `requalified` moves
+// an inherited expression onto the entity inheriting it.
 //
 
 import {Field, fieldBinding} from './ir';
@@ -64,30 +66,43 @@ function qualifiersIn(
 }
 
 // `expression` without each `<qualifier>.` it writes before a column (see
-// qualifiersIn), so it reads the columns of the qualifier's own table. A
-// `<qualifier>.<column>` whose column `replacements` holds is replaced, whole,
-// by the SQL it maps to, as given. The rest of the text stays as written. The
-// text is read in `dialect`; an ANSI_SQL text, or one with no dialect, is read
-// as BigQuery, as the graph generators read it. Returns `expression` itself
-// when it writes no such qualifier or the engine cannot tokenize it.
+// qualifiersIn), so it reads the columns of the qualifier's own table. The
+// rest of the text stays as written. The text is read in `dialect`; an
+// ANSI_SQL text, or one with no dialect, is read as BigQuery, as the graph
+// generators read it. Returns `expression` itself when it writes no such
+// qualifier or the engine cannot tokenize it.
 export function withoutQualifier(
-    expression: string, qualifier: string, dialect?: string,
-    replacements?: ReadonlyMap<string, string>): string {
-  const read =
-      qualifiersIn(expression, new Set([qualifier]), graphReading(dialect));
+    expression: string, qualifier: string, dialect?: string): string {
+  return spliced(expression, qualifier, graphReading(dialect), new Map());
+}
+
+// `expression`, BigQuery SQL on `qualifier`'s table, as withoutQualifier gives
+// it, except that each `<qualifier>.<field>` whose field `siblings` holds is
+// replaced, whole, by the SQL it maps to, as given. The graph generators put
+// the SQL of each sibling field an expression names in its place so (see
+// graph_ddl.fieldSql).
+export function withSiblingsSpliced(
+    expression: string, qualifier: string,
+    siblings: ReadonlyMap<string, string>): string {
+  return spliced(expression, qualifier, 'BIGQUERY', siblings);
+}
+
+// `expression`, read in `dialect`, without each `<qualifier>.` it writes
+// before a column (see qualifiersIn), and with each `<qualifier>.<column>`
+// whose column `replacements` holds replaced, whole, by the SQL it maps to.
+function spliced(
+    expression: string, qualifier: string, dialect: string,
+    replacements: ReadonlyMap<string, string>): string {
+  const read = qualifiersIn(expression, new Set([qualifier]), dialect);
   if (!read?.at.length) return expression;
   const {tokens, at} = read;
   const chars = Array.from(expression);
-  const written = (t: SqlToken) =>
-      t.token_type === 'QUOTED_IDENTIFIER' ?
-      t.text :
-      chars.slice(t.span.start, t.span.end).join('');
   let out = '';
   let end = 0;
   for (const i of at) {
     out += chars.slice(end, tokens[i].span.start).join('');
     const column = tokens[i + 2];
-    const replacement = column && replacements?.get(written(column));
+    const replacement = column && replacements.get(nameOf(column, chars));
     if (replacement !== undefined) {
       out += replacement;
       end = column.span.end;
@@ -97,6 +112,50 @@ export function withoutQualifier(
     }
   }
   return out + chars.slice(end).join('');
+}
+
+// The column written after each `<qualifier>.` that `expression` writes before
+// a column (see qualifiersIn), without its quotes, in the order written, so
+// ``orders.a + `orders`.`b`.c`` gives `a` and `b`. The text is read in
+// `dialect`, as withoutQualifier reads it, so a qualifier the parser reserves,
+// such as `Date` in `Date.days`, gives its column too. Undefined when the
+// engine cannot tokenize the text.
+export function qualifiedColumns(
+    expression: string, qualifier: string, dialect?: string): string[]|
+    undefined {
+  const read =
+      qualifiersIn(expression, new Set([qualifier]), graphReading(dialect));
+  if (!read) return undefined;
+  const chars = Array.from(expression);
+  return read.at.filter(i => read.tokens[i + 2])
+      .map(i => nameOf(read.tokens[i + 2], chars));
+}
+
+// The name token `t` of the text whose characters are `chars` gives, as
+// written, without its quotes.
+function nameOf(t: SqlToken, chars: string[]): string {
+  return t.token_type === 'QUOTED_IDENTIFIER' ?
+      t.text :
+      chars.slice(t.span.start, t.span.end).join('');
+}
+
+// The error for a field of `owner` that names itself. `cycle` starts at that
+// field and runs through the fields it names back to it, and `where` follows
+// the field's name, as ` in model 'm' (doc)` does. The graph renders a field
+// that names a sibling field from that sibling's own SQL (see
+// graph_ddl.fieldSql), so a field that reaches itself has none.
+export function selfReferenceMessage(
+    owner: string, cycle: string[], where = ''): string {
+  const [field, ...through] = cycle;
+  return `field '${owner}.${field}'${where} names itself` +
+      (through.length ?
+           ` through ${through.map(n => `'${owner}.${n}'`).join(', ')}` :
+           '') +
+      `; a field expression may name other fields of its entity, but not ` +
+      `itself, directly or through other fields` +
+      (through.length ? '' :
+                        `; to read the column of that name, write it ` +
+               `without the qualifier: '${field}'`);
 }
 
 // `expression` with each `<from>.` qualifier it writes before a column (see

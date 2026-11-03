@@ -952,145 +952,207 @@ describe('a comment in a field expression', () => {
 
 describe('a field expression that names a sibling field', () => {
   // An `orders` entity keyed on `id`, with `fields` after the key.
-  const ordersWith = (fields: Field[]): SemanticModel => ({
-    name: 'm',
-    relationships: [],
-    metrics: [],
-    entities: [{
-      name: 'orders',
-      dataSource: 'Orders',
-      keys: ['id'],
-      fields: [{name: 'id', expression: 'order_id'}, ...fields],
-    }],
-  });
+  const ordersWith = (fields: Record<string, string|Partial<Field>>) =>
+      modelOf('m', [entity('orders', 'Orders', ['id'],
+                           {id: 'order_id', ...fields})]);
 
   test('reads the columns its siblings are bound to', () => {
-    const {ddl, warnings} = generateSpannerPropertyGraph(ordersWith([
-      {name: 'gross', expression: 'g_amt'},
-      {name: 'discount', expression: 'd_amt'},
-      {name: 'net', expression: 'orders.gross - orders.discount'},
-    ]));
-    expect(ddl).toContain(
-        '      g_amt AS gross,\n' +
-        '      d_amt AS discount,\n' +
-        '      g_amt - d_amt AS net\n');
-    expect(warnings).toEqual([]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(ordersWith({
+        gross: 'g_amt',
+        discount: 'd_amt',
+        net: 'orders.gross - orders.discount',
+      }));
+      expect(ddl, engine).toContain(
+          '      g_amt AS gross,\n' +
+          '      d_amt AS discount,\n' +
+          '      g_amt - d_amt AS net\n');
+      expect(warnings, engine).toEqual([]);
+    }
   });
 
   test('reads a sibling\'s expression in parentheses, through a chain of siblings', () => {
-    const {ddl} = generateSpannerPropertyGraph(ordersWith([
-      {name: 'a', expression: 'x + y'},
-      {name: 'b', expression: 'orders.a * 2'},
-      {name: 'c', expression: 'orders.b + orders.a'},
-    ]));
-    expect(ddl).toContain(
-        '      x + y AS a,\n' +
-        '      (x + y) * 2 AS b,\n' +
-        '      ((x + y) * 2) + (x + y) AS c\n');
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        a: 'x + y',
+        b: 'orders.a * 2',
+        c: 'orders.b + orders.a',
+      }));
+      expect(ddl, engine).toContain(
+          '      x + y AS a,\n' +
+          '      (x + y) * 2 AS b,\n' +
+          '      ((x + y) * 2) + (x + y) AS c\n');
+    }
   });
 
   test('leaves an expression as written but for the siblings it names', () => {
-    const {ddl} = generateSpannerPropertyGraph(ordersWith([
-      {name: 'nm', expression: 'full_name'},
-      {name: 'tag', expression: 'lower(full_name) || "!"'},
-      {name: 'shout', expression: 'lower(orders.nm) || "!"'},
-    ]));
-    expect(ddl).toContain('      lower(full_name) || "!" AS tag,\n');
-    expect(ddl).toContain('      lower(full_name) || "!" AS shout\n');
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        nm: 'full_name',
+        tag: 'lower(full_name) || "!"',
+        shout: 'lower(orders.nm) || "!"',
+      }));
+      expect(ddl, engine).toContain('      lower(full_name) || "!" AS tag,\n');
+      expect(ddl, engine).toContain('      lower(full_name) || "!" AS shout\n');
+    }
   });
 
   // A SQL parser would write `DAYOFWEEK` as `DOW` and `DAYOFYEAR` as `DOY`,
-  // which Spanner does not read.
+  // which neither engine reads.
   test('keeps date parts and intervals as written around a sibling it reads', () => {
-    const {ddl} = generateSpannerPropertyGraph(ordersWith([
-      {name: 'd', expression: 'order_date'},
-      {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
-      {name: 'doy', expression: 'EXTRACT(DAYOFYEAR FROM orders.d)'},
-      {name: 'due', expression: 'DATE_ADD(orders.d, INTERVAL 30 DAY)'},
-    ]));
-    expect(ddl).toContain(
-        '      EXTRACT(DAYOFWEEK FROM order_date) AS dow,\n' +
-        '      EXTRACT(DAYOFYEAR FROM order_date) AS doy,\n' +
-        '      DATE_ADD(order_date, INTERVAL 30 DAY) AS due\n');
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        d: 'order_date',
+        dow: 'EXTRACT(DAYOFWEEK FROM orders.d)',
+        doy: 'EXTRACT(DAYOFYEAR FROM orders.d)',
+        due: 'DATE_ADD(orders.d, INTERVAL 30 DAY)',
+      }));
+      expect(ddl, engine).toContain(
+          '      EXTRACT(DAYOFWEEK FROM order_date) AS dow,\n' +
+          '      EXTRACT(DAYOFYEAR FROM order_date) AS doy,\n' +
+          '      DATE_ADD(order_date, INTERVAL 30 DAY) AS due\n');
+    }
   });
 
   test('leaves an expression as written when each sibling it names is bound to the column of its name', () => {
-    const {ddl} = generateSpannerPropertyGraph(ordersWith([
-      {name: 'd', expression: 'd'},
-      {name: 'nm', expression: 'nm'},
-      {name: 'dow', expression: 'EXTRACT(DAYOFWEEK FROM orders.d)'},
-      {name: 'tag', expression: 'lower(orders.nm) || "!"'},
-    ]));
-    expect(ddl).toContain(
-        '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
-        '      lower(nm) || "!" AS tag\n');
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        d: 'd',
+        nm: 'nm',
+        dow: 'EXTRACT(DAYOFWEEK FROM orders.d)',
+        tag: 'lower(orders.nm) || "!"',
+      }));
+      expect(ddl, engine).toContain(
+          '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
+          '      lower(nm) || "!" AS tag\n');
+    }
+  });
+
+  // fixtures/reserved_words.yaml binds `rank` to the column `order`.
+  test('quotes a sibling bound to a reserved column', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        rank: 'order',
+        rank_next: 'orders.rank + 1',
+      }));
+      expect(ddl, engine).toContain(
+          '      `order` AS rank,\n' +
+          '      `order` + 1 AS rank_next\n');
+    }
+  });
+
+  test('a field bound to the quoted column of its name renders as that column', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({order: '`order`'}));
+      expect(ddl, engine).toContain('      order_id AS id,\n      `order`\n');
+    }
+  });
+
+  // The parser reserves `Date`, so it reads `Date.days` only with the
+  // qualifier renamed.
+  test('reads its siblings on an entity whose name the parser reserves', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(modelOf('m', [entity('Date', 'Dates', ['id'], {
+        id: 'id',
+        days: 'd_days',
+        weeks: 'Date.days / 7',
+      })]));
+      expect(ddl, engine).toContain(
+          '      d_days AS days,\n' +
+          '      d_days / 7 AS weeks\n');
+      expect(() => generate(modelOf('m', [entity('Date', 'Dates', ['id'], {
+               id: 'id',
+               a: 'Date.b + 1',
+               b: 'Date.a - 1',
+             })])),
+             engine)
+          .toThrow(`field 'Date.a' names itself through 'Date.b'`);
+    }
   });
 
   // A field whose supertype's expression names only its siblings carries over
   // to a subtype, which reads it from its own binding of those siblings. That
   // matches the supertype's rendering, so there is no remap to warn about.
   test('an inherited field that names its siblings renders as its supertype\'s, without a warning', () => {
-    const {ddl, warnings} = generateSpannerPropertyGraph({
-      name: 'm',
-      relationships: [],
-      metrics: [],
-      entities: [
-        {
-          name: 'party',
-          dataSource: 'Party',
-          keys: ['id'],
-          fields: [
-            {name: 'id', expression: 'id'},
-            {name: 'gross', expression: 'g_amt'},
-            {name: 'discount', expression: 'd_amt'},
-            {name: 'net', expression: 'party.gross - party.discount'},
-          ],
-        },
-        {
-          name: 'customer',
-          dataSource: 'Customer',
-          keys: ['id'],
-          extends: ['party'],
-          fields: [
-            {name: 'id', expression: 'id'},
-            {name: 'gross', expression: 'g_amt'},
-            {name: 'discount', expression: 'd_amt'},
-          ],
-        },
-      ],
-    });
-    // Party's default label, customer's, and customer's `party` label.
-    expect(ddl.match(/\bg_amt - d_amt AS net\n/g)).toHaveLength(3);
-    expect(warnings).toEqual([]);
+    const model = modelOf('m', [
+      entity('party', 'Party', ['id'], {
+        id: 'id',
+        gross: 'g_amt',
+        discount: 'd_amt',
+        net: 'party.gross - party.discount',
+      }),
+      entity('customer', 'Customer', ['id'],
+             {id: 'id', gross: 'g_amt', discount: 'd_amt'},
+             {extends: ['party']}),
+    ]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      // Party's default label, customer's, and customer's `party` label.
+      expect(ddl.match(/\bg_amt - d_amt AS net\n/g), engine).toHaveLength(3);
+      expect(warnings, engine).toEqual([]);
+    }
   });
 
   test('two fields that name each other are rejected', () => {
-    expect(() => generateSpannerPropertyGraph(ordersWith([
-             {name: 'a', expression: 'orders.b + 1'},
-             {name: 'b', expression: 'orders.a - 1'},
-           ])))
-        .toThrow(`field 'orders.a' names itself through 'orders.b'`);
-    expect(() => generateSpannerPropertyGraph(ordersWith([
-             {name: 'total', expression: 'orders.total * 2'},
-           ])))
-        .toThrow(`field 'orders.total' names itself;`);
+    for (const [engine, generate] of ENGINES) {
+      expect(() => generate(ordersWith({a: 'orders.b + 1', b: 'orders.a - 1'})),
+             engine)
+          .toThrow(`field 'orders.a' names itself through 'orders.b'`);
+      expect(() => generate(ordersWith({total: 'orders.total * 2'})), engine)
+          .toThrow(
+              `field 'orders.total' names itself; a field expression may ` +
+              `name other fields of its entity, but not itself, directly or ` +
+              `through other fields; to read the column of that name, write ` +
+              `it without the qualifier: 'total'`);
+    }
   });
 
-  test('a field whose sibling has no Spanner SQL is left out, with a warning that names the sibling', () => {
-    const {ddl, warnings} = generateSpannerPropertyGraph(ordersWith([
-      {name: 'gross', dialects: [{dialect: 'BIGQUERY', expression: 'g_amt'}]},
-      {name: 'net', expression: 'orders.gross - 1'},
-      {name: 'twice', expression: 'orders.net * 2'},
-    ]));
-    expect(ddl).not.toMatch(/AS (gross|net|twice)/);
-    expect(warnings).toEqual([
-      `entity 'orders': field 'gross' has no 'SPANNER' or 'ANSI_SQL' ` +
-          `expression; omitted from the node table`,
-      `entity 'orders': field 'net' reads field 'gross', which has no ` +
-          `'SPANNER' or 'ANSI_SQL' expression; omitted from the node table`,
-      `entity 'orders': field 'twice' reads field 'net', which reads field ` +
-          `'gross', which has no 'SPANNER' or 'ANSI_SQL' expression; ` +
-          `omitted from the node table`,
-    ]);
+  test('a field whose sibling has SQL only for the other engine is left out, with a warning that names the sibling', () => {
+    for (const [engine, generate] of ENGINES) {
+      const otherOnly = (column: string) =>
+          texts({[engine === 'Spanner' ? 'BIGQUERY' : 'SPANNER']: column});
+      const dialect = engine === 'Spanner' ? 'SPANNER' : 'BIGQUERY';
+      const {ddl, warnings} = generate(ordersWith({
+        gross: otherOnly('g_amt'),
+        net: 'orders.gross - 1',
+        twice: 'orders.net * 2',
+      }));
+      expect(ddl, engine).not.toMatch(/AS (gross|net|twice)/);
+      expect(warnings, engine).toEqual([
+        `entity 'orders': field 'gross' has no '${dialect}' or 'ANSI_SQL' ` +
+            `expression; omitted from the node table`,
+        `entity 'orders': field 'net' reads field 'gross', which has no ` +
+            `'${dialect}' or 'ANSI_SQL' expression; omitted from the node ` +
+            `table`,
+        `entity 'orders': field 'twice' reads field 'net', which reads field ` +
+            `'gross', which has no '${dialect}' or 'ANSI_SQL' expression; ` +
+            `omitted from the node table`,
+      ]);
+    }
+  });
+
+  // An abstract label lists the same properties on every leaf, so a field
+  // one leaf leaves out, because a sibling it names has no SQL there, is left
+  // off the label on the other leaf too.
+  test('a field one leaf leaves out through its sibling is off its abstract ancestor\'s label on every leaf', () => {
+    for (const [engine, generate] of ENGINES) {
+      const otherOnly = (column: string) =>
+          texts({[engine === 'Spanner' ? 'BIGQUERY' : 'SPANNER']: column});
+      const {ddl} = generate(modelOf('parties', [
+        entity('party', '', [], {id: {}, gross: {}, net: {}},
+               {abstract: true}),
+        entity('customer', 'Customer', ['id'],
+               {id: 'id', gross: otherOnly('c_g'), net: 'customer.gross - 1'},
+               {extends: ['party']}),
+        entity('supplier', 'Supplier', ['id'],
+               {id: 'id', gross: 's_g', net: 'supplier.gross - 1'},
+               {extends: ['party']}),
+      ]));
+      // Each leaf's `party` label lists `id` alone.
+      expect(ddl.split('    LABEL party\n    PROPERTIES(\n      id\n    )'),
+             engine)
+          .toHaveLength(3);
+      expect(ddl, engine).toContain('      s_g - 1 AS net\n');
+    }
   });
 });

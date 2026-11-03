@@ -21,7 +21,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {measureEntities, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, measureEntities, requalified, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -98,6 +98,9 @@ interface MeasureLowering {
   // Every metric's name. Each metric placed here becomes a property named so,
   // so no operand property takes one, whatever order the metrics come in.
   metricNames: ReadonlySet<string>;
+  // The fields a measure cannot name, since the node's table also has a column
+  // of that name that the field does not read whole (see newLowering).
+  ambiguous: ReadonlySet<string>;
   byLocalExpr: Map<string, string>;  // a field's SQL on the node -> the field
   operandToName: Map<string, string>;  // an operand's SQL on the node -> the
                                        // property exposing it
@@ -105,26 +108,68 @@ interface MeasureLowering {
 
 // Builds the lowering state for an entity, seeded with its declared fields so
 // an operand with the same SQL as a field reuses that property instead of
-// duplicating it. A field the node table leaves out has no property to reuse.
+// duplicating it. A field the node table leaves out has no property to reuse,
+// and neither has an ambiguous one.
+//
+// A field is ambiguous when the node's table has a column of its name that the
+// field does not read whole, such as `amount` bound to `amount_usd` while
+// `amount_local` is bound to the column `amount`. A measure that names it
+// names both, and BigQuery rejects the graph: "Name amount is ambiguous
+// because it exists as both a column and a graph property". The columns the
+// table is known to have are its key columns and those the fields' SQL reads.
 function newLowering(
     entity: Entity, input: MetricPlacementInput,
     metricNames: ReadonlySet<string>): MeasureLowering {
   const taken = new Set<string>();
-  const byLocalExpr = new Map<string, string>();
+  const sqlOf = new Map<string, string>();
   for (const f of entity.fields) {
     taken.add(f.name);
-    const read = input.fieldSql(entity, f);
-    if (!('sql' in read)) continue;
-    if (!byLocalExpr.has(read.sql)) byLocalExpr.set(read.sql, f.name);
+    const read = input.renderedFieldSql(entity, f);
+    if ('sql' in read) sqlOf.set(f.name, read.sql);
+  }
+  const columns = new Set(
+      nodeKey(entity).map(k => k.replace(/^`(.*)`$/, '$1').toLowerCase()));
+  for (const sql of sqlOf.values()) {
+    // The SQL is local to the table, so `a.b` reads the column `a`.
+    for (const c of columnReferences(quoteIfReserved(sql), 'BIGQUERY') ?? []) {
+      columns.add((c.qualifier ?? c.name).toLowerCase());
+    }
+  }
+  const ambiguous = new Set<string>();
+  const byLocalExpr = new Map<string, string>();
+  for (const [name, sql] of sqlOf) {
+    if (columns.has(name.toLowerCase()) &&
+        loneColumn(sql)?.toLowerCase() !== name.toLowerCase()) {
+      ambiguous.add(name);
+    } else if (!byLocalExpr.has(sql)) {
+      byLocalExpr.set(sql, name);
+    }
   }
   return {
     derivedProperties: [],
     measures: [],
     taken,
     metricNames,
+    ambiguous,
     byLocalExpr,
     operandToName: new Map()
   };
+}
+
+// The column `sql`, BigQuery SQL local to a table, is when it is one column of
+// that table and nothing else, without its quotes, as in `amount` or
+// `` `order` ``. Undefined otherwise.
+function loneColumn(sql: string): string|undefined {
+  const column = soleColumn(quoteIfReserved(sql), 'BIGQUERY');
+  return column && column.qualifier === undefined ? column.name : undefined;
+}
+
+// A name `sql` does not hold, in any case, to stand in for an entity's
+// qualifier where the SQL parser reads it (see placeMetric).
+function standIn(sql: string): string {
+  let stand = 'kcmd_entity';
+  while (sql.toLowerCase().includes(stand)) stand += '_';
+  return stand;
 }
 
 // Assigns a metric to the node table of the single entity its aggregate
@@ -233,13 +278,12 @@ function placeMetric(
   // A graph measure must be one supported aggregate wrapping a single operand;
   // anything else (a non-aggregate, or a compound of aggregates like a ratio)
   // cannot be a single MEASURE. Flag it rather than emit DDL BigQuery rejects.
-  // The SQL parser finds the aggregate and its operand in the expression as
-  // written, and in `body` when it cannot read that, as with a qualifier it
-  // reserves (`SUM(Date.days)`).
-  const written = singleAggregate(expression, 'BIGQUERY');
-  const agg = written ?
-      {...written, operand: withoutQualifier(written.operand, entityName)} :
-      singleAggregate(body, 'BIGQUERY');
+  // The SQL parser finds the aggregate and its operand with the entity's
+  // qualifier renamed to a name it does not reserve, since it cannot read one
+  // it reserves, as in `SUM(Date.days)`.
+  const stand = standIn(expression);
+  const agg = singleAggregate(
+      requalified(expression, entityName, stand), 'BIGQUERY');
   if (!agg) {
     warnings.push(
         `metric '${metric.name}' expression '${
@@ -258,19 +302,10 @@ function placeMetric(
   // written, qualifiers kept, so readOperand can tell the entity's fields from
   // its columns. COUNT(*) has no operand column, so it counts the first column
   // of the node's key instead: the primary key, else the first unique key
-  // (nodeKey).
-  const operand = written?.operand ?? agg.operand;
+  // (nodeKey). singleAggregate gives a `*` operand for COUNT(*) alone.
+  const operand = requalified(agg.operand, stand, entityName);
   let read: OperandRead;
   if (operand === '*') {
-    // The entity is already known to have a key (checked above), so only the
-    // aggregate itself can disqualify a `*` operand: BigQuery lowers `COUNT(*)`
-    // to a count over the key, but no other aggregate has a `*` form.
-    if (agg.fn.toUpperCase() !== 'COUNT') {
-      warnings.push(
-          `metric '${metric.name}': '${agg.fn}(*)' is not supported; skipped ` +
-          `(only COUNT(*) over a keyed node can be lowered)`);
-      return;
-    }
     // A key names a column, never a field, so a field of the same name does
     // not stand in for it. A simple name is quoted, if reserved, where it is
     // exposed (exposeOperand).
@@ -320,34 +355,38 @@ function placeMetric(
   lowering.measures.push(opts ? `${measure} ${opts}` : measure);
 }
 
-// What a metric's aggregate operand reads on `entity`'s node table:
-//
-//   - `field`: a field of `entity`, written as `<entity>.<field>` or bare,
-//     which is a property already;
-//   - `sql`: any other SQL, local to the table, with each field it names as
-//     `<entity>.<field>` read through that field's own SQL (see
-//     MetricPlacementInput.localSql). `column` marks a column of the table
-//     that no field names, written as `<entity>.<column>` or bare.
+// What a metric's aggregate operand reads on `entity`'s node table: `sql`,
+// local to the table, with each field it names as `<entity>.<field>` read
+// through that field's own SQL (see MetricPlacementInput.localSql). `field` is
+// set when the operand is a field of `entity`, written as `<entity>.<field>` or
+// bare, and `sql` is then that field's SQL. `column` marks SQL that is one
+// column of the table: a column no field names, written as `<entity>.<column>`
+// or bare, or the column a field reads whole.
 //
 // `skip` is set instead when the operand reads a field the node table leaves
 // out, and says which.
 type OperandRead =
-    {field: string}|{sql: string; column: boolean}|{skip: string};
+    {field?: string; sql: string; column: boolean}|{skip: string};
 function readOperand(
     entity: Entity, operand: string,
     input: MetricPlacementInput): OperandRead {
   // Checked before any column: a field is read through its own SQL, which may
   // name another column, while a column of the same name may hold something
-  // else.
-  const column = soleColumn(operand, 'BIGQUERY');
+  // else. The SQL parser reads the entity's qualifier renamed, as placeMetric
+  // does, since it cannot read one it reserves, as in `Date.days`.
+  const stand = standIn(operand);
+  const column =
+      soleColumn(requalified(operand, entity.name, stand), 'BIGQUERY');
   const own = column !== undefined &&
-      (column.qualifier === undefined || column.qualifier === entity.name);
+      (column.qualifier === undefined ||
+       column.qualifier.toLowerCase() === stand);
   const field =
       own ? entity.fields.find(f => f.name === column.name) : undefined;
   if (field) {
-    const read = input.fieldSql(entity, field);
-    return 'sql' in read ? {field: field.name} :
-                           {skip: `aggregates ${read.reads}`};
+    const read = input.renderedFieldSql(entity, field);
+    return 'sql' in read ?
+        {field: field.name, sql: read.sql, column: !!loneColumn(read.sql)} :
+        {skip: `aggregates ${read.reads}`};
   }
   const read = input.localSql(entity, operand);
   return 'sql' in read ? {sql: read.sql, column: own} :
@@ -355,10 +394,11 @@ function readOperand(
 }
 
 // Ensures the operand `read` is exposed as a node property and returns its
-// property name. A field is one already. Other SQL reuses a field (or a
-// previously derived property) with the same SQL; a column no field names is
-// exposed under its own name; any other SQL gets a synthesized, unique name
-// derived from the metric.
+// property name. A field is one already, unless it is ambiguous (see
+// newLowering); its SQL is then exposed as any other SQL is. Other SQL reuses
+// a field (or a previously derived property) with the same SQL; a column no
+// field names is exposed under its own name; any other SQL gets a
+// synthesized, unique name derived from the metric.
 function exposeOperand(
     lowering: MeasureLowering, read: Exclude<OperandRead, {skip: string}>,
     metricName: string): string {
@@ -368,7 +408,9 @@ function exposeOperand(
   // Synthesizing an input property here would emit `<field> AS ..._input`, and
   // an alias is illegal inside a property expression -- BigQuery rejects it with
   // "Unrecognized name".
-  if ('field' in read) return read.field;
+  if (read.field !== undefined && !lowering.ambiguous.has(read.field)) {
+    return read.field;
+  }
 
   const {sql} = read;
   const existing =

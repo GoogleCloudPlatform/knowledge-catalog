@@ -129,12 +129,7 @@ export function soleColumn(expression: string, dialect: string): SqlColumn|
   const kind = (node: any) =>
       node && Object.keys(node).length === 1 ? Object.keys(node)[0] : undefined;
   while (kind(tree) === 'paren') tree = tree.paren.this;
-  // `Time.hour` reads as a field of a column named `Time` (see
-  // collectColumns), so a dot on a column with no qualifier is one too.
-  const isColumn = kind(tree) === 'column' ||
-      (kind(tree) === 'dot' && kind(tree.dot.this) === 'column' &&
-       !tree.dot.this.column.table);
-  if (!isColumn) return undefined;
+  if (kind(tree) !== 'column') return undefined;
   const columns = sqlColumns(expression, dialect);
   return columns?.length === 1 ? columns[0] : undefined;
 }

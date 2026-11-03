@@ -33,7 +33,7 @@ import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KE
 import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
+import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
 import {translatesToBigQuery} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
@@ -1615,6 +1615,8 @@ export function validateProfileCompleteness(
             errors.push(
                 `${at}: field '${pe.name}.${pf.name}' reads '${pe.name}.${
                     ref}', which is not a field of '${pe.name}'`);
+          } else if (ref === pf.name) {
+            errors.push(`${at}: ${selfReferenceMessage(pe.name, [pf.name])}`);
           }
         }
       }
