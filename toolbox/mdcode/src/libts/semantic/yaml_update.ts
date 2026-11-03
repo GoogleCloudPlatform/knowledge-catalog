@@ -409,6 +409,20 @@ function setScalar(
   if (!/^BLOCK/.test(node.type ?? '') && s.includes('\n')) {
     s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
   }
+  // A block scalar that keeps its final line breaks, as `|+` does, also takes
+  // the blank lines after it. It is written with that many fewer, or
+  // double-quoted when it ends in fewer.
+  let blank = 0;
+  for (let p = to; p < u.text.length && !u.text.slice(p, nextLine(u.text, p)).trim();
+       p = nextLine(u.text, p)) {
+    blank++;
+  }
+  const keeps = /^[|>][0-9]*\+/.test(s);
+  if (keeps && !s.endsWith(u.nl.repeat(blank))) {
+    s = scalarText(u, value, slot.col, slot.flow, 'QUOTE_DOUBLE');
+  } else if (keeps && blank > 0) {
+    s = s.slice(0, -u.nl.length * blank);
+  }
   // The text after a block scalar's header, such as a comment, stays after
   // the new header, or after the new value when it is not a block scalar.
   const tail = headerTail(u.text, from) ?? '';

@@ -23,6 +23,11 @@ test.each<[string, string, (value: any) => void, string?]>([
     v => (v.a = 5, v.b = {k: 1}), 'a: 5  # c\nb:  # d\n  k: 1\n'
   ],
   [
+    'block scalars above blank lines set to text that ends in blank lines',
+    'a: |-\n  x\n\nb: |\n  y\n\n\nc: 1\n', v => (v.a = 'z\n\n', v.b = 'w\n\n'),
+    'a: |+\n  z\n\nb: "w\n\n  \\n"\n\n\nc: 1\n'
+  ],
+  [
     'a JSON file', '{"a": "x", "b": [1, 2], "c": ["yes", "on", "2001-12-14"]}',
     v => (v.a = 'true', v.b[1] = 3)
   ],
