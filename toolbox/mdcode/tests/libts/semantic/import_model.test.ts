@@ -369,13 +369,20 @@ describe('sources', () => {
           "Write the table's GCP resource name instead, such as " +
           `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
     ],
+    [
+      'dotted namespace', '\'lake.`my.ns`.orders\'', {sourcePrefix: LAKE},
+      "the quoted name 'my.ns' is one namespace name, and a BigLake namespace name cannot hold a dot. " +
+          "Write the table's GCP resource name instead, such as " +
+          `'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
        const cleanSrc = src.replace(/^'|'$/g, '');
 
-       expect(res.ok).toBe(true);
-       expect(res.warnings.find(w => w.includes(cleanSrc))).toEndWith(tail);
+       const found = res.warnings.filter(w => w.includes(cleanSrc));
+       expect([res.ok, found.length]).toEqual([true, 1]);
+       expect(found[0]).toEndWith(tail);
      });
 
   test('keeps a third-party entry name as written, with no warning', async () => {
