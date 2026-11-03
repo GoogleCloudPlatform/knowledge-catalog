@@ -1513,7 +1513,8 @@ export interface ProfilesOptions {
 //
 // Returns a process exit code (0 on success).
 async function printStore(
-    options: ProfilesOptions, ctx: context.ApiContext): Promise<number> {
+    options: ProfilesOptions, ctx: context.ApiContext,
+    snapshot: kcmd.CatalogSnapshot): Promise<number> {
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
 
@@ -1521,8 +1522,8 @@ async function printStore(
   // a second line makes that variable address the wrong database. A scope
   // holding several models has no single answer, so it says so instead,
   // before any AlloyDB lookup.
-  const opened =
-      await createSemanticRuntimes({profile: named, ctx, oneModel: true});
+  const opened = await createSemanticRuntimes(
+      {profile: named, ctx, oneModel: true, snapshot});
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);
     return 1;
@@ -1609,7 +1610,7 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
   const legacy = legacyProfileFormErrors(snapshot);
   if (legacy.length) return printErrors(...legacy);
-  if (options.printStore) return await printStore(options, ctx);
+  if (options.printStore) return await printStore(options, ctx, snapshot);
 
   // `--profile` narrows the report to one profile; anything that is not a name
   // (a bare `--profile`, `--no-profile`) narrows nothing, the same read every
@@ -2016,12 +2017,18 @@ async function pullSemanticModel(
       return 1;
     }
     for (const name of staleLocal) {
-      const p = layout.modelPath(name);
-      if (options.dryRun) {
-        console.log(`  would remove ${p}`);
-      } else {
+      // Its profile files go too, since push refuses a profile file with no
+      // model beside it.
+      const paths = [
+        layout.modelPath(name),
+        ...layout.localProfileFiles(name).map(f => f.path),
+      ];
+      if (!options.dryRun) {
         layout.removeModelDocument(name);
-        console.log(`  removed ${p}`);
+        for (const p of paths.slice(1)) fs.rmSync(p);
+      }
+      for (const p of paths) {
+        console.log(`  ${options.dryRun ? 'would remove' : 'removed'} ${p}`);
       }
     }
   }
@@ -2558,8 +2565,8 @@ export interface SkillsGenerateOptions {
 export async function skillsGenerate(options: SkillsGenerateOptions = {}):
     Promise<number> {
   const ctx = context.ApiContext.default();
-  const legacy =
-      legacyProfileFormErrors(await kcmd.CatalogSnapshot.fromPath('.', ctx));
+  const snapshot = await kcmd.CatalogSnapshot.fromPath('.', ctx);
+  const legacy = legacyProfileFormErrors(snapshot);
   if (legacy.length) return printErrors(...legacy);
   const named =
       typeof options.profile === 'string' ? options.profile : undefined;
@@ -2572,6 +2579,7 @@ export async function skillsGenerate(options: SkillsGenerateOptions = {}):
         count => `--name applies to one skill, and this scope has ${
             count} models. Drop it and each takes its model's name.` :
         false,
+    snapshot,
   });
   if ('error' in opened) {
     console.error(`Error: ${opened.error}`);

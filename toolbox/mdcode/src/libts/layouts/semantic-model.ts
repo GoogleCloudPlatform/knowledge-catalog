@@ -273,7 +273,7 @@ export class SemanticModelLayout implements CatalogLayout {
         throw new Error(vanillaSiblingError(file, model));
       }
       const text = fs.readFileSync(p, 'utf8');
-      const declared = parseProfileName(text, file);
+      const declared = parseProfileName(text, file, name);
       const reserved = (n?: string) =>
           n?.toLowerCase() === DEFAULT_PROFILE_NAME;
       if (reserved(name)) {
@@ -350,7 +350,7 @@ export class SemanticModelLayout implements CatalogLayout {
     if (!dir || !fs.existsSync(dir)) return [];
     return fs.readdirSync(dir)
         .filter(f => {
-          if (!ANY_PROFILE_FILE.test(f)) return false;
+          if (f.startsWith('.') || !ANY_PROFILE_FILE.test(f)) return false;
           const prefix = f.slice(0, f.indexOf('.profile.'));
           return !fs.existsSync(path.join(dir, `${prefix}.yaml`));
         })
@@ -358,14 +358,18 @@ export class SemanticModelLayout implements CatalogLayout {
         .map(f => path.join(dir, f));
   }
 
-  // The older `<model>.profiles/` directories in the EntryGroup dir, which
-  // push, `kcmd profiles` and `kcmd skills-generate` reject.
+  // The older `<model>.profiles/` directories in the EntryGroup dir that still
+  // hold a profile file, which push, `kcmd profiles` and `kcmd skills-generate`
+  // reject.
   legacyProfileDirs(): string[] {
     const dir = this._entryGroup ? this._groupDir() : undefined;
     if (!dir || !fs.existsSync(dir)) return [];
     return fs.readdirSync(dir)
         .filter(f => f.endsWith('.profiles') &&
-                    fs.statSync(path.join(dir, f)).isDirectory())
+                    fs.statSync(path.join(dir, f), {throwIfNoEntry: false})
+                        ?.isDirectory() &&
+                    this._legacyProfilePaths(f.slice(0, -'.profiles'.length))
+                            .length > 0)
         .sort()
         .map(f => path.join(dir, f));
   }
@@ -547,14 +551,24 @@ export function formatOverviewSidecar(
 }
 
 // The `name` a profile file declares at its top level, or undefined when it
-// declares none. A file that does not parse throws, naming the file.
-function parseProfileName(text: string, file: string): string|undefined {
+// declares none. A file that does not parse or that uses the legacy
+// `semantic_model:` wrapper throws, naming the file.
+function parseProfileName(text: string, file: string, name: string):
+    string|undefined {
   let doc: any;
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
     throw new Error(
         `Profile file '${file}' does not parse: ${err?.message ?? err}`);
+  }
+  if (doc?.semantic_model !== undefined) {
+    throw new Error(
+        `Profile file '${file}' uses the legacy 'semantic_model:' wrapper, ` +
+        `which is no longer supported; write its entities, relationships ` +
+        `and actions at the top level under 'name: ${name}', and move any ` +
+        `'deployment_target' to an entry under 'deployments:' in the model ` +
+        `file with 'profile: ${name}'.`);
   }
   return typeof doc?.name === 'string' ? doc.name : undefined;
 }

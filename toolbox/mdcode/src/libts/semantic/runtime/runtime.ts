@@ -111,6 +111,8 @@ export interface CreateRuntimeOptions {
    * the number of models and returns the error.
    */
   oneModel?: boolean|((count: number) => string);
+  /** The scope, already loaded. Defaults to a load of `path`. */
+  snapshot?: CatalogSnapshot;
 }
 
 
@@ -131,7 +133,7 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
 
   let snapshot: CatalogSnapshot;
   try {
-    snapshot = await CatalogSnapshot.fromPath(base, ctx);
+    snapshot = options.snapshot ?? await CatalogSnapshot.fromPath(base, ctx);
   } catch (err: any) {
     return {error: `${err?.message ?? err}`};
   }

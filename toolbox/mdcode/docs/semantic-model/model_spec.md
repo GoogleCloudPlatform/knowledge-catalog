@@ -753,13 +753,11 @@ definition. A profile:
 The model document lives at `catalog/EntryGroups/<entryGroup>/<model>.yaml`
 (sidecar files `*.aspects.yaml` / `*.overview.yaml` are not models). Profiles live
 beside it as `catalog/EntryGroups/<entryGroup>/<model>.profile.<name>.yaml`, and
-a profile file's `name:` MUST equal its `<name>`. The older
-`<model>.profiles/<name>.yaml` directory is still read when a model has no sibling
-profile file. A vanilla `0.2.0.dev0` model lists its profiles instead in a
-`GOOGLE` block on the model, as `{"profiles": [...]}`, each with the keys a
-profile file takes. The name `default` is reserved for the model's own inline
-bindings and MUST NOT be used as a profile name. A
-`default_profile` in `catalog.yaml` selects which profile the default push uses.
+a profile file's `name:` MUST equal its `<name>`. A vanilla `0.2.0.dev0` model
+lists its profiles instead in a `GOOGLE` block on the model, as
+`{"profiles": [...]}`, each with the keys a profile file takes. The name
+`default` is reserved for the model's own inline bindings and MUST NOT be used
+as a profile name.
 The full merge behavior and worked examples are in
 [Binding profiles](profiles.md).
 

@@ -1602,8 +1602,9 @@ semantic_model:
       ]);
     });
 
-    // A file with a `semantic_model` key is no profile a push can apply.
-    test('and reports a file that is not a profile file', async () => {
+    // A file with a `semantic_model` key uses the legacy wrapper, which push
+    // no longer reads.
+    test('and reports a file that uses the legacy wrapper', async () => {
       writeScope({
         'commerce.yaml': commerce(),
         'commerce.profile.staging.yaml': 'name: staging\nsemantic_model: []\n',
@@ -1611,8 +1612,12 @@ semantic_model:
       expect(await pushResult()).toEqual({
         code: 1,
         errors: [
-          "[commerce.profile.staging.yaml] profile 'staging' is not a " +
-              'profile file',
+          "Profile file 'commerce.profile.staging.yaml' uses the legacy " +
+              "'semantic_model:' wrapper, which is no longer supported; " +
+              'write its entities, relationships and actions at the top ' +
+              "level under 'name: staging', and move any " +
+              "'deployment_target' to an entry under 'deployments:' in the " +
+              "model file with 'profile: staging'.",
         ],
       });
     });

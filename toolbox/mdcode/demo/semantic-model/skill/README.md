@@ -389,7 +389,7 @@ Flags:
 ```
 --out <dir>       Directory to write the skill directories under; each skill takes a directory of its own, named after the skill. Defaults to `skills`
 --name <name>     Name the skill, and so its directory; lowercase letters, digits and single hyphens. Defaults to the model's own name. Applies only to a scope with one model
---profile [name]  Read the model under this binding profile, which is what the skill's one deployment-specific section describes; defaults to default_profile, else the inline bindings
+--profile [name]  Read the model under this binding profile, which is what the skill's one deployment-specific section describes; defaults to the inline bindings
 --force           Replace a skill that is already there, including deleting a reference file for an action the model no longer declares
 ```
 

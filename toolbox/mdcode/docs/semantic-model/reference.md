@@ -58,11 +58,8 @@ graph. The first phase dry-runs each BigQuery graph's DDL. Spanner cannot check
 a graph's DDL without running it, so a Spanner deployment whose DDL Spanner
 rejects, for example one that reads a missing column, fails in the second phase,
 after Knowledge Catalog is written. On this path `--no-kc`, `--profile`,
-`--all-profiles` and `--no-profile` are errors, and catalog.yaml's
-`default_profile` chooses no binding: Knowledge Catalog receives the model file
-as written. The runtime still reads `default_profile`, so it must name a
-profile the model declares, and that profile must apply as the runtime
-applies it.
+`--all-profiles` and `--no-profile` are errors, and Knowledge Catalog
+receives the model file as written.
 
 Any other push prepares the catalog's model, checks that it publishes one
 model and checks the file copies before the first graph deploys. Its Knowledge
@@ -124,10 +121,7 @@ model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles and still checks each
 profile, unless a plain push runs in two phases. A Cloud SQL or third-party
 table whose dialect cannot be read from its entry stops the command before the
-report. When
-`default_profile` names a profile that a model does not declare,
-a push that names no profile fails. That error prints above the model's
-profiles. When push warns that the model file's own bindings are incomplete,
+report. When push warns that the model file's own bindings are incomplete,
 the report prints that warning under `profile 'default'`, unless `--profile`
 names another profile.
 
@@ -149,8 +143,8 @@ where that push stops. Under each profile it prints the errors of that profile's
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
 profiles' errors print above the profiles too, since any of them stops the
-push. Push applies only the profiles the deployments use and the one
-`default_profile` names, so it can accept a profile that does not apply. When
+push. Push applies only the profiles the deployments use, so it can accept a
+profile that does not apply. When
 push gives no error and a profile does not apply, the report prints why on a
 `not shown:` line under that profile.
 The report's `target:` line lists the targets of the deployments the profile
@@ -161,7 +155,7 @@ instance.
 | Flag | Effect |
 |------|--------|
 | `--profile [name]` | Report only this profile. Naming one the model does not declare is an error, not an empty report. Defaults to every profile. |
-| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. A legacy profile in `<model>.profiles/` that no deployment names takes the deployments for `default`, unless it sets its own `deployment_target`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target, the instance printed is the cluster's primary instance. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile, and so does a target a `GOOGLE` block lists twice. It reads every model's profiles first: its profile files, and the profiles a vanilla model carries in its `GOOGLE` block. So does `kcmd push --profile <name>`. A plain push that runs in two phases loads the model files before it checks the profile files. It errors on a profile file that breaks one of the layout's file rules, such as a `<model>.profile.<name>.yaml` file whose `name:` does not match its file name, on a `GOOGLE` block profile that does not load, and on a profile named `default` in any letter case. Like push, it also errors on a profile file that does not load, such as a file in `<model>.profiles/` whose `name:` does not match its file name. It does not run push's checks that every named profile applies to the model, that each is complete, and that each has valid keys and join columns. So a profile that leaves an entity without a source does not stop it. It does not run push's deployment checks, its dialect check of the model file's fields, or its check that each concrete entity restates the inherited fields that read a column either. It does not run push's checks on the copies of the model and profile files that push stores in Knowledge Catalog, such as whether each file is valid UTF-8. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
+| `--print-store` | Print only the store the profile deploys to, on one line and nothing else, for a script to read rather than parse out of the report: `project/instance/database` for a Spanner store, and the backend named ahead of the path for any other (`alloydb:project/region/cluster/instance/database`, `bigquery:project/dataset`). The store is the one the deployments for the profile name: those that name it in `profile`, or that name no profile or `default` for `default`. Of several, it is the single Spanner or AlloyDB store. For an AlloyDB target, the instance printed is the cluster's primary instance. Errors when the scope holds more than one model, since those may name different databases, before any AlloyDB call. Also errors when a deployment names a profile the model does not declare, and when no single store results. Like push, it errors when the model's `extends` do not resolve: one names an entity the model does not declare, they form a cycle, or an entity inherits one field from two unrelated ancestors. A target in no accepted form in any deployment fails it under every profile, and so does a target a `GOOGLE` block lists twice. It reads every model's profiles first: its profile files, and the profiles a vanilla model carries in its `GOOGLE` block. So does `kcmd push --profile <name>`. A plain push that runs in two phases loads the model files before it checks the profile files. It errors on a profile file that breaks one of the layout's file rules, such as a `<model>.profile.<name>.yaml` file whose `name:` does not match its file name, on a `GOOGLE` block profile that does not load, and on a profile named `default` in any letter case. Like push, it also errors on a profile file that does not load. It does not run push's checks that every named profile applies to the model, that each is complete, and that each has valid keys and join columns. So a profile that leaves an entity without a source does not stop it. It does not run push's deployment checks, its dialect check of the model file's fields, or its check that each concrete entity restates the inherited fields that read a column either. It does not run push's checks on the copies of the model and profile files that push stores in Knowledge Catalog, such as whether each file is valid UTF-8. For an AlloyDB cluster it also errors when the cluster has no primary instance, when the primary is not READY, or when the instance listing fails. |
 
 This is a read of the binding, never a choice of one. Nothing on any `kcmd`
 command line names a store directly; `--profile` selects a binding and the
@@ -210,8 +204,7 @@ profile files. It fails on a profile file that breaks one of the layout's file
 rules, such as a `<model>.profile.<name>.yaml` file whose `name:` does not
 match its file name, on a `GOOGLE` block profile that does not
 load, and on a profile named `default` in any letter case. Like push, it also
-fails on a profile file that does not load, such as a file in
-`<model>.profiles/` whose `name:` does not match its file name. It does not run
+fails on a profile file that does not load. It does not run
 push's checks that every named profile applies to the model and that each is
 complete. So it still writes a skill when a profile leaves an entity without a
 source. It does not run push's checks on the copies of the model and
@@ -258,7 +251,7 @@ against.
 |------|--------|
 | `--out <dir>` | Directory the skill directories are written under. Defaults to `skills`. |
 | `--name <name>` | Name the skill, and so its directory. Defaults to the model's own name. Rejected when the scope holds more than one model, because a name names one skill. |
-| `--profile [name]` | Read the model under this binding profile. Defaults to `default_profile`, else the model's inline bindings. It is what the one deployment-specific section describes. |
+| `--profile [name]` | Read the model under this binding profile. Defaults to the model's inline bindings. It is what the one deployment-specific section describes. |
 | `--force` | Replace a skill already at that path. A reference page for an action the model no longer declares is deleted and reported; a file outside `references/` is left alone. |
 
 Before anything is written, a warning is printed when no action in a model is

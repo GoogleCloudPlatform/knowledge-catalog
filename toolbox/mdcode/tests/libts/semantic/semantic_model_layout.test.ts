@@ -252,22 +252,28 @@ describe('SemanticModelLayout sibling profile files', () => {
          ]);
        });
 
+  // An editor lock file (Emacs `.#<file>`, macOS `._<file>`) is no orphan.
   test('orphanProfilePaths lists profile files with no model', async () => {
     write('retail.yaml', GOOGLE);
     write('retail.profile.prod.yaml', 'name: prod\n');
     write('gone.profile.prod.yaml', 'name: prod\n');
+    write('.#retail.profile.prod.yaml', '');
     const l = await layout('eg');
     expect(l.orphanProfilePaths()).toEqual(
         [path.join(groupDir(), 'gone.profile.prod.yaml')]);
   });
 
-  test('legacyProfileDirs lists <model>.profiles directories', async () => {
-    write('retail.yaml', GOOGLE);
-    fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
-    const l = await layout('eg');
-    expect(l.legacyProfileDirs()).toEqual(
-        [path.join(groupDir(), 'retail.profiles')]);
-  });
+  // `mv` and `pull --force-remove` leave an emptied directory behind.
+  test('legacyProfileDirs lists <model>.profiles directories with a profile file',
+       async () => {
+         write('retail.yaml', GOOGLE);
+         fs.mkdirSync(path.join(groupDir(), 'retail.profiles'));
+         write('retail.profiles/old.yaml', '# old\n');
+         fs.mkdirSync(path.join(groupDir(), 'shop.profiles'));
+         const l = await layout('eg');
+         expect(l.legacyProfileDirs()).toEqual(
+             [path.join(groupDir(), 'retail.profiles')]);
+       });
 
   test('profilePath, writeProfileDocument and removeProfileDocument', async () => {
     write('retail.yaml', GOOGLE);

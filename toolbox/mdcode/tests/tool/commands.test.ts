@@ -1448,6 +1448,21 @@ describe('pull with stored file copies', () => {
              .toBe(ROUND_TRIP_PROFILE);
        });
 
+  // Push refuses a profile file with no model beside it, so a local model the
+  // catalog does not name goes with its profile files.
+  test('under --force-remove a stale local model goes with its profile files',
+       async () => {
+         writeRoundTripWorkspace();
+         fs.renameSync(local('commerce.yaml'), local('old.yaml'));
+         fs.renameSync(
+             local('commerce.profile.prod.yaml'), local('old.profile.prod.yaml'));
+         pulled([MODEL_COPY, PROD_COPY]);
+
+         expect(await pull({forceRemove: true})).toBe(0);
+         expect(fs.readdirSync(entryGroupDir()).sort())
+             .toEqual(['commerce.profile.prod.yaml', 'commerce.yaml']);
+       });
+
   test('a name that only looks like a profile file is skipped', async () => {
     writeRoundTripWorkspace();
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
