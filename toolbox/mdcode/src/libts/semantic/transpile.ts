@@ -391,17 +391,6 @@ function polyglotDialect(token: string): string|undefined {
 }
 
 /**
- * Returns true if the default translator reads SQL written in `dialect`
- * (treating an empty string as `ANSI_SQL`).
- *
- * `transpileModel` leaves a text in any other dialect as written, with a
- * warning.
- */
-export function transpilesFrom(dialect: string): boolean {
-  return polyglotDialect(dialect || 'ANSI_SQL') !== undefined;
-}
-
-/**
  * The default {@link SqlTranspiler}: transpiles via the embedded
  * @polyglot-sql/sdk Rust/WASM engine. There is no external runtime dependency
  * -- the WASM blob is bundled into the tool. It never throws: an engine that
