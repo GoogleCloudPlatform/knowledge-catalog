@@ -121,7 +121,8 @@ describe('kcmd import', () => {
       write('retail.yaml', model());
       const call = spyOn(engine, 'importSemanticModelYaml');
       expect(await importModel('retail.yaml', {...options, out: 'out'})).toBe(0);
-      expect(call.mock.calls).toEqual([[model(), {...expected, profileFiles: []}]]);
+      expect(call.mock.calls).toEqual(
+          [[model(), {...expected, profileFiles: [], fileName: 'retail.yaml'}]]);
     });
   }
 

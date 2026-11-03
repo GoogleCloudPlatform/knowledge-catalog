@@ -38,6 +38,11 @@ export interface ImportSemanticModelOptions {
    * used when converting a Google-flavor model to vanilla (`'ossie'`).
    */
   profileFiles?: SerializedFile[];
+  /**
+   * The input file's name. The warning that a JSON input was written as YAML
+   * names it. Defaults to `<model>.yaml`.
+   */
+  fileName?: string;
 }
 
 /** Result of importing a semantic model YAML document. */
@@ -328,8 +333,9 @@ function parseImportDocument(
       (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
       inputVersion;
   // A model file is YAML, so a JSON file is written as YAML.
+  const fileName = opts.fileName ?? `${model.name}.yaml`;
   const warnings =
-      text === rawYaml ? [] : ['Converted the JSON file to YAML.'];
+      text === rawYaml ? [] : [`Converted '${fileName}' to YAML.`];
   const errors: string[] = [];
   return {
     text,

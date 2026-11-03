@@ -1048,7 +1048,7 @@ test('drops the blank lines after `{` and `[` of a JSON file', async () => {
 
   const res = await importSemanticModelYaml(json);
 
-  expect(res.warnings).toContain('Converted the JSON file to YAML.');
+  expect(res.warnings).toContain("Converted 'retail.yaml' to YAML.");
   expect(res.files[0].content).toBe(`version: 0.2.0.dev0
 
 semantic_model:

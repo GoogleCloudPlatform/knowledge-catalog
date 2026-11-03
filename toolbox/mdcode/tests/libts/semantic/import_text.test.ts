@@ -665,18 +665,19 @@ test.each([...CHANGES, ['no change', google] as const].flatMap(
     ] as const))(
     '%s is written as YAML', async (_, input, opts) => {
       const plain = yaml.stringify(JSON.parse(input));
+      const named = {...opts, fileName: 'retail.json'};
 
-      const res = await importSemanticModelYaml(input, opts);
+      const res = await importSemanticModelYaml(input, named);
 
       // The output holds what the same change makes of a YAML file, in the
       // input's key order, with no line of only spaces.
-      expect(res.warnings).toContain('Converted the JSON file to YAML.');
+      expect(res.warnings).toContain("Converted 'retail.json' to YAML.");
       const yamlRes = await importSemanticModelYaml(plain, opts);
       expect(JSON.stringify(yaml.parse(res.files[0].content)))
           .toBe(JSON.stringify(yaml.parse(yamlRes.files[0].content)));
       expect(res.files[0].content)
           .not.toMatch(/^\s|\n[ \t]+\n|:\n\s*(\[\]|\{\})|\n\s*-\s*\n/);
-      const reimport = await again(res.files[0].content, opts);
+      const reimport = await again(res.files[0].content, named);
       expect(reimport.files[0].content).toBe(res.files[0].content);
-      expect(reimport.warnings).not.toContain('Converted the JSON file to YAML.');
+      expect(reimport.warnings).not.toContain("Converted 'retail.json' to YAML.");
     });

@@ -2467,6 +2467,7 @@ export async function importModel(
     transpile: !!options.transpile,
     strict: input === 'first-party',
     profileFiles,
+    fileName: path.basename(file),
   });
   for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);
