@@ -53,6 +53,23 @@ export function profileFilesBeside(dir: string, model: string):
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// Each `<model>.profile.*.yaml` in `dir`, whatever its profile name. Push
+// checks the nameless file first, then any whose profile name is empty or has
+// a dot, then the rest by profile name, and the list is in that order.
+export function profileFileNamesBeside(dir: string, model: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const named = profileFilesBeside(dir, model).map(p => path.basename(p.path));
+  const nameless = `${model}.profile.yaml`;
+  const others = fs.readdirSync(dir).filter(
+      f => f.startsWith(`${model}.profile.`) && f.endsWith('.yaml') &&
+          f !== nameless && !named.includes(f));
+  return [
+    ...(fs.existsSync(path.join(dir, nameless)) ? [nameless] : []),
+    ...others.sort(),
+    ...named,
+  ];
+}
+
 // The suffix of an entry's overview sidecar.
 const OVERVIEW_SIDECAR = '.overview.md';
 
@@ -171,6 +188,18 @@ export class SemanticModelLayout implements CatalogLayout {
           .filter(p => !nameProblem('profile', p.name))
           .map(p => ({path: p.path, profileName: p.name})),
       ...this._legacyProfilePaths(model).map(p => ({path: p.path})),
+    ];
+  }
+
+  // Every profile file of a model on disk, whatever its profile name: each
+  // `<model>.profile.*.yaml` in the entry group, as profileFileNamesBeside
+  // lists them, then each file in the older `<model>.profiles/` directory.
+  profileFilePaths(model: string): string[] {
+    if (!this._entryGroup) return [];
+    const dir = this._groupDir();
+    return [
+      ...profileFileNamesBeside(dir, model).map(f => path.join(dir, f)),
+      ...this._legacyProfilePaths(model).map(p => p.path),
     ];
   }
 

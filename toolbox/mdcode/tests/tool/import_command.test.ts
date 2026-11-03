@@ -327,6 +327,26 @@ describe('kcmd import', () => {
       });
     }
 
+    // Each is a profile file of the model. Push refuses the misnamed ones, and
+    // reads the file in the older directory as the model's profile.
+    for (const left of [
+      'retail.profile.yaml', 'retail.profile.prod.v2.yaml', 'retail.profile.-us.yaml',
+      path.join('retail.profiles', 'prod.yaml'),
+    ]) {
+      test(`a model imported beside ${left} is refused, and nothing is written`, async () => {
+        workspace();
+        write(path.join(GROUP, left), PROFILE);
+        write('in/sales.yaml', google);
+        expect(await importModel('in/sales.yaml', {flavor: 'google'})).toBe(1);
+        expect(errors).toEqual([
+          `Error: the import does not write ${path.join(GROUP, left)}, which would stay beside ` +
+          'the model; pass --out <path> to write elsewhere, or first remove any the model no ' +
+          'longer uses.',
+        ]);
+        expect(filesIn(GROUP)).toEqual([left]);
+      });
+    }
+
     test('re-imported as Google flavor in place with --transpile translates its profile file', async () => {
       setUp();
       expect(await importModel(MODEL_FILE, {flavor: 'google', input: 'first-party', transpile: true}))

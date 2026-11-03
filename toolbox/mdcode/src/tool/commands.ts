@@ -14,7 +14,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {fileNameOf, formatOverviewSidecar, OverviewSidecar, profileFilesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {fileNameOf, formatOverviewSidecar, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
 import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
@@ -2351,26 +2351,15 @@ export async function importModel(
 
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
-  // inside it. The engine gets every `<name>.profile.*.yaml` there, so it
-  // reports a file name push refuses. Push checks the nameless file first,
-  // then any whose profile name is empty or has a dot, then the rest by
-  // profile name, and the engine gets them in that order.
+  // inside it. The engine gets every `<name>.profile.*.yaml` there, in the
+  // order push checks them, so it reports a file name push refuses.
   const dir = path.dirname(file);
-  const stem = path.basename(file).replace(YAML_FILE, '');
-  const named = profileFilesBeside(dir, stem).map(p => path.basename(p.path));
-  const nameless = `${stem}.profile.yaml`;
-  const dotted = fs.readdirSync(dir).filter(
-      f => f.startsWith(`${stem}.profile.`) && f.endsWith('.yaml') &&
-          f !== nameless && !named.includes(f));
   const profileFiles =
-      [
-        ...(fs.existsSync(path.join(dir, nameless)) ? [nameless] : []),
-        ...dotted.sort(),
-        ...named,
-      ].map(f => ({
-              fileName: f,
-              content: fs.readFileSync(path.join(dir, f), 'utf8'),
-            }));
+      profileFileNamesBeside(dir, path.basename(file).replace(YAML_FILE, ''))
+          .map(f => ({
+                 fileName: f,
+                 content: fs.readFileSync(path.join(dir, f), 'utf8'),
+               }));
   const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
     flavor: flavor as 'ossie' | 'google',
     sourcePrefix: options.sourcePrefix,
@@ -2438,16 +2427,18 @@ export async function importModel(
           `to write elsewhere.`);
     }
     if (refusals.length) return fail(...refusals);
-    // Refuse to leave behind a profile file this import does not write. Push
-    // rejects one beside a vanilla model, and reads one beside a Google model
-    // as that model's profile. A Google model file re-imported in place with
-    // no sibling profile file for the import to write keeps its other ones.
+    // Refuse to leave behind a profile file this import does not write,
+    // whatever its profile name. Push rejects one beside a vanilla model, and
+    // one whose name breaks its rule, and reads any other beside a Google
+    // model as that model's profile. A Google model file re-imported in place
+    // with no sibling profile file for the import to write keeps its other
+    // ones.
     const inPlace = profileFiles.length === 0 && flavor === 'google' &&
         result.files.length === 1 &&
         path.resolve(file) === path.resolve(layout.modelPath(model));
     if (!inPlace) {
       const kept = new Set(targets.map(t => t && path.resolve(t.path)));
-      const left = layout.localProfileFiles(model).map(p => p.path).filter(
+      const left = layout.profileFilePaths(model).filter(
           p => !kept.has(path.resolve(p)));
       if (left.length) {
         return fail(
