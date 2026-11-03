@@ -107,13 +107,9 @@ const LOADER_SOURCE_WARNING =
 const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote';
 
 // The warning for `source`, which import leaves as written after a run with
-// `prefix`, if any. It names the name to write when the loader's message does.
-// For a bare name, it suggests another run with --source-prefix only when a
-// prefix of the kind that ran, or of any kind when none ran, completes the
-// name. Otherwise it says why kcmd cannot name the table when the name holds a
-// space or a quote, or gives the form to write when only a quoted name's dot
-// keeps the prefix's kind from naming it. A source in no Google Cloud form may
-// be a third-party table, so the warning says how to write one.
+// `prefix`, if any. It gives the name to write when the loader names one,
+// or another --source-prefix run when a prefix of that kind, or of any kind
+// when none ran, completes the name, or else why the table cannot be named.
 function sourceWarning(
     ctx: string, source: string, prefix?: ParsedSourcePrefix): string {
   const problem = oldSourceForm(source);
