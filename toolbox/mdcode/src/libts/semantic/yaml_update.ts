@@ -72,19 +72,12 @@ export function updateText(
     links: ReadonlyMap<object, yaml.Node>): string {
   const pairs: Array<[yaml.Pair, unknown]> = [];
   yaml.visit(doc, {Pair: (_, p, path) => void pairs.push([p, path.at(-1)])});
-  const held = new Set<unknown>();
-  const hold = (v: unknown) => {
-    if (!isObject(v)) return;
-    held.add(links.get(v));
-    Object.values(v).forEach(hold);
-  };
-  hold(value);
   const u: Update = {
     text,
     doc,
     links,
     pairs,
-    held,
+    held: new Map(),
     used: new Set(),
     copies: new Map([...links].map(([v, n]) => [n, v])),
     edits: [],
@@ -93,6 +86,7 @@ export function updateText(
     nl: /\r?\n/.exec(text)?.[0] ?? '\n',
     ...indents(doc, text),
   };
+  hold(u, value, doc.contents);
   patch(u, value, doc.contents, {col: 0, prefix: '', flow: false});
   // An alias whose anchor changed or went is written out.
   for (const [alias, v, slot] of u.aliases) {
@@ -122,8 +116,11 @@ interface Update {
   links: ReadonlyMap<object, yaml.Node>;
   /** Each pair of `doc`, with the mapping that holds it. */
   pairs: ReadonlyArray<[yaml.Pair, unknown]>;
-  /** Nodes linked to an object the new value holds. */
-  held: ReadonlySet<unknown>;
+  /**
+   * Each node whose text the new value keeps, with the object of the new value
+   * that keeps it.
+   */
+  held: Map<unknown, object>;
   /** The pairs whose text a moved value took. */
   used: Set<yaml.Pair>;
   /** The reverse of `links`. */
@@ -154,6 +151,25 @@ interface Slot {
   after?: number;
   /** Whether the node is inside a flow collection. */
   flow: boolean;
+}
+
+/**
+ * Fills `held` for `value` in place of `node`: the node `links` maps each
+ * object to, and each mapping or list whose items `patch` keeps.
+ */
+function hold(u: Update, value: unknown, node: unknown): void {
+  if (!isObject(value)) return;
+  const linked = u.links.get(value);
+  if (linked) u.held.set(linked, value);
+  const kept = isFull(value) && yaml.isCollection(node) &&
+          Array.isArray(value) === yaml.isSeq(node) ?
+      matchItems(u, entriesOf(value), node) :
+      [];
+  if (kept.some(i => i >= 0)) u.held.set(node, value);
+  entriesOf(value).forEach(([, v], i) => {
+    const item = yaml.isCollection(node) ? node.items[kept[i] ?? -1] : undefined;
+    hold(u, v, yaml.isPair(item) ? item.value : item);
+  });
 }
 
 function patch(u: Update, value: unknown, node: unknown, slot: Slot): void {
@@ -235,10 +251,10 @@ function patchItems(
       // The comma after the item that becomes last goes, unless a new entry
       // comes after it, and a comment after that comma stays.
       const gap = t.slice(g[a - 1].end, g[a].start);
+      const kept = gap.includes('#') ? gap.replace(',', '') : '';
       u.edits.push(
           follows.includes(a - 1) ? [g[a].start, g[b].end, ''] :
-                                    [g[a - 1].end, g[b].end,
-                                     gap.includes('#') ? gap.replace(',', '') : '']);
+                                    [g[a - 1].end, g[b].end, kept]);
     } else if (g[a].inline && next) {
       // The next item moves up onto the `- ` line, and its comments go above
       // that line. A comment indented deeper than that line takes its
@@ -412,9 +428,10 @@ function setScalar(
   // A block scalar that keeps its final line breaks, as `|+` does, also takes
   // the blank lines after it. It is written with that many fewer, or
   // double-quoted when it ends in fewer.
+  const t = u.text;
   let blank = 0;
-  for (let p = to; p < u.text.length && !u.text.slice(p, nextLine(u.text, p)).trim();
-       p = nextLine(u.text, p)) {
+  for (let p = to; p < t.length && !t.slice(p, nextLine(t, p)).trim();
+       p = nextLine(t, p)) {
     blank++;
   }
   const keeps = /^[|>][0-9]*\+/.test(s);
@@ -508,32 +525,34 @@ function items(u: Update, value: object, col: number): string[] {
 }
 
 /**
- * The text of the input value that `value` moved from, re-indented for a key
- * at column `col`: what follows the key's `:` on its line, then each line
- * under it. An object or array moves from the node `links` maps it to. A
- * scalar under `key` moves from a pair with the same key and value whose
- * mapping the new value no longer holds that way.
+ * The text of the input value that `value` moved from, for `key` at column
+ * `col`, or in a flow mapping when `col` is undefined: what follows the key's
+ * `:` on its line, then each line under it, re-indented. An object or array
+ * moves from the node `links` maps it to. A scalar under `key` moves from a
+ * pair with the same key and value whose text the new value does not keep.
+ * Undefined when nothing moved, or when the text would not read back as
+ * `value` at its new place, as when it holds an alias of an anchor outside it.
  */
 function movedText(
     u: Update, key: string|undefined, value: unknown,
-    col: number): string[]|undefined {
+    col?: number): string[]|undefined {
   const node = isObject(value) ? u.links.get(value) : undefined;
   const found = u.pairs.find(([p, parent]) => !u.used.has(p) &&
       (node ? p.value === node :
               key !== undefined && keyOf(p) === key && yaml.isScalar(p.value) &&
               p.value.value === value &&
-              !(u.held.has(parent) &&
-                (u.copies.get(parent) as Record<string, unknown>)[key] === value)));
+              (u.held.get(parent) as Record<string, unknown>|undefined)?.[key] !==
+                  value));
   const p = found?.[0];
   const v = p?.value as yaml.Node|undefined;
-  if (!p || !v?.range || !yaml.isNode(p.key) ||
-      canonical(v.toJS(u.doc)) !== canonical(value)) {
-    return undefined;
-  }
-  u.used.add(p);
+  if (!p || !v?.range || !yaml.isNode(p.key)) return undefined;
   const t = u.text;
-  const [from, to] = v.range;
-  const shift = col - (p.key.range![0] - lineStart(t, p.key.range![0]));
+  const keyCol = p.key.range![0] - lineStart(t, p.key.range![0]);
+  const from = v.range[0];
+  // The comments after the value at its key's column or less are above the
+  // next key.
+  const to = blockEnd(t, v.range[1], keyCol);
+  const shift = (col ?? 0) - keyCol;
   const own = t.slice(lineStart(t, from), from).trim() === '';
   // A mapping or list on the lines under its key starts on the line after the
   // key, so the comments above its first key or item move with it. The
@@ -545,11 +564,18 @@ function movedText(
   const lines = t.slice(start, stop)
                     .replace(/\r?\n$/, '')
                     .split(/\r?\n/)
-                    .map((l, i) => !own && i === 0 ? l :
-                             l.trim() === ''        ? '' :
-                             shift >= 0             ? ' '.repeat(shift) + l :
-                                                      l.slice(Math.min(-shift, l.search(/\S/))));
-  return own ? ['', ...lines] : [' ' + lines[0], ...lines.slice(1)];
+                    .map((l, i) => !own && i === 0 || l === '' ? l :
+                             shift >= 0 ? ' '.repeat(shift) + l :
+                                          l.slice(Math.min(-shift, indentOf(l))));
+  const moved = own ? ['', ...lines] : [' ' + lines[0], ...lines.slice(1)];
+  const reads = col === undefined ?
+      moved.length === 1 && readsInFlow(moved[0].trim(), value) :
+      readsInBlock(
+          [' '.repeat(col) + '_:' + moved[0], ...moved.slice(1)].join('\n'),
+          value);
+  if (!reads) return undefined;
+  u.used.add(p);
+  return moved;
 }
 
 /**
@@ -557,11 +583,7 @@ function movedText(
  * when that is one line that reads the same there.
  */
 function flowValue(u: Update, key: string, value: unknown): string {
-  const moved = movedText(u, key, value, 0);
-  const text = moved?.length === 1 ? moved[0].trim() : undefined;
-  return text !== undefined && readsInFlow(text, value) ?
-      text :
-      scalarText(u, value, 0, true);
+  return movedText(u, key, value)?.[0].trim() ?? scalarText(u, value, 0, true);
 }
 
 /** Whether `text` reads as `value` in a flow collection. */
@@ -571,6 +593,24 @@ function readsInFlow(text: string, value: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Whether `text`, one key and its value, reads as that key holding `value`.
+ * An alias in it must have its anchor in it.
+ */
+function readsInBlock(text: string, value: unknown): boolean {
+  try {
+    const read = yaml.parse(text, YAML_OPTIONS);
+    return isRecord(read) && canonical(Object.values(read)[0]) === canonical(value);
+  } catch {
+    return false;
+  }
+}
+
+/** The number of spaces and tabs that start `line`. */
+function indentOf(line: string): number {
+  return /^[ \t]*/.exec(line)![0].length;
 }
 
 /**

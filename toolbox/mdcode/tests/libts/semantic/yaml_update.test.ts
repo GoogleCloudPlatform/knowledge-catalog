@@ -75,6 +75,31 @@ test.each<[string, string, (value: any) => void, string?]>([
           v.b = {i: 1, custom: {o: v.b.o}}),
     'a:\n  custom: {t: 1, m: "a, b", o: \'x\'}\nb: {i: 1, custom: {o: \'z\'}}\n'
   ],
+  [
+    'moved values with a line of spaces in a block scalar, or a comment at their key\'s column after them',
+    'a:\n  note: |  # h\n    x\n      \n    y\n  extra:\n    - k: 1\n      # deep\n  # above s\n  s: 1\n' +
+        'd:\n  custom:\n    w: |  # g\n      x\n        \n      y\n',
+    v => {
+      const {note, extra, s} = v.a;
+      v.a = {s, custom: {note, extra}};
+      v.d = {...v.d.custom};
+    },
+    'a:\n  # above s\n  s: 1\n  custom:\n    note: |  # h\n      x\n        \n      y\n    extra:\n      - k: 1\n        # deep\n' +
+        'd:\n  w: |  # g\n    x\n      \n    y\n'
+  ],
+  [
+    'moved values written fresh: text over several lines in a flow mapping, and an alias',
+    'b:\n  custom: {p: "a long text", m: "first\n    second", o: {\n      t: 1\n    }}\n' +
+        'c:\n  team:\n    lead: &l ann  # c\n  other:\n    owner: *l\n',
+    v => (v.b = {...v.b.custom}, v.c = {custom: {...v.c}}),
+    'b:\n  p: "a long text"\n  m: first second\n  o:\n    t: 1\n' +
+        'c:\n  custom:\n    team:\n      lead: &l ann  # c\n    other:\n      owner: ann\n'
+  ],
+  [
+    'a new list item beside an equal item that stays',
+    'l:\n  - d: S\n    e: |-  # h\n      x\n', v => v.l = [{d: 'S', e: 'x'}, {d: 'B', e: 'x'}],
+    'l:\n  - d: S\n    e: |-  # h\n      x\n  - d: B\n    e: x\n'
+  ],
   ['an alias of an anchor in a removed item', 'l:\n  - &x a\n  - b\nk: *x\n', v => v.l.shift()],
   [
     'an alias reached before its anchor gains an item', 'a: &s\n  - 1\nb: *s\n',
