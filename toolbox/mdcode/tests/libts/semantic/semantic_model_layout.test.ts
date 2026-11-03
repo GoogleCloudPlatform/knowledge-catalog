@@ -152,12 +152,16 @@ describe('SemanticModelLayout sibling profile files', () => {
     fs.writeFileSync(path.join(groupDir(), file), text);
   }
 
-  test('modelDocuments returns the model and not its profile files', async () => {
-    write('retail.yaml', GOOGLE);
+  test('modelDocuments returns each model, sorted, and not its profile files', async () => {
+    // glob lists files in directory order, not by name; with several models
+    // that order is rarely sorted by chance.
+    const models = ['shop', 'retail', 'commerce', 'zeta', 'alpha', 'orders'];
+    for (const m of models) write(`${m}.yaml`, GOOGLE);
     write('retail.profile.prod.yaml', 'name: prod\n');
     write('retail.profile.yaml', 'name: x\n');
     const l = await layout('eg');
-    expect(l.modelDocuments().map(d => d.name)).toEqual(['retail']);
+    expect(l.modelDocuments().map(d => d.name)).toEqual(
+        ['alpha', 'commerce', 'orders', 'retail', 'shop', 'zeta']);
   });
 
   test('profileDocuments finds sibling files by name, sorted', async () => {
