@@ -79,15 +79,12 @@ describe('CatalogClient.lookupEntryLinks', () => {
 
   test('a non-200 page aborts and is returned as-is', async () => {
     const client = new CatalogClient(CTX);
-    const get =
-        spyOn(client as any, '_get')
-            .mockImplementation(async () => ({status: 403, message: 'denied'}));
+    const failed = {status: 403, message: 'denied', body: '{}'};
+    const get = spyOn(client as any, '_get').mockResolvedValue(failed);
 
     const res = await client.lookupEntryLinks('proj', 'us', {entry: ENTRY});
 
-    expect(res.status).toBe(403);
-    expect(res.message).toBe('denied');
-    expect(res.result).toBeUndefined();
+    expect(res).toEqual(failed);
     expect(get).toHaveBeenCalledTimes(1);
   });
 
@@ -295,6 +292,15 @@ describe('CatalogClient.lookupEntryAspectTypes', () => {
     expect(res.result).toEqual(['111.global.guidelines']);
     expect(lookup).toHaveBeenCalledTimes(1);
     lookup.mockRestore();
+  });
+
+  test('a failed read is returned as-is', async () => {
+    const client = new CatalogClient(CTX);
+    const failed = {status: 403, message: 'denied', body: '{}'};
+    spyOn(client as any, '_get').mockResolvedValue(failed);
+
+    expect(await client.lookupEntryAspectTypes('proj', 'us', ENTRY))
+        .toEqual(failed);
   });
 });
 

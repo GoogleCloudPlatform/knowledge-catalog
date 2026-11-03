@@ -163,11 +163,11 @@ function toChange(
   };
 }
 
-export function isUnimplementedBatch(res: { status: number; message?: string }): boolean {
+export function isUnimplementedBatch(res: { status: number; body?: string }): boolean {
   if (res.status === 501) return true;
-  if (res.status !== 404 || !res.message) return false;
+  if (res.status !== 404 || !res.body) return false;
   try {
-    const parsed = JSON.parse(res.message);
+    const parsed = JSON.parse(res.body);
     return parsed?.error?.status === 'UNIMPLEMENTED';
   } catch {
     return false;

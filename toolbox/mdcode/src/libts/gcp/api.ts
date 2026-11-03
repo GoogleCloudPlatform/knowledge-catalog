@@ -7,7 +7,10 @@ import * as context from './context';
 export interface ApiResult<T> {
   status: number;
   result?: T;
+  // For a failed response, the message errorMessage reads from its body.
   message?: string;
+  // For a failed response, its whole body.
+  body?: string;
 }
 
 export interface ApiClientOptions {
@@ -20,6 +23,51 @@ export interface RequestOptions {
 
 const TRANSIENT_TRIES = 4;
 const TRANSIENT_DELAY_CAP_MS = 5000;
+const MAX_MESSAGE_LENGTH = 2000;
+
+// The message in a failed response's body. For a Google API error it is the
+// LocalizedMessage detail, which Spanner leaves unescaped, or else
+// `error.message`. Each BadRequest field violation that the message does not
+// state is appended, with its line breaks replaced by semicolons. Any other
+// body comes back trimmed and cut to 2,000 characters. An HTML page comes back
+// as its text.
+export function errorMessage(body: string): string {
+  const text = body.trim();
+  try {
+    const error = JSON.parse(text)?.error;
+    const details = Array.isArray(error?.details) ? error.details : [];
+    const localized = details.find((d: any) =>
+        d?.['@type']?.endsWith('LocalizedMessage') && isText(d.message));
+    const message = localized?.message ?? error?.message;
+    if (isText(message)) {
+      // Spanner states what is wrong with a name, such as an uppercase
+      // database ID, only in a field violation.
+      const violations = details
+          .filter((d: any) => d?.['@type']?.endsWith('BadRequest'))
+          .flatMap((d: any) =>
+              Array.isArray(d.fieldViolations) ? d.fieldViolations : [])
+          .map((v: any) => v?.description)
+          .filter((v: unknown): v is string =>
+              isText(v) && !message.includes(v.trim()))
+          .map((v: string) => v.trim().replace(/\s*\n\s*/g, '; '));
+      return [message.trim(), ...violations].join(' ');
+    }
+  } catch {
+    // Not JSON, such as a proxy's HTML error page.
+  }
+  const plain = text.startsWith('<') ?
+      text.replace(/<(style|script)\b[\s\S]*?<\/\1>/gi, ' ')
+          .replace(/<[^>]*>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim() :
+      text;
+  return plain.length > MAX_MESSAGE_LENGTH ?
+      `${plain.slice(0, MAX_MESSAGE_LENGTH)}...` : plain;
+}
+
+function isText(value: unknown): value is string {
+  return typeof value === 'string' && value.trim() !== '';
+}
 
 export function isTransientStatus(status: number): boolean {
   return status >= 500 || status === 429;
@@ -137,13 +185,14 @@ export class ApiClient {
 
     const result: ApiResult<T> = { status: response.status };
     if (!response.ok) {
-      result.message = await response.text();
+      result.body = await response.text();
+      result.message = errorMessage(result.body);
     }
     else {
       result.result = await response.json() as T;
     }
 
-    this._context.log(`${response.status}:${result.message ?? ''}\n`, result.result);
+    this._context.log(`${response.status}:${result.body ?? ''}\n`, result.result);
     return result;
   }
 

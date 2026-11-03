@@ -5,7 +5,9 @@
 
 import {expect} from 'bun:test';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
+
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, profileFile, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -19,15 +21,15 @@ const ONE_MODEL = err(
     "entry group 'commerce_eg' would receive 2 models, but only one model " +
     'per entry group is supported; split them into separate entry groups.');
 const spannerAnswers =
-    (what: string, status: number, body: string, error: string): Case => ({
+    (what: string, status: number, message: string, error: string): Case => ({
       name: `a Spanner deployment whose database ${what} writes nothing`,
       deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
       profiles: {ops: boundAt(SPANNER_CUSTOMER)},
-      services: {getDatabase: {status, message: body}},
+      services: {getDatabase: {status, message}},
       errors: [err(`${at('sp')}: database test-project/i/db ${error}`)],
       called: {spannerDml: 0},
     });
-const DISABLED = {code: 403, message: 'Cloud Spanner API is disabled.'};
+const DISABLED = 'Cloud Spanner API is disabled.';
 // Every dataset's location is unreadable, the sources' too, so a push that
 // uses it passes --skip-source-check (SKIP) to reach the graph's checks.
 const DENIED = {getDataset: {status: 403, message: 'Access Denied'}};
@@ -107,8 +109,7 @@ scenarios('push writes nothing when a check fails', [
   },
   spannerAnswers('does not exist', 404, 'Not found', 'not found'),
   spannerAnswers(
-      'answers 403', 403, JSON.stringify({error: DISABLED}),
-      `could not be read: ${DISABLED.message}`),
+      'answers 403', 403, DISABLED, `could not be read: ${DISABLED}`),
   {
     name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write',
     deployments: [{
@@ -164,6 +165,21 @@ const THREE_DEPLOYED = [
   ['b', 'bq', bqGraph('gb'), 'test-project.x.customer'],
 ] as const;
 const headers = (r: PushRun) => r.log.filter(l => l.includes('-- Deployment'));
+// BigQuery's answer to a graph over a limit, shaped as a live push got it, with
+// a stack trace in its two debug fields.
+const LIMIT = '[BigQueryPropertyGraphUserError]: Property graph label ' +
+    '[customer] has description length [1025] which exceeds the maximum ' +
+    'allowed length [1024].';
+const STACK = '\tat com.google.Frame.call(Frame.java:1)\n'.repeat(500);
+const REJECTED = JSON.stringify({
+  error: {
+    code: 400,
+    message: LIMIT,
+    errors: [{message: LIMIT, reason: 'invalid', debugInfo: STACK}],
+    status: 'INVALID_ARGUMENT',
+    details: [{'@type': 'google.rpc.DebugInfo', detail: STACK}],
+  },
+}, null, 2);
 // A graph deploy that fails outside --validate-only.
 const failedDeploy = when(
     (_m: unknown, _c: unknown, o: any) => !o?.validateOnly,
@@ -294,6 +310,19 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       code: 1,
       events: ['preflight', 'apply'],
     }],
+  },
+  {
+    name: 'a graph BigQuery rejects prints the message of its error body alone',
+    deployments: ['g'],
+    services: {
+      bq: (...a: any[]) => REAL.bq(...a),
+      query: (...a: any[]) =>
+          a[3] ? undefined : REAL.query.apply(new BigQueryClient(CTX), a),
+      fetch: async () => new Response(REJECTED, {status: 400}),
+    },
+    code: 1,
+    errors: [`Error pushing semantic model to BigQuery: Failed to deploy ` +
+             `'g': ${LIMIT}`],
   },
   {
     name: 'a profile that gives the join columns deploys, and with KC_V2_ASPECTS=1 so do relationships whose link IDs collide',

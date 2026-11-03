@@ -1939,37 +1939,12 @@ function firstLine(message: string): string {
 }
 
 
-// An error body reduced to the sentence worth showing. Both backends return a
-// google.rpc-shaped JSON whose message already reads as a diagnosis
-// ("Unrecognized name: accountId; Did you mean account_id? [at 1:54]"), so pull
-// that out when it parses and fall back to the raw text when it does not.
-//
-// A LocalizedMessage detail is preferred over the top-level `error.message`
-// because Spanner escapes the latter: a statement it quotes back comes through
-// as `Unexpected \"$1\"`, where the detail says `Unexpected "$1"`. BigQuery
-// sends no such detail, so the fallback is the normal path there, not an
-// unusual one.
-export function storeMessage(body: string|undefined, status: number): string {
-  const raw = (body ?? '').trim();
-  if (!raw) return `HTTP ${status}.`;
-  try {
-    const error = JSON.parse(raw)?.error;
-    const details: unknown[] =
-        Array.isArray(error?.details) ? error.details : [];
-    for (const detail of details) {
-      const d = detail as {'@type'?: string, message?: unknown};
-      if (!d?.['@type']?.endsWith('LocalizedMessage')) continue;
-      if (typeof d.message === 'string' && d.message.trim()) {
-        return sentence(firstLine(d.message));
-      }
-    }
-    if (typeof error?.message === 'string' && error.message.trim()) {
-      return sentence(firstLine(error.message));
-    }
-  } catch {
-    // Not JSON (an HTML error page from a proxy, say): show what came back.
-  }
-  return sentence(firstLine(raw));
+// An API error's message reduced to its first line as a sentence, such as
+// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]."
+export function storeMessage(
+    message: string|undefined, status: number): string {
+  const text = (message ?? '').trim();
+  return text ? sentence(firstLine(text)) : `HTTP ${status}.`;
 }
 
 

@@ -446,18 +446,10 @@ export async function withPrimaryInstance(
 }
 
 
-// The message of a failed API call: the error the response body states, or
-// failing that the body as it is, after the HTTP status.
+// The message of a failed API call, after the HTTP status.
 function apiError(res: {status: number; message?: string}): string {
-  try {
-    const message = JSON.parse(res.message ?? '')?.error?.message;
-    if (typeof message === 'string' && message) {
-      return `${res.status} ${message}`;
-    }
-  } catch {
-    // Not JSON: report the body as it is.
-  }
-  return res.message ? `${res.status} ${res.message}` : `${res.status}`;
+  const message = res.message?.trim();
+  return message ? `${res.status} ${message}` : `${res.status}`;
 }
 
 

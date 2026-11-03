@@ -298,7 +298,7 @@ describe('CatalogSync OKF push', () => {
       async () =>
         ({
           status: 404,
-          message: JSON.stringify({
+          body: JSON.stringify({
             error: {code: 404, status: 'UNIMPLEMENTED', message: 'not deployed'},
           }),
         }) as any,
@@ -332,7 +332,7 @@ describe('CatalogSync OKF push', () => {
       async () =>
         ({
           status: 404,
-          message: JSON.stringify({
+          body: JSON.stringify({
             error: {code: 404, status: 'NOT_FOUND', message: 'entryGroup missing'},
           }),
         }) as any,
