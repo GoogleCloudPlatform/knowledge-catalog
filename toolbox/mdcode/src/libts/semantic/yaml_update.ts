@@ -383,7 +383,9 @@ function replace(u: Update, value: unknown, node: unknown, slot: Slot): void {
   const [from, to] = yaml.isNode(node) && node.range ?
       node.range :
       [slot.after ?? 0, slot.after ?? 0];
-  if (slot.flow || slot.after === undefined) {
+  // A flow collection stays flow.
+  if (slot.flow || slot.after === undefined ||
+      yaml.isCollection(node) && node.flow && isObject(value)) {
     u.edits.push([from, to, scalarText(u, value, slot.col, true)]);
     return;
   }
