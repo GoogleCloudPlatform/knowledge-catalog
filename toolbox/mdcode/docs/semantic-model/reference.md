@@ -548,11 +548,12 @@ creates them in your own project at `global`; push still writes only entries.
 | Model file and each profile file | `semantic-model-file` (custom type) | entry holding the file's text | `<model>.files.<file>` |
 
 The model entry also carries the `kcmd-push-id` label, which names the push that
-stored the file copies. On each entry, push owns the `schema`, `semantic-*` and
-`guidelines` aspects it writes, the display name, the description and that
-label. When it updates an entry, it keeps every other label and the source
-`resource`, `system`, `platform`, `createTime` and `updateTime` another tool
-set.
+stored the file copies, and the `kcmd-push-state` label, which reads `writing`
+until the push's last write sets it to `finished`. On each entry, push owns the
+`schema`, `semantic-*` and `guidelines` aspects it writes, the display name, the
+description and those labels. When it updates an entry, it keeps every other
+label and the source `resource`, `system`, `platform`, `createTime` and
+`updateTime` another tool set.
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys

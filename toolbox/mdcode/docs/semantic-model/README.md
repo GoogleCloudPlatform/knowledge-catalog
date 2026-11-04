@@ -373,6 +373,12 @@ their number differs from that count, or when the label names a push whose
 copies the catalog does not hold. Each of these means the last push stopped
 partway. Pull then writes and deletes nothing and asks you to push again.
 
+Every push, with or without `KC_V2_ASPECTS=1`, also sets the `kcmd-push-state`
+label of the model entry to `writing` with its first write, and to `finished`
+with its last, after it deletes what the model no longer has. Pull refuses a
+model entry still labeled `writing` in the same way. A model an older `kcmd`
+pushed has no such label.
+
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.
 After a failed push, push again before you pull.

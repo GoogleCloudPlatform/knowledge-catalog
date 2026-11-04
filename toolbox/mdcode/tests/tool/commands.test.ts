@@ -935,18 +935,29 @@ function fakeCatalog(
       yield {name: e.name, entryType: e.entryType, parentEntry: e.parentEntry};
     }
   } as any);
+  // Writes after the first `stop.after` fail, as when a push stops partway.
+  const stop = {after: Infinity};
+  const stopped = () => !(stop.after-- > 0);
+  const INJECTED = {status: 500, message: 'injected'};
   const create = spyOn(P, 'createEntry')
                      .mockImplementation(async (...args: any[]) => {
                        const entry: Entry = args[4];
                        if (entries.has(entry.name)) return {status: 409};
+                       if (stopped()) return INJECTED;
                        entries.set(entry.name, structuredClone(entry));
                        return {status: 200, result: entry};
                      });
-  spyOn(P, 'updateEntry').mockImplementation(async (entry: Entry) => {
-    entries.set(entry.name, structuredClone(entry));
+  // An update leaves the aspects alone when its mask does not name them.
+  spyOn(P, 'updateEntry').mockImplementation(async (entry, mask) => {
+    if (stopped()) return INJECTED;
+    const aspects = mask?.includes('aspects') ?
+        entry.aspects :
+        entries.get(entry.name)?.aspects;
+    entries.set(entry.name, {...structuredClone(entry), aspects});
     return {status: 200, result: entry};
   });
   spyOn(P, 'deleteEntry').mockImplementation(async (...args: any[]) => {
+    if (stopped()) return INJECTED;
     for (const name of entries.keys()) {
       if (name.endsWith(`/entries/${args[3]}`)) entries.delete(name);
     }
@@ -972,8 +983,8 @@ function fakeCatalog(
   spyOn(P, 'lookupEntryLinks')
       .mockImplementation(async () => ({status: 200, result: []}));
   spyOn(P, 'createEntryLink')
-      .mockResolvedValue({status: 200, result: {}} as any);
-  return {entries, create, list, entryType, aspectType};
+      .mockImplementation(async () => stopped() ? INJECTED : {status: 200});
+  return {entries, create, list, entryType, aspectType, stop};
 }
 
 // The file copies the fake catalog holds, by file name.
@@ -986,6 +997,13 @@ function storedCopies(entries: Map<string, Entry>): Record<string, string> {
   }
   return out;
 }
+
+// Every file under the entry group directory, with its text.
+const localFiles = (): Record<string, string> => Object.fromEntries(
+    (fs.readdirSync(entryGroupDir(), {recursive: true}) as string[])
+        .map(f => path.join(entryGroupDir(), f))
+        .filter(f => fs.statSync(f).isFile())
+        .map(f => [f, fs.readFileSync(f, 'utf8')]));
 
 // Mocks the BigQuery leg's live checks and deploy, and returns the deploy's
 // mock.
@@ -1999,13 +2017,6 @@ describe('the push id on every file copy', () => {
     }
     return out;
   };
-  // Every file under the entry group directory, with its text.
-  const localFiles = (): Record<string, string> => Object.fromEntries(
-      (fs.readdirSync(entryGroupDir(), {recursive: true}) as string[])
-          .map(f => path.join(entryGroupDir(), f))
-          .filter(f => fs.statSync(f).isFile())
-          .map(f => [f, fs.readFileSync(f, 'utf8')]));
-
   // Makes every write of the copy of `fileName` fail, or of every copy when
   // `fileName` is absent.
   const failCopyWrites = (entries: Map<string, Entry>, fileName?: string) => {
@@ -2255,6 +2266,67 @@ describe('the push id on every file copy', () => {
                  'pull writes nothing. Push again, then pull.');
          expect(localFiles()).toEqual(before);
        });
+});
+
+
+describe('the push-state label on the model entry', () => {
+  for (const v2 of [true, false]) {
+    test(`with KC_V2_ASPECTS ${v2 ? 'on' : 'off'}, pull refuses after a ` +
+             'push that stopped at any write, until a push finishes',
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeRoundTripWorkspace();
+           const {entries, stop} = fakeCatalog();
+           expect(await push({deployment: false})).toBe(0);
+           // Rename the entity in the model file and the profile file.
+           for (const [f, text] of Object.entries(localFiles())) {
+             fs.writeFileSync(f, text.replaceAll('Customer', 'Client'));
+           }
+           const authored = localFiles();
+
+           // Each push stops one write later than the one before, until one
+           // finishes. Each pull in between writes and deletes nothing.
+           let code = 1;
+           let refused = '';
+           for (let n = 1; code && n < 50; n++) {
+             stop.after = n;
+             code = await push({deployment: false});
+             if (!code) break;
+             refused = await pull({forceRemove: true})
+                           .then(() => '', (e: Error) => e.message);
+             expect(refused)
+                 .toStartWith('the last push of model \'commerce\' did not ' +
+                              'finish: ');
+             expect(localFiles()).toEqual(authored);
+           }
+           expect(code).toBe(0);
+           // The push before the one that finished wrote every entry and
+           // stopped before its last write, so only the label tells.
+           expect(refused).toContain(
+               'its model entry\'s kcmd-push-state label still says writing, ' +
+               'so pull writes nothing. Push again, then pull.');
+           const anchor = entries.get(
+               'projects/test-project/locations/us/entryGroups/commerce_eg/' +
+               'entries/commerce')!;
+           expect(anchor.entrySource!.labels!['kcmd-push-state'])
+               .toBe('finished');
+
+           // A dry run and --validate-only write nothing, so they leave the
+           // label as it is.
+           stop.after = 0;
+           expect(await push({deployment: false, dryRun: true})).toBe(0);
+           expect(await push({deployment: false, validateOnly: true})).toBe(0);
+           stop.after = Infinity;
+           expect(await pull()).toBe(0);
+           expect(fs.readFileSync(path.join(entryGroupDir(), 'commerce.yaml'),
+                                  'utf8'))
+               .not.toContain('Customer');
+           expect([...entries.keys()].join()).not.toContain('Customer');
+           // A model an older kcmd pushed has no label.
+           delete anchor.entrySource!.labels!['kcmd-push-state'];
+           expect(await pull()).toBe(0);
+         });
+  }
 });
 
 
