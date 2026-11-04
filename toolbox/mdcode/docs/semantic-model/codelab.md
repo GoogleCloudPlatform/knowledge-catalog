@@ -866,7 +866,8 @@ BigQuery DDL in step 3:
 
 - **Bare table and graph names.** A Spanner property graph names tables inside
   one database, so there is no backticked `project.dataset.` qualifier — the DDL
-  names each table by the last part of its `source` (`Orders`).
+  names each table as its `source` does after `tables/` (`Orders`, or
+  `ops.stations` for a table in schema `ops`).
 - **No `MEASURE`.** Spanner Graph has no measures, so a profile that deploys to
   Spanner excludes every metric, as `operational` does with
   `metrics_exclude: "*"`. Author metrics as usual; a BigQuery target still emits

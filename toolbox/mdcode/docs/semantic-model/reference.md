@@ -476,14 +476,15 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, a table in the target database (`…/tables/Orders` → `Orders`, and `…/tables/ops.stations` → `ops.stations` for a table in schema `ops`). An entity with no primary key is keyed by its first unique key, and Spanner rejects the graph unless the table's primary key or a unique index covers that key. A `UNIQUE NULL_FILTERED` index leaves the rows whose key is NULL out of the graph. |
+| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, in the target database. `…/tables/Orders` gives `Orders`, and `…/tables/ops.stations` gives `ops.stations`, a table in schema `ops`. An entity with no primary key is keyed by its first unique key, and Spanner rejects the graph unless the table's primary key or a unique index covers that key. A `UNIQUE NULL_FILTERED` index leaves the rows whose key is NULL out of the graph. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 
 - **Bare table and graph names.** A Spanner property graph lives inside one
   database and names tables in that same database, so the generator emits bare
-  names — no `project.dataset.` qualifier on either the tables or the graph.
+  names — no `project.dataset.` qualifier on either the tables or the graph. A
+  table in a named schema keeps its schema, as in `ops.stations`.
 - **No `MEASURE`.** Metrics are dropped (warned per metric). The
   BigQuery-only rule that a metric must resolve to a single entity therefore does
   not apply to a Spanner target (see [Validation](#validation)).
