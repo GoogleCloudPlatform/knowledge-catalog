@@ -2134,8 +2134,8 @@ export async function localChecks(
   const plans: DeploymentPlan[] = [];
   for (const base of models) {
     for (const deployment of selectedByDoc.get(base.document) ?? []) {
-      const plan =
-          await deploymentPlan(base, profileDocs(base.document), deployment, warn);
+      const plan = await deploymentPlan(
+          base, profileDocs(base.document), deployment, load, warn);
       if ('errors' in plan) {
         return stop(
             ofProfile(base.document, deployment.profile, ...plan.errors));
@@ -2148,10 +2148,11 @@ export async function localChecks(
 
 // Builds and checks the model `deployment` deploys from `base`, reading its
 // profile file in `files` again with its actions, and generates its DDL
-// offline. Returns the plan, or the errors that stop the push.
+// offline. The profile applies with the source dialects in `load`. Returns
+// the plan, or the errors that stop the push.
 async function deploymentPlan(
     base: LoadedModel, files: ReturnType<ProfileFiles>,
-    deployment: ResolvedDeployment,
+    deployment: ResolvedDeployment, load: DialectLoad,
     warn: (w: string) => void): Promise<DeploymentPlan|{errors: string[]}> {
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
@@ -2173,7 +2174,7 @@ async function deploymentPlan(
       return fail(`[${file!.fileName}] ${err.message}`);
     }
     try {
-      applied = applyProfile(model, spec, {warnings});
+      applied = applyProfile(model, spec, {load, warnings});
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return fail(`${at}: ${err.message}`);
