@@ -1,6 +1,6 @@
-// API client for BigLake, covering the one call the source check needs:
-// reading an Iceberg REST catalog, whose region decides where Knowledge
-// Catalog keeps the entries of its tables.
+// API client for BigLake, covering the calls the source check needs: reading
+// an Iceberg REST catalog or a Hive catalog, whose region decides where
+// Knowledge Catalog keeps the entries of its tables.
 
 import * as api from './api';
 import * as context from './context';
@@ -27,14 +27,27 @@ export interface Catalog {
 
 
 export class BigLakeClient extends api.ApiClient {
+  private readonly hive: api.ApiClient;
+
   constructor(ctx: context.ApiContext) {
     super('https://biglake.googleapis.com', 'iceberg/v1/restcatalog/extensions',
           ctx);
+    this.hive =
+        new api.ApiClient('https://biglake.googleapis.com', 'hive/v1', ctx);
   }
 
-  // Fetches a catalog. A catalog that does not exist answers 404.
+  // Fetches a catalog. A catalog that does not exist answers 404, and a Hive
+  // catalog answers 400.
   async getCatalog(project: string, catalog: string):
       Promise<api.ApiResult<Catalog>> {
     return await this._get<Catalog>(`projects/${project}/catalogs/${catalog}`);
+  }
+
+  // Fetches a Hive catalog, which lists `replicas` as an Iceberg REST catalog
+  // does. Any other catalog answers 404.
+  async getHiveCatalog(project: string, catalog: string):
+      Promise<api.ApiResult<Catalog>> {
+    return await this.hive._get<Catalog>(
+        `projects/${project}/catalogs/${catalog}`);
   }
 }

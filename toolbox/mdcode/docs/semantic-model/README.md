@@ -269,6 +269,8 @@ name.
 A table in a **federated REST catalog**, such as an Apache Iceberg table exposed
 through BigLake, is written as its BigLake resource name,
 `biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>`.
+A table in a BigLake Hive catalog is written with `databases/<d>` in place of
+`namespaces/<n>`.
 Validation resolves each name the same way the deploy does (see
 [Validation](reference.md#validation)), and [profiles.md](profiles.md#sources)
 lists every accepted store.

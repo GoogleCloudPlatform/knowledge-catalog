@@ -11,13 +11,17 @@ import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import {Entity, ProfileSpec} from '../../../src/libts/semantic/ir';
 import {sourceEntryErrors, SourceReaders} from '../../../src/libts/semantic/source_entries';
-import {entryDenied, entryInvalid, FEDERATED_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
+import {entryDenied, entryInvalid, FEDERATED_CATALOG, HIVE_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
 
 const BIGQUERY = `bigquery.googleapis.com/projects/${P}/datasets/kcmd_demo/tables/orders`;
 const BIGLAKE = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-src-biglake-57138/namespaces/sales/tables/orders`;
 const BIGLAKE_US = 'biglake.googleapis.com/projects/looker-private-demo/catalogs/snowflake/namespaces/sales/tables/orders';
 const BIGLAKE_GCS_US = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-biglake-probe-6890/namespaces/sales/tables/orders`;
 const BIGLAKE_FAILOVER = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-biglake-failover/namespaces/sales/tables/orders`;
+const BIGLAKE_HIVE = 'biglake.googleapis.com/projects/sqlgen-testing/catalogs/sqlgen_jharshit_atscale_hive_us/databases/hive_db_us_d4/tables/jharshit_autogen_hive_us_t8';
+// An Iceberg REST catalog's table, written as a Hive catalog's.
+const BIGLAKE_US_AS_HIVE = BIGLAKE_US.replace('namespaces', 'databases');
+const GET_HIVE = 'getHiveCatalog sqlgen-testing sqlgen_jharshit_atscale_hive_us';
 const SPANNER = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-reg/databases/sales/tables/Orders`;
 const SPANNER_NAM3 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-multi/databases/sales/tables/Orders`;
 const SPANNER_NAM22 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-nam22/databases/sales/tables/Orders`;
@@ -85,6 +89,7 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
       replicas: [...MULTI_REGION_GCS_CATALOG.replicas].reverse(),
     }),
     [`getCatalog ${P} kcmd-biglake-failover`]: ok(FAILOVER_CATALOG),
+    [GET_HIVE]: ok(HIVE_CATALOG),
   };
   const answer = async (call: string, missing: ApiResult<any>) => {
     calls.push(call);
@@ -98,7 +103,10 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
           answer(`lookupEntry ${project} ${location} ${name}`, entryDenied(name)),
     },
     bigquery: {getTable: (p, d, t) => answer(`getTable ${p} ${d} ${t}`, NOT_FOUND)},
-    biglake: {getCatalog: (p, c) => answer(`getCatalog ${p} ${c}`, NOT_FOUND)},
+    biglake: {
+      getCatalog: (p, c) => answer(`getCatalog ${p} ${c}`, NOT_FOUND),
+      getHiveCatalog: (p, c) => answer(`getHiveCatalog ${p} ${c}`, NOT_FOUND),
+    },
     spanner: {
       getInstance: (p, i) => answer(`getInstance ${p} ${i}`, NOT_FOUND),
       getInstanceConfig: c => answer(`getInstanceConfig ${c}`, NOT_FOUND),
@@ -170,6 +178,7 @@ describe('sourceEntryErrors', () => {
      BIGLAKE_FAILOVER, lookup('biglake', 'us-central1', BIGLAKE_FAILOVER),
      [`getCatalog ${P} kcmd-biglake-failover`,
       lookup('biglake', 'us-east1', BIGLAKE_FAILOVER)]],
+    ['Hive BigLake', BIGLAKE_HIVE, lookup('biglake', 'us', BIGLAKE_HIVE), [GET_HIVE]],
     // A Spanner entry sits in its config's default leader region. A regional
     // config's name gives it, so the config is not read; the live config
     // agrees.
@@ -209,6 +218,10 @@ describe('sourceEntryErrors', () => {
      missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`)],
     ['a missing catalog', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, NOT_FOUND,
      missing(BIGLAKE, 'a catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`)],
+    // The Hive API answers 404 for an Iceberg REST catalog.
+    ['an Iceberg REST catalog written as a Hive one', BIGLAKE_US_AS_HIVE,
+     'getHiveCatalog looker-private-demo snowflake', NOT_FOUND,
+     missing(BIGLAKE_US_AS_HIVE, 'a Hive catalog', `reading the region of Hive catalog 'snowflake'`)],
     ['a missing instance', SPANNER, `getInstance ${P} kcmd-src-reg`, NOT_FOUND,
      missing(SPANNER, 'an instance', `reading instance 'kcmd-src-reg'`)],
     // Spanner answers 403 for an instance or config the caller may not read.
@@ -222,6 +235,9 @@ describe('sourceEntryErrors', () => {
     ['an instance config that fails', SPANNER_NAM3,
      `getInstanceConfig ${NAM3_INSTANCE.config}`, {status: 503, message: 'unavailable'},
      couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} failed (HTTP 503: unavailable).`)],
+    ['a Hive catalog read that fails', BIGLAKE_HIVE, GET_HIVE, {status: 503, message: 'unavailable'},
+     couldNotCheck(BIGLAKE_HIVE, "reading the region of Hive catalog " +
+         "'sqlgen_jharshit_atscale_hive_us' failed (HTTP 503: unavailable).")],
     ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,
      new Error('socket hang up'),
      couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],
@@ -285,6 +301,15 @@ describe('sourceEntryErrors', () => {
       `getCatalog ${P} kcmd-biglake-probe-6890`,
       ...entries,
     ].sort());
+  });
+
+  // A wrong form of a catalog does not fail its right form.
+  test('a catalog written in both forms is read through both APIs', async () => {
+    const asIceberg = BIGLAKE_HIVE.replace('databases', 'namespaces');
+    const {readers} = fakeReaders([lookup('biglake', 'us', BIGLAKE_HIVE)]);
+    const m = model([entity('orders', asIceberg)], [profile('hive', [['orders', BIGLAKE_HIVE]])]);
+    expect(await sourceEntryErrors(m, readers)).toEqual([missing(asIceberg, 'a catalog',
+        "reading the region of catalog 'sqlgen_jharshit_atscale_hive_us'")]);
   });
 
   test('every entity of a failing source is reported, in model order', async () => {

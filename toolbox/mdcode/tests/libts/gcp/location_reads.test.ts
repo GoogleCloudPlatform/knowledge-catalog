@@ -1,8 +1,9 @@
 // Behavior spec for the reads the source check uses to find where Knowledge
 // Catalog keeps a table's entry: a BigQuery table, a Spanner instance and its
-// instance config, and a BigLake catalog. Spies on the low-level _get so it
-// pins the path and parameters each read requests without a live service. The
-// responses are live copies (see location_responses.ts).
+// instance config, and a BigLake catalog. Spies on the low-level _get, or on
+// fetch for the Hive read, so it pins the path and parameters each read
+// requests without a live service. The responses are live copies (see
+// location_responses.ts).
 
 import {describe, expect, spyOn, test} from 'bun:test';
 
@@ -12,7 +13,7 @@ import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 
-import {FEDERATED_CATALOG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, US_TABLE} from './location_responses';
+import {FEDERATED_CATALOG, HIVE_CATALOG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, US_TABLE} from './location_responses';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -64,4 +65,15 @@ describe('location reads', () => {
            get.mockRestore();
          });
   }
+
+  test('a Hive catalog is read through the Hive API', async () => {
+    const fetch = spyOn(globalThis, 'fetch').mockImplementation(
+        (async () => Response.json(HIVE_CATALOG)) as any);
+    expect(await biglake.getHiveCatalog('sqlgen-testing', 'hive_us'))
+        .toEqual({status: 200, result: HIVE_CATALOG});
+    expect(fetch.mock.calls.map(c => c[0])).toEqual([
+      'https://biglake.googleapis.com/hive/v1/projects/sqlgen-testing/catalogs/hive_us',
+    ]);
+    fetch.mockRestore();
+  });
 });

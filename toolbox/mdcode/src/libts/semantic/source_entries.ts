@@ -15,6 +15,8 @@
 //   table was created, so after a failover an older table's entry can sit in
 //   a former primary's region, now a secondary's. The entry is looked up in
 //   each replica's region, the primary's first, until one finds it.
+//   getHiveCatalog reads a Hive catalog. Its tables are written with
+//   `databases/`.
 // - Spanner: the default leader region of the instance's config, which
 //   getInstance reads the config's name from. A regional config is named for
 //   its region, `regional-us-central1` for us-central1, so it is not read;
@@ -54,7 +56,7 @@ import {DEFAULT_PROFILE} from './resolve_profiles';
 export interface SourceReaders {
   catalog: EntryLookup;
   bigquery: Pick<BigQueryClient, 'getTable'>;
-  biglake: Pick<BigLakeClient, 'getCatalog'>;
+  biglake: Pick<BigLakeClient, 'getCatalog'|'getHiveCatalog'>;
   spanner: Pick<SpannerClient, 'getInstance'|'getInstanceConfig'>;
 }
 
@@ -215,14 +217,17 @@ async function locationsOf(
           located(res.result.location, what, 'no location') :
           res;
     }
-    case 'biglake':
-      return once(`biglake/${project}/${table.catalog}`, async () => {
-        const what = `reading the region of catalog '${table.catalog}'`;
+    case 'biglake': {
+      const kind = table.hive ? 'Hive catalog' : 'catalog';
+      return once(`biglake/${project}/${table.catalog}/${kind}`, async () => {
+        const what = `reading the region of ${kind} '${table.catalog}'`;
         const res = await readLocation(
-            what, 'a catalog',
-            () => readers.biglake.getCatalog(project, table.catalog));
+            what, `a ${kind}`, () => table.hive ?
+                readers.biglake.getHiveCatalog(project, table.catalog) :
+                readers.biglake.getCatalog(project, table.catalog));
         return 'result' in res ? replicaRegions(res.result, what) : res;
       });
+    }
     case 'spanner':
       return once(`spanner/${project}/${table.instance}`, async () => {
         const what = `reading instance '${table.instance}'`;

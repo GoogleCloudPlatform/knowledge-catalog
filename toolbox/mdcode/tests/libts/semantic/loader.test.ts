@@ -3209,9 +3209,11 @@ describe('strict entity sources', () => {
   const ALLOYDB = 'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/cl/databases/db/schemas/public/tables/orders';
   const MYSQL = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/tables/orders';
   const POSTGRES = 'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/inst/databases/db/schemas/public/tables/orders';
+  const HIVE = 'biglake.googleapis.com/projects/acme/catalogs/cat/databases/db/tables/orders';
   const cases: Array<[string, string, string]> = [
     ['BigQuery', BQ, 'acme.raw.orders'],
     ['BigLake', 'biglake.googleapis.com/projects/acme/catalogs/cat/namespaces/ns/tables/orders', 'acme.cat.ns.orders'],
+    ['BigLake Hive catalog', HIVE, 'acme.cat.db.orders'],
     ['Spanner', SPANNER, `//${SPANNER}`],
     ['AlloyDB', ALLOYDB, `//${ALLOYDB}`],
     ['Cloud SQL, MySQL shape (no schema)', MYSQL, `//${MYSQL}`],
@@ -3238,6 +3240,7 @@ describe('strict entity sources', () => {
       [`//${BQ}`, 'uri', BQ],
       [`//${SPANNER}`, 'uri', SPANNER],
       [`//${MYSQL}`, 'uri', MYSQL],
+      [`//${HIVE}`, 'uri', HIVE],
       ['bigquery:acme.raw.orders', 'fqn', BQ],
       ['bigquery:acme.raw."orders"', 'fqn', BQ],
       ['bigquery:`acme-prod`.raw.orders', 'fqn', 'bigquery.googleapis.com/projects/acme-prod/datasets/raw/tables/orders'],
@@ -3269,6 +3272,7 @@ describe('strict entity sources', () => {
     for (const [group, name] of [
       ['@bigquery', 'bigquery.googleapis.com/projects/acme/datasets/raw/tables/orders'],
       ['@spanner', 'spanner.googleapis.com/projects/acme/instances/inst/databases/db/tables/Orders'],
+      ['@biglake', HIVE],
     ]) {
       const source = `projects/acme/locations/us/entryGroups/${group}/entries/${name}`;
       expect(databaseOf(source)).toBeUndefined();
@@ -3570,6 +3574,22 @@ describe('strict entity sources', () => {
       expect(() => loadSource(bare)).toThrow(`source '${bare}' is not a valid table reference; the quoted name ` +
         `'${name}' is one name, dot included. Expected a GCP resource name`);
     }
+  });
+
+  // The general error lists every form, with the catalog each BigLake form is for.
+  test('a BigLake name with no namespace or database lists every form', () => {
+    const bad = 'biglake.googleapis.com/projects/acme/catalogs/cat/tables/orders';
+    expect(() => loadSource(bad)).toThrow(
+      `Semantic model load error: dataset 'orders': source '${bad}' is not a valid table ` +
+      "reference. Expected a GCP resource name ('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', " +
+      "'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', " +
+      "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', " +
+      "'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), " +
+      "'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' " +
+      "(PostgreSQL, SQL Server), 'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>' " +
+      "(Iceberg REST catalog), or 'biglake.googleapis.com/projects/<p>/catalogs/<c>/databases/<db>/tables/<t>' " +
+      "(Hive catalog)), or, for a table outside Google Cloud, the entry name of its Knowledge Catalog entry " +
+      "('projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>').");
   });
 
   test('a doubled quote in a quoted part of a bare name is one literal quote', () => {
