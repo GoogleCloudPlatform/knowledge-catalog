@@ -225,7 +225,7 @@ describe('bare table mapping', () => {
     ]) {
       const {ddl} = generateSpannerPropertyGraph(withSource(
           `//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${table}`));
-      expect(ddl).toContain(`${want} AS orders`);
+      expect(ddl).toContain(` ${want} AS orders`);
       expect(ddl).not.toContain('googleapis');
     }
   });
