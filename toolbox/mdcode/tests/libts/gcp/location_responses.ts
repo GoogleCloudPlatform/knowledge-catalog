@@ -111,6 +111,22 @@ export const HIVE_CATALOG = {
 
 export const NOT_FOUND = {status: 404, message: 'Not found'};
 
+// The Iceberg REST catalog API's answer for the Hive catalog `id` (live,
+// 2026-11-04).
+export function notIceberg(id: string) {
+  return {status: 400, message: `Catalog ${id} is not an Iceberg Catalog.`};
+}
+
+// The Hive API's answer for a catalog `id` that is not lower-case letters,
+// digits and underscores, such as one with a hyphen (live, 2026-11-04).
+export function invalidHiveId(id: string) {
+  return {
+    status: 400,
+    message: `Invalid catalog name: '${id}'. Must be a match of regex ` +
+        `'^[a-z0-9][a-z0-9_]{0,255}$'`,
+  };
+}
+
 // BigQuery's tables.get answer for the table ID `orders!x`, which the loader
 // accepts and BigQuery rejects (live, 2026-11-04; the message is the body's
 // `error.message`).

@@ -191,6 +191,15 @@ const CONFIG_REFUSED_HINT = ' Reading it needs the permission ' +
     'spanner.instanceConfigs.get on the project, which roles/spanner.viewer ' +
     'includes and the Spanner database roles do not.';
 
+// Said when a BigLake catalog read answers a status a retry will not change,
+// since the source may name a table in the other kind of catalog. Live, the
+// Iceberg REST catalog API answers 400 for a Hive catalog, and the Hive API
+// answers 404 for an Iceberg REST catalog, or 400 for an id it refuses.
+const HIVE_FORM_HINT =
+    ` A table in a Hive catalog is written with 'databases/<database>'.`;
+const ICEBERG_FORM_HINT = ` A table in an Iceberg REST catalog is written ` +
+    `with 'namespaces/<namespace>'.`;
+
 // The locations where `table`'s catalog entry may sit, as Dataplex writes
 // them, in lower case, in the order to look in: one for a BigQuery, Spanner
 // or AlloyDB table, and one per replica for a BigLake table. `cache` keeps
@@ -224,7 +233,9 @@ async function locationsOf(
         const res = await readLocation(
             what, `a ${kind}`, () => table.hive ?
                 readers.biglake.getHiveCatalog(project, table.catalog) :
-                readers.biglake.getCatalog(project, table.catalog));
+                readers.biglake.getCatalog(project, table.catalog),
+            table.hive ? {400: ICEBERG_FORM_HINT, 404: ICEBERG_FORM_HINT} :
+                         {400: HIVE_FORM_HINT});
         return 'result' in res ? replicaRegions(res.result, what) : res;
       });
     }
@@ -248,7 +259,7 @@ async function locationsOf(
         const config = await readLocation(
             configWhat, 'an instance config',
             () => readers.spanner.getInstanceConfig(configName),
-            CONFIG_REFUSED_HINT);
+            {403: CONFIG_REFUSED_HINT});
         // A config marks exactly one replica as its default leader.
         return 'result' in config ?
             located(
@@ -264,19 +275,20 @@ async function locationsOf(
 // names `kind`, such as `a table`, that does not exist (the services answer
 // 404 for a missing table, dataset, catalog or instance; live, 2026-10-27 and
 // 2026-11-03). A 403 says the read was refused, followed by the service's
-// message and `refusedHint`.
+// message. `hints` gives a sentence to add for a status.
 async function readLocation<T>(
     what: string, kind: string, call: () => Promise<ApiResult<T>>,
-    refusedHint = ''): Promise<Checked<T>> {
+    hints: Record<number, string> = {}): Promise<Checked<T>> {
   const res = await read(what, call);
   if ('result' in res) return res;
-  if ('error' in res) return failedProblem(res);
+  const hint = hints[res.status ?? 0] ?? '';
+  if ('error' in res) return failedProblem(res, hint);
   return {
     problem: res.status === 404 ?
         `names ${kind} that does not exist: ${what} found nothing (HTTP ` +
-            `404). Fix the source, or pass --skip-source-check.` :
+            `404).${hint} Fix the source, or pass --skip-source-check.` :
         `could not be checked: ${what} was refused (HTTP 403).${
-            res.message ? ` ${res.message}` : ''}${refusedHint} The ` +
+            res.message ? ` ${res.message}` : ''}${hint} The ` +
             `source's catalog entry was not looked up. Fix the access or ` +
             `the source, or pass --skip-source-check.`,
   };
@@ -315,14 +327,15 @@ function located(location: string|undefined, what: string, missing: string):
 
 // The problem for the failed read `res`. A thrown call, a 429 or a 5xx may
 // pass on retry; any other status, such as BigQuery's 400 for an invalid
-// table ID, never will, so the source must change.
-function failedProblem(res: {error: string; status?: number}):
+// table ID, never will, so the source must change, and `hint` follows the
+// service's answer.
+function failedProblem(res: {error: string; status?: number}, hint = ''):
     {problem: string} {
   return res.status === undefined || isTransientStatus(res.status) ?
       transientProblem(res.error) :
       {
-        problem: `could not be checked: ${res.error} Fix the source, or ` +
-            `pass --skip-source-check.`,
+        problem: `could not be checked: ${res.error}${hint} Fix the source, ` +
+            `or pass --skip-source-check.`,
       };
 }
 

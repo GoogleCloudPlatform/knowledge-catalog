@@ -11,7 +11,7 @@ import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import {Entity, ProfileSpec} from '../../../src/libts/semantic/ir';
 import {sourceEntryErrors, SourceReaders} from '../../../src/libts/semantic/source_entries';
-import {entryDenied, entryInvalid, FEDERATED_CATALOG, HIVE_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
+import {entryDenied, entryInvalid, FEDERATED_CATALOG, HIVE_CATALOG, INVALID_TABLE_ID, invalidHiveId, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, notIceberg, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
 
 const BIGQUERY = `bigquery.googleapis.com/projects/${P}/datasets/kcmd_demo/tables/orders`;
 const BIGLAKE = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-src-biglake-57138/namespaces/sales/tables/orders`;
@@ -299,14 +299,43 @@ describe('sourceEntryErrors', () => {
     ].sort());
   });
 
-  // The Hive API answers 404 for an Iceberg REST catalog. That wrong form
-  // does not fail the catalog's right form.
-  test('a catalog written in both forms is read through both APIs', async () => {
-    const {readers} = fakeReaders([lookup('biglake', 'us', BIGLAKE_US)]);
-    const m = model([entity('orders', BIGLAKE_US_AS_HIVE)], [profile('iceberg', [['orders', BIGLAKE_US]])]);
-    expect(await sourceEntryErrors(m, readers)).toEqual([missing(BIGLAKE_US_AS_HIVE, 'a Hive catalog',
-        "reading the region of Hive catalog 'snowflake'")]);
-  });
+  const HIVE_ID = 'sqlgen_jharshit_atscale_hive_us';
+  const HIVE_FORM = " A table in a Hive catalog is written with 'databases/<database>'.";
+  const ICEBERG_FORM = " A table in an Iceberg REST catalog is written with 'namespaces/<namespace>'.";
+  // A catalog read that fails for good says how a table in the other kind of
+  // catalog is written. Written that way, the source passes, even beside its
+  // wrong form in one model, since each form of a catalog is read apart.
+  // [label, source, the read that fails, its answer, the problem, the source
+  //  as the message says to write it]
+  const OTHER_FORMS: Array<[string, string, string, ApiResult<any>, string, string]> = [
+    ['a Hive catalog written with namespaces/', BIGLAKE_HIVE.replace('databases', 'namespaces'),
+     `getCatalog sqlgen-testing ${HIVE_ID}`, notIceberg(HIVE_ID),
+     `could not be checked: reading the region of catalog '${HIVE_ID}' failed (HTTP 400: ` +
+         `${notIceberg(HIVE_ID).message}).${HIVE_FORM} Fix the source, or pass --skip-source-check.`,
+     BIGLAKE_HIVE],
+    ['an Iceberg REST catalog written with databases/', BIGLAKE_US_AS_HIVE,
+     'getHiveCatalog looker-private-demo snowflake', NOT_FOUND,
+     "names a Hive catalog that does not exist: reading the region of Hive catalog 'snowflake' " +
+         `found nothing (HTTP 404).${ICEBERG_FORM} Fix the source, or pass --skip-source-check.`,
+     BIGLAKE_US],
+    // The Hive API refuses the id before it looks the catalog up.
+    ['an Iceberg REST catalog whose id has a hyphen, written with databases/',
+     BIGLAKE.replace('namespaces', 'databases'),
+     `getHiveCatalog ${P} kcmd-src-biglake-57138`, invalidHiveId('kcmd-src-biglake-57138'),
+     "could not be checked: reading the region of Hive catalog 'kcmd-src-biglake-57138' failed " +
+         `(HTTP 400: ${invalidHiveId('kcmd-src-biglake-57138').message}).${ICEBERG_FORM} Fix ` +
+         'the source, or pass --skip-source-check.',
+     BIGLAKE],
+  ];
+  for (const [label, source, call, answer, problem, written] of OTHER_FORMS) {
+    test(`${label}: the message says how to write it, and that passes`, async () => {
+      const entries = [lookup('biglake', 'us', BIGLAKE_HIVE), lookup('biglake', 'us', BIGLAKE_US),
+        lookup('biglake', 'us-central1', BIGLAKE)];
+      const {readers} = fakeReaders(entries, {[call]: answer});
+      const m = model([entity('orders', source)], [profile('fixed', [['orders', written]])]);
+      expect(await sourceEntryErrors(m, readers)).toEqual([`${at(source)} ${problem}`]);
+    });
+  }
 
   test('every entity of a failing source is reported, in model order', async () => {
     const {readers} = fakeReaders([lookup('bigquery', 'us', BIGQUERY)]);
