@@ -117,12 +117,15 @@ export const NOT_ICEBERG = {
   message: 'Catalog sqlgen_jharshit_atscale_hive_us is not an Iceberg Catalog.',
 };
 
-// The Hive API's answer for an id with a hyphen (live, 2026-11-04).
-export const INVALID_HIVE_ID = {
-  status: 400,
-  message: "Invalid catalog name: 'kcmd-src-biglake-57138'. Must be a match " +
-      "of regex '^[a-z0-9][a-z0-9_]{0,255}$'",
-};
+// The Hive API's answer for an id with a hyphen or a capital letter (live,
+// 2026-11-04).
+export function invalidHiveId(id: string) {
+  return {
+    status: 400,
+    message: `Invalid catalog name: '${id}'. Must be a match of regex ` +
+        `'^[a-z0-9][a-z0-9_]{0,255}$'`,
+  };
+}
 
 // BigQuery's tables.get answer for the table ID `orders!x`, which the loader
 // accepts and BigQuery rejects (live, 2026-11-04; the message is the body's

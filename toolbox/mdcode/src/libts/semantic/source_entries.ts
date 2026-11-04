@@ -103,8 +103,7 @@ export async function sourceEntryErrors(
     for (const b of p.entities) use(b.name, p.name, b.source);
   }
 
-  const catalogAndInstanceReads =
-      new Map<string, Promise<Checked<string[]>>>();
+  const catalogAndInstanceReads = new Map<string, Promise<unknown>>();
   const locations = new Map<string, Promise<Checked<string[]>>>();
   const problems = new Map<string, Promise<string|undefined>>();
   for (const {table} of uses) {
@@ -191,10 +190,10 @@ const CONFIG_REFUSED_HINT = ' Reading it needs the permission ' +
     'spanner.instanceConfigs.get on the project, which roles/spanner.viewer ' +
     'includes and the Spanner database roles do not.';
 
-// Said when a BigLake catalog read answers a status a retry will not change,
-// since the source may name a table in the other kind of catalog. Live, the
-// Iceberg REST catalog API answers 400 for a Hive catalog, and the Hive API
-// answers 404 for an Iceberg REST catalog, or 400 for an id it refuses.
+// Said when a BigLake catalog read fails in a way a retry cannot fix and the
+// other kind of catalog's API finds the catalog. The status alone does not
+// tell: live, the Hive API answers 400 for an Iceberg REST catalog id with a
+// hyphen and for a Hive catalog id in capitals.
 const HIVE_FORM_HINT =
     ` A table in a Hive catalog is written with 'databases/<database>'.`;
 const ICEBERG_FORM_HINT = ` A table in an Iceberg REST catalog is written ` +
@@ -203,15 +202,14 @@ const ICEBERG_FORM_HINT = ` A table in an Iceberg REST catalog is written ` +
 // The locations where `table`'s catalog entry may sit, as Dataplex writes
 // them, in lower case, in the order to look in: one for a BigQuery, Spanner
 // or AlloyDB table, and one per replica for a BigLake table. `cache` keeps
-// each catalog and instance's read, so each is read once; each table is read
-// once already.
+// each instance's read and each catalog's read through each API, so each is
+// made once; each table is read once already.
 async function locationsOf(
     table: SourceTable, readers: SourceReaders,
-    cache: Map<string, Promise<Checked<string[]>>>):
-    Promise<Checked<string[]>> {
-  const once = (key: string, readIt: () => Promise<Checked<string[]>>) => {
+    cache: Map<string, Promise<unknown>>): Promise<Checked<string[]>> {
+  const once = <T>(key: string, readIt: () => Promise<T>) => {
     if (!cache.has(key)) cache.set(key, readIt());
-    return cache.get(key)!;
+    return cache.get(key) as Promise<T>;
   };
   const {project} = table;
   switch (table.system) {
@@ -227,17 +225,21 @@ async function locationsOf(
           res;
     }
     case 'biglake': {
+      const readCatalog = (hive: boolean) => once(
+          `biglake/${project}/${table.catalog}/${hive}`,
+          () => hive ? readers.biglake.getHiveCatalog(project, table.catalog) :
+                       readers.biglake.getCatalog(project, table.catalog));
       const kind = table.hive ? 'Hive catalog' : 'catalog';
-      return once(`biglake/${project}/${table.catalog}/${kind}`, async () => {
-        const what = `reading the region of ${kind} '${table.catalog}'`;
-        const res = await readLocation(
-            what, `a ${kind}`, () => table.hive ?
-                readers.biglake.getHiveCatalog(project, table.catalog) :
-                readers.biglake.getCatalog(project, table.catalog),
-            table.hive ? {400: ICEBERG_FORM_HINT, 404: ICEBERG_FORM_HINT} :
-                         {400: HIVE_FORM_HINT});
-        return 'result' in res ? replicaRegions(res.result, what) : res;
-      });
+      const what = `reading the region of ${kind} '${table.catalog}'`;
+      // When the read fails and the other API finds the catalog, the source
+      // names a table in the other kind of catalog.
+      const otherForm = async () =>
+          'result' in await read(what, () => readCatalog(!table.hive)) ?
+          (table.hive ? ICEBERG_FORM_HINT : HIVE_FORM_HINT) :
+          '';
+      const res = await readLocation(
+          what, `a ${kind}`, () => readCatalog(table.hive), otherForm);
+      return 'result' in res ? replicaRegions(res.result, what) : res;
     }
     case 'spanner':
       return once(`spanner/${project}/${table.instance}`, async () => {
@@ -259,7 +261,7 @@ async function locationsOf(
         const config = await readLocation(
             configWhat, 'an instance config',
             () => readers.spanner.getInstanceConfig(configName),
-            {403: CONFIG_REFUSED_HINT});
+            status => status === 403 ? CONFIG_REFUSED_HINT : '');
         // A config marks exactly one replica as its default leader.
         return 'result' in config ?
             located(
@@ -275,13 +277,18 @@ async function locationsOf(
 // names `kind`, such as `a table`, that does not exist (the services answer
 // 404 for a missing table, dataset, catalog or instance; live, 2026-10-27 and
 // 2026-11-03). A 403 says the read was refused, followed by the service's
-// message. `hints` gives a sentence to add for a status.
+// message. When a retry cannot pass, `hintFor` gives a sentence to add for the
+// status.
 async function readLocation<T>(
     what: string, kind: string, call: () => Promise<ApiResult<T>>,
-    hints: Record<number, string> = {}): Promise<Checked<T>> {
+    hintFor: (status: number) => string|Promise<string> = () => ''):
+    Promise<Checked<T>> {
   const res = await read(what, call);
   if ('result' in res) return res;
-  const hint = hints[res.status ?? 0] ?? '';
+  const {status} = res;
+  const hint = status === undefined || isTransientStatus(status) ?
+      '' :
+      await hintFor(status);
   if ('error' in res) return failedProblem(res, hint);
   return {
     problem: res.status === 404 ?
