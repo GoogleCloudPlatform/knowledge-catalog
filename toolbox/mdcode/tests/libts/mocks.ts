@@ -43,6 +43,8 @@ export function passSourceCheck(): void {
       .mockResolvedValue(ok(REGIONAL_INSTANCE));
   spyOn(BigLakeClient.prototype, 'getCatalog')
       .mockResolvedValue(ok(REGIONAL_CATALOG));
+  spyOn(BigLakeClient.prototype, 'getHiveCatalog')
+      .mockResolvedValue(ok(REGIONAL_CATALOG));
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockResolvedValue(ok({}));
 }
 
