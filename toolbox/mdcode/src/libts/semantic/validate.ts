@@ -177,7 +177,7 @@ function nameAndDescriptionErrors(
 // profile it names in `model.profiles` or the model file's own bindings, and
 // returns one message per problem, naming every deployment it applies to.
 export function validateDeployments(
-    model: SemanticModel, document: string): string[] {
+    model: SemanticModel, document: string, load: DialectLoad = {}): string[] {
   // The deployments each problem applies to, keyed by the text that follows
   // their names in the message.
   const problems = new Map<string, string[]>();
@@ -200,7 +200,7 @@ export function validateDeployments(
     // The model the deployment's bindings give, less what they leave
     // unavailable. The completeness check reports a named profile that does
     // not apply, and the fields its metrics read.
-    const bound = named ? profiled(model, named) : pruneUnavailable(
+    const bound = named ? profiled(model, named, load) : pruneUnavailable(
         model, DEFAULT_PROFILE, alloyDb ? 'ALLOYDB' : sourcesDialect(model));
     if (!bound) continue;
     const available = bound.model.metrics ?? [];
@@ -266,10 +266,11 @@ export function validateDeployments(
 
 // `model` with `profile` applied and what it leaves unavailable pruned, or
 // undefined when the profile does not apply.
-function profiled(model: SemanticModel, profile: ProfileSpec):
+function profiled(
+    model: SemanticModel, profile: ProfileSpec, load: DialectLoad):
     ReturnType<typeof pruneUnavailable>|undefined {
   try {
-    return pruneUnavailable(applyProfile(model, profile), profile.name);
+    return pruneUnavailable(applyProfile(model, profile, {load}), profile.name);
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
     return undefined;
@@ -2071,7 +2072,7 @@ export async function localChecks(
               ...model,
               deployments: model.deployments!.filter(
                   d => (d.profile ?? DEFAULT_PROFILE) === profile),
-            }, document))));
+            }, document, load))));
     const doc = docs.find(d => d.name === document)!;
     const declared = declaredBy(doc);
     const named = declared.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);

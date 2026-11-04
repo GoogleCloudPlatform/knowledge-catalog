@@ -1,8 +1,9 @@
 // Tests that push reads each Spanner source database's dialect, holds a field
-// on a PostgreSQL-dialect table to POSTGRES or ANSI_SQL text, refuses a graph
-// deployment on such a database before any write, and holds the model file's
-// own Spanner tables to one database (src/tool/commands.ts,
-// src/libts/semantic/source_dialect.ts).
+// on a PostgreSQL-dialect table to POSTGRES or ANSI_SQL text, judges a
+// deployment's profile in that dialect, refuses a graph deployment on such a
+// database before any write, and holds the model file's own Spanner tables to
+// one database (src/tool/commands.ts, src/libts/semantic/source_dialect.ts,
+// src/libts/semantic/validate.ts).
 
 import {expect} from 'bun:test';
 
@@ -28,6 +29,10 @@ const REFUSAL =
     'PostgreSQL dialect, and Spanner creates no property graph in a ' +
     'PostgreSQL-dialect database. Remove the deployment; push still ' +
     'publishes the model to Knowledge Catalog.';
+const EXCLUDED =
+    "[commerce.profile.pg.yaml] profile 'pg': metric 'secret_sum' reaches " +
+    "'Customer.secret', which this profile excludes; add 'secret_sum' to " +
+    "'metrics_exclude'";
 
 scenarios('a Spanner database', [
   {
@@ -64,6 +69,23 @@ scenarios('a Spanner database', [
     code: 1, nothingWritten: true, events: [], errors: [err(REFUSAL)],
     report: {code: 1, rejects: {'no profiles': [REFUSAL]}},
     then: [{deployments: [], code: 0, events: ['preflight', 'apply']}],
+  },
+  {
+    name: "with the PostgreSQL dialect judges a Spanner deployment's profile in that dialect, so a POSTGRES metric on a field the profile excludes gets only the profile's error",
+    entities: [{
+      ...ON_SPANNER,
+      fields: [...ON_SPANNER.fields, {name: 'secret', expression: 'c_secret'}],
+    }],
+    metrics: [{
+      name: 'secret_sum',
+      expression:
+          {dialects: [{dialect: 'POSTGRES', expression: 'SUM(Customer.secret)'}]},
+    }],
+    deployments: [{name: 'd', target: spannerGraph('g'), profile: 'pg'}],
+    profiles: {pg: {entities: {Customer: {...ON_SPANNER, fields_exclude: ['secret']}}}},
+    services: POSTGRESQL,
+    code: 1, nothingWritten: true, errors: [err(EXCLUDED)],
+    report: {code: 1, rejects: {pg: [EXCLUDED]}},
   },
   {
     name: "holds every table the model file binds in Spanner, on every push and in kcmd profiles",
