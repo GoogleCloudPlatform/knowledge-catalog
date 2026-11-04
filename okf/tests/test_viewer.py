@@ -187,3 +187,36 @@ def test_v02_signals_appear_in_graph_payload(tmp_path: Path):
 def test_raises_when_bundle_missing(tmp_path: Path):
     with pytest.raises(FileNotFoundError):
         generate_visualization(tmp_path / "nope", tmp_path / "viz.html")
+
+def test_percent_encoded_links_produce_edges(tmp_path: Path):
+    bundle = tmp_path / "bundle"
+    _write(
+        bundle / "metrics" / "gross margin.md",
+        """
+        ---
+        type: Reference
+        title: Gross Margin
+        description: Gross margin metric.
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        ---
+        The gross margin metric.
+        """,
+    )
+    # links using %20 (percent-encoded space) — the bug case
+    _write(
+        bundle / "tables" / "orders.md",
+        """
+        ---
+        type: BigQuery Table
+        title: Orders
+        description: Orders table.
+        generated: {by: 'reference_agent/gemini', at: '2026-05-28T00:00:00+00:00'}
+        ---
+        See [gross margin](../metrics/gross%20margin.md).
+        """,
+    )
+    out = tmp_path / "viz.html"
+    generate_visualization(bundle, out)
+    data = _extract_bundle_data(out.read_text(encoding="utf-8"))
+    pairs = {(e["data"]["source"], e["data"]["target"]) for e in data["edges"]}
+    assert ("tables/orders", "metrics/gross margin") in pairs
