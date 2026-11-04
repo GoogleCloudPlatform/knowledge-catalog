@@ -41,10 +41,11 @@ export interface LoadOptions {
   allowLegacyBareSource?: boolean;
   // The dialect of each Cloud SQL table written as its resource name and each
   // third-party table, keyed as dialectLookupKey gives, as sourceDialects read
-  // them from the tables' Knowledge Catalog entries. A command looks them up
-  // before it loads. Without this map such a source implies no dialect: the
-  // source names a table, not its engine, so the model implies none and every
-  // expression text counts.
+  // them from the tables' Knowledge Catalog entries, and of each Spanner
+  // database, keyed as spannerDatabaseOf gives. A command looks them up
+  // before it loads. Without this map a Cloud SQL or third-party source implies
+  // no dialect: the source names a table, not its engine, so the model implies
+  // none and every expression text counts. A Spanner source implies SPANNER.
   sourceDialects?: ReadonlyMap<string, string>;
   // Turns `parseSource`'s rejection of an unaccepted table source form into a
   // warning so a caller can load a document whose sources have not all been
@@ -3640,6 +3641,17 @@ export function dialectLookupKey(source: string): string|undefined {
       thirdPartyEntryOf(source)?.name;
 }
 
+// The resource name of the database a Spanner table `source` is in, such as
+// `spanner.googleapis.com/projects/p/instances/i/databases/d`, which is the
+// key LoadOptions.sourceDialects holds its dialect under. Undefined for any
+// other source, and for a name with quotes.
+export function spannerDatabaseOf(source: string): string|undefined {
+  const uri = asResourceUri(source.trim());
+  return !QUOTE.test(uri) && SPANNER_TABLE_URI.test(uri) ?
+      uri.slice(2, uri.lastIndexOf('/tables/')) :
+      undefined;
+}
+
 // Why `source` is not accepted when it is a Knowledge Catalog entry name in a
 // system entry group, one whose id starts with `@`, such as `@bigquery`.
 // Undefined for any other source. The entry id of a Google Cloud table in a
@@ -3735,7 +3747,7 @@ export function parseSource(
   const problem = oldSourceForm(trimmed);
   // The accepted forms: a GCP resource name, or a third-party entry name.
   if (problem === undefined && isAcceptedSource(trimmed)) {
-    const key = dialectLookupKey(trimmed);
+    const key = dialectLookupKey(trimmed) ?? spannerDatabaseOf(trimmed);
     const sourceDialect = key && opts.sourceDialects?.get(key);
     return {
       authoredSource: trimmed,

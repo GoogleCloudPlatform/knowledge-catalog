@@ -386,8 +386,9 @@ function profileDocsReader(layout: SemanticModelLayout): ProfileDocs {
 
 // The dialect of each Cloud SQL and third-party table the model documents
 // `docs` and their profile files write, read from the tables' Knowledge
-// Catalog entries, for every load the command makes. Makes no call when no file
-// writes one. Prints each table whose dialect cannot be read and returns null.
+// Catalog entries, and of each Spanner database they write a table of, for
+// every load the command makes. Makes no call when no file writes one. Prints
+// each source whose dialect cannot be read and returns null.
 async function dialectLoad(
     ctx: context.ApiContext, docs: Array<{name: string; text: string}>,
     profileDocs: ProfileDocs): Promise<DialectLoad|null> {
@@ -399,8 +400,9 @@ async function dialectLoad(
       // A profile file the layout rejects is reported where it is read.
     }
   }
-  const {dialects, databases, errors} =
-      await sourceDialects(texts, new dataplex.CatalogClient(ctx));
+  const {dialects, databases, errors} = await sourceDialects(
+      texts, new dataplex.CatalogClient(ctx),
+      {spanner: new SpannerClient(ctx)});
   if (errors.length) {
     for (const e of errors) console.error(`Error: ${e}`);
     return null;
@@ -1106,9 +1108,10 @@ async function checkBeforeWrites(
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
-// the dataset or database, probe each BigQuery source and dry-run the BigQuery
-// DDL in the dataset's location, and check each action's DML. A dataset whose
-// location cannot be read adds a warning to `warnings`.
+// the dataset or database, refuse a PostgreSQL-dialect Spanner database, probe
+// each BigQuery source and dry-run the BigQuery DDL in the dataset's location,
+// and check each action's DML. A dataset whose location cannot be read adds a
+// warning to `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
     warnings: string[]): Promise<string[]> {
@@ -1122,6 +1125,14 @@ async function liveErrors(
     if (found.status !== 200) {
       return [`${at}: database ${name} could not be read: ${
           storeMessage(found.message, found.status)}`];
+    }
+    // Spanner refuses property graph DDL in a PostgreSQL-dialect database.
+    if (found.result?.databaseDialect === 'POSTGRESQL') {
+      return [
+        `${at}: database ${name} has the PostgreSQL dialect, and Spanner ` +
+        `creates no property graph in a PostgreSQL-dialect database. Remove ` +
+        `the deployment; push still publishes the model to Knowledge Catalog.`,
+      ];
     }
     return validateSpannerActionStatements([model], spanner);
   }
@@ -1312,8 +1323,8 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   const defaultProject = source.project ?? ctx.project;
   const profileDocs = profileDocsReader(layout);
   const declaredBy = declaredProfilesReader(profileDocs);
-  // A Cloud SQL or third-party table takes its dialect from its Knowledge
-  // Catalog entry, looked up once, as push does.
+  // A Cloud SQL, Spanner or third-party table's dialect is looked up once, as
+  // push does.
   const load = await dialectLoad(ctx, docs, profileDocs);
   if (!load) return 1;
   // The inline bindings' header. 'default' is not a profile document and

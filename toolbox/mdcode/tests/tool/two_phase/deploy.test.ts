@@ -20,13 +20,16 @@ const stops = (error: unknown, flags = {}) =>
 const ONE_MODEL = err(
     "entry group 'commerce_eg' would receive 2 models, but only one model " +
     'per entry group is supported; split them into separate entry groups.');
+// The dialect lookup reads the database before any other check does.
 const spannerAnswers =
-    (what: string, status: number, message: string, error: string): Case => ({
+    (what: string, status: number, message: string): Case => ({
       name: `a Spanner deployment whose database ${what} writes nothing`,
       deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
       profiles: {ops: boundAt(SPANNER_CUSTOMER)},
       services: {getDatabase: {status, message}},
-      errors: [err(`${at('sp')}: database test-project/i/db ${error}`)],
+      errors: [err(`source '${SPANNER_CUSTOMER}': kcmd reads its Spanner ` +
+          `database's SQL dialect, and could not read database ` +
+          `test-project/i/db: ${message}`)],
       called: {spannerDml: 0},
     });
 const DISABLED = 'Cloud Spanner API is disabled.';
@@ -106,9 +109,8 @@ scenarios('push writes nothing when a check fails', [
           "an mcp executor whose 'tool' is missing or blank.")],
     }],
   },
-  spannerAnswers('does not exist', 404, 'Not found', 'not found'),
-  spannerAnswers(
-      'answers 403', 403, DISABLED, `could not be read: ${DISABLED}`),
+  spannerAnswers('does not exist', 404, 'Database not found.'),
+  spannerAnswers('answers 403', 403, DISABLED),
   {
     name: 'a graph DDL that fails a BigQuery dry run stops the push before the catalog write',
     deployments: [{

@@ -1,6 +1,6 @@
 // The dialect of a Cloud SQL table written as its resource name, or of a
 // third-party table written as its entry name, read from the table's
-// Knowledge Catalog entry.
+// Knowledge Catalog entry, and the dialect of a Spanner table's database.
 //
 // The resource name cannot say the dialect: a MySQL table has no schema, but a
 // PostgreSQL table and a SQL Server table have the same shape. Dataplex keeps an
@@ -15,14 +15,22 @@
 // fullyQualifiedName, so its parts say whether the entry is a table's or, for
 // example, a schema's.
 //
+// A Spanner database is GoogleSQL (SPANNER) or PostgreSQL (POSTGRES).
+// Knowledge Catalog's Spanner entries leave their dialect empty, so it comes
+// from the database's `databaseDialect`, which the Spanner API's databases.get
+// reads, once per database.
+//
 // This is the only place kcmd makes a network call to learn a dialect. A
 // command looks every such source up once, before it loads the model, and
 // passes the dialects to the load (LoadOptions.sourceDialects).
 
 import * as yaml from 'yaml';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import type {SpannerClient} from '../gcp/spanner';
+
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
+import {storeMessage} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The dialect each entrySource.system gives, in lower case.
@@ -54,15 +62,18 @@ export interface SourceDialects {
 type Dialect = {dialect: string; database?: string}|{error: string};
 
 // Looks up the dialect of every Cloud SQL and third-party table the model and
-// profile files `texts` write (see sourcesToLookUp), once per table, in
-// parallel. With `thirdParty` false, looks up Cloud SQL tables only. Makes no
-// call when they write none. Never throws: a lookup that fails is reported in
-// `errors`.
+// profile files `texts` write (see sourcesToLookUp), once per table, and of
+// each Spanner database they write a table of, with `spanner`, once per
+// database, in parallel. With `thirdParty` false, looks up no third-party
+// table. Makes no call when they write none. Never throws: a lookup that fails
+// is reported in `errors`.
 export async function sourceDialects(
     texts: Iterable<string>, catalog: EntryLookup,
-    {thirdParty = true} = {}): Promise<SourceDialects> {
-  // Keyed as dialectLookupKey gives, so both spellings of one table are one
-  // lookup.
+    {thirdParty = true, spanner}: {
+      thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
+    } = {}): Promise<SourceDialects> {
+  // Keyed as dialectLookupKey or spannerDatabaseOf gives, so both spellings of
+  // one table, and the tables of one Spanner database, are one lookup.
   const lookups = new Map<string, () => Promise<Dialect>>();
   for (const source of sourcesToLookUp(texts)) {
     const table = cloudSqlTableOf(source);
@@ -71,6 +82,10 @@ export async function sourceDialects(
     }
     const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
     if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
+    const database = spanner && spannerDatabaseOf(source);
+    if (database) {
+      lookups.set(database, () => spannerDialect(spanner, database, source));
+    }
   }
   const dialects = new Map<string, string>();
   const databases = new Map<string, string>();
@@ -114,6 +129,29 @@ async function cloudSqlDialect(
         `not a Cloud SQL table or view type kcmd knows (${
                Object.keys(DIALECT_OF_ENTRY_TYPE).join(', ')}).`,
   };
+}
+
+// The dialect of the Spanner database `database`, which `source` names a
+// table of, by its databaseDialect.
+async function spannerDialect(
+    spanner: Pick<SpannerClient, 'getDatabase'>, database: string,
+    source: string): Promise<Dialect> {
+  const [, , project, , instance, , name] = database.split('/');
+  const failed = (why: string) => ({
+    error: `source '${source}': kcmd reads its Spanner database's SQL ` +
+        `dialect, and could not read database ${project}/${instance}/${
+               name}: ${why}`,
+  });
+  try {
+    const res = await spanner.getDatabase(project, instance, name);
+    if (res.status !== 200) {
+      return failed(storeMessage(res.message, res.status));
+    }
+    const postgres = res.result?.databaseDialect === 'POSTGRESQL';
+    return {dialect: postgres ? 'POSTGRES' : 'SPANNER'};
+  } catch (err: any) {
+    return failed(err?.message ?? String(err));
+  }
 }
 
 // The dialect of a third-party table, by its entry's fullyQualifiedName or
@@ -198,13 +236,14 @@ function databaseOfFqn(fqn: string): string|undefined {
   return [prefix, ...parts.slice(0, n)].join('/');
 }
 
-// Every Cloud SQL table and third-party entry the model and profile files
-// `texts` write. A Cloud SQL table counts as a resource name or resource URI
-// anywhere, JSON strings included. An entry name counts as a `source` value in
-// the YAML or in a GOOGLE block's JSON `data`, unless it sits in ai_context,
-// an action parameter's default or another vendor's block. Values are read
-// from the parsed YAML, so a name in a comment is not collected. A file that
-// does not parse collects nothing; the load reports it.
+// Every Cloud SQL table, Spanner table and third-party entry the model and
+// profile files `texts` write. A Cloud SQL table counts as a resource name or
+// resource URI anywhere, JSON strings included. A Spanner table or an entry
+// name counts as a `source` value in the YAML or in a GOOGLE block's JSON
+// `data`, unless it sits in ai_context, an action parameter's default or
+// another vendor's block. Values are read from the parsed YAML, so a name in a
+// comment is not collected. A file that does not parse collects nothing; the
+// load reports it.
 export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const found = new Set<string>();
   // `key` names the member that holds `value`. `opaque` marks a value whose
@@ -214,7 +253,8 @@ export function sourcesToLookUp(texts: Iterable<string>): string[] {
   const visit = (value: unknown, key?: string, opaque = false): void => {
     if (typeof value === 'string') {
       if (cloudSqlTableOf(value) ||
-          (key === 'source' && !opaque && thirdPartyEntryOf(value))) {
+          (key === 'source' && !opaque &&
+           (thirdPartyEntryOf(value) || spannerDatabaseOf(value)))) {
         found.add(value.trim());
       } else if (/^\s*[[{]/.test(value)) {
         try {

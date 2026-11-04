@@ -1268,7 +1268,8 @@ function stringList(value: unknown, where: string): string[] {
 
 
 // The dialect each system's sources infer, keyed by the
-// system databaseOf puts first.
+// system databaseOf puts first. A Spanner source whose database's dialect was
+// read implies that one instead.
 const DIALECT_OF_SYSTEM: Record<string, string> = {
   bigquery: 'BIGQUERY',
   spanner: 'SPANNER',
@@ -1427,10 +1428,12 @@ export function sourcesDialect(model: {
 // name, names BigQuery.
 //
 // A Cloud SQL table written as its resource name, and a third-party table,
-// imply the dialect their catalog entry gives, which a lookup read into
-// `lookedUp` (LoadOptions.sourceDialects). When every source is such a table
-// and none was looked up, as in `kcmd import`, the dialect is null: how their
-// database reads an ANSI_SQL text is not known, so a check reads no such text.
+// imply the dialect their catalog entry gives, and a Spanner table the dialect
+// its database gives, which a lookup read into `lookedUp`
+// (LoadOptions.sourceDialects). When every source is a Cloud SQL or
+// third-party table and none was looked up, as in `kcmd import`, the dialect
+// is null: how their database reads an ANSI_SQL text is not known, so a check
+// reads no such text.
 function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
     string|null|undefined {
   if (sources.length &&
@@ -1443,7 +1446,7 @@ function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
     const db = databaseOf(s) ??
         (/^[^./:\s`]+\.[^./:\s`]+\.[^./:\s`]+$/.test(s) ? 'bigquery' :
                                                          undefined);
-    return db ? DIALECT_OF_SYSTEM[db.split('/')[0]] : undefined;
+    return db ? lookedUp ?? DIALECT_OF_SYSTEM[db.split('/')[0]] : undefined;
   }));
   if (dialects.size !== 1) return undefined;
   return [...dialects][0];
