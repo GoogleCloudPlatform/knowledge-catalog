@@ -476,7 +476,7 @@ differs from BigQuery Graph in five ways:
 | Model element | Spanner construct | Notes |
 |---|---|---|
 | Model | `PROPERTY GRAPH` | named by the target's `graphs/<g>` segment, **bare** (no backticked `project.dataset.` prefix) |
-| Entity | `NODE TABLE` | backed by the entity's `source` reduced to its final segment (`spanner.googleapis.com/…/tables/Orders` → `Orders`), a table in the target database. An entity with no primary key is keyed by its first unique key, and Spanner rejects the graph unless the table's primary key or a unique index covers that key. A `UNIQUE NULL_FILTERED` index leaves the rows whose key is NULL out of the graph. |
+| Entity | `NODE TABLE` | backed by the table the entity's `source` names after `tables/`, a table in the target database (`…/tables/Orders` → `Orders`, and `…/tables/ops.stations` → `ops.stations` for a table in schema `ops`). An entity with no primary key is keyed by its first unique key, and Spanner rejects the graph unless the table's primary key or a unique index covers that key. A `UNIQUE NULL_FILTERED` index leaves the rows whose key is NULL out of the graph. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables |
 | Metric | — dropped | Spanner Graph has no `MEASURE`, so every model-level metric is skipped with a warning; the graph structure still deploys |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | same label-and-flatten handling as BigQuery (see [Class hierarchies](#class-hierarchies-extends--labels)) |

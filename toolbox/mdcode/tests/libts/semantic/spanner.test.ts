@@ -218,15 +218,18 @@ describe('bare table mapping', () => {
     expect(ddl).toContain('Orders AS orders');
   });
 
-  test('a Spanner resource-name URI reduces to its final path segment', () => {
-    // A binding profile may name a Spanner source by its AIP-122 resource
-    // name; the loader keeps it verbatim, so the generator must reduce it to
-    // the bare table (the naive dotted split left `com/.../tables/Orders`).
-    const {ddl} = generateSpannerPropertyGraph(withSource(
-        '//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/Orders'));
-    expect(ddl).toContain('Orders AS orders');
-    expect(ddl).not.toContain('googleapis');
-    expect(ddl).not.toContain('tables/Orders');
+  test('a Spanner resource-name URI reduces to its table, keeping a named schema', () => {
+    // The loader keeps a Spanner source as its resource URI, and a table in a
+    // named schema is `tables/<schema>.<table>`; each part is quoted alone.
+    for (const [table, named] of [
+      ['Orders', 'Orders'], ['ops.stations', 'ops.stations'],
+      ['ops.Order', 'ops.`Order`'],
+    ]) {
+      const {ddl} = generateSpannerPropertyGraph(withSource(
+          `//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/${table}`));
+      expect(ddl).toContain(`\n  ${named} AS orders`);
+      expect(ddl).not.toContain('googleapis');
+    }
   });
 
   test('a scheme:// source URI reduces to its final path segment', () => {
