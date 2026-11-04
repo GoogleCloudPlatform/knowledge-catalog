@@ -69,10 +69,10 @@ describe('location reads', () => {
   test('a Hive catalog is read through the Hive API', async () => {
     const fetch = spyOn(globalThis, 'fetch').mockImplementation(
         (async () => Response.json(HIVE_CATALOG)) as any);
-    expect(await biglake.getHiveCatalog('sqlgen-testing', 'hive_us'))
+    expect(await biglake.getHiveCatalog('sqlgen-testing', 'sqlgen_jharshit_atscale_hive_us'))
         .toEqual({status: 200, result: HIVE_CATALOG});
     expect(fetch.mock.calls.map(c => c[0])).toEqual(
-        ['https://biglake.googleapis.com/hive/v1/projects/sqlgen-testing/catalogs/hive_us']);
+        ['https://biglake.googleapis.com/hive/v1/projects/sqlgen-testing/catalogs/sqlgen_jharshit_atscale_hive_us']);
     fetch.mockRestore();
   });
 });

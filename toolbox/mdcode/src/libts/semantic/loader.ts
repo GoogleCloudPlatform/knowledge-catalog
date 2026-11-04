@@ -3572,8 +3572,8 @@ export function sourceToDataSource(source: string): string {
   if (bqUri) return `${bqUri[1]}.${bqUri[2]}.${bqUri[3]}`;
   const biglakeUri = value.match(BIGLAKE_TABLE_URI);
   if (biglakeUri) {
-    const [, project, catalog, , namespace, table] = biglakeUri;
-    return `${project}.${catalog}.${namespace}.${table}`;
+    const [, project, catalog, , parent, table] = biglakeUri;
+    return `${project}.${catalog}.${parent}.${table}`;
   }
   return value;
 }

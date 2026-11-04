@@ -841,7 +841,8 @@ describe('sources', () => {
   });
 
   // A path in one pair of backticks gives its parts under a BigLake prefix,
-  // and a part in double quotes keeps its dot.
+  // a part in double quotes keeps its dot, and a Hive database prefix
+  // completes the database form.
   const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
   const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
   const ALLOYDB_APP =

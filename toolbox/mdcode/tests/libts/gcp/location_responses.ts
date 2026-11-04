@@ -105,7 +105,8 @@ export const MULTI_REGION_GCS_CATALOG = {
 // replica first, and its tables' entries sit in `us`.
 export const HIVE_CATALOG = {
   name: 'projects/sqlgen-testing/catalogs/sqlgen_jharshit_atscale_hive_us',
-  replicas: [{region: 'US', state: 'STATE_PRIMARY'}, {region: 'us-east1', state: 'STATE_SECONDARY'}],
+  replicas: [{region: 'US', state: 'STATE_PRIMARY'},
+             {region: 'us-east1', state: 'STATE_SECONDARY'}],
 };
 
 export const NOT_FOUND = {status: 404, message: 'Not found'};
