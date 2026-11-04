@@ -200,6 +200,24 @@ function placeMetric(
         `MEASURE); metric dropped`);
     return;
   }
+  // A measure is allowed only on a LEAF type -- one that no other entity
+  // extends. A metric lowers to a MEASURE on the target's DEFAULT LABEL, and a
+  // supertype has no node table of its own: its label is carried by every
+  // subtype table, and BigQuery forbids a MEASURE on a label carried by more
+  // than one element table (verified live: "defined as MEASURE, but there are
+  // other declarations with the same name"). Drop it with a warning rather
+  // than emit DDL BigQuery rejects. Push validation rejects such a metric
+  // before generation; this guard covers a caller that generates DDL without
+  // validating first. A supertype is also in `skipped`, so this must precede
+  // the no-KEY message below to stay accurate.
+  if (ancestorsUsed.has(entityName)) {
+    warnings.push(
+        `metric '${metric.name}' targets entity '${entityName}', which is not ` +
+        `a leaf type (another entity extends it); a measure is allowed only on ` +
+        `a leaf type, because a supertype's label is shared across its ` +
+        `subtype tables; skipped`);
+    return;
+  }
   // A metric can only become a MEASURE on a node table, but an entity that was
   // skipped upstream (empty KEY) has no node table to carry it. Check the skip
   // set already computed, and report the drop directly, instead of letting it
@@ -207,23 +225,6 @@ function placeMetric(
   if (skipped.has(entityName)) {
     warnings.push(`metric '${metric.name}' targets entity '${
         entityName}', which has no KEY and was skipped; metric dropped`);
-    return;
-  }
-  // A measure is allowed only on a LEAF type -- one that no table-emitting
-  // entity extends. A metric lowers to a MEASURE on the target's DEFAULT LABEL;
-  // when that entity is a supertype its label is shared with every subtype
-  // table, and BigQuery forbids a MEASURE on a label carried by more than one
-  // element table (verified live: "defined as MEASURE, but there are other
-  // declarations with the same name"). Drop it with a warning rather than emit
-  // DDL BigQuery rejects. Push validation rejects such a metric before
-  // generation; this guard covers a caller that generates DDL without
-  // validating first.
-  if (ancestorsUsed.has(entityName)) {
-    warnings.push(
-        `metric '${metric.name}' targets entity '${entityName}', which is not ` +
-        `a leaf type (another entity extends it); a measure is allowed only on ` +
-        `a leaf type, because a supertype's label is shared across its ` +
-        `subtype tables; skipped`);
     return;
   }
 
