@@ -558,6 +558,10 @@ export function formatOverviewSidecar(
       body;
 }
 
+// The error checkProfileFileName throws for a profile file that breaks one of
+// its rules.
+export class ProfileFileError extends Error {}
+
 // Throws when the profile file `file`, holding `text` for profile `name` beside
 // the model file `modelFile`, names the same profile as a file in `seen`, which
 // maps each profile name read before, in lower case, to its file. It also
@@ -568,11 +572,11 @@ export function checkProfileFileName(
     modelFile: string, file: string, name: string, text: string,
     seen: Map<string, string>): void {
   const badName = profileNameError(file, name);
-  if (badName) throw new Error(badName);
+  if (badName) throw new ProfileFileError(badName);
   // Profile names are unique ignoring case.
   const twin = seen.get(name.toLowerCase());
   if (twin) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile files '${twin}' and '${file}' name the same profile; ` +
         `profile names are unique ignoring case.`);
   }
@@ -580,22 +584,22 @@ export function checkProfileFileName(
   const declared = parseProfileName(text, file, name);
   const reserved = (n?: string) => n?.toLowerCase() === DEFAULT_PROFILE_NAME;
   if (reserved(name)) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
         `inline bindings in '${modelFile}'; remove '${file}'.`);
   }
   if (reserved(declared)) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
         `inline bindings in '${modelFile}'; change the name in '${file}' to ` +
         `'${name}'.`);
   }
   if (declared === undefined) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile file '${file}' declares no name; add 'name: ${name}'.`);
   }
   if (declared !== name) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile file '${file}' declares name '${declared}', which does not ` +
         `match filename suffix '${name}'.`);
   }
@@ -629,10 +633,10 @@ function parseProfileName(text: string, file: string, name: string):
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    throw new Error(profileParseError(file, err?.message ?? err));
+    throw new ProfileFileError(profileParseError(file, err?.message ?? err));
   }
   if (doc?.semantic_model !== undefined) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile file '${file}' uses the legacy 'semantic_model:' wrapper, ` +
         `which is no longer supported; write its entities, relationships ` +
         `and actions at the top level under 'name: ${name}', and move any ` +

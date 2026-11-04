@@ -3,7 +3,7 @@
 
 import * as yaml from 'yaml';
 
-import {checkProfileFileName, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
+import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
 import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
@@ -1496,7 +1496,8 @@ function attachProfileFiles(
     for (const pf of files) {
       checkProfileFileName(modelFile, pf.fileName, pf.name, pf.content, seen);
     }
-  } catch (err: any) {
+  } catch (err) {
+    if (!(err instanceof ProfileFileError)) throw err;
     doc.errors.push(err.message);
     return;
   }
@@ -1753,9 +1754,10 @@ function validateOutputDocument(
     let profiles: DeclaredProfile[];
     try {
       profiles = declared();
-    } catch {
+    } catch (err) {
       // namedProfileErrors reports a profile file that breaks a file rule,
       // which stops push before it checks a deployment.
+      if (!(err instanceof ProfileFileError)) throw err;
       return;
     }
     const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
@@ -1781,7 +1783,8 @@ function validateOutputDocument(
           return 'text' in p ?
               [loadProfileFile(p.text, p.name, {skipActions: true})] :
               [];
-        } catch {
+        } catch (err) {
+          if (!(err instanceof SemanticModelError)) throw err;
           return [];
         }
       }),

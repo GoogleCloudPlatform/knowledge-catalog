@@ -1,8 +1,9 @@
 // Tests for the semantic model import engine (import_model.ts).
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 import * as yaml from 'yaml';
 
+import * as layout from '../../../src/libts/layouts/semantic-model';
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
@@ -727,6 +728,19 @@ describe('profile checks', () => {
     const res = await importSemanticModelYaml(input, opts);
     expect([...res.errors, ...res.warnings]).toEqual([message]);
   });
+
+  test.each(PATHS.filter(([path]) => path.includes('profile file')))(
+      'rethrows an unexpected error from the profile file check, in %s', async (_, build) => {
+        const bug = new TypeError('a bug');
+        const check = spyOn(layout, 'checkProfileFileName').mockImplementation(() => {
+          throw bug;
+        });
+        try {
+          await expect(importSemanticModelYaml(...build([PG]))).rejects.toBe(bug);
+        } finally {
+          check.mockRestore();
+        }
+      });
 });
 
 describe('vanilla output, extensions, and targets', () => {
