@@ -1041,9 +1041,10 @@ async function checkBeforeWrites(
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
-// the dataset or database, probe each BigQuery source and dry-run the BigQuery
-// DDL in the dataset's location, and check each action's DML. A dataset whose
-// location cannot be read adds a warning to `warnings`.
+// the dataset, or the Spanner database and its instance, probe each BigQuery
+// source and dry-run the BigQuery DDL in the dataset's location, and check
+// each action's DML. A dataset whose location cannot be read adds a warning to
+// `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
     warnings: string[]): Promise<string[]> {
@@ -1057,6 +1058,22 @@ async function liveErrors(
     if (found.status !== 200) {
       return [`${at}: database ${name} could not be read: ${
           storeMessage(found.message, found.status)}`];
+    }
+    // Spanner Graph needs an Enterprise or Enterprise Plus instance, or a free
+    // trial instance. An instance that gives no edition is a Standard one.
+    // When the instance cannot be read, the deploy finds out.
+    const read = await spanner.getInstance(project, instance);
+    const {edition = 'STANDARD', instanceType} = read.result ?? {};
+    if (read.status === 200 && edition === 'STANDARD' &&
+        instanceType !== 'FREE_INSTANCE') {
+      return [
+        `${at}: instance ${project}/${instance} is a Standard edition ` +
+        `instance, and Spanner Graph needs an Enterprise or Enterprise Plus ` +
+        `edition instance. Upgrade the instance (gcloud spanner instances ` +
+        `update ${instance} --edition=ENTERPRISE --project=${project}), or ` +
+        `remove the deployment; push still publishes the model to Knowledge ` +
+        `Catalog.`,
+      ];
     }
     return validateSpannerActionStatements([model], spanner);
   }

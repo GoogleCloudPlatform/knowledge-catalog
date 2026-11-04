@@ -3,7 +3,8 @@
 // database and deploy Spanner Graph DDL; the data plane (sessions and
 // executeSql) to PLAN an action's DML against the live database before
 // publishing it; and Instance Admin (getInstance and getInstanceConfig) to
-// find the region where Knowledge Catalog keeps a table's entry.
+// find the region where Knowledge Catalog keeps a table's entry and to read an
+// instance's edition.
 
 import * as api from './api';
 import * as context from './context';
@@ -109,7 +110,8 @@ export class SpannerClient extends api.ApiClient {
         `projects/${project}/instances/${instance}/databases/${database}`);
   }
 
-  // Fetches an instance's metadata, which names its instance config.
+  // Fetches an instance's metadata, which names its instance config and gives
+  // its edition: STANDARD, ENTERPRISE or ENTERPRISE_PLUS.
   async getInstance(project: string, instance: string):
       Promise<api.ApiResult<Instance>> {
     return await this._get<Instance>(`projects/${project}/instances/${instance}`);

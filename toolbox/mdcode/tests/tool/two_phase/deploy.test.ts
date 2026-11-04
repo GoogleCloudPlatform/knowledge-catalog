@@ -7,7 +7,7 @@ import {expect} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 
-import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
+import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, INSTANCE, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
 const header = (d: string) => `\n-- Deployment '${d}' --`;
 
@@ -45,6 +45,20 @@ const DENIED = {getDataset: {status: 403, message: 'Access Denied'}};
 const NO_LOCATION = (project: string) =>
     `Warning: could not read location of dataset ${project}.d (Access ` +
     'Denied); letting BigQuery infer the query location';
+// A Spanner deployment of database test-project/i/db.
+const SPANNER_DEPLOYMENT = {
+  deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
+  profiles: {ops: boundAt(SPANNER_CUSTOMER)},
+};
+// The instance answers with `instance`.
+const instanceIs = (instance: object) =>
+    ({getInstance: {status: 200, result: instance}});
+const STANDARD = err(
+    `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
+    'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
+    'instance. Upgrade the instance (gcloud spanner instances update i ' +
+    '--edition=ENTERPRISE --project=test-project), or remove the ' +
+    'deployment; push still publishes the model to Knowledge Catalog.');
 
 scenarios('push writes nothing when a check fails', [
   {
@@ -152,6 +166,25 @@ scenarios('push writes nothing when a check fails', [
       flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')],
     }],
   },
+  {
+    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check and when the instance gives no edition, and a missing database is reported first',
+    ...SPANNER_DEPLOYMENT,
+    services: instanceIs({...INSTANCE, edition: 'STANDARD'}),
+    errors: [STANDARD],
+    called: {spannerDml: 0},
+    then: [
+      {flags: {validateOnly: true}, errors: [STANDARD]},
+      {flags: {skipSourceCheck: true}, errors: [STANDARD]},
+      {
+        services: instanceIs({...INSTANCE, edition: undefined}),
+        errors: [STANDARD],
+      },
+      {
+        services: {getDatabase: {status: 404, message: 'Not found'}},
+        errors: [err(`${at('sp')}: database test-project/i/db not found`)],
+      },
+    ].map(step => ({code: 1, nothingWritten: true, ...step})),
+  },
 ], {
   deployments: ['g1', 'g2'],
   code: 1,
@@ -253,6 +286,7 @@ const placedBy = (...names: string[]) => ({
     },
   },
 });
+const SP_DEPLOYED = ['preflight', 'apply', 'deploy sp'];
 const ALLOYDB_NOTE = "Note: deployment 'ad' targets an AlloyDB database, " +
     'which has no property graph, so push deploys no graph there. The model ' +
     'runs against that database as published to Knowledge Catalog.';
@@ -329,6 +363,23 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     code: 1,
     errors: [`Error pushing semantic model to BigQuery: Failed to deploy ` +
              `'g': ${LIMIT}`],
+  },
+  {
+    name: 'a Spanner deployment deploys on an Enterprise Plus or a free trial instance, and when its instance cannot be read',
+    ...SPANNER_DEPLOYMENT,
+    services: instanceIs({...INSTANCE, edition: 'ENTERPRISE_PLUS'}),
+    events: SP_DEPLOYED,
+    then: [
+      {
+        services: instanceIs(
+            {...INSTANCE, edition: undefined, instanceType: 'FREE_INSTANCE'}),
+      },
+      // The source check fails when it cannot read the instance.
+      {
+        flags: {skipSourceCheck: true},
+        services: {getInstance: {status: 403, message: DISABLED}},
+      },
+    ].map(step => ({code: 0, events: SP_DEPLOYED, ...step})),
   },
   {
     name: 'a profile that gives the join columns deploys, and with KC_V2_ASPECTS=1 so do relationships whose link IDs collide',
