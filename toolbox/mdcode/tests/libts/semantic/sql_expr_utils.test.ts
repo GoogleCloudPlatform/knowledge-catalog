@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -452,6 +452,19 @@ describe('selfReferenceMessage', () => {
             `'orders.b', 'orders.c'; a field expression may name other ` +
             `fields of its entity, but not itself, directly or through other ` +
             `fields`);
+  });
+
+  test('quotes a reserved name in how to read the column', () => {
+    expect(selfReferenceMessage('Customer', ['order']))
+        .toEndWith("write it without the qualifier: '`order`'");
+  });
+});
+
+describe('unusedName', () => {
+  test('adds underscores until the text does not hold the name in any case', () => {
+    expect(unusedName('SUM(orders.amount)', 'kcmd_entity')).toBe('kcmd_entity');
+    expect(unusedName('SUM(KCMD_ENTITY.a) + kcmd_entity_', 'kcmd_entity'))
+        .toBe('kcmd_entity__');
   });
 });
 

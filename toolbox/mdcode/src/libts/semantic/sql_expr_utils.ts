@@ -1,7 +1,8 @@
 // Helpers for reading and rewriting entity-qualified SQL expressions across the
 // semantic-model layer.
 //
-// Expressions reference columns as `<Entity>.<column>`. The SQL parser
+// An expression names a field of its entity as `<Entity>.<field>`, and a
+// column of its table without a qualifier. The SQL parser
 // (`columnReferences`, `entitiesReached`, `fieldsReadOn`) reads column and
 // entity references across dialects for the loader, validator, profile checks,
 // pull reader, and transpiler. The graph generators read them with the parser
@@ -13,6 +14,7 @@
 //
 
 import {Field, fieldBinding} from './ir';
+import {quoteIfReserved} from './sql_identifiers';
 import {SqlColumn, sqlColumns, sqlExpressionTree, SqlToken, sqlTokens, withoutComments} from './sql_parser';
 
 // The dialect a graph generator reads `dialect` in: an ANSI_SQL text, or a
@@ -50,8 +52,7 @@ function qualifiersIn(
   });
   if (!candidates.length) return {tokens, at: []};
   // A placeholder stem the text does not hold.
-  let stem = 'kcmd_qualifier_';
-  while (expression.toLowerCase().includes(stem)) stem += '_';
+  const stem = unusedName(expression, 'kcmd_qualifier_');
   let text = '';
   let end = 0;
   candidates.forEach((i, k) => {
@@ -63,6 +64,14 @@ function qualifiersIn(
   const at = !columns ? candidates : candidates.filter(
       (_, k) => columns.some(c => c.qualifier?.toLowerCase() === stem + k));
   return {tokens, at};
+}
+
+// `base`, a lowercase name, with underscores added until `text` does not hold
+// it in any case.
+export function unusedName(text: string, base: string): string {
+  let name = base;
+  while (text.toLowerCase().includes(name)) name += '_';
+  return name;
 }
 
 // `expression` without each `<qualifier>.` it writes before a column (see
@@ -155,7 +164,7 @@ export function selfReferenceMessage(
       `itself, directly or through other fields` +
       (through.length ? '' :
                         `; to read the column of that name, write it ` +
-               `without the qualifier: '${field}'`);
+               `without the qualifier: '${quoteIfReserved(field)}'`);
 }
 
 // `expression` with each `<from>.` qualifier it writes before a column (see

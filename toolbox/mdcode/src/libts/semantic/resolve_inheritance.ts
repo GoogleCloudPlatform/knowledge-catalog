@@ -252,7 +252,7 @@ export function resolveInheritance(
 
 // Clones an ancestor's field for a descendant, rewriting its expression to be
 // TABLE-LOCAL. A field expression written on the ancestor as `<Ancestor>.col`
-// means "the `col` column of the ancestor's own table"; inherited onto a
+// names the ancestor's field `col`; inherited onto a
 // descendant -- whose backing table carries the same column, since inherited
 // fields must physically exist on the child -- it must reference the
 // DESCENDANT's column, so the ancestor's own-name qualifier is stripped.

@@ -21,7 +21,7 @@
 
 import {generateGraphDdl, GenerateResult, GraphEngine, MetricPlacementInput, nodeKey, physicalColumn} from './graph_ddl';
 import {AiContext, Entity, expressionForDialect, Field, isTimeDimension, Metric, SemanticModel,} from './ir';
-import {columnReferences, measureEntities, requalified, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, withoutQualifier} from './sql_expr_utils';
+import {columnReferences, measureEntities, requalified, singleAggregate, sqlWithoutComments, SUPPORTED_AGGREGATES, unusedName, withoutQualifier} from './sql_expr_utils';
 import {isSimpleIdentifier, quoteIfReserved} from './sql_identifiers';
 import {soleColumn} from './sql_parser';
 
@@ -164,14 +164,6 @@ function loneColumn(sql: string): string|undefined {
   return column && column.qualifier === undefined ? column.name : undefined;
 }
 
-// A name `sql` does not hold, in any case, to stand in for an entity's
-// qualifier where the SQL parser reads it (see placeMetric).
-function standIn(sql: string): string {
-  let stand = 'kcmd_entity';
-  while (sql.toLowerCase().includes(stand)) stand += '_';
-  return stand;
-}
-
 // Assigns a metric to the node table of the single entity its aggregate
 // references, lowering it to a MEASURE over an exposed property. Records a
 // warning (and skips) when it references zero/multiple entities or is not a
@@ -281,7 +273,7 @@ function placeMetric(
   // The SQL parser finds the aggregate and its operand with the entity's
   // qualifier renamed to a name it does not reserve, since it cannot read one
   // it reserves, as in `SUM(Date.days)`.
-  const stand = standIn(expression);
+  const stand = unusedName(expression, 'kcmd_entity');
   const agg = singleAggregate(
       requalified(expression, entityName, stand), 'BIGQUERY');
   if (!agg) {
@@ -374,7 +366,7 @@ function readOperand(
   // name another column, while a column of the same name may hold something
   // else. The SQL parser reads the entity's qualifier renamed, as placeMetric
   // does, since it cannot read one it reserves, as in `Date.days`.
-  const stand = standIn(operand);
+  const stand = unusedName(operand, 'kcmd_entity');
   const column =
       soleColumn(requalified(operand, entity.name, stand), 'BIGQUERY');
   const own = column !== undefined &&
