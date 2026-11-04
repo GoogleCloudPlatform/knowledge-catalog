@@ -919,6 +919,7 @@ function fakeCatalog(opts: {cloudSqlEngine?: CloudSqlEngine} = {}) {
   spyOn(globalThis, 'fetch').mockImplementation((async () => {
     throw new Error('a test made a network call');
   }) as any);
+  spyOn(P, 'getEntryGroup').mockResolvedValue({status: 200} as any);
   // A list returns entries without their aspects.
   const list = spyOn(P, 'listEntries').mockImplementation(async function*() {
     for (const e of entries.values()) {

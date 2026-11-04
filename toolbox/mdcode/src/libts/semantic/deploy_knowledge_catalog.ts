@@ -184,8 +184,9 @@ function sleep(ms: number): Promise<void> {
  *   1. Translates the IR models into catalog resources.
  *   2. Verifies that exactly one model is being deployed, builds the dry-run
  *      plan, and returns early when `opts.validateOnly` is set.
- *   3. Lists the destination entry group and fails if an unrecognized model's
- *      anchor entry is present without `--force-remove`.
+ *   3. Fails when the destination entry group does not exist. Lists it and
+ *      fails if an unrecognized model's anchor entry is present without
+ *      `--force-remove`.
  *   4. Verifies that every custom entry type and aspect type required by the
  *      model exists in the target project.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
@@ -307,8 +308,9 @@ export async function deployEmittedModels(
  *      `opts.v2Aspects` set, that every aspect size and instance count is
  *      within its limit. Builds the dry-run plan and returns early when
  *      `opts.validateOnly` is set.
- *   2. Lists the destination entry group and validates that it contains no
- *      foreign models unless `--force-remove` is set.
+ *   2. Validates that the destination entry group exists. Lists it and
+ *      validates that it contains no foreign models unless `--force-remove`
+ *      is set.
  *   3. Validates that every custom type used by the model exists in the
  *      target project.
  */
@@ -343,6 +345,15 @@ async function preflightEmittedModels(
   //    reconciliation. A re-emitted entry is never a deletion candidate, so a
   //    pre-write snapshot is correct for all three.
   const cat = new CatalogClient(ctx);
+  // The listing reads a missing group as empty, so read the group itself.
+  const group =
+      await cat.getEntryGroup(opts.project, opts.location, opts.entryGroup)
+          .catch((err: any) => `reading entry group '${opts.entryGroup}': ${
+                     err?.message || String(err)}`);
+  if (typeof group === 'string') return {result: result(false, group)};
+  if (isNotFoundStatus(group)) {
+    return {result: result(false, missingEntryGroupMessage(opts))};
+  }
   const listing = await listEntryGroup(cat, opts);
   if (listing.error) return {result: result(false, listing.error)};
   const existing = listing.entries;
@@ -408,6 +419,15 @@ export function oneModelPerEntryGroupMessage(
   return `entry group '${entryGroup}' would receive ${models} models, but ` +
       `only one model per entry group is supported; split them into ` +
       `separate entry groups.`;
+}
+
+/** The error for a push to an entry group that does not exist. */
+function missingEntryGroupMessage(opts: KcDeployOptions): string {
+  const {project, location, entryGroup} = opts;
+  return `entry group '${entryGroup}' does not exist in location ` +
+      `'${location}' of project '${project}'; run 'kcmd init ` +
+      `--semantic-model ${project}.${location}.${entryGroup}' to create it, ` +
+      `or correct the scope in catalog.yaml.`;
 }
 
 /**
