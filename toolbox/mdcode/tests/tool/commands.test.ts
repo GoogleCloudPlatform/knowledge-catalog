@@ -2259,8 +2259,6 @@ describe('the push id on every file copy', () => {
 describe('the push-state label on the model entry', () => {
   const ANCHOR = 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
       'entries/commerce';
-  const update = () =>
-      CatalogClient.prototype.updateEntry as unknown as Mock<any>;
   for (const v2 of [true, false]) {
     const flag = `with KC_V2_ASPECTS ${v2 ? 'on' : 'off'}`;
     test(`${flag}, pull refuses after a push that stopped at any write, ` +
@@ -2319,8 +2317,10 @@ describe('the push-state label on the model entry', () => {
            // writes it. Like Dataplex, the fake then refuses an entrySource
            // update that leaves the update time out or moves it back.
            const updateTime = '2026-11-04T08:00:00Z';
-           const write = update().getMockImplementation()!;
-           update().mockImplementation(async (entry: Entry, mask: string[]) => {
+           const update =
+               CatalogClient.prototype.updateEntry as unknown as Mock<any>;
+           const write = update.getMockImplementation()!;
+           update.mockImplementation(async (entry: Entry, mask: string[]) => {
              const held = entries.get(entry.name)!.entrySource?.updateTime;
              const sent = entry.entrySource?.updateTime;
              if (held && (!sent || sent < held)) {
@@ -2341,39 +2341,28 @@ describe('the push-state label on the model entry', () => {
            });
          });
 
-    // With the flag on, the label's update fails. With it off, the read
-    // before it throws.
-    test(`${flag}, a push whose last write fails says to push again before ` +
-             'you pull, and that works',
+    // The push reads the model entry before it labels it finished. With the
+    // flag on, the read answers an error. With it off, the read throws.
+    test(`${flag}, a push that cannot label the model entry finished says ` +
+             'to push again before you pull, and that works',
          async () => {
            if (v2) process.env.KC_V2_ASPECTS = '1';
            writeRoundTripWorkspace();
            fakeCatalog();
            expect(await push({deployment: false})).toBe(0);
-           const get = CatalogClient.prototype.getEntry as unknown as Mock<any>;
-           const read = get.getMockImplementation()!;
-           const write = update().getMockImplementation()!;
-           if (v2) {
-             update().mockImplementation(
-                 async (entry: Entry, mask: string[]) => mask.length === 1 ?
-                     {status: 503, message: 'The service is unavailable.'} :
-                     write(entry, mask));
-           } else {
-             get.mockImplementation(async () => {
-               throw new Error('fetch failed');
-             });
-           }
-           const error = console.error as unknown as Mock<any>;
+           (CatalogClient.prototype.getEntry as unknown as Mock<any>)
+               .mockImplementationOnce(async () => {
+                 if (v2) return {status: 503, message: 'Service unavailable.'};
+                 throw new Error('fetch failed');
+               });
            expect(await push({deployment: false})).toBe(1);
-           expect(messages(error))
+           expect(messages(console.error))
                .toBe(
                    'Error pushing semantic model to Knowledge Catalog: Model ' +
                    '\'commerce\': setting the kcmd-push-state label of entry ' +
                    '\'commerce\' to finished failed: ' +
-                   (v2 ? 'The service is unavailable' : 'fetch failed') +
+                   (v2 ? 'Service unavailable' : 'fetch failed') +
                    '. Push again before you pull.');
-           get.mockImplementation(read);
-           update().mockImplementation(write);
            expect(await push({deployment: false})).toBe(0);
            expect(await pull()).toBe(0);
          });
