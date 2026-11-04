@@ -142,12 +142,12 @@ export async function pullKnowledgeCatalog(
   // `targets`.
   const anchor =
       anchors.length ? hydrated[targets.indexOf(anchors[0])] : undefined;
-  const writing =
+  const writingReason =
       anchor?.entrySource?.labels?.[PUSH_STATE_LABEL] === PUSH_WRITING ?
       `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
       undefined;
   if (opts.v2Aspects) {
-    if (writing) throw notFinished(read.models[0].name, writing);
+    if (writingReason) throw notFinished(read.models[0].name, writingReason);
     warnings.push(...read.warnings);
     return {...read, warnings: [...new Set(warnings)]};
   }
@@ -193,7 +193,7 @@ export async function pullKnowledgeCatalog(
                         'the catalog holds none of its file copies') :
       label !== undefined && copies[0].pushId !== label ?
       'its model entry and its file copies come from different pushes' :
-      writing;
+      writingReason;
   if (unfinished) {
     // A skipped copy is often why the count is off, so its warning goes with
     // the error.
