@@ -34,7 +34,7 @@ export function passGraphChecks(): void {
       .mockResolvedValue(ok({location: 'US'}));
   spyOn(bigquery.BigQueryClient.prototype, 'query').mockResolvedValue(ok({}));
   spyOn(spanner.SpannerClient.prototype, 'getDatabase')
-      .mockResolvedValue(ok({}));
+      .mockResolvedValue(ok({databaseDialect: 'GOOGLE_STANDARD_SQL'}));
 }
 
 // Makes push's source check find a Knowledge Catalog entry for every table, as
