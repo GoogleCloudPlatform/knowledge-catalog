@@ -9,7 +9,7 @@ import {ApiContext} from '../../../../src/libts/gcp/context';
 import {resolveModelDeployments} from '../../../../src/libts/semantic/deployment_target';
 import {SemanticModel} from '../../../../src/libts/semantic/ir';
 import {loadModels} from '../../../../src/libts/semantic/loader';
-import {undeclaredProfileError} from '../../../../src/libts/semantic/runtime/runtime';
+import {undeclaredProfileError} from '../../../../src/libts/semantic/resolve_profiles';
 import {AlloyDbDatabase, resolveStore, withPrimaryInstance} from '../../../../src/libts/semantic/runtime/store';
 
 const DB = 'spanner.googleapis.com/projects/p/instances/i/databases/d';

@@ -11,7 +11,7 @@ import {describe, expect, spyOn, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import * as sqlParser from '../../../src/libts/semantic/sql_parser';
-import {doubleQuotedNames, SqlTranspiler, transpileModel, TranspileRequest,} from '../../../src/libts/semantic/transpile';
+import {doubleQuotedNames, SqlTranspiler, transpileModel, TranspileRequest, translatesToBigQuery,} from '../../../src/libts/semantic/transpile';
 
 // Builds a one-entity, one-metric model whose interesting fields/metric carry
 // only an imported (vendor) form, so the pass has something to fill. Extra
@@ -173,6 +173,21 @@ describe('transpileModel', () => {
                    w => w.includes(`metric 'rev'`) &&
                        w.includes('re-cased an entity qualifier')))
             .toBe(true);
+      });
+
+  test(
+      'translatesToBigQuery agrees with the default translator and the guard',
+      async () => {
+        await sqlParser.loadSqlEngine();
+        const node = (expression: string) => ({
+          dialects: [{dialect: 'SNOWFLAKE' as const, expression}],
+          importedExpression: expression,
+          importedDialect: 'SNOWFLAKE' as const,
+        });
+        const texts =
+            ['SUM(orders.amt)', 'SUM(Orders.amt)', "TO_CHAR(orders.d, 'YYYY')"];
+        expect(texts.map(e => translatesToBigQuery(node(e), ['orders'])))
+            .toEqual([true, false, false]);
       });
 
   test(

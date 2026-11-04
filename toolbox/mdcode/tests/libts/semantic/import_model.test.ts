@@ -1,8 +1,9 @@
 // Tests for the semantic model import engine (import_model.ts).
 
-import {describe, expect, test} from 'bun:test';
+import {describe, expect, spyOn, test} from 'bun:test';
 import * as yaml from 'yaml';
 
+import * as layout from '../../../src/libts/layouts/semantic-model';
 import {importSemanticModelYaml} from '../../../src/libts/semantic/import_model';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
@@ -135,6 +136,11 @@ describe('conversion, strict mode, and translation', () => {
       'biglake.googleapis.com/projects/acme/catalogs/c.1'
     ],
     [
+      'system entry group sourcePrefix', ossieDoc(),
+      {sourcePrefix: 'projects/acme/locations/us/entryGroups/@bigquery'},
+      "names the system entry group '@bigquery', whose entries are Google Cloud tables"
+    ],
+    [
       'Google to vanilla without strict', googleDoc(),
       {flavor: 'ossie' as const}, '--input first-party'
     ],
@@ -209,7 +215,7 @@ describe('conversion, strict mode, and translation', () => {
   });
 
   test(
-      'returns a valid Google-flavor model unchanged in strict mode and runs transpileModel when requested',
+      'returns a Google-flavor model unchanged as a third-party file, and runs transpileModel in strict mode when requested',
       async () => {
         const raw = googleDoc({
           fieldExpr:
@@ -217,7 +223,8 @@ describe('conversion, strict mode, and translation', () => {
           extra:
               '    metrics:\n      - name: total_orders\n        entity: orders\n        expression: \'COUNT("orders"."order_id")\'\n',
         });
-        const offRes = await importSemanticModelYaml(raw, {strict: true});
+        // Push rejects the vendor field, so a strict import would fail.
+        const offRes = await importSemanticModelYaml(raw);
         const onStrictRes =
             await importSemanticModelYaml(raw, {strict: true, transpile: true});
 
@@ -225,16 +232,19 @@ describe('conversion, strict mode, and translation', () => {
         expect(offRes.files[0].content).toBe(raw);
         // Without translation, the BigQuery table's vendor field and its
         // double-quoted ANSI_SQL metric each warn.
-        expect(offRes.warnings.map(w => w.split(':')[0])).toEqual([
-          "field 'orders.order_id'", "metric 'total_orders'",
+        expect(offRes.warnings.map(w => w.split(/:| in /)[0])).toEqual([
+          "field 'orders.order_id'", "metric 'total_orders'", "field 'orders.order_id'",
         ]);
-        // On a Spanner table, the vendor field warns that the table cannot
-        // run it.
+        // On a Spanner table, the vendor field gets push's error alone.
         const onSpanner = await importSemanticModelYaml(
             raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
-        expect(onSpanner.warnings[0]).toBe(
-            "field 'orders.order_id': no 'SPANNER' or 'ANSI_SQL' dialect, so " +
-            "the SPANNER table of entity 'orders' cannot run it");
+        expect(onSpanner.errors).toEqual([
+          "field 'orders.order_id' in model 'retail' (retail) has no expression for SPANNER " +
+              "or ANSI_SQL, and the model file binds entity 'orders' to a SPANNER source.",
+        ]);
+        expect(onSpanner.warnings.map(w => w.split(/:| in /)[0])).toEqual([
+          "metric 'total_orders'",
+        ]);
         expect(onStrictRes.ok).toBe(true);
         expect(onStrictRes.warnings).toEqual([
           "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
@@ -263,6 +273,473 @@ describe('conversion, strict mode, and translation', () => {
         expect(res.files).toEqual([]);
         expect(res.warnings.some(w => w.includes('to_customers'))).toBe(true);
         expect(res.errors.some(e => e.includes('customers'))).toBe(true);
+      });
+});
+
+// A profile field written only in Snowflake SQL gets a BIGQUERY entry when every
+// table its profile binds is a BigQuery or BigLake table.
+describe('profile translation', () => {
+  const fieldExpr =
+      '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}';
+  // Its Snowflake text spans two lines, which a profile file writes as a
+  // block scalar.
+  const SNOWFLAKE = 'NVL(o.order_id, 0)\n  + NVL(o.order_id, 1) + NVL(o.order_id, 2)';
+  // The texts of order_id on `source`: SNOWFLAKE, and SPANNER on Spanner, as
+  // push requires there.
+  const textsOn = (source: string) => [
+    {dialect: 'SNOWFLAKE' as const, expression: SNOWFLAKE},
+    ...source === SPANNER_TABLE ? [{dialect: 'SPANNER' as const, expression: 'order_id'}] : [],
+  ];
+  // Profile prod, which binds orders to `source` and its order_id to textsOn.
+  const prodOn = (source: string) => ({
+    name: 'prod',
+    entities: [{
+      name: 'orders',
+      source,
+      primary_key: ['order_id'],
+      fields: [{name: 'order_id', expression: {dialects: textsOn(source)}}],
+    }],
+  });
+  const PROD = prodOn(`${BQ_PREFIX}/tables/orders_prod`);
+  const blockOf = (...profiles: object[]) =>
+      `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${
+          JSON.stringify({profiles})}'\n`;
+  const fileOf = (profile: object) =>
+      ({fileName: 'retail.profile.prod.yaml', content: yaml.stringify(profile)});
+  const block = blockOf(PROD);
+  const prodFile = fileOf(PROD);
+  // Push reads a profile file without its actions, so a malformed one does not
+  // stop translation.
+  const withActions = {
+    ...prodFile,
+    content: yaml.stringify({...PROD, actions: [{drop: {target: 'x'}}]}),
+  };
+  const strict = {strict: true, transpile: true};
+  const ossie = {...strict, flavor: 'ossie' as const};
+  const google = {...strict, flavor: 'google' as const};
+  const sfEntry = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
+  const bigLake =
+      'biglake.googleapis.com/projects/acme/catalogs/c/namespaces/n/tables/orders';
+
+  // [label, input, options, translated]
+  test.each([
+    ['translates a GOOGLE block profile, written back into the block',
+     ossieDoc({extra: block}), ossie, true],
+    ['translates each BigQuery GOOGLE block profile, written back into the block',
+     ossieDoc({extra: blockOf({...PROD, name: 'dev'}, PROD, {...prodOn(SPANNER_TABLE), name: 'ops'})}), ossie, true],
+    ['translates a GOOGLE block profile, written as a profile file',
+     ossieDoc({fieldExpr, extra: block}), google, true],
+    ['translates a profile file, written into the vanilla model file', googleDoc({fieldExpr}),
+     {...ossie, profileFiles: [prodFile]}, true],
+    ['translates a profile file with a malformed action, written beside the Google model file',
+     googleDoc({fieldExpr}), {...google, profileFiles: [withActions]}, true],
+    ['translates a BigLake profile file', googleDoc({fieldExpr}),
+     {...google, profileFiles: [fileOf(prodOn(bigLake))]}, true],
+    ['translates a profile file that also binds an abstract and an unknown entity on Snowflake',
+     googleDoc({fieldExpr, extra: '      - name: party\n        abstract: true\n'}),
+     {...google, strict: false, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, ...['party', 'ghost'].map(name => ({name, source: sfEntry}))]})]}, true],
+    ['skips a profile file on BigQuery and Snowflake',
+     googleDoc({fieldExpr, extra: `      - name: items\n        source: ${BQ_TABLE}\n`}),
+     {...google, strict: false, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, {name: 'items', source: sfEntry}]})]}, false],
+    ['skips a Snowflake profile file', googleDoc({fieldExpr}),
+     {...google, profileFiles: [fileOf(prodOn(sfEntry))]}, false],
+    ['skips a Spanner GOOGLE block profile, written as a profile file',
+     ossieDoc({fieldExpr, extra: blockOf(prodOn(SPANNER_TABLE))}), google, false],
+    // Push reads neither a resource URI nor a catalog name, so neither counts.
+    // Under --input first-party, import refuses such a source.
+    ['translates a third-party profile file on BigQuery and a Spanner resource URI',
+     googleDoc({fieldExpr, extra: `      - name: items\n        source: ${BQ_TABLE}\n`}),
+     {...google, strict: false, profileFiles: [fileOf({...PROD, entities: [...PROD.entities, {name: 'items', source: `//${SPANNER_TABLE}`}]})]}, true],
+    ['skips a third-party profile file on a BigQuery catalog name', googleDoc({fieldExpr}),
+     {...google, strict: false, profileFiles: [fileOf(prodOn('bigquery:acme.sales.orders_prod'))]}, false],
+  ])('%s', async (_, input, opts, translated) => {
+    const res = await importSemanticModelYaml(input, opts);
+    expect(res.errors).toEqual([]);
+    const written = res.files.length > 1 ?
+        loadProfileFile(res.files[1].content, 'prod', {skipActions: true}) :
+        loadModels(res.files[0].content).models[0].profiles!.find(p => p.name === 'prod')!;
+    const bigQuery = {
+      dialect: 'BIGQUERY' as const,
+      expression: 'COALESCE(o.order_id, 0) + COALESCE(o.order_id, 1) + COALESCE(o.order_id, 2)',
+    };
+    expect(written.entities[0].fields![0].dialects).toEqual([
+      ...textsOn(written.entities[0].source!), ...translated ? [bigQuery] : [],
+    ]);
+    expect(res.warnings.filter(w => w.startsWith("profile 'prod': field"))).toEqual(translated ? [
+      "profile 'prod': field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
+    ] : []);
+    expect(res.warnings).not.toContain("Converted 'retail.profile.prod.yaml' to YAML.");
+  });
+
+  // A profile file that changes is written as YAML, as a model file is. One
+  // that does not change stays as written. Each warning names its file.
+  test.each([
+    ['a BigQuery', PROD, true],
+    ['a Snowflake', prodOn(sfEntry), false],
+  ])('reports writing %s JSON profile file as YAML only when it changes', async (_, profile, translated) => {
+    const model = JSON.stringify(yaml.parse(googleDoc({fieldExpr})));
+    const res = await importSemanticModelYaml(model, {
+      ...google, fileName: 'sales.yaml',
+      profileFiles: [{fileName: 'sales.profile.prod.yaml', content: JSON.stringify(profile)}],
+    });
+    expect(res.errors).toEqual([]);
+    expect(res.warnings.filter(w => w.startsWith('Converted '))).toEqual([
+      "Converted 'sales.yaml' to YAML.",
+      ...translated ? ["Converted 'sales.profile.prod.yaml' to YAML."] : [],
+    ]);
+    expect(res.files[1].content.startsWith('name: prod\n')).toBe(translated);
+  });
+
+  test('names a profile file that does not parse', async () => {
+    const res = await importSemanticModelYaml(googleDoc(), {
+      flavor: 'google', fileName: 'sales.yaml',
+      profileFiles: [{fileName: 'sales.profile.prod.yaml', content: 'name: [prod\n'}],
+    });
+    expect(res.errors).toEqual([expect.stringContaining(
+        "Profile file 'sales.profile.prod.yaml' does not parse: ")]);
+    expect(res.warnings).toEqual([]);
+  });
+
+  // A model with entities orders and items, and a profile file that binds
+  // items before orders, and orders' total and order_id each to the text after
+  // its `expression:`.
+  const model = googleDoc({
+    extra: '          - name: total\n            expression: orders.total\n' +
+        `      - name: items\n        source: ${BQ_PREFIX}/tables/items\n` +
+        '        primary_key: [id]\n        fields:\n          - name: id\n' +
+        '            expression: items.id\n',
+  });
+  const profileFile = (total: string, orderId: string) =>
+      `name: prod\nentities:\n  - name: items\n    source: ${BQ_PREFIX}/tables/items_prod\n` +
+      `    primary_key: [id]\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n` +
+      '    primary_key: [order_id]\n    fields: # bound fields\n' +
+      `      - name: total\n        expression: ${total}\n` +
+      `      - name: order_id\n        expression:${orderId}\n`;
+  const SF = '{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}';
+  const BQ = '{dialect: BIGQUERY, expression: "COALESCE(order_id, 0)"}';
+  const BLOCK = '\n          dialects:\n            - dialect: SNOWFLAKE # as written\n' +
+      '              expression: NVL(order_id, 0)';
+  const SINGLE = "'CONCAT(orders.total, '' x'')'";
+  // The start of an expression whose dialects list has a comment of two lines.
+  const COMMENTED = '\n          # Snowflake only,\n          # for now\n          dialects:';
+  // An entry that writes expression before dialect, quoted and commented.
+  const REVERSED = '\n          dialects:\n            # Snowflake only\n' +
+      "            - expression: 'NVL(order_id, 0)' # fallback to 0\n" +
+      '              dialect: SNOWFLAKE # source warehouse';
+  // A blank line after every line, and a comment inside a flow expression over
+  // several lines. Import writes that expression again in block style, without
+  // the comment.
+  const FLOW = ` {\n          dialects: [  # Snowflake only\n` +
+      `            ${SF}\n          ]\n        }`;
+  const BLANKS = profileFile('orders.total', FLOW).replaceAll('\n', '\n\n');
+  // The texts of each field of orders in profile file `text`.
+  const texts = (text: string) =>
+      loadProfileFile(text, 'prod').entities[1].fields!.map(f => f.dialects);
+
+  // [label, input, output]
+  test.each([
+    ['a folded block scalar and a commented block expression',
+     profileFile('>-\n          orders.total\n          + 1', BLOCK),
+     profileFile('>-\n          orders.total\n          + 1', `${BLOCK}
+            - dialect: BIGQUERY
+              expression: COALESCE(order_id, 0)`)],
+    ['a double-quoted string with a line break',
+     profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`, ` {dialects: [${SF}]}`),
+     profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`,
+                 ` {dialects: [${SF}, ${BQ}]}`)],
+    ['a blank line at each position and a comment inside a flow expression', BLANKS,
+     BLANKS.replace(FLOW.replaceAll('\n', '\n\n'), '\n          dialects:\n' +
+         '            - dialect: SNOWFLAKE\n              expression: "NVL(order_id, 0)"\n' +
+         '            - dialect: BIGQUERY\n              expression: COALESCE(order_id, 0)')],
+    ['an entry that writes expression before dialect', profileFile('orders.total', REVERSED),
+     profileFile('orders.total', `${REVERSED}
+            - dialect: BIGQUERY
+              expression: COALESCE(order_id, 0)`)],
+    ['CRLF line endings and a single-quoted string',
+     profileFile(SINGLE, `${COMMENTED} [${SF}]`).replaceAll('\n', '\r\n'),
+     profileFile(SINGLE, `${COMMENTED} [${SF}, ${BQ}]`).replaceAll('\n', '\r\n')],
+  ])('writes a profile file with %s as it writes the model file', async (_, input, output) => {
+    const res = await importSemanticModelYaml(model, {
+      ...google, profileFiles: [{fileName: 'retail.profile.prod.yaml', content: input}],
+    });
+    expect(res.files[1].content).toBe(output);
+    const [total, orderId] = texts(input);
+    expect(texts(res.files[1].content)).toEqual(
+        [total, [...orderId!, {dialect: 'BIGQUERY', expression: 'COALESCE(order_id, 0)'}]]);
+  });
+});
+
+// Import checks each profile it writes as push does, and reports what push
+// rejects in push's words: an error under --input first-party and a warning
+// otherwise. A profile file stays as written.
+describe('profile checks', () => {
+  type Profile = Record<string, unknown>;
+  const PG = {name: 'pg', entities: [{
+    name: 'orders', source: `${BQ_PREFIX}/tables/orders_prod`, primary_key: ['order_id'],
+    fields: [{name: 'order_id', expression: 'order_id'}],
+  }]};
+  const orders = (more: object) => [{...PG, entities: [{...PG.entities[0], ...more}]}];
+  const also = (name: string) => [{...PG, entities: [...PG.entities, {name, source: BQ_TABLE}]}];
+  const block = (ps: Profile[]) =>
+      `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({profiles: ps})}'\n`;
+  // The input file is sales.yaml, which holds model retail.
+  const files = (ps: Profile[]) =>
+      ps.map(p => ({fileName: `sales.profile.${p.name ?? 'pg'}.yaml`, content: yaml.stringify(p)}));
+  const google = googleDoc({extra: '      - name: party\n        abstract: true\n'});
+  const strict = {strict: true, fileName: 'sales.yaml'};
+  // Where a message says profile pg is: the document that holds the model and
+  // the label of pg's errors.
+  type At = {doc: string; label: string};
+  // [path, its input and options for profiles ps, the document and label a
+  // message names, whether the path keeps a Google model's profile files]. In
+  // strict mode a message names the input; otherwise it names what is written.
+  const PATHS: Array<[string, (ps: Profile[]) => [string, any], string, string, boolean]> = [
+    ['a GOOGLE block, to ossie', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'ossie'}], 'sales', 'sales', false],
+    ['a GOOGLE block, to google', ps => [ossieDoc({extra: block(ps)}), {...strict, flavor: 'google'}], 'sales', 'sales', false],
+    ['a profile file, to ossie', ps => [googleDoc(), {...strict, flavor: 'ossie', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', false],
+    ['a profile file, to google', ps => [google, {...strict, flavor: 'google', profileFiles: files(ps)}], 'sales', 'sales.profile.pg.yaml', true],
+    ['a third-party profile file, to google', ps => [google, {flavor: 'google', fileName: 'sales.yaml', profileFiles: files(ps)}], 'retail', 'retail.profile.pg.yaml', true],
+  ];
+  // Push's error about pg, labeled `label`, binding orders to 'orders'.
+  const badSource = (label: string) => `[${label}] profile 'pg': entity 'orders': bare table name 'orders' is not a valid source. Write the table's GCP resource name instead, for example:\n  source: bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/orders`;
+  // [problem, profiles, push's message, whether only a kept profile file
+  // reaches it]. A double-quoted name gets push's warning on every path.
+  const PROBLEMS: Array<[string, Profile[], ((at: At) => string)|undefined, boolean]> = [
+    ['nothing', [PG], undefined, false],
+    ['nothing for a profile named profile', [{...PG, name: 'profile'}], undefined, true],
+    ['no name', [(({name: _, ...rest}) => rest)(PG)],
+     at => `Profile file '${at.label}' declares no name; add 'name: pg'.`, true],
+    ['names that differ only in letter case', [PG, {...PG, name: 'PG'}],
+     at => `Profile files '${at.doc}.profile.pg.yaml' and '${at.doc}.profile.PG.yaml' name the ` +
+         'same profile; profile names are unique ignoring case.', true],
+    ['an unknown entity', also('ghost'),
+     at => `[${at.label}] profile 'pg': entity 'ghost' is not in the logical model`, false],
+    ['an abstract entity', also('party'),
+     at => `[${at.label}] profile 'pg': entity 'party' is abstract, so a profile cannot bind it`, true],
+    ['a bad source', orders({source: 'orders'}), at => badSource(at.label), false],
+    ['a field reference', orders({fields: [{name: 'order_id', expression: 'orders.nope'}]}),
+     at => `[${at.label}] profile 'pg': field 'orders.order_id' reads 'orders.nope', which is not a field of 'orders'`, false],
+    ['the reserved name', [{...PG, name: 'default'}],
+     at => `Profile name 'default' is reserved for the inline bindings in '${at.doc}.yaml'; ` +
+         `remove '${at.doc}.profile.default.yaml'.`, true],
+    ['a name that breaks the naming rule', [{...PG, name: '1x'}],
+     at => `Profile file '${at.doc}.profile.1x.yaml' has profile name '1x'; a profile name is ` +
+         'a letter followed by letters, digits, underscores and hyphens.', true],
+    ['a double-quoted name', orders({fields: [{name: 'order_id', expression: '"Order ID"'}]}),
+     at => `profile 'pg': [${at.doc}] field 'orders.order_id': BigQuery reads "Order ID" in its ` +
+         `'ANSI_SQL' expression as text; if you meant a column or a field, give it a 'BIGQUERY' ` +
+         'expression that names a column alone, in backticks if it needs quoting, and a field ' +
+         "of the entity whose fields list holds this expression as '<entity>.<field>'", false],
+  ];
+
+  test.each(PROBLEMS.flatMap(([problem, profiles, message, keptOnly]) => PATHS.flatMap(
+      ([path, build, doc, label, kept]) => {
+        const [input, opts] = build(profiles);
+        return !keptOnly || kept ?
+            [[problem, path, input, opts, message?.({doc, label})]] : [];
+      })))(
+      'reports %s in %s', async (problem, __, input, opts, message) => {
+        const res = await importSemanticModelYaml(input, opts);
+        const warned = !opts.strict || problem === 'a double-quoted name';
+        expect(res.errors).toEqual(!warned && message ? [message] : []);
+        expect(res.warnings).toEqual(warned && message ? [message] : []);
+        if (!opts.strict) {
+          expect(res.files.slice(1).map(f => f.content))
+              .toEqual(opts.profileFiles.map((f: any) => f.content));
+        }
+      });
+
+  // A Google model of `orders` on `source`, with `more` after its key field.
+  const model = (more: string, source = BQ_TABLE) => googleDoc({
+    source, fieldExpr: 'order_id', extra: more,
+  });
+  const KEYED = `    primary_key: [order_id]\n    fields:\n      - {name: order_id, expression: order_id}\n`;
+  const pg = (body: string) => [{fileName: 'sales.profile.pg.yaml', content:
+      `name: pg\nentities:\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n${body}`}];
+  // The warning about `names`, "Order Amount" unless given, in a field, or with
+  // `metric` in a metric.
+  const READS = (database: string, dialect: string, metric = false, names = '"Order Amount"') =>
+      `${database} reads ${names} in its 'ANSI_SQL' expression as text; ` + (metric ?
+          `if you meant a field, give it a '${dialect}' expression that names it as ` +
+              "'<entity>.<field>'" :
+          `if you meant a column or a field, give it a '${dialect}' expression that names a ` +
+              'column alone, in backticks if it needs quoting, and a field of the entity whose ' +
+              "fields list holds this expression as '<entity>.<field>'");
+  const AMOUNT = (expr: string) => `          - {name: amount, expression: ${expr}}\n`;
+  const UNBOUND = model('').replace(/ +source: .*\n/, '');
+  // A Cloud SQL for MySQL table, whose dialect only a lookup gives.
+  const MYSQL = (t: string) =>
+      `cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/i/databases/app/tables/${t}`;
+  // [label, model, profile files, errors, warnings]
+  test.each([
+    ['reads no ANSI_SQL text of a profile whose tables only a lookup gives the dialect of',
+     model(`          - {name: x}\n          - {name: y, expression: '"orders"."x"'}\n`),
+     [{fileName: 'sales.profile.pg.yaml', content: `name: pg\nentities:\n  - name: orders\n` +
+       `    source: ${MYSQL('orders')}\n    primary_key: [order_id]\n    fields:\n` +
+       `      - {name: order_id, expression: '"orders"."order_no"'}\n    fields_exclude: [x]\n`}],
+     [], [`field 'orders.y': ${READS('BigQuery', 'BIGQUERY', false, '"orders" and "x"')}`,
+          `profile 'pg': [sales] field 'orders.order_id': ${READS('MySQL', 'MYSQL', false, '"orders" and "order_no"')}`,
+          `profile 'pg': [sales] field 'orders.y': ${READS('MySQL', 'MYSQL', false, '"orders" and "x"')}`]],
+    ['reads no ANSI_SQL text of a model whose tables only a lookup gives the dialect of',
+     googleDoc({source: MYSQL('orders'), fieldExpr: `'"t"."order_id"'`, extra:
+         `      - name: items\n        extends: [orders]\n        source: ${MYSQL('items')}\n` +
+         "        primary_key: [order_id]\n    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id)'}\n"}),
+     [], [], ['orders', 'items'].map(e =>
+         `field '${e}.order_id': ${READS('MySQL', 'MYSQL', false, '"t" and "order_id"')}`)],
+    ['warns once about a model field that a valid profile inherits',
+     model(AMOUNT(`'"Order Amount"'`)), pg(KEYED), [],
+     [`field 'orders.amount': ${READS('BigQuery', 'BIGQUERY')}`]],
+    ['gives no warning about a profile push rejects',
+     model(AMOUNT('amount')),
+     pg(`    fields:\n      - {name: order_id, expression: order_id}\n${AMOUNT(`'"Order Amount"'`).slice(4)}`),
+     ["[sales.profile.pg.yaml] profile 'pg': entity 'orders' has no primary_key in this " +
+      "profile; the model file's keys are columns of its own table, so state this profile's keys"], []],
+    ['warns about a double-quoted name in a profile\'s metric',
+     model(`    metrics:\n      - {name: total, entity: orders, expression: 'COUNT("Order Amount")'}\n`,
+           SPANNER_TABLE), pg(KEYED), [],
+     [`metric 'total': ${READS('Spanner', 'SPANNER', true)}`,
+      `profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', true)}`]],
+    ['reports a model field with no text for its table',
+     model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}')), [],
+     ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
+      "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source; give it one, or " +
+      "add one with 'kcmd import <file> --input first-party --flavor google --transpile'."],
+     ["field 'orders.amount': no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the 'SNOWFLAKE' " +
+      "expression as imported_expression (needs transpilation to 'BIGQUERY')"]],
+    ['warns about a model field with no text for a MySQL table read from its name',
+     model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'), MYSQL('orders')), [],
+     [], ["field 'orders.amount': no 'MYSQL' or 'ANSI_SQL' dialect, so the MYSQL table of " +
+          "entity 'orders' cannot run it"]],
+    ['warns about a model field with no text for a Cloud SQL table import cannot read',
+     model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}'),
+           `${CLOUDSQL_PREFIX}/tables/orders`), [],
+     [], ["field 'orders.amount': no 'POSTGRES', 'SQLSERVER' or 'ANSI_SQL' dialect, so the " +
+          "Cloud SQL table of entity 'orders' cannot run it"]],
+    ['reports a field that reads the column of the entity it is inherited from',
+     model(`      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n        primary_key: [order_id]\n`), [],
+     ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
+      "whose expression reads column 'order_id' of that entity's table; restate it with an " +
+      "expression for this entity's table."], []],
+    ["warns that the model file's own bindings leave an entity unbound, beside a profile",
+     UNBOUND, pg(KEYED), [],
+     ["model 'retail' (sales) has an unbound 'default' profile: the model file leaves entity " +
+      "'orders' without a source. It cannot be queried through 'default'."]],
+    ["warns that the model file's own bindings leave an entity unbound, with no profile",
+     UNBOUND, [], [],
+     ["model 'retail' (sales) is non-executable: the model file leaves entity 'orders' without " +
+      'a source, and the model declares no named profile. It cannot be queried until it is bound.']],
+  ])('%s', async (_, input, profileFiles, errors, warnings) => {
+    const res = await importSemanticModelYaml(
+        input, {...strict, flavor: 'google', profileFiles});
+    expect(res.errors).toEqual(errors);
+    expect(res.warnings).toEqual(warnings);
+  });
+
+  test('suggests no import for a field its own --transpile leaves untranslated', async () => {
+    const toChar = (fmt: string) =>
+        AMOUNT(`{dialects: [{dialect: POSTGRES, expression: "TO_CHAR(amount, '${fmt}')"}]}`);
+    const metric = '    metrics:\n      - {name: years, entity: orders, expression: ' +
+        `{dialects: [{dialect: POSTGRES, expression: "COUNT(TO_CHAR(orders.amount, 'YYYY'))"}]}}\n`;
+    const res = await importSemanticModelYaml(model(toChar('YYYY') + metric), {
+      ...strict, flavor: 'google', transpile: true,
+      profileFiles: pg(KEYED + toChar('YY').slice(4)),
+    });
+    expect(res.errors).toEqual([
+      "field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
+          "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source.",
+      "[sales.profile.pg.yaml] profile 'pg': field 'orders.amount' has no expression for " +
+          "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY",
+      "[sales.profile.pg.yaml] profile 'pg': metric 'years' has no expression for BIGQUERY " +
+          "or ANSI_SQL, and this profile's sources are BIGQUERY; give it one, or add it to " +
+          "'metrics_exclude'",
+    ]);
+  });
+
+  // A model with metric total, deploying `deployment` with profile `profile`.
+  const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
+  const SPANNER_GRAPH = 'spanner.googleapis.com/projects/acme/instances/i/databases/db/graphs/g';
+  const onSpanner = (more = {}) =>
+      ({...orders({source: SPANNER_TABLE})[0], ...more});
+  // [path, the label of pg's errors, its input and options]
+  const DEPLOYED: Array<[string, string, (d: object|object[], p: Profile) => [string, any]]> = [
+    ['a profile file', 'sales.profile.pg.yaml', (d, p) => [googleDoc({extra:
+        `    deployments: ${JSON.stringify([d].flat())}\n` +
+        "    metrics:\n      - {name: total, entity: orders, expression: 'COUNT(orders.order_id)'}\n"}),
+     {...strict, flavor: 'google', profileFiles: files([p])}]],
+    ['a GOOGLE block', 'sales', (d, p) => [ossieDoc({extra:
+        "    metrics:\n      - name: total\n        expression: {dialects: [{dialect: ANSI_SQL, expression: 'COUNT(orders.order_id)'}]}\n" +
+        `        custom_extensions: [{vendor_name: GOOGLE, data: '{"entity":"orders"}'}]\n` +
+        `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '${JSON.stringify({deployments: [d].flat(), profiles: [p]})}'\n`}),
+     {...strict, flavor: 'ossie'}]],
+  ];
+  // [problem, deployments, profile, push's error, or its errors for pg's label]
+  const DEPLOYMENT_PROBLEMS:
+      Array<[string, object|object[], Profile, string|((label: string) => string[])]> = [
+    ['a deployment that names an unknown profile', {name: 'g', target: BQ_GRAPH, profile: 'nope'}, PG,
+     "[sales] model 'retail': deployment 'g' names unknown binding profile 'nope'; defined profiles: pg."],
+    ['a Spanner graph whose profile keeps a metric', {name: 's', target: SPANNER_GRAPH, profile: 'pg'}, onSpanner(),
+     "model 'retail' (sales) deployment 's' targets Spanner, which has no measures, and profile 'pg' " +
+     `leaves metric(s) 'total' available; name them in its 'metrics_exclude', or set it to "*".`],
+    ['a BigQuery graph whose profile binds a Spanner table', {name: 'g', target: BQ_GRAPH, profile: 'pg'},
+     onSpanner({metrics_exclude: '*'}),
+     `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
+     `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
+    ["a profile with a bad source once, and a Spanner graph on the model file's own bindings",
+     [{name: 'g', target: BQ_GRAPH, profile: 'pg'}, {name: 's', target: SPANNER_GRAPH}],
+     orders({source: 'orders'})[0], label => [
+       badSource(label),
+       "[sales] deployment 's' targets Spanner database 'acme/i/db', but the model file binds " +
+       `entity 'orders' to '${BQ_TABLE}', which is not a table in that database.`,
+       "[sales] deployment 's' targets a Spanner graph and uses the model file's own bindings, " +
+       'but the model declares metrics, which a Spanner graph cannot hold; name a profile with ' +
+       'metrics_exclude: "*".']],
+  ];
+  test.each(DEPLOYMENT_PROBLEMS.flatMap(([problem, d, p, error]) => DEPLOYED.map(
+      ([path, label, build]) => [problem, path, ...build(d, p),
+                                 [typeof error === 'function' ? error(label) : error].flat()] as const)))(
+      'reports %s, in %s', async (_, __, input, opts, errors) => {
+        const res = await importSemanticModelYaml(input, opts);
+        expect(res.errors).toEqual(errors);
+      });
+
+  test.each(DEPLOYED)('checks the deployments of each profile apart, in %s', async (_, __, build) => {
+    const [input, opts] = build(
+        [{name: 'a', target: BQ_GRAPH}, {name: 'b', target: `${BQ_GRAPH}2`, profile: 'pg'}], PG);
+    const res = await importSemanticModelYaml(
+        input.replace('COUNT(orders.order_id)', 'COUNT(orders.order_id) / 2'), opts);
+    expect(res.errors).toEqual(['a', 'b'].map(d => `model 'retail' (sales) deployment '${d}' ` +
+        "targets BigQuery, where metric 'total' cannot be a measure: it is not SUM, AVG, COUNT, " +
+        'MIN or MAX over one operand.'));
+  });
+
+  // [label, input and options, push's one message]
+  test.each([
+    ['a profile file breaks a file rule', DEPLOYED[0][2](
+        {name: 'g', target: BQ_GRAPH, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG)),
+     "Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."],
+    ['the loader warns about a source',
+     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_GRAPH}}]\n`}),
+      {flavor: 'google'}],
+     "dataset 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
+     "the file until it is repointed, or until 'kcmd import' runs again with '--source-prefix'. A " +
+     'table outside Google Cloud is written as the entry name of its Knowledge Catalog entry, ' +
+     "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'."],
+  ] as const)('checks no deployment when %s, as push does', async (_, [input, opts], message) => {
+    const res = await importSemanticModelYaml(input, opts);
+    expect([...res.errors, ...res.warnings]).toEqual([message]);
+  });
+
+  test.each(PATHS.filter(([path]) => path.includes('profile file')))(
+      'rethrows an unexpected error from the profile file check, in %s', async (_, build) => {
+        const bug = new TypeError('a bug');
+        const check = spyOn(layout, 'checkProfileFileName').mockImplementation(() => {
+          throw bug;
+        });
+        try {
+          await expect(importSemanticModelYaml(...build([PG]))).rejects.toBe(bug);
+        } finally {
+          check.mockRestore();
+        }
       });
 });
 
@@ -572,6 +1049,143 @@ describe('sources', () => {
       });
 });
 
+describe('sources completed from an entry group', () => {
+  const GROUP = 'projects/acme/locations/us/entryGroups/sf';
+  // Listed with the project number, and written with the project as
+  // --source-prefix spells it.
+  const entry = (id: string, fullyQualifiedName: string) =>
+      ({name: `projects/123/locations/us/entryGroups/sf/entries/${id}`, fullyQualifiedName});
+  const ENTRIES = [
+    entry('orders', 'snowflake:acme.retail.public.orders'),
+    // Ends in public.orders in another letter case, as Snowflake reads it.
+    entry('orders-upper', 'snowflake:acme.RETAIL.PUBLIC.ORDERS'),
+    entry('items-a', 'snowflake:acme.retail.public.items'),
+    entry('items-b', 'snowflake:acme.retail.sales.items'),
+    entry('public', 'snowflake:acme.retail.public'),
+    entry('dotted', 'snowflake:acme.retail.`my.schema`.t'),
+    entry('customers', 'snowflake:acme.RETAIL.PUBLIC.CUSTOMERS'),
+    entry('lines-a', 'snowflake:acme.RETAIL.PUBLIC.LINES'),
+    entry('lines-b', 'snowflake:acme.RETAIL.PUBLIC.Lines'),
+  ];
+  // Each [dataset, source] pair as a dataset of a vanilla model.
+  const model = (...datasets: Array<[string, string]>) =>
+      'version: "0.2.0.dev0"\nsemantic_model:\n  - name: retail\n    datasets:\n' +
+      datasets.map(([name, source]) => `      - name: ${name}\n        source: ${
+          source}\n        primary_key: [id]\n        fields:\n          - name: id\n` +
+          `            expression: {dialects: [{dialect: ANSI_SQL, expression: ${name}.id}]}\n`)
+          .join('');
+  // A lister that records each call and yields ENTRIES, or throws `error`.
+  const lister = (error?: string) => {
+    const calls: string[][] = [];
+    const listEntries = async function*(...args: string[]) {
+      calls.push(args);
+      if (error) throw new Error(error);
+      yield* ENTRIES;
+    };
+    return {calls, listEntries};
+  };
+  const input = model(
+      ['quoted', `'"public"."orders"'`], ['dotted', "'`my.schema`.t'"],
+      ['customers', 'public.customers'], ['orders', 'public.orders'], ['items', 'items'],
+      ['lines', 'public.lines'], ['ghosts', 'public.ghosts'],
+      ['quoted_lower', `'"public".customers'`], ['ticked_lower', "'`public`.customers'"],
+      ['dq_path', `'"public.orders"'`], ['stray', `'public."orders'`],
+      ['empty_part', 'public..orders']);
+  // Entry `id` as the import writes it, and its fullyQualifiedName.
+  const named = (id: string) => ({
+    name: `${GROUP}/entries/${id}`,
+    fqn: ENTRIES.find(e => e.name.endsWith(`/${id}`))!.fullyQualifiedName,
+  });
+  // The message for `source` of dataset `ds`, completed to entry `id`.
+  const rewrote = (ds: string, source: string, id: string) =>
+      `dataset '${ds}': rewrote bare source '${source}' to '${named(id).name}', ` +
+      `the entry whose fullyQualifiedName is '${named(id).fqn}'.`;
+  // The message for `source` of dataset `ds`, which no entry ends in.
+  const noEntry = (ds: string, source: string) =>
+      `dataset '${ds}': left bare source '${source}' as written, since no entry for ` +
+      `a table or view in entry group '${GROUP}' has a fullyQualifiedName that ends in ` +
+      "it. 'kcmd push' rejects the file until the source is the table's GCP resource " +
+      'name. A table outside Google Cloud is written as the entry name of its Knowledge ' +
+      "Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
+  // The message for `source` of dataset `ds`, which the entries `ids` end in.
+  const several = (ds: string, source: string, ...ids: string[]) =>
+      `dataset '${ds}': left bare source '${source}' as written, since several entries in ` +
+      `entry group '${GROUP}' have a fullyQualifiedName that ends in it: ${
+          ids.map(id => `'${named(id).name}' (${named(id).fqn})`).join(', ')}. ` +
+      "'kcmd push' rejects the file until the source names one of them.";
+  const completed = [
+    rewrote('quoted', '"public"."orders"', 'orders'),
+    rewrote('dotted', '`my.schema`.t', 'dotted'),
+    rewrote('customers', 'public.customers', 'customers'),
+  ];
+  const left = [
+    several('orders', 'public.orders', 'orders', 'orders-upper'),
+    several('items', 'items', 'items-a', 'items-b'),
+    several('lines', 'public.lines', 'lines-a', 'lines-b'),
+    noEntry('ghosts', 'public.ghosts'),
+    // A quoted part keeps its letter case.
+    noEntry('quoted_lower', '"public".customers'),
+    noEntry('ticked_lower', '`public`.customers'),
+    // A double-quoted whole path is one name, so the lookup does not split it.
+    noEntry('dq_path', '"public.orders"'),
+    // A name with a stray quote or an empty part is no bare name, so the
+    // lookup does not read it.
+    `dataset 'stray': source 'public."orders' is not a valid GCP resource name, ` +
+        "and kcmd cannot name a table whose name holds a quote. 'kcmd push' " +
+        'rejects the file until it is repointed. A table outside Google Cloud is ' +
+        "written as the entry name of its Knowledge Catalog entry, " +
+        "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.",
+    "dataset 'empty_part': source 'public..orders' is not a valid GCP resource " +
+        "name; 'kcmd push' rejects the file until it is repointed. A table " +
+        'outside Google Cloud is written as the entry name of its Knowledge ' +
+        "Catalog entry, 'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.",
+  ];
+
+  // A completion is a warning in strict mode too; a name left as written is an
+  // error there, as any bare source is.
+  test.each([
+    ['third-party', false, [...completed, ...left], []],
+    ['first-party', true, completed, left],
+  ])('completes each name one entry ends in, and reports the rest (%s)',
+     async (_, strict, warnings, errors) => {
+       const {calls, listEntries} = lister();
+       const res = await importSemanticModelYaml(
+           input, {flavor: 'ossie', strict, sourcePrefix: GROUP, listEntries});
+       expect([res.warnings, res.errors]).toEqual([warnings, errors]);
+       expect(calls).toEqual([['acme', 'us', 'sf']]);
+       if (!strict) {
+         expect(loadModels(res.files[0].content, {warnUnacceptedSource: true})
+                    .models[0].entities.map(e => e.authoredSource))
+             .toEqual([...['orders', 'dotted', 'customers'].map(id => named(id).name),
+                       'public.orders', 'items', 'public.lines', 'public.ghosts',
+                       '"public".customers', '`public`.customers', '"public.orders"',
+                       'public."orders', 'public..orders']);
+       }
+     });
+
+  // [label, input, sourcePrefix]
+  test.each([
+    ['a first-party prefix', model(['orders', 'orders']), BQ_PREFIX],
+    ['sources that are not bare names',
+     model(['orders', `${GROUP}/entries/orders`], ['other', 'trino:cat.public.orders']), GROUP],
+  ])('reads no catalog for %s', async (_, text, sourcePrefix) => {
+    const {calls, listEntries} = lister();
+    const res = await importSemanticModelYaml(text, {sourcePrefix, listEntries});
+    expect(res.ok).toBe(true);
+    expect(calls).toEqual([]);
+  });
+
+  test('stops when the entry group cannot be listed', async () => {
+    const {listEntries} = lister('Failed to list entries: Permission denied');
+    const res = await importSemanticModelYaml(
+        input, {sourcePrefix: GROUP, listEntries});
+    expect([res.ok, res.files, res.errors]).toEqual([false, [], [
+      `Could not list the entries of entry group '${GROUP}' to complete bare ` +
+          'table names: Failed to list entries: Permission denied',
+    ]]);
+  });
+});
+
 describe('dialects and datatypes', () => {
   test(
       'maps dialect aliases and drops non-SQL dialects',
@@ -816,6 +1430,13 @@ entities:
     fields:
       - name: order_id
         expression: {dialects: [{dialect: BIGQUERY, expression: "${longSql}"}]}
+  - name: base_orders
+    source: ${BQ_TABLE}
+    primary_key: [order_id]
+relationships:
+  - name: order_base
+    from_columns: [order_id]
+    to_columns: [order_id]
 `;
 
   test(
@@ -891,6 +1512,18 @@ semantic_model:
                     "name": "orders",
                     "source": "${BQ_TABLE}",
                     "primary_key": ["order_id"]
+                  },
+                  {
+                    "name": "base_orders",
+                    "source": "${BQ_TABLE}",
+                    "primary_key": ["order_id"]
+                  }
+                ],
+                "relationships": [
+                  {
+                    "name": "order_base",
+                    "from_columns": ["order_id"],
+                    "to_columns": ["order_id"]
                   }
                 ]
               }
@@ -944,8 +1577,15 @@ semantic_model:
               source: BQ_TABLE,
               primaryKey: ['order_id'],
             },
+            {
+              name: 'base_orders',
+              source: BQ_TABLE,
+              primaryKey: ['order_id'],
+            },
           ],
-          relationships: [],
+          relationships: [
+            {name: 'order_base', fromColumns: ['order_id'], toColumns: ['order_id']},
+          ],
         });
       });
 
@@ -1077,39 +1717,31 @@ semantic_model:
        expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
      });
 
+  // [label, the profile files beside sales.yaml, push's error]
   test.each([
-    [
-      'reserved default profile name',
-      [{fileName: 'retail.profile.default.yaml', content: 'name: default\n'}],
-      `'default' names the model's inline bindings`,
-    ],
-    [
-      'case-insensitive duplicate profile names',
-      [
-        {fileName: 'retail.profile.prod.yaml', content: 'name: prod\n'},
-        {fileName: 'PROD.yaml', content: 'name: PROD\n'},
-      ],
-      `duplicate profile name 'PROD'`,
-    ],
-    [
-      'mismatched profile name inside file',
-      [{fileName: '/dir/retail.profile.prod.yaml', content: 'name: staging\n'}],
-      `does not match its file's profile name 'prod'`,
-    ],
-    [
-      'nameless .yml profile file',
-      [{fileName: 'retail.profile.yml', content: 'name: ""\n'}],
-      `Profile name '' is not valid`,
-    ],
-  ])('refuses invalid profile file when converting to vanilla: %s',
-     async (_, profileFiles, expectedMsg) => {
-       const res = await importSemanticModelYaml(
-           googleDoc(), {flavor: 'ossie', strict: true, profileFiles});
-
-       expect(res.ok).toBe(false);
-       expect(res.files).toEqual([]);
-       expect(res.errors.some(e => e.includes(expectedMsg))).toBe(true);
-     });
+    ['the reserved name', [['sales.profile.default.yaml', 'name: default\n']],
+     "Profile name 'default' is reserved for the inline bindings in 'sales.yaml'; remove " +
+     "'sales.profile.default.yaml'."],
+    ['names that differ only in letter case',
+     [['sales.profile.PROD.yaml', 'name: PROD\n'], ['sales.profile.prod.yaml', 'name: prod\n']],
+     "Profile files 'sales.profile.PROD.yaml' and 'sales.profile.prod.yaml' name the same " +
+     'profile; profile names are unique ignoring case.'],
+    ['a key a profile may not set', [['sales.profile.prod.yaml', 'name: prod\nbogus: 1\n']],
+     "[sales.profile.prod.yaml] profile 'prod' sets 'bogus', which a profile may not set; a " +
+     'profile carries only physical bindings, and the logical model owns everything else'],
+    ['a file rule after a profile that does not load',
+     [['sales.profile.a.yaml', 'name: a\nbogus: 1\n'], ['sales.profile.b.yaml', 'name: c\n']],
+     "Profile file 'sales.profile.b.yaml' declares name 'c', which does not match filename suffix 'b'."],
+    ['a name that breaks the naming rule', [['sales.profile.-us.yaml', 'name: -us\n']],
+     "Profile file 'sales.profile.-us.yaml' has profile name '-us'; a profile name is a letter " +
+     'followed by letters, digits, underscores and hyphens.'],
+  ])('refuses %s when converting to vanilla, in push\'s words', async (_, files, error) => {
+    const res = await importSemanticModelYaml(googleDoc(), {
+      flavor: 'ossie', strict: true, fileName: 'sales.yaml',
+      profileFiles: files.map(([fileName, content]) => ({fileName, content})),
+    });
+    expect([res.files, res.errors]).toEqual([[], [error]]);
+  });
 
   test(
       'round-trips Google flavor to vanilla and back with equal loaded IR (wrapping short-form as ANSI_SQL) and preserves canonical files identically',
@@ -1305,21 +1937,24 @@ ${lines}`;
     expect(res.files[0].content).toContain(block);
   });
 
-  test('ignores profileFiles when target flavor is google', async () => {
+  test('refuses profileFiles beside a vanilla model when target flavor is google, as push does', async () => {
     const googleRes = await importSemanticModelYaml(ossieDoc(), {
       flavor: 'google',
       strict: true,
       profileFiles: [
         {
           fileName: 'retail.profile.default.yaml',
-          content: 'name: default\n',
+          content: 'name: default\nentities: [{name: orders, source: orders}]\n',
         },
       ],
     });
 
-    expect(googleRes.ok).toBe(true);
-    expect(googleRes.errors).toEqual([]);
-    expect(googleRes.files.map(f => f.fileName)).toEqual(['retail.yaml']);
+    expect(googleRes.ok).toBe(false);
+    expect(googleRes.errors).toEqual([
+      "Profile file 'retail.profile.default.yaml' sits beside 'retail.yaml', which is a " +
+      '0.2.0.dev0 document; sibling profile files are Google-flavor only, and a 0.2.0.dev0 ' +
+      'model keeps its profiles in its GOOGLE block.',
+    ]);
   });
 });
 

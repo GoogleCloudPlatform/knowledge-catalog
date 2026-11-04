@@ -53,6 +53,23 @@ export function profileFilesBeside(dir: string, model: string):
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// Each `<model>.profile.*.yaml` in `dir`, whatever its profile name: the
+// nameless file first, then those whose profile name is empty or has a dot, by
+// file name, then the rest by profile name.
+export function profileFileNamesBeside(dir: string, model: string): string[] {
+  if (!fs.existsSync(dir)) return [];
+  const named = profileFilesBeside(dir, model).map(p => path.basename(p.path));
+  const nameless = `${model}.profile.yaml`;
+  const others = fs.readdirSync(dir).filter(
+      f => f.startsWith(`${model}.profile.`) && f.endsWith('.yaml') &&
+          f !== nameless && !named.includes(f));
+  return [
+    ...(fs.existsSync(path.join(dir, nameless)) ? [nameless] : []),
+    ...others.sort(),
+    ...named,
+  ];
+}
+
 // The suffix of an entry's overview sidecar.
 const OVERVIEW_SIDECAR = '.overview.md';
 
@@ -72,13 +89,36 @@ const DEFAULT_PROFILE_NAME = 'default';
 const VANILLA_VERSION = '0.2.0.dev0';
 
 
-// The error for a sibling profile file beside a vanilla model, which keeps its
-// profiles in its GOOGLE block.
-function vanillaSiblingError(file: string, model: string): string {
-  return `Profile file '${file}' sits beside '${model}.yaml', which is a ` +
+// Push's error for the profile file `file` beside the vanilla model file
+// `modelFile`, which keeps its profiles in its GOOGLE block.
+export function vanillaSiblingError(file: string, modelFile: string): string {
+  return `Profile file '${file}' sits beside '${modelFile}', which is a ` +
       `${VANILLA_VERSION} document; sibling profile files are Google-flavor ` +
       `only, and a ${VANILLA_VERSION} model keeps its profiles in its GOOGLE ` +
       `block.`;
+}
+
+// The profile files in the older `<model>.profiles/` directory in `dir`, each
+// named by its file basename.
+export function legacyProfileFiles(dir: string, model: string):
+    {name: string; path: string}[] {
+  const legacy = path.join(dir, `${model}.profiles`);
+  if (!fs.statSync(legacy, {throwIfNoEntry: false})?.isDirectory()) return [];
+  const out: {name: string; path: string}[] = [];
+  for (const entry of fs.readdirSync(legacy)) {
+    if (!entry.endsWith('.yaml')) continue;
+    if (SIDECAR_SUFFIXES.some(s => entry.endsWith(s))) continue;
+    out.push(
+        {name: path.basename(entry, '.yaml'), path: path.join(legacy, entry)});
+  }
+  return out.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+// Push's error for the older `<model>.profiles/` directory.
+export function legacyProfileDirError(model: string): string {
+  return `Legacy profile directory '${model}.profiles/' is no longer ` +
+      `supported; rename profile files to '${model}.profile.<name>.yaml' ` +
+      `beside '${model}.yaml'.`;
 }
 
 export class SemanticModelLayout implements CatalogLayout {
@@ -174,6 +214,18 @@ export class SemanticModelLayout implements CatalogLayout {
     ];
   }
 
+  // Every profile file of a model on disk, whatever its profile name: each
+  // `<model>.profile.*.yaml` in the entry group, as profileFileNamesBeside
+  // lists them, then each file in the older `<model>.profiles/` directory.
+  profileFilePaths(model: string): string[] {
+    if (!this._entryGroup) return [];
+    const dir = this._groupDir();
+    return [
+      ...profileFileNamesBeside(dir, model).map(f => path.join(dir, f)),
+      ...this._legacyProfilePaths(model).map(p => p.path),
+    ];
+  }
+
   // The overview sidecar of each entry, by entry id. Throws naming a sidecar
   // parseOverviewSidecar rejects.
   overviewSidecars(): Map<string, OverviewSidecar> {
@@ -219,9 +271,7 @@ export class SemanticModelLayout implements CatalogLayout {
         path.join(this._groupDir(), `${model}.profile.yaml`) :
         undefined;
     if (nameless && fs.existsSync(nameless)) {
-      throw new Error(
-          `Profile file '${path.basename(nameless)}' names no profile; ` +
-          `rename it '${model}.profile.<name>.yaml'.`);
+      throw new Error(profileNameError(path.basename(nameless), '')!);
     }
     const prefix = `${model}.profile.`;
     const badName = this._entryGroup && fs.existsSync(this._groupDir()) ?
@@ -233,11 +283,8 @@ export class SemanticModelLayout implements CatalogLayout {
         }) :
         undefined;
     if (badName) {
-      throw new Error(
-          `Profile file '${badName}' has profile name '${
-              badName.slice(prefix.length, -'.yaml'.length)}'; a profile ` +
-          `name is a letter followed by letters, digits, underscores and ` +
-          `hyphens.`);
+      throw new Error(profileNameError(
+          badName, badName.slice(prefix.length, -'.yaml'.length))!);
     }
     const siblings = this._siblingProfilePaths(model);
     if (!siblings.length) return [];
@@ -255,47 +302,17 @@ export class SemanticModelLayout implements CatalogLayout {
     }
     const version = header.version;
     const docs: {name: string; text: string; path: string}[] = [];
-    // Profile names are unique ignoring case.
-    const byLowerName = new Map<string, string>();
+    const seen = new Map<string, string>();
     for (const {name, path: p} of siblings) {
       const file = path.basename(p);
-      const twin = byLowerName.get(name.toLowerCase());
-      if (twin) {
-        throw new Error(
-            `Profile files '${twin}' and '${file}' name the same profile; ` +
-            `profile names are unique ignoring case.`);
-      }
-      byLowerName.set(name.toLowerCase(), file);
       if (!fs.statSync(p).isFile()) {
         throw new Error(`Profile file '${file}' is not a file.`);
       }
       if (version === VANILLA_VERSION) {
-        throw new Error(vanillaSiblingError(file, model));
+        throw new Error(vanillaSiblingError(file, modelFile));
       }
       const text = fs.readFileSync(p, 'utf8');
-      const declared = parseProfileName(text, file, name);
-      const reserved = (n?: string) =>
-          n?.toLowerCase() === DEFAULT_PROFILE_NAME;
-      if (reserved(name)) {
-        throw new Error(
-            `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
-            `inline bindings in '${modelFile}'; remove '${file}'.`);
-      }
-      if (reserved(declared)) {
-        throw new Error(
-            `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
-            `inline bindings in '${modelFile}'; change the name in '${
-                file}' to '${name}'.`);
-      }
-      if (declared === undefined) {
-        throw new Error(
-            `Profile file '${file}' declares no name; add 'name: ${name}'.`);
-      }
-      if (declared !== name) {
-        throw new Error(
-            `Profile file '${file}' declares name '${declared}', which ` +
-            `does not match filename suffix '${name}'.`);
-      }
+      checkProfileFileName(modelFile, file, name, text, seen);
       docs.push({name, text, path: p});
     }
     return docs;
@@ -392,16 +409,7 @@ export class SemanticModelLayout implements CatalogLayout {
   // `..` segment, so such a name has no directory here.
   private _legacyProfilePaths(model: string): {name: string; path: string}[] {
     if (!this._entryGroup || /[\\/]/.test(model)) return [];
-    const dir = path.join(this._groupDir(), `${model}.profiles`);
-    if (!fs.existsSync(dir)) return [];
-    const out: {name: string; path: string}[] = [];
-    for (const entry of fs.readdirSync(dir)) {
-      if (!entry.endsWith('.yaml')) continue;
-      if (SIDECAR_SUFFIXES.some(s => entry.endsWith(s))) continue;
-      out.push(
-          {name: path.basename(entry, '.yaml'), path: path.join(dir, entry)});
-    }
-    return out.sort((a, b) => a.name.localeCompare(b.name));
+    return legacyProfileFiles(this._groupDir(), model);
   }
 
   // The `version` and model `name` a model document declares, each undefined
@@ -550,6 +558,72 @@ export function formatOverviewSidecar(
       body;
 }
 
+// The error checkProfileFileName throws for a profile file that breaks one of
+// its rules.
+export class ProfileFileError extends Error {}
+
+// Throws when the profile file `file`, holding `text` for profile `name` beside
+// the model file `modelFile`, names the same profile as a file in `seen`, which
+// maps each profile name read before, in lower case, to its file. It also
+// throws when the name breaks the naming rule, the file does not parse, uses
+// the legacy `semantic_model:` wrapper, takes the name reserved for the inline
+// bindings, or declares no name or another name. Adds the file to `seen`.
+export function checkProfileFileName(
+    modelFile: string, file: string, name: string, text: string,
+    seen: Map<string, string>): void {
+  const badName = profileNameError(file, name);
+  if (badName) throw new ProfileFileError(badName);
+  // Profile names are unique ignoring case.
+  const twin = seen.get(name.toLowerCase());
+  if (twin) {
+    throw new ProfileFileError(
+        `Profile files '${twin}' and '${file}' name the same profile; ` +
+        `profile names are unique ignoring case.`);
+  }
+  seen.set(name.toLowerCase(), file);
+  const declared = parseProfileName(text, file, name);
+  const reserved = (n?: string) => n?.toLowerCase() === DEFAULT_PROFILE_NAME;
+  if (reserved(name)) {
+    throw new ProfileFileError(
+        `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
+        `inline bindings in '${modelFile}'; remove '${file}'.`);
+  }
+  if (reserved(declared)) {
+    throw new ProfileFileError(
+        `Profile name '${DEFAULT_PROFILE_NAME}' is reserved for the ` +
+        `inline bindings in '${modelFile}'; change the name in '${file}' to ` +
+        `'${name}'.`);
+  }
+  if (declared === undefined) {
+    throw new ProfileFileError(
+        `Profile file '${file}' declares no name; add 'name: ${name}'.`);
+  }
+  if (declared !== name) {
+    throw new ProfileFileError(
+        `Profile file '${file}' declares name '${declared}', which does not ` +
+        `match filename suffix '${name}'.`);
+  }
+}
+
+// Push's error for the profile file `file` whose profile name `name` breaks
+// the naming rule, or undefined. A `<model>.profile.yaml` names no profile.
+export function profileNameError(file: string, name: string): string|undefined {
+  const nameless = file.match(/^(.*)\.profile\.yaml$/);
+  if (nameless && name === '') {
+    return `Profile file '${file}' names no profile; rename it ` +
+        `'${nameless[1]}.profile.<name>.yaml'.`;
+  }
+  if (nameProblem('profile', name) === undefined) return undefined;
+  return `Profile file '${file}' has profile name '${name}'; a profile name ` +
+      `is a letter followed by letters, digits, underscores and hyphens.`;
+}
+
+// Push's error for the profile file `file`, which does not parse, with the
+// parser's `message`.
+export function profileParseError(file: string, message: string): string {
+  return `Profile file '${file}' does not parse: ${message}`;
+}
+
 // The `name` a profile file declares at its top level, or undefined when it
 // declares none. A file that does not parse or that uses the legacy
 // `semantic_model:` wrapper throws, naming the file.
@@ -559,11 +633,10 @@ function parseProfileName(text: string, file: string, name: string):
   try {
     doc = yaml.parse(text, YAML_OPTIONS);
   } catch (err: any) {
-    throw new Error(
-        `Profile file '${file}' does not parse: ${err?.message ?? err}`);
+    throw new ProfileFileError(profileParseError(file, err?.message ?? err));
   }
   if (doc?.semantic_model !== undefined) {
-    throw new Error(
+    throw new ProfileFileError(
         `Profile file '${file}' uses the legacy 'semantic_model:' wrapper, ` +
         `which is no longer supported; write its entities, relationships ` +
         `and actions at the top level under 'name: ${name}', and move any ` +

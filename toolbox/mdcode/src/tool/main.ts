@@ -80,7 +80,7 @@ cli.command('push', 'Push catalog entries')
         'Print each pushed destination\'s generated artifact in its native format (BigQuery/Spanner Graph SQL DDL, Knowledge Catalog entry plan); semantic-model push only')
     .option(
         '--transpile',
-        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model file; write a profile\'s BIGQUERY or ANSI_SQL expressions yourself')
+        'No longer supported on push; use kcmd import --transpile to translate SQL dialects in a model and each profile whose tables are all in BigQuery or BigLake')
     .option(
         '--profile [name]',
         'No longer supported on push; declare a deployment with profile: prod under deployments: and run kcmd push --deployment <name>')
@@ -146,10 +146,10 @@ cli.command(
     .option('--flavor <flavor>', 'Flavor to write: ossie or google; required')
     .option(
         '--source-prefix <prefix>',
-        'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d')
+        'GCP resource name of the database whose tables complete each bare table name, such as bigquery.googleapis.com/projects/p/datasets/d, or the Knowledge Catalog entry group projects/p/locations/l/entryGroups/g whose table entries complete them by fullyQualifiedName')
     .option(
         '--transpile',
-        'Add a BigQuery translation beside SQL in another dialect; off by default')
+        'Add a BigQuery translation beside SQL in another dialect, in the model file and in each GOOGLE block profile or profile file the import writes, when all the profile\'s tables are in BigQuery or BigLake; off by default')
     .option(
         '--out <path>',
         'A .yaml file to write the one output file to, or a directory to write each output file into; defaults to the semantic-model layout')

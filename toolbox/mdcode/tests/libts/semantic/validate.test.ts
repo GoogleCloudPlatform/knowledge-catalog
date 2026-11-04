@@ -1704,19 +1704,22 @@ semantic_model:
       expect(validatePushRequirements([loaded(vanillaDoc)])).toEqual([]);
 
       // Metric with only a non-BigQuery dialect expression is rejected, and
-      // the error names kcmd import --transpile.
-      expect(bqPush([orders()], {
+      // the error names kcmd import --transpile when it translates the text.
+      const pg = (expression: string) => bqPush([orders()], {
         name: 'pg_rev',
-        importedExpression: 'SUM("orders"."net_amount")',
+        importedExpression: expression,
         importedDialect: 'POSTGRES',
         entity: 'orders',
         authoredEntity: 'orders',
-        dialects: [{dialect: 'POSTGRES', expression: 'SUM("orders"."net_amount")'}],
-      })).toContain(
-          "targets a BigQuery graph with only a 'POSTGRES' expression; supply " +
-          "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +
-          "import <file> --input first-party --flavor <ossie|google> " +
-          "--transpile'.");
+        dialects: [{dialect: 'POSTGRES', expression}],
+      });
+      const onlyPg = "targets a BigQuery graph with only a 'POSTGRES' " +
+          "expression; supply a 'BIGQUERY' or 'ANSI_SQL' expression";
+      expect(pg('SUM("orders"."net_amount")')).toContain(
+          `${onlyPg}, or add one with 'kcmd import <file> --input ` +
+          "first-party --flavor <ossie|google> --transpile'.");
+      expect(pg(`MAX(TO_CHAR("orders"."net_amount", '9'))`))
+          .toContain(`${onlyPg}.`);
     });
 
     test('the BigQuery placement error offers the anchor the flavor writes', () => {
@@ -3238,7 +3241,7 @@ ${extra}`);
           dialect} or ANSI_SQL, and the model file binds entity '${
           entity}' to ${a} ${dialect} source${hint}.`;
   const HINT = "; give it one, or add one with 'kcmd import <file> " +
-      "--input first-party --flavor <ossie|google> --transpile'";
+      "--input first-party --flavor google --transpile'";
 
   // A bound field needs a text for its source's dialect, an ANSI_SQL text, or
   // the string form. An inherited field is judged by the source of the entity

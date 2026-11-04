@@ -107,29 +107,48 @@ empty `extends`, `deployments` or relationship `description` instead of writing
 a `GOOGLE` block for it, and drops an empty `custom`, with its `ai_context`
 when nothing else is left in it. A file written for kcmd converts between
 flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
-`<file>` go in with it. Nothing is written when the import reports an error.
-Import rewrites only the values it changes, and every other line of the file
-stays as written, with its comments, blank lines, quoting, indentation and line
-endings. Comments on anything import removes or moves elsewhere in the file are
-dropped, such as those on a key that goes into or out of a `GOOGLE` block. A
-flow collection over several lines that import changes is written again in
-block style, without the comments inside it. A value that import would write as
-a `|+` block scalar is double-quoted instead, and a `|+` block scalar that it
-moves is written again. A profile file's comments are dropped when its contents
-move into the model file. A JSON file is written as YAML, and import reports
-the conversion. Without `--out`, the files go into the scope's entry group
-folder, and an import that would leave one of the model's profile files there
-unwritten is refused. Without `--out`, an import is also refused when the entry
-group folder already holds another model's file, since an entry group holds one
-model. It is refused too when the input file is a `.yaml` file in that folder
-other than `<model>.yaml`, since the model would then have two files.
+a Google-flavor `<file>` go in with it. A profile's sources stay as written,
+even with `--source-prefix`. Import runs push's checks on the model file's own
+bindings, on each profile it writes, on each deployment's profile, bindings,
+metrics and tables, on any profile file beside a vanilla `<file>`, and on a
+`<model>.profiles/` directory beside `<file>`. The deployment checks include
+the names a BigQuery or Spanner graph cannot hold and BigQuery's description
+and synonym limits. Import reports what these checks reject as an error under
+`--input first-party` and as a warning otherwise, and their warnings as
+warnings. A profile file that does not parse is always an error. Under
+`--input first-party`, a message from these checks names the input file that
+holds what it reports. Push's other model
+checks, such as whether a metric reads a known field or has SQL for its
+deployment's target, stay with push. Push reads each Cloud SQL and third-party
+table's engine from its Knowledge Catalog entry, and import does not, so the
+checks that need the engine stay with push: whether a profile's tables in one
+Cloud SQL instance or one third-party system are in one database, whether a
+field has SQL in its table's dialect, and what an `ANSI_SQL` text reads when
+every table of the model file or profile is such a table. Nothing is written
+when the import reports an error. Import rewrites only the values it changes,
+and every other line of the file stays as written, with its comments, blank
+lines, quoting, indentation and line endings. Comments on anything import
+removes or moves elsewhere in the file are dropped, such as those on a key that
+goes into or out of a `GOOGLE` block. A flow collection over several lines that
+import changes is written again in block style, without the comments inside it.
+A value that import would write as a `|+` block scalar is double-quoted
+instead, and a `|+` block scalar that it moves is written again. A profile file
+written beside the model is rewritten the same way. A profile file's comments
+are dropped when its contents move into the model file. A JSON file is written
+as YAML, and import reports the conversion. Without `--out`, the files go into
+the scope's entry group folder, and an import that would leave one of the
+model's profile files there unwritten is refused. Without `--out`, an import is
+also refused when the entry group folder already holds another model's file,
+since an entry group holds one model. It is refused too when the input file is
+a `.yaml` file in that folder other than `<model>.yaml`, since the model would
+then have two files.
 
 | Flag | Effect |
 |------|--------|
 | `--input <who>` | Who wrote the file: `third-party`, a file another product wrote (default), or `first-party`, a file written for kcmd. |
 | `--flavor <flavor>` | Flavor to write: `ossie` or `google`. Required. |
-| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`. Against an AlloyDB prefix, a name's unquoted parts are read in lower case, as PostgreSQL reads them. A name that still differs from the prefix only in letter case is not completed, and import reports it. |
-| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model file only. A profile's SQL stays as written. Off by default. |
+| `--source-prefix <prefix>` | GCP resource name of the database whose tables complete each bare table name, such as `bigquery.googleapis.com/projects/p/datasets/d`, or the name of a Knowledge Catalog entry group, `projects/<p>/locations/<l>/entryGroups/<g>`. Against an AlloyDB prefix, a name's unquoted parts are read in lower case, as PostgreSQL reads them. A name that still differs from a database prefix only in letter case is not completed, and import reports it. For an entry group, the import writes the entry name of the one table entry whose `fullyQualifiedName` ends in the bare name. An unquoted part of the name matches in any letter case, and a quoted part only in its own case. For example, `public.orders` becomes the name of the entry for `snowflake:acme.RETAIL.PUBLIC.ORDERS`. A name that no entry or several entries end in stays as written and is reported. Listing the entries needs read access to the entry group. |
+| `--transpile` | Add a BigQuery translation beside SQL in another dialect, in the model and in each profile the import writes. A profile is translated only when all its tables are in BigQuery or BigLake. Off by default. |
 | `--out <path>` | A `.yaml` file to write the one output file to, or a directory to write each output file into. |
 
 ### profiles

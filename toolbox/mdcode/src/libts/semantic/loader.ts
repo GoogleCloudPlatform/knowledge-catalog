@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {DEFAULT_PROFILE, fieldsOnTables, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
+import {DEFAULT_PROFILE, fieldsOnTables, importCommand, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
@@ -51,7 +51,9 @@ export interface LoadOptions {
   // repointed yet.
   warnUnacceptedSource?: boolean;
   // The caller rejects a field its own table cannot run, as push does for a
-  // model file, so the load gives no warning for it.
+  // model file, so the load gives no warning for it. A Cloud SQL or
+  // third-party table no lookup has read keeps the warning, since the caller
+  // does not check it.
   fieldTextChecked?: boolean;
 }
 
@@ -2020,8 +2022,9 @@ function runsDialect(
 }
 
 // The warning `item` gives on `table`, the table of `entity`:
-// expressionWarning's when the load knows the table's dialect, or, unless
-// `profiled`, one saying the table has no text to run. On a table of the
+// expressionWarning's when the load knows the table's dialect, or one saying
+// the table has no text to run. With `profiled`, the second is given only on a
+// Cloud SQL or third-party table no lookup has read. On a table of the
 // `preferred` dialect, expressionWarning's transpilation warning already says
 // so.
 function tableWarning(
@@ -2031,7 +2034,10 @@ function tableWarning(
   const w = table.unread ?
       undefined :
       expressionWarning(item, subject, table.name, preferred);
-  if (w || profiled || !noTextFor(item, table.dialects)) return w;
+  if (w || (profiled && !table.unread && !table.guessed) ||
+      !noTextFor(item, table.dialects)) {
+    return w;
+  }
   const own = table.dialects.map(d => `'${d}'`).join(', ');
   return `${subject.ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
              table.name} table of entity '${entity}' cannot run it`;
@@ -2090,14 +2096,16 @@ function keyWarning(
 // and returns the warning the metric gives when an expression could not be
 // parsed or when it states no `entity` and its expressions name none. An
 // authored anchor, which vanilla writes in a GOOGLE block, settles which entity
-// the metric belongs to, so a `COUNT(*)` with one is not warned about.
+// the metric belongs to, so a `COUNT(*)` with one is not warned about. An
+// ANSI_SQL text whose `impliedDialect` no lookup read (null) is read as
+// generic SQL, the closest reading there is.
 export function inferMetricEntities(
     metric: Pick<
         Metric,
         'name'|'authoredEntity'|'expression'|'importedExpression'|
         'importedDialect'|'dialects'>,
     entityNames: string[], preferred: string = DEFAULT_DIALECT,
-    impliedDialect?: string, version?: FormatVersion):
+    impliedDialect?: string|null, version?: FormatVersion):
     {referenced: string[]; warning?: string} {
   const ctx = `metric '${metric.name}'`;
   const sources: Array<{text: string; dialect: string}> =
@@ -2114,7 +2122,7 @@ export function inferMetricEntities(
   let unparsed = false;
   for (const {text, dialect} of sources) {
     if (!text) continue;
-    const cols = columnsForSource(text, dialect, impliedDialect);
+    const cols = columnsForSource(text, dialect, impliedDialect ?? undefined);
     if (cols === undefined) {
       unparsed = true;
     } else {
@@ -2386,7 +2394,7 @@ function convertDataset(
   // dataSource) and no key -- both are meaningless for a class never
   // materialized. Only a concrete entity is parsed/warned for those.
   const parsedSource = ds.source !== undefined ?
-      parseSource(ds.source, opts, ctxLabel, warnings, /* importHint= */ true) :
+      parseSource(ds.source, opts, ctxLabel, warnings, version) :
       undefined;
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
@@ -2641,7 +2649,7 @@ function convertRelationship(
 
 function convertMetric(
     mt: MetricDoc, version: FormatVersion, entities: Entity[],
-    warnings: string[], dialect: string, impliedDialect?: string): Metric {
+    warnings: string[], dialect: string, impliedDialect?: string|null): Metric {
   rejectInvalidName('metric', mt.name);
   const ctx = `metric '${mt.name}'`;
   const entityNames = entities.map(e => e.name);
@@ -3691,12 +3699,12 @@ function thirdPartyNameError(source: string, ctx: string): string|undefined {
 // Reads an entity's `source` into the dotted name the generators use and the
 // source as written. Throws on a form the loader does not accept. A profile
 // file's sources are read here too, so they follow the same rules. With
-// `importHint`, for a model file's source, a bare table name's error also
-// names `kcmd import`, which completes a model file's bare names but not a
-// profile file's.
+// `importVersion`, the version of the model file the source is in, a bare
+// table name's error also names `kcmd import`, which completes a model file's
+// bare names but not a profile file's.
 export function parseSource(
-    source: string, opts: LoadOptions, ctx: string,
-    warnings?: string[], importHint = false): ParsedSource {
+    source: string, opts: LoadOptions, ctx: string, warnings?: string[],
+    importVersion?: FormatVersion): ParsedSource {
   const trimmed = source.trim();
 
   // Under the legacy wrapper, a space inside double quotes also marks a query.
@@ -3776,12 +3784,13 @@ export function parseSource(
         dataSource: parts.join('.'),
       };
     }
-    // With `importHint`, the example also names the command that completes a
-    // model file's bare names.
-    const viaImport = importHint ?
-        `\nOr run 'kcmd import <file> --flavor <ossie|google> ` +
-            `--source-prefix <prefix>' to complete each bare table name ` +
-            `from the database that <prefix> names.` :
+    // With `importVersion`, the example also names the command that completes
+    // a model file's bare names.
+    const viaImport = importVersion ?
+        `\nOr run '${
+            importCommand('--source-prefix <prefix>', importVersion)}' to ` +
+            `complete each bare table name from the database or Knowledge ` +
+            `Catalog entry group that <prefix> names.` :
         '';
     // A name holding a space gets no name to write. Any other name gets an
     // example built from its parts when the loader accepts the example, and

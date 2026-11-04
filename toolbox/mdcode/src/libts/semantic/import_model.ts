@@ -3,15 +3,18 @@
 
 import * as yaml from 'yaml';
 
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
+import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
+import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
-import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
+import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {DEFAULT_PROFILE, loadProfileFile, plainCopy, sourcesDialect} from './resolve_profiles';
+import {appliedProfileWarnings, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, namedProfileErrors, plainCopy, readerMessage, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
+import {deploymentTableErrors, inlineBindingWarnings, spannerMetricsErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -23,9 +26,16 @@ export interface ImportSemanticModelOptions {
   flavor?: 'ossie'|'google';
   /**
    * First-party GCP container resource name used to qualify bare table
-   * sources.
+   * sources, or the name of a Knowledge Catalog entry group
+   * (`projects/<p>/locations/<l>/entryGroups/<g>`) whose table entries complete
+   * them by their fullyQualifiedName.
    */
   sourcePrefix?: string;
+  /**
+   * Lists every entry of an entry group, as `CatalogClient.listEntries` does.
+   * Required when `sourcePrefix` names an entry group.
+   */
+  listEntries?: EntryLister;
   /** When true, translates vendor or double-quoted ANSI SQL to `BIGQUERY`. */
   transpile?: boolean;
   /**
@@ -34,16 +44,24 @@ export interface ImportSemanticModelOptions {
    */
   strict?: boolean;
   /**
-   * Sibling `<model>.profile.<name>.yaml` files located beside the input file,
-   * used when converting a Google-flavor model to vanilla (`'ossie'`).
+   * Sibling `<model>.profile.<name>.yaml` files located beside the input file.
+   * A conversion to vanilla writes them into the model file, and a
+   * Google-flavor import of a Google-flavor model writes them beside it.
    */
   profileFiles?: SerializedFile[];
   /**
    * The input file's name. The warning that a JSON input was written as YAML
-   * names it. Defaults to `<model>.yaml`.
+   * names it, or `<model>.yaml` when it is unset. When set, in strict mode
+   * each message about the model's bindings names the input file or profile
+   * file that holds them.
    */
   fileName?: string;
 }
+
+/** The one catalog call import makes. */
+export type EntryLister =
+    (project: string, location: string, entryGroup: string) =>
+        AsyncIterable<{name: string; fullyQualifiedName?: string}>;
 
 /** Result of importing a semantic model YAML document. */
 export interface ImportSemanticModelResult {
@@ -68,6 +86,25 @@ interface ParsedSourcePrefix {
   base: string;
   known: string[];
   child?: string;
+}
+
+/** A `--source-prefix` that names a Knowledge Catalog entry group. */
+interface EntryGroupPrefix {
+  /** The entry group's name, as written. */
+  base: string;
+  project: string;
+  location: string;
+  group: string;
+  list: EntryLister;
+}
+
+/** An entry of the `--source-prefix` entry group that names a table or view. */
+interface TableEntry {
+  /** The entry's name, under the entry group as `--source-prefix` writes it. */
+  name: string;
+  fullyQualifiedName: string;
+  /** The parts of `fullyQualifiedName` after its prefix, unquoted. */
+  parts: string[];
 }
 
 /** Mutable representation of a semantic model document during import. */
@@ -101,6 +138,13 @@ interface ImportDocument {
   targetVersion: FormatVersion;
   /** Validated `--source-prefix` container resource name, if supplied. */
   sourcePrefix?: ParsedSourcePrefix;
+  /** The `--source-prefix` entry group, if it names one. */
+  entryGroup?: EntryGroupPrefix;
+  /**
+   * The table entries of `entryGroup`, listed when a dataset's source is a
+   * bare table name.
+   */
+  entryTables?: TableEntry[];
   /** Whether strict mode (`--input first-party`) is active. */
   strict: boolean;
   /** True when any mutations have been applied to `root`. */
@@ -172,6 +216,18 @@ function sourceWarning(
       (isGoogleCloudForm(source) ? '' : ` ${THIRD_PARTY_SOURCE}`);
 }
 
+// Push's error for `source`, read as the loader reads a source in `ctx`, or
+// undefined when push accepts it.
+function sourceError(source: string, ctx: string): string|undefined {
+  try {
+    parseSource(source, {}, ctx);
+    return undefined;
+  } catch (err) {
+    if (!(err instanceof SemanticModelError)) throw err;
+    return readerMessage(err);
+  }
+}
+
 const ALLOWED_DIALECT_SET = new Set<string>(ALLOWED_DIALECTS);
 
 const DIALECT_ALIASES: Readonly<Record<string, SqlDialect>> = {
@@ -225,6 +281,12 @@ const SOURCE_PREFIX_PATTERNS:
     form: TABLE_FORMS.cloudsqlSchema,
   },
 ];
+
+// An entry group a `--source-prefix` names. A system entry group, such as
+// `@bigquery`, is refused, since its entries are Google Cloud tables, which a
+// source names by resource name.
+const ENTRY_GROUP_PREFIX =
+    /^projects\/([^/]+)\/locations\/([^/]+)\/entryGroups\/([^/]+)$/;
 
 /** Filters an unknown array down to its plain-object elements. */
 function asRecords(v: unknown): Record<string, any>[] {
@@ -301,20 +363,39 @@ function parseImportDocument(
     }
   }
 
-  // 3. Validate `opts.sourcePrefix` against the 8 supported first-party GCP
-  // container resource name patterns before doing any document work.
+  // 3. Validate `opts.sourcePrefix` against the 9 supported first-party GCP
+  // container resource name patterns, or as an entry group, before doing any
+  // document work.
   let sourcePrefix: ParsedSourcePrefix|undefined;
+  let entryGroup: EntryGroupPrefix|undefined;
   if (opts.sourcePrefix !== undefined) {
     const base = opts.sourcePrefix.trim();
     const match = SOURCE_PREFIX_PATTERNS.map(p => ({m: base.match(p.re), p}))
                       .find(x => x.m !== null);
-    if (!match?.m) {
+    const group = base.match(ENTRY_GROUP_PREFIX);
+    if (match?.m) {
+      sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
+    } else if (group?.[3].startsWith('@')) {
+      return `sourcePrefix '${opts.sourcePrefix}' names the system entry ` +
+          `group '${group[3]}', whose entries are Google Cloud tables. Pass ` +
+          `the GCP resource name of their database instead, such as ` +
+          `'bigquery.googleapis.com/projects/<p>/datasets/<d>'.`;
+    } else if (group) {
+      entryGroup = {
+        base,
+        project: group[1],
+        location: group[2],
+        group: group[3],
+        list: opts.listEntries!,
+      };
+    } else {
       return `Invalid sourcePrefix '${opts.sourcePrefix}'; expected the GCP ` +
           `resource name of a BigQuery project or dataset, a BigLake ` +
           `catalog or namespace, a Spanner database, an AlloyDB database ` +
-          `or schema, or a Cloud SQL database or schema (with no leading '//').`;
+          `or schema, or a Cloud SQL database or schema (with no leading ` +
+          `'//'), or the name of a Knowledge Catalog entry group ` +
+          `('projects/<p>/locations/<l>/entryGroups/<g>').`;
     }
-    sourcePrefix = {base, known: match.m.slice(1), child: match.p.child};
   }
 
   // 4. Reject a document written for kcmd when `strict` is false: one with a
@@ -356,6 +437,7 @@ function parseImportDocument(
     inputVersion,
     targetVersion,
     sourcePrefix,
+    entryGroup,
     strict,
     modified: false,
     warnings,
@@ -395,13 +477,12 @@ function parseGoogleBlocks(exts: unknown): Array<Record<string, unknown>> {
 
 /**
  * Validates all model, deployment, profile, entity/dataset, field,
- * relationship, and metric names in `doc` (plus any `googleBlocks` and
- * `profileFiles`) in a single pass so every invalid or over-length identifier
- * is reported at once.
+ * relationship, and metric names in `doc` (plus any `googleBlocks`) in a
+ * single pass so every invalid or over-length identifier is reported at once.
  */
 function validateObjectNames(
     doc: ImportDocument, googleBlocks: Array<Record<string, unknown>>,
-    modelScope: string, profileFiles?: SerializedFile[]): void {
+    modelScope: string): void {
   // Validates a single identifier `name` against `kind`'s rules via
   // `nameProblem` and appends any error to `doc.errors`.
   const validateName = (kind: NameKind, name: unknown, scope?: string) => {
@@ -416,19 +497,14 @@ function validateObjectNames(
         for (const record of records) validateName(kind, record.name, scope);
       };
 
-  // 1. Validate model, deployment, and profile names (inline, `GOOGLE` block,
-  // and sibling `profileFiles`).
+  // 1. Validate model, deployment, and profile names (inline and `GOOGLE`
+  // block).
   validateName('model', doc.model.name);
   validateRecords('deployment', asRecords(doc.model.deployments), modelScope);
   validateRecords('profile', asRecords(doc.model.profiles), modelScope);
   for (const g of googleBlocks) {
     validateRecords('deployment', asRecords(g.deployments), modelScope);
     validateRecords('profile', asRecords(g.profiles), modelScope);
-  }
-  if (doc.targetVersion === OSSIE_VERSION) {
-    for (const pf of profileFiles ?? []) {
-      validateName('profile', parseProfileName(pf.fileName), modelScope);
-    }
   }
 
   // 2. Validate dataset/entity, field, relationship, and metric names.
@@ -444,16 +520,14 @@ function validateObjectNames(
 
 /**
  * Phase 2 (Pre-validation): Validates all identifier names in the input
- * document and any attached `profileFiles`. The loader rejects a model's
- * legacy `deploymentTargets`.
+ * document. The loader rejects a model's legacy `deploymentTargets`.
  */
-function validateInputDocument(
-    doc: ImportDocument, profileFiles?: SerializedFile[]): void {
+function validateInputDocument(doc: ImportDocument): void {
   const modelScope = typeof doc.model.name === 'string' ?
       `model '${doc.model.name}'` :
       'model';
   const googleBlocks = parseGoogleBlocks(doc.model.custom_extensions);
-  validateObjectNames(doc, googleBlocks, modelScope, profileFiles);
+  validateObjectNames(doc, googleBlocks, modelScope);
 }
 
 /**
@@ -461,7 +535,7 @@ function validateInputDocument(
  * them, each unquoted and marked when it was quoted, or `undefined` when
  * `source` is not a bare name.
  */
-function sourceParts(source: string, prefix: ParsedSourcePrefix):
+function sourceParts(source: string, prefix?: ParsedSourcePrefix):
     Array<{text: string; quoted: boolean}>|undefined {
   // Reject empty strings, already-slashed or colon-prefixed sources, and
   // query-valued sources with unquoted whitespace.
@@ -470,7 +544,7 @@ function sourceParts(source: string, prefix: ParsedSourcePrefix):
       hasUnquotedWhitespace(trimmed)) {
     return undefined;
   }
-  const segs = prefixParts(trimmed, prefix.base);
+  const segs = prefixParts(trimmed, prefix?.base ?? '');
   return segs.length && segs.every(s => s.text.length) ? segs : undefined;
 }
 
@@ -589,6 +663,86 @@ function completes(
     return prefix !== undefined &&
         qualifyTableSource(source, prefix) !== undefined;
   });
+}
+
+/**
+ * Phase 2b (Catalog read): When `doc.entryGroup` is set and a dataset's
+ * source is a bare table name, lists the entry group's entries once into
+ * `doc.entryTables`, keeping those whose fullyQualifiedName names a table or
+ * view. Returns the error when the list fails.
+ */
+async function listEntryTables(doc: ImportDocument): Promise<string|undefined> {
+  const group = doc.entryGroup;
+  if (!group ||
+      !doc.datasets.some(
+          ds => typeof ds.source === 'string' && sourceParts(ds.source))) {
+    return undefined;
+  }
+  const tables: TableEntry[] = [];
+  try {
+    for await (const e of group.list(
+                   group.project, group.location, group.group)) {
+      const fqn = e.fullyQualifiedName ?? '';
+      const table = tableFqnParts(fqn);
+      if (!table) continue;
+      tables.push({
+        name: `${group.base}${e.name.slice(e.name.indexOf('/entries/'))}`,
+        fullyQualifiedName: fqn,
+        parts: table.parts,
+      });
+    }
+  } catch (err: any) {
+    return `Could not list the entries of entry group '${group.base}' to ` +
+        `complete bare table names: ${err?.message ?? err}`;
+  }
+  doc.entryTables = tables;
+  return undefined;
+}
+
+/**
+ * Completes the bare table name `source` of `ds` with the one entry in
+ * `doc.entryTables` whose fullyQualifiedName ends in its parts, an unquoted
+ * part in any letter case and a quoted part in its own case. Leaves a name no
+ * entry or several entries end in as written, and reports it with the
+ * candidates.
+ */
+function completeFromEntryGroup(
+    ds: Record<string, any>, source: string,
+    parts: Array<{text: string; quoted: boolean}>, doc: ImportDocument): void {
+  const dsLabel = `dataset '${ds.name}'`;
+  const group = doc.entryGroup!.base;
+  // Compared from the end, so a name with more parts than an entry's matches
+  // none.
+  const matches = doc.entryTables!.filter(t => parts.every((p, i) => {
+    const e = t.parts.at(i - parts.length);
+    return p.quoted ? p.text === e : p.text.toLowerCase() === e?.toLowerCase();
+  }));
+  if (matches.length === 1) {
+    // The author asked for this rewrite with --source-prefix, so it is a
+    // warning in strict mode too.
+    const [m] = matches;
+    doc.warnings.push(
+        `${dsLabel}: rewrote bare source '${source}' to '${m.name}', the ` +
+        `entry whose fullyQualifiedName is '${m.fullyQualifiedName}'.`);
+    ds.source = m.name;
+    doc.modified = true;
+    return;
+  }
+  const left = `${dsLabel}: left bare source '${source}' as written, since `;
+  if (matches.length) {
+    const names =
+        matches.map(m => `'${m.name}' (${m.fullyQualifiedName})`).join(', ');
+    doc.warnOrError(
+        `${left}several entries in entry group '${group}' have a ` +
+        `fullyQualifiedName that ends in it: ${names}. 'kcmd push' rejects ` +
+        `the file until the source names one of them.`);
+  } else {
+    doc.warnOrError(
+        `${left}no entry for a table or view in entry group '${group}' has ` +
+        `a fullyQualifiedName that ends in it. 'kcmd push' rejects the file ` +
+        `until the source is the table's GCP resource name. ` +
+        THIRD_PARTY_SOURCE);
+  }
 }
 
 /**
@@ -751,19 +905,22 @@ function repairField(
 
 /**
  * Repairs a dataset's `source` (removing query-valued sources, qualifying bare
- * table names against `doc.sourcePrefix`, and warning on unaccepted sources),
- * truncates its `description`, and repairs each of its `fields`.
+ * table names against `doc.sourcePrefix` or completing them from
+ * `doc.entryTables`, and warning on unaccepted sources), truncates its
+ * `description`, and repairs each of its `fields`.
  */
 function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   // 1. Repair or diagnose `ds.source`: remove query-valued sources (in the
-  // Google version), qualify bare table names against `doc.sourcePrefix`, or
-  // warn on unaccepted source formats.
+  // Google version), qualify bare table names against `doc.sourcePrefix` or
+  // complete them from `doc.entryTables`, or warn on unaccepted source
+  // formats.
   const dsLabel = `dataset '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
     const qualified = doc.sourcePrefix ?
         qualifyTableSource(trimmed, doc.sourcePrefix) :
         undefined;
+    const parts = doc.entryTables ? sourceParts(trimmed) : undefined;
     if (hasUnquotedWhitespace(trimmed)) {
       if (doc.targetVersion === OSSIE_VERSION) {
         doc.errors.push(
@@ -784,8 +941,9 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
           `${dsLabel}: rewrote bare source '${trimmed}' to '${qualified}'.`);
       ds.source = qualified;
       doc.modified = true;
-    } else if (!(oldSourceForm(trimmed) === undefined &&
-                 isAcceptedSource(trimmed))) {
+    } else if (parts) {
+      completeFromEntryGroup(ds, trimmed, parts, doc);
+    } else if (sourceError(trimmed, dsLabel) !== undefined) {
       // Why a prefix that nearly fits the name cannot complete it.
       const p = doc.sourcePrefix;
       const caseOnly =
@@ -887,7 +1045,9 @@ function repairDocument(doc: ImportDocument): void {
   }
 
   // 3. Infer the model's source dialect from its repaired datasets via
-  // `sourcesDialect`, and repair or prune each metric (`repairMetric`).
+  // `sourcesDialect`, and repair or prune each metric (`repairMetric`). The
+  // pruning infers each metric's entity, so it reads an ANSI_SQL text whose
+  // dialect no lookup gave as generic SQL, as the loader's inference does.
   const entityNames = doc.datasets.map(ds => ds.name)
                           .filter((n): n is string => typeof n === 'string');
   const impliedDialect = sourcesDialect({
@@ -897,7 +1057,7 @@ function repairDocument(doc: ImportDocument): void {
           authoredSource: typeof ds.source === 'string' ? ds.source : undefined,
           dataSource: '',
         })),
-  });
+  }) ?? undefined;
   doc.metrics = doc.metrics.filter(
       mt => repairMetric(mt, entityNames, impliedDialect, doc));
   if (Array.isArray(doc.model.metrics) && doc.model.metrics.length) {
@@ -1136,36 +1296,51 @@ function moveConstructs(
 /**
  * Loads `doc.root` into the `SemanticModel` IR, runs `transpileModel` to
  * translate vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, and
- * writes any newly added `BIGQUERY` dialect entries back onto `doc`.
+ * writes any newly added `BIGQUERY` dialect entries back onto `doc`, including
+ * the field bindings of each BigQuery profile (`isBigQueryProfile`) in the
+ * model's `GOOGLE` blocks. Translates the BigQuery profiles among
+ * `profileFiles` the same way and returns every file. A warning about a JSON
+ * profile file names the matching file of `inputFiles`.
  */
-async function transpileDocument(doc: ImportDocument): Promise<void> {
+async function transpileDocument(
+    doc: ImportDocument, profileFiles: SerializedFile[],
+    inputFiles = profileFiles): Promise<SerializedFile[]> {
   let preLoaded: ReturnType<typeof fromDocument>;
   try {
     preLoaded = fromDocument(
         doc.root, {bindingOptional: true, warnUnacceptedSource: true});
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
-    return;
+    return profileFiles;
   }
-  // Writes `irDialects` back onto `rawNode.expression` when `transpileModel`
-  // appended a new dialect entry (e.g. `BIGQUERY`).
-  const syncNode =
-      (rawNode: Record<string, any>,
-       irDialects: Array<{dialect: string; expression: string}>|undefined) => {
-        const prevCount = typeof rawNode.expression === 'string' ?
-            1 :
-            asRecords(rawNode.expression?.dialects).length;
-        if (prevCount > 0 && irDialects && irDialects.length > prevCount) {
-          rawNode.expression = {
-            dialects: irDialects.map(
-                d => ({dialect: d.dialect, expression: d.expression})),
-          };
-          doc.modified = true;
-        }
-      };
+  const syncNode = (...args: Parameters<typeof syncDialects>) => {
+    if (syncDialects(...args)) doc.modified = true;
+  };
+  // Each of `profileFiles` as loaded, or undefined for one that does not
+  // load. That one is written as it is when it parses, since push reports it.
+  const loaded = profileFiles.map(pf => {
+    try {
+      return loadProfileFile(
+          pf.content, parseProfileName(pf.fileName), {skipActions: true});
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return undefined;
+    }
+  });
+  let translatedFiles = profileFiles;
   for (const m of preLoaded.models) {
-    const transpiled = await transpileModel(m);
+    const transpiled = await transpileModel({
+      ...m,
+      profiles: [...(m.profiles ?? []), ...loaded.filter(p => p !== undefined)],
+    }, {translatesProfile: isBigQueryProfile});
     doc.warnings.push(...transpiled.warnings);
+    const profile = (name: unknown) =>
+        transpiled.model.profiles?.find(p => p.name === name);
+    translatedFiles = profileFiles.map((pf, i) => {
+      const p = loaded[i] && profile(loaded[i].name);
+      const named = {...pf, fileName: inputFiles[i].fileName};
+      return p ? {...pf, content: withDialects(named, p, doc)} : pf;
+    });
     for (const ds of doc.datasets) {
       const irEntity = transpiled.model.entities.find(e => e.name === ds.name);
       for (const f of asRecords(ds.fields)) {
@@ -1176,7 +1351,95 @@ async function transpileDocument(doc: ImportDocument): Promise<void> {
       syncNode(
           mt, transpiled.model.metrics.find(x => x.name === mt.name)?.dialects);
     }
+    // A profile in a GOOGLE block is JSON text, so a block whose profiles
+    // gained an entry is written back as JSON.
+    for (const block of asRecords(doc.model.custom_extensions)) {
+      const data = parseGoogleBlocks([block])[0];
+      let changed = false;
+      for (const p of asRecords(data?.profiles)) {
+        changed = syncProfile(p, profile(p.name)) || changed;
+      }
+      if (changed) {
+        block.data = JSON.stringify(data);
+        doc.modified = true;
+      }
+    }
   }
+  return translatedFiles;
+}
+
+// Whether `profile` is a BigQuery profile of `model`, by the rule push's import
+// hint uses: each source push accepts that it states for a concrete entity of
+// `model` is a BigQuery or BigLake table, and it states at least one.
+function isBigQueryProfile(profile: ProfileSpec, model: SemanticModel): boolean {
+  const concrete =
+      new Set(model.entities.filter(e => !e.abstract).map(e => e.name));
+  const entities = profile.entities.flatMap(
+      ({name, source}) => concrete.has(name) && source !== undefined &&
+              sourceError(source, '') === undefined ?
+          [{authoredSource: source, dataSource: source}] :
+          []);
+  return sourcesDialect({entities}) === 'BIGQUERY';
+}
+
+/**
+ * Adds to `rawNode.expression` each dialect entry, such as `BIGQUERY`, that
+ * `transpileModel` appended to `irDialects`, and returns whether it added any.
+ * The entries already in a dialects list stay as written.
+ */
+function syncDialects(
+    rawNode: Record<string, any>,
+    irDialects: Array<{dialect: string; expression: string}>|undefined):
+    boolean {
+  const dialects = rawNode.expression?.dialects;
+  const prevCount = typeof rawNode.expression === 'string' ?
+      1 :
+      asRecords(dialects).length;
+  if (prevCount === 0 || !irDialects || irDialects.length <= prevCount) {
+    return false;
+  }
+  const entries = irDialects.map(
+      d => ({dialect: d.dialect, expression: d.expression}));
+  if (typeof rawNode.expression === 'string') {
+    rawNode.expression = {dialects: entries};
+  } else {
+    dialects.push(...entries.slice(prevCount));
+  }
+  return true;
+}
+
+/**
+ * Writes onto the raw profile `p` each field expression that gained a dialect
+ * entry in the translated `irProfile`, and returns whether any did.
+ */
+function syncProfile(
+    p: Record<string, any>, irProfile: ProfileSpec|undefined): boolean {
+  let changed = false;
+  for (const pe of asRecords(p.entities)) {
+    const irEntity = irProfile?.entities.find(x => x.name === pe.name);
+    for (const f of asRecords(pe.fields)) {
+      const irField = irEntity?.fields?.find(x => x.name === f.name);
+      changed = syncDialects(f, irField?.dialects) || changed;
+    }
+  }
+  return changed;
+}
+
+/**
+ * Returns the content of the profile file `file` with each field expression
+ * that gained a dialect entry in the translated `profile`, written as the
+ * model file is. A JSON file that changes is written as YAML, and a warning
+ * on `doc` names it.
+ */
+function withDialects(
+    {fileName, content}: SerializedFile, profile: ProfileSpec,
+    doc: ImportDocument): string {
+  const {document, text} = parseForUpdate(content);
+  const root = plainCopy(document.toJS()) as Record<string, any>;
+  const links = linkNodes(root, document.contents);
+  if (!syncProfile(root, profile)) return content;
+  if (text !== content) doc.warnings.push(`Converted '${fileName}' to YAML.`);
+  return writeDocument({document, links, text}, root);
 }
 
 /**
@@ -1197,40 +1460,54 @@ function validateDeploymentTargets(
 }
 
 /**
+ * Records push's error for the profile files `profileFiles` beside a vanilla
+ * input in `modelFile`, which keeps its profiles in its `GOOGLE` block. Push
+ * checks the name of each file first. The message is an error in strict mode
+ * and a warning otherwise.
+ */
+function checkVanillaProfileFiles(
+    doc: ImportDocument, profileFiles: SerializedFile[],
+    modelFile: string): void {
+  if (doc.inputVersion !== OSSIE_VERSION || profileFiles.length === 0) return;
+  const badName =
+      profileFiles
+          .map(pf => profileNameError(pf.fileName, parseProfileName(pf.fileName)))
+          .find(e => e !== undefined);
+  doc.warnOrError(
+      badName ?? vanillaSiblingError(profileFiles[0].fileName, modelFile));
+}
+
+/**
  * Loads each sibling `<model>.profile.<name>.yaml` entry in `profileFiles` via
  * `loadProfileFile` and attaches the resulting `ProfileSpec` list to
- * `model.profiles`, recording any reserved or duplicate profile name or
- * profile load error in `doc.errors`.
+ * `model.profiles`. Records in `doc.errors` push's error for the first file
+ * that breaks a file rule beside `modelFile`, or each profile's load error
+ * labeled with its file.
  */
 function attachProfileFiles(
     model: SemanticModel, profileFiles: SerializedFile[]|undefined,
-    doc: ImportDocument): void {
-  if (!profileFiles?.length) return;
+    doc: ImportDocument, modelFile: string): void {
+  const files = (profileFiles ?? []).map(
+      pf => ({...pf, name: parseProfileName(pf.fileName)}));
+  // Push checks every file's name before it loads any profile, and stops at
+  // the first file that breaks a file rule.
+  const seen = new Map<string, string>();
+  try {
+    for (const pf of files) {
+      checkProfileFileName(modelFile, pf.fileName, pf.name, pf.content, seen);
+    }
+  } catch (err) {
+    if (!(err instanceof ProfileFileError)) throw err;
+    doc.errors.push(err.message);
+    return;
+  }
   const profiles: ProfileSpec[] = [];
-  const seen = new Set<string>();
-  for (const pf of profileFiles) {
-    const profileName = parseProfileName(pf.fileName);
-    if (nameProblem('profile', profileName)) continue;
-    const lower = profileName.toLowerCase();
-    if (lower === DEFAULT_PROFILE) {
-      doc.errors.push(
-          `model '${model.name}': a profile may not be named ` +
-          `'${profileName}'; '${DEFAULT_PROFILE}' names the model's inline ` +
-          `bindings.`);
-      continue;
-    }
-    if (seen.has(lower)) {
-      doc.errors.push(
-          `model '${model.name}': duplicate profile name '${profileName}'; ` +
-          `profile names must be unique ignoring case.`);
-      continue;
-    }
-    seen.add(lower);
+  for (const pf of files) {
     try {
-      profiles.push(loadProfileFile(pf.content, profileName));
+      profiles.push(loadProfileFile(pf.content, pf.name));
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
-      doc.errors.push(err.message);
+      doc.errors.push(`[${pf.fileName}] ${err.message}`);
     }
   }
   if (profiles.length > 0) {
@@ -1321,7 +1598,8 @@ async function generateConvertedFiles(
   const model = loadSemanticModel(doc);
   if (!model) return [];
   if (doc.targetVersion === OSSIE_VERSION) {
-    attachProfileFiles(model, opts.profileFiles, doc);
+    attachProfileFiles(
+        model, opts.profileFiles, doc, opts.fileName ?? `${model.name}.yaml`);
     validateOssieConversion(model, doc);
     if (doc.errors.length > 0) return [];
   }
@@ -1332,15 +1610,24 @@ async function generateConvertedFiles(
  * Phase 4 (Adapt): Adapts `doc` in place to its target version
  * (`moveConstructs`, then `adaptToGoogleVersion` or `adaptToOssieVersion`),
  * optionally transpiles expressions via `transpileDocument`, and returns the
- * output files. Every value these steps do not change keeps its text.
+ * output files: the model file, then the profile files. An import that keeps
+ * the flavor writes `profileFiles` under the model's name. Every value these
+ * steps do not change keeps its text.
  */
 async function generateAdaptedFiles(
     doc: ImportDocument, transpile: boolean,
     profileFiles: SerializedFile[] = []): Promise<SerializedFile[]> {
   // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
-  // or `0.2.0.dev0`).
-  const profiles = doc.inputVersion === doc.targetVersion ?
-      [] :
+  // or `0.2.0.dev0`). Each of `profileFiles` goes under the model's name. A
+  // nameless `<file>.profile.yaml` stays nameless, so push reports it.
+  let profiles = doc.inputVersion === doc.targetVersion ?
+      profileFiles.map(pf => ({
+        fileName: /\.profile\.ya?ml$/i.test(pf.fileName) &&
+                parseProfileName(pf.fileName) === '' ?
+            `${doc.model.name}.profile.yaml` :
+            `${doc.model.name}.profile.${parseProfileName(pf.fileName)}.yaml`,
+        content: pf.content,
+      })) :
       moveConstructs(doc, profileFiles);
   if (doc.inputVersion === OSSIE_VERSION &&
       doc.targetVersion === GOOGLE_VERSION) {
@@ -1350,9 +1637,12 @@ async function generateAdaptedFiles(
   }
 
   // 2. When `transpile` is enabled and no prior errors occurred, translate
-  // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`.
+  // vendor or double-quoted `ANSI_SQL` expressions to `BIGQUERY`, in the model
+  // and in each BigQuery profile, in its GOOGLE blocks or among `profiles`.
   if (transpile && doc.errors.length === 0) {
-    await transpileDocument(doc);
+    profiles = await transpileDocument(
+        doc, profiles,
+        doc.inputVersion === doc.targetVersion ? profileFiles : profiles);
   }
 
   // 3. Write `doc.root` into the input's text when modified or preserve the
@@ -1365,7 +1655,9 @@ async function generateAdaptedFiles(
  * Returns the input's text changed to hold `root`. What survives from the
  * input keeps its text, and long SQL stays on one line.
  */
-function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
+function writeDocument(
+    doc: Pick<ImportDocument, 'document'|'links'|'text'>,
+    root: Record<string, any>): string {
   // The vanilla flavor lists a model's entities under `datasets:` and the
   // Google flavor under `entities:`. Renaming the key keeps the comments of
   // the list and of every entity in it.
@@ -1383,18 +1675,28 @@ function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
 }
 
 /**
- * Phase 5 (Post-validation): Validates the serialized output YAML with
- * `loadModels` (`warnUnacceptedSource: !doc.strict`) and checks deployment
- * targets.
+ * Phase 5 (Post-validation): Validates the output model file with `loadModels`
+ * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and checks
+ * the model file's own bindings, each profile the output declares and each
+ * deployment as push does.
  */
-function validateOutputDocument(content: string, doc: ImportDocument): void {
+function validateOutputDocument(
+    files: SerializedFile[], doc: ImportDocument,
+    opts: ImportSemanticModelOptions): void {
+  const [{fileName, content}, ...profileFiles] = files;
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
     // validation while turning unaccepted table sources into warnings in
-    // non-strict mode, deduplicating warnings already recorded.
+    // non-strict mode, deduplicating warnings already recorded. Step 3 gives
+    // push's error for a field its table cannot run, so the load does not
+    // warn about it too.
     const loaded = loadModels(
-        content, {bindingOptional: true, warnUnacceptedSource: !doc.strict});
+        content, {
+          bindingOptional: true,
+          warnUnacceptedSource: !doc.strict,
+          fieldTextChecked: true,
+        });
     for (const w of loaded.warnings) {
       // The repair step has reported each source the loader warns about.
       if (LOADER_SOURCE_WARNING.test(w)) continue;
@@ -1407,6 +1709,104 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
     // `validateDeploymentTargets`.
     for (const m of loaded.models) {
       validateDeploymentTargets(m, doc);
+    }
+
+    // 3. Check the model file's own bindings, each profile file, under the
+    // layout's file rules, and each GOOGLE block profile with push's offline
+    // checks. What push rejects is an error in strict mode and a warning
+    // otherwise. Nothing is written on an error, so in strict mode each
+    // message names where the input holds the bindings.
+    const input = doc.strict ? opts.fileName : undefined;
+    const model = {
+      name: (input ?? fileName).replace(/\.ya?ml$/, ''),
+      text: content,
+    };
+    // Where the input holds profile `name`, which the output writes in
+    // `written`: its profile file, or the model file's GOOGLE block.
+    const inputFiles =
+        doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
+    const where = (name: string, written: string) => !input ? written :
+        inputFiles.find(pf => parseProfileName(pf.fileName) === name)
+                ?.fileName ??
+            model.name;
+    const profileDocs = () => {
+      const seen = new Map<string, string>();
+      return profileFiles.map(f => {
+        const name = parseProfileName(f.fileName);
+        const label = where(name, f.fileName);
+        checkProfileFileName(input ?? fileName, label, name, f.content, seen);
+        return {name, text: f.content, fileName: label};
+      });
+    };
+    const declared = () => declaredProfiles(model, profileDocs()).map(
+        p => 'spec' in p ? {...p, label: where(p.name, model.name)} : p);
+    for (const e of [
+           ...validateInlineDialects(loaded.models[0], model.name),
+           ...validateInheritedColumns(loaded.models[0], model.name),
+         ]) {
+      doc.warnOrError(e);
+    }
+    const errors = namedProfileErrors(
+        [model], new Map([[model.name, loaded.models[0]]]), profileDocs,
+        declared, doc.warnings, {});
+    for (const e of errors) doc.warnOrError(e.error);
+    // Push also warns about the values each profile without an error sets.
+    let profiles: DeclaredProfile[];
+    try {
+      profiles = declared();
+    } catch (err) {
+      // namedProfileErrors reports a profile file that breaks a file rule,
+      // which stops push before it checks a deployment.
+      if (!(err instanceof ProfileFileError)) throw err;
+      return;
+    }
+    const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
+    for (const {name} of profiles) {
+      if (errors.some(e => e.profile === name)) continue;
+      doc.warnings.push(...appliedProfileWarnings(model, profiles, name, own));
+    }
+    // Push stops at a source its loader rejects.
+    if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) return;
+    doc.warnings.push(...inlineBindingWarnings(
+        loaded.models[0], model.name,
+        profiles.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE)));
+
+    // 4. Check each deployment with push's offline checks, under the profile
+    // it names. A profile file that does not load is reported above. A
+    // deployment whose profile has an error gets no table check, so a bad
+    // source is reported once.
+    const withFiles = {...loaded.models[0]};
+    withFiles.profiles = [
+      ...withFiles.profiles ?? [],
+      ...profiles.flatMap(p => {
+        try {
+          return 'text' in p ?
+              [loadProfileFile(p.text, p.name, {skipActions: true})] :
+              [];
+        } catch (err) {
+          if (!(err instanceof SemanticModelError)) throw err;
+          return [];
+        }
+      }),
+    ];
+    const every = resolveModelDeployments(withFiles);
+    const deployments = 'error' in every ? [] : every.deployments;
+    for (const e of [
+           undeclaredProfileError(
+               model.name, withFiles, profiles.map(p => p.name)) ?? [],
+           ...[...new Set(deployments.map(d => d.profile))].flatMap(
+               profile => validateDeployments({
+                 ...withFiles,
+                 deployments: withFiles.deployments?.filter(
+                     d => (d.profile ?? DEFAULT_PROFILE) === profile),
+               }, model.name)),
+           ...deployments
+               .filter(d => !errors.some(e => e.profile === d.profile))
+               .flatMap(d => deploymentTableErrors(model.name, withFiles, d)),
+           ...deployments.flatMap(
+               d => spannerMetricsErrors(model.name, withFiles, d)),
+         ].flat()) {
+      doc.warnOrError(e);
     }
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
@@ -1422,26 +1822,56 @@ function validateOutputDocument(content: string, doc: ImportDocument): void {
 export async function importSemanticModelYaml(
     rawYaml: string,
     opts: ImportSemanticModelOptions = {}): Promise<ImportSemanticModelResult> {
-  // 1. Initialize the SQL parser and parse/pre-validate the input document.
+  // 1. Initialize the SQL parser and parse/pre-validate the input document,
+  // and report any profile file beside a vanilla input as push does.
   await loadSqlEngine();
   const doc = parseImportDocument(rawYaml, opts);
   if (typeof doc === 'string') {
     return {ok: false, files: [], warnings: [], errors: [doc]};
   }
-  validateInputDocument(doc, opts.profileFiles);
+  validateInputDocument(doc);
+  checkVanillaProfileFiles(
+      doc, opts.profileFiles ?? [], opts.fileName ?? `${doc.model.name}.yaml`);
 
-  // 2. Run third-party repairs (which record errors in `strict` mode).
+  // 2. Read the `--source-prefix` entry group, if needed, and run third-party
+  // repairs (which record errors in `strict` mode).
+  const listError = await listEntryTables(doc);
+  if (listError) {
+    return {
+      ok: false,
+      files: [],
+      warnings: doc.warnings,
+      errors: [...doc.errors, listError],
+    };
+  }
   repairDocument(doc);
 
-  // 3. Generate the converted or adapted output file(s).
+  // 3. Generate the converted or adapted output file(s). A conversion to
+  // `0.2.0.dev0` writes the sibling profile files inside the model file, and
+  // a Google-flavor import of a Google-flavor model writes them beside it.
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
+  const googleToGoogle = doc.inputVersion === GOOGLE_VERSION &&
+      doc.targetVersion === GOOGLE_VERSION;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
-      await generateAdaptedFiles(doc, !!opts.transpile);
+      await generateAdaptedFiles(
+          doc, !!opts.transpile, googleToGoogle ? opts.profileFiles ?? [] : []);
 
-  // 4. Validate the primary output document and return the result.
+  // 4. Check that each profile file the import writes parses, validate the
+  // output files, and return the result.
+  for (const [i, f] of files.slice(1).entries()) {
+    const [problem] = yaml.parseDocument(f.content, YAML_OPTIONS).errors;
+    if (!problem) continue;
+    // A file import passes through unchanged is the input's own file.
+    const input = opts.profileFiles?.[i];
+    doc.errors.push(
+        input?.content === f.content ?
+            profileParseError(input.fileName, problem.message) :
+            `the import writes '${f.fileName}', which does not parse: ${
+                problem.message}`);
+  }
   if (files.length > 0 && doc.errors.length === 0) {
-    validateOutputDocument(files[0].content, doc);
+    validateOutputDocument(files, doc, opts);
   }
   return {
     ok: doc.errors.length === 0,

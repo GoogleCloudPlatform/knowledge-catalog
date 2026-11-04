@@ -24,7 +24,7 @@ import {SemanticModelSource} from '../../sources/semantic-model';
 import {SemanticModel} from '../ir';
 import {bindsThirdPartyTable, loadSemanticModels, SemanticModelError} from '../loader';
 import {resolveInheritance, ResolveResult} from '../resolve_inheritance';
-import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, unknownProfileMessage} from '../resolve_profiles';
+import {DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, profileErrorMessage, profileForDocument, reservedProfileNameError, undeclaredProfileError, unknownProfileMessage} from '../resolve_profiles';
 import {sourceDialects} from '../source_dialect';
 import {loadSqlEngine} from '../sql_parser';
 
@@ -344,24 +344,4 @@ export async function createSemanticRuntimes(options: CreateRuntimeOptions = {})
     runtimes.push(runtime);
   }
   return runtimes;
-}
-
-
-/**
- * Why `model` cannot be used because a deployment names a binding profile
- * `declared` does not hold, or undefined when each names `default` or a
- * declared profile. `document` is the model's document, for the message.
- */
-export function undeclaredProfileError(
-    document: string, model: SemanticModel, declared: string[]): string|
-    undefined {
-  for (const d of model.deployments ?? []) {
-    const profile = d.profile ?? DEFAULT_PROFILE;
-    if (profile === DEFAULT_PROFILE || declared.includes(profile)) continue;
-    return `[${document}] model '${model.name}': deployment '${
-               d.name}' names unknown binding profile '${profile}'; ` +
-        (declared.length ? `defined profiles: ${declared.join(', ')}.` :
-                           `no profiles are defined for this model.`);
-  }
-  return undefined;
 }

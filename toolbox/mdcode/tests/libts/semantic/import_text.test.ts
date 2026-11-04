@@ -635,7 +635,7 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a conversion to vanilla', google, {...STRICT, flavor: 'ossie'}],
   ['a conversion to vanilla with a profile file', google, {
      ...STRICT, flavor: 'ossie',
-     profileFiles: [{fileName: 'retail.profile.prod.yaml', content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ}\n`}],
+     profileFiles: [{fileName: 'retail.profile.prod.yaml', content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ}\n    primary_key: [order_id]\n`}],
    }],
 ];
 const STYLES: Array<[string, Partial<Style>]> = [
@@ -659,8 +659,13 @@ const STYLES: Array<[string, Partial<Style>]> = [
 ];
 
 // Re-imports `output`. A file with a GOOGLE block is written for kcmd.
-const again = (output: string, opts: object = {}) => importSemanticModelYaml(
-    output, {...opts, ...(output.includes('GOOGLE') ? {strict: true} : {})});
+// The output imported again. A profile file the output holds is not passed
+// again, since push refuses one beside a vanilla model.
+const again = (output: string, opts: object = {}) => {
+  const {profileFiles: _, ...rest} = opts as {profileFiles?: unknown};
+  return importSemanticModelYaml(
+      output, {...rest, ...(output.includes('GOOGLE') ? {strict: true} : {})});
+};
 
 test.each(CHANGES.flatMap(
     ([change, model, opts]) => STYLES.map(([style, s]) => [

@@ -718,10 +718,13 @@ relationships:
       `field '${name}' in model 'commerce' (commerce) has no expression for ` +
       `${dialect} or ANSI_SQL, and the model file binds entity '${
           name.split('.')[0]}' to a ${dialect} source`;
-  // The end of the error for a field whose text kcmd import --transpile can
-  // translate.
-  const HINT = "; give it one, or add one with 'kcmd import <file> " +
-      "--input first-party --flavor <ossie|google> --transpile'.";
+  // The end of the error for a field, in a model file of `flavor`, whose text
+  // kcmd import --transpile can translate.
+  const hint = (flavor = 'google') => "; give it one, or add one with 'kcmd " +
+      `import <file> --input first-party --flavor ${flavor} --transpile'.`;
+  const HINT = hint();
+  // The same hint at the end of a profile's error, which has no closing period.
+  const PROFILE_HINT = HINT.slice(0, -1);
   // Field amount, whose one text is `text` in `dialect`.
   const amount = (dialect: string, text: string) =>
       `{ name: amount, expression: { dialects: [{ dialect: ${dialect}, ` +
@@ -1833,7 +1836,7 @@ ${shopExtends}        source: ${BQ('dev', 'shop')}
               "'positive_spend' has no expression for BIGQUERY or ANSI_SQL, " +
               "and this profile's sources are BIGQUERY; give it one, add " +
               "one with 'kcmd import <file> --input first-party --flavor " +
-              "<ossie|google> --transpile', or add it to 'metrics_exclude'",
+              "google --transpile', or add it to 'metrics_exclude'",
         ],
       });
     });
@@ -2020,16 +2023,41 @@ semantic_model:
       });
 
       // The model file's error names the text to fix, so a block profile that
-      // inherits the field unchanged gets no error of its own.
+      // inherits the field unchanged gets no error of its own. One that
+      // rebinds it, or is on another database, gets its own error. On
+      // BigQuery that error suggests kcmd import --transpile, which rewrites
+      // the block.
       test('reports a model file field with only a vendor text once', async () => {
-        const withAmount = (deploy?: string) => vanilla([complete('prod')], {deploy})
-            .replace('expression: p_id}]}\n',
-                     p => `${p}          - ${amount('SNOWFLAKE', '"amount +"')}\n`);
-        const error = modelNoText('purchase.amount') + HINT;
-        writeScope({'commerce.yaml': withAmount('prod')});
+        const withAmount = (profile: object, deploy?: string) =>
+            vanilla([profile], {deploy})
+                .replace('expression: p_id}]}\n',
+                         p => `${p}          - ${amount('SNOWFLAKE', '"NVL(NULL, 0)"')}\n`);
+        const error = modelNoText('purchase.amount') + hint('ossie');
+        writeScope({'commerce.yaml': withAmount(complete('prod'), 'prod')});
         expect(await pushResult()).toEqual({code: 1, errors: [error]});
-        writeScope({'commerce.yaml': withAmount()});
-        await expectReport({default: [error], prod: []});
+        // Profile prod's error for amount on `dialect`, ending in `hint`.
+        const blockError = (dialect: string, hint = '') =>
+            "[commerce] profile 'prod': field 'purchase.amount' has no " +
+            `expression for ${dialect} or ANSI_SQL, and this profile's ` +
+            `sources are ${dialect}${hint}`;
+        const rebound = complete('prod');
+        rebound.entities[1].fields.push({
+          name: 'amount',
+          expression: {dialects: [{dialect: 'SNOWFLAKE', expression: '"amount -"'}]},
+        } as any);
+        const onSpanner = {
+          ...complete('prod'),
+          entities: complete('prod').entities.map(
+              e => ({...e, source: `${SPANNER_DB}/tables/${e.name}`})),
+        };
+        for (const [label, profile, prod] of [
+               ['inherited', complete('prod'), []],
+               ['rebound', rebound, [blockError('BIGQUERY', hint('ossie').slice(0, -1))]],
+               ['on Spanner', onSpanner, [blockError('SPANNER')]],
+             ] as const) {
+          writeScope({'commerce.yaml': withAmount(profile)});
+          await expectReport({default: [error], prod: [...prod]}, label);
+        }
       });
 
       // Push's own checks cover part of the profile it applies, so the
@@ -2246,10 +2274,11 @@ semantic_model:
 
       const missing = modelNoText('purchase.amount');
       for (const targets of [0, 1]) {
-        for (const [dialect, text] of [
-               ['SNOWFLAKE', 'amount'],
-               ['SNOWFLAKE', '"amount +"'],
-               ['SPANNER', 'amount'],
+        // The translator cannot read `amount +`, so no hint suggests it.
+        for (const [dialect, text, end] of [
+               ['SNOWFLAKE', 'amount', HINT],
+               ['SNOWFLAKE', '"amount +"', '.'],
+               ['SPANNER', 'amount', HINT],
              ]) {
           writeScope({
             'commerce.yaml':
@@ -2257,7 +2286,7 @@ semantic_model:
           });
           const label = {targets, dialect, text};
           expect({...label, ...await pushResult()})
-              .toEqual({...label, code: 1, errors: [missing + HINT]});
+              .toEqual({...label, code: 1, errors: [missing + end]});
         }
       }
     });
@@ -2355,17 +2384,17 @@ semantic_model:
     // another database, or whose field that check skips, keeps its own error.
     test('reports a model file field with only a vendor text once beside a named profile', async () => {
       // The error of profile 'prod' for field amount, with no text for the
-      // `dialect` of its sources.
-      const profileError = (dialect = 'BIGQUERY') =>
+      // `dialect` of its sources, ending in `hint`.
+      const profileError = (dialect = 'BIGQUERY', hint = '') =>
           "[commerce.profile.prod.yaml] profile 'prod': field " +
           `'purchase.amount' has no expression for ${dialect} or ANSI_SQL, ` +
-          `and this profile's sources are ${dialect}`;
+          `and this profile's sources are ${dialect}${hint}`;
       const hinted = modelNoText('purchase.amount') + HINT;
       const spannerProfile = profileFile('prod').replaceAll(
           BQ('prod', ''), `${SPANNER_DB}/tables/`);
       // Profile prod rebinds purchase's amount to another SNOWFLAKE text.
       const rebound = profileFile('prod').replace(
-          '{ name: p_id, expression: p_id }', `$&, ${amount('SNOWFLAKE', '"amount -"')}`);
+          '{ name: p_id, expression: p_id }', `$&, ${amount('SNOWFLAKE', '"NVL(NULL, 1)"')}`);
       // The profile rebinds the parent's amount, and purchase keeps its own.
       const child = commerce().replace(
           '      - name: purchase\n',
@@ -2382,17 +2411,17 @@ semantic_model:
       const cases: Array<[label: string, model: string, profile: string,
                           errors: string[]]> = [
         ['inherited', commerce(), profileFile('prod'), [hinted]],
-        ['rebound', commerce(), rebound, [profileError(), hinted]],
+        ['rebound', commerce(), rebound, [profileError('BIGQUERY', PROFILE_HINT), hinted]],
         ['on Spanner', commerce(), spannerProfile,
          [profileError('SPANNER'), hinted]],
         ['declared on the child, rebound on its parent', child, childProfile,
          [hinted]],
         ['no source in the model file',
          commerce().replace(`        source: ${BQ('dev', 'purchase')}\n`, ''),
-         profileFile('prod'), [profileError()]],
+         profileFile('prod'), [profileError('BIGQUERY', PROFILE_HINT)]],
       ];
       for (const [label, model, profile, errors] of cases) {
-        const text = withFields(model, amount('SNOWFLAKE', '"amount +"'));
+        const text = withFields(model, amount('SNOWFLAKE', '"NVL(NULL, 0)"'));
         // A push whose deployment applies prod, then one that applies none.
         for (const deployed of [true, false]) {
           writeScope({

@@ -97,15 +97,17 @@ agree on every structural row and differ only where a Spanner target has no
     MAQL or Snowflake form a metric was imported from). `kcmd import
     --transpile` adds a `BIGQUERY` dialect entry to a model file's field or
     metric, translated from a vendor-only expression or from an `ANSI_SQL`
-    expression that double-quotes column names. It leaves a profile's
-    expressions as written. Without the translation, kcmd warns about either
-    kind of text on a BigQuery table. Spanner, MySQL and Databricks also read
-    a double-quoted name as text, so kcmd warns about that kind on their
-    tables.
+    expression that double-quotes column names. It does the same in each
+    profile the import writes, when all of that profile's tables are in
+    BigQuery or BigLake. Without the translation, kcmd warns about
+    either kind of text on a BigQuery table. Spanner, MySQL and Databricks
+    also read a double-quoted name as text, so kcmd warns about that kind on
+    their tables.
     On a table in another database, it warns about a field or metric with no
     text that table runs. Push rejects such a field in the model file with an
-    error in place of the warning. When a profile binds that table, push
-    rejects the field or metric instead. `kcmd import` does not look up a
+    error in place of the warning. `kcmd import` gives push's message in place
+    of the warning on a Spanner or AlloyDB table. When a profile binds that
+    table, push rejects the field or metric instead. `kcmd import` does not look up a
     Cloud SQL or third-party table's dialect, and `kcmd skills-generate` and
     `kcmd profiles --print-store` do not look up a third-party table's.
     Import reads a Cloud SQL table whose name has no schema as MySQL. On any
@@ -284,7 +286,8 @@ into Knowledge Catalog instead. Of an entity's keys only one is emitted: its
 primary key, else its first unique key. The imported vendor SQL is never
 emitted. `kcmd import --transpile` adds a `BIGQUERY` entry to a model file's
 field or metric whose expression is vendor-only or an `ANSI_SQL` expression
-that double-quotes column names. It leaves a profile's expressions as written.
+that double-quotes column names. It does the same in each profile the import
+writes, when all of that profile's tables are in BigQuery or BigLake.
 The graph builds each field and metric from its `BIGQUERY` entry, else its
 `ANSI_SQL` one. A field with none of these is left out of its node table with a warning,
 though push rejects such a field in the model file first. A

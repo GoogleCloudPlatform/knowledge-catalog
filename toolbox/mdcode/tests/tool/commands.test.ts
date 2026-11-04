@@ -2610,9 +2610,8 @@ semantic_model:
     expect(prints(console.error)).toEqual([
       "Error: '--transpile' is no longer supported on 'kcmd push'; use " +
       "'kcmd import <file> --input first-party --flavor <ossie|google> " +
-      "--transpile' to translate SQL dialects when importing a model. " +
-      "Import translates the model file only, so write a profile's " +
-      "'BIGQUERY' or 'ANSI_SQL' expressions yourself.",
+      "--transpile' to translate SQL dialects when importing a model, in the " +
+      'model and each profile whose tables are all in BigQuery or BigLake.',
     ]);
     expect(prints(console.warn)).toEqual([]);
   });
@@ -2642,8 +2641,7 @@ semantic_model:
     expect(prints(console.error).join('\n')).toContain(
         "targets a BigQuery graph with only a 'SNOWFLAKE' expression; supply " +
         "a 'BIGQUERY' or 'ANSI_SQL' expression, or add one with 'kcmd " +
-        "import <file> --input first-party --flavor <ossie|google> " +
-        "--transpile'.");
+        "import <file> --input first-party --flavor google --transpile'.");
     expect(kcSpy).not.toHaveBeenCalled();
   });
 

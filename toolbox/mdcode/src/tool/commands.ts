@@ -14,7 +14,7 @@ import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
 import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
-import {fileNameOf, formatOverviewSidecar, OverviewSidecar, profileFilesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
+import {fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {readWorkspaceLayout} from '../libts/manifest';
 import {fileContentToConcept} from '../libts/okf/concept';
 import {initOkfWorkspace} from '../libts/okf/init_okf_workspace';
@@ -24,19 +24,19 @@ import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
-import {ProfileSpec, SemanticModel} from '../libts/semantic/ir';
+import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, IMPORT_TRANSPILE_COMMAND, inheritanceErrorOf, loadProfileFile, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, validateProfileCompleteness, validateProfileConsistency,} from '../libts/semantic/resolve_profiles';
-import {createSemanticRuntimes, undeclaredProfileError} from '../libts/semantic/runtime/runtime';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, undeclaredProfileError,} from '../libts/semantic/resolve_profiles';
+import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {deploymentTableErrors, inlineBindingWarnings, spannerMetricsErrors, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -145,7 +145,7 @@ function hasTargetType(
 // The dialect pruning reads a model's SQL in: SPANNER when the model has a
 // Spanner graph target, since that graph reads SPANNER text first, else the
 // dialect its sources imply.
-function pruningDialect(model: SemanticModel): string|undefined {
+function pruningDialect(model: SemanticModel): string|null|undefined {
   return hasTargetType({model}, 'spanner') ? 'SPANNER' : sourcesDialect(model);
 }
 
@@ -359,11 +359,8 @@ function legacyProfileFormErrors(snapshot: kcmd.CatalogSnapshot): string[] {
         `'profile:' on each entry under 'deployments:' in your model YAML.`);
   }
   for (const dir of layout.legacyProfileDirs()) {
-    const model = path.basename(dir).slice(0, -'.profiles'.length);
     errors.push(
-        `Legacy profile directory '${model}.profiles/' is no longer ` +
-        `supported; rename profile files to '${model}.profile.<name>.yaml' ` +
-        `beside '${model}.yaml'.`);
+        legacyProfileDirError(path.basename(dir).slice(0, -'.profiles'.length)));
   }
   for (const orphan of layout.orphanProfilePaths()) {
     const file = path.basename(orphan);
@@ -519,102 +516,6 @@ function checkedFileCopies(
   const files = read.map(f => ({...f, pushId, pushFileCount: read.length}));
   const error = kc.checkFileCopies(files);
   return error ? {files: [], error} : {files};
-}
-
-// An error of a two-phase push's checks, and what it belongs to: the whole
-// push when `document` is unset, the model in `document` when `profile` is
-// unset, and that profile of the model otherwise. A deployment's errors belong
-// to the profile it uses, which is 'default' when it names none.
-interface LocalCheckError {
-  error: string;
-  document?: string;
-  profile?: string;
-}
-
-// The errors the named profiles of each model in `docs` give: each profile
-// file, and each profile a vanilla model carries in its GOOGLE block, checked
-// on its own for completeness. An error about a profile file names that file,
-// and one about a block profile names the model document.
-// A model's profiles are checked against its model file as loaded on its own,
-// which `baseByDoc` holds. A file under the reserved name 'default', which no
-// push deploys, is not read here. Push also checks the
-// keys and join columns of the model file and of each named profile. The
-// warnings go to `warnings`.
-function namedProfileErrors(
-    docs: Array<{name: string; text: string}>,
-    baseByDoc: Map<string, SemanticModel>, profileDocs: ProfileDocs,
-    declared: DeclaredProfiles, warnings: string[],
-    load: DialectLoad): LocalCheckError[] {
-  const errors: LocalCheckError[] = [];
-  for (const d of docs) {
-    // Each named profile, with the label its errors carry and a function that
-    // reads it. declared() lists the profile files too, so only its block
-    // profiles are taken from it. A block profile is already read. Its actions
-    // are dropped, as loadProfileFile skips a profile file's.
-    let named: Array<{name: string; label: string; read: () => ProfileSpec}>;
-    try {
-      named = [
-        ...profileDocs(d.name).map(p => ({
-          name: p.name,
-          label: p.fileName,
-          read: () => loadProfileFile(p.text, p.name, {skipActions: true}),
-        })),
-        ...declared(d).flatMap(p => 'spec' in p ? [{
-          name: p.name,
-          label: d.name,
-          read: () => {
-            const {actions: _, ...spec} = p.spec;
-            return spec;
-          },
-        }] : []),
-      ].filter(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
-    } catch (err: any) {
-      // A profile file that breaks one of the layout's file rules, or block
-      // profiles a load rejects.
-      errors.push({error: `${err.message || err}`, document: d.name});
-      continue;
-    }
-    // A document that holds no model has nothing to check its profiles
-    // against.
-    const base = baseByDoc.get(d.name);
-    if (!base) continue;
-    // Actions are out of scope for the preview. Push checks a profile's
-    // actions only when it applies the profile, so these checks leave them
-    // out.
-    const logical = {...base, actions: []};
-    // Push warns about the SQL it cannot read in the model file, so these
-    // checks leave out a warning about model file SQL that push reads in the
-    // same dialect. Push stops reading what the SQL reads when the model's
-    // hierarchy does not resolve, and these checks then give every warning.
-    const ownSqlOnly = !inheritanceErrorOf(base) ?
-        {dialect: sourcesDialect(base)} :
-        undefined;
-    const specs: ProfileSpec[] = [];
-    for (const p of named) {
-      const at = (m: string) => `[${p.label}] ${m}`;
-      const tag = (m: string) =>
-          ({error: at(m), document: d.name, profile: p.name});
-      let spec: ProfileSpec;
-      try {
-        spec = p.read();
-      } catch (err) {
-        if (!(err instanceof SemanticModelError)) throw err;
-        errors.push(tag(err.message));
-        continue;
-      }
-      specs.push(spec);
-      const profileWarnings: string[] = [];
-      errors.push(
-          ...validateProfileCompleteness(logical, spec, profileWarnings, {
-            ownSqlOnly,
-            ...load,
-          }).map(tag));
-      warnings.push(...profileWarnings.map(at));
-    }
-    errors.push(...validateProfileConsistency(logical, specs, DEFAULT_PROFILE)
-                    .map(e => ({error: `[${d.name}] ${e}`, document: d.name})));
-  }
-  return errors;
 }
 
 // The warnings and the note push prints on what pruning leaves out of model
@@ -784,10 +685,9 @@ function retiredPushFlagErrors(options: PushOptions): string[] {
       !!options.transpile,
       retired(
           '--transpile',
-          `; use '${IMPORT_TRANSPILE_COMMAND}' to translate SQL dialects ` +
-              `when importing a model. Import translates the model file ` +
-              `only, so write a profile's 'BIGQUERY' or 'ANSI_SQL' ` +
-              `expressions yourself`),
+          `; use '${importCommand('--transpile')}' to translate SQL dialects ` +
+              `when importing a model, in the model and each profile whose ` +
+              `tables are all in BigQuery or BigLake`),
     ],
     [
       options.profile !== undefined && typeof options.profile !== 'boolean',
@@ -1324,11 +1224,8 @@ async function checkBeforeWrites(
               e => e.document === document && e.profile === name)) {
         continue;
       }
-      const res = profileForDocument(doc, declared, name, load);
-      if (res.kind !== 'file') continue;
       profileWarnings.push(
-          ...res.warnings.filter(w => !loaded.warnings.includes(w))
-              .map(w => `profile '${name}': ${w}`));
+          ...appliedProfileWarnings(doc, declared, name, loaded.warnings, load));
     }
   }
   const kcWarnings: string[] = [];
@@ -1405,13 +1302,8 @@ async function deploymentPlan(
   const {document, model} = base;
   const at = `[${document}] deployment '${deployment.name}'`;
   const fail = (...errors: string[]) => ({errors});
-  if (deployment.engine === 'spanner' &&
-      deployment.profile === DEFAULT_PROFILE && model.metrics?.length) {
-    return fail(
-        `${at} targets a Spanner graph and uses the model file's own ` +
-        `bindings, but the model declares metrics, which a Spanner graph ` +
-        `cannot hold; name a profile with metrics_exclude: "*".`);
-  }
+  const spanner = spannerMetricsErrors(document, model, deployment);
+  if (spanner.length) return fail(...spanner);
   let applied = model;
   if (deployment.profile !== DEFAULT_PROFILE) {
     // checkBeforeWrites has checked that the model declares the profile and
@@ -2418,7 +2310,8 @@ export interface ImportCommandOptions {
   // which flavor its owner wants.
   flavor?: string;
   // The GCP resource name of the database whose tables complete each bare
-  // table name.
+  // table name, or the name of the Knowledge Catalog entry group whose table
+  // entries complete them.
   sourcePrefix?: string;
   // Add a BigQuery translation beside SQL in another dialect.
   transpile?: boolean;
@@ -2455,13 +2348,21 @@ export async function importModel(
 
   // A Google-flavor model's profiles are its own files beside it, found by
   // the input file's name without `.yaml` or `.yml`, not by the model name
-  // inside it.
+  // inside it. The engine gets every `<name>.profile.*.yaml` there, in the
+  // order push checks them, so it reports a file name push refuses.
+  const dir = path.dirname(file);
+  const stem = path.basename(file).replace(YAML_FILE, '');
+  // Push refuses the older `<model>.profiles/` directory, which import does
+  // not read.
+  if (legacyProfileFiles(dir, stem).length) {
+    if (input === 'first-party') return fail(legacyProfileDirError(stem));
+    console.warn(`Warning: ${legacyProfileDirError(stem)}`);
+  }
   const profileFiles =
-      profileFilesBeside(
-          path.dirname(file), path.basename(file).replace(YAML_FILE, ''))
-          .map(p => ({
-                 fileName: path.basename(p.path),
-                 content: fs.readFileSync(p.path, 'utf8'),
+      profileFileNamesBeside(dir, stem)
+          .map(f => ({
+                 fileName: f,
+                 content: fs.readFileSync(path.join(dir, f), 'utf8'),
                }));
   const result = await importSemanticModelYaml(fs.readFileSync(file, 'utf8'), {
     flavor: flavor as 'ossie' | 'google',
@@ -2470,6 +2371,11 @@ export async function importModel(
     strict: input === 'first-party',
     profileFiles,
     fileName: path.basename(file),
+    // Called only for a --source-prefix that names an entry group, so an
+    // import that reads no catalog needs no credentials.
+    listEntries: (project, location, entryGroup) =>
+        new dataplex.CatalogClient(context.ApiContext.default())
+            .listEntries(project, location, entryGroup),
   });
   for (const w of result.warnings) console.warn(`Warning: ${w}`);
   if (!result.ok) return fail(...result.errors);
@@ -2525,15 +2431,18 @@ export async function importModel(
           `to write elsewhere.`);
     }
     if (refusals.length) return fail(...refusals);
-    // Refuse to leave behind a profile file this import does not write. Push
-    // rejects one beside a vanilla model, and reads one beside a Google model
-    // as that model's profile. A Google model file re-imported in place keeps
-    // its profile files.
-    const inPlace = flavor === 'google' && result.files.length === 1 &&
+    // Refuse to leave behind a profile file this import does not write,
+    // whatever its profile name. Push rejects one beside a vanilla model, and
+    // one whose name breaks its rule, and reads any other beside a Google
+    // model as that model's profile. A Google model file re-imported in place
+    // with no sibling profile file for the import to write keeps its other
+    // ones.
+    const inPlace = profileFiles.length === 0 && flavor === 'google' &&
+        result.files.length === 1 &&
         path.resolve(file) === path.resolve(layout.modelPath(model));
     if (!inPlace) {
       const kept = new Set(targets.map(t => t && path.resolve(t.path)));
-      const left = layout.localProfileFiles(model).map(p => p.path).filter(
+      const left = layout.profileFilePaths(model).filter(
           p => !kept.has(path.resolve(p)));
       if (left.length) {
         return fail(

@@ -18,7 +18,7 @@ import { fromDocument, SemanticModelError } from '../../../src/libts/semantic/lo
 import { resolveModelDeployments } from '../../../src/libts/semantic/deployment_target';
 import { nameProblem } from '../../../src/libts/semantic/names';
 import { applyProfile, loadProfileFile, reservedProfileNameError, validateProfileCompleteness } from '../../../src/libts/semantic/resolve_profiles';
-import { undeclaredProfileError } from '../../../src/libts/semantic/runtime/runtime';
+import { undeclaredProfileError } from '../../../src/libts/semantic/resolve_profiles';
 import { validateDeployments, validateInlineDialects, validatePushRequirements } from '../../../src/libts/semantic/validate';
 
 const fixturesDir = join(__dirname, 'fixtures');

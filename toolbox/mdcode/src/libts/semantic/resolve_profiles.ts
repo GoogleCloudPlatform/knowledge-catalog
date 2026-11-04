@@ -30,12 +30,12 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
 import {SqlColumn} from './sql_parser';
-import {transpilesFrom} from './transpile';
+import {translatesToBigQuery} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The implicit profile: the inline bindings already in the model document (the
@@ -108,14 +108,15 @@ export interface AvailabilityReport {
  * it. What a field or metric reads comes from the text `dialect` evaluates
  * (see textsFor). `dialect` defaults to the dialect the model's sources
  * imply. When the sources are in systems of different dialects, or one names
- * no system, there is no dialect and every text counts.
+ * no system, there is no dialect and every text counts. When no lookup read
+ * the dialect, it is null and no text counts.
  * The input is never mutated. The report names each dropped block
  * and the unbound field that stops it, so a caller can state the withheld
  * coverage. A model with nothing unbound resolves unchanged.
  */
 export function pruneUnavailable(
     model: SemanticModel, profileName: string,
-    dialect: string|undefined = sourcesDialect(model)):
+    dialect: string|null|undefined = sourcesDialect(model)):
     {model: SemanticModel; report: AvailabilityReport} {
   const clone: SemanticModel = structuredClone(model);
   const report: AvailabilityReport = {
@@ -591,10 +592,12 @@ function applyToDocument(
 
 /**
  * A profile a model declares: the text of a profile file, or a profile already
- * read, such as one a vanilla model carries in its GOOGLE block.
+ * read, such as one a vanilla model carries in its GOOGLE block. A profile
+ * already read may carry `label`, the file that holds it, which
+ * namedProfileErrors names in place of the model document.
  */
 export type DeclaredProfile = {name: string; text: string}|
-    {name: string; spec: ProfileSpec};
+    {name: string; spec: ProfileSpec; label?: string};
 
 /**
  * The profiles the model document `doc` declares: `files`, its profile files,
@@ -647,6 +650,21 @@ export function profileForDocument(
 }
 
 /**
+ * The warnings that applying the profile `profileName` among `profiles` to the
+ * model document `doc` gives, each labeled with the profile. The warnings in
+ * `own`, which the document's own load gives, are left out. Empty unless
+ * profileForDocument applies the profile as a profile file.
+ */
+export function appliedProfileWarnings(
+    doc: {name: string; text: string}, profiles: DeclaredProfile[],
+    profileName: string, own: string[], load: DialectLoad = {}): string[] {
+  const res = profileForDocument(doc, profiles, profileName, load);
+  if (res.kind !== 'file') return [];
+  return res.warnings.filter(w => !own.includes(w))
+      .map(w => `profile '${profileName}': ${w}`);
+}
+
+/**
  * `error`, from loading a model document on its own before a profile file
  * applies to it, with a note that says so. A model file that a profile used to
  * complete, such as one with a half-given join, fails that load. Names
@@ -677,6 +695,25 @@ export function profileErrorMessage(
   }
   const file = profileFiles.find(p => p.name === profileName);
   return `[${file?.fileName ?? docName}] ${res.error}`;
+}
+
+/**
+ * Why `model` cannot be used because a deployment names a binding profile
+ * `declared` does not hold, or undefined when each names `default` or a
+ * declared profile. `document` is the model's document, for the message.
+ */
+export function undeclaredProfileError(
+    document: string, model: SemanticModel, declared: string[]): string|
+    undefined {
+  for (const d of model.deployments ?? []) {
+    const profile = d.profile ?? DEFAULT_PROFILE;
+    if (profile === DEFAULT_PROFILE || declared.includes(profile)) continue;
+    return `[${document}] model '${model.name}': deployment '${
+               d.name}' names unknown binding profile '${profile}'; ` +
+        (declared.length ? `defined profiles: ${declared.join(', ')}.` :
+                           `no profiles are defined for this model.`);
+  }
+  return undefined;
 }
 
 /** The error for a profile name a model document does not declare. */
@@ -1051,7 +1088,7 @@ function applyBindings(
 
 // The message of an error the loader's source or expression reader throws,
 // without the prefix a model file's load gives it.
-function readerMessage(err: SemanticModelError): string {
+export function readerMessage(err: SemanticModelError): string {
   return err.message.replace(/^Semantic model load error: /, '');
 }
 
@@ -1253,12 +1290,14 @@ export function expressionSources(
 // database runs an ANSI_SQL text as its own SQL. A field held without a
 // dialect list offers its imported text when that is in the profile's dialect,
 // and otherwise the text the loader picked. With no known dialect, every text
-// counts, each read in the dialect it is written in.
+// counts, each read in the dialect it is written in. With a null dialect, which
+// no lookup read, the text the database runs is not known, and none counts.
 function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
-    dialect: string|undefined): Array<{text: string; dialect: string}> {
+    dialect: string|null|undefined): Array<{text: string; dialect: string}> {
+  if (dialect === null) return [];
   if (dialect === undefined) return expressionSources(f);
   // The text a database of this dialect runs: its own entry, or the
   // ANSI_SQL one.
@@ -1280,6 +1319,8 @@ export interface TableDialects {
   name: string;
   dialects: string[];
   unread?: boolean;
+  // Set for a Cloud SQL table read as MySQL from a name with no schema.
+  guessed?: boolean;
 }
 
 // The table of `entity`, or undefined when the load does not know its
@@ -1296,7 +1337,7 @@ export function tableDialects(
   if (table) {
     // Only a MySQL table's name has no schema.
     const mysql = DIALECT_OF_SYSTEM.cloudsql_mysql;
-    if (!table.inSchema) return {name: mysql, dialects: [mysql]};
+    if (!table.inSchema) return {name: mysql, dialects: [mysql], guessed: true};
     const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))].filter(
         d => d !== mysql);
     return {name: 'Cloud SQL', dialects, unread: true};
@@ -1320,29 +1361,47 @@ export function fieldsOnTables(model: SemanticModel, withUnread = false):
   });
 }
 
-// The import command that adds BigQuery SQL to a model file. Push reads only
-// files written for kcmd, so `--input first-party` fits each of them.
-export const IMPORT_TRANSPILE_COMMAND =
-    'kcmd import <file> --input first-party --flavor <ossie|google> --transpile';
+// The import command, ending in `flags`, that keeps a model file of `version`
+// in its own flavor: `--flavor google` for a Google model, `--flavor ossie` for
+// a vanilla one, and both flavors when no model is known. Push reads only files
+// written for kcmd, so `--input first-party` fits each of them.
+export function importCommand(flags: string, version?: string): string {
+  const flavor = version === GOOGLE_VERSION ? 'google' :
+      version === OSSIE_VERSION             ? 'ossie' :
+                                              '<ossie|google>';
+  return `kcmd import <file> --input first-party --flavor ${flavor} ${flags}`;
+}
 
 // Whether `kcmd import --transpile` gives BigQuery SQL to a field or metric
-// with no text for `dialect`: true when `dialect` is BIGQUERY and its only
-// text is an imported one, in a dialect the translator reads.
+// of `model` with no text for `dialect`: true when `dialect` is BIGQUERY and
+// import's translator turns its imported text into BigQuery SQL.
 export function importTranspiles(
-    f: Parameters<typeof textsFor>[0], dialect: string|undefined): boolean {
+    f: Parameters<typeof textsFor>[0], dialect: string|undefined,
+    model: Pick<SemanticModel, 'entities'>): boolean {
   return dialect === 'BIGQUERY' && !!f.importedExpression &&
-      transpilesFrom(f.importedDialect ?? '');
+      translatesToBigQuery(f, (model.entities ?? []).map(e => e.name));
+}
+
+// The hint that import can add a text in `dialect` to `f`, a field of
+// `model`, or ''.
+export function importHint(
+    f: Parameters<typeof textsFor>[0], dialect: string,
+    model: Pick<SemanticModel, 'entities'|'version'>): string {
+  if (!importTranspiles(f, dialect, model)) return '';
+  return `; give it one, or add one with '${
+      importCommand('--transpile', model.version)}'`;
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
 // entity reads from, or undefined when they name several, or a source names
-// none. A legacy bare name, which the loader completes into
+// none. It is null when every source is a table whose dialect no lookup read
+// (see dialectOfSources). A legacy bare name, which the loader completes into
 // `project.dataset.table` in `dataSource`, names BigQuery however many parts it
 // was written with.
 export function sourcesDialect(model: {
   entities?: ReadonlyArray<
       Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>;
-}): string|undefined {
+}): string|null|undefined {
   return dialectOfSources(
       (model.entities ?? [])
           .filter(e => !e.abstract)
@@ -1360,9 +1419,15 @@ export function sourcesDialect(model: {
 //
 // A Cloud SQL table written as its resource name, and a third-party table,
 // imply the dialect their catalog entry gives, which a lookup read into
-// `lookedUp` (LoadOptions.sourceDialects).
-function dialectOfSources(
-    sources: Array<{source: string; lookedUp?: string}>): string|undefined {
+// `lookedUp` (LoadOptions.sourceDialects). When every source is such a table
+// and none was looked up, as in `kcmd import`, the dialect is null: how their
+// database reads an ANSI_SQL text is not known, so a check reads no such text.
+function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
+    string|null|undefined {
+  if (sources.length &&
+      sources.every(s => dialectLookupKey(s.source.trim()) && !s.lookedUp)) {
+    return null;
+  }
   const dialects = new Set<string|undefined>(sources.map(({source, lookedUp}) => {
     const s = source.trim();
     if (dialectLookupKey(s)) return lookedUp;
@@ -1379,12 +1444,13 @@ function dialectOfSources(
 export interface CompletenessOptions extends DialectLoad {
   // The caller warns about the model file's SQL that it reads, which it does
   // only when the hierarchy of the model it checks resolves. It reads an
-  // ANSI_SQL text in `dialect`, or as generic SQL when that is unset, and
-  // every other entry in its own dialect. A warning about the model file's SQL
-  // is left out when the caller also warns about each text this check cannot
-  // read: an entry in a dialect other than ANSI_SQL, or an ANSI_SQL text when
-  // this profile's dialect is `dialect` or the caller cannot read it either.
-  ownSqlOnly?: {dialect?: string};
+  // ANSI_SQL text in `dialect`, as generic SQL when that is unset, and not at
+  // all when it is null, and every other entry in its own dialect. A warning
+  // about the model file's SQL is left out when the caller also warns about
+  // each text this check cannot read: an entry in a dialect other than
+  // ANSI_SQL, or an ANSI_SQL text when this profile's dialect is `dialect` or
+  // the caller cannot read it either.
+  ownSqlOnly?: {dialect?: string|null};
 }
 
 /**
@@ -1479,9 +1545,12 @@ export function validateProfileCompleteness(
     }
     const lookedUp = profiledEntity.sourceDialect;
     stated.push({source: pe.source, lookedUp});
-    // One query reaches every database of a SQL Server instance. A third-party
-    // table is in the database its entry's fullyQualifiedName names.
-    const table = lookedUp === 'SQLSERVER' && cloudSqlTableOf(pe.source);
+    // One query reaches every database of a SQL Server instance, so a Cloud SQL
+    // table whose engine was not looked up is keyed by its instance too. A
+    // third-party table is in the database its entry's fullyQualifiedName
+    // names.
+    const table = (lookedUp === 'SQLSERVER' || lookedUp === undefined) &&
+        cloudSqlTableOf(pe.source);
     const key = table ? table.resourceName.split('/databases/')[0] :
         db !== 'thirdparty' ? db :
         opts.sourceDatabases?.get(pe.source.trim()) ?? `thirdparty/${lookedUp}`;
@@ -1516,12 +1585,14 @@ export function validateProfileCompleteness(
     // These rules check every text the profile wrote, since each must be a
     // valid field expression wherever it runs; the dependency rules below read
     // only the text the profile's dialect evaluates. An ANSI_SQL text is read
-    // as the profile's own SQL.
+    // as the profile's own SQL, and not at all when no lookup read its
+    // dialect.
     const others = entities.map(x => x.name).filter(n => n !== pe.name);
     for (const pf of pe.fields ?? []) {
       // A text with no SQL is reported above, and has nothing to read.
       const readable = expressionSources(pf).filter(
-          s => noSqlReason(s.text, s.dialect, pe.name) === undefined);
+          s => noSqlReason(s.text, s.dialect, pe.name) === undefined &&
+              !(s.dialect === 'ANSI_SQL' && dialect === null));
       for (const {text, dialect: written} of readable) {
         const columns = columnReferences(
             text, written === 'ANSI_SQL' && dialect ? dialect : written);
@@ -1688,7 +1759,7 @@ export function validateProfileCompleteness(
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
-                  dialect}`);
+                  dialect}${importHint(f, dialect, baseModel)}`);
         }
       }
     }
@@ -1696,8 +1767,10 @@ export function validateProfileCompleteness(
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
         if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
-          const viaImport = importTranspiles(m as Field, dialect) ?
-              ` add one with '${IMPORT_TRANSPILE_COMMAND}',` : '';
+          const viaImport = importTranspiles(m as Field, dialect, baseModel) ?
+              ` add one with '${
+                  importCommand('--transpile', baseModel.version)}',` :
+              '';
           errors.push(
               `${at}: metric '${m.name}' has no expression for ${dialect} or ` +
               `ANSI_SQL, and this profile's sources are ${dialect}; give it ` +
@@ -1844,6 +1917,105 @@ export function validateProfileConsistency(
   return errors;
 }
 
+// An error of a two-phase push's checks, and what it belongs to: the whole
+// push when `document` is unset, the model in `document` when `profile` is
+// unset, and that profile of the model otherwise. A deployment's errors belong
+// to the profile it uses, which is 'default' when it names none.
+export interface LocalCheckError {
+  error: string;
+  document?: string;
+  profile?: string;
+}
+
+// The errors the named profiles of each model in `docs` give: each profile
+// file, and each profile a vanilla model carries in its GOOGLE block, checked
+// on its own for completeness. An error about a profile file names that file,
+// and one about a block profile names its label or the model document.
+// A model's profiles are checked against its model file as loaded on its own,
+// which `baseByDoc` holds. A file under the reserved name 'default', which no
+// push deploys, is not read here. Push also checks the
+// keys and join columns of the model file and of each named profile. The
+// warnings go to `warnings`. `profileDocs` gives a model's profile files, and
+// `declared` the profiles a document declares, as push reads them.
+export function namedProfileErrors(
+    docs: Array<{name: string; text: string}>,
+    baseByDoc: Map<string, SemanticModel>,
+    profileDocs: (model: string) =>
+        Array<{name: string; text: string; fileName: string}>,
+    declared: (doc: {name: string; text: string}) => DeclaredProfile[],
+    warnings: string[], load: DialectLoad): LocalCheckError[] {
+  const errors: LocalCheckError[] = [];
+  for (const d of docs) {
+    // Each named profile, with the label its errors carry and a function that
+    // reads it. declared() lists the profile files too, so only its block
+    // profiles are taken from it. A block profile is already read. Its actions
+    // are dropped, as loadProfileFile skips a profile file's.
+    let named: Array<{name: string; label: string; read: () => ProfileSpec}>;
+    try {
+      named = [
+        ...profileDocs(d.name).map(p => ({
+          name: p.name,
+          label: p.fileName,
+          read: () => loadProfileFile(p.text, p.name, {skipActions: true}),
+        })),
+        ...declared(d).flatMap(p => 'spec' in p ? [{
+          name: p.name,
+          label: p.label ?? d.name,
+          read: () => {
+            const {actions: _, ...spec} = p.spec;
+            return spec;
+          },
+        }] : []),
+      ].filter(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
+    } catch (err: any) {
+      // A profile file that breaks one of the layout's file rules, or block
+      // profiles a load rejects.
+      errors.push({error: `${err.message || err}`, document: d.name});
+      continue;
+    }
+    // A document that holds no model has nothing to check its profiles
+    // against.
+    const base = baseByDoc.get(d.name);
+    if (!base) continue;
+    // Actions are out of scope for the preview. Push checks a profile's
+    // actions only when it applies the profile, so these checks leave them
+    // out.
+    const logical = {...base, actions: []};
+    // Push warns about the SQL it cannot read in the model file, so these
+    // checks leave out a warning about model file SQL that push reads in the
+    // same dialect. Push stops reading what the SQL reads when the model's
+    // hierarchy does not resolve, and these checks then give every warning.
+    const ownSqlOnly = !inheritanceErrorOf(base) ?
+        {dialect: sourcesDialect(base)} :
+        undefined;
+    const specs: ProfileSpec[] = [];
+    for (const p of named) {
+      const at = (m: string) => `[${p.label}] ${m}`;
+      const tag = (m: string) =>
+          ({error: at(m), document: d.name, profile: p.name});
+      let spec: ProfileSpec;
+      try {
+        spec = p.read();
+      } catch (err) {
+        if (!(err instanceof SemanticModelError)) throw err;
+        errors.push(tag(err.message));
+        continue;
+      }
+      specs.push(spec);
+      const profileWarnings: string[] = [];
+      errors.push(
+          ...validateProfileCompleteness(logical, spec, profileWarnings, {
+            ownSqlOnly,
+            ...load,
+          }).map(tag));
+      warnings.push(...profileWarnings.map(at));
+    }
+    errors.push(...validateProfileConsistency(logical, specs, DEFAULT_PROFILE)
+                    .map(e => ({error: `[${d.name}] ${e}`, document: d.name})));
+  }
+  return errors;
+}
+
 // Each entity's fields, declared plus inherited, by name. Resolution throws on a
 // broken hierarchy, which push reports elsewhere. Each entity is then resolved
 // with only its own ancestors, and one whose own ancestors do not resolve
@@ -1950,10 +2122,10 @@ function boundDeclaration(
 // The first column `entityName`'s binding of `field` reads, as written, and
 // the entity that declares it (see boundDeclaration), or undefined when that
 // entity is abstract. A column is a reference no entity name qualifies, and an
-// ANSI_SQL text is read in `dialect` if set.
+// ANSI_SQL text is read in `dialect` if set, and not at all if it is null.
 export function columnBinding(
     model: SemanticModel, entityName: string, field: string,
-    dialect?: string): {owner: string; column: string}|undefined {
+    dialect?: string|null): {owner: string; column: string}|undefined {
   const byName = new Map((model.entities ?? []).map(e => [e.name, e]));
   const bound = boundDeclaration(model, entityName, field);
   if (!bound || byName.get(bound.owner)?.abstract) return undefined;
@@ -1976,7 +2148,7 @@ export function columnBinding(
 // qualifier.
 function fieldDependencies(
     model: SemanticModel, entityName: string, field: string,
-    unreadable: Set<string>, dialect?: string,
+    unreadable: Set<string>, dialect?: string|null,
     onUnread?: (what: string, owner: Field,
                 text: {text: string; dialect: string}) => void): string[] {
   const bound = boundDeclaration(model, entityName, field);
