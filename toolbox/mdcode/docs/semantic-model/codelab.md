@@ -326,13 +326,12 @@ A bare `kcmd push` governs the logical model in Knowledge Catalog.
 Warning: model 'sales' (sales) is non-executable: the model file leaves entities 'orders', 'customer' and 'lineitem' without a source, and the model declares no named profile. It cannot be queried until it is bound.
 -- Knowledge Catalog --
 Knowledge Catalog plan for 'sales' (destination $PROJECT.$LOCATION.$DATASET):
-  6 entries:
+  5 entries:
     - sales (semantic-model)
     - sales.entities.orders (semantic-entity)
     - sales.entities.customer (semantic-entity)
     - sales.entities.lineitem (semantic-entity)
     - sales.metrics.revenue (semantic-metric)
-    - sales.files.sales.yaml (semantic-model-file)
   2 schema-join links:
     - sales-placed-by
     - sales-part-of
@@ -350,14 +349,14 @@ kcmd push
 ```
 Warning: model 'sales' (sales) is non-executable: the model file leaves entities 'orders', 'customer' and 'lineitem' without a source, and the model declares no named profile. It cannot be queried until it is bound.
 Pushing semantic model (Knowledge Catalog)...
-Wrote 6 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
+Wrote 5 new and 0 updated Knowledge Catalog entries; linked 2 relationships.
 ```
 
 Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
 discoverable, access-controlled, and the single definition the rest of your work
-reads from. `kcmd pull` returns the model YAML push stored with these entries,
-confirming the round-trip. Physical bindings can be governed here too, alongside
+reads from. `kcmd pull` rebuilds the model YAML from these entries, confirming
+the round-trip; comments, key order and formatting are not kept. Physical bindings can be governed here too, alongside
 the logical model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`

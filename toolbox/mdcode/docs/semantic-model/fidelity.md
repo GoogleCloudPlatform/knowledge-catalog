@@ -80,9 +80,8 @@ agree on every structural row and differ only where a Spanner target has no
    carries no `OPTIONS` at all — so the model's `description` and
    `ai_context.instructions` are carried into Knowledge Catalog instead.
 9. **Other custom extensions.** A `custom_extensions` block from a vendor other
-   than GOOGLE is inert on push and has no catalog entry or aspect of its own;
-   `pull` returns it from the stored copy of the model file, and leaves it out
-   only when rebuilding from the catalog metadata. The OWL importer emits none:
+   than GOOGLE is inert on push and has no catalog entry or aspect of its own.
+   The OWL importer emits none:
    it is import-only (see [Importing an OWL ontology](owl-import.md)).
 10. **Logical (unbound) model.** A model with no bindings still publishes to
     Knowledge Catalog: each entity's `source` is recorded empty (`resources: []`)
@@ -154,15 +153,12 @@ agree on every structural row and differ only where a Spanner target has no
     link between two entries, so when several relationships join the same two
     entities, push links the first one it can publish and skips the rest with
     a warning. The catalog metadata holds no link for a skipped relationship.
-    `pull` still returns it from the stored copy of the model file, and leaves
-    it out only when it rebuilds the file from the metadata.
 
 ## To Knowledge Catalog
 
-The catalog holds the model's metadata and a copy of each model file and profile
-file. Every resource type it uses is a built-in system type under
-`dataplex-types/global`, apart from the custom `semantic-action`,
-`semantic-constraint` and `semantic-model-file` pairs that `kcmd init`
+The catalog holds the model's metadata. Every resource type it uses is a
+built-in system type under `dataplex-types/global`, apart from the custom
+`semantic-action` and `semantic-constraint` pairs that `kcmd init`
 provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
@@ -313,13 +309,9 @@ and round-trip losslessly through `pull` — see
 
 ## What pull recovers
 
-Push stores a copy of the model file and of each profile file it reads, and
-`pull` writes those copies back unchanged. What follows describes the catalog
-metadata itself, which is what `pull` rebuilds the model file from when the
-model has no `kcmd-push-id` label and no stored copy, such as a model an older
-`kcmd` pushed. It also rebuilds the model file when no stored copy is named
-after the model. [Pull](README.md#pull) says when `pull` refuses the catalog
-instead.
+`pull` rebuilds the model file from the catalog metadata, which is what
+follows describes, so comments, key order and formatting are not kept.
+[Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 With the second-generation types (the default), pull rebuilds the model file,
 profile files and overview sidecars from the metadata, and writes each metric's

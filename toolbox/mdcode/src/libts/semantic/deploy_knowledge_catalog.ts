@@ -18,8 +18,8 @@
 //
 // Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
 // `applyKnowledgeCatalog`):
-//   * Preflight validates that exactly one model is deployed per entry group
-//     and that each file copy fits in one aspect, snapshots the destination
+//   * Preflight validates that exactly one model is deployed per entry group,
+//     snapshots the destination
 //     entry group to guard against foreign models (unless `--force-remove` is
 //     set), and checks that any required custom entry/aspect types exist in
 //     the target project. With the second-generation aspects, it also checks
@@ -56,9 +56,9 @@ import * as crm from '../gcp/crm';
 import {Aspect, CatalogClient, Entry, EntryLink} from '../gcp/dataplex';
 import type {OverviewSidecar} from '../layouts/semantic-model';
 
-import {collectCustomTypes, customTypeHome, FILE_COPY_TYPE_ID, FileCopy, PUSH_FINISHED, PUSH_ID_LABEL, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
+import {collectCustomTypes, customTypeHome, PUSH_FINISHED, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {anchorId, collectEntityNames, collectOwnedEntries, collectOwnedReferences, entryAspectKeys, entryId, entryTypeId, isAnchorEntry, isDependentEntry, isEntryOwner, isLinkOwner, isModelLink, KcAnchor, linkId, linkTypeId, sameLinkReferences,} from './kc_entries';
-import {entryIdOf, slug} from './kc_ids';
+import {entryIdOf} from './kc_ids';
 import * as kcEmit from './knowledge_catalog';
 import {LoadedModel} from './loader';
 
@@ -86,16 +86,9 @@ export interface KcDeployOptions {
   // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
   // false).
   v2Aspects?: boolean;
-  // The file copies of the model file and its profile files, which the
-  // emitter stores when v2Aspects is off.
-  sourceFiles?: FileCopy[];
   // The overview sidecar of each entry, by entry id, which the emitter writes
   // into the entry's overview when v2Aspects is on.
   overviews?: ReadonlyMap<string, OverviewSidecar>;
-  // Set when the caller has already checked that the file-copy type exists
-  // in the destination project. The preflight then does not look that type
-  // up again. It still looks up every other custom type the model uses.
-  fileCopyTypeChecked?: boolean;
   // Called with the warnings once the preflight passes, before the first
   // catalog write, so a caller can show them before anything is written. The
   // result carries them too. Not called for validateOnly or when the preflight
@@ -190,14 +183,12 @@ function sleep(ms: number): Promise<void> {
  *
  * The method performs the following actions:
  *   1. Translates the IR models into catalog resources.
- *   2. Verifies that exactly one model is being deployed and that each file
- *      copy fits in one aspect, builds the dry-run plan, and returns early
- *      when `opts.validateOnly` is set.
+ *   2. Verifies that exactly one model is being deployed, builds the dry-run
+ *      plan, and returns early when `opts.validateOnly` is set.
  *   3. Lists the destination entry group and fails if an unrecognized model's
  *      anchor entry is present without `--force-remove`.
  *   4. Verifies that every custom entry type and aspect type required by the
- *      model exists in the target project. Skips the file-copy type when
- *      `opts.fileCopyTypeChecked` is set.
+ *      model exists in the target project.
  *   5. Returns the emitted resources, entry-group listing, warnings, and plan
  *      as `prepared` for `applyKnowledgeCatalog`.
  * With `opts.v2Aspects` set, step 2 also checks every aspect's size.
@@ -247,24 +238,10 @@ export async function applyKnowledgeCatalog(
   // Resource Manager is asked for the project number at most once per push.
   const isScopeProject = scopeProjectMatcher(ctx, opts.project);
 
-  // Some of this model's writes may have landed before a failure in them.
-  // The catalog may then lack some or all of this push's file copies, and
-  // pull refuses that until a push succeeds.
-  const storesCopies = emitted.some(
-      m => m.resources.entries.some(e => entryTypeId(e) === FILE_COPY_TYPE_ID));
-  const failed = (details: string) => result(
-      false,
-      storesCopies ?
-          `${details.replace(/\.$/, '')}. The catalog may now lack some or ` +
-              `all of this push's file copies, so push again before you pull.` :
-          details);
-
   if (opts.forceRemove) {
     const foreignAnchorIds = findForeignAnchorIds(emitted[0], existing);
     if (foreignAnchorIds.length) {
-      // This runs before any of this model's writes. A failure here leaves
-      // none of this push's file copies, so it gets the note too, and so
-      // does a thrown error.
+      // A thrown error is reported like a failed delete.
       const removed =
           await removeForeignModels(
               cat, opts, existing, foreignAnchorIds, isScopeProject)
@@ -275,7 +252,7 @@ export async function applyKnowledgeCatalog(
                      }));
       counts.deleted += removed.deleted;
       counts.unlinked += removed.unlinked;
-      if (removed.error) return failed(removed.error);
+      if (removed.error) return result(false, removed.error);
     }
   }
 
@@ -288,10 +265,7 @@ export async function applyKnowledgeCatalog(
           cat, opts, emitted, existing, counts, isScopeProject)
           .catch((err: any): WriteModelsOutcome =>
                      ({error: String(err?.message || err).trim()}));
-  // Every file copy has landed before the last write, so its error gets no
-  // note.
-  if (written.finishFailed) return result(false, written.error);
-  if (written.error) return failed(written.error);
+  if (written.error) return result(false, written.error);
 
   return result(true);
 }
@@ -330,15 +304,14 @@ export async function deployEmittedModels(
  * Runs read-only preflight checks on already-emitted models.
  *
  * The method performs the following checks:
- *   1. Validates locally that `emitted` contains a single model, that each
- *      file copy fits in one aspect and, with `opts.v2Aspects` set, that every
- *      aspect size and instance count is within its limit. Builds the
+ *   1. Validates locally that `emitted` contains a single model and, with
+ *      `opts.v2Aspects` set, that every aspect size and instance count is
+ *      within its limit. Builds the
  *      dry-run plan and returns early when `opts.validateOnly` is set.
  *   2. Lists the destination entry group and validates that it contains no
  *      foreign models unless `--force-remove` is set.
  *   3. Validates that every custom type used by the model exists in the
- *      target project. Skips the file-copy type when
- *      `opts.fileCopyTypeChecked` is set.
+ *      target project.
  */
 async function preflightEmittedModels(
     emitted: EmittedModel[], emitWarnings: string[], ctx: context.ApiContext,
@@ -361,8 +334,6 @@ async function preflightEmittedModels(
   // Once `validateEmittedModels` passes and `emitted` is non-empty, `emitted`
   // is guaranteed to contain exactly one model (`emitted[0]`).
   const model = emitted[0];
-  const sizeValidation = validateFileCopySizes(model, result);
-  if (!sizeValidation.success) return {result: sizeValidation};
   const aspectsError = opts.v2Aspects ? emittedAspectsError(model) : undefined;
   if (aspectsError) return {result: result(false, aspectsError)};
   plan = buildPlan(emitted, opts);
@@ -470,59 +441,6 @@ export const MAX_ASPECT_DATA_BYTES = 120 * 1024;
 const MAX_SCHEMA_ASPECT_DATA_BYTES = 2 * 1024 * 1024;
 
 /**
- * Validates that every file copy in `model` fits in one aspect.
- *
- * A file too large to store then fails before any write, naming the file,
- * rather than partway through the writes. Push runs the same check on its
- * copies, with `checkFileCopies`, before any graph deploys.
- */
-function validateFileCopySizes(
-    model: EmittedModel, result: ResultBuilder): KcDeployResult {
-  for (const entry of model.resources.entries) {
-    if (entryTypeId(entry) !== FILE_COPY_TYPE_ID) continue;
-    for (const aspect of Object.values(entry.aspects ?? {})) {
-      const error = fileCopySizeError(aspect.data ?? {});
-      if (error) return result(false, error);
-    }
-  }
-  return result(true);
-}
-
-/**
- * Checks a push's file copies before anything is written. Returns the error
- * to report, or undefined when every copy fits in one aspect and no two file
- * names map to one entry id.
- *
- * Push calls it before any graph deploys. Every copy of a model shares the
- * model's part of the entry id, so two file names collide when their slugs
- * do.
- */
-export function checkFileCopies(files: readonly FileCopy[]): string|undefined {
-  const bySlug = new Map<string, string>();
-  for (const file of files) {
-    const tooLarge = fileCopySizeError(kcEmit.fileCopyData(file));
-    if (tooLarge) return tooLarge;
-    const earlier = bySlug.get(slug(file.fileName));
-    if (earlier !== undefined) {
-      return `files '${earlier}' and '${file.fileName}' both map to one ` +
-          `entry id; rename one of them`;
-    }
-    bySlug.set(slug(file.fileName), file.fileName);
-  }
-  return undefined;
-}
-
-// Why the aspect data of one file copy is too large to store, or undefined
-// when it fits.
-function fileCopySizeError(data: Record<string, any>): string|undefined {
-  const bytes = new TextEncoder().encode(JSON.stringify(data)).length;
-  if (bytes <= MAX_ASPECT_DATA_BYTES) return undefined;
-  return `file '${data.fileName}' is too large to store in Knowledge ` +
-      `Catalog: its copy takes ${bytes} bytes, and one aspect holds at most ` +
-      `${MAX_ASPECT_DATA_BYTES}.`;
-}
-
-/**
  * The emitter's warnings for `models`, and an emit error or the first aspect
  * too large to store. With v2Aspects on, that error is why push's catalog leg
  * cannot write them. Calls no service.
@@ -585,8 +503,7 @@ function aspectTypeIdOfKey(key: string): string {
 
 /**
  * Validates that every kcmd-owned custom type (`semantic-action`,
- * `semantic-constraint`, `semantic-model-file`) used by `model` exists in the
- * target project.
+ * `semantic-constraint`) used by `model` exists in the target project.
  *
  * Unlike built-in system types in `dataplex-types`, custom entry and aspect
  * types are provisioned in the destination project by `kcmd init`;
@@ -594,28 +511,21 @@ function aspectTypeIdOfKey(key: string): string {
  * before any catalog entries or entry links are written, rather than failing
  * mid-push when creating an action or constraint entry.
  *
- * Skips the file-copy type when `opts.fileCopyTypeChecked` is set, because
- * the caller has already looked it up. Makes no network calls when no type
- * is left to check.
+ * Makes no network calls when the model uses no custom type.
  */
 async function validateCustomTypes(
     cat: CatalogClient, model: EmittedModel, opts: KcDeployOptions,
     result: ResultBuilder): Promise<KcDeployResult> {
-  const typeIds = collectCustomTypes(model.resources.entries).filter(
-      id => !(opts.fileCopyTypeChecked && id === FILE_COPY_TYPE_ID));
-  const error = await checkCustomTypes(cat, opts, typeIds);
+  const error = await checkCustomTypes(
+      cat, opts, collectCustomTypes(model.resources.entries));
   return error ? result(false, error) : result(true);
 }
 
 /**
  * Checks that each custom type in `typeIds` exists in the destination
  * project. Returns the error to report, or undefined when every one exists.
- *
- * Push also calls it before any graph deploys, for the file-copy type every
- * push with v2Aspects off needs. Push then sets `fileCopyTypeChecked`, so the
- * catalog preflight looks up only the other custom types.
  */
-export async function checkCustomTypes(
+async function checkCustomTypes(
     cat: CatalogClient, dest: {project: string},
     typeIds: readonly string[]): Promise<string|undefined> {
   const home = customTypeHome(dest);
@@ -664,7 +574,6 @@ function emitModels(models: LoadedModel[], opts: KcDeployOptions):
         systemTypeLocation: opts.systemTypeLocation,
         emitExpressions: opts.emitExpressions,
         v2Aspects: opts.v2Aspects,
-        sourceFiles: opts.sourceFiles,
         overviews: opts.overviews,
       });
     } catch (err: any) {
@@ -721,9 +630,6 @@ function planSummary(
 
 interface WriteModelsOutcome {
   error?: string;
-  // Set when the last write, which labels the model entry finished, failed.
-  // Every other write has landed then.
-  finishFailed?: boolean;
 }
 
 /**
@@ -875,7 +781,6 @@ async function writeEmittedModels(
           error: `Model '${model}': setting the ${PUSH_STATE_LABEL} label of ` +
               `entry '${entryId(anchor)}' to ${PUSH_FINISHED} failed: ` +
               `${error.replace(/\.$/, '')}. Push again before you pull.`,
-          finishFailed: true,
         };
       }
     }
@@ -1654,6 +1559,11 @@ async function writeEntry(
   return {};
 }
 
+// The entrySource label an older kcmd put on the model entry when it stored
+// file copies. No push sets it now. An update drops it, so a model entry an
+// older kcmd wrote loses it on the next push.
+const OLD_PUSH_ID_LABEL = 'kcmd-push-id';
+
 // The entrySource fields another writer may set, which an update keeps.
 const KEPT_SOURCE_FIELDS =
     ['resource', 'system', 'platform', 'createTime', 'updateTime'] as const;
@@ -1676,11 +1586,10 @@ const KEPT_SOURCE_FIELDS =
  *
  * The update mask replaces the whole entrySource, so the update carries over
  * fields from `source`, the entrySource the entry had before this push. Of
- * those fields kcmd owns the display name, the description and the
- * `kcmd-push-id` label. The update keeps another writer's `resource`,
- * `system`, `platform`, `createTime` and `updateTime`, and every label but
- * `kcmd-push-id`. It sets that label when `entry` carries it and drops it
- * when not. A label `entry` carries, such as the model entry's
+ * those fields kcmd owns the display name and the description. The update
+ * keeps another writer's `resource`, `system`, `platform`, `createTime` and
+ * `updateTime`, and every label but the `kcmd-push-id` an older kcmd set,
+ * which it drops. A label `entry` carries, such as the model entry's
  * `kcmd-push-state`, replaces the stored one. Dataplex refuses an update that
  * leaves out an `updateTime` the entry has, or moves it back. A kept field
  * another writer changes after `source` was read is written back with the old
@@ -1689,7 +1598,7 @@ const KEPT_SOURCE_FIELDS =
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
     source?: Entry['entrySource']): Promise<WriteOutcome> {
-  const {[PUSH_ID_LABEL]: _own, ...others} = source?.labels ?? {};
+  const {[OLD_PUSH_ID_LABEL]: _old, ...others} = source?.labels ?? {};
   const labels = {...others, ...entry.entrySource?.labels};
   const kept = Object.fromEntries(
       KEPT_SOURCE_FIELDS.filter(k => source?.[k] !== undefined)

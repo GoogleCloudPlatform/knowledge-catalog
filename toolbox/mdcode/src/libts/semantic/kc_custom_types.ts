@@ -51,9 +51,6 @@ export interface CustomType {
   // The aspect type, including the metadata template that gives the entry its
   // typed, queryable fields.
   aspectType: Omit<AspectType, 'name'>;
-  // Set when every push needs the type, so init fails when it cannot create
-  // it. Absent means the type backs an optional construct.
-  required?: boolean;
 }
 
 
@@ -583,94 +580,12 @@ const CONSTRAINT_ASPECT_TYPE: Omit<AspectType, 'name'> = {
   },
 };
 
-// The id of the file-copy type. A file copy holds the text of one model or
-// profile file as push read it, so a pull can return the file unchanged.
-export const FILE_COPY_TYPE_ID = 'semantic-model-file';
-
-// The entrySource label a push puts on the model entry when it stores file
-// copies. Its value is the push id those copies carry. A model entry whose
-// label names a push the catalog holds no copies of was last written by a
-// push that stopped before storing them.
-export const PUSH_ID_LABEL = 'kcmd-push-id';
-
 // The entrySource label every push puts on the model entry: PUSH_WRITING with
 // the model entry's write and PUSH_FINISHED as the push's last write. kcmd
-// owns this label and PUSH_ID_LABEL, and no other.
+// owns this label and no other.
 export const PUSH_STATE_LABEL = 'kcmd-push-state';
 export const PUSH_WRITING = 'writing';
 export const PUSH_FINISHED = 'finished';
-
-// A file copy: one model or profile file's name and text.
-export interface FileCopy {
-  // The file's path relative to the entry group directory, for example
-  // `retail.yaml` or `retail.profile.prod.yaml`.
-  fileName: string;
-  // The file's text, exactly as read.
-  content: string;
-  // The id of the push that stored the copy. Every copy one push stores
-  // carries the same id. Absent on a copy stored before push ids.
-  pushId?: string;
-  // How many copies that push stored. Absent on a copy stored before copy
-  // counts.
-  pushFileCount?: number;
-}
-
-// The aspect that carries a file copy.
-const FILE_COPY_ASPECT_TYPE: Omit<AspectType, 'name'> = {
-  displayName: 'Semantic Model File',
-  description:
-      'The text of one semantic model file or profile file, exactly as ' +
-      'pushed.',
-  metadataTemplate: {
-    name: FILE_COPY_TYPE_ID,
-    type: 'record',
-    recordFields: [
-      {
-        index: 1,
-        name: 'fileName',
-        type: 'string',
-        constraints: {required: true},
-        annotations: {
-          displayName: 'File Name',
-          description:
-              'The file\'s path relative to the entry group directory, for ' +
-              'example `retail.profile.prod.yaml`.',
-        },
-      },
-      {
-        index: 2,
-        name: 'content',
-        type: 'string',
-        constraints: {required: true},
-        annotations: {
-          displayName: 'Content',
-          description: 'The file\'s text, exactly as read.',
-        },
-      },
-      {
-        index: 3,
-        name: 'pushId',
-        type: 'string',
-        annotations: {
-          displayName: 'Push ID',
-          description:
-              'The id of the push that stored this copy. Every copy one push ' +
-              'stores carries the same id.',
-        },
-      },
-      {
-        index: 4,
-        name: 'pushFileCount',
-        type: 'int',
-        annotations: {
-          displayName: 'Push File Count',
-          description: 'How many file copies the push that stored this one ' +
-              'stored in all.',
-        },
-      },
-    ],
-  },
-};
 
 // Every type kcmd provisions. This list is the whole of what is custom.
 export const CUSTOM_TYPES: readonly CustomType[] = [
@@ -689,16 +604,6 @@ export const CUSTOM_TYPES: readonly CustomType[] = [
       description: 'An invariant a semantic model requires to hold.',
     },
     aspectType: CONSTRAINT_ASPECT_TYPE,
-  },
-  {
-    id: FILE_COPY_TYPE_ID,
-    entryType: {
-      displayName: 'Semantic Model File',
-      description: 'A copy of one semantic model file or profile file.',
-    },
-    aspectType: FILE_COPY_ASPECT_TYPE,
-    // Push stores every model file with it.
-    required: true,
   },
 ];
 
@@ -756,10 +661,9 @@ export function customAspectKey(id: string, dest: {project: string}): string {
 }
 
 // What provisioning produced. `error` is a failure the caller must not ignore.
-// `denied` is the narrower case of lacking permission to create a type that
-// backs an optional construct, which is reported and survived: a project whose
-// models use none of those constructs never needs the type. Lacking permission
-// to create a required type that does not exist is an `error`.
+// `denied` is the narrower case of lacking permission to create a type, which
+// is reported and survived: a project whose models use none of the constructs
+// a custom type backs never needs it.
 export interface ProvisionResult {
   error?: string;
   denied?: string;
@@ -777,9 +681,8 @@ export interface ProvisionResult {
  * template lacks fails with an opaque parsing error. Dataplex rejects a
  * backwards-incompatible change, so the patch only ever adds appended fields.
  *
- * Stops at the first hard failure, which includes a permission refusal for a
- * required type that does not exist. A refusal to patch a type that exists is
- * a warning. A refusal for an optional type does NOT stop it: the refusals
+ * Stops at the first hard failure. A refusal to patch a type that exists is
+ * a warning. A refusal to create a type does NOT stop it: the refusals
  * differ per type and per operation -- patching a type that already exists
  * needs `update`, creating one that does not needs `create` -- so a caller
  * refused one type may well be allowed the next, and giving up early would
@@ -812,36 +715,22 @@ async function provisionOne(
 
   // Creating a type needs permissions that publishing entries does not. A
   // caller who lacks them can still init, push and pull every model that uses
-  // none of the optional types, so that refusal is reported rather than fatal.
-  // A required type is needed by every push, so its refusal stops init.
+  // none of the custom types, so that refusal is reported rather than fatal.
   const denial = (what: string, status: number, message?: string):
       ProvisionResult|undefined => {
     if (status !== 403) return undefined;
-    const refused = `no permission to create ${what} in project '${
-        home.project}' (${message || status})`;
-    return type.required ?
-        {error: `${refused}; every push needs it, so init cannot finish`} :
-        {
-          denied: `${refused}; models that need it cannot be pushed until ` +
-              `it exists`
-        };
+    return {
+      denied: `no permission to create ${what} in project '${home.project}' (${
+                  message || status}); models that need it cannot be pushed ` +
+          `until it exists`
+    };
   };
-
-  // A caller without create permission may be refused the create of a type
-  // that already exists. For a required type a lookup tells the two apart, so
-  // init fails only when the type is missing.
-  const refusedButExists =
-      async (status: number, lookup: () => Promise<{status: number}>) =>
-          status === 403 && !!type.required && (await lookup()).status === 200;
 
   const warnings: string[] = [];
   const aspectLabel = `aspect type '${type.id}'`;
   const aspect = await cat.createAspectType(
       home.project, home.location, type.id, type.aspectType);
-  if (aspect.status === 409 ||
-      await refusedButExists(
-          aspect.status,
-          () => cat.getAspectType(home.project, home.location, type.id))) {
+  if (aspect.status === 409) {
     const upd = await cat.updateAspectType(
         home.project, home.location, type.id, type.aspectType,
         ['description', 'display_name', 'metadata_template']);
@@ -906,12 +795,7 @@ async function provisionOne(
         requiredAspects: [{type: customAspectTypeName(type.id, dest)}],
       });
   const collected = warnings.length ? {warnings} : {};
-  if (entryType.status === 409 ||
-      await refusedButExists(
-          entryType.status,
-          () => cat.getEntryType(home.project, home.location, type.id))) {
-    return collected;
-  }
+  if (entryType.status === 409) return collected;
   const refused = denial(entryLabel, entryType.status, entryType.message);
   if (refused) return {...refused, ...collected};
   if (entryType.status !== 200) {

@@ -7,11 +7,10 @@
 // (a BASIC list omits aspect data, so each entry is re-fetched with its aspect
 // types -- an entity needs BOTH its `semantic-entity` aspect and the built-in
 // `schema` aspect), and hands the hydrated entries to the pure reader
-// (`kc_converter.modelsFromCatalogResources`). With the first-generation
-// aspects it also returns the file copies a push stored of the model and
-// profile files, for the caller to write instead of the rebuilt model. With
-// the second-generation types, a model an older kcmd pushed with the first-
-// generation ones is left out, and a warning names it.
+// (`kc_converter.modelsFromCatalogResources`). With the second-generation
+// types, a model an older kcmd pushed with the first-generation ones is left
+// out, and a warning names it. The file copies an older kcmd stored of the
+// model and profile files are not read.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -25,7 +24,7 @@ import {catalogContainer, CatalogClient, Entry, EntryLink} from '../gcp/dataplex
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
 import {FirstGenerationModel, linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
-import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
+import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {entryIdOf, Namer} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
 
@@ -46,40 +45,29 @@ export interface KcPullOptions {
   systemTypeProject?: string;
 }
 
-export interface KcPullResult extends ReadResult {
-  // The file copies a push stored for the model, sorted by file name. Set
-  // only with v2Aspects off. Empty when the catalog holds no copy of the
-  // model file, `<model>.yaml`; the caller then writes the model rebuilt from
-  // the aspects.
-  rawFiles?: FileCopy[];
-}
-
 // Upper bound on in-flight aspect-hydration fetches during a pull.
 const HYDRATE_CONCURRENCY = 8;
 
 // Reads the semantic model back from a Knowledge Catalog entry group. Emits no
 // console output; soft warnings (from the reader) are returned for the caller
 // to print. Hard failures -- more than one model in the group, a fetch error
-// on any entry or its links, a model entry still labeled as being written, or
-// file copies that are not one finished push's -- throw, so the pull aborts
-// rather than write a partial model.
+// on any entry or its links, or a model entry still labeled as being written
+// -- throw, so the pull aborts rather than write a partial model.
 export async function pullKnowledgeCatalog(
-    cat: CatalogClient, opts: KcPullOptions): Promise<KcPullResult> {
+    cat: CatalogClient, opts: KcPullOptions): Promise<ReadResult> {
   await loadSqlEngine();
   const destination = `${opts.project}.${opts.location}.${opts.entryGroup}`;
-  const warnings: string[] = [];
 
   // Enumerate the group (paging is inherently sequential) and pick the semantic
   // entries, then hydrate their aspects concurrently: a BASIC list omits aspect
   // data, so each entry needs its own lookupEntry, and those fetches are
   // independent. The pool preserves input order so warnings stay deterministic.
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
-  // With v2Aspects on, the ids of the file copies, which are not fetched.
+  // The ids of the file copies an older kcmd stored, which are not fetched.
   const copyIds: string[] = [];
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
-    // With v2Aspects on, a pull returns no file copies, so it fetches none.
-    if (opts.v2Aspects && isFileCopyEntry(entry)) {
+    if (isFileCopyEntry(entry)) {
       copyIds.push(entryIdOf(entry.name));
       continue;
     }
@@ -155,99 +143,45 @@ export async function pullKnowledgeCatalog(
       anchor?.entrySource?.labels?.[PUSH_STATE_LABEL] === PUSH_WRITING ?
       `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
       undefined;
-  if (opts.v2Aspects) {
-    // A model an older kcmd pushed is not in `read.models`, so the model is
-    // named from its entry, as the reader names it.
-    if (writingReason) {
-      throw notFinished(
-          anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
-          writingReason);
-    }
-    warnings.push(...read.warnings);
-    for (const m of read.firstGeneration ?? []) {
-      warnings.push(firstGenerationWarning(opts, m, copyIds));
-    }
-    return {...read, warnings: [...new Set(warnings)]};
+  if (writingReason) {
+    // With v2Aspects on, a model an older kcmd pushed is not in `read.models`,
+    // so the model is named from its entry, as the reader names it.
+    throw notFinished(
+        anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
+        writingReason);
   }
-  // A copy belongs to the group's one model, so with no model there are none.
-  if (!anchor) {
-    warnings.push(...read.warnings);
-    return {models: [], rawFiles: [], warnings: [...new Set(warnings)]};
+  const warnings = [...read.warnings];
+  for (const m of read.firstGeneration ?? []) {
+    warnings.push(firstGenerationWarning(opts, m, copyIds));
   }
-
-  // The first-generation aspects cannot hold the whole model, so the caller
-  // writes these copies instead of the model rebuilt from the aspects. That
-  // needs the copy of the model file, `<model>.yaml`, which is where pull
-  // writes the model. Without it the rebuilt model is written, as for a model
-  // pushed before copies were stored.
-  const model = read.models[0].name;
-  const before = warnings.length;
-  const copies = readFileCopies(
-      hydrated.filter(e => isOwnCopy(anchors[0].entry.name, entryIdOf(e.name))),
-      warnings);
-  const skipped = warnings.slice(before);
-  // Every copy one push stores carries that push's id and how many copies it
-  // stored. Copies whose ids differ, or of which only some carry one, or a
-  // number of copies other than that count, mean the last push stopped
-  // partway. Writing them would mix files from two pushes or leave one out.
-  // A push that stores copies also labels the model entry with its push id,
-  // and writes that entry first. A labeled model whose copies are missing or
-  // carry another id means the last push stopped before storing them.
-  // Writing the copies of an earlier push, or rebuilding, would overwrite
-  // the local files.
-  const count = copies[0]?.pushFileCount;
-  const label = anchor.entrySource?.labels?.[PUSH_ID_LABEL];
-  const unfinished = new Set(copies.map(f => f.pushId)).size > 1 ?
-      'its file copies in the catalog come from different pushes' :
-      count !== undefined && copies.length < count ?
-      `the catalog holds ${copies.length} of its ${count} file copies` :
-      count !== undefined && copies.length > count ?
-      `the catalog holds ${copies.length} file copies, but the push stored ` +
-          `${count}` :
-      label !== undefined && !copies.length ?
-      (skipped.length ? 'the catalog holds no readable file copy' :
-                        'the catalog holds none of its file copies') :
-      label !== undefined && copies[0].pushId !== label ?
-      'its model entry and its file copies come from different pushes' :
-      writingReason;
-  if (unfinished) {
-    // A skipped copy is often why the count is off, so its warning goes with
-    // the error.
-    throw notFinished(model, unfinished, skipped.map(w => ` ${w}.`).join(''));
-  }
-  if (copies.some(f => f.fileName === `${model}.yaml`)) {
-    // The rebuilt model is not written, so its warnings are left out.
-    return {
-      models: read.models,
-      rawFiles: copies,
-      warnings: [...new Set(warnings)],
-    };
-  }
-  warnings.push(...read.warnings);
-  warnings.push(
-      copies.length ?
-          `the stored copies of model '${model}' hold no '${model}.yaml', so ` +
-              `the model file is rebuilt from the catalog's aspects and may ` +
-              `differ from what was pushed` :
-          'no stored copy of the model file was found, so it is rebuilt from ' +
-              'the catalog\'s aspects and may differ from what was pushed; ' +
-              'push it again to store a copy');
-  return {models: read.models, rawFiles: [], warnings: [...new Set(warnings)]};
+  return {...read, warnings: [...new Set(warnings)]};
 }
 
 // The error for a model whose last push stopped partway, for `reason`.
-function notFinished(model: string, reason: string, more = ''): Error {
+function notFinished(model: string, reason: string): Error {
   return new Error(
       `the last push of model '${model}' did not finish: ${reason}, so pull ` +
-      `writes nothing. Push again, then pull.${more}`);
+      `writes nothing. Push again, then pull.`);
 }
 
 
 // True when the file copy `copyId` belongs to the model of the entry
-// `anchor`: a model's own copies sit under its entry id's `.files.` prefix,
-// and a copy another model left behind is not one of them.
+// `anchor`: an older kcmd stored a model's copies under its entry id's
+// `.files.` prefix, and a copy another model left behind is not one of them.
 function isOwnCopy(anchor: string, copyId: string): boolean {
   return copyId.startsWith(`${entryIdOf(anchor)}.files.`);
+}
+
+// The entry type of the file copies an older kcmd stored, a custom type in
+// the destination project.
+const OLD_FILE_COPY_TYPE_ID = 'semantic-model-file';
+
+// True when an entry is a file copy an older kcmd stored, matched by its
+// entry type's id suffix so the project the custom type lives in need not be
+// known.
+function isFileCopyEntry(entry: Entry): boolean {
+  return entry.entryType?.endsWith(`/entryTypes/${OLD_FILE_COPY_TYPE_ID}`) ??
+      false;
 }
 
 // The model, entity and metric aspect types a first-generation push writes, in
@@ -356,43 +290,6 @@ function pathBatches(
 }
 
 
-// True when an entry is a file copy, matched by its entry type's id suffix so
-// the project the custom type lives in need not be known.
-function isFileCopyEntry(entry: Entry): boolean {
-  return entry.entryType?.endsWith(`/entryTypes/${FILE_COPY_TYPE_ID}`) ?? false;
-}
-
-// The file copies among the hydrated entries, sorted by file name, each with
-// the push id and copy count it carries. A copy whose aspect holds no file
-// name or no content is skipped with a warning.
-function readFileCopies(entries: Entry[], warnings: string[]): FileCopy[] {
-  const files: FileCopy[] = [];
-  for (const entry of entries) {
-    if (!isFileCopyEntry(entry)) continue;
-    const aspect = Object.entries(entry.aspects ?? {}).find(
-        ([key, a]) => key.endsWith(`.${FILE_COPY_TYPE_ID}`) ||
-            (a.aspectType ?? '').endsWith(`/aspectTypes/${FILE_COPY_TYPE_ID}`));
-    const data = aspect?.[1].data;
-    if (typeof data?.fileName !== 'string' || data.fileName === '' ||
-        typeof data.content !== 'string') {
-      warnings.push(
-          `file copy '${entryIdOf(entry.name)}' holds no file name or no ` +
-          `content; it is skipped`);
-      continue;
-    }
-    files.push({
-      fileName: data.fileName,
-      content: data.content,
-      ...(typeof data.pushId === 'string' ? {pushId: data.pushId} : {}),
-      ...(typeof data.pushFileCount === 'number' ?
-              {pushFileCount: data.pushFileCount} :
-              {}),
-    });
-  }
-  return files.sort(
-      (a, b) => a.fileName < b.fileName ? -1 : a.fileName > b.fileName ? 1 : 0);
-}
-
 
 // The aspect types each second-generation entry type is read with.
 const OBJECT_ASPECTS = ['guidelines', 'semantic-extensions', 'overview'];
@@ -440,9 +337,6 @@ function semanticAspectTypes(entryType: string, v2Aspects?: boolean): string[]|
     case CONSTRAINT_TYPE_ID:
       // Custom for the same reason, and named through the same `typeBase`.
       return constraintAspectTypes(typeBase);
-    case FILE_COPY_TYPE_ID:
-      // Custom too: one aspect holding the file's name and text.
-      return [aspectType(FILE_COPY_TYPE_ID)];
     default:
       return undefined;
   }

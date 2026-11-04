@@ -137,9 +137,6 @@ scenarios('kcmd profiles reports what push rejects', [
       relationships: [{name: 'placed_by', from: 'purchase', to: 'customer',
                        from_columns: ['p_c'], to_columns: ['c_x']}],
     }, 'placed_by', {model: [pushed()], 'no profiles': []}],
-    ['a file too large to store',
-     {files: {'commerce.profile.big.yaml': `#${'x'.repeat(125e3)}\nname: big`}},
-     'too large to store', {'': [pushed()], big: []}],
     ['a malformed overview sidecar', {v2Aspects: true, files: {
        'commerce.overview.md': '---\ncontentType: markdown\n---\nOrders.\n',
      }}, "not 'markdown'", {'': [pushed()], 'no profiles': []}],

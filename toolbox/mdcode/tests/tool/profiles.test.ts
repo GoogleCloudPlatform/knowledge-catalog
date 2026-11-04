@@ -11,7 +11,6 @@ import * as path from 'node:path';
 
 import {BigQueryClient} from '../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../src/libts/gcp/context';
-import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import * as bigQueryDeploy from '../../src/libts/semantic/deploy_bigquery';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
@@ -307,11 +306,6 @@ entities:
     expect(await profiles()).toBe(1);
     expect(logs).toContain('      Customer -> (unbound)');
     expect(errs).toContain(`      ${error}`);
-    // Push checks that the file-copy type exists; that lookup passes.
-    spyOn(CatalogClient.prototype, 'getEntryType')
-        .mockResolvedValue({status: 200, result: {}} as any);
-    spyOn(CatalogClient.prototype, 'getAspectType')
-        .mockResolvedValue({status: 200, result: {}} as any);
     errs.length = 0;
     expect(await push({validateOnly: true})).toBe(1);
     expect(errs).toEqual([`Error: ${error}`]);
@@ -734,11 +728,6 @@ relationships:
     // Push probes BigQuery before it generates a graph; that probe passes.
     spyOn(BigQueryClient.prototype, 'query')
         .mockResolvedValue({status: 200, result: {}});
-    // Push checks that the file-copy type exists; that lookup passes.
-    spyOn(CatalogClient.prototype, 'getEntryType')
-        .mockResolvedValue({status: 200, result: {}} as any);
-    spyOn(CatalogClient.prototype, 'getAspectType')
-        .mockResolvedValue({status: 200, result: {}} as any);
   });
 
   test('a profile push accepts keeps its report and exits 0', async () => {
@@ -959,12 +948,10 @@ semantic_model:
       '  - name: commerce\n',
       `  - name: commerce\n    custom_extensions:\n      - {vendor_name: DBT, ` +
           `data: ${'x'.repeat(130 * 1024)}}\n`);
-  // Push gives a scope with two models its one-model error, once, and checks
-  // neither the copies nor the aspects.
+  // Push gives a scope with two models its one-model error, once, and does
+  // not check the aspects.
   for (const [label, model, v2] of [
          ['', commerce(), false],
-         [' and a file over the size limit',
-          `# ${'x'.repeat(130 * 1024)}\n${commerce()}`, false],
          [' and an aspect over the size limit with KC_V2_ASPECTS on',
           bigBlock(commerce()), true],
        ] as const) {
@@ -984,52 +971,6 @@ semantic_model:
                .toHaveLength(1);
            expect(logs.join('\n')).not.toContain('too large');
          });
-  }
-
-  // With KC_V2_ASPECTS off, push stores a copy of each model and profile file
-  // and checks the copies before any graph deploys, so a copy that fails a
-  // check fails every push of the scope.
-  const copyCases: Array<[string, () => void, string]> = [
-    [
-      'a file over the size limit',
-      () => writeScope(
-          {'commerce.yaml': `# ${'x'.repeat(130 * 1024)}\n${commerce()}`}),
-      "file 'commerce.yaml' is too large to store in Knowledge Catalog",
-    ],
-    [
-      'a file that is not valid UTF-8',
-      () => {
-        writeScope({'commerce.yaml': commerce()});
-        fs.writeFileSync(
-            path.join(
-                dir, 'catalog', 'EntryGroups', 'commerce_eg',
-                'commerce.profile.prod.yaml'),
-            Buffer.concat([
-              Buffer.from('# caf'), Buffer.from([0xe9]),
-              Buffer.from(`\n${profileFile('prod')}`)
-            ]));
-      },
-      "File 'commerce.profile.prod.yaml' is not valid UTF-8",
-    ],
-  ];
-  for (const [label, write, error] of copyCases) {
-    test(`prints push's error once for ${label}`, async () => {
-      write();
-      const pushed = await pushResult();
-      expect(pushed).toEqual(
-          {code: 1, errors: [expect.stringContaining(error)]});
-      expect(await profiles()).toBe(1);
-      expect(rejects(logs, '')).toEqual(pushed.errors);
-      expect(logs.filter(l => l.includes(error))).toHaveLength(1);
-    });
-
-    test(`checks no copy for ${label} with KC_V2_ASPECTS on`, async () => {
-      write();
-      process.env.KC_V2_ASPECTS = '1';
-      expect(await pushResult()).toEqual({code: 0, errors: []});
-      expect(await profiles()).toBe(0);
-      expect(logs).not.toContain('push rejects:');
-    });
   }
 
   // Customer's c_id and 200 fields that each read a column with a long name.

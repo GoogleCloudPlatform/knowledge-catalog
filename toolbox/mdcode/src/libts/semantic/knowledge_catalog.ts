@@ -27,14 +27,6 @@
 // and `kc_actions.ts` and `kc_constraints.ts` encode the aspects they carry.
 // This module only appends the entries those two return.
 //
-// With the first-generation aspects (v2Aspects off), each model and profile
-// file the push read is also stored whole as a file copy, one
-// `semantic-model-file` entry per file, parented to the anchor. That type is
-// custom too. The aspects cannot hold the whole model, so a pull returns
-// these copies instead of rebuilding the file from them. The anchor of a
-// model with copies carries their push id in the `kcmd-push-id` label on its
-// entrySource.
-//
 // Aspect data shapes mirror the aspect types' CLOSED metadataTemplates exactly
 // (a server aspect type rejects an undeclared data field):
 //   * semantic-model  = { deploymentTargets: string[] }
@@ -86,7 +78,6 @@ import {googleDeploymentTargets} from './deployment_target';
 import {AiContext, CustomExtension, DataType, DeploymentSpec, Entity, Field, Metric, ProfileSpec, Relationship, SemanticModel} from './ir';
 import {actionEntries} from './kc_actions';
 import {constraintEntries} from './kc_constraints';
-import {customAspectKey, customAspectTypeName, customEntryTypeName, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL} from './kc_custom_types';
 import {linkSlug, Namer, ownedEntryIdPrefixes, semanticLinkId} from './kc_ids';
 import {asResourceUri, GOOGLE_VERSION, isAcceptedSource} from './loader';
 import {nonEmpty} from './osi_converter';
@@ -111,9 +102,6 @@ export interface KcGenerateOptions {
   // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
   // false), which emits the first-generation layout.
   v2Aspects?: boolean;
-  // The file copies of the model file and its profile files, each stored in
-  // an entry of its own when v2Aspects is off. Absent emits none.
-  sourceFiles?: FileCopy[];
   // The overview sidecar of each entry, by entry id, which fills its overview
   // beside the examples when v2Aspects is on.
   overviews?: ReadonlyMap<string, OverviewSidecar>;
@@ -162,15 +150,6 @@ export function generateCatalogResources(
   const v2 = opts.v2Aspects ?? false;
 
   if (v2) warnings.push(...unstorableMemberWarnings(model));
-
-  // The first-generation aspects have no field for a vendor's extension
-  // blocks, and the stored copy of the model file keeps them.
-  if (!v2 && opts.sourceFiles?.length && hasThirdPartyExtensions(model)) {
-    warnings.push(
-        'custom_extensions from vendors other than GOOGLE are not indexed ' +
-        'by the Knowledge Catalog aspects; the stored copy of the model file ' +
-        'preserves them');
-  }
 
   // With the first-generation aspects, a subtype field that only rebinds an
   // inherited field is published with the definition it inherits.
@@ -309,40 +288,6 @@ export function generateCatalogResources(
     claim: (id: string, label: string) =>
         claim(seen, id, 'entry', label, warnings),
   }, warnings));
-
-  // One file copy entry per model and profile file, holding its text as
-  // read. Only with the first-generation aspects: a push with v2Aspects on
-  // emits none, so delete reconciliation removes the copies under the owned
-  // `.files.` prefix. Two file names that slug to one id fail the push, since
-  // storing only one would lose the other on the next pull.
-  if (!v2) {
-    const fileById = new Map<string, string>();
-    let pushId: string|undefined;
-    for (const file of opts.sourceFiles ?? []) {
-      const id = names.fileEntryId(model.name, file.fileName);
-      const earlier = fileById.get(id);
-      if (earlier !== undefined) {
-        throw new Error(
-            `files '${earlier}' and '${file.fileName}' both map to entry id ` +
-            `'${id}'; rename one of them`);
-      }
-      fileById.set(id, file.fileName);
-      if (!claim(seen, id, 'entry', `file '${file.fileName}'`, warnings))
-        continue;
-      entries.push(fileCopyEntry(names.entry(id), modelEntryName, file, opts));
-      pushId ??= file.pushId;
-    }
-    // The anchor is written before the copies and is labeled with the push id
-    // they carry. A pull that finds the label and no copies from that push
-    // knows the last push stopped before storing them. A model an older kcmd
-    // pushed has no label.
-    if (pushId !== undefined) {
-      entries[0].entrySource = {
-        ...entries[0].entrySource,
-        labels: {[PUSH_ID_LABEL]: pushId},
-      };
-    }
-  }
 
   const entryLinks = v2Relationships ?
       [
@@ -625,48 +570,6 @@ function schemaJoinAspectData(
 
 function entityByName(model: SemanticModel, name: string): Entity|undefined {
   return (model.entities ?? []).find(e => e.name === name);
-}
-
-// The entry holding one file copy. Its entry and aspect types are custom, so
-// they live in the destination project.
-function fileCopyEntry(
-    name: string, anchor: string, file: FileCopy,
-    dest: {project: string}): Entry {
-  return {
-    name,
-    entryType: customEntryTypeName(FILE_COPY_TYPE_ID, dest),
-    parentEntry: anchor,
-    aspects: {
-      [customAspectKey(FILE_COPY_TYPE_ID, dest)]: {
-        aspectType: customAspectTypeName(FILE_COPY_TYPE_ID, dest),
-        data: fileCopyData(file),
-      },
-    },
-  };
-}
-
-// The aspect data of a file copy: the file's name and text, and the push id
-// and copy count when the push set them.
-export function fileCopyData(file: FileCopy): Record<string, any> {
-  return compact({
-    fileName: file.fileName,
-    content: file.content,
-    pushId: file.pushId,
-    pushFileCount: file.pushFileCount,
-  });
-}
-
-// True when the model, or anything in it, carries a `custom_extensions` block
-// from a vendor other than GOOGLE.
-function hasThirdPartyExtensions(model: SemanticModel): boolean {
-  const thirdParty = (o: {customExtensions?: {vendorName: string}[]}) =>
-      (o.customExtensions ?? []).some(x => x.vendorName !== 'GOOGLE');
-  const entities = model.entities ?? [];
-  return thirdParty(model) || entities.some(thirdParty) ||
-      entities.some(e => (e.fields ?? []).some(thirdParty)) ||
-      (model.relationships ?? []).some(thirdParty) ||
-      (model.metrics ?? []).some(thirdParty) ||
-      (model.actions ?? []).some(thirdParty);
 }
 
 // One warning for each custom `ai_context` member that `guidelines` leaves

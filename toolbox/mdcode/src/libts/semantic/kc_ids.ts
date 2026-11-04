@@ -129,14 +129,6 @@ export class Namer {
   linkId(model: SemanticModel, rel: Relationship): string {
     return relationshipLinkId(model.name, rel.name);
   }
-
-  /**
-   * Bare entry ID for a verbatim model/profile file copy (used while
-   * `KC_V2_ASPECTS` is off). Dotted under both layouts.
-   */
-  fileEntryId(modelName: string, fileName: string): string {
-    return `${slug(modelName)}.files.${slug(fileName)}`;
-  }
 }
 
 /** Entry-link ID for a relationship on a model. */
@@ -165,6 +157,10 @@ export function semanticLinkId(
  * relationship entries. Because V2 model names are restricted to letters,
  * digits, underscores and hyphens, all of which `slug()` keeps,
  * `slug(modelName)` and `modelName` are equal for valid V2 models.
+ *
+ * No push writes under `.files.` any more: an older kcmd stored a copy of
+ * each model and profile file there. The prefix stays so the next push
+ * deletes those copies.
  */
 export function ownedEntryIdPrefixes(modelName: string): string[] {
   const s = slug(modelName);

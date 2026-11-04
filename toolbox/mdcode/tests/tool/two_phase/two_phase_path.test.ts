@@ -10,15 +10,13 @@ import {typedDeployment} from '../../../src/tool/commands';
 import {boundAt, boundTo, CUSTOMER, err, EXPRESSION_KEY, has, msg, PushRun, refused, scenarios, SPANNER_CUSTOMER, spannerGraph} from './harness';
 
 // A push that publishes the model file as written, with the profile files
-// `profiles` lists, stores a copy of each file in `files`, and deploys nothing.
-const published = (profiles: string[]|undefined, files: string[]) => ({
+// `profiles` lists, and deploys nothing.
+const published = (profiles: string[]|undefined) => ({
   code: 0,
   events: ['preflight', 'apply'],
   check: (r: PushRun) => {
     expect(r.published.entities[0].dataSource).toBe('test-project.d.customer');
     expect(r.published.profiles?.map(p => p.name)).toEqual(profiles);
-    const [, , options] = r.fake.preflight.mock.calls[0];
-    expect(options.sourceFiles.map((f: any) => f.fileName)).toEqual(files);
   },
 });
 
@@ -104,16 +102,13 @@ scenarios('the two-phase push path', [
     // bare `--profile`.
     name: 'a model with no deployments list publishes the model file as written, with its profile files, and deploys nothing, with no flags, profile: true or deployment: true, beside a sibling profile file or none, and --force only adds a warning that it has no effect',
     profiles: {prod: boundTo('prod')},
-    ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
+    ...published(['prod']),
     then: [
-      {
-        flags: {profile: true, deployment: true},
-        ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
-      },
-      {profiles: {}, ...published(undefined, ['commerce.yaml'])},
+      {flags: {profile: true, deployment: true}, ...published(['prod'])},
+      {profiles: {}, ...published(undefined)},
       {
         flags: {force: true},
-        ...published(['prod'], ['commerce.yaml', 'commerce.profile.prod.yaml']),
+        ...published(['prod']),
         warnings: ['Warning: --force has no effect.'],
       },
     ],

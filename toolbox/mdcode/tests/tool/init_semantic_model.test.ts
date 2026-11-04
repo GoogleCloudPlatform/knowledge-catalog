@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import {ApiResult} from '../../src/libts/gcp/api';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
-import {CUSTOM_TYPES, FILE_COPY_TYPE_ID} from '../../src/libts/semantic/kc_custom_types';
+import {CUSTOM_TYPES} from '../../src/libts/semantic/kc_custom_types';
 import {init} from '../../src/tool/commands';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
@@ -249,9 +249,7 @@ describe('init --semantic-model: entry-group provisioning', () => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
         .mockImplementation(async () => ok({name: 'sales-group'}));
     spyOn(CatalogClient.prototype, 'createAspectType')
-        .mockImplementation(async (_p: any, _l: any, id: string) =>
-            id === FILE_COPY_TYPE_ID ? ok({}) :
-                                       err(403, 'permission denied'));
+        .mockImplementation(async () => err(403, 'permission denied'));
 
     // Actions are one optional construct: a caller who will never declare one
     // must still be able to init, push and pull.
@@ -260,31 +258,8 @@ describe('init --semantic-model: entry-group provisioning', () => {
         .toBe(true);
   });
 
-  test('init fails when creating the file-copy type is denied', async () => {
-    spyOn(CatalogClient.prototype, 'createEntryGroup')
-        .mockImplementation(async () => ok({name: 'sales-group'}));
-    spyOn(CatalogClient.prototype, 'createAspectType')
-        .mockImplementation(async (_p: any, _l: any, id: string) =>
-            id === FILE_COPY_TYPE_ID ? err(403, 'permission denied') :
-                                       ok({}));
-    spyOn(CatalogClient.prototype, 'getAspectType')
-        .mockImplementation(async () => err(404, 'not found'));
-    const errors: string[] = [];
-    spyOn(console, 'error').mockImplementation((...args: any[]) => {
-      errors.push(args.join(' '));
-    });
-
-    // Every push stores the model file with this type, so init cannot leave
-    // it uncreated.
-    expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(1);
-    expect(errors.join('\n'))
-        .toContain(
-            'no permission to create aspect type \'semantic-model-file\' in ' +
-            'project \'proj\'');
-  });
-
   // A teammate in a project an administrator set up may publish entries but
-  // not create or update types. The types exist, so push has what it needs.
+  // not create types. The types exist, so push has what it needs.
   test('init finishes when the types exist and every create and update is ' +
            'refused',
        async () => {
@@ -292,15 +267,8 @@ describe('init --semantic-model: entry-group provisioning', () => {
              .mockImplementation(async () => err(409, 'already exists'));
          spyOn(CatalogClient.prototype, 'createAspectType')
              .mockImplementation(async () => err(403, 'permission denied'));
-         spyOn(CatalogClient.prototype, 'updateAspectType')
-             .mockImplementation(async () => err(403, 'permission denied'));
          spyOn(CatalogClient.prototype, 'createEntryType')
              .mockImplementation(async () => err(403, 'permission denied'));
-         const aspectLookup =
-             spyOn(CatalogClient.prototype, 'getAspectType')
-                 .mockImplementation(async () => ok<any>({}));
-         const entryLookup = spyOn(CatalogClient.prototype, 'getEntryType')
-                                 .mockImplementation(async () => ok<any>({}));
          const warned: string[] = [];
          spyOn(console, 'warn').mockImplementation((...args: any[]) => {
            warned.push(args.join(' '));
@@ -308,57 +276,12 @@ describe('init --semantic-model: entry-group provisioning', () => {
 
          expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
          expect(fs.existsSync('catalog.yaml')).toBe(true);
-         // Only the required type is looked up.
-         expect(aspectLookup.mock.calls.map(c => c[2])).toEqual([
-           FILE_COPY_TYPE_ID,
-         ]);
-         expect(entryLookup.mock.calls.map(c => c[2])).toEqual([
-           FILE_COPY_TYPE_ID,
-         ]);
-         // The refused call is the update of a type that exists.
+         // Every custom type backs an optional construct, so the refusal is
+         // a warning.
          expect(warned).toContain(
-             'Warning: no permission to update the existing aspect type ' +
-             '\'semantic-model-file\' in project \'proj\' (permission ' +
-             'denied); left it unchanged');
-       });
-
-  test('init finishes when the file-copy entry type exists and its create ' +
-           'is refused',
-       async () => {
-         spyOn(CatalogClient.prototype, 'createEntryGroup')
-             .mockImplementation(async () => ok({name: 'sales-group'}));
-         spyOn(CatalogClient.prototype, 'createEntryType')
-             .mockImplementation(async (_p: any, _l: any, id: string) =>
-                 id === FILE_COPY_TYPE_ID ? err(403, 'permission denied') :
-                                            ok({name: OP}));
-         spyOn(CatalogClient.prototype, 'getEntryType')
-             .mockImplementation(async () => ok<any>({}));
-
-         expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
-         expect(fs.existsSync('catalog.yaml')).toBe(true);
-       });
-
-  test('init fails when the file-copy entry type is missing and its create ' +
-           'is refused',
-       async () => {
-         spyOn(CatalogClient.prototype, 'createEntryGroup')
-             .mockImplementation(async () => ok({name: 'sales-group'}));
-         spyOn(CatalogClient.prototype, 'createEntryType')
-             .mockImplementation(async (_p: any, _l: any, id: string) =>
-                 id === FILE_COPY_TYPE_ID ? err(403, 'permission denied') :
-                                            ok({name: OP}));
-         spyOn(CatalogClient.prototype, 'getEntryType')
-             .mockImplementation(async () => err(404, 'not found'));
-         const errors: string[] = [];
-         spyOn(console, 'error').mockImplementation((...args: any[]) => {
-           errors.push(args.join(' '));
-         });
-
-         expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(1);
-         expect(errors.join('\n'))
-             .toContain(
-                 'no permission to create entry type \'semantic-model-file\'');
-         expect(fs.existsSync('catalog.yaml')).toBe(false);
+             'Warning: no permission to create aspect type ' +
+             '\'semantic-action\' in project \'proj\' (permission ' +
+             'denied); models that need it cannot be pushed until it exists');
        });
 
   test('a type refused for lack of permission does not skip the next one',
