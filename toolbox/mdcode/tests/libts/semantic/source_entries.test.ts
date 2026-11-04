@@ -218,10 +218,6 @@ describe('sourceEntryErrors', () => {
      missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`)],
     ['a missing catalog', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, NOT_FOUND,
      missing(BIGLAKE, 'a catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`)],
-    // The Hive API answers 404 for an Iceberg REST catalog.
-    ['an Iceberg REST catalog written as a Hive one', BIGLAKE_US_AS_HIVE,
-     'getHiveCatalog looker-private-demo snowflake', NOT_FOUND,
-     missing(BIGLAKE_US_AS_HIVE, 'a Hive catalog', `reading the region of Hive catalog 'snowflake'`)],
     ['a missing instance', SPANNER, `getInstance ${P} kcmd-src-reg`, NOT_FOUND,
      missing(SPANNER, 'an instance', `reading instance 'kcmd-src-reg'`)],
     // Spanner answers 403 for an instance or config the caller may not read.
@@ -303,13 +299,13 @@ describe('sourceEntryErrors', () => {
     ].sort());
   });
 
-  // A wrong form of a catalog does not fail its right form.
+  // The Hive API answers 404 for an Iceberg REST catalog. That wrong form
+  // does not fail the catalog's right form.
   test('a catalog written in both forms is read through both APIs', async () => {
-    const asIceberg = BIGLAKE_HIVE.replace('databases', 'namespaces');
-    const {readers} = fakeReaders([lookup('biglake', 'us', BIGLAKE_HIVE)]);
-    const m = model([entity('orders', asIceberg)], [profile('hive', [['orders', BIGLAKE_HIVE]])]);
-    expect(await sourceEntryErrors(m, readers)).toEqual([missing(asIceberg, 'a catalog',
-        "reading the region of catalog 'sqlgen_jharshit_atscale_hive_us'")]);
+    const {readers} = fakeReaders([lookup('biglake', 'us', BIGLAKE_US)]);
+    const m = model([entity('orders', BIGLAKE_US_AS_HIVE)], [profile('iceberg', [['orders', BIGLAKE_US]])]);
+    expect(await sourceEntryErrors(m, readers)).toEqual([missing(BIGLAKE_US_AS_HIVE, 'a Hive catalog',
+        "reading the region of Hive catalog 'snowflake'")]);
   });
 
   test('every entity of a failing source is reported, in model order', async () => {
