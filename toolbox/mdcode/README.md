@@ -159,8 +159,16 @@ kcmd init --entry-group <projectId>.<locationId>.<entryGroupId> --format okf
 
 # For a scope backed by an entry group (entryGroup, kb, semantic-model), in any
 # layout, the context set's display name and description live in catalog.yaml
-# as `displayName:` and `description:`. Pull sets them from the entry group, and
-# push writes a changed one back; an absent key is left alone.
+# as `displayName:` and `description:`:
+# - Pull sets both from the entry group, keeping every other key and comment; a
+#   value the entry group does not set removes its key.
+# - Push writes only the keys whose values differ from the entry group, after
+#   the entries, so the last write wins. An absent key is not managed, and
+#   `description: ""` clears the description.
+# - Write a multi-line description with `>-`: `|` keeps a trailing newline,
+#   which push would send to Knowledge Catalog.
+# - The description holds at most 1,024 characters and the display name 500;
+#   push fails before any write when a value is longer.
 
 # Pull the latest catalog snapshot from the Knowledge Catalog service
 # Reports any conflicts if there are pending changes that have not been
