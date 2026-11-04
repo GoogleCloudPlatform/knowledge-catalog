@@ -23,7 +23,7 @@ import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthP
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, tableDialects, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -360,7 +360,8 @@ function measurePlacementErrors(
 
 // Checks that the model file's Spanner tables are all in one database, so they
 // share one dialect, and that each bound field has a text for the dialect of
-// its entity's source. Returns one message per problem.
+// its entity's source, or, on a table whose dialect no lookup read, for one of
+// the dialects the table can have. Returns one message per problem.
 export function validateInlineDialects(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
@@ -378,15 +379,15 @@ export function validateInlineDialects(
         `Spanner database (${named}); bind the model file's entities to ` +
         `tables in one Spanner database.`);
   }
-  for (const {entity: e, field: f, table: {name: dialect}} of
-           fieldsOnTables(model)) {
-    if (!noTextFor(f, [dialect])) continue;
+  for (const {entity: e, field: f, table: {name, dialects}} of
+           fieldsOnTables(model, true)) {
+    if (!noTextFor(f, dialects)) continue;
     errors.push(
         `field '${e.name}.${f.name}' in model '${model.name}' (${
-            document}) has no expression for ${dialect} or ANSI_SQL, and ` +
-        `the model file binds entity '${e.name}' to ${
-            /^[AEIOU]/.test(dialect) ? 'an' : 'a'} ${dialect} source${
-            importHint(f, dialect, model)}.`);
+            document}) has no expression for ${dialects.join(', ')} or ` +
+        `ANSI_SQL, and the model file binds entity '${e.name}' to ${
+            /^[AEIOU]/.test(name) ? 'an' : 'a'} ${name} source${
+            importHint(f, name, model)}.`);
   }
   return errors;
 }
@@ -401,9 +402,14 @@ export function validateInheritedColumns(
   const dialect = sourcesDialect(model);
   const errors: string[] = [];
   for (const e of entities.filter(e => !e.abstract && e.dataSource)) {
+    // With no dialect read, a text reads a column when it does in every
+    // dialect the entity's table can have.
+    const readIn =
+        dialect === null ? tableDialects(e, true)?.dialects ?? [] : [dialect];
     for (const f of inheritedNamesOf(model, e.name)) {
+      const reads = readIn.map(d => columnBinding(model, e.name, f, d));
       const read = !e.fields.some(x => x.name === f) &&
-          columnBinding(model, e.name, f, dialect);
+          reads.every(r => r) && reads[0];
       if (!read) continue;
       errors.push(
           `entity '${e.name}' in model '${model.name}' (${document}): field '${

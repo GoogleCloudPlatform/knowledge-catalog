@@ -48,10 +48,9 @@ export interface LoadOptions {
   // warning so a caller can load a document whose sources have not all been
   // repointed yet.
   warnUnacceptedSource?: boolean;
-  // The caller rejects a field its own table cannot run, as push does for a
-  // model file, so the load gives no warning for it. A Cloud SQL, Spanner or
-  // third-party table no lookup has read keeps the warning, since the caller
-  // does not check it.
+  // The caller rejects a field its own table cannot run, as push and import
+  // do for a model file with validateInlineDialects, so the load gives no
+  // warning for it.
   fieldTextChecked?: boolean;
 }
 
@@ -2026,10 +2025,10 @@ function runsDialect(
 
 // The warning `item` gives on `table`, the table of `entity`:
 // expressionWarning's when the load knows the table's dialect, or one saying
-// the table has no text to run. With `profiled`, the second is given only on a
-// Cloud SQL, Spanner or third-party table no lookup has read. On a table of the
-// `preferred` dialect, expressionWarning's transpilation warning already says
-// so.
+// the table has no text to run. With `profiled`, the second is given only for
+// a metric on a Cloud SQL, Spanner or third-party table no lookup has read. On
+// a table of the `preferred` dialect, expressionWarning's transpilation warning
+// already says so.
 function tableWarning(
     item: Pick<Field, 'expression'|'dialects'|'stringForm'>, subject: Subject,
     table: TableDialects, entity: string, preferred: string,
@@ -2037,10 +2036,9 @@ function tableWarning(
   const w = table.unread ?
       undefined :
       expressionWarning(item, subject, table.name, preferred);
-  if (w || (profiled && !table.unread && !table.guessed) ||
-      !noTextFor(item, table.dialects)) {
-    return w;
-  }
+  const reported =
+      profiled && (!subject.metric || (!table.unread && !table.guessed));
+  if (w || reported || !noTextFor(item, table.dialects)) return w;
   const own = table.dialects.map(d => `'${d}'`).join(', ');
   return `${subject.ctx}: no ${own} or '${FALLBACK_DIALECT}' dialect, so the ${
              table.name} table of entity '${entity}' cannot run it`;

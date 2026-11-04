@@ -114,7 +114,9 @@ agree on every structural row and differ only where a Spanner target has no
     third-party table's dialect, and they read a Spanner table as `SPANNER`.
     Import reads a Cloud SQL table whose name has no schema as MySQL. On any
     other table whose dialect a command has not looked up, kcmd warns only about
-    a field or metric with no text in any dialect the table's name allows. A
+    a field or metric with no text in any dialect the table's name allows.
+    Push rejects such a field, so `kcmd import --input first-party` gives an
+    error for it in the model file and in a profile. A
     BigQuery
     graph reads a field's or metric's `BIGQUERY` entry, else its `ANSI_SQL` one. It never emits the
     vendor text. A field with none of these is left out of its node table with
