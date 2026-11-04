@@ -1225,9 +1225,11 @@ async function checkBeforeWrites(
 
   const defaultProject = source.project ?? ctx.project;
   // A model file may leave every source to its profile files, so a source is
-  // required only once a deployment's profile is applied.
+  // required only once a deployment's profile is applied. The checks below
+  // reject a field its table cannot run, so the load does not warn about it.
   const loaded = loadSemanticModels(
-      docs, {defaultProject, bindingOptional: true, ...load});
+      docs,
+      {defaultProject, bindingOptional: true, ...load, fieldTextChecked: true});
   if (loaded.error) return fail(loaded.error);
   for (const w of loaded.warnings) warn(w);
   if (selected && !loaded.models.length) {
@@ -1305,9 +1307,27 @@ async function checkBeforeWrites(
               deployments: model.deployments!.filter(
                   d => (d.profile ?? DEFAULT_PROFILE) === profile),
             }, document))));
-    const named =
-        declaredNames(document).some(n => n.toLowerCase() !== DEFAULT_PROFILE);
+    const doc = docs.find(d => d.name === document)!;
+    const declared = declaredBy(doc);
+    const named = declared.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
     profileWarnings.push(...inlineBindingWarnings(model, document, named));
+    // A profile that no selected deployment applies still goes to Knowledge
+    // Catalog, so its load warnings print here, less those the model file's
+    // load gave, unless a check above recorded an error for that profile. A
+    // selected deployment prints its own profile's warnings.
+    const applied = selectedByDoc.get(document)!.map(d => d.profile);
+    for (const {name} of declared) {
+      if (applied.includes(name)) continue;
+      if (profileErrors.some(
+              e => e.document === document && e.profile === name)) {
+        continue;
+      }
+      const res = profileForDocument(doc, declared, name, load);
+      if (res.kind !== 'file') continue;
+      profileWarnings.push(
+          ...res.warnings.filter(w => !loaded.warnings.includes(w))
+              .map(w => `profile '${name}': ${w}`));
+    }
   }
   const kcWarnings: string[] = [];
   const kcErrors = models.flatMap(
@@ -1410,7 +1430,9 @@ async function deploymentPlan(
       if (!(err instanceof SemanticModelError)) throw err;
       return fail(`${at}: ${err.message}`);
     }
-    for (const w of warnings) warn(`[${document}] ${w}`);
+    for (const w of warnings) {
+      warn(`profile '${deployment.profile}': [${document}] ${w}`);
+    }
   }
   // Messages name the deployment.
   const label = `${document}, deployment '${deployment.name}'`;

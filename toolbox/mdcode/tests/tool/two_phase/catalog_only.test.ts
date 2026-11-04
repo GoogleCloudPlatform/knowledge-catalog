@@ -9,10 +9,27 @@ import * as path from 'node:path';
 
 import {createSemanticRuntimes} from '../../../src/libts/semantic/runtime/runtime';
 
-import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, writeScope} from './harness';
+import {boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, err, EXPRESSION_KEY, has, kcResult, msg, PREPARED, scenarios, Scope, SNOWFLAKE_METRIC, SPANNER_CUSTOMER, writeScope} from './harness';
 
 const PROD = boundTo('prod');
 const PLAN = ['-- Knowledge Catalog --', 'PLAN LINE'];
+// The warning that BigQuery reads field key's ANSI_SQL "c_key" as text, after
+// `label`.
+const quotedKey = (label: string) => `Warning: ${label}[commerce] field ` +
+    `'Customer.key': BigQuery reads "c_key" in its 'ANSI_SQL' expression as ` +
+    `text; if you meant a column or a field, give it a 'BIGQUERY' expression ` +
+    `that names a column alone, in backticks if it needs quoting, and a field ` +
+    `of the entity whose fields list holds this expression as ` +
+    `'<entity>.<field>'`;
+const NOTE = has("Warning: [commerce] note: no 'BIGQUERY' dialect");
+// Customer on `source`, its key field given as `text` in `dialect`.
+const keyAt = (source: string, text: string, dialect = 'ANSI_SQL') => ({
+  ...CUSTOMER, source,
+  fields: [{name: 'key', expression: {dialects: [{dialect, expression: text}]}}],
+});
+// A profile that binds Customer to table customer in dataset `name`.
+const keyIn = (name: string, text: string, dialect?: string) =>
+    ({entities: {Customer: keyAt(bqTable('customer', name), text, dialect)}});
 
 // A catalog preflight that plans one line and gives `result`.
 const planned = (result = {}) =>
@@ -63,14 +80,87 @@ scenarios('push --no-deployment', [
   },
   {
     // Push translates nothing; kcmd import --transpile does.
-    name: 'a vendor-only metric reaches Knowledge Catalog as written, with the loader\'s warning',
-    metrics: [SNOWFLAKE_METRIC],
+    name: 'a vendor-only metric and an ANSI_SQL metric that double-quotes a name reach Knowledge Catalog as written, each with the loader\'s warning',
+    metrics: [SNOWFLAKE_METRIC, {
+      name: 'quoted_keys', entity: 'Customer',
+      expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("key")'}]},
+    }],
     flags: {validateOnly: true},
     code: 0,
-    warnings: [has('needs transpilation')],
+    warnings: [
+      has('needs transpilation'),
+      has("metric 'quoted_keys': BigQuery reads \"key\" in its 'ANSI_SQL' expression as text"),
+    ],
+    then: [{
+      // Push checks no model-file metric against a Spanner table's dialect,
+      // so the load's warning is the only message.
+      entities: [{...CUSTOMER, source: SPANNER_CUSTOMER}],
+      metrics: [SNOWFLAKE_METRIC],
+      code: 0,
+      warnings: [has("metric 'positive_keys': no 'SPANNER' or 'ANSI_SQL' dialect")],
+    }, {
+      // Push rejects a model-file field its Spanner table cannot run, with
+      // no warning beside the error, with and without --no-deployment.
+      entities: [keyAt(SPANNER_CUSTOMER, 'c_key', 'BIGQUERY')], metrics: [],
+      code: 1, warnings: [],
+    }, {
+      entities: [keyAt(SPANNER_CUSTOMER, 'c_key', 'BIGQUERY')], metrics: [],
+      flags: {deployment: undefined, validateOnly: true}, code: 1, warnings: [],
+    }, {
+      // Push's errors are the only messages about profile ops on Spanner. The
+      // one warning is the model file's own.
+      profiles: {ops: {entities: {Customer: keyAt(SPANNER_CUSTOMER, 'c_key', 'SNOWFLAKE')}}},
+      metrics: [SNOWFLAKE_METRIC],
+      flags: {deployment: undefined, validateOnly: true},
+      code: 1,
+      errors: [
+        has("profile 'ops': field 'Customer.key' has no expression for SPANNER"),
+        has("profile 'ops': metric 'positive_keys' has no expression for SPANNER"),
+      ],
+      warnings: [has('needs transpilation')],
+    }],
     check: r => expect(r.published.metrics![0].dialects).toEqual([
       {dialect: 'SNOWFLAKE', expression: 'SUM(IFF(Customer.key > 0, 1, 0))'},
     ]),
+  },
+  {
+    // Knowledge Catalog receives every profile file, applied or not. The
+    // model file and profile dev give the same ANSI_SQL note, which prints
+    // once.
+    name: 'prints the warnings of each profile file once, labelled with its name, whether or not a selected deployment applies it, and none for a profile push rejects',
+    deployments: [{name: 'g', profile: 'prod'}, {name: 'h', profile: 'dev'}],
+    entities: [keyAt(bqTable('customer'), 'c_key')],
+    profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', '"c_key"')},
+    flags: {validateOnly: true},
+    code: 0,
+    warnings: [NOTE, quotedKey("profile 'prod': ")],
+    then: [{flags: {deployment: 'h', validateOnly: true}, code: 0,
+            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+           {flags: {deployment: 'g', validateOnly: true}, code: 0,
+            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+           // A GOOGLE block profile's field gets the same warning.
+           {google: {profiles: [{name: 'prod', entities: [keyIn('prod', '"c_key"').entities.Customer]}]},
+            profiles: {}, flags: {validateOnly: true}, code: 0,
+            warnings: [NOTE, quotedKey("profile 'prod': ")]},
+           // Push's error for the Snowflake-only key is prod's only message.
+           {profiles: {dev: keyIn('dev', 'c_key'), prod: keyIn('prod', 'c_key', 'SNOWFLAKE')},
+            flags: {validateOnly: true}, code: 1, warnings: [NOTE],
+            rejects: [has("field 'Customer.key' has no expression for BIGQUERY or ANSI_SQL")]}],
+    report: {code: 0},
+  },
+  {
+    // The model file binds no table, so only the profiles warn about metric
+    // m, deployment d's dev among them.
+    name: 'a warning that an applied and an unapplied profile both give prints once for each, under its name',
+    deployments: [{name: 'd', profile: 'dev'}],
+    entities: [{...CUSTOMER, source: undefined}],
+    metrics: [{name: 'm', entity: 'Customer',
+               expression: {dialects: [{dialect: 'ANSI_SQL', expression: 'COUNT("key")'}]}}],
+    profiles: {dev: boundTo('dev'), prod: PROD},
+    flags: {deployment: undefined, validateOnly: true},
+    code: 0,
+    warnings: [has("unbound 'default' profile"), ...['prod', 'dev'].map(p => has(
+        `Warning: profile '${p}': [commerce] metric 'm': BigQuery reads "key"`))],
   },
   {
     name: '--validate-only --print prints the catalog plan first',

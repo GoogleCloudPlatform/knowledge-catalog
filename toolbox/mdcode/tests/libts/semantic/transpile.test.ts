@@ -11,7 +11,7 @@ import {describe, expect, spyOn, test} from 'bun:test';
 
 import {Field, SemanticModel} from '../../../src/libts/semantic/ir';
 import * as sqlParser from '../../../src/libts/semantic/sql_parser';
-import {SqlTranspiler, transpileModel, TranspileRequest,} from '../../../src/libts/semantic/transpile';
+import {doubleQuotedNames, SqlTranspiler, transpileModel, TranspileRequest,} from '../../../src/libts/semantic/transpile';
 
 // Builds a one-entity, one-metric model whose interesting fields/metric carry
 // only an imported (vendor) form, so the pass has something to fill. Extra
@@ -496,4 +496,14 @@ describe('transpileModel', () => {
           expect(out.entities[0].fields[0].stringForm).toBe(true);
         }
       });
+});
+
+// A message names the tokens BigQuery reads as text, not a backtick-quoted one.
+test.each([
+  ['"orders"."order_amount"', ['orders', 'order_amount']],
+  ['`orders`."order_amount"', ['order_amount']],
+  ['`status` = "open"', ['open']],
+  ['CONCAT("c""first", "c_last")', ['c"first', 'c_last']],
+])('doubleQuotedNames(%s) is %p', (expression, names) => {
+  expect(doubleQuotedNames(expression)).toEqual(names);
 });

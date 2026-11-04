@@ -30,7 +30,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName} from './sql_expr_utils';
@@ -478,8 +478,8 @@ export function applyProfile(
   if ('error' in res) throw new SemanticModelError(res.error);
   if (opts.warnings) {
     // With no `from`, these are the applied model's entity and metric
-    // warnings, judged in the load dialect as the callers judge them. Keep
-    // those the model did not give already.
+    // warnings, judged on its tables in the load dialect, as the callers
+    // judge them. Keep those the model did not give already.
     const before = new Set(entityAndMetricWarnings(
         model, opts.load?.dialect ?? DEFAULT_DIALECT));
     opts.warnings.push(...res.warnings.filter(w => !before.has(w)));
@@ -708,7 +708,7 @@ export function reservedProfileNameError(
 // entityAndMetricWarnings, which builds them with the helpers the load uses,
 // then the model file's other load warnings, about actions, which a profile
 // does not change. That is the order a load gives them. The applied model is
-// judged in the load's dialect, which picked the text each field holds.
+// judged on its own tables, in the load's dialect.
 function warningsAfterProfile(
     model: SemanticModel, applied: SemanticModel,
     opts: Omit<ApplyProfileOptions, 'warnings'>): string[] {
@@ -719,7 +719,7 @@ function warningsAfterProfile(
       new Set(entityAndMetricWarnings(model, preferred).map(w => prefix + w));
   const kept = (from?.warnings ?? []).filter(w => !before.has(w));
   const after =
-      entityAndMetricWarnings(applied, preferred).map(w => prefix + w);
+      entityAndMetricWarnings(applied, preferred, true).map(w => prefix + w);
   return [...new Set([...after, ...kept])];
 }
 
@@ -1254,7 +1254,7 @@ export function expressionSources(
 // dialect list offers its imported text when that is in the profile's dialect,
 // and otherwise the text the loader picked. With no known dialect, every text
 // counts, each read in the dialect it is written in.
-export function textsFor(
+function textsFor(
     f: Pick<
         Field,
         'expression'|'dialects'|'importedExpression'|'importedDialect'>,
@@ -1264,6 +1264,60 @@ export function textsFor(
   // ANSI_SQL one.
   const text = expressionForDialect(f, dialect as SqlDialect);
   return text !== undefined ? [{text, dialect}] : [];
+}
+
+// Whether a field or metric holds SQL but has no text in any of `dialects`
+// and no ANSI_SQL text, so no table of those dialects runs it.
+export function noTextFor(
+    f: Parameters<typeof textsFor>[0], dialects: string[]): boolean {
+  return isFieldBound(f) && dialects.every(d => !textsFor(f, d).length);
+}
+
+// An entity's table as a message names it, with every dialect it may run. A
+// table whose dialect neither a lookup nor its name gives is `unread` and
+// named after its system.
+export interface TableDialects {
+  name: string;
+  dialects: string[];
+  unread?: boolean;
+}
+
+// The table of `entity`, or undefined when the load does not know its
+// dialect. With `withUnread`, a Cloud SQL or third-party table no lookup has
+// read is given too, and a Cloud SQL name with no schema gives MySQL.
+export function tableDialects(
+    entity: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>,
+    withUnread: boolean): TableDialects|undefined {
+  const dialect = sourcesDialect({entities: [entity]});
+  if (dialect) return {name: dialect, dialects: [dialect]};
+  if (!withUnread) return undefined;
+  const source = writtenSource(entity);
+  const table = cloudSqlTableOf(source);
+  if (table) {
+    // Only a MySQL table's name has no schema.
+    const mysql = DIALECT_OF_SYSTEM.cloudsql_mysql;
+    if (!table.inSchema) return {name: mysql, dialects: [mysql]};
+    const dialects = [...new Set(Object.values(DIALECT_OF_ENTRY_TYPE))].filter(
+        d => d !== mysql);
+    return {name: 'Cloud SQL', dialects, unread: true};
+  }
+  if (thirdPartyEntryOf(source)) {
+    const dialects = [...DIALECT_OF_FQN_PREFIX.values()];
+    return {name: 'third-party', dialects, unread: true};
+  }
+  return undefined;
+}
+
+// Each field of each entity whose table `tableDialects(entity, withUnread)`
+// gives, with that table. An inherited field is listed on each entity that
+// inherits it.
+export function fieldsOnTables(model: SemanticModel, withUnread = false):
+    Array<{entity: Entity; field: Field; table: TableDialects}> {
+  return resolvedEntities(model).flatMap(entity => {
+    const table = tableDialects(entity, withUnread);
+    if (!table) return [];
+    return (entity.fields ?? []).map(field => ({entity, field, table}));
+  });
 }
 
 // The import command that adds BigQuery SQL to a model file. Push reads only
@@ -1621,7 +1675,6 @@ export function validateProfileCompleteness(
   // Every bound field, and every metric the profile keeps, has a text this
   // profile's database can run, checked once its sources name one database.
   if (dialect) {
-    const runs = (f: Field) => textsFor(f, dialect).length > 0;
     for (const e of entities) {
       if (e.abstract || rejected.has(e.name)) continue;
       for (const f of seenOf.get(e.name)?.values() ?? []) {
@@ -1631,7 +1684,7 @@ export function validateProfileCompleteness(
             JSON.stringify(expressionSources(f)) ===
                 JSON.stringify(expressionSources(asInModelFile)) &&
             sourcesDialect({entities: [e]}) === dialect;
-        if (isFieldBound(f) && !runs(f) && !reported) {
+        if (noTextFor(f, [dialect]) && !reported) {
           errors.push(
               `${at}: field '${e.name}.${f.name}' has no expression for ${
                   dialect} or ANSI_SQL, and this profile's sources are ${
@@ -1642,7 +1695,7 @@ export function validateProfileCompleteness(
     if (profile.metricsExclude !== '*') {
       const excludedMetrics = new Set(profile.metricsExclude ?? []);
       for (const m of baseModel.metrics ?? []) {
-        if (!excludedMetrics.has(m.name) && !runs(m as Field)) {
+        if (!excludedMetrics.has(m.name) && noTextFor(m, [dialect])) {
           const viaImport = importTranspiles(m as Field, dialect) ?
               ` add one with '${IMPORT_TRANSPILE_COMMAND}',` : '';
           errors.push(

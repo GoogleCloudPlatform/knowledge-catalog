@@ -53,7 +53,10 @@ A model that lists `deployments:`, and a push with `--deployment` or
 profile file, without `--profile`, `--all-profiles` or `--no-profile`. The first
 runs every check, for Knowledge Catalog and for each deployment, and writes
 nothing. It also prints each graph's warnings, such as a metric the graph leaves
-out. The second publishes the model to Knowledge Catalog, then deploys each
+out. Knowledge Catalog receives every profile, so the first phase prints the
+load warnings of each profile, whether or not a selected deployment applies it,
+each prefixed with `profile '<name>':`.
+The second publishes the model to Knowledge Catalog, then deploys each
 deployment in order with the profile it names. An AlloyDB deployment deploys no
 graph. The first phase dry-runs each BigQuery graph's DDL. Spanner cannot check
 a graph's DDL without running it, so a Spanner deployment whose DDL Spanner
@@ -711,7 +714,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span
   systems, so each entity is judged by its own source. `kcmd import
   --transpile` adds a BigQuery entry for a text it can translate. Every push
-  runs this check, whether or not a deployment uses those bindings. *(static)*
+  runs this check, whether or not a deployment uses those bindings. When a
+  BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
+  string form with a double-quoted token, push accepts it and warns, naming
+  the field or metric, since those databases read that token as text.
+  PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name.
+  *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
   subtype redeclares an inherited field only to bind it. A concrete entity

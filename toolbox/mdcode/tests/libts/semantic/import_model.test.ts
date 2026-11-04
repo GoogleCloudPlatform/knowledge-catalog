@@ -9,6 +9,8 @@ import {loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 
 const BQ_PREFIX = 'bigquery.googleapis.com/projects/acme/datasets/sales';
 const BQ_TABLE = `${BQ_PREFIX}/tables/orders`;
+const SPANNER_TABLE =
+    'spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/orders';
 const CLOUDSQL_PREFIX =
     'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
 
@@ -182,7 +184,23 @@ describe('conversion, strict mode, and translation', () => {
 
         expect(offRes.ok).toBe(true);
         expect(offRes.files[0].content).toBe(raw);
+        // Without translation, the BigQuery table's vendor field and its
+        // double-quoted ANSI_SQL metric each warn.
+        expect(offRes.warnings.map(w => w.split(':')[0])).toEqual([
+          "field 'orders.order_id'", "metric 'total_orders'",
+        ]);
+        // On a Spanner table, the vendor field warns that the table cannot
+        // run it.
+        const onSpanner = await importSemanticModelYaml(
+            raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
+        expect(onSpanner.warnings[0]).toBe(
+            "field 'orders.order_id': no 'SPANNER' or 'ANSI_SQL' dialect, so " +
+            "the SPANNER table of entity 'orders' cannot run it");
         expect(onStrictRes.ok).toBe(true);
+        expect(onStrictRes.warnings).toEqual([
+          "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
+          "metric 'total_orders': transpiled 'ANSI_SQL' -> 'BIGQUERY'",
+        ]);
         const loaded = loadModels(onStrictRes.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
           {dialect: 'SNOWFLAKE', expression: ' orders.order_id '},
@@ -387,10 +405,13 @@ describe('sources', () => {
 
   test('keeps a third-party entry name as written, with no warning', async () => {
     const entry = 'projects/acme/locations/us/entryGroups/sf/entries/orders';
-    const res = await importSemanticModelYaml(
-        ossieDoc({source: entry}), {sourcePrefix: BQ_PREFIX});
+    const doc = ossieDoc({
+      source: entry,
+      fieldExpr: '{dialects: [{dialect: SNOWFLAKE, expression: order_id}]}',
+    });
+    const res = await importSemanticModelYaml(doc, {sourcePrefix: BQ_PREFIX});
     expect([res.ok, res.warnings, res.files[0].content])
-        .toEqual([true, [], ossieDoc({source: entry})]);
+        .toEqual([true, [], doc]);
   });
 
   test(

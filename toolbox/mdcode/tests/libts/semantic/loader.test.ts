@@ -194,6 +194,150 @@ describe('per-dialect expressions collapse to a single string', () => {
 });
 
 
+describe('expression warnings judge each expression on the table that runs it', () => {
+  const BQ = 'bigquery.googleapis.com/projects/p/datasets/d/tables/t';
+  const LAKE = 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t';
+  const SPANNER = 'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t';
+  const ALLOY = 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/t';
+  const MYSQL = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/t';
+  const PG = 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/schemas/s/tables/t';
+  const MSSQL = PG.replace('/instances/i/', '/instances/k/');
+  const TP = 'projects/p/locations/us/entryGroups/g/entries/orders';
+  const DBX = TP.replace('/orders', '/events');
+  // The tables a lookup has not read, as in `kcmd import`.
+  const UNREAD = MYSQL.replace('/instances/i/', '/instances/j/');
+  const UNREAD_PG = PG.replace('/instances/i/', '/instances/j/');
+  const UNREAD_TP = TP.replace('/orders', '/items');
+  const opts: LoadOptions = {
+    bindingOptional: true,
+    sourceDialects: new Map([[MYSQL, 'MYSQL'], [PG, 'POSTGRES'], [MSSQL, 'SQLSERVER'],
+                             [TP, 'SNOWFLAKE'], [DBX, 'DATABRICKS']]),
+  };
+  const entity = (name: string, source: string|undefined, fields: object[], more = {}) =>
+      ({name, ...(source ? {source} : {}), primary_key: ['x'], fields, ...more});
+  // The field and metric warnings for entity 't' on `source`. Field 'f' and
+  // metric 'm' read x through `dialects`, a list of [dialect, text] pairs or
+  // a string for the string form. The load prefers `dialect`.
+  const warned = (source: string|undefined, dialects: Array<[string, string]>|string,
+                  dialect?: string) => {
+    const sql = (text: (x: string) => string) => typeof dialects === 'string' ?
+        text(dialects) :
+        {dialects: dialects.map(([dialect, x]) => ({dialect, expression: text(x)}))};
+    return fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
+      name: 'shop',
+      entities: [entity('t', source, [{name: 'f', expression: sql(x => x)}])],
+      metrics: [{name: 'm', entity: 't', expression: sql(x => `SUM(${x})`)}],
+    }]}, {...opts, dialect}).warnings.filter(w => /^(field|metric|note)/.test(w));
+  };
+  // A warning for field 'f', then the same for metric 'm'.
+  const both = (text: string) => [`field 't.f': ${text}`, `metric 'm': ${text}`];
+  const vendor = (dialect: string) => both(
+      `no 'BIGQUERY' or 'ANSI_SQL' dialect; keeping the '${dialect}' ` +
+      `expression as imported_expression (needs transpilation to 'BIGQUERY')`);
+  const readsX = (database: string, token = 'x') =>
+      `${database} reads "${token}" in its 'ANSI_SQL' expression as text; `;
+  // The double-quote warning on a table of `dialect`, in `database`, about
+  // `token`.
+  const quotedIn = (database: string, dialect: string, token = 'x') => [
+    `field 't.f': ${readsX(database, token)}if you meant a column or a field, ` +
+        `give it a '${dialect}' expression that names a column alone, in ` +
+        `backticks if it needs quoting, and a field of the entity whose ` +
+        `fields list holds this expression as '<entity>.<field>'`,
+    `metric 'm': ${readsX(database, token)}if you meant a field, give it a '${
+        dialect}' expression that names it as '<entity>.<field>'`,
+  ];
+  // The warning that the `table` table, which may run `dialects`, has no text
+  // to run.
+  const unrunnable = (table: string, dialects = `'${table}'`) => both(
+      `no ${dialects} or 'ANSI_SQL' dialect, so the ${table} table of entity ` +
+      `'t' cannot run it`);
+  const quoted = quotedIn('BigQuery', 'BIGQUERY');
+  const note = ['note: no \'BIGQUERY\' dialect for one or more expressions; ' +
+      'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' accepts ' +
+      'the ANSI core subset — supply \'BIGQUERY\' variants only for ' +
+      'BIGQUERY-specific SQL)'];
+
+  test.each([
+    ['a BigQuery table, Snowflake text', BQ, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
+    ['a BigLake table, Snowflake text', LAKE, [['SNOWFLAKE', 'x']], vendor('SNOWFLAKE')],
+    ['a Spanner table, Spanner text', SPANNER, [['SPANNER', 'x']], []],
+    ['a Spanner table, Snowflake text', SPANNER, [['SNOWFLAKE', 'x']], unrunnable('SPANNER')],
+    ['an AlloyDB table, AlloyDB text', ALLOY, [['ALLOYDB', 'x']], []],
+    ['a Cloud SQL for MySQL table, MySQL text', MYSQL, [['MYSQL', 'x']], []],
+    ['a Cloud SQL for MySQL table, Snowflake text', MYSQL, [['SNOWFLAKE', 'x']], unrunnable('MYSQL')],
+    ['a Cloud SQL for PostgreSQL table, PostgreSQL text', PG, [['POSTGRES', 'x']], []],
+    ['a Cloud SQL table no lookup has read, MySQL text', UNREAD, [['MYSQL', 'x']], []],
+    ['a Cloud SQL table no lookup has read, PostgreSQL text', UNREAD, [['POSTGRES', 'x']],
+     unrunnable('MYSQL')],
+    ['a Cloud SQL table no lookup has read, a double-quoted name in ANSI_SQL', UNREAD,
+     [['ANSI_SQL', '"x"']], quotedIn('MySQL', 'MYSQL')],
+    ['a Cloud SQL table in a schema no lookup has read, Snowflake text', UNREAD_PG,
+     [['SNOWFLAKE', 'x']], unrunnable('Cloud SQL', "'POSTGRES', 'SQLSERVER'")],
+    ['a third-party table no lookup has read, BigQuery text', UNREAD_TP, [['BIGQUERY', 'x']],
+     unrunnable('third-party', "'SNOWFLAKE', 'DATABRICKS', 'MYSQL', 'POSTGRES', 'SQLSERVER'")],
+    ['a third-party table, its own Snowflake text', TP, [['SNOWFLAKE', 'x']], []],
+    ['a third-party table, a double-quoted name in ANSI_SQL', TP, [['ANSI_SQL', '"x"']], []],
+    ['a third-party Databricks table, a double-quoted name in ANSI_SQL', DBX,
+     [['ANSI_SQL', '"x"']], quotedIn('Databricks', 'DATABRICKS')],
+    ['a Spanner table, a double-quoted name in ANSI_SQL', SPANNER, [['ANSI_SQL', '"x"']],
+     quotedIn('Spanner', 'SPANNER')],
+    ['a Cloud SQL for MySQL table, a double-quoted name in ANSI_SQL', MYSQL,
+     [['ANSI_SQL', '"x"']], quotedIn('MySQL', 'MYSQL')],
+    ['a Cloud SQL for PostgreSQL table, a double-quoted name in ANSI_SQL', PG,
+     [['ANSI_SQL', '"x"']], []],
+    ['a Cloud SQL for SQL Server table, a double-quoted name in ANSI_SQL', MSSQL,
+     [['ANSI_SQL', '"x"']], []],
+    ['an AlloyDB table, a double-quoted name in ANSI_SQL', ALLOY, [['ANSI_SQL', '"x"']], []],
+    ['an entity with no source, Snowflake text', undefined, [['SNOWFLAKE', 'x']], []],
+    ['a BigQuery table, ANSI_SQL text', BQ, [['ANSI_SQL', 'x']], note],
+    ['a BigQuery table, a double-quoted name in ANSI_SQL', BQ, [['ANSI_SQL', '"x"']], quoted],
+    ['a BigQuery table, a double-quoted name in the string form', BQ, '"x"', quoted],
+    // The warning names every double-quoted name, each once.
+    ['a BigQuery table, two double-quoted names', BQ, [['ANSI_SQL', '"f" || "y" || "f"']], [
+       quotedIn('BigQuery', 'BIGQUERY', 'f" and "y')[0],
+       `metric 'm': ${readsX('BigQuery', 'f" and "y')}if you meant fields, give it ` +
+           `a 'BIGQUERY' expression that names each as '<entity>.<field>'`,
+     ]],
+    // A metric's advice names no field, even one its entity declares.
+    ['a BigQuery table, a double-quoted name of a field of the metric\'s entity', BQ,
+     [['ANSI_SQL', '"f"']], quotedIn('BigQuery', 'BIGQUERY', 'f')],
+    ['a BigQuery table, a double-quoted name beside a BigQuery text', BQ,
+     [['ANSI_SQL', '"x"'], ['BIGQUERY', 'x']], []],
+  ] as Array<[string, string|undefined, Array<[string, string]>|string, string[]]>)(
+      '%s', (_, source, dialects, expected) => {
+        expect(warned(source, dialects)).toEqual(expected);
+      });
+
+  test('a load preferring PostgreSQL gives only its ANSI_SQL note', () => {
+    expect(warned(PG, [['ANSI_SQL', '"x"']], 'POSTGRES'))
+        .toEqual([note[0].replaceAll('BIGQUERY', 'POSTGRES')]);
+  });
+
+  // An inherited field is judged on the table of each entity that inherits
+  // it, and a metric on the tables of the entities it reaches, or on any
+  // table of the model when it reaches none.
+  test('an inherited field and a metric are judged on the tables that run them', () => {
+    const {warnings} = fromDocument({version: '0.2.0.dev0/google', semantic_model: [{
+      name: 'shop',
+      entities: [
+        entity('p', SPANNER, [{name: 'f', expression: expr('x', 'SPANNER')}]),
+        entity('c', BQ, [], {extends: ['p']}),
+        entity('o', SPANNER, []),
+      ],
+      metrics: [{name: 'm', entity: 'o', expression: expr('SUM(o.x)', 'SPANNER')},
+                {name: 'n', expression: expr('COUNT(*)', 'SPANNER')},
+                {name: 'r', entity: 'o', expression: expr('SUM(o.x) - SUM(p.x)', 'SNOWFLAKE')}],
+    }]});
+    expect(warnings).toEqual([
+      vendor('SPANNER')[0].replace("'t.f'", "'c.f'"),
+      vendor('SPANNER')[1].replace("'m'", "'n'"),
+      "metric 'n': expression references no known entity; it may not be placeable downstream",
+      "metric 'r': no 'SPANNER' or 'ANSI_SQL' dialect, so the SPANNER table of entity 'o' cannot run it",
+    ]);
+  });
+});
+
+
 describe('relationships map onto the direct-FK IR convention', () => {
   const { models } = fromDocument({ version: '0.2.0.dev0',
     semantic_model: [{

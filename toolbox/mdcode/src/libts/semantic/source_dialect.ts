@@ -21,19 +21,9 @@
 
 import * as yaml from 'yaml';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_FQN_PREFIX, isGoogleVendor, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {YAML_OPTIONS} from './yaml_options';
-
-// The dialect each Cloud SQL table or view entry type gives.
-const DIALECT_OF_ENTRY_TYPE: Record<string, string> = {
-  'cloudsql-mysql-table': 'MYSQL',
-  'cloudsql-mysql-view': 'MYSQL',
-  'cloudsql-postgresql-table': 'POSTGRES',
-  'cloudsql-postgresql-view': 'POSTGRES',
-  'cloudsql-sqlserver-table': 'SQLSERVER',
-  'cloudsql-sqlserver-view': 'SQLSERVER',
-};
 
 // The dialect each entrySource.system gives, in lower case.
 const DIALECT_OF_ENTRY_SYSTEM =
