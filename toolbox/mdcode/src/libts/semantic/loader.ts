@@ -284,9 +284,11 @@ function noSqlProblem(
 }
 
 // `problems` as one list, "a, b and c", or undefined when there are none.
-export function listed(problems: string[]): string|undefined {
+// `conjunction` replaces the "and".
+export function listed(problems: string[], conjunction = 'and'): string|
+    undefined {
   if (problems.length < 2) return problems[0];
-  return `${problems.slice(0, -1).join(', ')} and ${
+  return `${problems.slice(0, -1).join(', ')} ${conjunction} ${
       problems[problems.length - 1]}`;
 }
 
@@ -449,10 +451,7 @@ const googleAiContextSchema = z.union([
   z.string(),
   z.object({
      ...aiContextMembers,
-     custom: z.record(z.string(), z.unknown(), {
-                error: `ai_context 'custom' must be a mapping of custom ` +
-                    `member names to values`,
-              }).optional(),
+     custom: z.record(z.string(), z.unknown()).optional(),
    })
       .strict()
       .superRefine((ai, ctx) => {
@@ -779,6 +778,15 @@ const modelBase = z.object({
 // `custom_extensions` encoding, so they do not take it.
 const customExtensionsKey = {custom_extensions: z.array(customExtensionSchema).optional()};
 
+// The schemas of keys a document schema accepts only so that the loader can
+// reject them with its own message. A message about an unknown key does not
+// list them among the keys an object takes.
+const UNLISTED_KEYS = new WeakSet<z.ZodType>();
+function unlisted<T extends z.ZodType>(schema: T): T {
+  UNLISTED_KEYS.add(schema);
+  return schema;
+}
+
 // Builds the document schema for one (bindingOptional, extended) combination.
 // Every object is `.strict()`, so an unknown key is a hard error rather than
 // silently dropped. Two axes shape it:
@@ -831,10 +839,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          // dataset and the fix, not a bare "unrecognized key".
          extends: placement.dataset.extends === 'native' ?
              z.array(z.string()).optional() :
-             z.unknown().optional(),
+             unlisted(z.unknown().optional()),
          abstract: placement.dataset.abstract === 'native' ?
              z.boolean().optional() :
-             z.unknown().optional(),
+             unlisted(z.unknown().optional()),
        })
           .strict()
           .superRefine((ds: any, ctx) => {
@@ -884,7 +892,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
                 code: z.ZodIssueCode.custom,
                 path: ['source'],
                 message:
-                    `dataset '${ds.name}': an abstract dataset has no table; ` +
+                    `entity '${ds.name}': an abstract entity has no table; ` +
                     `remove 'source', or drop 'abstract: true' to bind it to that table`,
               });
             }
@@ -919,7 +927,10 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          to: z.string(),
          from_columns: z.array(z.string()).min(1).optional(),
          to_columns: z.array(z.string()).min(1).optional(),
-         description: z.string().optional(),
+         // Vanilla rejects a relationship's description after the schema.
+         description: placement.relationship.description === 'native' ?
+             z.string().optional() :
+             unlisted(z.string().optional()),
          ai_context: aiContext.optional(),
          ...customExtensionsKey,
        })
@@ -946,8 +957,9 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          // An authored anchor is a native extension: extended profile only.
          // Vanilla still declares the key so the refinement below can reject it
          // with a message that names the fix, not a bare "unrecognized key".
-         entity: placement.metric.entity === 'native' ? z.string().optional() :
-                                                        z.unknown().optional(),
+         entity: placement.metric.entity === 'native' ?
+             z.string().optional() :
+             unlisted(z.unknown().optional()),
        })
           .strict()
           .superRefine((mt, ctx) => {
@@ -1004,7 +1016,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   // rejectExpressionBody, which is what turns it into a useful error.
   const constraint = z.object({
                         name: z.string(),
-                        expression: z.string().optional(),
+                        expression: unlisted(z.string().optional()),
                         judgment: z.string().optional(),
                         description: z.string().optional(),
                         // What a violation does; required. See
@@ -1412,7 +1424,9 @@ function readGoogleBlocks(
       }
       const parsed = GOOGLE_BLOCK_SCHEMAS[key].safeParse(value);
       if (!parsed.success) {
-        throw error(`'${key}' in a ${block}: ${issueList(parsed.error)}`);
+        throw error(keyProblems(
+            parsed.error, GOOGLE_BLOCK_SCHEMAS[key], key, value,
+            `the ${block}`).replaceAll('\n', `\n${ctx}: `));
       }
       values[key] = parsed.data;
     }
@@ -1902,11 +1916,14 @@ export function fromDocument(doc: unknown, opts: LoadOptions = {}): LoadResult {
   }
 
   const normalized = normalizeDocumentSugars(doc, extended);
-  const result = makeDocumentSchema(opts.bindingOptional ?? false, extended)
-                     .safeParse(normalized);
+  const schema = makeDocumentSchema(opts.bindingOptional ?? false, extended);
+  const result = schema.safeParse(normalized);
   if (!result.success) {
-    throw new SemanticModelError(
-        `Semantic model load error: ${result.error.message}`);
+    throw new SemanticModelError(`Semantic model load error: ${
+        schemaProblems(result.error.issues, {
+          schema, doc: normalized, authored: doc, extended,
+          subject: 'the document',
+        })}`);
   }
 
   const warnings: string[] = [];
@@ -2495,8 +2512,8 @@ export function readFieldExpression(
       z.string().safeParse(raw) :
       expressionObjectSchema.safeParse(raw);
   if (!result.success) {
-    throw new SemanticModelError(
-        `${where}: 'expression': ${issueList(result.error)}`);
+    throw new SemanticModelError(keyProblems(
+        result.error, expressionObjectSchema, 'expression', raw, where));
   }
   const problem = problemOf(result.data);
   if (problem) {
@@ -2965,11 +2982,211 @@ function convertParameter(
   return param;
 }
 
-// A schema error's problems on one line, each led by its path.
-function issueList(error: z.ZodError): string {
-  return error.issues
-      .map(i => (i.path.length ? `${i.path.join('.')}: ` : '') + i.message)
-      .join('; ');
+// One line per problem that `schema` finds in the value of `key` on
+// `subject`.
+function keyProblems(
+    error: z.ZodError, schema: z.ZodType, key: string, value: unknown,
+    subject: string): string {
+  const doc = {[key]: value};
+  return schemaProblems(
+      error.issues.map(i => ({...i, path: [key, ...i.path]})),
+      {schema: z.object({[key]: schema}), doc, authored: doc, extended: true,
+       subject});
+}
+
+type SchemaIssue = z.ZodError['issues'][number];
+
+// What a schema error is read against. `doc` is the value `schema` read, and
+// `authored` is `doc` as written. A line names `subject` unless it is about a
+// named object inside `doc`.
+interface SchemaInput {
+  schema: z.ZodType;
+  doc: unknown;
+  authored: unknown;
+  extended: boolean;
+  subject: string;
+}
+
+// The noun a message gives an entry of each list of named objects in a model
+// document. An entry of `datasets` is an entity in the Google flavor.
+const ENTRY_NOUNS = new Map([
+  ['semantic_model', 'model'], ['datasets', 'dataset'], ['fields', 'field'],
+  ['relationships', 'relationship'], ['metrics', 'metric'],
+  ['actions', 'action'], ['parameters', 'parameter'],
+  ['constraints', 'constraint'], ['deployments', 'deployment'],
+]);
+
+// What a message says a schema expects.
+const EXPECTED: Record<string, string> = {
+  string: 'a string',
+  boolean: 'true or false',
+  array: 'a list',
+  object: 'a mapping',
+  record: 'a mapping',
+};
+
+// A value as a message describes it.
+function described(value: unknown): string {
+  if (value === undefined) return 'missing';
+  if (value === null) return 'empty';
+  if (Array.isArray(value)) return 'a list';
+  if (typeof value === 'object') return 'a mapping';
+  if (typeof value !== 'string') return String(value);
+  return value.includes('\n') ? 'a string' : `'${value}'`;
+}
+
+// The keys the object at `path` in `schema` takes, apart from unlisted keys.
+function keysAt(schema: z.ZodType, path: readonly PropertyKey[]): string[] {
+  // `s` without its optional, nullable and pipe wrappers. Of a union, the
+  // member that is a `kind`.
+  const unwrapped = (s: unknown, kind: Function): unknown => {
+    if (s instanceof z.ZodOptional || s instanceof z.ZodNullable) {
+      return unwrapped(s.unwrap(), kind);
+    }
+    if (s instanceof z.ZodPipe) return unwrapped(s.in, kind);
+    if (s instanceof z.ZodUnion) {
+      return s.options.map(o => unwrapped(o, kind))
+          .find(o => o instanceof kind);
+    }
+    return s;
+  };
+  let node: unknown = schema;
+  for (const seg of path) {
+    const holder =
+        unwrapped(node, typeof seg === 'number' ? z.ZodArray : z.ZodObject);
+    node = holder instanceof z.ZodArray ? holder.element :
+        holder instanceof z.ZodObject   ? holder.shape[String(seg)] :
+                                          undefined;
+  }
+  const object = unwrapped(node, z.ZodObject);
+  if (!(object instanceof z.ZodObject)) return [];
+  return Object.keys(object.shape)
+      .filter(k => !UNLISTED_KEYS.has(object.shape[k]));
+}
+
+// Where `path` points in `input.doc`: the innermost named object, as messages
+// name it, and the key below it, such as "'data' of entry 1 of
+// 'custom_extensions'". `spelled` gives a key as the author wrote it: a
+// Google-flavor model's `datasets` is `entities` unless the author wrote
+// `datasets`.
+function schemaLocation(path: readonly PropertyKey[], input: SchemaInput): {
+  subject: string; name?: string; place: string; value: unknown;
+  spelled: (key: PropertyKey) => string;
+} {
+  let subject = input.subject;
+  let name: string|undefined;
+  let entity: string|undefined;
+  let datasets = 'datasets';
+  let rest: PropertyKey[] = [];
+  let node: any = input.doc;
+  for (const seg of path) {
+    node = node?.[seg];
+    const list = rest.length === 1 ? String(rest[0]) : '';
+    const noun = list === 'datasets' && input.extended ?
+        'entity' :
+        ENTRY_NOUNS.get(list);
+    if (typeof seg !== 'number' || !noun) {
+      rest.push(seg);
+      continue;
+    }
+    rest = [];
+    name = typeof node?.name === 'string' ? node.name : undefined;
+    const named =
+        name === undefined ? `${noun} number ${seg + 1}` : `${noun} '${name}'`;
+    if (list === 'semantic_model') {
+      const written = (input.authored as any)?.semantic_model?.[seg];
+      datasets = input.extended && written?.datasets === undefined ?
+          'entities' :
+          'datasets';
+    }
+    if (list === 'datasets') entity = name;
+    if (list === 'fields' && name !== undefined && entity !== undefined) {
+      name = `${entity}.${name}`;
+      subject = `field '${name}'`;
+    } else {
+      subject = list === 'fields' || list === 'parameters' ?
+          `${named} of ${subject}` :
+          named;
+    }
+  }
+  const spelled = (key: PropertyKey) =>
+      key === 'datasets' ? datasets : String(key);
+  const place =
+      rest.map(s => typeof s === 'number' ? `entry ${s + 1}` :
+                                            `'${spelled(s)}'`)
+          .reverse()
+          .join(' of ');
+  return {subject, name, place, value: node, spelled};
+}
+
+// One line per problem of a schema error, naming the object and the key and
+// saying how to fix it.
+function schemaProblems(
+    issues: readonly SchemaIssue[], input: SchemaInput): string {
+  // zod also checks the length of a value of the wrong type, as for
+  // `target: []`. The type is what to fix, so that check gives no line.
+  const mistyped = new Set(issues.filter(i => i.code === 'invalid_type')
+                               .map(i => JSON.stringify(i.path)));
+  return issues
+      .filter(
+          i => i.code !== 'too_small' || !mistyped.has(JSON.stringify(i.path)))
+      .map(i => schemaProblem(i, input))
+      .join('\n');
+}
+
+function schemaProblem(issue: SchemaIssue, input: SchemaInput): string {
+  if (issue.code === 'invalid_union') {
+    // When only one alternative takes the value's type, report its problems.
+    const typed = issue.errors.filter(
+        b => !b.every(i => i.code === 'invalid_type' && !i.path.length));
+    if (typed.length === 1) {
+      return schemaProblems(
+          typed[0].map(i => ({...i, path: [...issue.path, ...i.path]})),
+          input);
+    }
+  }
+  const {subject, name, place, value, spelled} =
+      schemaLocation(issue.path, input);
+  const at = place ? `${subject}: ${place}` : subject;
+  const takes = (what: string|undefined) =>
+      `${at} is ${described(value)}; it takes ${what}`;
+  const expected = (type: string) => EXPECTED[type] ?? type;
+  switch (issue.code) {
+    case 'unrecognized_keys': {
+      const keys = keysAt(input.schema, issue.path).map(k => `'${spelled(k)}'`);
+      return `${subject}: unknown key${issue.keys.length > 1 ? 's' : ''} ${
+          listed(issue.keys.map(k => `'${k}'`))}${
+          place ? ` in ${place}` : ''}; it takes ${listed(keys)}`;
+    }
+    case 'invalid_type':
+      return takes(expected(issue.expected));
+    case 'invalid_union': {
+      // A vanilla document writes an expression only as a mapping.
+      const types = issue.errors.flatMap(b => b.flatMap(
+          i => i.code === 'invalid_type' ? [i.expected] : []));
+      const offered = types.filter(
+          t => input.extended || t !== 'string' ||
+              issue.path.at(-1) !== 'expression');
+      return takes(listed([...new Set(offered.map(expected))], 'or'));
+    }
+    case 'invalid_value':
+      return takes(listed(issue.values.map(v => `'${String(v)}'`), 'or'));
+    case 'too_small':
+      if (issue.origin === 'array') {
+        return `${at} is an empty list; it takes at least one entry`;
+      }
+      if (issue.origin === 'string') {
+        return `${at} is empty; it takes a non-empty string`;
+      }
+      break;
+    case 'custom':
+      // A rule on a named object quotes the object's name in its message.
+      if (name !== undefined && issue.message.includes(`'${name}'`)) {
+        return issue.message;
+      }
+      return `${subject}: ${issue.message}`;
+  }
+  return `${at}: ${issue.message}`;
 }
 
 // An executor written outside a model document, such as in a profile file,
@@ -2978,7 +3195,8 @@ function issueList(error: z.ZodError): string {
 export function parseExecutor(raw: unknown, where: string): Executor {
   const result = executorSchema.safeParse(raw);
   if (!result.success) {
-    throw new SemanticModelError(`${where} 'executor': ${issueList(result.error)}`);
+    throw new SemanticModelError(
+        keyProblems(result.error, executorSchema, 'executor', raw, where));
   }
   return convertExecutor(result.data);
 }
