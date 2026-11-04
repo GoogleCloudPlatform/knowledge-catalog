@@ -285,7 +285,11 @@ export async function applyKnowledgeCatalog(
   const written =
       await writeEmittedModels(
           cat, opts, emitted, existing, counts, isScopeProject)
-          .catch((err: any) => ({error: String(err?.message || err).trim()}));
+          .catch((err: any): WriteModelsOutcome =>
+                     ({error: String(err?.message || err).trim()}));
+  // Every file copy has landed before the last write, so its error gets no
+  // note.
+  if (written.finishFailed) return result(false, written.error);
   if (written.error) return failed(written.error);
 
   return result(true);
@@ -714,6 +718,13 @@ function planSummary(
   return lines;
 }
 
+interface WriteModelsOutcome {
+  error?: string;
+  // Set when the last write, which labels the model entry finished, failed.
+  // Every other write has landed then.
+  finishFailed?: boolean;
+}
+
 /**
  * Writes every model's entries and relationship links and deletes orphaned
  * resources in model order.
@@ -738,7 +749,7 @@ function planSummary(
 async function writeEmittedModels(
     cat: CatalogClient, opts: KcDeployOptions, emitted: EmittedModel[],
     existing: Entry[], counts: Counts,
-    isScopeProject: ProjectMatcher): Promise<{error?: string}> {
+    isScopeProject: ProjectMatcher): Promise<WriteModelsOutcome> {
   for (const {model, resources} of emitted) {
     const entries =
         await writeEntries(cat, opts, resources.entries, existing);
@@ -853,27 +864,47 @@ async function writeEmittedModels(
     }
 
     if (resources.entries.length) {
-      const finished =
-          await finishPush(cat, resources.entries[0], entries.anchorSource);
-      if (finished) return {error: `Model '${model}': ${finished}`};
+      const anchor = resources.entries[0];
+      const error =
+          await finishPush(cat, opts, anchor)
+              .catch((err: any) => String(err?.message || err).trim());
+      if (error) {
+        return {
+          error: `Model '${model}': setting the ${PUSH_STATE_LABEL} label of ` +
+              `entry '${entryId(anchor)}' to ${PUSH_FINISHED} failed: ` +
+              `${error.replace(/\.$/, '')}. Push again before you pull.`,
+          finishFailed: true,
+        };
+      }
     }
   }
   return {};
 }
 
 /**
- * Labels the model entry `anchor` finished. `source` is the entrySource its
- * write stored, and the update names only the entrySource.
+ * Labels the model entry `anchor` finished, and returns the error when that
+ * fails. It reads the entry first and sends back the entrySource the entry
+ * holds then, so what another writer set during the push stays. The update
+ * names only the entrySource.
  */
 async function finishPush(
-    cat: CatalogClient, anchor: Entry,
-    source: Entry['entrySource']): Promise<string|undefined> {
+    cat: CatalogClient, opts: KcDeployOptions,
+    anchor: Entry): Promise<string|undefined> {
+  const read = await cat.getEntry(
+      opts.project, opts.location, opts.entryGroup, entryId(anchor),
+      undefined, {keepSourceResource: true});
+  if (!isOkStatus(read)) return errText(read);
   const {name, entryType} = anchor;
-  const labels = {...source?.labels, [PUSH_STATE_LABEL]: PUSH_FINISHED};
-  const res = await cat.updateEntry(
-      {name, entryType, entrySource: {...source, labels}}, ['entry_source']);
-  return isOkStatus(res) ? undefined :
-                           `entry '${entryId(anchor)}': ${errText(res)}`;
+  const entrySource = withPushState(read.result?.entrySource, PUSH_FINISHED);
+  const res =
+      await cat.updateEntry({name, entryType, entrySource}, ['entry_source']);
+  return isOkStatus(res) ? undefined : errText(res);
+}
+
+// `source` with its kcmd-push-state label set to `state`.
+function withPushState(
+    source: Entry['entrySource'], state: string): Entry['entrySource'] {
+  return {...source, labels: {...source?.labels, [PUSH_STATE_LABEL]: state}};
 }
 
 /**
@@ -1294,8 +1325,6 @@ async function removeForeignModels(
 interface EntriesOutcome {
   created: number;
   updated: number;
-  // The entrySource the anchor's write stored.
-  anchorSource?: Entry['entrySource'];
   error?: string;
 }
 
@@ -1324,10 +1353,8 @@ async function writeEntries(
   const write = (e: Entry) => writeEntry(cat, opts, e, sources);
   const [anchor, ...children] = entries;
 
-  const labels =
-      {...anchor.entrySource?.labels, [PUSH_STATE_LABEL]: PUSH_WRITING};
-  const anchorRes =
-      await write({...anchor, entrySource: {...anchor.entrySource, labels}});
+  const entrySource = withPushState(anchor.entrySource, PUSH_WRITING);
+  const anchorRes = await write({...anchor, entrySource});
   if (anchorRes.error) return {created: 0, updated: 0, error: anchorRes.error};
 
   let created = anchorRes.updated ? 0 : 1;
@@ -1349,7 +1376,7 @@ async function writeEntries(
     const firstErr = res.find(r => r.error);
     if (firstErr) return {created, updated, error: firstErr.error};
   }
-  return {created, updated, anchorSource: anchorRes.source};
+  return {created, updated};
 }
 
 interface LinksOutcome {
@@ -1407,8 +1434,6 @@ async function writeEntryLinks(
 
 interface WriteOutcome {
   updated?: boolean;  // true when the resource already existed and was updated
-  // The entrySource the write stored.
-  source?: Entry['entrySource'];
   error?: string;
 }
 
@@ -1624,7 +1649,7 @@ async function writeEntry(
     return updateEntry(cat, opts, entry, read.result?.entrySource);
   }
   if (!isOkStatus(res)) return {error: `entry '${id}': ${errText(res)}`};
-  return {source: entry.entrySource};
+  return {};
 }
 
 // The entrySource fields another writer may set, which an update keeps.
@@ -1680,7 +1705,7 @@ async function updateEntry(
   if (!isOkStatus(upd)) {
     return {error: `entry '${entryId(entry)}': ${errText(upd)}`};
   }
-  return {updated: true, source: entry.entrySource};
+  return {updated: true};
 }
 
 /**

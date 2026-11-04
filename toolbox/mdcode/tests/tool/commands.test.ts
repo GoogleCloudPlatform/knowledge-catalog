@@ -980,6 +980,13 @@ function fakeCatalog(
                 .filter(([, a]) => (aspectTypes ?? []).includes(a.aspectType!)));
         return {status: 200, result: {...structuredClone(e), aspects}};
       });
+  // A get returns the entry without its aspects.
+  spyOn(P, 'getEntry').mockImplementation(async (...[p, l, g, id]: any[]) => {
+    const e = entries.get(
+        `projects/${p}/locations/${l}/entryGroups/${g}/entries/${id}`);
+    return e ? {status: 200, result: {...structuredClone(e), aspects: {}}} :
+               {status: 404, message: 'not found'};
+  });
   spyOn(P, 'lookupEntryLinks')
       .mockImplementation(async () => ({status: 200, result: []}));
   spyOn(P, 'createEntryLink')
@@ -2270,9 +2277,14 @@ describe('the push id on every file copy', () => {
 
 
 describe('the push-state label on the model entry', () => {
+  const ANCHOR = 'projects/test-project/locations/us/entryGroups/commerce_eg/' +
+      'entries/commerce';
+  const update = () =>
+      CatalogClient.prototype.updateEntry as unknown as Mock<any>;
   for (const v2 of [true, false]) {
-    test(`with KC_V2_ASPECTS ${v2 ? 'on' : 'off'}, pull refuses after a ` +
-             'push that stopped at any write, until a push finishes',
+    const flag = `with KC_V2_ASPECTS ${v2 ? 'on' : 'off'}`;
+    test(`${flag}, pull refuses after a push that stopped at any write, ` +
+             'until a push finishes',
          async () => {
            if (v2) process.env.KC_V2_ASPECTS = '1';
            writeRoundTripWorkspace();
@@ -2324,6 +2336,76 @@ describe('the push-state label on the model entry', () => {
            expect([...entries.keys()].join()).not.toContain('Customer');
            // A model an older kcmd pushed has no label.
            delete anchor.entrySource!.labels!['kcmd-push-state'];
+           expect(await pull()).toBe(0);
+         });
+
+    test(`${flag}, a push keeps the label and the source update time ` +
+             'another writer sets on the model entry while it runs',
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeRoundTripWorkspace();
+           const {entries} = fakeCatalog();
+           expect(await push({deployment: false})).toBe(0);
+           // Another writer changes the model entry right after the push
+           // writes it. Like Dataplex, the fake then refuses an entrySource
+           // update that leaves the update time out or moves it back.
+           const updateTime = '2026-11-04T08:00:00Z';
+           const write = update().getMockImplementation()!;
+           update().mockImplementation(async (entry: Entry, mask: string[]) => {
+             const held = entries.get(entry.name)!.entrySource?.updateTime;
+             const sent = entry.entrySource?.updateTime;
+             if (held && (!sent || sent < held)) {
+               return {status: 400, message: 'update_time is required'};
+             }
+             const res = await write(entry, mask);
+             if (entry.name === ANCHOR && mask.includes('aspects')) {
+               const source = entries.get(ANCHOR)!.entrySource!;
+               source.updateTime = updateTime;
+               source.labels = {...source.labels, steward: 'data-team'};
+             }
+             return res;
+           });
+           expect(await push({deployment: false})).toBe(0);
+           expect(entries.get(ANCHOR)!.entrySource).toMatchObject({
+             updateTime,
+             labels: {'steward': 'data-team', 'kcmd-push-state': 'finished'},
+           });
+         });
+
+    // With the flag on, the label's update fails. With it off, the read
+    // before it throws.
+    test(`${flag}, a push whose last write fails says to push again before ` +
+             'you pull, and that works',
+         async () => {
+           if (v2) process.env.KC_V2_ASPECTS = '1';
+           writeRoundTripWorkspace();
+           fakeCatalog();
+           expect(await push({deployment: false})).toBe(0);
+           const get = CatalogClient.prototype.getEntry as unknown as Mock<any>;
+           const read = get.getMockImplementation()!;
+           const write = update().getMockImplementation()!;
+           if (v2) {
+             update().mockImplementation(
+                 async (entry: Entry, mask: string[]) => mask.length === 1 ?
+                     {status: 503, message: 'The service is unavailable.'} :
+                     write(entry, mask));
+           } else {
+             get.mockImplementation(async () => {
+               throw new Error('fetch failed');
+             });
+           }
+           const error = console.error as unknown as Mock<any>;
+           expect(await push({deployment: false})).toBe(1);
+           expect(messages(error))
+               .toBe(
+                   'Error pushing semantic model to Knowledge Catalog: Model ' +
+                   '\'commerce\': setting the kcmd-push-state label of entry ' +
+                   '\'commerce\' to finished failed: ' +
+                   (v2 ? 'The service is unavailable' : 'fetch failed') +
+                   '. Push again before you pull.');
+           get.mockImplementation(read);
+           update().mockImplementation(write);
+           expect(await push({deployment: false})).toBe(0);
            expect(await pull()).toBe(0);
          });
   }

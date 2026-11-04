@@ -257,7 +257,11 @@ function destProject(project: string): ApiResult<any> {
 
 describe('deployKnowledgeCatalog: happy path', () => {
   test('writes entries anchor-first, provisioning nothing', async () => {
-    const {group, create, update} = stubClient();
+    // The model entry as the push ends, with a label another writer set.
+    const held =
+        {displayName: 'sales', labels: {owner: 'data-team', ...WRITING}};
+    const {group, create, update, getEntry} =
+        stubClient({getEntry: () => ok({entrySource: held})});
 
     const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
 
@@ -273,12 +277,14 @@ describe('deployKnowledgeCatalog: happy path', () => {
     // The model anchor is written before its children, labeled as writing.
     expect(create.mock.calls[0][3]).toBe('sales');
     expect(create.mock.calls[0][4]!.entrySource!.labels).toEqual(WRITING);
-    // One more write labels it finished, and names only the entrySource.
-    expect(update).toHaveBeenCalledTimes(1);
-    const [anchor, mask] = update.mock.calls[0];
-    expect(anchor.entrySource)
-        .toEqual({displayName: 'sales', labels: FINISHED});
-    expect(mask).toEqual(['entry_source']);
+    // One more write labels it finished. It reads the entry first, sends back
+    // what the entry holds then, and names only the entrySource.
+    expect(getEntry.mock.calls.map(c => c.slice(3)))
+        .toEqual([['sales', undefined, {keepSourceResource: true}]]);
+    const finish = update.mock.calls.map(([e, mask]) => [e.entrySource, mask]);
+    expect(finish).toEqual([[
+      {...held, labels: {owner: 'data-team', ...FINISHED}}, ['entry_source']
+    ]]);
   });
 });
 
@@ -428,8 +434,6 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
       create.mock.calls.find((c: any[]) => c[3] === 'sales')![4];
   const updated = (update: any, id: string) => update.mock.calls.find(
       (c: any[]) => c[0].name.endsWith(`/entries/${id}`))!;
-  // The last write, which labels the model entry finished.
-  const finished = (update: any) => update.mock.calls.at(-1)[0];
   const ENTITY = 'sales.entities.orders';
   // Labels another writer set, beside the label of an earlier push.
   const existing: {id: string; type: string; labels: Record<string, string>}[] =
@@ -493,11 +497,8 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
                 models(DOCS), CTX, {...OPTS, sourceFiles: COPIES}))
                .success)
         .toBe(true);
-    const labels = {'owner': 'data-team', 'kcmd-push-id': PUSH};
     expect(updated(update, 'sales')[0].entrySource.labels)
-        .toEqual({...labels, ...WRITING});
-    expect(finished(update).entrySource.labels)
-        .toEqual({...labels, ...FINISHED});
+        .toEqual({'owner': 'data-team', 'kcmd-push-id': PUSH, ...WRITING});
     expect(updated(update, ENTITY)[0].entrySource.labels)
         .toEqual({'owner': 'data-team'});
   });
@@ -540,11 +541,6 @@ describe('deployKnowledgeCatalog: the push id label and other writers\' fields',
     expect(updated(update, ENTITY)[0].entrySource)
         .toEqual({...source, ...emitted(ENTITY)});
     expect(updated(update, COPY)[0].entrySource).toEqual(source);
-    expect(finished(update).entrySource).toEqual({
-      ...source,
-      ...emitted('sales'),
-      labels: {...LABELS, ...FINISHED},
-    });
   });
 
   // A listing the caller may not make comes back empty, and another writer
