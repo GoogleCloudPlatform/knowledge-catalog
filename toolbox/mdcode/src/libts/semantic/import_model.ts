@@ -260,6 +260,10 @@ const SOURCE_PREFIX_PATTERNS:
     form: TABLE_FORMS.biglake,
   },
   {
+    re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/databases\/([^/.]+)$/,
+    form: TABLE_FORMS.biglakeHive,
+  },
+  {
     re: /^spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)$/,
     form: TABLE_FORMS.spanner,
   },
@@ -363,7 +367,7 @@ function parseImportDocument(
     }
   }
 
-  // 3. Validate `opts.sourcePrefix` against the 9 supported first-party GCP
+  // 3. Validate `opts.sourcePrefix` against the supported first-party GCP
   // container resource name patterns, or as an entry group, before doing any
   // document work.
   let sourcePrefix: ParsedSourcePrefix|undefined;
@@ -391,10 +395,10 @@ function parseImportDocument(
     } else {
       return `Invalid sourcePrefix '${opts.sourcePrefix}'; expected the GCP ` +
           `resource name of a BigQuery project or dataset, a BigLake ` +
-          `catalog or namespace, a Spanner database, an AlloyDB database ` +
-          `or schema, or a Cloud SQL database or schema (with no leading ` +
-          `'//'), or the name of a Knowledge Catalog entry group ` +
-          `('projects/<p>/locations/<l>/entryGroups/<g>').`;
+          `catalog, namespace or Hive database, a Spanner database, an ` +
+          `AlloyDB database or schema, or a Cloud SQL database or schema ` +
+          `(with no leading '//'), or the name of a Knowledge Catalog entry ` +
+          `group ('projects/<p>/locations/<l>/entryGroups/<g>').`;
     }
   }
 

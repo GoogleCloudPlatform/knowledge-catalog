@@ -141,6 +141,15 @@ describe('conversion, strict mode, and translation', () => {
       "names the system entry group '@bigquery', whose entries are Google Cloud tables"
     ],
     [
+      'sourcePrefix naming a table', ossieDoc(),
+      {sourcePrefix: 'biglake.googleapis.com/projects/acme/catalogs/c/databases/d/tables/t'},
+      "Invalid sourcePrefix 'biglake.googleapis.com/projects/acme/catalogs/c/databases/d/tables/t'; " +
+          'expected the GCP resource name of a BigQuery project or dataset, a BigLake catalog, ' +
+          'namespace or Hive database, a Spanner database, an AlloyDB database or schema, or a ' +
+          "Cloud SQL database or schema (with no leading '//'), or the name of a Knowledge " +
+          "Catalog entry group ('projects/<p>/locations/<l>/entryGroups/<g>')."
+    ],
+    [
       'Google to vanilla without strict', googleDoc(),
       {flavor: 'ossie' as const}, '--input first-party'
     ],
@@ -845,6 +854,7 @@ describe('sources', () => {
   test.each([
     ['`acme.lake.sales.orders`', LAKE, LAKE_TABLE],
     ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
+    ['sales.orders', `${LAKE}/databases/sales`, `${LAKE}/databases/sales/tables/orders`],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
     ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
