@@ -2191,7 +2191,7 @@ semantic_model:
     test('rejects a field with no text for its entity\'s source dialect, and suggests kcmd import --transpile when it can translate it', async () => {
       writeScope({
         'commerce.yaml': commerce()
-            .replace(BQ('dev', 'purchase'), `${SPANNER_DB}/tables/purchase`)
+            .replaceAll(BQ('dev', ''), `${SPANNER_DB}/tables/`)
             .replace('expression: p_id }', 'expression: { dialects: ' +
                      '[{ dialect: BIGQUERY, expression: p_id }] } }'),
       });

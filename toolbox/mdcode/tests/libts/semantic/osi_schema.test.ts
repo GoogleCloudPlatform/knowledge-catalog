@@ -129,8 +129,8 @@ function loaderErrors(doc: unknown): string|undefined {
     }
     const errors = [
       ...models.flatMap(model => [
-        ...validateInlineDialects(model, 'doc'),
-        ...validateDeployments(model, 'doc')]),
+        ...validateInlineDialects(model, 'doc', {}),
+        ...validateDeployments(model, 'doc', {})]),
       // Push checks the catalog's model as one that deploys nowhere.
       ...validatePushRequirements(
         models.map(model =>
@@ -522,7 +522,11 @@ const MODEL_CASES: Case[] = [
     `an empty ${what}`, base(m => Object.assign(m, structuredClone(patch))), false,
     EMPTY_TEXT_BUG]),
 
-  ...sourceCases(source => base(m => { m.entities[0].source = source; })),
+  // A model file reads from one database, so both entities take the form.
+  ...sourceCases(source => base(m => {
+    m.entities[0].source = source;
+    m.entities[1].source = source.replace(/orders$/, 'customers');
+  })),
 
   // Deployment targets: one valid and one invalid case per form.
   ...Object.entries(TARGET).flatMap(([form, target]): Case[] => [

@@ -812,6 +812,21 @@ describe('profile checks', () => {
     ]);
   });
 
+  // Push's message about a model file on BigQuery and Spanner, which names
+  // document `doc`, is an error in strict mode and a warning otherwise.
+  test.each([
+    ['first-party', true, 'sales'],
+    ['third-party', false, 'retail'],
+  ])('reports a model file whose tables are in two databases (%s)', async (_, firstParty, doc) => {
+    const items = `      - name: items\n        source: ${SPANNER_TABLE}\n` +
+        '        primary_key: [order_id]\n        fields: [{name: order_id, expression: order_id}]\n';
+    const res = await importSemanticModelYaml(
+        model(items), {strict: firstParty, fileName: 'sales.yaml', flavor: 'google'});
+    const message = `model 'retail' (${doc}) binds entities in more than one database ` +
+        "('orders', 'items'); bind the model file's entities to tables in one database.";
+    expect([res.errors, res.warnings]).toEqual(firstParty ? [[message], []] : [[], [message]]);
+  });
+
   test('suggests no import for a field its own --transpile leaves untranslated', async () => {
     const toChar = (fmt: string) =>
         AMOUNT(`{dialects: [{dialect: POSTGRES, expression: "TO_CHAR(amount, '${fmt}')"}]}`);

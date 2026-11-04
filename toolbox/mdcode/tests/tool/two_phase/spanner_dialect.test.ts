@@ -21,9 +21,9 @@ const order = (database: string) => ({
   fields: [{name: 'id', expression: 'o_id'}],
 });
 const TWO_DATABASES =
-    "model 'commerce' (commerce) binds entities in more than one Spanner " +
-    "database ('Customer', 'Order'); bind the model file's entities to " +
-    'tables in one Spanner database.';
+    "model 'commerce' (commerce) binds entities in more than one database " +
+    "('Customer', 'Order'); bind the model file's entities to tables in one " +
+    'database.';
 const REFUSAL =
     "[commerce] deployment 'd': database test-project/i/db has the " +
     'PostgreSQL dialect, and Spanner creates no property graph in a ' +

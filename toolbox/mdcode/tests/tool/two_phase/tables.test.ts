@@ -47,13 +47,13 @@ scenarios('each deployment\'s tables are in the database it deploys to', [
           `'Customer' to '${OTHER_ALLOYDB}', which is not a table in that ` +
           'database.'),
   fails(
-      'a deployment that uses the model file\'s bindings names only the entity outside its database',
+      'a deployment that uses the model file\'s bindings on BigQuery and Spanner gets only the model file\'s one-database error',
       {entities: [CUSTOMER, {
         ...CUSTOMER, name: 'Orders', source: `${SPANNER}/tables/Orders`,
       }]},
-      "[commerce] deployment 'g' targets a BigQuery graph, but the model " +
-          `file binds entity 'Orders' to '${SPANNER}/tables/Orders', which ` +
-          'is not a BigQuery or BigLake table.'),
+      "model 'commerce' (commerce) binds entities in more than one database " +
+          "('Customer', 'Orders'); bind the model file's entities to tables " +
+          'in one database.'),
   {
     ...fails(
         'a deployment the push does not select fails the push the same way, ' +

@@ -2809,7 +2809,7 @@ ${customer ? `        source: ${BQ_TABLE('customer')}\n` : ''}\
           join ? ', from_columns: [p_customer], to_columns: [c_id]' : ''} }
 ${metric && `    metrics:\n      - ${metric}\n`}`);
   };
-  const check = (m: SemanticModel) => validateDeployments(m, 'commerce');
+  const check = (m: SemanticModel) => validateDeployments(m, 'commerce', {});
   // The start of the error saying deployment `engine` uses the model file's
   // own bindings. A list of engines gives the plural form that names each.
   const OWN = (engine: Engine|Engine[]) => typeof engine === 'string' ?
@@ -3380,9 +3380,11 @@ describe('validateInlineDialects', () => {
   const SPANNER_TABLE = `${SPANNER_DB}/tables/t`;
   // A model whose entity `e` reads `source` and has field `f` with
   // `expression`, written as YAML. `extra` is the YAML of more entities. The
-  // load has the dialect a lookup gave the Spanner database, or none.
+  // load has the dialect a lookup gave the Spanner database, or none, and the
+  // dialects `looked` gives other sources.
   const withField = (source: string, expression: string, extra = '',
-                     spanner: string|null = 'SPANNER') =>
+                     spanner: string|null = 'SPANNER',
+                     looked: Array<[string, string]> = []) =>
       loadOne('m', `    entities:
       - name: e
         source: ${source}
@@ -3390,10 +3392,11 @@ describe('validateInlineDialects', () => {
         fields:
           - { name: id, expression: id }
           - { name: f, expression: ${expression} }
-${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
+${extra}`, {sourceDialects: new Map([
+        ...spanner ? [[SPANNER_DB, spanner] as [string, string]] : [], ...looked])});
   const dialects = (...entries: string[]) =>
       `{ dialects: [${entries.map(e => `{ dialect: ${e}, expression: x }`)}] }`;
-  const check = (m: SemanticModel) => validateInlineDialects(m, 'doc');
+  const check = (m: SemanticModel) => validateInlineDialects(m, 'doc', {});
   // The error for field `f` of `entity`, whose source has `dialect`, ending
   // in `hint`. `a` is the article before the dialect.
   const MISSING = (entity: string, dialect: string, hint = '', a = 'a') =>
@@ -3402,11 +3405,24 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
           entity}' to ${a} ${dialect} source${hint}.`;
   const HINT = "; give it one, or add one with 'kcmd import <file> " +
       "--input first-party --flavor google --transpile'";
+  // The error for a model file whose entities `a` and `b` are in two
+  // databases.
+  const TWO_DATABASES = (a: string, b: string) => expect.stringContaining(
+      `binds entities in more than one database ('${a}', '${b}')`);
+  // The YAML of entity `c` on `source`.
+  const second = (source: string) => `      - { name: c, source: ${source},
+          primary_key: [id], fields: [{ name: id, expression: id }] }\n`;
+  const entry = (group: string) =>
+      `projects/p/locations/l/entryGroups/${group}/entries/t`;
+  // A Snowflake table and a Databricks table, each looked up.
+  const thirdParty: Array<[string, string]> =
+      [[entry('sf'), 'SNOWFLAKE'], [entry('dbx'), 'DATABRICKS']];
 
   // A bound field needs a text for its source's dialect, an ANSI_SQL text, or
   // the string form. An inherited field is judged by the source of the entity
-  // that inherits it.
-  test('holds each bound field to the dialect of its own entity\'s source, and suggests kcmd import --transpile only for a text it translates', () => {
+  // that inherits it. The model file's tables are all in one database, as a
+  // profile's are, and a model file in two databases gets only that error.
+  test('holds each bound field to the dialect of its own entity\'s source, suggests kcmd import --transpile only for a text it translates, and holds the tables to one database', () => {
     const bigQueryText = dialects('BIGQUERY');
     // Entity `other` on Spanner has field `f` with only a BigQuery text, and
     // entity `leaf` on Spanner inherits `f` from `e`.
@@ -3417,15 +3433,14 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
           primary_key: [id], fields: [{ name: id, expression: id }] }\n`;
     const alloyDb = `${TARGET.alloydb}/schemas/s/tables/t`;
     const cases: Array<[source: string, expression: string, extra: string,
-                        errors: string[]]> = [
+                        errors: string[], looked?: Array<[string, string]>]> = [
       [SPANNER_TABLE, bigQueryText, '', [MISSING('e', 'SPANNER')]],
       [SPANNER_TABLE, dialects('SPANNER'), '', []],
       [SPANNER_TABLE, dialects('BIGQUERY', 'ANSI_SQL'), '', []],
       [SPANNER_TABLE, 'x', '', []],
-      [BQ_TABLE('t'), bigQueryText, other, [MISSING('other', 'SPANNER')]],
-      [BQ_TABLE('t'), bigQueryText, leaf, [MISSING('leaf', 'SPANNER')]],
-      [BQ_TABLE('t'), dialects('SNOWFLAKE'), other,
-       [MISSING('e', 'BIGQUERY', HINT), MISSING('other', 'SPANNER')]],
+      [SPANNER_TABLE, bigQueryText, leaf,
+       [MISSING('e', 'SPANNER'), MISSING('leaf', 'SPANNER')]],
+      [BQ_TABLE('t'), dialects('SNOWFLAKE'), other, [TWO_DATABASES('e', 'other')]],
       // The message reads "an" before a dialect that starts with a vowel.
       [alloyDb, bigQueryText, '', [MISSING('e', 'ALLOYDB', '', 'an')]],
       // kcmd import --transpile translates a Snowflake, Spanner or AlloyDB
@@ -3434,9 +3449,16 @@ ${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
       [SPANNER_TABLE, dialects('SNOWFLAKE'), '', [MISSING('e', 'SPANNER')]],
       [BQ_TABLE('t'), dialects('SPANNER'), '', [MISSING('e', 'BIGQUERY', HINT)]],
       [BQ_TABLE('t'), dialects('ALLOYDB'), '', [MISSING('e', 'BIGQUERY', HINT)]],
+      // BigQuery and BigLake are one database. A Snowflake table and a
+      // Databricks table are in two.
+      [BQ_TABLE('t'), 'x',
+       second('biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t'),
+       []],
+      [entry('sf'), 'x', second(entry('dbx')), [TWO_DATABASES('e', 'c')], thirdParty],
     ];
-    for (const [source, expression, extra, errors] of cases) {
-      const actual = check(withField(source, expression, extra));
+    for (const [source, expression, extra, errors, looked] of cases) {
+      const actual =
+          check(withField(source, expression, extra, undefined, looked));
       expect({source, expression, extra, errors: actual})
           .toEqual({source, expression, extra, errors});
     }
