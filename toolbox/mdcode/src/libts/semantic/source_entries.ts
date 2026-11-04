@@ -1,6 +1,7 @@
 // Checks that Knowledge Catalog has an entry for every table a push reads
 // (b/568769073), so a source that names no table stops the push before it
-// writes anything.
+// writes anything. The same reads find each profile whose BigQuery and
+// BigLake tables share no location (b/578688979).
 //
 // Each first-party table's entry sits in its system's entry group, with its
 // resource name as the entry id, in the table's own location:
@@ -63,14 +64,30 @@ type Checked<T> = {result: T}|{problem: string};
 
 // One message for each entity, in the inline bindings (named `default`) or in
 // a profile, whose source names a table with no Knowledge Catalog entry, in
-// that order. Reads each table's location and looks its entry up once per
-// location it may sit in, and reads each catalog and instance once; tables
-// are checked in parallel, and a table's locations in turn. Skips an abstract
-// entity, an entity with no source, and a source that names no table this
-// module knows (a Cloud SQL or third-party table, or a legacy bare name).
-// Never throws.
+// that order. Then one message for each of those profiles whose BigQuery and
+// BigLake tables share no location (b/578688979): BigQuery runs each query in
+// one location, so no query through the profile can join them.
+//
+// A named profile is judged by its own sources, since push requires it to
+// bind every concrete entity. A BigLake table can be queried in any replica
+// region of its catalog. A table whose location could not be read is
+// reported above and left out.
+//
+// Seen live in kc-looker-external, for a US catalog whose replicas are
+// us-central1 (primary) and us-east1:
+// - A job in US cannot read its tables (2026-11-03).
+// - Once a table has replicated, which took a few minutes, a job in either
+//   region can read it, join it with a dataset in that region, and create a
+//   property graph over both (2026-11-04).
+// - A job with no location runs in the primary.
+//
+// Reads each table's location and looks its entry up once per location it
+// may sit in, and reads each catalog and instance once; tables are checked in
+// parallel, and a table's locations in turn. Skips an abstract entity, an
+// entity with no source, and a source that names no table this module knows
+// (a Cloud SQL or third-party table, or a legacy bare name). Never throws.
 export async function sourceEntryErrors(
-    model: Pick<SemanticModel, 'entities'|'profiles'>,
+    model: Pick<SemanticModel, 'name'|'entities'|'profiles'>,
     readers: SourceReaders): Promise<string[]> {
   const uses: Array<{entity: string; profile: string; table: SourceTable}> = [];
   const use = (entity: string, profile: string, source: string|undefined) => {
@@ -84,33 +101,65 @@ export async function sourceEntryErrors(
     for (const b of p.entities) use(b.name, p.name, b.source);
   }
 
+  const catalogAndInstanceReads =
+      new Map<string, Promise<Checked<string[]>>>();
   const locations = new Map<string, Promise<Checked<string[]>>>();
   const problems = new Map<string, Promise<string|undefined>>();
   for (const {table} of uses) {
     if (!problems.has(table.resourceName)) {
-      problems.set(table.resourceName, problemOf(table, readers, locations));
+      const located = locationsOf(table, readers, catalogAndInstanceReads);
+      locations.set(table.resourceName, located);
+      problems.set(table.resourceName, problemOf(table, located, readers));
     }
   }
 
   const errors: string[] = [];
+  // By profile, each list of regions BigQuery can query one of its tables in,
+  // keyed by the list, with the entities bound to such tables, in the order
+  // bound.
+  const placed = new Map<string, Map<string, {regions: string[]; entities: string[]}>>();
   for (const {entity, profile, table} of uses) {
     const problem = await problems.get(table.resourceName)!;
     if (problem) {
       errors.push(`entity '${entity}' in profile '${profile}': source '${
           table.resourceName}' ${problem}`);
     }
+    if (table.system !== 'bigquery' && table.system !== 'biglake') continue;
+    const located = await locations.get(table.resourceName)!;
+    if (!('result' in located)) continue;
+    const regions = located.result;
+    const key = regions.join(' ');
+    const at = placed.get(profile) ?? new Map();
+    at.set(key, {regions, entities: [...at.get(key)?.entities ?? [], entity]});
+    placed.set(profile, at);
+  }
+  for (const [profile, at] of placed) {
+    const [first, ...rest] = at.values();
+    if (first.regions.some(r => rest.every(g => g.regions.includes(r)))) {
+      continue;
+    }
+    const listed = [...at.values()].map(
+        ({regions, entities}) => `${regions.map(shown).join(' or ')} (${
+            entities.map(e => `'${e}'`).join(', ')})`);
+    errors.push(
+        `profile '${profile}' of model '${model.name}' binds tables that ` +
+        `share no BigQuery location: ${listed.join(', ')}. ` +
+        `BigQuery runs each query in one location, so no query can join ` +
+        `them. Bind them to tables that share a location, or pass ` +
+        `--skip-source-check.`);
   }
   return errors;
 }
 
 // What is wrong with `table`'s source, or undefined when its catalog entry
-// is there. Looks the entry up in each of its locations in turn, and stops at
-// the first that finds it: a lookup in the wrong location answers 403, so
-// trying each cannot pass a missing entry.
+// is there. `located` is what locationsOf gave for `table`. Looks the entry
+// up in each of its locations in turn, and stops at the first that finds it:
+// a lookup in the wrong location answers 403, so trying each cannot pass a
+// missing entry.
 async function problemOf(
-    table: SourceTable, readers: SourceReaders,
-    cache: Map<string, Promise<Checked<string[]>>>): Promise<string|undefined> {
-  const locations = await locationsOf(table, readers, cache);
+    table: SourceTable, located: Promise<Checked<string[]>>,
+    readers: SourceReaders): Promise<string|undefined> {
+  const locations = await located;
   if ('problem' in locations) return locations.problem;
   for (const location of locations.result) {
     const res = await lookupSystemEntry(
@@ -125,6 +174,12 @@ async function problemOf(
                  ' A new AlloyDB cluster can take hours to appear in the ' +
                      'catalog after Dataplex integration is turned on.' :
                  ''} Fix the source, or pass --skip-source-check.`;
+}
+
+// `location`, which is kept in lower case, as BigQuery writes it: a
+// multi-region, which has no hyphen, in upper case (`US`, `EU`).
+function shown(location: string): string {
+  return location.includes('-') ? location : location.toUpperCase();
 }
 
 // Said when reading an instance config is refused (live on

@@ -2809,7 +2809,7 @@ semantic_model:
     expect(await push({skipSourceCheck: true})).toBe(0);
     expect(lookup).not.toHaveBeenCalled();
     expect(messages(logSpy))
-        .toContain('Skipping the source existence check (--skip-source-check).');
+        .toContain('Skipping the source check (--skip-source-check).');
     expect(applySpy).toHaveBeenCalledTimes(1);
   });
 

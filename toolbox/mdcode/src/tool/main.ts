@@ -68,7 +68,7 @@ cli.command('push', 'Push catalog entries')
     .option('--validate-only', 'Same as --dry-run')
     .option(
         '--skip-source-check',
-        'Skip the check that every source names a table Knowledge Catalog knows about; a Cloud SQL or third-party source is still looked up for its dialect; semantic-model push only')
+        'Skip the checks that every source names a table Knowledge Catalog knows about and that the BigQuery and BigLake tables of each profile share a location; a Cloud SQL or third-party source is still looked up for its dialect; semantic-model push only')
     .option(
         '--no-profile',
         'No longer supported on push; use --no-deployment to skip database deployments, or --deployment <name> to select one')
