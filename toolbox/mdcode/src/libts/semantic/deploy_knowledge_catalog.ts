@@ -1332,8 +1332,8 @@ interface EntriesOutcome {
  * Creates or updates a model's entries in dependency order.
  *
  * The method writes entries in three stages:
- *   1. Writes the model anchor (`entries[0]`) first, since it is the parent of
- *      every child entry, labeled as writing.
+ *   1. Writes the model anchor (`entries[0]`) first, labeled as writing, since
+ *      it is the parent of every child entry.
  *   2. Writes independent child entries (such as entities, relationships,
  *      actions, and constraints) concurrently.
  *   3. Writes dependent child entries (`semantic-metric` via

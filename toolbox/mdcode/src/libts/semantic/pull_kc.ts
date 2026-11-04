@@ -137,8 +137,9 @@ export async function pullKnowledgeCatalog(
 
   const read = modelsFromCatalogResources(
       hydrated, entryLinks, {v2Aspects: opts.v2Aspects});
-  // Every push labels the model entry as writing with its first write and as
-  // finished with its last. The hydrated entries keep the order of `targets`.
+  // Every push labels the model entry as writing when it writes the model entry
+  // and as finished with its last. The hydrated entries keep the order of
+  // `targets`.
   const anchor =
       anchors.length ? hydrated[targets.indexOf(anchors[0])] : undefined;
   const writing =
