@@ -178,9 +178,9 @@ model in the entry group. When push would stop at such an error,
 `kcmd profiles` prints it once above the profiles and still checks each
 profile, unless a plain push runs in two phases. A Cloud SQL or third-party
 table whose dialect cannot be read from its entry, or a Spanner database whose
-dialect cannot be read, stops the command before the report. When push warns that the model file's own bindings are incomplete,
-the report prints that warning under `profile 'default'`, unless `--profile`
-names another profile.
+dialect cannot be read, stops the command before the report. When push warns
+that the model file's own bindings are incomplete, the report prints that
+warning under `profile 'default'`, unless `--profile` names another profile.
 
 The command is read-only. It applies and prunes each profile and generates each
 graph as `push --validate-only` does, but deploys nothing, so you can compare
@@ -770,10 +770,12 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   once, with the Spanner API, before they load the model:
   `GOOGLE_STANDARD_SQL` gives `SPANNER` and `POSTGRESQL` gives `POSTGRES`. A
   database that cannot be read stops the command before anything is written.
-  Fields and metrics on its tables then need SQL in that dialect or in
-  `ANSI_SQL`. Spanner creates no property graph in a PostgreSQL-dialect
-  database, so push refuses a Spanner deployment there before anything is
-  written. *(live — needs `spanner.databases.get` on the database)*
+  A field the model file binds to one of its tables then needs SQL in that
+  dialect or in `ANSI_SQL`. So does every field and metric of a profile whose
+  sources are in that database. Spanner creates no property graph in a
+  PostgreSQL-dialect database, so push refuses a Spanner deployment there
+  before anything is written. *(live — needs `spanner.databases.get` on the
+  database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
   `ANSI_SQL` entry, or the string form. The model file's own bindings may span
@@ -966,6 +968,13 @@ model is present), on the database the target names:
   plans each statement on a session, and a `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
+
+**Spanner sources** — for a model whose `source` values name Spanner tables,
+whether or not it deploys to Spanner:
+
+* `spanner.databases.get` on each database those tables are in, to read the
+  database's SQL dialect. `kcmd profiles` and `kcmd skills-generate` need it
+  too.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (on by
 default; skip it with `--no-kc`):
