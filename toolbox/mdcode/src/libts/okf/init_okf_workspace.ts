@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import * as yaml from 'yaml';
 
 import * as gcp from '../gcp';
+import {contextSetOf, describeChanged, pullContextSetMetadata} from '../context_set';
 import * as dataplex from '../gcp/dataplex';
 import {BUNDLE_DIR} from '../layouts/okf';
 import {CatalogManifest, writeWorkspaceLayout} from '../manifest';
@@ -82,6 +83,23 @@ export async function initOkfWorkspace(
     if (!result.success) {
       if (result.details) console.error(`Error: ${result.details}`);
       return 1;
+    }
+    // The context set's display name and description, as `kcmd pull` sets
+    // them.
+    const ref = contextSetOf(manifest.source);
+    if (ref) {
+      const pulled = await pullContextSetMetadata(
+        new dataplex.CatalogClient(ctx),
+        ref,
+        'catalog.yaml',
+      );
+      if (pulled.error) {
+        console.error(`Error: ${pulled.error}`);
+        return 1;
+      }
+      if (pulled.changed.length) {
+        console.log(`Updated ${describeChanged(pulled.changed)} in catalog.yaml.`);
+      }
     }
   } else {
     console.log(

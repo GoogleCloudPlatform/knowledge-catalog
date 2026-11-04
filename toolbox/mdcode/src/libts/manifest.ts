@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as yaml from 'yaml';
 import * as z from 'zod';
 import * as gcp from './gcp';
-import {ContextSetMetadata, manifestMetadataErrors, metadataOfManifest} from './context_set';
+import {ContextSetMetadata, METADATA_KEYS, metadataOfManifest, metadataScopeError} from './context_set';
 import * as dataplex from './gcp/dataplex';
 import { CatalogSource, createSource, Sources } from './source';
 import { EntryGroupSource } from './sources/entrygroup';
@@ -29,8 +29,8 @@ const manifestSchema = z.object({
   // The workspace layout, when it is not the scope's own (see above).
   layout: z.string().optional(),
   // The context set's display name and description (see context_set.ts).
-  displayName: z.unknown().optional(),
-  description: z.unknown().optional(),
+  displayName: z.string().optional(),
+  description: z.string().optional(),
   snapshot: z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
@@ -39,6 +39,10 @@ const manifestSchema = z.object({
     entries: z.array(z.string()).optional(),
     aspects: z.array(z.string()).optional()
   }).optional(),
+}).superRefine((manifest, ctx) => {
+  const error = metadataScopeError(
+      manifest.scope, METADATA_KEYS.filter(k => manifest[k] !== undefined));
+  if (error) ctx.addIssue({code: 'custom', message: error});
 });
 
 export interface SnapshotConfig {
@@ -196,8 +200,6 @@ export class CatalogManifest {
     
     const scope = result.data.scope;
     const layout = layoutOf(result.data);
-    const metadataErrors = manifestMetadataErrors(result.data);
-    if (metadataErrors.length) throw new Error(metadataErrors.join('\n'));
     let source: CatalogSource;
     if (Array.isArray(scope)) {
       if (scope.length === 0) {

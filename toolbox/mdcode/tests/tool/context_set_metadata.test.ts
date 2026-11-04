@@ -263,6 +263,67 @@ describe('OKF workspace', () => {
          expect(updateGroup).not.toHaveBeenCalled();
        });
 
+  test('a create whose operation fails stops push before any entry', async () => {
+    fs.writeFileSync('catalog.yaml', OKF_SCOPE + 'description: d\n');
+    spyOn(CatalogClient.prototype, 'getEntryGroup')
+        .mockImplementation(async () => ({status: 404, message: 'not found'}));
+    const op = 'projects/test-project/locations/us/operations/op-1';
+    spyOn(CatalogClient.prototype, 'createEntryGroup')
+        .mockImplementation(async () => ({status: 200, result: {name: op}}));
+    spyOn(CatalogClient.prototype, 'getOperation')
+        .mockImplementation(async () => ({
+                              status: 200,
+                              result: {
+                                name: op,
+                                done: true,
+                                error: {code: 7, message: 'Permission denied'},
+                              },
+                            }));
+    expect(await commands.push({})).toBe(1);
+    expect(errors).toEqual([
+      'Error: creating context set \'test-project.us.commerce_eg\': ' +
+          'createEntryGroup: Permission denied. Creating a context set ' +
+          'needs roles/dataplex.catalogAdmin or ' +
+          'roles/dataplex.entryGroupOwner on the project.',
+    ]);
+    expect(events).not.toContain('sync.push');
+  });
+
+  test('warns when the bundle root names what catalog.yaml does not', async () => {
+    const warn = spyOn(console, 'warn').mockImplementation(() => {});
+    fs.writeFileSync('catalog.yaml', OKF_SCOPE);
+    expect(await commands.push({})).toBe(0);
+    expect(warn.mock.calls.map(c => String(c[0]))).toEqual([
+      'Warning: the bundle root\'s \'title\' no longer sets the context ' +
+          'set\'s display name; add \'displayName:\' to catalog.yaml, or run ' +
+          'kcmd pull.',
+      'Warning: the bundle root\'s \'description\' no longer sets the ' +
+          'context set\'s description; add \'description:\' to catalog.yaml, ' +
+          'or run kcmd pull.',
+    ]);
+
+    warn.mockClear();
+    fs.writeFileSync(
+        'catalog.yaml', OKF_SCOPE + 'displayName: Shop\ndescription: d\n');
+    expect(await commands.push({})).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  test('init without --pull leaves the keys unset and reads nothing more',
+       async () => {
+         fs.rmSync('bundle', {recursive: true, force: true});
+         const pull = spyOn(kcmd.CatalogSync.prototype, 'pull');
+         expect(await commands.init({
+           format: 'okf',
+           entryGroup: 'test-project.us.commerce_eg',
+           pull: false,
+         })).toBe(0);
+         expect(pull).not.toHaveBeenCalled();
+         expect(readContextSetMetadata('catalog.yaml')).toEqual({});
+         // The one read is init's own check that the entry group exists.
+         expect(events.filter(e => e === 'getEntryGroup')).toHaveLength(1);
+       });
+
   test('init of an existing context set sets the keys', async () => {
     fs.rmSync('bundle', {recursive: true, force: true});
     spyOn(kcmd.CatalogSync.prototype, 'pull')

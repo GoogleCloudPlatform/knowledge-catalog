@@ -110,11 +110,18 @@ export interface EntryGroupCoordinates {
   container: string;
 }
 
+// The scope types backed by an entry group, whose coordinates
+// entryGroupCoordinates gives.
+export const ENTRY_GROUP_SCOPES: readonly string[] =
+    [Sources.ENTRYGROUP, Sources.KB, Sources.SEMANTIC_MODEL];
+
 /** Validates and extracts `<project>.<location>.<entryGroup>` coordinates. */
 export function entryGroupCoordinates(source: CatalogSource): EntryGroupCoordinates {
-  if (source.type && source.type !== Sources.ENTRYGROUP && source.type !== Sources.KB) {
+  if (source.type && !ENTRY_GROUP_SCOPES.includes(source.type)) {
     throw new Error(
-        `OKF layout applies only to '${Sources.ENTRYGROUP}' and '${Sources.KB}' scopes, got '${source.type}'.`);
+        `Entry group coordinates apply only to ${
+            ENTRY_GROUP_SCOPES.map(s => `'${s}'`).join(', ')} scopes, got '${
+            source.type}'.`);
   }
   const project = source.project ?? source.name.split('.')[0];
   const location = source.location ?? source.name.split('.')[1];

@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import {entryGroupOf, manifestMetadataErrors, MAX_DESCRIPTION_LENGTH, MAX_DISPLAY_NAME_LENGTH, metadataErrors, metadataOfEntryGroup, metadataUpdate, pullContextSetMetadata, pushContextSetMetadata, readContextSetMetadata, writeContextSetMetadata} from '../../src/libts/context_set';
+import {contextSetOf, MAX_DESCRIPTION_LENGTH, MAX_DISPLAY_NAME_LENGTH, metadataErrors, metadataOfEntryGroup, metadataScopeError, metadataUpdate, pullContextSetMetadata, pushContextSetMetadata, readContextSetMetadata, writeContextSetMetadata} from '../../src/libts/context_set';
 import {ApiContext} from '../../src/libts/gcp/context';
 import {CatalogClient} from '../../src/libts/gcp/dataplex';
 import {CatalogManifest} from '../../src/libts/manifest';
@@ -56,33 +56,31 @@ function fakeCatalog(
 
 
 describe('which scopes take the keys', () => {
+  // A source of scope type `type` and name `name`, as catalog.yaml names it.
+  const source = (type: string, name: string) => ({type, name}) as any;
+
   test('entry group, knowledge base and semantic-model scopes', () => {
-    expect(entryGroupOf('entryGroup', 'p.us.sales')).toEqual(REF);
-    expect(entryGroupOf('kb', 'p.us.sales')).toEqual(REF);
-    expect(entryGroupOf('semantic-model', 'p.us.sales')).toEqual(REF);
-    expect(entryGroupOf('bq-dataset', 'p.d')).toBeUndefined();
-    expect(entryGroupOf('entryGroup', 'p.us')).toBeUndefined();
+    expect(contextSetOf(source('entryGroup', 'p.us.sales')))
+        .toEqual(expect.objectContaining(REF));
+    expect(contextSetOf(source('kb', 'p.us.sales')))
+        .toEqual(expect.objectContaining(REF));
+    expect(contextSetOf(source('semantic-model', 'p.us.sales')))
+        .toEqual(expect.objectContaining(REF));
+    expect(contextSetOf(source('bq-dataset', 'p.d'))).toBeUndefined();
   });
 
-  test('a BigQuery dataset scope and a value that is not a string are refused',
-       () => {
-         expect(manifestMetadataErrors({scope: 'semantic-model.p.us.s'}))
-             .toEqual([]);
-         expect(manifestMetadataErrors(
-                    {scope: 'semantic-model.p.us.s', description: 'd'}))
-             .toEqual([]);
-         expect(manifestMetadataErrors(
-                    {scope: 'bq-dataset.p.d', displayName: 'n'}))
-             .toEqual([expect.stringContaining(
-                 '\'displayName\' apply only to scopes backed by an entry group')]);
-         expect(manifestMetadataErrors(
-                    {scope: ['bq-dataset.p.d1', 'bq-dataset.p.d2'],
-                     description: 'd'}))
-             .toHaveLength(1);
-         expect(manifestMetadataErrors(
-                    {scope: 'entryGroup.p.us.s', description: 42}))
-             .toEqual(['Manifest error: \'description\' must be a string.']);
-       });
+  test('a BigQuery dataset scope or a list of scopes refuses the keys', () => {
+    expect(metadataScopeError('semantic-model.p.us.s', ['description']))
+        .toBeUndefined();
+    expect(metadataScopeError('bq-dataset.p.d', [])).toBeUndefined();
+    expect(metadataScopeError('bq-dataset.p.d', ['displayName']))
+        .toContain(
+            '\'displayName\' apply only to scopes backed by an entry group');
+    expect(metadataScopeError(
+               ['bq-dataset.p.d1', 'bq-dataset.p.d2'],
+               ['displayName', 'description']))
+        .toContain('\'displayName\' and \'description\' apply only');
+  });
 });
 
 
@@ -276,6 +274,13 @@ describe('CatalogManifest', () => {
   test('a workspace without the keys has none', async () => {
     fs.writeFileSync(manifest, 'scope: semantic-model.p.us.sales\n');
     expect((await CatalogManifest.load(manifest, ctx)).contextSet).toEqual({});
+  });
+
+  test('a value that is not a string does not load', async () => {
+    fs.writeFileSync(
+        manifest, 'scope: semantic-model.p.us.sales\ndisplayName: 42\n');
+    await expect(CatalogManifest.load(manifest, ctx))
+        .rejects.toThrow('Manifest error');
   });
 
   test('refuses the keys in a BigQuery dataset scope, before any call',
