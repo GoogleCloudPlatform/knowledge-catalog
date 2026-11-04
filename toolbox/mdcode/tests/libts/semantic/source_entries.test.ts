@@ -11,7 +11,7 @@ import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import {Entity, ProfileSpec} from '../../../src/libts/semantic/ir';
 import {sourceEntryErrors, SourceReaders} from '../../../src/libts/semantic/source_entries';
-import {entryDenied, FEDERATED_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
+import {entryDenied, entryInvalid, FEDERATED_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
 
 const BIGQUERY = `bigquery.googleapis.com/projects/${P}/datasets/kcmd_demo/tables/orders`;
 const BIGLAKE = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-src-biglake-57138/namespaces/sales/tables/orders`;
@@ -184,6 +184,8 @@ describe('sourceEntryErrors', () => {
   const CONFIG_DENIED = spannerDenied('spanner.instanceConfigs.get', NAM3_INSTANCE.config);
   // The loader accepts this table ID; BigQuery rejects it.
   const BIGQUERY_INVALID = BIGQUERY.replace(/orders$/, 'orders!x');
+  const ALLOYDB_LOOKUP = lookup('alloydb', 'us-east4', ALLOYDB);
+  const ENTRY_INVALID = entryInvalid(ALLOYDB_LOOKUP.split(' ')[3]);
   // [label, source, the read that fails, its answer, the message]
   const FAILED_READS: Array<[string, string, string, ApiResult<any>|Error, string]> = [
     // A missing table or dataset, catalog or instance answers 404.
@@ -204,13 +206,17 @@ describe('sourceEntryErrors', () => {
     ['an instance config that fails', SPANNER_NAM3,
      `getInstanceConfig ${NAM3_INSTANCE.config}`, {status: 503, message: 'unavailable'},
      couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} failed (HTTP 503: unavailable).`)],
-    ['a lookup that throws', ALLOYDB, lookup('alloydb', 'us-east4', ALLOYDB),
+    ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,
      new Error('socket hang up'),
      couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],
     ['an invalid table ID', BIGQUERY_INVALID, `getTable ${P} kcmd_demo orders!x`,
      INVALID_TABLE_ID,
      `${at(BIGQUERY_INVALID)} could not be checked: reading table '${P}.kcmd_demo.orders!x' ` +
          `failed (HTTP 400: ${INVALID_TABLE_ID.message}). Fix the source, or pass ` +
+         `--skip-source-check.`],
+    ['a lookup that answers 400', ALLOYDB, ALLOYDB_LOOKUP, ENTRY_INVALID,
+     `${at(ALLOYDB)} could not be checked: looking up its Knowledge Catalog entry ` +
+         `failed (HTTP 400: ${ENTRY_INVALID.message}). Fix the source, or pass ` +
          `--skip-source-check.`],
     // The services have always given these fields; the guards keep an answer
     // without one from crashing the push.

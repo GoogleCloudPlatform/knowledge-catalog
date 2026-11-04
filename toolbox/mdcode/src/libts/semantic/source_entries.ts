@@ -228,7 +228,7 @@ async function readLocation<T>(
 // replicas come. A regional or federated catalog lists one replica with no
 // state.
 //
-// After a failover, a table's entry stays in the region that was the
+// After a failover, a table's entry stays only in the region that was the
 // catalog's primary when the table was created, until the table is next
 // written; for a few seconds during a failover the new primary reads
 // STATE_PRIMARY_IN_PROGRESS, so no replica is STATE_PRIMARY (from review on

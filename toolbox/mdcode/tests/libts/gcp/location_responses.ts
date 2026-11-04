@@ -130,3 +130,11 @@ export function entryDenied(name: string) {
     message: `Permission denied on resource \`${name}\` (or it may not exist).`,
   };
 }
+
+// Knowledge Catalog's lookupEntry answer for the malformed entry `name`
+// (live in kc-looker-external, us-east4, 2026-11-04: for entry `` and `  `
+// it answered 400 INVALID_ARGUMENT; the message is the body's
+// `error.message`).
+export function entryInvalid(name: string) {
+  return {status: 400, message: `Invalid \`Entry\` resource name \`${name}\`.`};
+}
