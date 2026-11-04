@@ -261,15 +261,14 @@ describe('conversion, strict mode, and translation', () => {
           "field 'orders.order_id'", "metric 'total_orders'", "metric 'total_orders'",
           "field 'orders.order_id'",
         ]);
-        // On a Spanner table, the vendor field gets push's error alone.
+        // On a Spanner table, whose dialect import does not read, the vendor
+        // field warns and the metric's double-quoted names do not.
         const onSpanner = await importSemanticModelYaml(
             raw.replace(BQ_TABLE, SPANNER_TABLE), {strict: true});
-        expect(onSpanner.errors).toEqual([
-          "field 'orders.order_id' in model 'retail' (retail) has no expression for SPANNER " +
-              "or ANSI_SQL, and the model file binds entity 'orders' to a SPANNER source.",
-        ]);
-        expect(onSpanner.warnings.map(w => w.split(/:| in /)[0])).toEqual([
-          "metric 'total_orders'", "metric 'total_orders'",
+        expect(onSpanner.errors).toEqual([]);
+        expect(onSpanner.warnings).toEqual([
+          "field 'orders.order_id': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the " +
+              "Spanner table of entity 'orders' cannot run it",
         ]);
         expect(onStrictRes.ok).toBe(true);
         expect(onStrictRes.warnings).toEqual([
@@ -632,8 +631,7 @@ describe('profile checks', () => {
     ['warns about a double-quoted name in a profile\'s metric',
      model(`    metrics:\n      - {name: total, entity: orders, expression: 'COUNT("Order Amount")'}\n`,
            SPANNER_TABLE), pg(KEYED), [],
-     [`metric 'total': ${READS('Spanner', 'SPANNER', true)}`,
-      `profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', true)}`]],
+     [`profile 'pg': [sales] metric 'total': ${READS('BigQuery', 'BIGQUERY', true)}`]],
     ['reports a model field with no text for its table',
      model(AMOUNT('{dialects: [{dialect: SNOWFLAKE, expression: amount}]}')), [],
      ["field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
@@ -674,6 +672,24 @@ describe('profile checks', () => {
         input, {...strict, flavor: 'google', profileFiles});
     expect(res.errors).toEqual(errors);
     expect(res.warnings).toEqual(warnings);
+  });
+
+  // Import does not read a Spanner database's dialect, which push reads, so a
+  // Spanner table's field needs a text in either dialect or in ANSI_SQL.
+  test('holds a field on a Spanner table to no one dialect, in either input mode', async () => {
+    for (const input of [{}, strict]) {
+      for (const dialect of ['POSTGRES', 'SPANNER', 'SNOWFLAKE']) {
+        const res = await importSemanticModelYaml(
+            model(AMOUNT(`{dialects: [{dialect: ${dialect}, expression: amount}]}`),
+                  SPANNER_TABLE),
+            {...input, flavor: 'google'});
+        expect({dialect, errors: res.errors, warnings: res.warnings}).toEqual({
+          dialect, errors: [], warnings: dialect !== 'SNOWFLAKE' ? [] :
+              ["field 'orders.amount': no 'SPANNER', 'POSTGRES' or 'ANSI_SQL' dialect, so the " +
+               "Spanner table of entity 'orders' cannot run it"],
+        });
+      }
+    }
   });
 
   test('suggests no import for a field its own --transpile leaves untranslated', async () => {

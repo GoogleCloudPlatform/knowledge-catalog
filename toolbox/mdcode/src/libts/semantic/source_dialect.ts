@@ -60,17 +60,19 @@ export interface SourceDialects {
 type Dialect = {dialect: string; database?: string}|{error: string};
 
 // Looks up, once each and in parallel, the dialect of every Cloud SQL and
-// third-party table the files `texts` write (see sourcesToLookUp), and with
-// `spanner` of every Spanner database they name. `thirdParty: false` skips
-// third-party tables. Never throws: a failed lookup goes to `errors`.
+// third-party table the files `texts` write (see sourcesToLookUp), and of every
+// Spanner database they name. Without `spanner`, a Spanner database gives
+// SPANNER, the dialect kcmd's Spanner store speaks, with no call.
+// `thirdParty: false` skips third-party tables. Never throws: a failed lookup
+// goes to `errors`.
 export async function sourceDialects(
     texts: Iterable<string>, catalog: EntryLookup,
     {thirdParty = true, spanner}: {
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
-  // Keyed as dialectLookupKey or spannerDatabaseOf gives, so both spellings of
-  // one table, and the tables of one Spanner database, are one lookup. A
-  // database's lookup names the first of its tables.
+  // Keyed as dialectLookupKey gives, so both spellings of one table, and the
+  // tables of one Spanner database, are one lookup. A database's lookup names
+  // the first of its tables.
   const lookups = new Map<string, () => Promise<Dialect>>();
   for (const source of sourcesToLookUp(texts)) {
     const table = cloudSqlTableOf(source);
@@ -79,9 +81,12 @@ export async function sourceDialects(
     }
     const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
     if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
-    const database = spanner && spannerDatabaseOf(source);
+    const database = spannerDatabaseOf(source);
     if (database && !lookups.has(database)) {
-      lookups.set(database, () => spannerDialect(spanner, database, source));
+      lookups.set(
+          database,
+          spanner ? () => spannerDialect(spanner, database, source) :
+                    async () => ({dialect: 'SPANNER'}));
     }
   }
   const dialects = new Map<string, string>();

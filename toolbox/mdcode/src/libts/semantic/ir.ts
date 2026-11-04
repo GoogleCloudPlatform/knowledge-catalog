@@ -108,7 +108,7 @@ export interface Entity {
   // target's addressing scheme.
   dataSource: string;
   authoredSource?: string;  // the source string as typed
-  // The dialect a lookup read for this entity's source: a Cloud SQL or
+  // The dialect a lookup gave for this entity's source: a Cloud SQL or
   // third-party table's from its Knowledge Catalog entry, a Spanner table's
   // from its database. Set only when the load was given those dialects
   // (LoadOptions.sourceDialects).

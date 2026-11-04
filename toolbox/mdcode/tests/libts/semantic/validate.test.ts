@@ -4,7 +4,7 @@
 import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
-import {listed, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
+import {listed, LoadedModel, LoadOptions, loadModels} from '../../../src/libts/semantic/loader';
 import {applyProfile, applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
 import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
@@ -2795,9 +2795,9 @@ describe('push checks names and description lengths', () => {
 });
 
 // Loads model `name` from the YAML of its lists, with bindings optional.
-const loadOne = (name: string, lists: string) => loadModels(
+const loadOne = (name: string, lists: string, opts: LoadOptions = {}) => loadModels(
     `version: "0.2.0.dev0/google"\nsemantic_model:\n  - name: ${name}\n${lists}`,
-    {bindingOptional: true}).models[0];
+    {bindingOptional: true, ...opts}).models[0];
 const BQ_TABLE = (t: string) =>
     `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 // One target of each engine.
@@ -3413,11 +3413,13 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
 });
 
 describe('validateInlineDialects', () => {
-  const SPANNER_TABLE =
-      'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/t';
+  const SPANNER_DB = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const SPANNER_TABLE = `${SPANNER_DB}/tables/t`;
   // A model whose entity `e` reads `source` and has field `f` with
-  // `expression`, written as YAML. `extra` is the YAML of more entities.
-  const withField = (source: string, expression: string, extra = '') =>
+  // `expression`, written as YAML. `extra` is the YAML of more entities. The
+  // load has the dialect a lookup gave the Spanner database, or none.
+  const withField = (source: string, expression: string, extra = '',
+                     spanner: string|null = 'SPANNER') =>
       loadOne('m', `    entities:
       - name: e
         source: ${source}
@@ -3425,7 +3427,7 @@ describe('validateInlineDialects', () => {
         fields:
           - { name: id, expression: id }
           - { name: f, expression: ${expression} }
-${extra}`);
+${extra}`, spanner ? {sourceDialects: new Map([[SPANNER_DB, spanner]])} : {});
   const dialects = (...entries: string[]) =>
       `{ dialects: [${entries.map(e => `{ dialect: ${e}, expression: x }`)}] }`;
   const check = (m: SemanticModel) => validateInlineDialects(m, 'doc');
@@ -3475,6 +3477,11 @@ ${extra}`);
       expect({source, expression, extra, errors: actual})
           .toEqual({source, expression, extra, errors});
     }
+    // A Spanner table takes its database's dialect, and one no lookup read, as
+    // in kcmd import, is not judged.
+    expect(check(withField(SPANNER_TABLE, dialects('SPANNER'), '', 'POSTGRES')))
+        .toEqual([MISSING('e', 'POSTGRES')]);
+    expect(check(withField(SPANNER_TABLE, bigQueryText, '', null))).toEqual([]);
     // An unsupported dialect on an in-memory model is not translated.
     const unsupported = withField(BQ_TABLE('t'), dialects('SNOWFLAKE'));
     unsupported.entities[0].fields[1] = {

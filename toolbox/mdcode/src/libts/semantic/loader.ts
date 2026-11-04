@@ -39,18 +39,17 @@ export interface LoadOptions {
   // they are migrated (b/568184815, b/568186042): accepts bare table names and
   // the legacy `deployment_target:` key.
   allowLegacyBareSource?: boolean;
-  // The dialects sourceDialects read before the load: each Cloud SQL and
-  // third-party table's, keyed as dialectLookupKey gives, and each Spanner
-  // database's, keyed by its resource name. Without this map a Cloud SQL or
-  // third-party source implies no dialect, as dialectOfSources describes, and
-  // a Spanner source implies SPANNER.
+  // The dialects sourceDialects found before the load, keyed as
+  // dialectLookupKey gives: each Cloud SQL and third-party table's, and each
+  // Spanner database's. Without this map such a source implies no dialect, as
+  // dialectOfSources describes.
   sourceDialects?: ReadonlyMap<string, string>;
   // Turns `parseSource`'s rejection of an unaccepted table source form into a
   // warning so a caller can load a document whose sources have not all been
   // repointed yet.
   warnUnacceptedSource?: boolean;
   // The caller rejects a field its own table cannot run, as push does for a
-  // model file, so the load gives no warning for it. A Cloud SQL or
+  // model file, so the load gives no warning for it. A Cloud SQL, Spanner or
   // third-party table no lookup has read keeps the warning, since the caller
   // does not check it.
   fieldTextChecked?: boolean;
@@ -2028,7 +2027,7 @@ function runsDialect(
 // The warning `item` gives on `table`, the table of `entity`:
 // expressionWarning's when the load knows the table's dialect, or one saying
 // the table has no text to run. With `profiled`, the second is given only on a
-// Cloud SQL or third-party table no lookup has read. On a table of the
+// Cloud SQL, Spanner or third-party table no lookup has read. On a table of the
 // `preferred` dialect, expressionWarning's transpilation warning already says
 // so.
 function tableWarning(
@@ -3104,8 +3103,8 @@ function pickDialect(
 interface ParsedSource {
   dataSource: string;
   authoredSource: string;
-  // The looked-up dialect of a Cloud SQL or third-party table, when the load
-  // has it.
+  // The looked-up dialect of a Cloud SQL, Spanner or third-party table, when
+  // the load has it.
   sourceDialect?: string;
 }
 
@@ -3632,16 +3631,15 @@ export function bindsThirdPartyTable(
 }
 
 // The key LoadOptions.sourceDialects holds a source's dialect under: a Cloud
-// SQL table's resource name, or a third-party table's entry name. Undefined
-// for a source whose own name gives its dialect.
+// SQL table's resource name, a third-party table's entry name, or a Spanner
+// table's database. Undefined for a source whose own name gives its dialect.
 export function dialectLookupKey(source: string): string|undefined {
   return cloudSqlTableOf(source)?.resourceName ??
-      thirdPartyEntryOf(source)?.name;
+      thirdPartyEntryOf(source)?.name ?? spannerDatabaseOf(source);
 }
 
-// The resource name of the database the Spanner table `source` is in, which
-// keys its dialect in LoadOptions.sourceDialects. Undefined for any other
-// source and for a name with quotes.
+// The resource name of the database the Spanner table `source` is in.
+// Undefined for any other source and for a name with quotes.
 export function spannerDatabaseOf(source: string): string|undefined {
   const uri = asResourceUri(source.trim());
   return !QUOTE.test(uri) && SPANNER_TABLE_URI.test(uri) ?
@@ -3744,7 +3742,7 @@ export function parseSource(
   const problem = oldSourceForm(trimmed);
   // The accepted forms: a GCP resource name, or a third-party entry name.
   if (problem === undefined && isAcceptedSource(trimmed)) {
-    const key = dialectLookupKey(trimmed) ?? spannerDatabaseOf(trimmed);
+    const key = dialectLookupKey(trimmed);
     const sourceDialect = key && opts.sourceDialects?.get(key);
     return {
       authoredSource: trimmed,

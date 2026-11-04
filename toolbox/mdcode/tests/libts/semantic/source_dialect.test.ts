@@ -135,7 +135,7 @@ describe('sourceDialects', () => {
     ]);
   });
 
-  test('reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER', async () => {
+  test('reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER, and gives SPANNER with no client', async () => {
     const calls: string[] = [];
     const spanner = {async getDatabase(project: string, instance: string, database: string) {
       calls.push(`${project}/${instance}/${database}`);
@@ -148,6 +148,8 @@ describe('sourceDialects', () => {
     expect({dialects, errors}).toEqual({errors: [], dialects: new Map([
       [`${SPANNER}/pg`, 'POSTGRES'], [`${SPANNER}/gsql`, 'SPANNER'], [`${SPANNER}/old`, 'SPANNER']])});
     expect(calls.sort()).toEqual(['acme/ops/gsql', 'acme/ops/old', 'acme/ops/pg']);
+    expect((await sourceDialects(files, fakeCatalog({}).catalog)).dialects).toEqual(new Map(
+        ['pg', 'gsql', 'old'].map(db => [`${SPANNER}/${db}`, 'SPANNER'])));
   });
 
   test('the catalog client provides the lookup', () => {

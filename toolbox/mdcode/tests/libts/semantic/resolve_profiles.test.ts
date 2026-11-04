@@ -2801,10 +2801,12 @@ semantic_model:
 
 describe('profile completeness: dialects and struct paths', () => {
   const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
-  const SP = (t: string) =>
-      `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+  const SP_DB = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const SP = (t: string) => `${SP_DB}/tables/${t}`;
   // The IR keeps a Spanner table as its resource URI.
   const SP_DATA = (t: string) => `//${SP(t)}`;
+  // The dialect push reads for database db.
+  const READ = {sourceDialects: new Map([[SP_DB, 'SPANNER']])};
   const shop = (amount: object): SemanticModel => ({
     name: 'shop',
     entities: [{
@@ -2868,12 +2870,14 @@ describe('profile completeness: dialects and struct paths', () => {
 
   // Every bound field has a text its profile's database can run.
   test('a bound field needs an expression for the profile\'s dialect or ANSI_SQL', () => {
-    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders'))).join('\n'))
+    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')), [], READ).join('\n'))
         .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
     expect(validateProfileCompleteness(bqOnly(), atSource(BQ('orders_prod')))).toEqual([]);
     const ansi = shop(
         {expression: 'orders.id', dialects: [{dialect: 'ANSI_SQL', expression: 'orders.id'}]});
-    expect(validateProfileCompleteness(ansi, atSource(SP('Orders')))).toEqual([]);
+    expect(validateProfileCompleteness(ansi, atSource(SP('Orders')), [], READ)).toEqual([]);
+    // Without the lookup, as in kcmd import, a Spanner table is not judged.
+    expect(validateProfileCompleteness(bqOnly(), atSource(SP('Orders')))).toEqual([]);
   });
 
   test('a field the profile rebinds needs a text for the profile\'s dialect too', () => {
@@ -2964,18 +2968,20 @@ semantic_model:
                   importedExpression: 'orders.a', importedDialect: 'SPANNER'}],
       }],
       relationships: [],
-    }).join('\n');
+    }, [], READ).join('\n');
     expect(excluding('a')).toContain("field 'orders.x' depends on 'orders.a'");
     expect(excluding('b')).not.toContain("field 'orders.x'");
   });
 
-  // A source written as a GCP resource name implies its system's dialect and
-  // counts as its database for the one-database rule.
+  // A source written as a GCP resource name counts as its database for the
+  // one-database rule. A Spanner table takes the dialect its database's lookup
+  // gave, and has none without one.
   test('a source written as a resource name implies its dialect and database', () => {
-    expect(sourcesDialect({entities: [
-      {name: 'orders', dataSource: SP_DATA('Orders'), authoredSource: SP('Orders'),
-       keys: [], fields: []},
-    ]} as any)).toBe('SPANNER');
+    const orders = {name: 'orders', dataSource: SP_DATA('Orders'),
+                    authoredSource: SP('Orders'), keys: [], fields: []};
+    expect(sourcesDialect({entities: [orders]} as any)).toBeNull();
+    expect(sourcesDialect({entities: [{...orders, sourceDialect: 'POSTGRES'}]} as any))
+        .toBe('POSTGRES');
     expect(validateProfileCompleteness(bqOnly(), atSource(BQ('orders_prod'))))
         .toEqual([]);
 
@@ -3036,7 +3042,7 @@ semantic_model:
       name: 'shop',
       entities: [
         {name: 'orders', dataSource: `//${SP2('db1', 'Orders')}`,
-         authoredSource: SP2('db1', 'Orders'), keys: ['id'],
+         authoredSource: SP2('db1', 'Orders'), sourceDialect: 'SPANNER', keys: ['id'],
          fields: [
            {name: 'id', expression: 'id'},
            {name: 'gross', expression: 'g'},
@@ -3046,7 +3052,7 @@ semantic_model:
                        {dialect: 'POSTGRES', expression: 'orders.gross - orders.tax'}]},
          ]},
         {name: 'items', dataSource: `//${SP2('db2', 'Items')}`,
-         authoredSource: SP2('db2', 'Items'), keys: ['id'],
+         authoredSource: SP2('db2', 'Items'), sourceDialect: 'SPANNER', keys: ['id'],
          fields: [{name: 'id', expression: 'id'}]},
       ],
       relationships: [], metrics: [],
@@ -3071,7 +3077,7 @@ semantic_model:
     const errors = validateProfileCompleteness(model, {
       name: 'p', entities: [{name: 'customer', source: SP('Customer')}],
       relationships: [],
-    }).join('\n');
+    }, [], READ).join('\n');
     expect(errors).toContain("entity 'orders' has no source in this profile");
     expect(errors).toContain(
         "field 'customer.id' has no expression for SPANNER or ANSI_SQL");
@@ -3201,7 +3207,7 @@ semantic_model:
       name: 'shop',
       entities: [{
         name: 'orders', dataSource: SP_DATA('Orders'), authoredSource: SP('Orders'),
-        keys: ['id'],
+        sourceDialect: 'SPANNER', keys: ['id'],
         fields: [
           {name: 'id', expression: 'id'},
           {name: 'code'},
@@ -3241,7 +3247,7 @@ semantic_model:
       entities: [{...keyedById('orders', source, column('amount', 'amt')), fieldsExclude: ['tax']}],
       relationships: [],
     });
-    expect(validateProfileCompleteness(model(), excludingTax(SP('Orders'))))
+    expect(validateProfileCompleteness(model(), excludingTax(SP('Orders')), [], READ))
         .toEqual([]);
     expect(validateProfileCompleteness(model(), excludingTax(BQ('orders_prod')))
                .join('\n'))
@@ -3265,10 +3271,10 @@ semantic_model:
 `).models[0];
     expect(validateProfileCompleteness(
                loaded('{dialects: [{dialect: BIGQUERY, expression: orders.id}]}'),
-               atSource(SP('Orders')))
+               atSource(SP('Orders')), [], READ)
                .join('\n'))
         .toContain("field 'orders.amount' has no expression for SPANNER or ANSI_SQL");
-    expect(validateProfileCompleteness(loaded('orders.id'), atSource(SP('Orders'))))
+    expect(validateProfileCompleteness(loaded('orders.id'), atSource(SP('Orders')), [], READ))
         .toEqual([]);
   });
 
@@ -3744,8 +3750,8 @@ describe('what applying a profile keeps and replaces', () => {
 // The options b/568184633 uses: the warnings the profile's values give, and
 // the dialect a profile's texts are picked for.
 describe('applyProfile options', () => {
-  const SP = (t: string) =>
-      `spanner.googleapis.com/projects/p/instances/i/databases/db/tables/${t}`;
+  const SP_DB = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const SP = (t: string) => `${SP_DB}/tables/${t}`;
   const BQ = (t: string) => `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
   const base = (): SemanticModel => ({
     name: 'shop',
@@ -3770,7 +3776,9 @@ describe('applyProfile options', () => {
     quoted.metrics!.push(
         {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
     const onSpanner: string[] = [];
-    applyProfile(quoted, rebind(SP('Orders')), {warnings: onSpanner});
+    applyProfile(quoted, rebind(SP('Orders')), {
+      warnings: onSpanner, load: {sourceDialects: new Map([[SP_DB, 'SPANNER']])},
+    });
     expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
     expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
     expect(onSpanner).toContain(

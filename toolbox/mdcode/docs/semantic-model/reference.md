@@ -136,9 +136,9 @@ stay with push: whether a profile's tables in one Cloud SQL instance or one
 third-party system are in one database, whether a field has SQL in its table's
 dialect, and what an `ANSI_SQL` text reads when every table of the model file or
 profile is such a table. Import does not read a Spanner database's dialect
-either. It judges every Spanner table as `SPANNER`, so on a PostgreSQL-dialect
-database its dialect checks can differ from push's, and it does not refuse a
-Spanner deployment there. Nothing is written
+either, so it treats a Spanner table the same way, and push alone refuses a
+Spanner deployment on a PostgreSQL-dialect database.
+Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
 lines, quoting, indentation and line endings. Comments on anything import

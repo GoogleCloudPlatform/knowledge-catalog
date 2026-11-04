@@ -30,7 +30,7 @@
 import * as yaml from 'yaml';
 
 import {Action, coversKey, Entity, expressionForDialect, Field, FIELD_BINDING_KEYS, isFieldBound, Metric, ProfileEntityBinding, ProfileRelationshipBinding, ProfileSpec, Relationship, SemanticModel, SqlDialect} from './ir';
-import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, thirdPartyEntryOf, writtenSource} from './loader';
+import {cloudSqlTableOf, databaseOf, DEFAULT_DIALECT, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, dialectLookupKey, entityAndMetricWarnings, expressionDocOf, GOOGLE_VERSION, googleBlockProfiles, inferMetricEntities, inheritedNoSqlProblems, joinLengthMessage, LoadOptions, loadSemanticModels, noSqlReason, OSSIE_VERSION, parseExecutor, parseFieldBinding, parseFieldExpression, parseSource, readFieldExpression, SemanticModelError, spannerDatabaseOf, thirdPartyEntryOf, writtenSource} from './loader';
 import {qualifierCaseError} from './names';
 import {declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, selfReferenceMessage} from './sql_expr_utils';
@@ -1333,8 +1333,9 @@ export interface TableDialects {
 }
 
 // The table of `entity`, or undefined when the load does not know its
-// dialect. With `withUnread`, a Cloud SQL or third-party table no lookup has
-// read is given too, and a Cloud SQL name with no schema gives MySQL.
+// dialect. With `withUnread`, a Cloud SQL, Spanner or third-party table no
+// lookup has read is given too, and a Cloud SQL name with no schema gives
+// MySQL.
 export function tableDialects(
     entity: Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>,
     withUnread: boolean): TableDialects|undefined {
@@ -1354,6 +1355,9 @@ export function tableDialects(
   if (thirdPartyEntryOf(source)) {
     const dialects = [...DIALECT_OF_FQN_PREFIX.values()];
     return {name: 'third-party', dialects, unread: true};
+  }
+  if (spannerDatabaseOf(source)) {
+    return {name: 'Spanner', dialects: ['SPANNER', 'POSTGRES'], unread: true};
   }
   return undefined;
 }
@@ -1426,13 +1430,12 @@ export function sourcesDialect(model: {
 // A three-part dotted name, which is how the loader completes a legacy bare
 // name, names BigQuery.
 //
-// A Cloud SQL table written as its resource name, and a third-party table,
-// imply the dialect their catalog entry gives, and a Spanner table the dialect
-// its database gives, which a lookup read into `lookedUp`
-// (LoadOptions.sourceDialects). When every source is a Cloud SQL or
-// third-party table and none was looked up, as in `kcmd import`, the dialect
-// is null: how their database reads an ANSI_SQL text is not known, so a check
-// reads no such text.
+// A Cloud SQL table written as its resource name, a third-party table and a
+// Spanner table imply the dialect a lookup gave in `lookedUp`
+// (LoadOptions.sourceDialects): the one their catalog entry or Spanner
+// database gives. When every source is such a table and none was looked up,
+// as in `kcmd import`, the dialect is null: how their database reads an
+// ANSI_SQL text is not known, so a check reads no such text.
 function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
     string|null|undefined {
   if (sources.length &&
@@ -1445,7 +1448,7 @@ function dialectOfSources(sources: Array<{source: string; lookedUp?: string}>):
     const db = databaseOf(s) ??
         (/^[^./:\s`]+\.[^./:\s`]+\.[^./:\s`]+$/.test(s) ? 'bigquery' :
                                                          undefined);
-    return db ? lookedUp ?? DIALECT_OF_SYSTEM[db.split('/')[0]] : undefined;
+    return db ? DIALECT_OF_SYSTEM[db.split('/')[0]] : undefined;
   }));
   if (dialects.size !== 1) return undefined;
   return [...dialects][0];
