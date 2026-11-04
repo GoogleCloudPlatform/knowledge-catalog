@@ -23,6 +23,11 @@ const TWO_DATABASES =
     "model 'commerce' (commerce) binds entities in more than one Spanner " +
     "database ('Customer', 'Order'); bind the model file's entities to " +
     'tables in one Spanner database.';
+const REFUSAL =
+    "[commerce] deployment 'd': database test-project/i/db has the " +
+    'PostgreSQL dialect, and Spanner creates no property graph in a ' +
+    'PostgreSQL-dialect database. Remove the deployment; push still ' +
+    'publishes the model to Knowledge Catalog.';
 
 scenarios('a Spanner database', [
   {
@@ -52,16 +57,12 @@ scenarios('a Spanner database', [
     }],
   },
   {
-    name: 'with the PostgreSQL dialect refuses a Spanner deployment before anything is written, and a push without it publishes',
+    name: 'with the PostgreSQL dialect refuses a Spanner deployment before the catalog preflight, in push and in kcmd profiles, and a push without it publishes',
     entities: [ON_SPANNER],
     deployments: [{name: 'd', target: spannerGraph('g')}],
     services: POSTGRESQL,
-    code: 1, nothingWritten: true,
-    errors: [err(
-        "[commerce] deployment 'd': database test-project/i/db has the " +
-        'PostgreSQL dialect, and Spanner creates no property graph in a ' +
-        'PostgreSQL-dialect database. Remove the deployment; push still ' +
-        'publishes the model to Knowledge Catalog.')],
+    code: 1, nothingWritten: true, events: [], errors: [err(REFUSAL)],
+    report: {code: 1, rejects: {'no profiles': [REFUSAL]}},
     then: [{deployments: [], code: 0, events: ['preflight', 'apply']}],
   },
   {

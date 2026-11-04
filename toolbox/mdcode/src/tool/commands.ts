@@ -12,7 +12,7 @@ import {BigQueryClient} from '../libts/gcp/bigquery';
 import * as context from '../libts/gcp/context';
 import * as crm from '../libts/gcp/crm';
 import * as dataplex from '../libts/gcp/dataplex';
-import {POSTGRESQL_DIALECT, SpannerClient} from '../libts/gcp/spanner';
+import {SpannerClient} from '../libts/gcp/spanner';
 import {OkfLayout} from '../libts/layouts/okf';
 import {fileNameOf, formatOverviewSidecar, legacyProfileDirError, legacyProfileFiles, OverviewSidecar, profileFileNamesBeside, SemanticModelLayout} from '../libts/layouts/semantic-model';
 import {readWorkspaceLayout} from '../libts/manifest';
@@ -1106,10 +1106,9 @@ async function checkBeforeWrites(
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
-// the dataset or database, refuse a PostgreSQL-dialect Spanner database, probe
-// each BigQuery source and dry-run the BigQuery DDL in the dataset's location,
-// and check each action's DML. A dataset whose location cannot be read adds a
-// warning to `warnings`.
+// the dataset or database, probe each BigQuery source and dry-run the BigQuery
+// DDL in the dataset's location, and check each action's DML. A dataset whose
+// location cannot be read adds a warning to `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
     warnings: string[]): Promise<string[]> {
@@ -1123,13 +1122,6 @@ async function liveErrors(
     if (found.status !== 200) {
       return [`${at}: database ${name} could not be read: ${
           storeMessage(found.message, found.status)}`];
-    }
-    if (found.result?.databaseDialect === POSTGRESQL_DIALECT) {
-      return [
-        `${at}: database ${name} has the PostgreSQL dialect, and Spanner ` +
-        `creates no property graph in a PostgreSQL-dialect database. Remove ` +
-        `the deployment; push still publishes the model to Knowledge Catalog.`,
-      ];
     }
     return validateSpannerActionStatements([model], spanner);
   }

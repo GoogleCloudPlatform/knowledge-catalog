@@ -2111,6 +2111,24 @@ export async function localChecks(
               document, d.profile,
               ...deploymentTableErrors(document, model, d))));
   if (tableErrors.length) return stop(tableErrors);
+  // Spanner creates no property graph in a PostgreSQL-dialect database, so a
+  // selected Spanner deployment there is refused by the dialect already read.
+  const dialectErrors = models.flatMap(
+      ({document}) => (selectedByDoc.get(document) ?? []).flatMap(d => {
+        if (d.engine !== 'spanner') return [];
+        const {project, instance, database} = d.coordinates;
+        const key = `spanner.googleapis.com/projects/${project}/instances/${
+            instance}/databases/${database}`;
+        if (load.sourceDialects?.get(key) !== 'POSTGRES') return [];
+        return ofProfile(
+            document, d.profile,
+            `[${document}] deployment '${d.name}': database ${project}/${
+                instance}/${database} has the PostgreSQL dialect, and ` +
+                `Spanner creates no property graph in a PostgreSQL-dialect ` +
+                `database. Remove the deployment; push still publishes the ` +
+                `model to Knowledge Catalog.`);
+      }));
+  if (dialectErrors.length) return stop(dialectErrors);
 
   const plans: DeploymentPlan[] = [];
   for (const base of models) {
