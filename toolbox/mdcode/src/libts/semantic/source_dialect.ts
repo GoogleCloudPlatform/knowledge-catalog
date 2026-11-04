@@ -24,9 +24,9 @@
 
 import * as yaml from 'yaml';
 
-import {POSTGRESQL_DIALECT, SpannerClient} from '../gcp/spanner';
+import type {SpannerClient} from '../gcp/spanner';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, SpannerDatabase, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {storeMessage} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
@@ -68,9 +68,9 @@ export async function sourceDialects(
     {thirdParty = true, spanner}: {
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
-  // Keyed as dialectLookupKey gives or by a Spanner database's resource name,
-  // so both spellings of one table, and the tables of one Spanner database, are
-  // one lookup. A database's lookup names the first of its tables.
+  // Keyed as dialectLookupKey or spannerDatabaseOf gives, so both spellings of
+  // one table, and the tables of one Spanner database, are one lookup. A
+  // database's lookup names the first of its tables.
   const lookups = new Map<string, () => Promise<Dialect>>();
   for (const source of sourcesToLookUp(texts)) {
     const table = cloudSqlTableOf(source);
@@ -80,10 +80,8 @@ export async function sourceDialects(
     const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
     if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
     const database = spanner && spannerDatabaseOf(source);
-    if (database && !lookups.has(database.resourceName)) {
-      lookups.set(
-          database.resourceName,
-          () => spannerDialect(spanner, database, source));
+    if (database && !lookups.has(database)) {
+      lookups.set(database, () => spannerDialect(spanner, database, source));
     }
   }
   const dialects = new Map<string, string>();
@@ -130,23 +128,23 @@ async function cloudSqlDialect(
   };
 }
 
-// The dialect of a Spanner database, which `source` names a table of, by its
-// databaseDialect.
+// The dialect of the Spanner database `database`, which `source` names a
+// table of, by its databaseDialect.
 async function spannerDialect(
-    spanner: Pick<SpannerClient, 'getDatabase'>,
-    {project, instance, database}: SpannerDatabase,
+    spanner: Pick<SpannerClient, 'getDatabase'>, database: string,
     source: string): Promise<Dialect> {
+  const [, , project, , instance, , name] = database.split('/');
   const failed = (why: string) => ({
     error: `source '${source}': kcmd reads its Spanner database's SQL ` +
         `dialect, and could not read database ${project}/${instance}/${
-               database}: ${why}`,
+               name}: ${why}`,
   });
   try {
-    const res = await spanner.getDatabase(project, instance, database);
+    const res = await spanner.getDatabase(project, instance, name);
     if (res.status !== 200) {
       return failed(storeMessage(res.message, res.status));
     }
-    const postgres = res.result?.databaseDialect === POSTGRESQL_DIALECT;
+    const postgres = res.result?.databaseDialect === 'POSTGRESQL';
     return {dialect: postgres ? 'POSTGRES' : 'SPANNER'};
   } catch (err: any) {
     return failed(err?.message ?? String(err));
