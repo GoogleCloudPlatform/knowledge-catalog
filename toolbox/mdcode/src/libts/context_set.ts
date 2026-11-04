@@ -20,7 +20,7 @@ import * as yaml from 'yaml';
 
 import * as api from './gcp/api';
 import * as dataplex from './gcp/dataplex';
-import {Sources} from './source';
+import {CatalogSource, ENTRY_GROUP_SCOPES, entryGroupCoordinates, EntryGroupCoordinates} from './source';
 
 // The limits Knowledge Catalog puts on an entry group's description and
 // display name.
@@ -32,10 +32,6 @@ export const METADATA_KEYS = ['displayName', 'description'] as const;
 export type MetadataKey = (typeof METADATA_KEYS)[number];
 
 export type ContextSetMetadata = Partial<Record<MetadataKey, string>>;
-
-// The scope types backed by an entry group, which take the keys.
-const METADATA_SCOPES: readonly string[] =
-    [Sources.ENTRYGROUP, Sources.KB, Sources.SEMANTIC_MODEL];
 
 // The labels messages use for each key.
 const LABELS: Record<MetadataKey, string> = {
@@ -50,53 +46,43 @@ const LIMITS: Record<MetadataKey, number> = {
 
 
 // The entry group a context set scope names.
-export interface EntryGroupRef {
-  project: string;
-  location: string;
-  entryGroup: string;
+export type EntryGroupRef =
+    Pick<EntryGroupCoordinates, 'project'|'location'|'entryGroup'>;
+
+
+// The entry group `source` is backed by, or undefined for a scope that has
+// none (a BigQuery dataset).
+export function contextSetOf(source: CatalogSource): EntryGroupRef|undefined {
+  return ENTRY_GROUP_SCOPES.includes(source.type) ?
+      entryGroupCoordinates(source) :
+      undefined;
 }
 
 
-// The entry group that a scope of type `type` and name `name` (as catalog.yaml
-// writes them) is backed by, or undefined when the scope has none.
-export function entryGroupOf(type: string, name: string): EntryGroupRef|
-    undefined {
-  if (!METADATA_SCOPES.includes(type)) return undefined;
-  const [project, location, entryGroup, ...rest] = name.split('.');
-  if (!project || !location || !entryGroup || rest.length) return undefined;
-  return {project, location, entryGroup};
-}
-
-
-// The problems with the keys of a parsed catalog.yaml: a key that is not a
-// string, or a key in a scope with no entry group. Lengths are checked by
-// metadataErrors, at push, so a pull can still refresh an over-long value.
-export function manifestMetadataErrors(manifest: any): string[] {
-  const errors: string[] = [];
-  const present = METADATA_KEYS.filter(k => manifest?.[k] !== undefined);
-  for (const key of present) {
-    if (typeof manifest[key] !== 'string') {
-      errors.push(`Manifest error: '${key}' must be a string.`);
-    }
-  }
-  const scope = manifest?.scope;
+// Why catalog.yaml may not hold `present` keys for `scope` (its parsed value):
+// the keys apply only to a single scope backed by an entry group. Undefined
+// when it may. The manifest schema reports it (see manifest.ts); lengths are
+// checked by metadataErrors, at push, so a pull can still refresh an
+// over-long value.
+export function metadataScopeError(
+    scope: unknown, present: readonly MetadataKey[]): string|undefined {
+  if (!present.length) return undefined;
   const type = typeof scope === 'string' ? scope.split('.')[0] : undefined;
-  if (present.length && (type === undefined || !METADATA_SCOPES.includes(type))) {
-    errors.push(
-        `Manifest error: ${present.map(k => `'${k}'`).join(' and ')} ` +
-        `apply only to scopes backed by an entry group (${
-            METADATA_SCOPES.map(s => `'${s}'`).join(', ')}).`);
-  }
-  return errors;
+  if (type !== undefined && ENTRY_GROUP_SCOPES.includes(type)) return undefined;
+  return `${present.map(k => `'${k}'`).join(' and ')} apply only to scopes ` +
+      `backed by an entry group (${
+             ENTRY_GROUP_SCOPES.map(s => `'${s}'`).join(', ')}).`;
 }
 
 
-// The keys a parsed catalog.yaml holds. A key that is not a string is left
-// out; manifestMetadataErrors reports it.
-export function metadataOfManifest(manifest: any): ContextSetMetadata {
+// The keys a parsed catalog.yaml holds as strings. Anything else, or a key
+// that is not a string, is left out; the manifest schema reports the latter.
+export function metadataOfManifest(manifest: unknown): ContextSetMetadata {
   const metadata: ContextSetMetadata = {};
+  if (typeof manifest !== 'object' || manifest === null) return metadata;
   for (const key of METADATA_KEYS) {
-    if (typeof manifest?.[key] === 'string') metadata[key] = manifest[key];
+    const value = (manifest as Record<string, unknown>)[key];
+    if (typeof value === 'string') metadata[key] = value;
   }
   return metadata;
 }

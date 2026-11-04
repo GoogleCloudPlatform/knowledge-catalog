@@ -249,8 +249,15 @@ scope: <type>.<name>              # The resources in the snapshot. Examples:
 displayName: Sales                # Optional. The context set's (entry group's) display
 description: >-                   # name and description, for a scope backed by an entry
   Orders, customers and revenue   # group (entryGroup, kb, semantic-model) in any layout.
-  for the sales team.             # `kcmd pull` sets them from the entry group; `kcmd push`
-                                  # writes a changed one back. An absent key is not managed.
+  for the sales team.             # `kcmd pull` sets them from the entry group and removes
+                                  # a key the entry group leaves unset. `kcmd push` writes
+                                  # only the keys that differ, after the entries (the last
+                                  # write wins). An absent key is not managed;
+                                  # `description: ""` clears the description. Use `>-` for
+                                  # several lines: `|` keeps a trailing newline that push
+                                  # sends. At most 1,024 characters for the description and
+                                  # 500 for the display name; push fails before any write
+                                  # when a value is longer.
 
 
 aliases:                          # Optional. Can always use 3-part fully qualified references.
