@@ -40,8 +40,10 @@
 // the entry was never looked up, so the message says which read it was, and
 // what the service said: Spanner answers 403 for a project the caller may not
 // read, whether or not the instance exists, so a 403 does not say the table
-// is missing. A read that fails another way says to try again when a retry
-// may pass (a thrown call, a 429 or a 5xx), and to fix the source otherwise.
+// is missing. A refused Spanner instance config read is the exception: the
+// entry is then looked up in each replica region the instance lists. A read
+// that fails another way says to try again when a retry may pass (a thrown
+// call, a 429 or a 5xx), and to fix the source otherwise.
 //
 // A Cloud SQL or third-party source is not looked up here: sourceDialects
 // already looks up its entry directly, and fails the push when it is missing.
@@ -199,6 +201,13 @@ const CONFIG_REFUSED_HINT = ' Reading it needs the permission ' +
     'spanner.instanceConfigs.get on the project, which roles/spanner.viewer ' +
     'includes and the Spanner database roles do not.';
 
+// Said when reading an instance is refused: a Spanner database role gives
+// spanner.instances.get only when granted on the instance or its project
+// (from review on #630, 2026-11-04).
+const INSTANCE_REFUSED_HINT = ' The Spanner database roles include ' +
+    'spanner.instances.get, but a role granted on one database does not ' +
+    'apply to its instance.';
+
 // Said when a BigLake catalog read fails in a way a retry cannot fix and the
 // other kind of catalog's API finds the catalog. The status alone does not
 // tell: live, the Hive API answers 400 for an Iceberg REST catalog id with a
@@ -211,7 +220,7 @@ const ICEBERG_FORM_HINT = ` A table in an Iceberg REST catalog is written ` +
 // The locations where `table`'s catalog entry may sit, as Dataplex writes
 // them, in lower case, in the order to look in: one for a BigQuery or AlloyDB
 // table; one for a Spanner table, or one per replica region of its instance
-// when its config cannot be read; and one per replica for a BigLake table.
+// when reading its config is refused; and one per replica for a BigLake table.
 // `cache` keeps each instance's read and each catalog's read through each
 // API, so each is made once; each table is read once already.
 async function locationsOf(
@@ -256,7 +265,8 @@ async function locationsOf(
         const what = `reading instance '${table.instance}'`;
         const instance = await readLocation(
             what, 'an instance',
-            () => readers.spanner.getInstance(project, table.instance));
+            () => readers.spanner.getInstance(project, table.instance),
+            status => status === 403 ? INSTANCE_REFUSED_HINT : '');
         if ('problem' in instance) return instance;
         const configName = instance.result.config;
         if (!configName) {
@@ -273,10 +283,9 @@ async function locationsOf(
         // The default leader's region is one of the instance's replica
         // regions, so when the config read is refused, each is looked in.
         if ('unreadable' in res && res.status === 403) {
-          const regions = [...new Set(
-              (instance.result.replicaComputeCapacity ?? [])
-                  .map(r => r.replicaSelection?.location)
-                  .filter((l): l is string => !!l))];
+          const regions = (instance.result.replicaComputeCapacity ?? [])
+                              .map(r => r.replicaSelection?.location)
+                              .filter((l): l is string => !!l);
           if (regions.length) {
             return {
               result: regions,
