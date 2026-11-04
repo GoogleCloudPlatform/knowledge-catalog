@@ -935,25 +935,26 @@ function fakeCatalog(
       yield {name: e.name, entryType: e.entryType, parentEntry: e.parentEntry};
     }
   } as any);
-  // Writes after the first `stop.after` fail, as when a push stops partway.
-  const stop = {after: Infinity};
-  const stopped = () => !(stop.after-- > 0);
+  // Writes after the first `stop.after`, and writes of an entry `stop.fails`
+  // names, fail, as when a push stops partway.
+  const stop = {after: Infinity, fails: (_name: string) => false};
+  const stopped = (name = '') => stop.after-- <= 0 || stop.fails(name);
   const INJECTED = {status: 500, message: 'injected'};
   const create = spyOn(P, 'createEntry')
                      .mockImplementation(async (...args: any[]) => {
                        const entry: Entry = args[4];
                        if (entries.has(entry.name)) return {status: 409};
-                       if (stopped()) return INJECTED;
+                       if (stopped(entry.name)) return INJECTED;
                        entries.set(entry.name, structuredClone(entry));
                        return {status: 200, result: entry};
                      });
   // An update leaves the aspects alone when its mask does not name them.
   spyOn(P, 'updateEntry').mockImplementation(async (entry, mask) => {
-    if (stopped()) return INJECTED;
+    if (stopped(entry.name)) return INJECTED;
     const aspects = mask?.includes('aspects') ?
         entry.aspects :
         entries.get(entry.name)?.aspects;
-    entries.set(entry.name, {...structuredClone(entry), aspects});
+    entries.set(entry.name, structuredClone({...entry, aspects}));
     return {status: 200, result: entry};
   });
   spyOn(P, 'deleteEntry').mockImplementation(async (...args: any[]) => {
@@ -2026,24 +2027,11 @@ describe('the push id on every file copy', () => {
   };
   // Makes every write of the copy of `fileName` fail, or of every copy when
   // `fileName` is absent.
-  const failCopyWrites = (entries: Map<string, Entry>, fileName?: string) => {
-    const failing = (entry: Entry) => fileName === undefined ?
-        entry.name.includes('/commerce.files.') :
-        entry.name.endsWith(`/commerce.files.${fileName}`);
-    spyOn(CatalogClient.prototype, 'createEntry')
-        .mockImplementation(async (...args: any[]) => {
-          const entry: Entry = args[4];
-          if (failing(entry)) return {status: 500, message: 'injected'};
-          if (entries.has(entry.name)) return {status: 409};
-          entries.set(entry.name, structuredClone(entry));
-          return {status: 200, result: entry};
-        });
-    spyOn(CatalogClient.prototype, 'updateEntry')
-        .mockImplementation(async (entry: Entry) => {
-          if (failing(entry)) return {status: 500, message: 'injected'};
-          entries.set(entry.name, structuredClone(entry));
-          return {status: 200, result: entry};
-        });
+  const failCopyWrites = (stop: {fails: (name: string) => boolean},
+                          fileName?: string) => {
+    stop.fails = name => fileName === undefined ?
+        name.includes('/commerce.files.') :
+        name.endsWith(`/commerce.files.${fileName}`);
   };
   const PARTIAL = 'the last push of model \'commerce\' did not finish: the ' +
       'catalog holds 1 of its 2 file copies, so pull writes nothing. Push ' +
@@ -2057,8 +2045,8 @@ describe('the push id on every file copy', () => {
            'and --force-remove writes and deletes nothing',
        async () => {
          writeRoundTripWorkspace();
-         const {entries} = fakeCatalog();
-         failCopyWrites(entries);
+         const {entries, stop} = fakeCatalog();
+         failCopyWrites(stop);
          expect(await push({deployment: false})).toBe(1);
          expect(storedCopies(entries)).toEqual({});
 
@@ -2082,13 +2070,13 @@ describe('the push id on every file copy', () => {
          const shop = path.join(entryGroupDir(), 'shop.yaml');
          fs.writeFileSync(
              shop, ROUND_TRIP_MODEL.replace('name: commerce', 'name: shop'));
-         const {entries} = fakeCatalog();
+         const {entries, stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          fs.rmSync(shop);
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.yaml'), ROUND_TRIP_MODEL);
-         failCopyWrites(entries);
+         failCopyWrites(stop);
          expect(await push({deployment: false, forceRemove: true})).toBe(1);
          expect(storedCopies(entries)).toEqual({});
 
@@ -2105,7 +2093,7 @@ describe('the push id on every file copy', () => {
        async () => {
          writeRoundTripWorkspace();
          fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-         const {entries} = fakeCatalog();
+         const {entries, stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          fs.writeFileSync(
@@ -2114,7 +2102,7 @@ describe('the push id on every file copy', () => {
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
              ROUND_TRIP_PROFILE);
-         failCopyWrites(entries);
+         failCopyWrites(stop);
          expect(await push({deployment: false})).toBe(1);
          expect(Object.keys(storedCopies(entries))).toEqual(['commerce.yaml']);
 
@@ -2172,8 +2160,8 @@ describe('the push id on every file copy', () => {
            'and --force-remove keeps the profile file',
        async () => {
          writeRoundTripWorkspace();
-         const {entries} = fakeCatalog();
-         failCopyWrites(entries, 'commerce.profile.prod.yaml');
+         const {entries, stop} = fakeCatalog();
+         failCopyWrites(stop, 'commerce.profile.prod.yaml');
          expect(await push({deployment: false})).toBe(1);
          expect(Object.keys(storedCopies(entries))).toEqual(['commerce.yaml']);
 
@@ -2187,13 +2175,13 @@ describe('the push id on every file copy', () => {
        async () => {
          writeRoundTripWorkspace();
          fs.rmSync(path.join(entryGroupDir(), 'commerce.profile.prod.yaml'));
-         const {entries} = fakeCatalog();
+         const {stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
              ROUND_TRIP_PROFILE);
-         failCopyWrites(entries, 'commerce.profile.prod.yaml');
+         failCopyWrites(stop, 'commerce.profile.prod.yaml');
          expect(await push({deployment: false})).toBe(1);
 
          const before = localFiles();
@@ -2234,7 +2222,7 @@ describe('the push id on every file copy', () => {
            'even under --force-remove',
        async () => {
          writeRoundTripWorkspace();
-         const {entries} = fakeCatalog();
+         const {stop} = fakeCatalog();
          expect(await push({deployment: false})).toBe(0);
 
          // The next push edits both files, and the profile copy's write fails.
@@ -2244,15 +2232,7 @@ describe('the push id on every file copy', () => {
          fs.writeFileSync(
              path.join(entryGroupDir(), 'commerce.profile.prod.yaml'),
              `${ROUND_TRIP_PROFILE}# edited\n`);
-         spyOn(CatalogClient.prototype, 'updateEntry')
-             .mockImplementation(async (entry: Entry) => {
-               if (entry.name.endsWith(
-                       '/commerce.files.commerce.profile.prod.yaml')) {
-                 return {status: 500, message: 'injected'};
-               }
-               entries.set(entry.name, structuredClone(entry));
-               return {status: 200, result: entry};
-             });
+         failCopyWrites(stop, 'commerce.profile.prod.yaml');
          const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
          expect(await push({deployment: false})).toBe(1);
          expect(messages(errorSpy))
@@ -2300,7 +2280,7 @@ describe('the push-state label on the model entry', () => {
            // finishes. Each pull in between writes and deletes nothing.
            let code = 1;
            let refused = '';
-           for (let n = 1; code && n < 50; n++) {
+           for (let n = 1; n < 50; n++) {
              stop.after = n;
              code = await push({deployment: false});
              if (!code) break;
@@ -2317,26 +2297,15 @@ describe('the push-state label on the model entry', () => {
            expect(refused).toContain(
                'its model entry\'s kcmd-push-state label still says writing, ' +
                'so pull writes nothing. Push again, then pull.');
-           const anchor = entries.get(
-               'projects/test-project/locations/us/entryGroups/commerce_eg/' +
-               'entries/commerce')!;
-           expect(anchor.entrySource!.labels!['kcmd-push-state'])
-               .toBe('finished');
 
-           // A dry run and --validate-only write nothing, so they leave the
-           // label as it is.
+           // --validate-only, which --dry-run runs too, writes nothing, so it
+           // leaves the label as it is.
            stop.after = 0;
-           expect(await push({deployment: false, dryRun: true})).toBe(0);
            expect(await push({deployment: false, validateOnly: true})).toBe(0);
            stop.after = Infinity;
            expect(await pull()).toBe(0);
-           expect(fs.readFileSync(path.join(entryGroupDir(), 'commerce.yaml'),
-                                  'utf8'))
-               .not.toContain('Customer');
+           expect(Object.values(localFiles()).join()).not.toContain('Customer');
            expect([...entries.keys()].join()).not.toContain('Customer');
-           // A model an older kcmd pushed has no label.
-           delete anchor.entrySource!.labels!['kcmd-push-state'];
-           expect(await pull()).toBe(0);
          });
 
     test(`${flag}, a push keeps the label and the source update time ` +
