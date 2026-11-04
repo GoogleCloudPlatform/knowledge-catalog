@@ -11,6 +11,7 @@
 // DDL generator to learn a table name would be describing a layering that is
 // not real.
 
+import {sourceTableOf} from './loader';
 import {quoteIdentifier} from './sql_identifiers';
 
 
@@ -23,16 +24,10 @@ import {quoteIdentifier} from './sql_identifiers';
 export type QuoteFn = (identifier: string) => string;
 
 
-// Maps the IR's `dataSource` to the BARE table name a statement references. A
-// property graph names input tables within its own database, so only the final
-// segment of a qualified `project.dataset.table` (or any dotted source) is
-// meaningful; the leading qualifiers name where a BigQuery copy lives and have
-// no bearing on the operational table. A resource-name URI
-// (`//spanner.googleapis.com/.../tables/<t>`, or any other `scheme://.../<t>`)
-// names its table by the final PATH segment for the same reason — the leading
-// path locates the store, not the table. A verbatim query (contains whitespace)
-// cannot back a graph element table, so it is passed through parenthesized with
-// a warning.
+// The table `dataSource` names within its own database: its final dotted or
+// path segment, except that a Spanner table keeps its schema (`ops.stations`),
+// each part quoted. A query, which holds whitespace, is returned in
+// parentheses with a warning.
 export function boundTable(
     dataSource: string, warnings: string[], context: string,
     quote: QuoteFn): string {
@@ -49,12 +44,13 @@ export function boundTable(
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  // A BigQuery or BigLake source reaches here dotted, but a Spanner, AlloyDB or
-  // Cloud SQL source as its resource URI (see isResourceUri), so reduce a URI
-  // to its final path segment before the dotted reduction below.
+  // Reduce a URI to its final path segment. A Spanner source keeps every
+  // dotted part of it, and any other source keeps the last.
   const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
-  const last = splitDotted(source).map(unquote).pop() ?? source;
-  return quote(last);
+  const parts = splitDotted(source).map(unquote);
+  const kept =
+      sourceTableOf(trimmed)?.system === 'spanner' ? parts : parts.slice(-1);
+  return kept.map(quote).join('.');
 }
 
 

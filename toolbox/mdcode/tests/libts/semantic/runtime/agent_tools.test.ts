@@ -511,3 +511,15 @@ semantic_model:
     });
   });
 });
+
+
+describe('a Spanner table in a named schema', () => {
+  test('is named with its schema', () => {
+    const runtime = rt({name: 'm', relationships: [], metrics: [], entities: [{
+      name: 'station', keys: ['id'], fields: [{name: 'id', expression: 'id'}],
+      dataSource: '//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/ops.stations',
+    }]});
+    expect(readableEntities(runtime, dialectFor(runtime.store)).map(r => r.table))
+        .toEqual(['ops.stations']);
+  });
+});
