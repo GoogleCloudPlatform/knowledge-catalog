@@ -374,8 +374,8 @@ export function validateInlineDialects(
     const named = [...databases.values()].map(n => `'${n}'`).join(', ');
     errors.push(
         `model '${model.name}' (${document}) binds entities in more than one ` +
-        `Spanner database (${named}); the model file's own bindings, like a ` +
-        `profile, read from one Spanner database.`);
+        `Spanner database (${named}); bind the model file's entities to ` +
+        `tables in one Spanner database.`);
   }
   for (const {entity: e, field: f, table: {name: dialect}} of
            fieldsOnTables(model)) {

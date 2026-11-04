@@ -21,8 +21,8 @@ const order = (database: string) => ({
 });
 const TWO_DATABASES =
     "model 'commerce' (commerce) binds entities in more than one Spanner " +
-    "database ('Customer', 'Order'); the model file's own bindings, like a " +
-    'profile, read from one Spanner database.';
+    "database ('Customer', 'Order'); bind the model file's entities to " +
+    'tables in one Spanner database.';
 
 scenarios('a Spanner database', [
   {
