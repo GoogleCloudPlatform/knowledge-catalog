@@ -731,7 +731,7 @@ const constraintSchema =
 // the rule goes instead. A hard error rather than a dropped key: a rule the
 // author stated and the loader silently ignored is a guard that stops guarding.
 function rejectExpressionBody(
-    c: {name?: string, expression?: string}, ctx: z.RefinementCtx): void {
+    c: {name?: string, expression?: unknown}, ctx: z.RefinementCtx): void {
   if (c.expression === undefined) return;
   ctx.addIssue({
     code: z.ZodIssueCode.custom,
@@ -925,7 +925,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
          // Vanilla rejects a relationship's description after the schema.
          description: placement.relationship.description === 'native' ?
              z.string().optional() :
-             unlisted(z.string().optional()),
+             unlisted(z.unknown().optional()),
          ai_context: aiContext.optional(),
          ...customExtensionsKey,
        })
@@ -1011,7 +1011,7 @@ function buildDocumentSchema(bindingOptional: boolean, extended: boolean) {
   // rejectExpressionBody, which is what turns it into a useful error.
   const constraint = z.object({
                         name: z.string(),
-                        expression: unlisted(z.string().optional()),
+                        expression: unlisted(z.unknown().optional()),
                         judgment: z.string().optional(),
                         description: z.string().optional(),
                         // What a violation does; required. See

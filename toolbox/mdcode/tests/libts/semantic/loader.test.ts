@@ -1758,8 +1758,10 @@ describe('custom_extensions: where each vendor block is accepted', () => {
 
 describe('relationship description', () => {
   test('vanilla: a plain description is rejected, naming the GOOGLE-block form', () => {
-    expect(() => load(VANILLA, fullModel('relationship', { description: 'd' })))
-      .toThrow(/cannot carry a plain 'description'[\s\S]*vendor_name: GOOGLE/);
+    for (const description of ['d', 5]) {
+      expect(() => load(VANILLA, fullModel('relationship', { description })))
+        .toThrow(/cannot carry a plain 'description'[\s\S]*vendor_name: GOOGLE/);
+    }
   });
   test('Google: a plain description loads', () => {
     const m = load(GOOGLE, fullModel('relationship', { description: 'd' })).models[0];

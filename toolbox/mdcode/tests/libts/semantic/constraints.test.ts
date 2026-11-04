@@ -142,7 +142,11 @@ describe('loader parses constraints', () => {
              name: 'C',
              judgment: 'The customer.balance must not go below zero.',
              on_violation: 'reject',
-             expression: 'customer.balance >= 0',
+             expression: {
+               dialects: [
+                 {dialect: 'BIGQUERY', expression: 'customer.balance >= 0'},
+               ],
+             },
            }]))
         .toThrow(/constraint 'C' states an expression/);
   });
