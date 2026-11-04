@@ -260,6 +260,8 @@ describe('sourceEntryErrors', () => {
      couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} failed (HTTP 503: unavailable).`)],
     ['a catalog read that answers 503', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, UNAVAILABLE,
      couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed (HTTP 503: unavailable).")],
+    ['a catalog read that throws', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, new Error('socket hang up'),
+     couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed: socket hang up")],
     ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,
      new Error('socket hang up'),
      couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],

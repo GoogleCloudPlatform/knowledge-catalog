@@ -84,10 +84,11 @@ type Checked<T> = {result: T}|{problem: string};
 // - A job with no location runs in the primary.
 //
 // Reads each table's location and looks its entry up once per location it
-// may sit in, and reads each catalog and instance once; tables are checked in
-// parallel, and a table's locations in turn. Skips an abstract entity, an
-// entity with no source, and a source that names no table this module knows
-// (a Cloud SQL or third-party table, or a legacy bare name). Never throws.
+// may sit in, and reads each instance once and each catalog at most once
+// through each API; tables are checked in parallel, and a table's locations in
+// turn. Skips an abstract entity, an entity with no source, and a source that
+// names no table this module knows (a Cloud SQL or third-party table, or a
+// legacy bare name). Never throws.
 export async function sourceEntryErrors(
     model: Pick<SemanticModel, 'name'|'entities'|'profiles'>,
     readers: SourceReaders): Promise<string[]> {
