@@ -357,19 +357,21 @@ function measurePlacementErrors(
   return errors;
 }
 
-// Checks that the model file's Spanner tables are in one database, as a
-// profile's are, so they share one dialect, and that each bound field has a
-// text for the dialect of its entity's source. Returns one message per problem.
+// Checks that the model file's Spanner tables are all in one database, so they
+// share one dialect, and that each bound field has a text for the dialect of
+// its entity's source. Returns one message per problem.
 export function validateInlineDialects(
     model: SemanticModel, document: string): string[] {
   const errors: string[] = [];
-  const spanner = new Map<string, string>();
+  const databases = new Map<string, string>();
   for (const e of model.entities ?? []) {
     const db = databaseOf(e.authoredSource ?? '');
-    if (db?.startsWith('spanner/') && !spanner.has(db)) spanner.set(db, e.name);
+    if (db?.startsWith('spanner/') && !databases.has(db)) {
+      databases.set(db, e.name);
+    }
   }
-  if (spanner.size > 1) {
-    const named = [...spanner.values()].map(n => `'${n}'`).join(', ');
+  if (databases.size > 1) {
+    const named = [...databases.values()].map(n => `'${n}'`).join(', ');
     errors.push(
         `model '${model.name}' (${document}) binds entities in more than one ` +
         `Spanner database (${named}); the model file's own bindings, like a ` +

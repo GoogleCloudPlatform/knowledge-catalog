@@ -15,20 +15,18 @@
 // fullyQualifiedName, so its parts say whether the entry is a table's or, for
 // example, a schema's.
 //
-// A Spanner database is GoogleSQL (SPANNER) or PostgreSQL (POSTGRES).
-// Knowledge Catalog's Spanner entries leave their dialect empty, so it comes
-// from the database's `databaseDialect`, which the Spanner API's databases.get
-// reads, once per database.
+// Knowledge Catalog's Spanner entries leave their dialect empty, so a Spanner
+// table's dialect is its database's `databaseDialect`, read by databases.get.
 //
-// This is the only place kcmd makes a network call to learn a dialect. A
-// command looks every such source up once, before it loads the model, and
-// passes the dialects to the load (LoadOptions.sourceDialects).
+// This is the only place kcmd looks up a source's dialect. A command looks
+// every such source up once, before it loads the model, and passes the
+// dialects to the load (LoadOptions.sourceDialects).
 
 import * as yaml from 'yaml';
 
-import type {SpannerClient} from '../gcp/spanner';
+import {POSTGRESQL_DIALECT, SpannerClient} from '../gcp/spanner';
 
-import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
+import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, SpannerDatabase, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
 import {storeMessage} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
@@ -61,19 +59,18 @@ export interface SourceDialects {
 // cannot tell the dialect.
 type Dialect = {dialect: string; database?: string}|{error: string};
 
-// Looks up the dialect of every Cloud SQL and third-party table the model and
-// profile files `texts` write (see sourcesToLookUp), once per table, and of
-// each Spanner database they write a table of, with `spanner`, once per
-// database, in parallel. With `thirdParty` false, looks up no third-party
-// table. Makes no call when they write none. Never throws: a lookup that fails
-// is reported in `errors`.
+// Looks up, once each and in parallel, the dialect of every Cloud SQL and
+// third-party table the files `texts` write (see sourcesToLookUp), and with
+// `spanner` of every Spanner database they name. `thirdParty: false` skips
+// third-party tables. Never throws: a failed lookup goes to `errors`.
 export async function sourceDialects(
     texts: Iterable<string>, catalog: EntryLookup,
     {thirdParty = true, spanner}: {
       thirdParty?: boolean; spanner?: Pick<SpannerClient, 'getDatabase'>;
     } = {}): Promise<SourceDialects> {
-  // Keyed as dialectLookupKey or spannerDatabaseOf gives, so both spellings of
-  // one table, and the tables of one Spanner database, are one lookup.
+  // Keyed as dialectLookupKey gives or by a Spanner database's resource name,
+  // so both spellings of one table, and the tables of one Spanner database, are
+  // one lookup.
   const lookups = new Map<string, () => Promise<Dialect>>();
   for (const source of sourcesToLookUp(texts)) {
     const table = cloudSqlTableOf(source);
@@ -84,7 +81,9 @@ export async function sourceDialects(
     if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
     const database = spanner && spannerDatabaseOf(source);
     if (database) {
-      lookups.set(database, () => spannerDialect(spanner, database, source));
+      lookups.set(
+          database.resourceName,
+          () => spannerDialect(spanner, database, source));
     }
   }
   const dialects = new Map<string, string>();
@@ -131,23 +130,23 @@ async function cloudSqlDialect(
   };
 }
 
-// The dialect of the Spanner database `database`, which `source` names a
-// table of, by its databaseDialect.
+// The dialect of a Spanner database, which `source` names a table of, by its
+// databaseDialect.
 async function spannerDialect(
-    spanner: Pick<SpannerClient, 'getDatabase'>, database: string,
+    spanner: Pick<SpannerClient, 'getDatabase'>,
+    {project, instance, database}: SpannerDatabase,
     source: string): Promise<Dialect> {
-  const [, , project, , instance, , name] = database.split('/');
   const failed = (why: string) => ({
     error: `source '${source}': kcmd reads its Spanner database's SQL ` +
         `dialect, and could not read database ${project}/${instance}/${
-               name}: ${why}`,
+               database}: ${why}`,
   });
   try {
-    const res = await spanner.getDatabase(project, instance, name);
+    const res = await spanner.getDatabase(project, instance, database);
     if (res.status !== 200) {
       return failed(storeMessage(res.message, res.status));
     }
-    const postgres = res.result?.databaseDialect === 'POSTGRESQL';
+    const postgres = res.result?.databaseDialect === POSTGRESQL_DIALECT;
     return {dialect: postgres ? 'POSTGRES' : 'SPANNER'};
   } catch (err: any) {
     return failed(err?.message ?? String(err));

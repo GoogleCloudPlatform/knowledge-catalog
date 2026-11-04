@@ -9,6 +9,10 @@ import * as api from './api';
 import * as context from './context';
 
 
+// The databaseDialect getDatabase gives for a PostgreSQL-dialect database.
+export const POSTGRESQL_DIALECT = 'POSTGRESQL';
+
+
 // A long-running operation, as returned by updateDatabaseDdl and fetched by
 // getOperation. `done` flips to true at completion; `error` is set on failure
 // (a google.rpc.Status).

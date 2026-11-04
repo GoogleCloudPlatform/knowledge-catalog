@@ -134,6 +134,21 @@ describe('sourceDialects', () => {
     ]);
   });
 
+  test('reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER', async () => {
+    const calls: string[] = [];
+    const spanner = {async getDatabase(project: string, instance: string, database: string) {
+      calls.push(`${project}/${instance}/${database}`);
+      const dialect = {pg: 'POSTGRESQL', gsql: 'GOOGLE_STANDARD_SQL'}[database];
+      return {status: 200, result: dialect ? {databaseDialect: dialect} : {}};
+    }};
+    const files = ['pg/tables/a', 'pg/tables/ops.b', 'gsql/tables/a', 'old/tables/a']
+                      .map(t => `source: ${SPANNER}/${t}`);
+    const {dialects, errors} = await sourceDialects(files, fakeCatalog({}).catalog, {spanner});
+    expect({dialects, errors}).toEqual({errors: [], dialects: new Map([
+      [`${SPANNER}/pg`, 'POSTGRES'], [`${SPANNER}/gsql`, 'SPANNER'], [`${SPANNER}/old`, 'SPANNER']])});
+    expect(calls.sort()).toEqual(['acme/ops/gsql', 'acme/ops/old', 'acme/ops/pg']);
+  });
+
   test('the catalog client provides the lookup', () => {
     // Compile-time check: CatalogClient fits EntryLookup.
     const fits = (c: CatalogClient): EntryLookup => c;
@@ -235,21 +250,6 @@ describe('sourceDialects of a third-party table', () => {
     await sourceDialects([THIRD_PARTY_FILE, THIRD_PARTY_FILE], catalog);
     expect(calls).toEqual([{project: 'acme', location: 'us-central1', name: THIRD_PARTY}]);
   });
-});
-
-test('sourceDialects reads each Spanner database once, POSTGRESQL as POSTGRES and any other as SPANNER', async () => {
-  const calls: string[] = [];
-  const spanner = {async getDatabase(project: string, instance: string, database: string) {
-    calls.push(`${project}/${instance}/${database}`);
-    const dialect = {pg: 'POSTGRESQL', gsql: 'GOOGLE_STANDARD_SQL'}[database];
-    return {status: 200, result: dialect ? {databaseDialect: dialect} : {}};
-  }};
-  const files = ['pg/tables/a', 'pg/tables/ops.b', 'gsql/tables/a', 'old/tables/a']
-                    .map(t => `source: ${SPANNER}/${t}`);
-  const {dialects, errors} = await sourceDialects(files, fakeCatalog({}).catalog, {spanner});
-  expect({dialects, errors}).toEqual({errors: [], dialects: new Map([
-    [`${SPANNER}/pg`, 'POSTGRES'], [`${SPANNER}/gsql`, 'SPANNER'], [`${SPANNER}/old`, 'SPANNER']])});
-  expect(calls.sort()).toEqual(['acme/ops/gsql', 'acme/ops/old', 'acme/ops/pg']);
 });
 
 describe('sourcesToLookUp', () => {

@@ -108,10 +108,10 @@ export interface Entity {
   // target's addressing scheme.
   dataSource: string;
   authoredSource?: string;  // the source string as typed
-  // The dialect of a Cloud SQL table written as its resource name, or of a
-  // third-party table, as its Knowledge Catalog entry gives it, or of a Spanner
-  // table, as its database gives it. Set only when the load was given the
-  // dialects a lookup read (LoadOptions.sourceDialects).
+  // The dialect a lookup read for this entity's source: a Cloud SQL or
+  // third-party table's from its Knowledge Catalog entry, a Spanner table's
+  // from its database. Set only when the load was given those dialects
+  // (LoadOptions.sourceDialects).
   sourceDialect?: string;
   keys: string[];  // grain / primary key
   // Additional uniqueness constraints beyond the primary key; each inner array

@@ -39,13 +39,11 @@ export interface LoadOptions {
   // they are migrated (b/568184815, b/568186042): accepts bare table names and
   // the legacy `deployment_target:` key.
   allowLegacyBareSource?: boolean;
-  // The dialect of each Cloud SQL table written as its resource name and each
-  // third-party table, keyed as dialectLookupKey gives, as sourceDialects read
-  // them from the tables' Knowledge Catalog entries, and of each Spanner
-  // database, keyed as spannerDatabaseOf gives. A command looks them up
-  // before it loads. Without this map a Cloud SQL or third-party source implies
-  // no dialect: the source names a table, not its engine, so the model implies
-  // none and every expression text counts. A Spanner source implies SPANNER.
+  // The dialects sourceDialects read before the load: each Cloud SQL and
+  // third-party table's, keyed as dialectLookupKey gives, and each Spanner
+  // database's, keyed by its resource name. Without this map a Cloud SQL or
+  // third-party source implies no dialect, so every expression text counts,
+  // and a Spanner source implies SPANNER.
   sourceDialects?: ReadonlyMap<string, string>;
   // Turns `parseSource`'s rejection of an unaccepted table source form into a
   // warning so a caller can load a document whose sources have not all been
@@ -3641,15 +3639,24 @@ export function dialectLookupKey(source: string): string|undefined {
       thirdPartyEntryOf(source)?.name;
 }
 
-// The resource name of the database a Spanner table `source` is in, such as
-// `spanner.googleapis.com/projects/p/instances/i/databases/d`, which is the
-// key LoadOptions.sourceDialects holds its dialect under. Undefined for any
-// other source, and for a name with quotes.
-export function spannerDatabaseOf(source: string): string|undefined {
+// A Spanner database: its project, instance and database id, and its resource
+// name with no leading `//`, which keys its dialect in
+// LoadOptions.sourceDialects.
+export interface SpannerDatabase {
+  project: string;
+  instance: string;
+  database: string;
+  resourceName: string;
+}
+
+// The database the Spanner table `source` is in. Undefined for any other
+// source and for a name with quotes.
+export function spannerDatabaseOf(source: string): SpannerDatabase|undefined {
   const uri = asResourceUri(source.trim());
-  return !QUOTE.test(uri) && SPANNER_TABLE_URI.test(uri) ?
-      uri.slice(2, uri.lastIndexOf('/tables/')) :
-      undefined;
+  const m = QUOTE.test(uri) ? null : uri.match(SPANNER_TABLE_URI);
+  if (!m) return undefined;
+  const resourceName = uri.slice(2, uri.lastIndexOf('/tables/'));
+  return {project: m[1], instance: m[2], database: m[3], resourceName};
 }
 
 // Why `source` is not accepted when it is a Knowledge Catalog entry name in a
@@ -3747,7 +3754,8 @@ export function parseSource(
   const problem = oldSourceForm(trimmed);
   // The accepted forms: a GCP resource name, or a third-party entry name.
   if (problem === undefined && isAcceptedSource(trimmed)) {
-    const key = dialectLookupKey(trimmed) ?? spannerDatabaseOf(trimmed);
+    const key =
+        dialectLookupKey(trimmed) ?? spannerDatabaseOf(trimmed)?.resourceName;
     const sourceDialect = key && opts.sourceDialects?.get(key);
     return {
       authoredSource: trimmed,

@@ -19,11 +19,11 @@ export function stubCloudSqlEntry(status: number, type?: string) {
            {status, message: 'Permission denied (or it may not exist).'}) as any);
 }
 
-// Makes every Spanner database answer that it has `databaseDialect`, as the
-// dialect lookup reads it. `mock.restore()` undoes it.
-export function stubSpannerDialect(databaseDialect = 'GOOGLE_STANDARD_SQL') {
-  return spyOn(spanner.SpannerClient.prototype, 'getDatabase')
-      .mockResolvedValue({status: 200, result: {databaseDialect}} as any);
+// Makes every Spanner database answer that it is GoogleSQL, as the dialect
+// lookup reads it. `mock.restore()` undoes it.
+export function stubSpannerDialect() {
+  return spyOn(spanner.SpannerClient.prototype, 'getDatabase').mockResolvedValue(
+      {status: 200, result: {databaseDialect: 'GOOGLE_STANDARD_SQL'}} as any);
 }
 
 // Makes push find each graph's dataset or database, and pass each BigQuery dry

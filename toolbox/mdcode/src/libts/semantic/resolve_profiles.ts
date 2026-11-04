@@ -1268,8 +1268,7 @@ function stringList(value: unknown, where: string): string[] {
 
 
 // The dialect each system's sources infer, keyed by the
-// system databaseOf puts first. A Spanner source whose database's dialect was
-// read implies that one instead.
+// system databaseOf puts first.
 const DIALECT_OF_SYSTEM: Record<string, string> = {
   bigquery: 'BIGQUERY',
   spanner: 'SPANNER',
@@ -1423,7 +1422,7 @@ export function sourcesDialect(model: {
 
 // The dialect every one of `sources` implies, or undefined when one names no
 // database in an accepted form or two imply different dialects. Two databases
-// of one system, such as two Spanner databases, imply that system's dialect.
+// of one system, such as two AlloyDB databases, imply that system's dialect.
 // A three-part dotted name, which is how the loader completes a legacy bare
 // name, names BigQuery.
 //
