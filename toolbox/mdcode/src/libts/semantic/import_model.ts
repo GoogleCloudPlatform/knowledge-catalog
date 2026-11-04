@@ -4,17 +4,18 @@
 import * as yaml from 'yaml';
 
 import {checkProfileFileName, ProfileFileError, profileNameError, profileParseError, vanillaSiblingError} from '../layouts/semantic-model';
-import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, resolveModelDeployments, targetProblem} from './deployment_target';
+import {checkCatalogAspects} from './deploy_knowledge_catalog';
+import {deploymentTargetError, googleBlockTargetError, googleDeploymentTargets, targetProblem} from './deployment_target';
 import {ALLOWED_DIALECTS, isFieldBound, normalizeDataType, ProfileSpec, SemanticModel, SqlDialect} from './ir';
 import {bareNameParts, ConstructPlacement, dottedPartProblem, fillForm, FORMAT_VERSION_PLACEMENT, FormatVersion, fromDocument, GOOGLE_VENDOR, GOOGLE_VERSION, hasGoogleBlock, hasUnquotedWhitespace, isAcceptedSource, isFormatVersion, isGoogleCloudForm, isGoogleVendor, isRecord, loadModels, modelAiContexts, NO_SPACE, noSqlReason, oldSourceForm, OSSIE_VERSION, parseSource, SemanticModelError, TABLE_FORMS, THIRD_PARTY_SOURCE} from './loader';
 import {MAX_ENTRY_DESCRIPTION, NameKind, nameProblem} from './names';
 import {SerializedFile} from './osi_converter';
-import {appliedProfileWarnings, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, loadProfileFile, namedProfileErrors, plainCopy, readerMessage, sourcesDialect, undeclaredProfileError} from './resolve_profiles';
+import {declaredProfiles, loadProfileFile, namedProfileErrors, plainCopy, ProfileFiles, readerMessage, sourcesDialect} from './resolve_profiles';
 import {tableFqnParts} from './source_dialect';
 import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
-import {deploymentTableErrors, inlineBindingWarnings, spannerMetricsErrors, validateDeployments, validateInheritedColumns, validateInlineDialects} from './validate';
+import {kcV2Aspects, localChecks, pruningLines, withProfileFiles} from './validate';
 import {YAML_OPTIONS} from './yaml_options';
 import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
@@ -1676,19 +1677,21 @@ function writeDocument(
 
 /**
  * Phase 5 (Post-validation): Validates the output model file with `loadModels`
- * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and checks
- * the model file's own bindings, each profile the output declares and each
- * deployment as push does.
+ * (`warnUnacceptedSource: !doc.strict`), checks deployment targets, and runs
+ * push's local checks (`localChecks`) on the model file and each profile it
+ * declares. With KC_V2_ASPECTS on, it also checks that Knowledge Catalog can
+ * store each aspect. It also gives push's warnings from the Knowledge Catalog
+ * entry builder, the pruning and each graph, and leaves out push's notes.
  */
-function validateOutputDocument(
+async function validateOutputDocument(
     files: SerializedFile[], doc: ImportDocument,
-    opts: ImportSemanticModelOptions): void {
+    opts: ImportSemanticModelOptions): Promise<void> {
   const [{fileName, content}, ...profileFiles] = files;
   try {
     // 1. Load the serialized output YAML with `loadModels`
     // (`warnUnacceptedSource: !doc.strict`) to run full schema and semantic
     // validation while turning unaccepted table sources into warnings in
-    // non-strict mode, deduplicating warnings already recorded. Step 3 gives
+    // non-strict mode, deduplicating warnings already recorded. Step 2 gives
     // push's error for a field its table cannot run, so the load does not
     // warn about it too.
     const loaded = loadModels(
@@ -1705,108 +1708,103 @@ function validateOutputDocument(
       }
     }
 
-    // 2. Validate every deployment target on the loaded model using
-    // `validateDeploymentTargets`.
-    for (const m of loaded.models) {
-      validateDeploymentTargets(m, doc);
-    }
-
-    // 3. Check the model file's own bindings, each profile file, under the
-    // layout's file rules, and each GOOGLE block profile with push's offline
-    // checks. What push rejects is an error in strict mode and a warning
-    // otherwise. Nothing is written on an error, so in strict mode each
-    // message names where the input holds the bindings.
+    // 2. Run push's local checks on the model file and each profile it
+    // declares. What push rejects is an error in strict mode and a warning
+    // otherwise.
     const input = doc.strict ? opts.fileName : undefined;
     const model = {
       name: (input ?? fileName).replace(/\.ya?ml$/, ''),
       text: content,
     };
     // Where the input holds profile `name`, which the output writes in
-    // `written`: its profile file, or the model file's GOOGLE block.
+    // `written`: its profile file, or the model file's GOOGLE block. Strict
+    // mode writes nothing on an error, so its messages name the input.
     const inputFiles =
         doc.inputVersion === GOOGLE_VERSION ? opts.profileFiles ?? [] : [];
     const where = (name: string, written: string) => !input ? written :
         inputFiles.find(pf => parseProfileName(pf.fileName) === name)
                 ?.fileName ??
             model.name;
-    const profileDocs = () => {
+    // Push stops at a profile file that breaks a file rule, then at a
+    // deployment target in no accepted form. validateDeploymentTargets reports
+    // such a target as an error in either mode.
+    let read: ReturnType<ProfileFiles>|undefined;
+    try {
       const seen = new Map<string, string>();
-      return profileFiles.map(f => {
+      read = profileFiles.map(f => {
         const name = parseProfileName(f.fileName);
         const label = where(name, f.fileName);
         checkProfileFileName(input ?? fileName, label, name, f.content, seen);
         return {name, text: f.content, fileName: label};
       });
-    };
-    const declared = () => declaredProfiles(model, profileDocs()).map(
-        p => 'spec' in p ? {...p, label: where(p.name, model.name)} : p);
-    for (const e of [
-           ...validateInlineDialects(loaded.models[0], model.name),
-           ...validateInheritedColumns(loaded.models[0], model.name),
-         ]) {
-      doc.warnOrError(e);
-    }
-    const errors = namedProfileErrors(
-        [model], new Map([[model.name, loaded.models[0]]]), profileDocs,
-        declared, doc.warnings, {});
-    for (const e of errors) doc.warnOrError(e.error);
-    // Push also warns about the values each profile without an error sets.
-    let profiles: DeclaredProfile[];
-    try {
-      profiles = declared();
     } catch (err) {
-      // namedProfileErrors reports a profile file that breaks a file rule,
-      // which stops push before it checks a deployment.
       if (!(err instanceof ProfileFileError)) throw err;
+      doc.warnOrError(err.message);
+    }
+    if (!doc.errors.length) {
+      for (const m of loaded.models) validateDeploymentTargets(m, doc);
+    }
+    const profiles = read;
+    if (!profiles) return;
+    const declaredBy = () => declaredProfiles(model, profiles).map(
+        p => 'spec' in p ? {...p, label: where(p.name, model.name)} : p);
+    // Push stops at a source its loader rejects. Import still reports each
+    // profile's problems, its sources among them.
+    if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) {
+      for (const {error} of namedProfileErrors(
+               [model], new Map([[model.name, loaded.models[0]]]),
+               () => profiles, declaredBy, doc.warnings, {})) {
+        doc.warnOrError(error);
+      }
       return;
     }
+    if (doc.errors.length) return;
+    const base = {document: model.name, model: loaded.models[0]};
     const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
-    for (const {name} of profiles) {
-      if (errors.some(e => e.profile === name)) continue;
-      doc.warnings.push(...appliedProfileWarnings(model, profiles, name, own));
+    // Push prints each warning once, after the load's. Each is a warning in
+    // either mode.
+    const warn = (w: string) => {
+      if (!own.includes(w) && !doc.warnings.includes(w)) doc.warnings.push(w);
+    };
+    const withFiles = withProfileFiles(base, () => profiles);
+    const checked = 'errors' in withFiles ? withFiles : await localChecks(
+        {
+          docs: [model],
+          loaded: {models: [base], warnings: own},
+          models: [withFiles],
+          profileDocs: () => profiles,
+          declaredBy,
+          load: {},
+        },
+        warn);
+    // Push prints each error once.
+    const errors = 'errors' in checked ? checked.errors : [];
+    for (const error of new Set(errors.map(e => e.error))) {
+      doc.warnOrError(error);
     }
-    // Push stops at a source its loader rejects.
-    if (loaded.warnings.some(w => LOADER_SOURCE_WARNING.test(w))) return;
-    doc.warnings.push(...inlineBindingWarnings(
-        loaded.models[0], model.name,
-        profiles.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE)));
-
-    // 4. Check each deployment with push's offline checks, under the profile
-    // it names. A profile file that does not load is reported above. A
-    // deployment whose profile has an error gets no table check, so a bad
-    // source is reported once.
-    const withFiles = {...loaded.models[0]};
-    withFiles.profiles = [
-      ...withFiles.profiles ?? [],
-      ...profiles.flatMap(p => {
-        try {
-          return 'text' in p ?
-              [loadProfileFile(p.text, p.name, {skipActions: true})] :
-              [];
-        } catch (err) {
-          if (!(err instanceof SemanticModelError)) throw err;
-          return [];
-        }
-      }),
-    ];
-    const every = resolveModelDeployments(withFiles);
-    const deployments = 'error' in every ? [] : every.deployments;
-    for (const e of [
-           undeclaredProfileError(
-               model.name, withFiles, profiles.map(p => p.name)) ?? [],
-           ...[...new Set(deployments.map(d => d.profile))].flatMap(
-               profile => validateDeployments({
-                 ...withFiles,
-                 deployments: withFiles.deployments?.filter(
-                     d => (d.profile ?? DEFAULT_PROFILE) === profile),
-               }, model.name)),
-           ...deployments
-               .filter(d => !errors.some(e => e.profile === d.profile))
-               .flatMap(d => deploymentTableErrors(model.name, withFiles, d)),
-           ...deployments.flatMap(
-               d => spannerMetricsErrors(model.name, withFiles, d)),
-         ].flat()) {
-      doc.warnOrError(e);
+    if ('errors' in checked || 'errors' in withFiles) return;
+    // Push next builds the Knowledge Catalog entries and prints the builder's
+    // warnings. With KC_V2_ASPECTS on, it also checks that Knowledge Catalog
+    // can store each aspect. The entry group does not change an aspect's size.
+    // With the flag off, the entries hold a copy of each file.
+    const v2Aspects = kcV2Aspects();
+    const catalog = checkCatalogAspects([withFiles], {
+      project: 'p', location: 'l', entryGroup: 'g',
+      systemTypeProject: process.env.KC_TYPE_PROJECT, v2Aspects,
+      sourceFiles: files,
+    });
+    for (const w of catalog.warnings) warn(w);
+    if (v2Aspects && catalog.error) {
+      doc.warnOrError(catalog.error);
+      return;
+    }
+    // Push then warns about what pruning leaves out of each deployment, and
+    // about what each graph leaves out. Import leaves out push's notes.
+    for (const line of checked.plans.flatMap(pruningLines)) {
+      if (line.startsWith('Warning: ')) warn(line.slice('Warning: '.length));
+    }
+    for (const {generated} of checked.plans) {
+      for (const w of generated?.warnings ?? []) warn(w);
     }
   } catch (err) {
     if (!(err instanceof SemanticModelError)) throw err;
@@ -1871,7 +1869,7 @@ export async function importSemanticModelYaml(
                 problem.message}`);
   }
   if (files.length > 0 && doc.errors.length === 0) {
-    validateOutputDocument(files, doc, opts);
+    await validateOutputDocument(files, doc, opts);
   }
   return {
     ok: doc.errors.length === 0,

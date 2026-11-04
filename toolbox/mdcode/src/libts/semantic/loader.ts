@@ -301,6 +301,11 @@ export function listed(problems: string[]): string|undefined {
       problems[problems.length - 1]}`;
 }
 
+// Selects the singular or plural form based on `n` (English count agreement).
+export function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
 // Whether reading `doc` for a field of `entity` names `text`, or finds every
 // problem that reading `text` in `dialect` finds. The string form and an
 // ANSI_SQL entry are read both as ANSI_SQL and as BigQuery.

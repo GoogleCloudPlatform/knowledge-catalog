@@ -516,9 +516,9 @@ function fileCopySizeError(data: Record<string, any>): string|undefined {
 }
 
 /**
- * The emitter's warnings for `models` with v2Aspects on, and why push's
- * catalog leg cannot write them: an emit error or an aspect too large to
- * store. Calls no service.
+ * The emitter's warnings for `models`, and an emit error or the first aspect
+ * too large to store. With v2Aspects on, that error is why push's catalog leg
+ * cannot write them. Calls no service.
  */
 export function checkCatalogAspects(
     models: LoadedModel[],

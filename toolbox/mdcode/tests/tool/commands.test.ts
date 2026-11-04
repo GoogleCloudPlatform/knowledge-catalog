@@ -22,7 +22,8 @@ import * as pullKc from '../../src/libts/semantic/pull_kc';
 import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import * as sqlParser from '../../src/libts/semantic/sql_parser';
 import * as validateMod from '../../src/libts/semantic/validate';
-import {kcV2Aspects, profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
+import {kcV2Aspects} from '../../src/libts/semantic/validate';
+import {profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
 import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 

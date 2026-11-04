@@ -108,23 +108,34 @@ a `GOOGLE` block for it, and drops an empty `custom`, with its `ai_context`
 when nothing else is left in it. A file written for kcmd converts between
 flavors exactly or not at all. The `<model>.profile.<name>.yaml` files beside
 a Google-flavor `<file>` go in with it. A profile's sources stay as written,
-even with `--source-prefix`. Import runs push's checks on the model file's own
-bindings, on each profile it writes, on each deployment's profile, bindings,
-metrics and tables, on any profile file beside a vanilla `<file>`, and on a
-`<model>.profiles/` directory beside `<file>`. The deployment checks include
-the names a BigQuery or Spanner graph cannot hold and BigQuery's description
-and synonym limits. Import reports what these checks reject as an error under
-`--input first-party` and as a warning otherwise, and their warnings as
-warnings. A profile file that does not parse is always an error. Under
-`--input first-party`, a message from these checks names the input file that
-holds what it reports. Push's other model
-checks, such as whether a metric reads a known field or has SQL for its
-deployment's target, stay with push. Push reads each Cloud SQL and third-party
-table's engine from its Knowledge Catalog entry, and import does not, so the
-checks that need the engine stay with push: whether a profile's tables in one
-Cloud SQL instance or one third-party system are in one database, whether a
-field has SQL in its table's dialect, and what an `ANSI_SQL` text reads when
-every table of the model file or profile is such a table. Nothing is written
+even with `--source-prefix`. Import runs push's checks of the model and its
+bindings on what it writes, and stops where push stops. Unlike push, it
+reports every deployment target in no accepted form. Without
+`--input first-party`, it still reports each profile's problems when the model
+file has a source push rejects. The checks cover the model's names,
+descriptions, fields, keys, metrics, relationships, inheritance, actions and
+constraints. They also cover the model file's own bindings and each profile
+import writes. For each deployment they cover its profile, bindings, metrics,
+tables and graph. A profile file beside a vanilla `<file>` and a
+`<model>.profiles/` directory beside `<file>` are checked too. With
+`KC_V2_ASPECTS=1`, the checks also make sure Knowledge Catalog can store each
+aspect push writes. The deployment checks include the names a BigQuery or
+Spanner graph cannot hold and BigQuery's description and synonym limits. Import
+reports what these checks reject as an error under
+`--input first-party` and as a warning otherwise, except a deployment target in
+no accepted form, which is an error either way. It reports their warnings as
+warnings in either mode. They include push's warnings about the Knowledge
+Catalog entries, about the fields each deployment leaves out and about each
+graph. Import leaves out push's notes. A profile file that does not parse is
+always an error. Under `--input first-party`, a message from these checks names
+the input file that holds what it reports. The checks that read a service stay
+with push, such as whether each source names a table Knowledge Catalog knows
+about. Push reads each Cloud SQL and third-party table's engine from its
+Knowledge Catalog entry, and import does not, so the checks that need the engine
+stay with push: whether a profile's tables in one Cloud SQL instance or one
+third-party system are in one database, whether a field has SQL in its table's
+dialect, and what an `ANSI_SQL` text reads when every table of the model file or
+profile is such a table. Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
 lines, quoting, indentation and line endings. Comments on anything import

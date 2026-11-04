@@ -40,7 +40,7 @@ function ossieDoc(overrides: {
   const src = overrides.source ?? BQ_TABLE;
   const fName = overrides.fieldName ?? 'order_id';
   const fExpr = overrides.fieldExpr ??
-      '{\n              dialects: [{dialect: BIGQUERY, expression: "orders.order_id"}]\n            }';
+      '{\n              dialects: [{dialect: BIGQUERY, expression: "order_id"}]\n            }';
   const extra = overrides.extra ?? '';
   return `version: "0.2.0.dev0"
 semantic_model:
@@ -60,6 +60,26 @@ function googleDoc(overrides: Parameters<typeof ossieDoc>[0] = {}): string {
   return ossieDoc(overrides)
       .replace('version: "0.2.0.dev0"', 'version: "0.2.0.dev0/google"')
       .replace('    datasets:\n', '    entities:\n');
+}
+
+/**
+ * Entity customers and relationship `name` from orders to it, followed by
+ * `lines`, as the `extra` of either fixture.
+ */
+function joined(name: string, lines: string): string {
+  return `      - name: customers
+        source: ${BQ_PREFIX}/tables/customers
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}
+    relationships:
+      - name: ${name}
+        from: orders
+        to: customers
+        from_columns: [order_id]
+        to_columns: [order_id]
+${lines}`;
 }
 
 describe('names', () => {
@@ -203,7 +223,7 @@ describe('conversion, strict mode, and translation', () => {
     ],
     [
       'a vanilla string expression in strict mode',
-      ossieDoc({fieldExpr: '"orders.order_id"'}), {strict: true},
+      ossieDoc({fieldExpr: '"order_id"'}), {strict: true},
       `field 'orders.order_id': wrote the string expression as an 'ANSI_SQL' dialects entry.`
     ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
@@ -219,7 +239,7 @@ describe('conversion, strict mode, and translation', () => {
       async () => {
         const raw = googleDoc({
           fieldExpr:
-              '{\n              dialects: [{dialect: SNOWFLAKE, expression: " orders.order_id "}]\n            }',
+              '{\n              dialects: [{dialect: SNOWFLAKE, expression: " order_id "}]\n            }',
           extra:
               '    metrics:\n      - name: total_orders\n        entity: orders\n        expression: \'COUNT("orders"."order_id")\'\n',
         });
@@ -231,9 +251,11 @@ describe('conversion, strict mode, and translation', () => {
         expect(offRes.ok).toBe(true);
         expect(offRes.files[0].content).toBe(raw);
         // Without translation, the BigQuery table's vendor field and its
-        // double-quoted ANSI_SQL metric each warn.
+        // double-quoted ANSI_SQL metric each warn, and push cannot read the
+        // metric.
         expect(offRes.warnings.map(w => w.split(/:| in /)[0])).toEqual([
-          "field 'orders.order_id'", "metric 'total_orders'", "field 'orders.order_id'",
+          "field 'orders.order_id'", "metric 'total_orders'", "metric 'total_orders'",
+          "field 'orders.order_id'",
         ]);
         // On a Spanner table, the vendor field gets push's error alone.
         const onSpanner = await importSemanticModelYaml(
@@ -243,17 +265,19 @@ describe('conversion, strict mode, and translation', () => {
               "or ANSI_SQL, and the model file binds entity 'orders' to a SPANNER source.",
         ]);
         expect(onSpanner.warnings.map(w => w.split(/:| in /)[0])).toEqual([
-          "metric 'total_orders'",
+          "metric 'total_orders'", "metric 'total_orders'",
         ]);
         expect(onStrictRes.ok).toBe(true);
         expect(onStrictRes.warnings).toEqual([
           "field 'orders.order_id': transpiled 'SNOWFLAKE' -> 'BIGQUERY'",
           "metric 'total_orders': transpiled 'ANSI_SQL' -> 'BIGQUERY'",
+          "metric 'total_orders' in model 'retail' (retail): kcmd could not read its " +
+              "'ANSI_SQL' SQL, so the fields that entry reads were not checked.",
         ]);
         const loaded = loadModels(onStrictRes.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
-          {dialect: 'SNOWFLAKE', expression: ' orders.order_id '},
-          {dialect: 'BIGQUERY', expression: 'orders.order_id'},
+          {dialect: 'SNOWFLAKE', expression: ' order_id '},
+          {dialect: 'BIGQUERY', expression: 'order_id'},
         ]);
         expect(loaded.metrics[0].dialects).toEqual([
           {dialect: 'ANSI_SQL', expression: 'COUNT("orders"."order_id")'},
@@ -280,7 +304,7 @@ describe('conversion, strict mode, and translation', () => {
 // table its profile binds is a BigQuery or BigLake table.
 describe('profile translation', () => {
   const fieldExpr =
-      '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(orders.order_id, 0)"}]}';
+      '{dialects: [{dialect: SNOWFLAKE, expression: "NVL(order_id, 0)"}]}';
   // Its Snowflake text spans two lines, which a profile file writes as a
   // block scalar.
   const SNOWFLAKE = 'NVL(o.order_id, 0)\n  + NVL(o.order_id, 1) + NVL(o.order_id, 2)';
@@ -404,14 +428,15 @@ describe('profile translation', () => {
   // items before orders, and orders' total and order_id each to the text after
   // its `expression:`.
   const model = googleDoc({
-    extra: '          - name: total\n            expression: orders.total\n' +
+    extra: '          - name: total\n            expression: total\n' +
         `      - name: items\n        source: ${BQ_PREFIX}/tables/items\n` +
         '        primary_key: [id]\n        fields:\n          - name: id\n' +
-        '            expression: items.id\n',
+        '            expression: id\n',
   });
   const profileFile = (total: string, orderId: string) =>
       `name: prod\nentities:\n  - name: items\n    source: ${BQ_PREFIX}/tables/items_prod\n` +
-      `    primary_key: [id]\n  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n` +
+      '    primary_key: [id]\n    fields: [{name: id, expression: id}]\n' +
+      `  - name: orders\n    source: ${BQ_PREFIX}/tables/orders_prod\n` +
       '    primary_key: [order_id]\n    fields: # bound fields\n' +
       `      - name: total\n        expression: ${total}\n` +
       `      - name: order_id\n        expression:${orderId}\n`;
@@ -486,6 +511,9 @@ describe('profile checks', () => {
   const files = (ps: Profile[]) =>
       ps.map(p => ({fileName: `sales.profile.${p.name ?? 'pg'}.yaml`, content: yaml.stringify(p)}));
   const google = googleDoc({extra: '      - name: party\n        abstract: true\n'});
+  // Push's warning about party with KC_V2_ASPECTS off.
+  const PARTY_SKIPPED = "[retail] entity 'party' is abstract (no physical table); skipped for " +
+      'Knowledge Catalog (KC does not yet model class hierarchies)';
   const strict = {strict: true, fileName: 'sales.yaml'};
   // Where a message says profile pg is: the document that holds the model and
   // the label of pg's errors.
@@ -542,7 +570,8 @@ describe('profile checks', () => {
         const res = await importSemanticModelYaml(input, opts);
         const warned = !opts.strict || problem === 'a double-quoted name';
         expect(res.errors).toEqual(!warned && message ? [message] : []);
-        expect(res.warnings).toEqual(warned && message ? [message] : []);
+        expect(res.warnings.filter(w => w !== PARTY_SKIPPED))
+            .toEqual(warned && message ? [message] : []);
         if (!opts.strict) {
           expect(res.files.slice(1).map(f => f.content))
               .toEqual(opts.profileFiles.map((f: any) => f.content));
@@ -579,11 +608,13 @@ describe('profile checks', () => {
        `      - {name: order_id, expression: '"orders"."order_no"'}\n    fields_exclude: [x]\n`}],
      [], [`field 'orders.y': ${READS('BigQuery', 'BIGQUERY', false, '"orders" and "x"')}`,
           `profile 'pg': [sales] field 'orders.order_id': ${READS('MySQL', 'MYSQL', false, '"orders" and "order_no"')}`,
-          `profile 'pg': [sales] field 'orders.y': ${READS('MySQL', 'MYSQL', false, '"orders" and "x"')}`]],
+          `profile 'pg': [sales] field 'orders.y': ${READS('MySQL', 'MYSQL', false, '"orders" and "x"')}`,
+          "field 'orders.y' in model 'retail' (sales): kcmd could not read its SQL, so the " +
+          'fields it reads were not checked.']],
     ['reads no ANSI_SQL text of a model whose tables only a lookup gives the dialect of',
      googleDoc({source: MYSQL('orders'), fieldExpr: `'"t"."order_id"'`, extra:
          `      - name: items\n        extends: [orders]\n        source: ${MYSQL('items')}\n` +
-         "        primary_key: [order_id]\n    metrics:\n      - {name: m, expression: 'COUNT(orders.order_id)'}\n"}),
+         "        primary_key: [order_id]\n    metrics:\n      - {name: m, expression: 'COUNT(items.order_id)'}\n"}),
      [], [], ['orders', 'items'].map(e =>
          `field '${e}.order_id': ${READS('MySQL', 'MYSQL', false, '"t" and "order_id"')}`)],
     ['warns once about a model field that a valid profile inherits',
@@ -615,6 +646,12 @@ describe('profile checks', () => {
            `${CLOUDSQL_PREFIX}/tables/orders`), [],
      [], ["field 'orders.amount': no 'POSTGRES', 'SQLSERVER' or 'ANSI_SQL' dialect, so the " +
           "Cloud SQL table of entity 'orders' cannot run it"]],
+    ["reports once a deployment's error that both its checks give",
+     model(AMOUNT('amount') + `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g, profile: pg}]\n` +
+           '    metrics:\n      - {name: total, entity: orders, expression: SUM(amount)}\n', MYSQL('orders')),
+     pg(KEYED + AMOUNT('amount').slice(4)),
+     ["metric 'total' in model 'retail' (sales, deployment 'g'): 'amount' must be written as " +
+      "'entity.field'; a metric reads fields, never columns."], []],
     ['reports a field that reads the column of the entity it is inherited from',
      model(`      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n        primary_key: [order_id]\n`), [],
      ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
@@ -645,13 +682,13 @@ describe('profile checks', () => {
       profileFiles: pg(KEYED + toChar('YY').slice(4)),
     });
     expect(res.errors).toEqual([
-      "field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
-          "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source.",
       "[sales.profile.pg.yaml] profile 'pg': field 'orders.amount' has no expression for " +
           "BIGQUERY or ANSI_SQL, and this profile's sources are BIGQUERY",
       "[sales.profile.pg.yaml] profile 'pg': metric 'years' has no expression for BIGQUERY " +
           "or ANSI_SQL, and this profile's sources are BIGQUERY; give it one, or add it to " +
           "'metrics_exclude'",
+      "field 'orders.amount' in model 'retail' (sales) has no expression for BIGQUERY or " +
+          "ANSI_SQL, and the model file binds entity 'orders' to a BIGQUERY source.",
     ]);
   });
 
@@ -684,15 +721,9 @@ describe('profile checks', () => {
      onSpanner({metrics_exclude: '*'}),
      `[sales] deployment 'g' targets a BigQuery graph, but profile 'pg' binds entity 'orders' to ` +
      `'${SPANNER_TABLE}', which is not a BigQuery or BigLake table.`],
-    ["a profile with a bad source once, and a Spanner graph on the model file's own bindings",
+    ["a profile with a bad source alone, before a Spanner graph on the model file's own bindings",
      [{name: 'g', target: BQ_GRAPH, profile: 'pg'}, {name: 's', target: SPANNER_GRAPH}],
-     orders({source: 'orders'})[0], label => [
-       badSource(label),
-       "[sales] deployment 's' targets Spanner database 'acme/i/db', but the model file binds " +
-       `entity 'orders' to '${BQ_TABLE}', which is not a table in that database.`,
-       "[sales] deployment 's' targets a Spanner graph and uses the model file's own bindings, " +
-       'but the model declares metrics, which a Spanner graph cannot hold; name a profile with ' +
-       'metrics_exclude: "*".']],
+     orders({source: 'orders'})[0], label => [badSource(label)]],
   ];
   test.each(DEPLOYMENT_PROBLEMS.flatMap(([problem, d, p, error]) => DEPLOYED.map(
       ([path, label, build]) => [problem, path, ...build(d, p),
@@ -712,22 +743,127 @@ describe('profile checks', () => {
         'MIN or MAX over one operand.'));
   });
 
-  // [label, input and options, push's one message]
+  // A deployment to `target` under a profile file that declares no name.
+  const nameless = (target: string, strict = true) => {
+    const [input, opts] = DEPLOYED[0][2](
+        {name: 'g', target, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG));
+    return [input, {...opts, strict}] as const;
+  };
+  // The repair step's warning about model source 'shop.orders'.
+  const UNACCEPTED =
+      "dataset 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
+      "the file until it is repointed, or until 'kcmd import' runs again with '--source-prefix'. A " +
+      'table outside Google Cloud is written as the entry name of its Knowledge Catalog entry, ' +
+      "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'.";
+  // [label, input and options, push's one message, then any profile problems
+  // import also reports]
   test.each([
-    ['a profile file breaks a file rule', DEPLOYED[0][2](
-        {name: 'g', target: BQ_GRAPH, profile: 'pg'}, (({name: _, ...rest}) => rest)(PG)),
+    ['a profile file breaks a file rule', nameless(BQ_GRAPH),
      "Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."],
+    ['a profile file breaks a file rule beside a target in no accepted form', nameless(BQ_TABLE),
+     "Profile file 'sales.profile.pg.yaml' declares no name; add 'name: pg'."],
+    ['a third-party profile file breaks a file rule', nameless(BQ_GRAPH, false),
+     "Profile file 'retail.profile.pg.yaml' declares no name; add 'name: pg'."],
     ['the loader warns about a source',
      [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_GRAPH}}]\n`}),
       {flavor: 'google'}],
-     "dataset 'orders': source 'shop.orders' is not a valid GCP resource name; 'kcmd push' rejects " +
-     "the file until it is repointed, or until 'kcmd import' runs again with '--source-prefix'. A " +
-     'table outside Google Cloud is written as the entry name of its Knowledge Catalog entry, ' +
-     "'projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>'."],
-  ] as const)('checks no deployment when %s, as push does', async (_, [input, opts], message) => {
+     UNACCEPTED],
+    ["the loader warns about a source, apart from each profile's problems and each target",
+     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_TABLE}, profile: pg}]\n`}),
+      {flavor: 'google', profileFiles: files(orders({source: 'orders'}))}],
+     [`Model 'retail': deployment 'g' targets '${BQ_TABLE}', which is not a BigQuery graph, a Spanner graph or ` +
+      "an AlloyDB database. Write a GCP resource name: 'bigquery.googleapis.com/projects/<p>/datasets/<d>/" +
+      "propertyGraphs/<g>', 'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>' or " +
+      "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.",
+      UNACCEPTED, badSource('retail.profile.pg.yaml')]],
+  ] as const)('checks nothing more when %s', async (_, [input, opts], messages) => {
     const res = await importSemanticModelYaml(input, opts);
-    expect([...res.errors, ...res.warnings]).toEqual([message]);
+    expect([...res.errors, ...res.warnings]).toEqual([messages].flat());
   });
+
+  // [mistake, input, push's message about it in document `doc`], each run with
+  // KC_V2_ASPECTS on
+  const MODEL_MISTAKES: Array<[string, string, (doc: string) => string]> = [
+    ['a metric that reads a column, not a field',
+     googleDoc({extra: "    metrics:\n      - {name: revenue, expression: 'SUM(orders.amount)'}\n"}),
+     doc => `metric 'revenue' in model 'retail' (${doc}): expression references 'orders.amount', ` +
+         "but entity 'orders' has no field 'amount'; metric expressions must reference declared " +
+         'fields, not physical columns.'],
+    ['a metric on an entity another extends', googleDoc({extra:
+         `      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n` +
+         '        primary_key: [order_id]\n        fields:\n          - {name: order_id, expression: order_id}\n' +
+         "    metrics:\n      - {name: m, entity: orders, expression: 'COUNT(orders.order_id)'}\n"}),
+     doc => `metric 'm' in model 'retail' (${doc}) belongs to 'orders', which is extended by ` +
+         'another entity; a metric may belong only to a concrete leaf entity.'],
+    ['a relationship from an entity to itself', googleDoc({extra:
+         '          - {name: manager_id, expression: manager_id}\n    relationships:\n      - {name: ' +
+         'manager, from: orders, to: orders, from_columns: [manager_id], to_columns: [order_id]}\n'}),
+     doc => `relationship 'manager' in model 'retail' (${doc}) runs from 'orders' to itself; a ` +
+         'relationship joins two different entities.'],
+    ['a graph whose entities have no primary key',
+     googleDoc({extra: `    deployments: [{name: g, target: ${BQ_GRAPH}}]\n`})
+         .replace('        primary_key: [order_id]\n', ''),
+     doc => `[${doc}] deployment 'g': cannot generate a property graph: every entity was skipped ` +
+         'because it has no primary key (a graph node requires a KEY); a graph requires at least ' +
+         "one NODE TABLE\nentity 'orders': empty KEY (no primary key); node table skipped, as a " +
+         'graph node requires a KEY'],
+    ['an aspect too large for Knowledge Catalog', googleDoc({source: `${BQ_TABLE}\n        ` +
+         `ai_context: {examples: ${JSON.stringify(Array.from({length: 70}, (_, i) => 'e'.repeat(2000) + i))}}`}),
+     () => `aspect '${process.env.KC_TYPE_PROJECT ?? 'dataplex-types'}.global.overview' of entry ` +
+         "'retail/entities/orders' is too large to store in Knowledge Catalog: its data takes " +
+         '141194 bytes, and one aspect holds at most 122880.'],
+  ];
+  test.each(MODEL_MISTAKES.flatMap(([mistake, input, message]) => [true, false].map(
+      first => [mistake, first ? 'first-party' : 'third-party', first, input, message] as const)))(
+      'reports %s in a %s import, as push does', async (_, __, first, input, message) => {
+        const saved = process.env.KC_V2_ASPECTS;
+        process.env.KC_V2_ASPECTS = '1';
+        try {
+          const res = await importSemanticModelYaml(
+              input, first ? {...strict, flavor: 'google'} : {flavor: 'google'});
+          expect(res.errors).toEqual(first ? [message('sales')] : []);
+          if (!first) expect(res.warnings.at(-1)).toBe(message('retail'));
+        } finally {
+          if (saved === undefined) delete process.env.KC_V2_ASPECTS;
+          else process.env.KC_V2_ASPECTS = saved;
+        }
+      });
+
+  // [what push's line is about, input, profile files, the line push prints
+  // about it in document `doc`]
+  const PUSH_LINES: Array<[string, string, ReturnType<typeof pg>, (doc: string) => string]> = [
+    ['an entity the catalog holds without keys',
+     model('').replace('        primary_key: [order_id]\n', ''), [],
+     () => "Warning: [retail] entity 'orders': no keys declared in the source model"],
+    ['a field pruning leaves out',
+     model(`          - {name: extra}\n    deployments: [{name: a, target: ${ALLOYDB_DB}}]\n`,
+           `${ALLOYDB_DB}/schemas/public/tables/orders`), [],
+     doc => `Warning: field 'orders.extra' in model 'retail' (${doc}, deployment 'a') has no ` +
+         'expression, so it is unavailable there.'],
+    ['an entity two graphs named g leave out', model(
+         `      - name: items\n        source: ${BQ_PREFIX}/tables/items\n        fields:\n` +
+         `          - {name: order_id, expression: order_id}\n    deployments: [{name: g, target: ${BQ_GRAPH}}, ` +
+         `{name: h, target: ${BQ_GRAPH.replace('/sales/', '/dev/')}}]\n`), [],
+     () => "Warning: [retail -> g] entity 'items': empty KEY (no primary key); node table " +
+         'skipped, as a graph node requires a KEY'],
+    ['a field a profile excludes',
+     model(`          - {name: extra, expression: extra}\n    deployments: [{name: g, target: ${BQ_GRAPH}, profile: pg}]\n`),
+     pg(`${KEYED}    fields_exclude: [extra]\n`),
+     doc => `Note: model 'retail' (${doc}, deployment 'g') excludes field 'orders.extra'.`],
+  ];
+  test.each(PUSH_LINES.flatMap(([what, input, profileFiles, line]) => [true, false].map(
+      first => [what, first ? 'first-party' : 'third-party', first, input, profileFiles, line] as const)))(
+      "gives push's warning, or leaves out push's note, about %s in a %s import",
+      async (_, __, first, input, profileFiles, line) => {
+        const res = await importSemanticModelYaml(
+            input, {strict: first, fileName: 'sales.yaml', flavor: 'google', profileFiles});
+        const text = line(first ? 'sales' : 'retail');
+        // Import prints each warning once, and leaves out push's notes.
+        const body = text.replace(/^(Warning|Note): /, '');
+        expect(res.errors).toEqual([]);
+        expect(text.startsWith('Note: ') ? res.warnings : res.warnings.filter(w => w === body))
+            .toEqual(text.startsWith('Note: ') ? [] : [body]);
+      });
 
   test.each(PATHS.filter(([path]) => path.includes('profile file')))(
       'rethrows an unexpected error from the profile file check, in %s', async (_, build) => {
@@ -748,9 +884,9 @@ describe('vanilla output, extensions, and targets', () => {
       'wraps short-form expression, moves relationship description into GOOGLE block, and warns on unaccepted source',
       async () => {
         const extra =
-            `      - name: customers\n        source: customers\n        primary_key: [customer_id]\n        fields:\n          - name: customer_id\n            expression: "customers.customer_id"\n    relationships:\n      - name: order_customer\n        from: orders\n        to: customers\n        from_columns: [order_id]\n        to_columns: [customer_id]\n        description: "Customer who placed the order"\n    custom_extensions:\n      - vendor_name: DBT\n        data: '{"meta":"kept"}'\n`;
+            `      - name: customers\n        source: customers\n        primary_key: [customer_id]\n        fields:\n          - name: customer_id\n            expression: "customer_id"\n    relationships:\n      - name: order_customer\n        from: orders\n        to: customers\n        from_columns: [order_id]\n        to_columns: [customer_id]\n        description: "Customer who placed the order"\n    custom_extensions:\n      - vendor_name: DBT\n        data: '{"meta":"kept"}'\n`;
         const res = await importSemanticModelYaml(
-            ossieDoc({fieldExpr: '"orders.order_id"', extra}));
+            ossieDoc({fieldExpr: '"order_id"', extra}));
 
         expect(res.ok).toBe(true);
         expect(res.warnings).toContain(
@@ -763,7 +899,7 @@ describe('vanilla output, extensions, and targets', () => {
                          warnUnacceptedSource: true
                        }).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
-          {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
+          {dialect: 'ANSI_SQL', expression: 'order_id'},
         ]);
         expect(loaded.relationships[0].description)
             .toBe('Customer who placed the order');
@@ -1191,11 +1327,11 @@ describe('dialects and datatypes', () => {
       'maps dialect aliases and drops non-SQL dialects',
       async () => {
         const extra =
-            `          - name: amount\n            datatype: Opaque\n            expression:\n              dialects:\n                - {dialect: GOOGLESQL, expression: "orders.amount"}\n                - {dialect: POSTGRESQL, expression: "orders.amount"}\n                - {dialect: TSQL, expression: "orders.amount"}\n          - name: bi_only\n            datatype: datetimetz\n            expression:\n              dialects:\n                - {dialect: MDX, expression: "[Measures].[BiOnly]"}\n`;
+            `          - name: amount\n            datatype: Opaque\n            expression:\n              dialects:\n                - {dialect: GOOGLESQL, expression: "amount"}\n                - {dialect: POSTGRESQL, expression: "amount"}\n                - {dialect: TSQL, expression: "amount"}\n          - name: bi_only\n            datatype: datetimetz\n            expression:\n              dialects:\n                - {dialect: MDX, expression: "[Measures].[BiOnly]"}\n`;
         const res = await importSemanticModelYaml(
             ossieDoc({
               fieldExpr:
-                  '{\n              dialects: [{dialect: GOOGLE_SQL, expression: "orders.order_id"}, {dialect: TABLEAU, expression: "[Order ID]"}]\n            }\n            datatype: integer',
+                  '{\n              dialects: [{dialect: GOOGLE_SQL, expression: "order_id"}, {dialect: TABLEAU, expression: "[Order ID]"}]\n            }\n            datatype: integer',
               extra,
             }),
             {flavor: 'google'});
@@ -1272,7 +1408,7 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
       'removes extra models, prunes unanchored metrics, and truncates descriptions > 2000 chars',
       async () => {
         const extra = `      - name: customers\n        source: ${
-            BQ_TABLE}\n        primary_key: [customer_id]\n        fields:\n          - name: customer_id\n            expression:\n              dialects: [{dialect: BIGQUERY, expression: "customers.customer_id"}]\n    metrics:\n      - name: row_count\n        expression: "COUNT(*)"\n        custom_extensions:\n          - vendor_name: DBT\n            data: "{}"\n      - name: cross_entity\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(orders.order_id) + COUNT(customers.customer_id)"}]\n      - name: valid_orders\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(orders.order_id)"}]\n  - name: extra_model\n    datasets: []\n`;
+            BQ_TABLE}\n        primary_key: [customer_id]\n        fields:\n          - name: customer_id\n            expression:\n              dialects: [{dialect: BIGQUERY, expression: "customer_id"}]\n    metrics:\n      - name: row_count\n        expression: "COUNT(*)"\n        custom_extensions:\n          - vendor_name: DBT\n            data: "{}"\n      - name: cross_entity\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(orders.order_id) + COUNT(customers.customer_id)"}]\n      - name: valid_orders\n        expression:\n          dialects: [{dialect: BIGQUERY, expression: "COUNT(orders.order_id)"}]\n  - name: extra_model\n    datasets: []\n`;
         const res = await importSemanticModelYaml(
             ossieDoc({modelDescription: 'x'.repeat(2105), extra}));
         const googleRes = await importSemanticModelYaml(
@@ -1309,7 +1445,7 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
     ['in a GOOGLE block', ossieDoc, `custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "%s"}'}]`, true],
   ])('reports a relationship description over 2,000 characters %s', async (_, build, line, strict) => {
     const res = await importSemanticModelYaml(build({
-      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        ${line.replace('%s', 'd'.repeat(2005))}\n`,
+      extra: joined('oc', `        ${line.replace('%s', 'd'.repeat(2005))}\n`),
     }), {strict});
 
     expect([...res.warnings, ...res.errors]).toEqual([
@@ -1321,7 +1457,7 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
 
   test('counts a description without its surrounding whitespace, as push does', async () => {
     const input = googleDoc({
-      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: |\n          ${'d'.repeat(2000)}\n`,
+      extra: joined('oc', `        description: |\n          ${'d'.repeat(2000)}\n`),
     });
     const res = await importSemanticModelYaml(input, {strict: true});
 
@@ -1331,7 +1467,7 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
 
   test('cuts a description before a surrogate pair it would split', async () => {
     const res = await importSemanticModelYaml(googleDoc({
-      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: " ${'d'.repeat(1999)}\u{1F600}${'d'.repeat(10)} "\n`,
+      extra: joined('oc', `        description: " ${'d'.repeat(1999)}\u{1F600}${'d'.repeat(10)} "\n`),
     }));
 
     expect(res.warnings).toEqual(
@@ -1344,7 +1480,7 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
     [
       'non-SQL dialect in strict mode', googleDoc({
         fieldExpr:
-            '{\n              dialects: [{dialect: MDX, expression: "1"}, {dialect: BIGQUERY, expression: "orders.order_id"}]\n            }'
+            '{\n              dialects: [{dialect: MDX, expression: "1"}, {dialect: BIGQUERY, expression: "order_id"}]\n            }'
       })
     ],
     [
@@ -1396,7 +1532,7 @@ semantic_model:
         extends: [base_orders]
         fields:
           - name: order_id
-            expression: "orders.order_id"
+            expression: "order_id"
       - name: base_orders
         source: ${BQ_TABLE}
         primary_key: [order_id]
@@ -1406,11 +1542,17 @@ semantic_model:
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: "base_orders.order_id"
+                  expression: "order_id"
+      - name: customers
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}
     relationships:
       - name: order_base
         from: orders
-        to: base_orders
+        to: customers
         from_columns: [order_id]
         to_columns: [order_id]
         description: "Order to base"
@@ -1433,6 +1575,11 @@ entities:
   - name: base_orders
     source: ${BQ_TABLE}
     primary_key: [order_id]
+    fields: [{name: order_id, expression: order_id}]
+  - name: customers
+    source: ${BQ_TABLE}
+    primary_key: [order_id]
+    fields: [{name: order_id, expression: order_id}]
 relationships:
   - name: order_base
     from_columns: [order_id]
@@ -1458,7 +1605,7 @@ semantic_model:
             expression:
               dialects:
                 - dialect: SNOWFLAKE
-                  expression: "orders.order_id"
+                  expression: "order_id"
         ai_context:
           tier: gold
         custom_extensions:
@@ -1472,11 +1619,17 @@ semantic_model:
             expression:
               dialects:
                 - dialect: BIGQUERY
-                  expression: "base_orders.order_id"
+                  expression: "order_id"
+      - name: customers
+        source: ${BQ_TABLE}
+        primary_key: [order_id]
+        fields:
+          - name: order_id
+            expression: {dialects: [{dialect: BIGQUERY, expression: order_id}]}
     relationships:
       - name: order_base
         from: orders
-        to: base_orders
+        to: customers
         from_columns: [order_id]
         to_columns: [order_id]
         custom_extensions:
@@ -1511,12 +1664,20 @@ semantic_model:
                   {
                     "name": "orders",
                     "source": "${BQ_TABLE}",
-                    "primary_key": ["order_id"]
+                    "primary_key": ["order_id"],
+                    "fields": [{"name": "order_id", "expression": "order_id"}]
                   },
                   {
                     "name": "base_orders",
                     "source": "${BQ_TABLE}",
-                    "primary_key": ["order_id"]
+                    "primary_key": ["order_id"],
+                    "fields": [{"name": "order_id", "expression": "order_id"}]
+                  },
+                  {
+                    "name": "customers",
+                    "source": "${BQ_TABLE}",
+                    "primary_key": ["order_id"],
+                    "fields": [{"name": "order_id", "expression": "order_id"}]
                   }
                 ],
                 "relationships": [
@@ -1548,8 +1709,8 @@ semantic_model:
         expect(res.files[0].content).not.toContain('vendor_name: GOOGLE');
         const loaded = loadModels(res.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
-          {dialect: 'SNOWFLAKE', expression: 'orders.order_id'},
-          {dialect: 'BIGQUERY', expression: 'orders.order_id'},
+          {dialect: 'SNOWFLAKE', expression: 'order_id'},
+          {dialect: 'BIGQUERY', expression: 'order_id'},
         ]);
         expect(loaded.entities[0].aiContext?.additionalProperties).toEqual({
           tier: 'gold',
@@ -1569,6 +1730,11 @@ semantic_model:
           },
         ]);
         const loadedProfile = loadProfileFile(res.files[1].content, 'prod');
+        // Each entity's order_id, as the profile restates it.
+        const fields = [{
+          name: 'order_id', expression: 'order_id', stringForm: true,
+          dialects: [{dialect: 'ANSI_SQL' as const, expression: 'order_id'}],
+        }];
         expect(loadedProfile).toEqual({
           name: 'prod',
           entities: [
@@ -1576,12 +1742,15 @@ semantic_model:
               name: 'orders',
               source: BQ_TABLE,
               primaryKey: ['order_id'],
+              fields,
             },
             {
               name: 'base_orders',
               source: BQ_TABLE,
               primaryKey: ['order_id'],
+              fields,
             },
+            {name: 'customers', source: BQ_TABLE, primaryKey: ['order_id'], fields},
           ],
           relationships: [
             {name: 'order_base', fromColumns: ['order_id'], toColumns: ['order_id']},
@@ -1615,7 +1784,7 @@ semantic_model:
         expect(res.files[0].content).toContain('flag: "yes"');
         const loaded = loadModels(res.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
-          {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
+          {dialect: 'ANSI_SQL', expression: 'order_id'},
         ]);
         expect(loaded.entities[0].extends).toEqual(['base_orders']);
         expect(loaded.relationships[0].description).toBe('Order to base');
@@ -1641,7 +1810,7 @@ semantic_model:
         primary_key: [order_id]
         fields:
           - name: order_id
-            expression: "orders.order_id"
+            expression: "order_id"
           - name: amount
             datatype: Decimal
       - name: base_entity
@@ -1649,7 +1818,7 @@ semantic_model:
       - name: unbound_entity
         fields:
           - name: id
-            expression: "unbound_entity.id"
+            expression: "id"
     relationships:
       - name: rel_no_cols
         from: orders
@@ -1778,7 +1947,7 @@ semantic_model:
         expect(origIr.entities[0].fields[0].stringForm).toBe(true);
         expect(roundTripIr.entities[0].fields[0].stringForm).toBe(false);
         expect(roundTripIr.entities[0].fields[0].dialects).toEqual([
-          {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
+          {dialect: 'ANSI_SQL', expression: 'order_id'},
         ]);
         expect(origIr.metrics[0].stringForm).toBe(true);
         expect(roundTripIr.metrics[0].stringForm).toBe(false);
@@ -1797,14 +1966,6 @@ semantic_model:
             .toContain(`expression: ${longSql}\n`);
       });
 
-  // A relationship from `orders` to itself, with `lines` added to it.
-  const selfJoin = (lines: string) => `    relationships:
-      - name: self
-        from: orders
-        to: orders
-        from_columns: [order_id]
-        to_columns: [order_id]
-${lines}`;
   test.each([
     ['a padded description', '    description: "  Retail model  "\n'],
     ['a block description', '    description: |\n      Retail model.\n'],
@@ -1825,7 +1986,7 @@ ${lines}`;
             `    custom_extensions: [{vendor_name: GOOGLE, data: '{"deployments": [{"name": "prod", "target": "${BQ_PREFIX}/propertyGraphs/retail"}]}'}]\n`,
         source: `${BQ_TABLE}\n        custom_extensions: [{vendor_name: GOOGLE, data: '{"extends": ["base"]}'}]`,
         extra: `      - name: base\n        source: ${BQ_TABLE}\n        fields: []\n` +
-            selfJoin(
+            joined('self',
                 `        custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "  Self join.\\n"}'}]\n`),
       }),
       [
@@ -1837,7 +1998,7 @@ ${lines}`;
     [
       'a description in a GOOGLE block', 'ossie',
       googleDoc({
-        extra: selfJoin(
+        extra: joined('self',
             '        description: |\n          Self join.\n        custom_extensions:\n          - vendor_name: DBT\n            data: "{}"\n'),
       }),
       `            data: "{}"\n          - vendor_name: GOOGLE\n            data: '{"description":"Self join.\\n"}'\n`,
@@ -1849,7 +2010,7 @@ ${lines}`;
             '    ai_context:\n      instructions: i\n      custom:\n        team: sales\n      synonyms: [s]\n',
         source: `${BQ_TABLE}\n        ai_context: {instructions: d, custom: {k: d}}`,
         fieldExpr: 'order_id\n            ai_context: {instructions: f, custom: {k: f}}',
-        extra: selfJoin('        ai_context: {instructions: r, custom: {k: r}}\n') +
+        extra: joined('self', '        ai_context: {instructions: r, custom: {k: r}}\n') +
             '    metrics:\n      - name: n\n        expression: COUNT(orders.order_id)\n        ai_context: {instructions: m, custom: {k: m}}\n',
       }),
       [
@@ -1863,9 +2024,9 @@ ${lines}`;
         modelAiContext:
             '    deployments: []\n    ai_context: {custom: {}}\n    actions: []\n    constraints: []\n',
         source: `${BQ_TABLE}\n        abstract: false\n        extends: []`,
-        extra: selfJoin('        description: ""\n') + '# end\n',
+        extra: joined('self', '        description: ""\n') + '# end\n',
       }),
-      ossieDoc({extra: `${selfJoin('')}# end\n`}),
+      ossieDoc({extra: `${joined('self', '')}# end\n`}),
     ],
     [
       'the GOOGLE block after the entities that came before deployments', 'ossie',
@@ -1900,7 +2061,7 @@ ${lines}`;
       },
       '        extends: [base]\n',
     ],
-    ['a relationship description', {extra: selfJoin('        description: Self join.\n')}, '        description: Self join.\n'],
+    ['a relationship description', {extra: joined('self', '        description: Self join.\n')}, '        description: Self join.\n'],
     [
       'a metric entity',
       {extra: '    metrics:\n      - name: n\n        entity: orders\n        expression: {dialects: [{dialect: BIGQUERY, expression: COUNT(orders.order_id)}]}\n'},

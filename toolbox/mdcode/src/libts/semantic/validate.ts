@@ -3,24 +3,27 @@
 // Runs once over the shared, already-parsed models (see loadSemanticModels)
 // before any destination leg, so a real `kcmd push` AND a `--validate-only` dry
 // run enforce the same requirements. Returns one message per violation (an
-// empty array means valid); the caller (commands.ts) prints them and aborts the
-// push. Kept separate from the loader -- which validates a document against the
-// schema -- because these are deployment requirements, not schema rules, and
-// they read the GOOGLE deployment-target extension the BigQuery leg owns.
+// empty array means valid); push prints them and aborts, and `kcmd import`
+// reports them. Kept separate from the loader -- which validates a document
+// against the schema -- because these are deployment requirements, not schema
+// rules, and they read the GOOGLE deployment-target extension the BigQuery leg
+// owns.
 
 import {BigQueryClient} from '../gcp/bigquery';
+import {ApiContext} from '../gcp/context';
 import {SpannerClient} from '../gcp/spanner';
 
 import {elementDescription, fieldDescription} from './bigquery';
-import {googleDeploymentTargets} from './deploy_bigquery';
+import {deployBigQuery, DeployResult, googleDeploymentTargets} from './deploy_bigquery';
+import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
-import {applyProfile, columnBinding, DEFAULT_PROFILE, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, noTextFor, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey} from './resolve_profiles';
+import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
 import {leadingDmlVerb, referencedParameters} from './sql_identifiers';
 import {SqlColumn} from './sql_parser';
@@ -1622,9 +1625,9 @@ function metricNoSqlError(
 //        E, declared or inherited, since the graph renders a field that names
 //        a sibling from that sibling's SQL (see selfReferenceErrors).
 //
-// Exported so `commands.ts` can also run it on the unpruned model before
-// `pruneUnavailable` drops unbound fields and metrics on a graph push. When
-// given, `flaggedMetrics` collects the name of each metric it reports.
+// deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
+// drops unbound fields and metrics on a graph push. When given,
+// `flaggedMetrics` collects the name of each metric it reports.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
     flaggedMetrics?: Set<string>): string[] {
@@ -1651,7 +1654,12 @@ export function validateExpressionReferences(
             .map(e => [e.name, e]));
     const impliedDialect = sourcesDialect(model);
     const addUnreadableWarning =
-        (what: string, total: number, unreadDialects: string[]) => {
+        (what: string, total: number, unread: string[]) => {
+          // A caller that looked up no table's dialect reads no ANSI_SQL
+          // text when every table needs the lookup, so it warns about none.
+          const unreadDialects = impliedDialect === null ?
+              unread.filter(d => d !== 'ANSI_SQL') :
+              unread;
           if (!unreadDialects.length) return;
           if (unreadDialects.length === total) {
             warnings.push(
@@ -1938,6 +1946,297 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
       ['AlloyDB', `${c.project}/${c.location}/${c.cluster}/${c.database}`];
   return {database: `${engine}/${name}`, target: `${system} database '${name}'`,
           outside: 'which is not a table in that database'};
+}
+
+// Whether Knowledge Catalog push and pull should use the second-generation
+// built-in aspect fields and entry-id layout. Only `KC_V2_ASPECTS=1` enables
+// it; unset, `''`, `'0'`, and `'true'` are all off.
+export function kcV2Aspects(): boolean {
+  return process.env.KC_V2_ASPECTS === '1';
+}
+
+// What localChecks reads. `loaded` is the load of `docs` with the dialects in
+// `load`, and `models` holds each loaded model after withProfileFiles.
+export interface LocalCheckScope {
+  docs: Array<{name: string; text: string}>;
+  loaded: {models: LoadedModel[]; warnings: string[]};
+  models: LoadedModel[];
+  profileDocs: ProfileFiles;
+  declaredBy: DeclaredProfiles;
+  load: DialectLoad;
+}
+
+// One selected deployment, its message prefix, the model it deploys and what
+// pruning leaves out of it. A BigQuery or Spanner deployment also holds its
+// generated DDL and warnings.
+export interface DeploymentPlan {
+  deployment: ResolvedDeployment;
+  at: string;
+  model: LoadedModel;
+  report: AvailabilityReport;
+  generated?: {ddl: string[]; warnings: string[]};
+}
+
+// Adds the profile files of the model in `base` to `model.profiles`, without
+// their actions. Returns the error of the first profile file that breaks a
+// file rule. A profile file that does not load is left out, for
+// namedProfileErrors to report.
+export function withProfileFiles(base: LoadedModel, profileDocs: ProfileFiles):
+    LoadedModel|{errors: LocalCheckError[]} {
+  const {document, model} = base;
+  const profiles = [...(model.profiles ?? [])];
+  let files: ReturnType<ProfileFiles>;
+  try {
+    files = profileDocs(document);
+  } catch (err: any) {
+    return {errors: [{error: err.message || String(err), document}]};
+  }
+  const reserved = reservedProfileNameError(document, files);
+  if (reserved) return {errors: [{error: reserved, document}]};
+  for (const p of files) {
+    try {
+      profiles.push(loadProfileFile(p.text, p.name, {skipActions: true}));
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+    }
+  }
+  return {document, model: profiles.length ? {...model, profiles} : model};
+}
+
+// Runs push's offline checks that follow withProfileFiles and the file copy
+// and sidecar checks, through the graph generation. Returns the errors of the
+// first stage that finds any, or else a plan for each deployment `selected`
+// names, or for every deployment when it is unset.
+export async function localChecks(
+    scope: LocalCheckScope, warn: (w: string) => void, selected?: string[]):
+    Promise<{plans: DeploymentPlan[]}|{errors: LocalCheckError[]}> {
+  const {docs, loaded, models, profileDocs, declaredBy, load} = scope;
+  const stop = (errors: LocalCheckError[]) => ({errors});
+  const ofModel = (document: string, ...errors: string[]) =>
+      errors.map(error => ({error, document}));
+  const ofProfile = (document: string, profile: string, ...errors: string[]) =>
+      errors.map(error => ({error, document, profile}));
+  const declaredNames = (document: string) =>
+      declaredBy(docs.find(d => d.name === document)!).map(p => p.name);
+
+  // Every deployment's target must be in an accepted form, and its profile one
+  // the model declares, whether or not this push selects the deployment.
+  const selectedByDoc = new Map<string, ResolvedDeployment[]>();
+  const everyByDoc = new Map<string, ResolvedDeployment[]>();
+  for (const {document, model} of models) {
+    const every = resolveModelDeployments(model);
+    if ('error' in every) return stop(ofModel(document, every.error));
+    const resolved = resolveModelDeployments(model, selected);
+    if ('error' in resolved) return stop(ofModel(document, resolved.error));
+    const undeclared = undeclaredProfileError(
+        document, model, declaredNames(document));
+    if (undeclared) return stop(ofModel(document, undeclared));
+    everyByDoc.set(document, every.deployments);
+    selectedByDoc.set(document, resolved.deployments);
+  }
+
+  // Every named profile is checked on its own against the model file, and so
+  // are the model file's own bindings and each deployment. The catalog's model
+  // is checked as a model that deploys nowhere. A selected deployment's own
+  // checks run only after these pass, so these give every error and every
+  // warning about SQL kcmd cannot read.
+  const profileWarnings: string[] = [];
+  const profileErrors = namedProfileErrors(
+      docs, new Map(loaded.models.map(m => [m.document, m.model])),
+      profileDocs, declaredBy, profileWarnings, load);
+  for (const {document, model} of models) {
+    profileErrors.push(
+        ...ofProfile(
+            document, DEFAULT_PROFILE,
+            ...validateInlineDialects(model, document),
+            ...validateInheritedColumns(model, document)),
+        // One call per profile, so each error carries its deployments' profile.
+        ...[...new Set(everyByDoc.get(document)!.map(d => d.profile))].flatMap(
+            profile => ofProfile(document, profile, ...validateDeployments({
+              ...model,
+              deployments: model.deployments!.filter(
+                  d => (d.profile ?? DEFAULT_PROFILE) === profile),
+            }, document))));
+    const doc = docs.find(d => d.name === document)!;
+    const declared = declaredBy(doc);
+    const named = declared.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
+    profileWarnings.push(...inlineBindingWarnings(model, document, named));
+    // A profile that no selected deployment applies still goes to Knowledge
+    // Catalog, so its load warnings print here, less those the model file's
+    // load gave, unless a check above recorded an error for that profile. A
+    // selected deployment prints its own profile's warnings.
+    const applied = selectedByDoc.get(document)!.map(d => d.profile);
+    for (const {name} of declared) {
+      if (applied.includes(name)) continue;
+      if (profileErrors.some(
+              e => e.document === document && e.profile === name)) {
+        continue;
+      }
+      profileWarnings.push(
+          ...appliedProfileWarnings(doc, declared, name, loaded.warnings, load));
+    }
+  }
+  const kcWarnings: string[] = [];
+  const kcErrors = models.flatMap(
+      m => ofModel(m.document, ...validatePushRequirements(
+          [{...m, model: {...m.model, deployments: []}}],
+          {
+            warnings: kcWarnings,
+            v2Aspects: kcV2Aspects(),
+          })));
+  for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
+  if (profileErrors.length || kcErrors.length) {
+    return stop([...profileErrors, ...kcErrors]);
+  }
+  // Each deployment's tables must be in the database it deploys to, whether
+  // or not this push selects the deployment.
+  const tableErrors = models.flatMap(
+      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(
+          d => ofProfile(
+              document, d.profile,
+              ...deploymentTableErrors(document, model, d))));
+  if (tableErrors.length) return stop(tableErrors);
+
+  const plans: DeploymentPlan[] = [];
+  for (const base of models) {
+    for (const deployment of selectedByDoc.get(base.document) ?? []) {
+      const plan =
+          await deploymentPlan(base, profileDocs(base.document), deployment, warn);
+      if ('errors' in plan) {
+        return stop(
+            ofProfile(base.document, deployment.profile, ...plan.errors));
+      }
+      plans.push(plan);
+    }
+  }
+  return {plans};
+}
+
+// Builds and checks the model `deployment` deploys from `base`, reading its
+// profile file in `files` again with its actions, and generates its DDL
+// offline. Returns the plan, or the errors that stop the push.
+async function deploymentPlan(
+    base: LoadedModel, files: ReturnType<ProfileFiles>,
+    deployment: ResolvedDeployment,
+    warn: (w: string) => void): Promise<DeploymentPlan|{errors: string[]}> {
+  const {document, model} = base;
+  const at = `[${document}] deployment '${deployment.name}'`;
+  const fail = (...errors: string[]) => ({errors});
+  const spanner = spannerMetricsErrors(document, model, deployment);
+  if (spanner.length) return fail(...spanner);
+  let applied = model;
+  if (deployment.profile !== DEFAULT_PROFILE) {
+    // localChecks has checked that the model declares the profile and that
+    // its file loads, so `model.profiles` holds it.
+    let spec = model.profiles!.find(p => p.name === deployment.profile)!;
+    const file = files.find(p => p.name === deployment.profile);
+    const warnings: string[] = [];
+    try {
+      // A profile in a GOOGLE block has no file and applies as loaded.
+      if (file) spec = loadProfileFile(file.text, file.name);
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return fail(`[${file!.fileName}] ${err.message}`);
+    }
+    try {
+      applied = applyProfile(model, spec, {warnings});
+    } catch (err) {
+      if (!(err instanceof SemanticModelError)) throw err;
+      return fail(`${at}: ${err.message}`);
+    }
+    for (const w of warnings) {
+      warn(`profile '${deployment.profile}': [${document}] ${w}`);
+    }
+  }
+  // Messages name the deployment.
+  const label = `${document}, deployment '${deployment.name}'`;
+  const checked: LoadedModel = {document: label, model: applied};
+  // Pruning can remove the field these rules are about, so they run first.
+  // localChecks has already warned about the SQL they cannot read.
+  const unprunedErrors = [
+    ...validateInheritance([checked]),
+    ...validateExpressionReferences([checked]),
+  ];
+  const {model: pruned, report} =
+      pruneUnavailable(checked.model, deployment.profile);
+  // Keeps only this deployment, so every reader sees its target alone.
+  const narrowed: LoadedModel = {
+    document: checked.document,
+    model: {
+      ...pruned,
+      deployments:
+          (model.deployments ?? []).filter(d => d.name === deployment.name),
+    },
+  };
+  const errors = [
+    ...unprunedErrors,
+    ...validatePushRequirements([narrowed], {
+      fieldsPruned: true,
+      v2Aspects: kcV2Aspects(),
+    }),
+  ];
+  if (errors.length) return {errors};
+  // An AlloyDB database holds no graph.
+  if (deployment.engine === 'alloydb') {
+    return {deployment, at, model: narrowed, report};
+  }
+  const generated = await generateOffline(
+      deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
+      [narrowed]);
+  if (typeof generated === 'string') return fail(`${at}: ${generated}`);
+  return {deployment, at, model: narrowed, report, generated};
+}
+
+// The warnings and the note push prints on what pruning leaves out of the
+// model `plan` deploys. Each line names the model, and the document and the
+// deployment.
+export function pruningLines({deployment, model, report: r}: DeploymentPlan):
+    string[] {
+  const where = `model '${model.model.name}' (${model.document})`;
+  // What becomes of a field left out. An AlloyDB database holds no graph.
+  const outcome = deployment.engine === 'alloydb' ? 'it is unavailable there' :
+                                                    'the graph omits it';
+  const excluded = new Set(r.excludedFields);
+  const omits = (field: string, why: string) =>
+      `Warning: field '${field}' in ${where} ${why}, so ${outcome}.`;
+  // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
+  const named = (kind: string, names: string[]) => names.length ?
+      `${plural(names.length, kind, `${kind}s`)} ${
+          listed(names.map(n => `'${n}'`))}` :
+      '';
+  const unavailable = [
+    named('metric', r.droppedMetrics.map(m => m.name)),
+    named('action', r.droppedActions.map(a => a.name)),
+  ].filter(n => n).join(r.droppedMetrics.length > 1 ? ', and ' : ' and ');
+  const note = [
+    excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
+    unavailable && `leaves ${unavailable} unavailable.`,
+  ].filter(p => p).join(' It ');
+  return [
+    ...r.unboundFields.filter(f => !excluded.has(f))
+        .map(f => omits(f, 'has no expression')),
+    ...r.droppedFields.map(d => omits(d.name, d.reason)),
+    ...note ? [`Note: ${where} ${note}`] : [],
+  ];
+}
+
+
+// A validate-only deploy builds the DDL and calls no service, so it needs no
+// project or token.
+const NO_SERVICE = new ApiContext('', '', '');
+
+// Generates a graph leg's DDL without calling a service, or gives why it
+// cannot be generated.
+async function generateOffline(
+    deployLeg: typeof deployBigQuery,
+    models: LoadedModel[]): Promise<DeployResult|string> {
+  try {
+    const result = await deployLeg(models, NO_SERVICE, {validateOnly: true});
+    if (result.success) return result;
+    return result.details ?? 'the graph could not be generated';
+  } catch (err: any) {
+    return err.message || String(err);
+  }
 }
 
 // Live pre-flight over the BigQuery-targeting models: confirms every entity's

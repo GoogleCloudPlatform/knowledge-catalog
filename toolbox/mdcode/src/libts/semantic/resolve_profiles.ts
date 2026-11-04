@@ -599,6 +599,15 @@ function applyToDocument(
 export type DeclaredProfile = {name: string; text: string}|
     {name: string; spec: ProfileSpec; label?: string};
 
+// Gives the profiles a model document declares: its profile files, then the
+// profiles a vanilla model carries in its GOOGLE block.
+export type DeclaredProfiles = (doc: {name: string; text: string}) =>
+    DeclaredProfile[];
+
+// A model's profile files, each with the file name messages give it.
+export type ProfileFiles =
+    (model: string) => Array<{name: string; text: string; fileName: string}>;
+
 /**
  * The profiles the model document `doc` declares: `files`, its profile files,
  * then the profiles a vanilla model carries in its GOOGLE block, by name, as
@@ -1942,9 +1951,7 @@ export interface LocalCheckError {
 export function namedProfileErrors(
     docs: Array<{name: string; text: string}>,
     baseByDoc: Map<string, SemanticModel>,
-    profileDocs: (model: string) =>
-        Array<{name: string; text: string; fileName: string}>,
-    declared: (doc: {name: string; text: string}) => DeclaredProfile[],
+    profileDocs: ProfileFiles, declared: DeclaredProfiles,
     warnings: string[], load: DialectLoad): LocalCheckError[] {
   const errors: LocalCheckError[] = [];
   for (const d of docs) {
