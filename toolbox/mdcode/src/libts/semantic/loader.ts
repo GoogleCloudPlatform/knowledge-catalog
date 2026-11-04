@@ -42,8 +42,8 @@ export interface LoadOptions {
   // The dialects sourceDialects read before the load: each Cloud SQL and
   // third-party table's, keyed as dialectLookupKey gives, and each Spanner
   // database's, keyed by its resource name. Without this map a Cloud SQL or
-  // third-party source implies no dialect, so every expression text counts,
-  // and a Spanner source implies SPANNER.
+  // third-party source implies no dialect, as dialectOfSources describes, and
+  // a Spanner source implies SPANNER.
   sourceDialects?: ReadonlyMap<string, string>;
   // Turns `parseSource`'s rejection of an unaccepted table source form into a
   // warning so a caller can load a document whose sources have not all been
