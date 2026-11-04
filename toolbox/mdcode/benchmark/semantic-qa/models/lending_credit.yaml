@@ -1,0 +1,915 @@
+# Benchmark model: consumer lending and credit risk.
+#
+# An inheritance hierarchy at the centre. `credit_account` is abstract and has
+# three concrete subtypes with genuinely different economics -- a revolving
+# card, an amortizing installment loan, and a drawable line of credit.
+# Payments and delinquency snapshots attach to the SUPERTYPE.
+#
+# What it is here to test:
+#   - polymorphic aggregation. "Total exposure" must reach all three subtypes;
+#     "utilization" is meaningful only for the two carrying a credit limit;
+#     "remaining term" only for the installment loan. A reader that flattens
+#     the hierarchy away gets these wrong in both directions
+#   - an edge whose endpoint is an abstract entity (payment -> credit_account),
+#     which resolves to a union over the subtypes
+#   - a funnel (application -> decision -> booked account) where the
+#     denominator of approval rate is applications, not accounts
+#   - a daily risk snapshot, where delinquency is a state on a date rather than
+#     an event to be summed over time
+#
+# Questions: ../questions/lending_credit.yaml
+
+version: "0.2.0.dev0/google"
+
+semantic_model:
+  - name: lending_credit
+    description: >-
+      Consumer credit applications, booked accounts across three product
+      types, payments received, and daily delinquency positions.
+    ai_context:
+      instructions: >-
+        credit_account is abstract: questions about "accounts", "exposure" or
+        "balances" in general span card_account, installment_loan and
+        line_of_credit together. Utilization applies only to card_account and
+        line_of_credit, which have a credit limit; installment_loan has none.
+        Delinquency is a daily snapshot, so read it at one as_of_date rather
+        than summing across dates. Approval rate is measured over applications,
+        never over booked accounts.
+
+    entities:
+      - name: borrower
+        source: lending.public.borrower
+        primary_key: [borrower_id]
+        description: One row per individual who has applied or borrowed.
+        ai_context:
+          synonyms: ["borrower", "customer", "applicant", "account holder"]
+        fields:
+          - name: borrower_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: borrower_id}]
+          - name: borrower_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: borrower_name}]
+          - name: credit_score
+            datatype: Integer
+            description: Most recent bureau score, 300 to 850.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: credit_score}]
+            ai_context:
+              synonyms: ["FICO", "credit score", "bureau score"]
+          - name: risk_band
+            datatype: String
+            description: One of SUPER_PRIME, PRIME, NEAR_PRIME, SUBPRIME.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: risk_band}]
+            ai_context:
+              synonyms: ["risk band", "credit tier", "prime or subprime"]
+          - name: annual_income
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: annual_income}]
+            ai_context:
+              synonyms: ["income", "earnings", "salary"]
+          - name: debt_to_income
+            datatype: Float
+            description: Total monthly debt service over monthly income.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: debt_to_income}]
+            ai_context:
+              synonyms: ["DTI", "debt to income", "leverage"]
+          - name: employment_status
+            datatype: String
+            description: One of EMPLOYED, SELF_EMPLOYED, RETIRED, UNEMPLOYED, STUDENT.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: employment_status}]
+          - name: state
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: state}]
+          - name: relationship_start_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: relationship_start_date}]
+            ai_context:
+              synonyms: ["customer since", "tenure start"]
+
+      - name: branch
+        source: lending.public.branch
+        primary_key: [branch_id]
+        description: One row per originating branch or digital channel.
+        ai_context:
+          synonyms: ["branch", "office", "origination channel", "location"]
+        fields:
+          - name: branch_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: branch_id}]
+          - name: branch_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: branch_name}]
+          - name: region
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: region}]
+            ai_context:
+              synonyms: ["region", "market", "territory"]
+          - name: channel_type
+            datatype: String
+            description: One of BRANCH, DIGITAL, CALL_CENTER, PARTNER.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: channel_type}]
+            ai_context:
+              synonyms: ["channel", "how they applied", "origination channel"]
+
+      - name: loan_officer
+        source: lending.public.loan_officer
+        primary_key: [officer_id]
+        description: One row per underwriter or loan officer.
+        ai_context:
+          synonyms: ["loan officer", "underwriter", "banker"]
+        fields:
+          - name: officer_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: officer_id}]
+          - name: officer_name
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: officer_name}]
+          - name: branch_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: branch_id}]
+          - name: approval_authority_limit
+            datatype: Decimal
+            description: Largest amount the officer may approve unaided.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: approval_authority_limit}]
+            ai_context:
+              synonyms: ["authority", "approval limit", "signing limit"]
+
+      - name: application
+        source: lending.public.application
+        primary_key: [application_id]
+        description: >-
+          One row per credit application. The funnel grain, and the only
+          correct denominator for approval rate.
+        ai_context:
+          synonyms: ["application", "credit request", "loan request", "app"]
+        fields:
+          - name: application_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: application_id}]
+          - name: borrower_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: borrower_id}]
+          - name: branch_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: branch_id}]
+          - name: officer_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: officer_id}]
+          - name: applied_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: applied_date}]
+            ai_context:
+              synonyms: ["application date", "when they applied"]
+          - name: decision_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: decision_date}]
+          - name: product_requested
+            datatype: String
+            description: One of CARD, INSTALLMENT, LINE_OF_CREDIT.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: product_requested}]
+            ai_context:
+              synonyms: ["product applied for", "what they asked for"]
+          - name: requested_amount
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: requested_amount}]
+            ai_context:
+              synonyms: ["amount requested", "asked for"]
+          - name: decision
+            datatype: String
+            description: One of APPROVED, DECLINED, WITHDRAWN, PENDING.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: decision}]
+            ai_context:
+              synonyms: ["outcome", "approved or declined", "decision"]
+          - name: decline_reason
+            datatype: String
+            description: Adverse-action reason recorded on a DECLINED application.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: decline_reason}]
+            ai_context:
+              synonyms: ["why declined", "decline reason", "adverse action"]
+          - name: approved_amount
+            datatype: Decimal
+            description: Amount approved; may be less than requested.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: approved_amount}]
+          - name: booked_account_id
+            datatype: String
+            description: Account opened from this application; null if never booked.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: booked_account_id}]
+            ai_context:
+              synonyms: ["booked account", "resulting account"]
+
+      # --- the credit account hierarchy ------------------------------------
+      - name: credit_account
+        abstract: true
+        description: >-
+          Abstract supertype of every extension of credit. Has no table of its
+          own; its fields flatten into each subtype, and payments and
+          delinquency snapshots attach here so they reach all three.
+        ai_context:
+          synonyms: ["credit account", "account", "facility", "exposure"]
+        fields:
+          - name: account_id
+            datatype: String
+            description: Identifier, unique across all account subtypes.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: borrower_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: borrower_id}]
+          - name: origination_branch_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: origination_branch_id}]
+          - name: opened_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: opened_date}]
+            ai_context:
+              synonyms: ["opened", "origination date", "booked on"]
+          - name: closed_date
+            datatype: Date
+            description: Date closed; null while open.
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: closed_date}]
+          - name: account_status
+            datatype: String
+            description: One of OPEN, CLOSED, CHARGED_OFF, FROZEN.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_status}]
+            ai_context:
+              synonyms: ["status", "open or closed", "standing"]
+          - name: current_balance
+            datatype: Decimal
+            description: Principal outstanding. The shared exposure measure.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: current_balance}]
+            ai_context:
+              synonyms: ["balance", "outstanding", "principal", "exposure"]
+          - name: interest_rate
+            datatype: Float
+            description: Annual percentage rate as a fraction.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: interest_rate}]
+            ai_context:
+              synonyms: ["APR", "rate", "interest rate"]
+          - name: charged_off_amount
+            datatype: Decimal
+            description: Principal written off as uncollectable; zero while performing.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: charged_off_amount}]
+            ai_context:
+              synonyms: ["charge-off", "write-off", "loss"]
+
+      - name: card_account
+        source: lending.public.card_account
+        primary_key: [account_id]
+        extends: [credit_account]
+        description: A revolving credit card. Has a limit, so utilization applies.
+        ai_context:
+          synonyms: ["credit card", "card", "revolving account"]
+        fields:
+          - name: credit_limit
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: credit_limit}]
+            ai_context:
+              synonyms: ["limit", "credit line", "available credit"]
+          - name: card_network
+            datatype: String
+            description: One of VISA, MASTERCARD, AMEX, DISCOVER.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: card_network}]
+          - name: rewards_program
+            datatype: String
+            description: One of NONE, CASHBACK, TRAVEL, POINTS.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: rewards_program}]
+            ai_context:
+              synonyms: ["rewards", "card program", "perks"]
+          - name: cash_advance_balance
+            datatype: Decimal
+            description: Portion of the balance drawn as cash, priced higher.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: cash_advance_balance}]
+          - name: last_statement_balance
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: last_statement_balance}]
+
+      - name: installment_loan
+        source: lending.public.installment_loan
+        primary_key: [account_id]
+        extends: [credit_account]
+        description: >-
+          An amortizing fixed-term loan. Has NO credit limit, so utilization is
+          undefined for it.
+        ai_context:
+          synonyms: ["loan", "installment loan", "term loan", "personal loan"]
+        fields:
+          - name: original_principal
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: original_principal}]
+            ai_context:
+              synonyms: ["original amount", "loan amount", "principal advanced"]
+          - name: term_months
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: term_months}]
+            ai_context:
+              synonyms: ["term", "loan length", "duration"]
+          - name: remaining_term_months
+            datatype: Integer
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: remaining_term_months}]
+            ai_context:
+              synonyms: ["months left", "remaining term"]
+          - name: monthly_payment
+            datatype: Decimal
+            description: Scheduled amortizing payment.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: monthly_payment}]
+            ai_context:
+              synonyms: ["installment", "scheduled payment", "monthly amount"]
+          - name: collateral_type
+            datatype: String
+            description: One of UNSECURED, AUTO, HOME_IMPROVEMENT, SECURED_DEPOSIT.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: collateral_type}]
+            ai_context:
+              synonyms: ["collateral", "secured by", "security"]
+
+      - name: line_of_credit
+        source: lending.public.line_of_credit
+        primary_key: [account_id]
+        extends: [credit_account]
+        description: >-
+          A drawable revolving line. Has a limit, so utilization applies, but
+          its undrawn portion is a commitment the loan does not carry.
+        ai_context:
+          synonyms: ["line of credit", "LOC", "revolver", "HELOC"]
+        fields:
+          - name: credit_limit
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: credit_limit}]
+            ai_context:
+              synonyms: ["limit", "commitment", "line size"]
+          - name: drawn_amount
+            datatype: Decimal
+            description: Portion currently drawn down.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: drawn_amount}]
+            ai_context:
+              synonyms: ["drawn", "utilized", "advanced"]
+          - name: undrawn_commitment
+            datatype: Decimal
+            description: Limit less drawn; an off-balance-sheet exposure.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: undrawn_commitment}]
+            ai_context:
+              synonyms: ["undrawn", "available to draw", "unfunded commitment"]
+          - name: draw_period_end_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: draw_period_end_date}]
+
+      - name: payment
+        source: lending.public.payment
+        primary_key: [payment_id]
+        description: >-
+          One row per payment received, against an account of any subtype.
+        ai_context:
+          synonyms: ["payment", "remittance", "repayment", "cash received"]
+        fields:
+          - name: payment_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: payment_id}]
+          - name: account_id
+            datatype: String
+            description: Account paid, which may be any of the three subtypes.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: payment_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: payment_date}]
+          - name: payment_amount
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: payment_amount}]
+            ai_context:
+              synonyms: ["amount paid", "payment", "remitted"]
+          - name: principal_portion
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: principal_portion}]
+          - name: interest_portion
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: interest_portion}]
+            ai_context:
+              synonyms: ["interest paid", "interest collected"]
+          - name: fee_portion
+            datatype: Decimal
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: fee_portion}]
+            ai_context:
+              synonyms: ["fees", "fee income", "charges"]
+          - name: payment_method
+            datatype: String
+            description: One of ACH, CARD, CHECK, WIRE, AUTOPAY.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: payment_method}]
+          - name: is_late
+            datatype: Boolean
+            description: True when received after the due date.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: is_late}]
+            ai_context:
+              synonyms: ["late payment", "missed due date", "paid late"]
+
+      - name: delinquency_snapshot
+        source: lending.public.delinquency_snapshot
+        primary_key: [as_of_date, account_id]
+        description: >-
+          One row per account per day recording how far past due it is. A
+          state, not an event: read it at one as_of_date.
+        ai_context:
+          synonyms: ["delinquency", "past due", "arrears", "aging", "risk position"]
+        fields:
+          - name: as_of_date
+            datatype: Date
+            dimension:
+              is_time: true
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: as_of_date}]
+            ai_context:
+              synonyms: ["as of", "snapshot date", "position date"]
+          - name: account_id
+            datatype: String
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: account_id}]
+          - name: days_past_due
+            datatype: Integer
+            description: Days since the oldest unpaid scheduled amount came due.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: days_past_due}]
+            ai_context:
+              synonyms: ["DPD", "days late", "how far behind"]
+          - name: delinquency_bucket
+            datatype: String
+            description: One of CURRENT, DPD_1_29, DPD_30_59, DPD_60_89, DPD_90_PLUS.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: delinquency_bucket}]
+            ai_context:
+              synonyms: ["bucket", "aging bucket", "delinquency stage"]
+          - name: balance_at_risk
+            datatype: Decimal
+            description: Outstanding balance on the account at that date.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: balance_at_risk}]
+            ai_context:
+              synonyms: ["balance at risk", "exposure at risk"]
+          - name: in_hardship_program
+            datatype: Boolean
+            description: True when the account is under a forbearance arrangement.
+            expression:
+              dialects: [{dialect: ANSI_SQL, expression: in_hardship_program}]
+            ai_context:
+              synonyms: ["hardship", "forbearance", "payment relief"]
+
+    relationships:
+      - name: application_to_borrower
+        from: application
+        to: borrower
+        from_columns: [borrower_id]
+        to_columns: [borrower_id]
+        ai_context:
+          instructions: >-
+            Each application is from one borrower.
+      - name: application_to_branch
+        from: application
+        to: branch
+        from_columns: [branch_id]
+        to_columns: [branch_id]
+        ai_context:
+          instructions: >-
+            Each application came through one branch or channel.
+      - name: application_to_loan_officer
+        from: application
+        to: loan_officer
+        from_columns: [officer_id]
+        to_columns: [officer_id]
+        ai_context:
+          instructions: >-
+            Each application was decided by one officer.
+      - name: application_to_credit_account
+        from: application
+        to: credit_account
+        from_columns: [booked_account_id]
+        to_columns: [account_id]
+        ai_context:
+          instructions: >-
+            An approved application that was taken up points at the account it
+            booked. The endpoint is the abstract supertype, so it resolves to
+            whichever subtype was opened.
+          synonyms: ["booked from", "resulting account", "funded"]
+      - name: loan_officer_to_branch
+        from: loan_officer
+        to: branch
+        from_columns: [branch_id]
+        to_columns: [branch_id]
+        ai_context:
+          instructions: >-
+            Each officer is based at one branch.
+      - name: credit_account_to_borrower
+        from: credit_account
+        to: borrower
+        from_columns: [borrower_id]
+        to_columns: [borrower_id]
+        ai_context:
+          instructions: >-
+            Every account, of any subtype, belongs to one borrower. Declared
+            on the supertype so all three inherit it.
+      - name: credit_account_to_branch
+        from: credit_account
+        to: branch
+        from_columns: [origination_branch_id]
+        to_columns: [branch_id]
+        ai_context:
+          instructions: >-
+            Where the account was originated.
+      - name: payment_to_credit_account
+        from: payment
+        to: credit_account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        ai_context:
+          instructions: >-
+            Each payment is against one account of any subtype. Resolving this
+            edge means a union over card_account, installment_loan and
+            line_of_credit.
+      - name: delinquency_snapshot_to_credit_account
+        from: delinquency_snapshot
+        to: credit_account
+        from_columns: [account_id]
+        to_columns: [account_id]
+        ai_context:
+          instructions: >-
+            Each daily risk position is for one account of any subtype.
+
+    metrics:
+      # --- origination funnel ----------------------------------------------
+      - name: application_count
+        datatype: Integer
+        description: Distinct applications received.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: COUNT(DISTINCT application.application_id)
+        ai_context:
+          synonyms: ["applications", "volume applied", "demand"]
+      - name: approved_count
+        datatype: Integer
+        description: Applications approved.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN application.decision = 'APPROVED'
+                      THEN application.application_id END)
+        ai_context:
+          synonyms: ["approvals", "approved applications"]
+      - name: approval_rate
+        datatype: Float
+        description: >-
+          Approved over all decided applications. Withdrawn and pending
+          applications stay in the denominator only if they were decided, so
+          the denominator is every application.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN application.decision = 'APPROVED'
+                      THEN application.application_id END)
+                / NULLIF(COUNT(DISTINCT application.application_id), 0)
+        ai_context:
+          synonyms: ["approval rate", "acceptance rate", "pass rate"]
+      - name: decline_rate
+        datatype: Float
+        description: Declined over all applications.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN application.decision = 'DECLINED'
+                      THEN application.application_id END)
+                / NULLIF(COUNT(DISTINCT application.application_id), 0)
+        ai_context:
+          synonyms: ["decline rate", "rejection rate", "turndown rate"]
+      - name: requested_amount_total
+        datatype: Decimal
+        description: Credit asked for across applications.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(application.requested_amount)
+        ai_context:
+          synonyms: ["demand", "amount requested", "applied volume"]
+      - name: approved_amount_total
+        datatype: Decimal
+        description: Credit approved across applications.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(application.approved_amount)
+        ai_context:
+          synonyms: ["approved volume", "credit extended", "originations"]
+      - name: booking_rate
+        datatype: Float
+        description: >-
+          Share of approved applications that actually opened an account. The
+          take-up step of the funnel, distinct from approval.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT application.booked_account_id)
+                / NULLIF(COUNT(DISTINCT CASE WHEN application.decision = 'APPROVED'
+                               THEN application.application_id END), 0)
+        ai_context:
+          synonyms: ["take-up rate", "booking rate", "conversion"]
+
+      # --- exposure, across the whole hierarchy ----------------------------
+      - name: card_balance
+        datatype: Decimal
+        description: Outstanding on credit cards only.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(card_account.current_balance)
+        ai_context:
+          synonyms: ["card balances", "revolving balance", "card outstanding"]
+      - name: loan_balance
+        datatype: Decimal
+        description: Outstanding on installment loans only.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(installment_loan.current_balance)
+        ai_context:
+          synonyms: ["loan balances", "term loan outstanding"]
+      - name: line_drawn_balance
+        datatype: Decimal
+        description: Outstanding drawn on lines of credit only.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_of_credit.current_balance)
+        ai_context:
+          synonyms: ["line balances", "revolver drawn", "LOC outstanding"]
+      - name: total_exposure
+        datatype: Decimal
+        description: >-
+          Outstanding across all three account subtypes. The polymorphic
+          aggregate over the abstract supertype.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(card_account.current_balance)
+                + SUM(installment_loan.current_balance)
+                + SUM(line_of_credit.current_balance)
+        ai_context:
+          synonyms: ["total outstanding", "book size", "exposure", "receivables"]
+      - name: committed_credit
+        datatype: Decimal
+        description: >-
+          Limits extended on the two revolving products. Installment loans have
+          no limit and are correctly absent.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(card_account.credit_limit) + SUM(line_of_credit.credit_limit)
+        ai_context:
+          synonyms: ["total limits", "committed credit", "credit lines extended"]
+      - name: undrawn_commitment_total
+        datatype: Decimal
+        description: Unfunded commitment on lines of credit.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(line_of_credit.undrawn_commitment)
+        ai_context:
+          synonyms: ["undrawn", "unfunded", "available to draw"]
+      - name: card_utilization
+        datatype: Float
+        description: >-
+          Card balance over card limit. Defined only for card_account, since
+          installment loans have no limit.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(card_account.current_balance)
+                / NULLIF(SUM(card_account.credit_limit), 0)
+        ai_context:
+          synonyms: ["utilization", "card utilization", "percent of limit used"]
+      - name: revolving_utilization
+        datatype: Float
+        description: Balance over limit across both revolving products.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                (SUM(card_account.current_balance) + SUM(line_of_credit.current_balance))
+                / NULLIF(SUM(card_account.credit_limit)
+                         + SUM(line_of_credit.credit_limit), 0)
+        ai_context:
+          synonyms: ["revolving utilization", "overall utilization"]
+      - name: average_apr
+        datatype: Float
+        description: Mean rate across card accounts, unweighted by balance.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(card_account.interest_rate)
+                / NULLIF(COUNT(card_account.account_id), 0)
+        ai_context:
+          synonyms: ["average rate", "average APR", "pricing"]
+      - name: average_remaining_term
+        datatype: Float
+        description: >-
+          Mean months left on installment loans. Meaningful only for that
+          subtype; cards and lines have no term.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(installment_loan.remaining_term_months)
+                / NULLIF(COUNT(installment_loan.account_id), 0)
+        ai_context:
+          synonyms: ["remaining term", "months left", "weighted life"]
+
+      # --- credit risk -----------------------------------------------------
+      - name: delinquent_balance_30plus
+        datatype: Decimal
+        description: Balance on accounts 30 or more days past due, at one as_of_date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN delinquency_snapshot.days_past_due >= 30
+                    THEN delinquency_snapshot.balance_at_risk ELSE 0 END)
+        ai_context:
+          synonyms: ["30+ balance", "delinquent balance", "arrears balance"]
+      - name: delinquency_rate_30plus
+        datatype: Float
+        description: >-
+          Balance 30 or more days past due over all balance on that date. A
+          state measure, so it must be read at a single as_of_date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN delinquency_snapshot.days_past_due >= 30
+                    THEN delinquency_snapshot.balance_at_risk ELSE 0 END)
+                / NULLIF(SUM(delinquency_snapshot.balance_at_risk), 0)
+        ai_context:
+          synonyms: ["30+ DPD rate", "delinquency rate", "arrears rate"]
+      - name: delinquency_rate_90plus
+        datatype: Float
+        description: Balance 90 or more days past due over all balance on that date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(CASE WHEN delinquency_snapshot.days_past_due >= 90
+                    THEN delinquency_snapshot.balance_at_risk ELSE 0 END)
+                / NULLIF(SUM(delinquency_snapshot.balance_at_risk), 0)
+        ai_context:
+          synonyms: ["90+ DPD rate", "serious delinquency", "NPL rate"]
+      - name: hardship_account_count
+        datatype: Integer
+        description: Distinct accounts under a forbearance arrangement.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN delinquency_snapshot.in_hardship_program
+                      THEN delinquency_snapshot.account_id END)
+        ai_context:
+          synonyms: ["hardship accounts", "forbearance", "relief plans"]
+      - name: charge_off_amount
+        datatype: Decimal
+        description: Principal written off across all three subtypes.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                SUM(card_account.charged_off_amount)
+                + SUM(installment_loan.charged_off_amount)
+                + SUM(line_of_credit.charged_off_amount)
+        ai_context:
+          synonyms: ["charge-offs", "write-offs", "credit losses"]
+      - name: charge_off_rate
+        datatype: Float
+        description: Written-off principal as a share of total exposure.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                (SUM(card_account.charged_off_amount)
+                 + SUM(installment_loan.charged_off_amount)
+                 + SUM(line_of_credit.charged_off_amount))
+                / NULLIF(SUM(card_account.current_balance)
+                         + SUM(installment_loan.current_balance)
+                         + SUM(line_of_credit.current_balance), 0)
+        ai_context:
+          synonyms: ["loss rate", "charge-off rate", "net credit loss rate"]
+
+      # --- collections and income ------------------------------------------
+      - name: payments_received
+        datatype: Decimal
+        description: Cash received across all accounts.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(payment.payment_amount)
+        ai_context:
+          synonyms: ["collections", "cash in", "repayments"]
+      - name: interest_income
+        datatype: Decimal
+        description: Interest portion of payments received.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(payment.interest_portion)
+        ai_context:
+          synonyms: ["interest income", "interest collected", "NII"]
+      - name: fee_income
+        datatype: Decimal
+        description: Fee portion of payments received.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: SUM(payment.fee_portion)
+        ai_context:
+          synonyms: ["fees", "fee income", "non-interest income"]
+      - name: late_payment_rate
+        datatype: Float
+        description: Share of payments received after the due date.
+        expression:
+          dialects:
+            - dialect: ANSI_SQL
+              expression: >-
+                COUNT(DISTINCT CASE WHEN payment.is_late THEN payment.payment_id END)
+                / NULLIF(COUNT(DISTINCT payment.payment_id), 0)
+        ai_context:
+          synonyms: ["late payments", "payment delinquency", "paid late rate"]
