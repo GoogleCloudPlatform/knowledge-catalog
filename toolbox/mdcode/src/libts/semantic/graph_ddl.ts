@@ -736,8 +736,8 @@ function renderEdgeTable(
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
 
-  // A foreign-key relationship declares no fields of its own: the columns of
-  // its table are the source node's properties, not the edge's.
+  // A foreign-key relationship declares no fields of its own, so its edge
+  // lists none.
   lines.push(propertiesClause([]));
 
   return lines.join('\n');
