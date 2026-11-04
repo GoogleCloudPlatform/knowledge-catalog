@@ -12,7 +12,7 @@ import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 
-import {MULTI_REGION_CATALOG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, US_TABLE} from './location_responses';
+import {FEDERATED_CATALOG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, US_TABLE} from './location_responses';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -45,10 +45,10 @@ const CASES: Array<[string, object, () => Promise<ApiResult<unknown>>, unknown[]
    () => biglake.getCatalog(P, 'kcmd-src-biglake-57138'),
    [`projects/${P}/catalogs/kcmd-src-biglake-57138`],
    {status: 200, result: REGIONAL_CATALOG}],
-  ['multi-region BigLake catalog', biglake,
+  ['federated multi-region BigLake catalog', biglake,
    () => biglake.getCatalog('looker-private-demo', 'snowflake'),
    ['projects/looker-private-demo/catalogs/snowflake'],
-   {status: 200, result: MULTI_REGION_CATALOG}],
+   {status: 200, result: FEDERATED_CATALOG}],
   ['missing BigLake catalog', biglake, () => biglake.getCatalog(P, 'nope'),
    [`projects/${P}/catalogs/nope`], NOT_FOUND],
 ];

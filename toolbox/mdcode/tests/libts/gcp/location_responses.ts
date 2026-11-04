@@ -11,8 +11,10 @@
 // - A regional or federated BigLake catalog lists one replica, with no state;
 //   a federated multi-region catalog writes it in upper case (`US`). A
 //   multi-region catalog of Cloud Storage tables lists a primary and a
-//   secondary replica (2026-11-03), and its entries sit in the primary's
-//   region.
+//   secondary replica (2026-11-03), and a table's entries sit in the region
+//   that was the primary when the table was created: after a failover, an
+//   older table's entries can sit in a former primary's region, now a
+//   secondary's (from review on #623, 2026-11-03; not tested live by us).
 // - A missing table, dataset, instance or catalog answers 404.
 // - Spanner answers 403, naming the permission, for an instance or instance
 //   config the caller may not read, whether or not it exists (on
@@ -80,7 +82,7 @@ export const REGIONAL_CATALOG = {
   'storage-regions': ['us-central1'],
   'replicas': [{region: 'us-central1'}],
 };
-export const MULTI_REGION_CATALOG = {
+export const FEDERATED_CATALOG = {
   'name': 'projects/looker-private-demo/catalogs/snowflake',
   'catalog-type': 'CATALOG_TYPE_FEDERATED',
   'storage-regions': ['US'],
@@ -100,6 +102,14 @@ export const MULTI_REGION_GCS_CATALOG = {
 };
 
 export const NOT_FOUND = {status: 404, message: 'Not found'};
+
+// BigQuery's tables.get answer for the table ID `orders!x`, which the loader
+// accepts and BigQuery rejects (live, 2026-11-04; the message is the body's
+// `error.message`).
+export const INVALID_TABLE_ID = {
+  status: 400,
+  message: 'Invalid table ID "orders!x".',
+};
 
 // Spanner's answer when the caller lacks `permission` on `resource`, a full
 // resource name such as `projects/p/instanceConfigs/nam3`, whether or not the
