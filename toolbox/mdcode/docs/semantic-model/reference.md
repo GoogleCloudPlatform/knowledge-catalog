@@ -188,10 +188,11 @@ of each Cloud SQL table written as its resource name and of each third-party
 table, and each Spanner database a source names, for the dialect.
 The other checks that need a service run only at push time: the BigQuery source
 table probe, the dry runs of action statements and of each BigQuery graph's DDL,
-the check that a deployment's BigQuery dataset or Spanner database exists, and
-(on a push without `--validate-only`) the
-Knowledge Catalog checks on the entry group. It exits non-zero when push would
-reject a binding. Under each profile it prints the errors of that profile's own
+the check that a deployment's BigQuery dataset or Spanner database exists, the
+check of a Spanner deployment's instance edition, and (on a push without
+`--validate-only`) the Knowledge Catalog checks on the entry group. It exits
+non-zero when push would reject a binding. Under each profile it prints the
+errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
 profiles' errors print above the profiles too, since any of them stops the
@@ -524,6 +525,13 @@ differs from BigQuery Graph in five ways:
   `updateDatabaseDdl` long-running operation, polled to completion (BigQuery runs
   its DDL through `jobs.query`). No region detection is needed — the DDL runs in
   the database the target names.
+
+Spanner Graph needs an Enterprise or Enterprise Plus edition instance, or a
+free trial instance. In its first phase, push reads each Spanner deployment's
+instance. It refuses a deployment on a Standard edition instance before
+anything is written, also under `--validate-only` and `--skip-source-check`.
+When push cannot read the instance, it skips this check, and Spanner refuses
+the graph in the second phase, after Knowledge Catalog is written.
 
 Under `--validate-only` nothing is applied; add `--print` to see the generated
 Spanner DDL. Unlike the BigQuery leg, a Spanner-targeting model's source tables
@@ -963,6 +971,9 @@ model is present), on the database the target names:
   plans each statement on a session, and a `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
+* `spanner.instances.get` on the instance, to read its edition before any
+  write. It comes with `roles/spanner.databaseUser` granted on the instance or
+  its project.
 
 **Spanner sources** — for a model whose `source` values name Spanner tables,
 whether or not it deploys to Spanner:
