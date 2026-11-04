@@ -83,7 +83,8 @@ export interface KcDeployOptions {
   // KcGenerateOptions.emitExpressions.
   emitExpressions?: boolean;
   // Emit the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
+  // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
+  // false).
   v2Aspects?: boolean;
   // The file copies of the model file and its profile files, which the
   // emitter stores when v2Aspects is off.

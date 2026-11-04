@@ -42,7 +42,7 @@ import {SqlColumn} from './sql_parser';
 // caller to print.
 //
 // `v2Aspects` says push writes the second-generation Knowledge Catalog types
-// (selected via KC_V2_ASPECTS=1).
+// (the CLI sets it unless KC_V2_ASPECTS=0).
 export function validatePushRequirements(
     models: LoadedModel[],
     opts: {
@@ -1981,11 +1981,13 @@ function targetDatabase({engine, coordinates: c}: ParsedDeploymentTarget) {
           outside: 'which is not a table in that database'};
 }
 
-// Whether Knowledge Catalog push and pull should use the second-generation
-// built-in aspect fields and entry-id layout. Only `KC_V2_ASPECTS=1` enables
-// it; unset, `''`, `'0'`, and `'true'` are all off.
+// Whether Knowledge Catalog push and pull use the second-generation built-in
+// aspect fields and entry-id layout. They do unless `KC_V2_ASPECTS=0`; every
+// other value, including unset and `''`, is on. `KC_V2_ASPECTS=0` is a
+// temporary escape hatch to the first-generation path, removed with that path
+// (b/575695037).
 export function kcV2Aspects(): boolean {
-  return process.env.KC_V2_ASPECTS === '1';
+  return process.env.KC_V2_ASPECTS !== '0';
 }
 
 // What localChecks reads. `loaded` is the load of `docs` with the dialects in

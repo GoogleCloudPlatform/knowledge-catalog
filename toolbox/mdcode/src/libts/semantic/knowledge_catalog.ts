@@ -108,8 +108,8 @@ export interface KcGenerateOptions {
   // no `semantics` block and `semantic-metric` carries no expression.
   emitExpressions?: boolean;
   // Emit the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false), which
-  // emits the first-generation layout.
+  // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
+  // false), which emits the first-generation layout.
   v2Aspects?: boolean;
   // The file copies of the model file and its profile files, each stored in
   // an entry of its own when v2Aspects is off. Absent emits none.

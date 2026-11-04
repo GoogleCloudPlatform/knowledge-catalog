@@ -37,9 +37,9 @@ export interface KcPullOptions {
   // Id of the source entry group to pull from.
   entryGroup: string;
   // Read the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false). A
-  // model an older kcmd pushed with the first-generation types is then left
-  // out with a warning.
+  // (the CLI sets it unless KC_V2_ASPECTS=0). Off by default (absent means
+  // false). A model an older kcmd pushed with the first-generation types is
+  // then left out with a warning.
   v2Aspects?: boolean;
   // The project of the schema-join entry link type, which only a pull with
   // v2Aspects off reads. Defaults to `dataplex-types`.

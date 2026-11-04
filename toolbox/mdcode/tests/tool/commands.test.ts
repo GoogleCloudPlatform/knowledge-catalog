@@ -72,7 +72,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-commands-'));
   process.chdir(dir);
   savedEnv = {...process.env};
-  delete process.env.KC_V2_ASPECTS;
+  process.env.KC_V2_ASPECTS = '0';
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   spyOn(console, 'log').mockImplementation(() => {});
   spyOn(console, 'error').mockImplementation(() => {});
@@ -102,22 +102,17 @@ afterEach(() => {
 });
 
 describe('kcV2Aspects', () => {
-  test('returns true only when KC_V2_ASPECTS is "1"', () => {
-    delete process.env.KC_V2_ASPECTS;
-    expect(kcV2Aspects()).toBe(false);
-
-    process.env.KC_V2_ASPECTS = '';
-    expect(kcV2Aspects()).toBe(false);
-
-    process.env.KC_V2_ASPECTS = '0';
-    expect(kcV2Aspects()).toBe(false);
-
-    process.env.KC_V2_ASPECTS = 'true';
-    expect(kcV2Aspects()).toBe(false);
-
-    process.env.KC_V2_ASPECTS = '1';
-    expect(kcV2Aspects()).toBe(true);
-  });
+  // Second generation is the default; only '0' turns it off.
+  for (const [value, on] of [
+    [undefined, true], ['1', true], ['0', false],
+  ] as const) {
+    test(`returns ${on} when KC_V2_ASPECTS is ${JSON.stringify(value)}`,
+         () => {
+           if (value === undefined) delete process.env.KC_V2_ASPECTS;
+           else process.env.KC_V2_ASPECTS = value;
+           expect(kcV2Aspects()).toBe(on);
+         });
+  }
 });
 
 describe('push prints Knowledge Catalog warnings', () => {
@@ -171,7 +166,7 @@ describe('push prints Knowledge Catalog warnings', () => {
 
 describe('v2Aspects forwarding', () => {
   test(
-      'push forwards v2Aspects: false when KC_V2_ASPECTS is unset',
+      'push forwards v2Aspects: false when KC_V2_ASPECTS is "0"',
       async () => {
         writeWorkspace();
         const preflightSpy = spyOn(kc, 'preflightKnowledgeCatalog');
@@ -186,9 +181,9 @@ describe('v2Aspects forwarding', () => {
         expect(emitSpy.mock.calls[0][1].v2Aspects).toBe(false);
       });
 
-  test('push forwards v2Aspects: true when KC_V2_ASPECTS is "1"', async () => {
+  test('push forwards v2Aspects: true when KC_V2_ASPECTS is unset', async () => {
     writeWorkspace();
-    process.env.KC_V2_ASPECTS = '1';
+    delete process.env.KC_V2_ASPECTS;
     const preflightSpy = spyOn(kc, 'preflightKnowledgeCatalog');
     const emitSpy = spyOn(kcEmit, 'generateCatalogResources');
 
@@ -202,7 +197,7 @@ describe('v2Aspects forwarding', () => {
   });
 
   test(
-      'pull forwards v2Aspects: false when KC_V2_ASPECTS is unset',
+      'pull forwards v2Aspects: false when KC_V2_ASPECTS is "0"',
       async () => {
         writeWorkspace();
         const pullSpy = spyOn(pullKc, 'pullKnowledgeCatalog')
@@ -215,20 +210,22 @@ describe('v2Aspects forwarding', () => {
         expect(pullSpy.mock.calls[0][1].v2Aspects).toBe(false);
       });
 
-  test('pull forwards v2Aspects: true and KC_TYPE_PROJECT', async () => {
-    writeWorkspace();
-    process.env.KC_V2_ASPECTS = '1';
-    process.env.KC_TYPE_PROJECT = 'types';
-    const pullSpy = spyOn(pullKc, 'pullKnowledgeCatalog')
-                        .mockResolvedValue({models: [], warnings: []});
+  test('pull forwards v2Aspects: true when KC_V2_ASPECTS is unset, and ' +
+           'KC_TYPE_PROJECT',
+       async () => {
+         writeWorkspace();
+         delete process.env.KC_V2_ASPECTS;
+         process.env.KC_TYPE_PROJECT = 'types';
+         const pullSpy = spyOn(pullKc, 'pullKnowledgeCatalog')
+                             .mockResolvedValue({models: [], warnings: []});
 
-    const code = await pull();
+         const code = await pull();
 
-    expect(code).toBe(0);
-    expect(pullSpy).toHaveBeenCalledTimes(1);
-    expect(pullSpy.mock.calls[0][1].v2Aspects).toBe(true);
-    expect(pullSpy.mock.calls[0][1].systemTypeProject).toBe('types');
-  });
+         expect(code).toBe(0);
+         expect(pullSpy).toHaveBeenCalledTimes(1);
+         expect(pullSpy.mock.calls[0][1].v2Aspects).toBe(true);
+         expect(pullSpy.mock.calls[0][1].systemTypeProject).toBe('types');
+       });
 });
 
 
