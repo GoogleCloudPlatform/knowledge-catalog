@@ -18,21 +18,21 @@ semantic_model:
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/customers
         primary_key: [customer_id]
         fields:
-          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.customer_id }, { dialect: ANSI_SQL, expression: customers.customer_id }] } }
-          - { name: region, expression: { dialects: [{ dialect: BIGQUERY, expression: customers.region }, { dialect: ANSI_SQL, expression: customers.region }] } }
+          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: customer_id }, { dialect: ANSI_SQL, expression: customer_id }] } }
+          - { name: region, expression: { dialects: [{ dialect: BIGQUERY, expression: region }, { dialect: ANSI_SQL, expression: region }] } }
       - name: orders
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/orders
         primary_key: [order_id]
         fields:
-          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.order_id }, { dialect: ANSI_SQL, expression: orders.order_id }] } }
-          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: orders.customer_id }, { dialect: ANSI_SQL, expression: orders.customer_id }] } }
+          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_id }, { dialect: ANSI_SQL, expression: order_id }] } }
+          - { name: customer_id, expression: { dialects: [{ dialect: BIGQUERY, expression: customer_id }, { dialect: ANSI_SQL, expression: customer_id }] } }
       - name: order_items
         source: bigquery.googleapis.com/projects/sqlgen-testing/datasets/demo/tables/order_items
         primary_key: [order_item_id]
         fields:
-          - { name: order_item_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_item_id }, { dialect: ANSI_SQL, expression: order_items.order_item_id }] } }
-          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.order_id }, { dialect: ANSI_SQL, expression: order_items.order_id }] } }
-          - { name: amount, expression: { dialects: [{ dialect: BIGQUERY, expression: order_items.amount }, { dialect: ANSI_SQL, expression: order_items.amount }] } }
+          - { name: order_item_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_item_id }, { dialect: ANSI_SQL, expression: order_item_id }] } }
+          - { name: order_id, expression: { dialects: [{ dialect: BIGQUERY, expression: order_id }, { dialect: ANSI_SQL, expression: order_id }] } }
+          - { name: amount, expression: { dialects: [{ dialect: BIGQUERY, expression: amount }, { dialect: ANSI_SQL, expression: amount }] } }
     relationships:
       - { name: orders_customers, from: orders, to: customers, from_columns: [customer_id], to_columns: [customer_id] }
       - { name: orderitems_orders, from: order_items, to: orders, from_columns: [order_id], to_columns: [order_id] }

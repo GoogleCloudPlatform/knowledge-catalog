@@ -419,7 +419,7 @@ describe('profile translation', () => {
   const BQ = '{dialect: BIGQUERY, expression: "COALESCE(order_id, 0)"}';
   const BLOCK = '\n          dialects:\n            - dialect: SNOWFLAKE # as written\n' +
       '              expression: NVL(order_id, 0)';
-  const SINGLE = "'CONCAT(orders.total, '' x'')'";
+  const SINGLE = "'CONCAT(total, '' x'')'";
   // The start of an expression whose dialects list has a comment of two lines.
   const COMMENTED = '\n          # Snowflake only,\n          # for now\n          dialects:';
   // An entry that writes expression before dialect, quoted and commented.
@@ -431,7 +431,7 @@ describe('profile translation', () => {
   // the comment.
   const FLOW = ` {\n          dialects: [  # Snowflake only\n` +
       `            ${SF}\n          ]\n        }`;
-  const BLANKS = profileFile('orders.total', FLOW).replaceAll('\n', '\n\n');
+  const BLANKS = profileFile('total', FLOW).replaceAll('\n', '\n\n');
   // The texts of each field of orders in profile file `text`.
   const texts = (text: string) =>
       loadProfileFile(text, 'prod').entities[1].fields!.map(f => f.dialects);
@@ -439,20 +439,20 @@ describe('profile translation', () => {
   // [label, input, output]
   test.each([
     ['a folded block scalar and a commented block expression',
-     profileFile('>-\n          orders.total\n          + 1', BLOCK),
-     profileFile('>-\n          orders.total\n          + 1', `${BLOCK}
+     profileFile('>-\n          total\n          + 1', BLOCK),
+     profileFile('>-\n          total\n          + 1', `${BLOCK}
             - dialect: BIGQUERY
               expression: COALESCE(order_id, 0)`)],
     ['a double-quoted string with a line break',
-     profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`, ` {dialects: [${SF}]}`),
-     profileFile(`"CONCAT(orders.total, 'a long enough text')\\n  || 'x'"`,
+     profileFile(`"CONCAT(total, 'a long enough text')\\n  || 'x'"`, ` {dialects: [${SF}]}`),
+     profileFile(`"CONCAT(total, 'a long enough text')\\n  || 'x'"`,
                  ` {dialects: [${SF}, ${BQ}]}`)],
     ['a blank line at each position and a comment inside a flow expression', BLANKS,
      BLANKS.replace(FLOW.replaceAll('\n', '\n\n'), '\n          dialects:\n' +
          '            - dialect: SNOWFLAKE\n              expression: "NVL(order_id, 0)"\n' +
          '            - dialect: BIGQUERY\n              expression: COALESCE(order_id, 0)')],
-    ['an entry that writes expression before dialect', profileFile('orders.total', REVERSED),
-     profileFile('orders.total', `${REVERSED}
+    ['an entry that writes expression before dialect', profileFile('total', REVERSED),
+     profileFile('total', `${REVERSED}
             - dialect: BIGQUERY
               expression: COALESCE(order_id, 0)`)],
     ['CRLF line endings and a single-quoted string',
@@ -1420,7 +1420,7 @@ semantic_model:
         expression: "COUNT(*)"
 `;
   const longSql =
-      `CASE WHEN orders.order_id > 0 THEN 'known order' ELSE 'unknown order' END`;
+      `CASE WHEN order_id > 0 THEN 'known order' ELSE 'unknown order' END`;
   const profileYaml = `
 name: prod
 entities:

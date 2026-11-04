@@ -177,10 +177,11 @@ written for. A named profile restates each field whose expression reads a
 column, or names it in `fields_exclude`. A column is any reference that no
 entity name qualifies. Push rejects a profile that does neither, naming the
 field, the profile and the column. A field whose expression reads only other
-fields, such as `Order.gross - Order.discount`, carries over. To withdraw an
-inherited executor — a read-only binding
-that performs no writes at all — a profile writes `executor: null`, which leaves
-the action declared and unavailable there.
+fields, such as `Order.gross - Order.discount`, carries over. A field that
+names itself, such as `amount: Order.amount`, is rejected. Write its column
+without the qualifier: `amount: amount`. To withdraw an inherited executor — a
+read-only binding that performs no writes at all — a profile writes
+`executor: null`, which leaves the action declared and unavailable there.
 
 **Why metrics never appear in a profile.** A metric like
 `SUM(OrderedAs.extendedPrice * (1 - OrderedAs.discount))` references field

@@ -80,8 +80,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.students',
             keys: ['student_id'],
             fields: [
-              {name: 'student_id', expression: 'students.student_id'},
-              {name: 'name', expression: 'students.name'}
+              {name: 'student_id', expression: 'student_id'},
+              {name: 'name', expression: 'name'}
             ]
           },
           {
@@ -89,8 +89,8 @@ describe(
             dataSource: 'sqlgen-testing.bei_semantic_ir_verify.courses',
             keys: ['course_id'],
             fields: [
-              {name: 'course_id', expression: 'courses.course_id'},
-              {name: 'title', expression: 'courses.title'}
+              {name: 'course_id', expression: 'course_id'},
+              {name: 'title', expression: 'title'}
             ]
           },
         ],
@@ -106,7 +106,7 @@ describe(
               destinationColumns: ['course_id'],
               fields: [{
                 name: 'grade',
-                expression: 'enrollment.grade',
+                expression: 'grade',
                 description: 'Letter grade'
               }]
             }
@@ -147,7 +147,7 @@ describe('graph naming', () => {
       name: 'orders',
       dataSource: 'proj.ds.orders',
       keys: ['id'],
-      fields: [{name: 'id', expression: 'orders.id'}]
+      fields: [{name: 'id', expression: 'id'}]
     }],
   });
 
@@ -198,7 +198,7 @@ describe('bare table mapping', () => {
       name: 'orders',
       dataSource: source,
       keys: ['id'],
-      fields: [{name: 'id', expression: 'orders.id'}]
+      fields: [{name: 'id', expression: 'id'}]
     }],
   });
 
@@ -357,7 +357,7 @@ describe('degenerate inputs', () => {
           name: 'good',
           dataSource: 'ds.good',
           keys: ['id'],
-          fields: [{name: 'id', expression: 'good.id'}]
+          fields: [{name: 'id', expression: 'id'}]
         },
         {name: 'bad', dataSource: 'ds.bad', keys: [], fields: []},
       ],
@@ -382,13 +382,13 @@ describe('reserved-word names in an M:N association edge are quoted', () => {
         name: 'Order',
         dataSource: 'proj.ds.orders',
         keys: ['order'],
-        fields: [{name: 'order', expression: 'Order.order'}],
+        fields: [{name: 'order', expression: '`order`'}],
       },
       {
         name: 'Group',
         dataSource: 'proj.ds.groups',
         keys: ['id'],
-        fields: [{name: 'id', expression: 'Group.id'}],
+        fields: [{name: 'id', expression: 'id'}],
       },
     ],
     relationships: [{
@@ -876,7 +876,7 @@ describe('a comment in a field expression', () => {
       fields: [
         {name: 'id', expression: 'order_id -- the key'},
         {name: 'total', expression: 'amount -- in cents'},
-        {name: 'notes', expression: '/* free text */ orders.notes'},
+        {name: 'notes', expression: '/* free text */ notes'},
         {name: 'status', expression: 'status # open or closed'},
         {name: 'code', expression: "CONCAT('--', code)"},
       ],
@@ -905,15 +905,16 @@ describe('a comment in a field expression', () => {
         keys: ['order_id'],
         fields: [
           {name: 'id', expression: 'orders./* the key */order_id'},
-          {name: 'amount', expression: 'orders/* in cents */.amount'},
-          {name: 'select', expression: 'orders. /* a keyword */ select'},
+          {name: 'amount', expression: 'orders/* in cents */.amount_cents'},
+          {name: 'select', expression: 'orders. /* a keyword */ group'},
         ],
       }],
     };
     const {ddl, warnings} = generateSpannerPropertyGraph(dotted);
     expect(ddl).toContain('KEY(order_id)');
     expect(ddl).toContain(
-        '      order_id AS id,\n      amount,\n      `select`\n');
+        '      order_id AS id,\n      amount_cents AS amount,\n' +
+        '      `group` AS `select`\n');
     expect(warnings).toEqual([]);
   });
 
@@ -946,5 +947,212 @@ describe('a comment in a field expression', () => {
     expect(ddl).not.toContain('base.second');
     expect(ddl.match(/first \|\| second \|\| ' ' AS label/g)).toHaveLength(3);
     expect(warnings).toEqual([]);
+  });
+});
+
+describe('a field expression that names a sibling field', () => {
+  // An `orders` entity keyed on `id`, with `fields` after the key.
+  const ordersWith = (fields: Record<string, string|Partial<Field>>) =>
+      modelOf('m', [entity('orders', 'Orders', ['id'],
+                           {id: 'order_id', ...fields})]);
+
+  test('reads the columns its siblings are bound to', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(ordersWith({
+        gross: 'g_amt',
+        discount: 'd_amt',
+        net: 'orders.gross - orders.discount',
+      }));
+      expect(ddl, engine).toContain(
+          '      g_amt AS gross,\n' +
+          '      d_amt AS discount,\n' +
+          '      g_amt - d_amt AS net\n');
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  test('reads a sibling\'s expression in parentheses, through a chain of siblings', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        a: 'x + y',
+        b: 'orders.a * 2',
+        c: 'orders.b + orders.a',
+      }));
+      expect(ddl, engine).toContain(
+          '      x + y AS a,\n' +
+          '      (x + y) * 2 AS b,\n' +
+          '      ((x + y) * 2) + (x + y) AS c\n');
+    }
+  });
+
+  test('leaves an expression as written but for the siblings it names', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        nm: 'full_name',
+        tag: 'lower(full_name) || "!"',
+        shout: 'lower(orders.nm) || "!"',
+      }));
+      expect(ddl, engine).toContain('      lower(full_name) || "!" AS tag,\n');
+      expect(ddl, engine).toContain('      lower(full_name) || "!" AS shout\n');
+    }
+  });
+
+  // A SQL parser would write `DAYOFWEEK` as `DOW` and `DAYOFYEAR` as `DOY`,
+  // which neither engine reads.
+  test('keeps date parts and intervals as written around a sibling it reads', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        d: 'order_date',
+        dow: 'EXTRACT(DAYOFWEEK FROM orders.d)',
+        doy: 'EXTRACT(DAYOFYEAR FROM orders.d)',
+        due: 'DATE_ADD(orders.d, INTERVAL 30 DAY)',
+      }));
+      expect(ddl, engine).toContain(
+          '      EXTRACT(DAYOFWEEK FROM order_date) AS dow,\n' +
+          '      EXTRACT(DAYOFYEAR FROM order_date) AS doy,\n' +
+          '      DATE_ADD(order_date, INTERVAL 30 DAY) AS due\n');
+    }
+  });
+
+  test('leaves an expression as written when each sibling it names is bound to the column of its name', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        d: 'd',
+        nm: 'nm',
+        dow: 'EXTRACT(DAYOFWEEK FROM orders.d)',
+        tag: 'lower(orders.nm) || "!"',
+      }));
+      expect(ddl, engine).toContain(
+          '      EXTRACT(DAYOFWEEK FROM d) AS dow,\n' +
+          '      lower(nm) || "!" AS tag\n');
+    }
+  });
+
+  // fixtures/reserved_words.yaml binds `rank` to the column `order`.
+  test('quotes a sibling bound to a reserved column', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({
+        rank: 'order',
+        rank_next: 'orders.rank + 1',
+      }));
+      expect(ddl, engine).toContain(
+          '      `order` AS rank,\n' +
+          '      `order` + 1 AS rank_next\n');
+    }
+  });
+
+  test('a field bound to the quoted column of its name renders as that column', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(ordersWith({order: '`order`'}));
+      expect(ddl, engine).toContain('      order_id AS id,\n      `order`\n');
+    }
+  });
+
+  // The parser reserves `Date`, so it reads `Date.days` only with the
+  // qualifier renamed.
+  test('reads its siblings on an entity whose name the parser reserves', () => {
+    for (const [engine, generate] of ENGINES) {
+      const {ddl} = generate(modelOf('m', [entity('Date', 'Dates', ['id'], {
+        id: 'id',
+        days: 'd_days',
+        weeks: 'Date.days / 7',
+      })]));
+      expect(ddl, engine).toContain(
+          '      d_days AS days,\n' +
+          '      d_days / 7 AS weeks\n');
+      expect(() => generate(modelOf('m', [entity('Date', 'Dates', ['id'], {
+               id: 'id',
+               a: 'Date.b + 1',
+               b: 'Date.a - 1',
+             })])),
+             engine)
+          .toThrow(`field 'Date.a' names itself through 'Date.b'`);
+    }
+  });
+
+  // A field whose supertype's expression names only its siblings carries over
+  // to a subtype, which reads it from its own binding of those siblings. That
+  // matches the supertype's rendering, so there is no remap to warn about.
+  test('an inherited field that names its siblings renders as its supertype\'s, without a warning', () => {
+    const model = modelOf('m', [
+      entity('party', 'Party', ['id'], {
+        id: 'id',
+        gross: 'g_amt',
+        discount: 'd_amt',
+        net: 'party.gross - party.discount',
+      }),
+      entity('customer', 'Customer', ['id'],
+             {id: 'id', gross: 'g_amt', discount: 'd_amt'},
+             {extends: ['party']}),
+    ]);
+    for (const [engine, generate] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      // Party's default label, customer's, and customer's `party` label.
+      expect(ddl.match(/\bg_amt - d_amt AS net\n/g), engine).toHaveLength(3);
+      expect(warnings, engine).toEqual([]);
+    }
+  });
+
+  test('two fields that name each other are rejected', () => {
+    for (const [engine, generate] of ENGINES) {
+      expect(() => generate(ordersWith({a: 'orders.b + 1', b: 'orders.a - 1'})),
+             engine)
+          .toThrow(`field 'orders.a' names itself through 'orders.b'`);
+      expect(() => generate(ordersWith({total: 'orders.total * 2'})), engine)
+          .toThrow(
+              `field 'orders.total' names itself; a field expression may ` +
+              `name other fields of its entity, but not itself, directly or ` +
+              `through other fields; to read the column of that name, write ` +
+              `it without the qualifier: 'total'`);
+    }
+  });
+
+  test('a field whose sibling has SQL only for the other engine is left out, with a warning that names the sibling', () => {
+    for (const [engine, generate] of ENGINES) {
+      const otherOnly = (column: string) =>
+          texts({[engine === 'Spanner' ? 'BIGQUERY' : 'SPANNER']: column});
+      const dialect = engine === 'Spanner' ? 'SPANNER' : 'BIGQUERY';
+      const {ddl, warnings} = generate(ordersWith({
+        gross: otherOnly('g_amt'),
+        net: 'orders.gross - 1',
+        twice: 'orders.net * 2',
+      }));
+      expect(ddl, engine).not.toMatch(/AS (gross|net|twice)/);
+      expect(warnings, engine).toEqual([
+        `entity 'orders': field 'gross' has no '${dialect}' or 'ANSI_SQL' ` +
+            `expression; omitted from the node table`,
+        `entity 'orders': field 'net' reads field 'gross', which has no ` +
+            `'${dialect}' or 'ANSI_SQL' expression; omitted from the node ` +
+            `table`,
+        `entity 'orders': field 'twice' reads field 'net', which reads field ` +
+            `'gross', which has no '${dialect}' or 'ANSI_SQL' expression; ` +
+            `omitted from the node table`,
+      ]);
+    }
+  });
+
+  // An abstract label lists the same properties on every leaf, so a field
+  // one leaf leaves out, because a sibling it names has no SQL there, is left
+  // off the label on the other leaf too.
+  test('a field one leaf leaves out through its sibling is off its abstract ancestor\'s label on every leaf', () => {
+    for (const [engine, generate] of ENGINES) {
+      const otherOnly = (column: string) =>
+          texts({[engine === 'Spanner' ? 'BIGQUERY' : 'SPANNER']: column});
+      const {ddl} = generate(modelOf('parties', [
+        entity('party', '', [], {id: {}, gross: {}, net: {}},
+               {abstract: true}),
+        entity('customer', 'Customer', ['id'],
+               {id: 'id', gross: otherOnly('c_g'), net: 'customer.gross - 1'},
+               {extends: ['party']}),
+        entity('supplier', 'Supplier', ['id'],
+               {id: 'id', gross: 's_g', net: 'supplier.gross - 1'},
+               {extends: ['party']}),
+      ]));
+      // Each leaf's `party` label lists `id` alone.
+      expect(ddl.split('    LABEL party\n    PROPERTIES(\n      id\n    )'),
+             engine)
+          .toHaveLength(3);
+      expect(ddl, engine).toContain('      s_g - 1 AS net\n');
+    }
   });
 });
