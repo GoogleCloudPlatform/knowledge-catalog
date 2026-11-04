@@ -867,7 +867,8 @@ async function writeEmittedModels(
       const anchor = resources.entries[0];
       const error =
           await finishPush(cat, opts, anchor)
-              .catch((err: any) => String(err?.message || err).trim());
+              .catch((err: any) =>
+                         String(err?.message || err).trim() || 'unknown error');
       if (error) {
         return {
           error: `Model '${model}': setting the ${PUSH_STATE_LABEL} label of ` +
