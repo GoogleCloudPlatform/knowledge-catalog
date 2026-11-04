@@ -22,21 +22,21 @@ import {convertOwlToOsi} from '../libts/semantic/converters/owl/convert';
 import * as deploy from '../libts/semantic/deploy_bigquery';
 import * as kc from '../libts/semantic/deploy_knowledge_catalog';
 import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
-import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, resolveModelDeployments, unnamedDeployments} from '../libts/semantic/deployment_target';
+import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {appliedProfileWarnings, applyProfile, AvailabilityReport, DeclaredProfile, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, namedProfileErrors, profileErrorMessage, profileForDocument, pruneUnavailable, reservedProfileNameError, sourcesDialect, undeclaredProfileError,} from '../libts/semantic/resolve_profiles';
+import {AvailabilityReport, DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {deploymentTableErrors, inlineBindingWarnings, spannerMetricsErrors, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritance, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -73,14 +73,6 @@ export interface InitOptions {
   kb?: string;
   semanticModel?: string;
   pull?: boolean;
-}
-
-
-// Whether Knowledge Catalog push and pull should use the second-generation
-// built-in aspect fields and entry-id layout. Only `KC_V2_ASPECTS=1` enables
-// it; unset, `''`, `'0'`, and `'true'` are all off.
-export function kcV2Aspects(): boolean {
-  return process.env.KC_V2_ASPECTS === '1';
 }
 
 
@@ -439,11 +431,6 @@ async function sourceCheckErrors(
       .flat();
 }
 
-// Gives the profiles a model document declares: its profile files, then the
-// profiles a vanilla model carries in its GOOGLE block.
-type DeclaredProfiles = (doc: {name: string; text: string}) =>
-    DeclaredProfile[];
-
 // Reads a model document's declared profiles on the first call for that
 // document and returns them again on later calls. Throws when its profile
 // files or the profiles in its GOOGLE blocks cannot be read.
@@ -579,20 +566,6 @@ function catalogAspects(
     v2Aspects: true,
     overviews,
   });
-}
-
-// Generates a graph leg's DDL without calling a service, or gives why it
-// cannot be generated.
-async function generateOffline(
-    deployLeg: typeof deploy.deployBigQuery, models: LoadedModel[],
-    ctx: context.ApiContext): Promise<deploy.DeployResult|string> {
-  try {
-    const result = await deployLeg(models, ctx, {validateOnly: true});
-    if (result.success) return result;
-    return result.details ?? 'the graph could not be generated';
-  } catch (err: any) {
-    return err.message || String(err);
-  }
 }
 
 const EG_DESCRIPTION_MAX_CHARS = 1024;
@@ -993,15 +966,6 @@ interface TwoPhaseScope {
   load: DialectLoad;
 }
 
-// One selected deployment, its message prefix and the model it deploys. A
-// BigQuery or Spanner deployment also holds its generated DDL and warnings.
-interface DeploymentPlan {
-  deployment: ResolvedDeployment;
-  at: string;
-  model: LoadedModel;
-  generated?: {ddl: string[]; warnings: string[]};
-}
-
 // Runs checkBeforeWrites and the checks that call a service, then publishes to
 // Knowledge Catalog and deploys each selected deployment in order with its
 // own model. Returns a process exit code.
@@ -1105,10 +1069,6 @@ async function checkBeforeWrites(
   const {ctx, layout, source, docs, profileDocs, load} = scope;
   const stop = (errors: LocalCheckError[]) => ({errors});
   const fail = (...errors: string[]) => stop(errors.map(error => ({error})));
-  const ofModel = (document: string, ...errors: string[]) =>
-      errors.map(error => ({error, document}));
-  const ofProfile = (document: string, profile: string, ...errors: string[]) =>
-      errors.map(error => ({error, document, profile}));
   // Prints each warning once.
   const printed = new Set<string>();
   const warn = (w: string) => {
@@ -1149,10 +1109,6 @@ async function checkBeforeWrites(
     if ('errors' in model) return stop(model.errors);
     models.push(model);
   }
-  // Every profile each model declares.
-  const declaredBy = declaredProfilesReader(profileDocs);
-  const declaredNames = (document: string) =>
-      declaredBy(docs.find(d => d.name === document)!).map(p => p.name);
   // With KC_V2_ASPECTS off, the catalog stores each model file and profile
   // file as read. With it on, it writes each overview sidecar.
   let fileCopies: FileCopy[] = [];
@@ -1170,205 +1126,18 @@ async function checkBeforeWrites(
     }
   }
 
-  // Every deployment's target must be in an accepted form, and its profile one
-  // the model declares, whether or not this push selects the deployment.
-  const selectedByDoc = new Map<string, ResolvedDeployment[]>();
-  const everyByDoc = new Map<string, ResolvedDeployment[]>();
-  for (const {document, model} of models) {
-    const every = resolveModelDeployments(model);
-    if ('error' in every) return stop(ofModel(document, every.error));
-    const resolved = noDeployment ? {deployments: []} :
-                                    resolveModelDeployments(model, selected);
-    if ('error' in resolved) return stop(ofModel(document, resolved.error));
-    const undeclared = undeclaredProfileError(
-        document, model, declaredNames(document));
-    if (undeclared) return stop(ofModel(document, undeclared));
-    everyByDoc.set(document, every.deployments);
-    selectedByDoc.set(document, resolved.deployments);
-  }
-
-  // Every named profile is checked on its own against the model file, and so
-  // are the model file's own bindings and each deployment. The catalog's model
-  // is checked as a model that deploys nowhere. A selected deployment's own
-  // checks run only after these pass, so these give every error and every
-  // warning about SQL kcmd cannot read.
-  const profileWarnings: string[] = [];
-  const profileErrors = namedProfileErrors(
-      docs, new Map(loaded.models.map(m => [m.document, m.model])),
-      profileDocs, declaredBy, profileWarnings, load);
-  for (const {document, model} of models) {
-    profileErrors.push(
-        ...ofProfile(
-            document, DEFAULT_PROFILE,
-            ...validateInlineDialects(model, document),
-            ...validateInheritedColumns(model, document)),
-        // One call per profile, so each error carries its deployments' profile.
-        ...[...new Set(everyByDoc.get(document)!.map(d => d.profile))].flatMap(
-            profile => ofProfile(document, profile, ...validateDeployments({
-              ...model,
-              deployments: model.deployments!.filter(
-                  d => (d.profile ?? DEFAULT_PROFILE) === profile),
-            }, document))));
-    const doc = docs.find(d => d.name === document)!;
-    const declared = declaredBy(doc);
-    const named = declared.some(p => p.name.toLowerCase() !== DEFAULT_PROFILE);
-    profileWarnings.push(...inlineBindingWarnings(model, document, named));
-    // A profile that no selected deployment applies still goes to Knowledge
-    // Catalog, so its load warnings print here, less those the model file's
-    // load gave, unless a check above recorded an error for that profile. A
-    // selected deployment prints its own profile's warnings.
-    const applied = selectedByDoc.get(document)!.map(d => d.profile);
-    for (const {name} of declared) {
-      if (applied.includes(name)) continue;
-      if (profileErrors.some(
-              e => e.document === document && e.profile === name)) {
-        continue;
-      }
-      profileWarnings.push(
-          ...appliedProfileWarnings(doc, declared, name, loaded.warnings, load));
-    }
-  }
-  const kcWarnings: string[] = [];
-  const kcErrors = models.flatMap(
-      m => ofModel(m.document, ...validatePushRequirements(
-          [{...m, model: {...m.model, deployments: []}}],
-          {
-            warnings: kcWarnings,
-            v2Aspects: kcV2Aspects(),
-          })));
-  for (const w of [...profileWarnings, ...kcWarnings]) warn(w);
-  if (profileErrors.length || kcErrors.length) {
-    return stop([...profileErrors, ...kcErrors]);
-  }
-  // Each deployment's tables must be in the database it deploys to, whether
-  // or not this push selects the deployment.
-  const tableErrors = models.flatMap(
-      ({document, model}) => (everyByDoc.get(document) ?? []).flatMap(
-          d => ofProfile(
-              document, d.profile,
-              ...deploymentTableErrors(document, model, d))));
-  if (tableErrors.length) return stop(tableErrors);
-
-  const plans: DeploymentPlan[] = [];
-  const leftOut: string[] = [];
-  for (const base of models) {
-    for (const deployment of selectedByDoc.get(base.document) ?? []) {
-      const plan = await deploymentPlan(
-          base, profileDocs(base.document), deployment, ctx, warn, leftOut);
-      if ('errors' in plan) {
-        return stop(
-            ofProfile(base.document, deployment.profile, ...plan.errors));
-      }
-      plans.push(plan);
-    }
-  }
-  return {plans, kcModels: models, fileCopies, leftOut, overviews};
-}
-
-// Adds the profile files of the model in `base` to `model.profiles`, without
-// their actions. Returns the error of the first profile file that breaks a
-// file rule. A profile file that does not load is left out, for
-// namedProfileErrors to report.
-function withProfileFiles(base: LoadedModel, profileDocs: ProfileDocs):
-    LoadedModel|{errors: LocalCheckError[]} {
-  const {document, model} = base;
-  const profiles = [...(model.profiles ?? [])];
-  let files: ReturnType<ProfileDocs>;
-  try {
-    files = profileDocs(document);
-  } catch (err: any) {
-    return {errors: [{error: err.message || String(err), document}]};
-  }
-  const reserved = reservedProfileNameError(document, files);
-  if (reserved) return {errors: [{error: reserved, document}]};
-  for (const p of files) {
-    try {
-      profiles.push(loadProfileFile(p.text, p.name, {skipActions: true}));
-    } catch (err) {
-      if (!(err instanceof SemanticModelError)) throw err;
-    }
-  }
-  return {document, model: profiles.length ? {...model, profiles} : model};
-}
-
-// Builds and checks the model `deployment` deploys from `base`, reading its
-// profile file in `files` again with its actions, and generates its DDL
-// offline. Returns the plan, or the errors that stop the push.
-async function deploymentPlan(
-    base: LoadedModel, files: ReturnType<ProfileDocs>,
-    deployment: ResolvedDeployment, ctx: context.ApiContext,
-    warn: (w: string) => void,
-    leftOut: string[]): Promise<DeploymentPlan|{errors: string[]}> {
-  const {document, model} = base;
-  const at = `[${document}] deployment '${deployment.name}'`;
-  const fail = (...errors: string[]) => ({errors});
-  const spanner = spannerMetricsErrors(document, model, deployment);
-  if (spanner.length) return fail(...spanner);
-  let applied = model;
-  if (deployment.profile !== DEFAULT_PROFILE) {
-    // checkBeforeWrites has checked that the model declares the profile and
-    // that its file loads, so `model.profiles` holds it.
-    let spec = model.profiles!.find(p => p.name === deployment.profile)!;
-    const file = files.find(p => p.name === deployment.profile);
-    const warnings: string[] = [];
-    try {
-      // A profile in a GOOGLE block has no file and applies as loaded.
-      if (file) spec = loadProfileFile(file.text, file.name);
-    } catch (err) {
-      if (!(err instanceof SemanticModelError)) throw err;
-      return fail(`[${file!.fileName}] ${err.message}`);
-    }
-    try {
-      applied = applyProfile(model, spec, {warnings});
-    } catch (err) {
-      if (!(err instanceof SemanticModelError)) throw err;
-      return fail(`${at}: ${err.message}`);
-    }
-    for (const w of warnings) {
-      warn(`profile '${deployment.profile}': [${document}] ${w}`);
-    }
-  }
-  // Messages name the deployment.
-  const label = `${document}, deployment '${deployment.name}'`;
-  const checked: LoadedModel = {document: label, model: applied};
-  // Pruning can remove the field these rules are about, so they run first.
-  // checkBeforeWrites has already warned about the SQL they cannot read.
-  const unprunedErrors = [
-    ...validateInheritance([checked]),
-    ...validateExpressionReferences([checked]),
-  ];
-  const {model: pruned, report} =
-      pruneUnavailable(checked.model, deployment.profile);
-  leftOut.push(...pruningLines(
-      report, model.name, label,
-      deployment.engine === 'alloydb' ? 'it is unavailable there' : undefined));
-  // Keeps only this deployment, so every reader sees its target alone.
-  const narrowed: LoadedModel = {
-    document: checked.document,
-    model: {
-      ...pruned,
-      deployments:
-          (model.deployments ?? []).filter(d => d.name === deployment.name),
-    },
-  };
-  const errors = [
-    ...unprunedErrors,
-    ...validatePushRequirements([narrowed], {
-      fieldsPruned: true,
-      v2Aspects: kcV2Aspects(),
-    }),
-  ];
-  if (errors.length) return {errors};
-  // An AlloyDB database holds no graph.
-  if (deployment.engine === 'alloydb') {
-    return {deployment, at, model: narrowed};
-  }
-  const generated = await generateOffline(
-      deployment.engine === 'bigquery' ? deploy.deployBigQuery :
-                                         deploySpannerLeg.deploySpanner,
-      [narrowed], ctx);
-  if (typeof generated === 'string') return fail(`${at}: ${generated}`);
-  return {deployment, at, model: narrowed, generated};
+  const declaredBy = declaredProfilesReader(profileDocs);
+  const checked = await localChecks(
+      {docs, loaded, models, profileDocs, declaredBy, load}, warn,
+      noDeployment ? [] : selected);
+  if ('errors' in checked) return checked;
+  // What pruning leaves out of each deployment's model.
+  const leftOut = checked.plans.flatMap(
+      ({deployment, model, report}) => pruningLines(
+          report, model.model.name, model.document,
+          deployment.engine === 'alloydb' ? 'it is unavailable there' :
+                                            undefined));
+  return {plans: checked.plans, kcModels: models, fileCopies, leftOut, overviews};
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
