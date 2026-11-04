@@ -179,6 +179,10 @@ describe('sourceEntryErrors', () => {
      [`getCatalog ${P} kcmd-biglake-failover`,
       lookup('biglake', 'us-east1', BIGLAKE_FAILOVER)]],
     ['Hive BigLake', BIGLAKE_HIVE, lookup('biglake', 'us', BIGLAKE_HIVE), [GET_HIVE]],
+    // After a fail back, a table made during the failover has its entry only
+    // in the secondary's region (live, 2026-11-04).
+    ['Hive BigLake, whose entry sits in its secondary\'s region', BIGLAKE_HIVE,
+     lookup('biglake', 'us-east1', BIGLAKE_HIVE), [GET_HIVE, lookup('biglake', 'us', BIGLAKE_HIVE)]],
     // A Spanner entry sits in its config's default leader region. A regional
     // config's name gives it, so the config is not read; the live config
     // agrees.
@@ -302,9 +306,9 @@ describe('sourceEntryErrors', () => {
   const HIVE_ID = 'sqlgen_jharshit_atscale_hive_us';
   const HIVE_FORM = " A table in a Hive catalog is written with 'databases/<database>'.";
   const ICEBERG_FORM = " A table in an Iceberg REST catalog is written with 'namespaces/<namespace>'.";
-  // A catalog read that fails for good says how a table in the other kind of
-  // catalog is written. Written that way, the source passes, even beside its
-  // wrong form in one model, since each form of a catalog is read apart.
+  // A catalog read that fails for good gives the service's answer and says
+  // how a table in the other kind of catalog is written. The source written
+  // as the message says passes, even beside its wrong form in one model.
   // [label, source, the read that fails, its answer, the problem, the source
   //  as the message says to write it]
   const OTHER_FORMS: Array<[string, string, string, ApiResult<any>, string, string]> = [
@@ -326,6 +330,12 @@ describe('sourceEntryErrors', () => {
          `(HTTP 400: ${invalidHiveId('kcmd-src-biglake-57138').message}).${ICEBERG_FORM} Fix ` +
          'the source, or pass --skip-source-check.',
      BIGLAKE],
+    ['a Hive catalog id in capitals', BIGLAKE_HIVE.replace(HIVE_ID, HIVE_ID.toUpperCase()),
+     `getHiveCatalog sqlgen-testing ${HIVE_ID.toUpperCase()}`, invalidHiveId(HIVE_ID.toUpperCase()),
+     `could not be checked: reading the region of Hive catalog '${HIVE_ID.toUpperCase()}' failed ` +
+         `(HTTP 400: ${invalidHiveId(HIVE_ID.toUpperCase()).message}).${ICEBERG_FORM} Fix the ` +
+         'source, or pass --skip-source-check.',
+     BIGLAKE_HIVE],
   ];
   for (const [label, source, call, answer, problem, written] of OTHER_FORMS) {
     test(`${label}: the message says how to write it, and that passes`, async () => {
@@ -379,6 +389,7 @@ describe('sourceEntryErrors', () => {
     lookup('bigquery', 'us-east1', BQ_EAST),
     lookup('biglake', 'us-central1', BIGLAKE_GCS_US),
     lookup('biglake', 'us', BIGLAKE_US),
+    lookup('biglake', 'us', BIGLAKE_HIVE),
   ];
   // [label, inline sources of orders and customers, profiles, the messages,
   //  answers that replace the live ones]
@@ -402,6 +413,8 @@ describe('sourceEntryErrors', () => {
      [spans('default', "us-central1 or us-east1 ('orders'), US ('customers')")]],
     // The table writes `US` and the federated catalog's replica `US`.
     ['a US dataset and a federated US catalog', [BIGQUERY, BIGLAKE_US], [], []],
+    ['a Hive catalog with replicas in US and us-east1, with a europe-west1 dataset',
+     [BIGLAKE_HIVE, BQ_EU], [], [spans('default', "US or us-east1 ('orders'), europe-west1 ('customers')")]],
     ['a table whose location read failed, which only its own message names', [BQ_CENTRAL, BQ_EU], [],
      [missing(BQ_EU, 'a table', `reading table '${P}.eu_ds.customers'`, 'customers')],
      {[`getTable ${P} eu_ds customers`]: NOT_FOUND}],
