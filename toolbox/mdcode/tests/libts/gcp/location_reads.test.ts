@@ -71,9 +71,8 @@ describe('location reads', () => {
         (async () => Response.json(HIVE_CATALOG)) as any);
     expect(await biglake.getHiveCatalog('sqlgen-testing', 'hive_us'))
         .toEqual({status: 200, result: HIVE_CATALOG});
-    expect(fetch.mock.calls.map(c => c[0])).toEqual([
-      'https://biglake.googleapis.com/hive/v1/projects/sqlgen-testing/catalogs/hive_us',
-    ]);
+    expect(fetch.mock.calls.map(c => c[0])).toEqual(
+        ['https://biglake.googleapis.com/hive/v1/projects/sqlgen-testing/catalogs/hive_us']);
     fetch.mockRestore();
   });
 });

@@ -127,8 +127,12 @@ describe('conversion, strict mode, and translation', () => {
       'version'
     ],
     [
-      'invalid FQN sourcePrefix', ossieDoc(),
-      {sourcePrefix: 'bigquery:acme.sales'}, 'bigquery:acme.sales'
+      'invalid FQN sourcePrefix', ossieDoc(), {sourcePrefix: 'bigquery:acme.sales'},
+      "Invalid sourcePrefix 'bigquery:acme.sales'; expected the GCP resource name of a BigQuery " +
+          'project or dataset, a BigLake catalog, namespace or Hive database, a Spanner database, ' +
+          "an AlloyDB database or schema, or a Cloud SQL database or schema (with no leading '//'), " +
+          "or the name of a Knowledge Catalog entry group " +
+          "('projects/<p>/locations/<l>/entryGroups/<g>')."
     ],
     [
       'BigLake sourcePrefix with dot in catalog', ossieDoc(),
@@ -139,15 +143,6 @@ describe('conversion, strict mode, and translation', () => {
       'system entry group sourcePrefix', ossieDoc(),
       {sourcePrefix: 'projects/acme/locations/us/entryGroups/@bigquery'},
       "names the system entry group '@bigquery', whose entries are Google Cloud tables"
-    ],
-    [
-      'sourcePrefix naming a table', ossieDoc(),
-      {sourcePrefix: 'biglake.googleapis.com/projects/acme/catalogs/c/databases/d/tables/t'},
-      "Invalid sourcePrefix 'biglake.googleapis.com/projects/acme/catalogs/c/databases/d/tables/t'; " +
-          'expected the GCP resource name of a BigQuery project or dataset, a BigLake catalog, ' +
-          'namespace or Hive database, a Spanner database, an AlloyDB database or schema, or a ' +
-          "Cloud SQL database or schema (with no leading '//'), or the name of a Knowledge " +
-          "Catalog entry group ('projects/<p>/locations/<l>/entryGroups/<g>')."
     ],
     [
       'Google to vanilla without strict', googleDoc(),

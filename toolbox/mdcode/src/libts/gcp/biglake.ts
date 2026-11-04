@@ -36,15 +36,15 @@ export class BigLakeClient extends api.ApiClient {
         new api.ApiClient('https://biglake.googleapis.com', 'hive/v1', ctx);
   }
 
-  // Fetches a catalog. A catalog that does not exist answers 404, and a Hive
-  // catalog answers 400.
+  // Fetches an Iceberg REST catalog. A catalog that does not exist answers
+  // 404, and a Hive catalog answers 400.
   async getCatalog(project: string, catalog: string):
       Promise<api.ApiResult<Catalog>> {
     return await this._get<Catalog>(`projects/${project}/catalogs/${catalog}`);
   }
 
-  // Fetches a Hive catalog, which lists `replicas` as an Iceberg REST catalog
-  // does. Any other catalog answers 404.
+  // Fetches a Hive catalog. Any other catalog answers 404, and an id that is
+  // not lower-case letters, digits and underscores answers 400.
   async getHiveCatalog(project: string, catalog: string):
       Promise<api.ApiResult<Catalog>> {
     return await this.hive._get<Catalog>(

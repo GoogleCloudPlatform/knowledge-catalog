@@ -3549,11 +3549,21 @@ describe('strict entity sources', () => {
       datasets: [{ name: 'orders', source: overlong, primary_key: ['id'], fields: [] }],
     })).toThrow(/exceeds the 4000-character limit/);
 
-    // 5. Unknown prefix / unsupported URI
-    for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'oracle:p.i.t', '//trino.example.com/anything', 'SNOWFLAKE:acct.db.public.orders']) {
+    // 5. Unknown prefix, unsupported URI, or a BigLake name with no namespace
+    // or database. The error lists every form.
+    for (const bad of ['custom:foo', 'trino:cat.sch.tbl', 'oracle:p.i.t', '//trino.example.com/anything',
+      'SNOWFLAKE:acct.db.public.orders', 'biglake.googleapis.com/projects/acme/catalogs/cat/tables/orders']) {
       expect(() => loadSource(bad)).toThrow(
-        new RegExp(`dataset 'orders': source '${bad}' is not a valid table reference[\\s\\S]*for a table outside Google Cloud, the entry name of its Knowledge Catalog entry`),
-      );
+        `Semantic model load error: dataset 'orders': source '${bad}' is not a valid table ` +
+        "reference. Expected a GCP resource name ('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', " +
+        "'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', " +
+        "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', " +
+        "'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), " +
+        "'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' " +
+        "(PostgreSQL, SQL Server), 'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>' " +
+        "(Iceberg REST catalog), or 'biglake.googleapis.com/projects/<p>/catalogs/<c>/databases/<db>/tables/<t>' " +
+        "(Hive catalog)), or, for a table outside Google Cloud, the entry name of its Knowledge Catalog entry " +
+        "('projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>').");
     }
   });
 
@@ -3574,22 +3584,6 @@ describe('strict entity sources', () => {
       expect(() => loadSource(bare)).toThrow(`source '${bare}' is not a valid table reference; the quoted name ` +
         `'${name}' is one name, dot included. Expected a GCP resource name`);
     }
-  });
-
-  // The general error lists every form, with the catalog each BigLake form is for.
-  test('a BigLake name with no namespace or database lists every form', () => {
-    const bad = 'biglake.googleapis.com/projects/acme/catalogs/cat/tables/orders';
-    expect(() => loadSource(bad)).toThrow(
-      `Semantic model load error: dataset 'orders': source '${bad}' is not a valid table ` +
-      "reference. Expected a GCP resource name ('bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>', " +
-      "'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/tables/<t>', " +
-      "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>/schemas/<s>/tables/<t>', " +
-      "'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/tables/<t>' (MySQL), " +
-      "'cloudsql.googleapis.com/projects/<p>/locations/<l>/instances/<i>/databases/<db>/schemas/<s>/tables/<t>' " +
-      "(PostgreSQL, SQL Server), 'biglake.googleapis.com/projects/<p>/catalogs/<c>/namespaces/<n>/tables/<t>' " +
-      "(Iceberg REST catalog), or 'biglake.googleapis.com/projects/<p>/catalogs/<c>/databases/<db>/tables/<t>' " +
-      "(Hive catalog)), or, for a table outside Google Cloud, the entry name of its Knowledge Catalog entry " +
-      "('projects/<p>/locations/<l>/entryGroups/<g>/entries/<id>').");
   });
 
   test('a doubled quote in a quoted part of a bare name is one literal quote', () => {
