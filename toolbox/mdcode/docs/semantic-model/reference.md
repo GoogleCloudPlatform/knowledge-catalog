@@ -951,8 +951,9 @@ Writing an entry with aspects needs permission on **both** the entry operation
 and each aspect type attached, so a push needs, on the destination entry group:
 
 * `dataplex.entries.create`, `dataplex.entries.update`, `dataplex.entries.delete`,
-  and `dataplex.entries.list` — push upserts the model / entity / metric entries
-  and deletes orphaned ones
+  `dataplex.entries.list` and `dataplex.entries.get` — push upserts the model /
+  entity / metric entries, deletes orphaned ones, and reads the model entry again
+  before it labels the push finished
 * `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
   `schema-join` links, when the model has relationships
 * `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in
