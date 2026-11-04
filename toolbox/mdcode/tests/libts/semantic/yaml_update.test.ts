@@ -67,10 +67,10 @@ test.each<[string, string, (value: any) => void, string?]>([
   [
     'items removed and replaced after `|+` block scalars that stay',
     'l:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 2\n\n  - k: 3\n' +
-        'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\nb:\n  - >2+\n    x\n\nc: 1\nd: 1\n',
-    v => (v.l.splice(1, 1), v.r.splice(1, 1, {k: 9}), v.a.m.splice(1, 1), delete v.a.n, delete v.c),
+        'a:\n  m:\n    - e: |+\n        x\n\n    - k: 2\n\n  n: 1\n\n  o: 2\nb:\n  - >2+\n    x\n\nc: 1\nd: 1\ne:\n  - >2+\n    y\n\nf: 1\n\ng: 1\n',
+    v => (v.l.splice(1, 1), v.r.splice(1, 1, {k: 9}), v.a.m.splice(1, 1), delete v.a.n, delete v.c, delete v.f),
     'l:\n  - e: |+\n      x\n\n  - k: 3\nr:\n  - e: |+\n      x\n\n  - k: 9\n\n  - k: 3\n' +
-        'a:\n  m:\n    - e: |+\n        x\n\n  o: 2\nb:\n  - >2+\n    x\n\nd: 1\n'
+        'a:\n  m:\n    - e: |+\n        x\n\n  o: 2\nb:\n  - >2+\n    x\n\nd: 1\ne:\n  - >2+\n    y\n\ng: 1\n'
   ],
   [
     'items removed after a `|+` block scalar that changes and one in a value that changes',
