@@ -13,6 +13,8 @@ const SPANNER_TABLE =
     'spanner.googleapis.com/projects/acme/instances/i/databases/db/tables/orders';
 const CLOUDSQL_PREFIX =
     'cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/pg1/databases/app/schemas/public';
+const ALLOYDB_DB =
+    'alloydb.googleapis.com/projects/acme/locations/us-central1/clusters/c1/databases/analytics';
 
 /**
  * Builds a minimal valid `0.2.0.dev0` (vanilla Ossie) YAML fixture with
@@ -161,6 +163,43 @@ describe('conversion, strict mode, and translation', () => {
       'loader error in Check step (blank SQL)', googleDoc({fieldExpr: '"   "'}),
       {}, 'blank'
     ],
+    [
+      'dialect alias in strict mode',
+      googleDoc().replace('dialect: BIGQUERY', 'dialect: GOOGLE_SQL'),
+      {strict: true},
+      `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`
+    ],
+    [
+      'vanilla datatype in another casing in strict mode',
+      ossieDoc({extra: '            datatype: integer\n'}), {strict: true},
+      `field 'orders.order_id': rewrote datatype 'integer' to 'Integer'.`
+    ],
+    [
+      'vanilla datatype in another casing converted to Google in strict mode',
+      ossieDoc({extra: '            datatype: integer\n'}), {flavor: 'google' as const, strict: true},
+      `Semantic model load error: field 'orders.order_id': datatype 'integer' is not valid in a '0.2.0.dev0' document; expected exactly one of String, Integer, Decimal, Float, Boolean, Date, Time, DateTime, DateTimeTz, Opaque.`
+    ],
+    [
+      'one-part name against an AlloyDB database prefix in strict mode',
+      googleDoc({source: 'orders'}), {strict: true, sourcePrefix: ALLOYDB_DB},
+      `dataset 'orders': source 'orders' names no schema, and neither does '--source-prefix', so import cannot complete it; add the schema to the source or to '--source-prefix'.`
+    ],
+    [
+      'an unquoted part against an AlloyDB prefix with a capital letter in strict mode',
+      googleDoc({source: 'Sales.orders'}),
+      {strict: true, sourcePrefix: `${ALLOYDB_DB}/schemas/Sales`},
+      `dataset 'orders': source 'Sales.orders' names schema 'sales', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names schema 'Sales', so import cannot complete the source. If the schema is 'Sales', write it as '"Sales"' in the source; if it is 'sales', write 'sales' in '--source-prefix'.`
+    ],
+    [
+      'lowercase Opaque in strict mode',
+      ossieDoc({extra: '            datatype: opaque\n'}), {strict: true},
+      `field 'orders.order_id': removed datatype 'opaque'.`
+    ],
+    [
+      'a vanilla string expression in strict mode',
+      ossieDoc({fieldExpr: '"orders.order_id"'}), {strict: true},
+      `field 'orders.order_id': wrote the string expression as an 'ANSI_SQL' dialects entry.`
+    ],
   ])('refuses %s', async (_, input, opts, expectedMsg) => {
     const res = await importSemanticModelYaml(input, opts);
 
@@ -237,6 +276,9 @@ describe('vanilla output, extensions, and targets', () => {
             ossieDoc({fieldExpr: '"orders.order_id"', extra}));
 
         expect(res.ok).toBe(true);
+        expect(res.warnings).toContain(
+            `field 'orders.order_id': wrote the string expression as an ` +
+            `'ANSI_SQL' dialects entry.`);
         expect(res.warnings.some(w => w.includes('order_customer'))).toBe(true);
         expect(res.warnings.some(w => w.includes('--source-prefix')))
             .toBe(true);
@@ -321,13 +363,13 @@ describe('sources', () => {
   // and a part in double quotes keeps its dot.
   const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
   const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
-  const ALLOYDB =
+  const ALLOYDB_APP =
       'alloydb.googleapis.com/projects/acme/locations/us/clusters/c/databases/app';
   test.each([
     ['`acme.lake.sales.orders`', LAKE, LAKE_TABLE],
     ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
-    ['public."order.items"', ALLOYDB, `${ALLOYDB}/schemas/public/tables/order.items`],
+    ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
     const res = await importSemanticModelYaml(
         ossieDoc({source: `'${bare}'`}), {sourcePrefix});
@@ -387,6 +429,15 @@ describe('sources', () => {
           "Write the table's GCP resource name instead, such as " +
           `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
     ],
+    [
+      'dotted name against a project prefix', `'"order.items"'`,
+      {sourcePrefix: 'bigquery.googleapis.com/projects/acme'},
+      "the quoted name 'order.items' is one table name, and a BigQuery table name cannot hold a dot. " +
+          "Write the table's GCP resource name instead, such as " +
+          `'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
+    // A prefix of the database `other` completes it.
+    ['capitals against another AlloyDB database', 'OTHER.PUBLIC.Orders', {sourcePrefix: ALLOYDB_APP}, `${RERUN} ${ADVICE}`],
     [
       'dotted namespace', '\'lake.`my.ns`.orders\'', {sourcePrefix: LAKE},
       "the quoted name 'my.ns' is one namespace name, and a BigLake namespace name cannot hold a dot. " +
@@ -452,6 +503,58 @@ describe('sources', () => {
             .toBe(true);
       });
 
+  const ALLOYDB = `${ALLOYDB_DB}/schemas/public`;
+  // The warnings for a model whose one source is `bare`.
+  const caseWarnings = async (bare: string, sourcePrefix: string) =>
+      (await importSemanticModelYaml(
+           ossieDoc({
+             source: `'${bare}'`,
+             fieldExpr: '{dialects: [{dialect: ANSI_SQL, expression: order_id}]}',
+           }),
+           {sourcePrefix}))
+          .warnings;
+  const rewrote = (bare: string, completed: string) =>
+      `dataset 'orders': rewrote bare source '${bare}' to '${completed}'.`;
+  // [label, bare name, prefix, the source it completes to, or undefined when
+  // it differs from the prefix only in letter case]
+  test.each([
+    ['AlloyDB, unquoted', 'ANALYTICS.PUBLIC.ORDERS', ALLOYDB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB database', 'Public.ORDERS', ALLOYDB_DB, `${ALLOYDB}/tables/orders`],
+    ['AlloyDB, double-quoted table', 'PUBLIC."Orders"', ALLOYDB, `${ALLOYDB}/tables/Orders`],
+    ['AlloyDB, backticked table', 'PUBLIC.`Orders`', ALLOYDB, `${ALLOYDB}/tables/Orders`],
+    ['AlloyDB, backticked schema', '`Public`.ORDERS', ALLOYDB_DB, `${ALLOYDB_DB}/schemas/Public/tables/orders`],
+    ['AlloyDB, quoted schema', '"PUBLIC".orders', ALLOYDB, undefined],
+    ['AlloyDB, quoted schema against a prefix with capitals', '"sales".orders', `${ALLOYDB_DB}/schemas/Sales`, undefined],
+    ['AlloyDB, non-ASCII letter', 'PUBLIC.ÄRGER', ALLOYDB, `${ALLOYDB}/tables/Ärger`],
+    ['BigQuery', 'SALES.orders', BQ_PREFIX, undefined],
+    ['Cloud SQL', 'PUBLIC.orders', CLOUDSQL_PREFIX, undefined],
+  ])('matches letter case against a prefix: %s', async (_, bare, sourcePrefix, completed) => {
+    expect(await caseWarnings(bare, sourcePrefix)).toEqual([
+      completed ?
+          rewrote(bare, completed) :
+          `dataset 'orders': source '${bare}' differs from '--source-prefix' only in letter case, so import cannot complete it; correct the letter case of the source or of '--source-prefix'.`,
+    ]);
+  });
+
+  // An unquoted part, which PostgreSQL reads in lower case, never matches a
+  // name with a capital letter from A to Z in an AlloyDB prefix. [bare name,
+  // prefix, the part's kind, the prefix's name for it, the source with that
+  // name double-quoted, the rest of the source it then completes to]
+  test.each([
+    ['Sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', '"Sales".orders', '/tables/orders'],
+    ['analytics.Sales.orders', `${ALLOYDB_DB}/schemas/Sales`, 'schema', 'Sales', 'analytics."Sales".orders', '/tables/orders'],
+    ['Analytics.public.orders', ALLOYDB_DB.replace(/analytics$/, 'Analytics'), 'database', 'Analytics', '"Analytics".public.orders', '/schemas/public/tables/orders'],
+  ])('says how to match an AlloyDB prefix with capitals: %s against %s', async (bare, prefix, kind, name, quoted, rest) => {
+    const read = name.toLowerCase();
+    expect(await caseWarnings(bare, prefix)).toEqual([
+      `dataset 'orders': source '${bare}' names ${kind} '${read}', since PostgreSQL reads an unquoted name in lower case. '--source-prefix' names ${kind} '${name}', so import cannot complete the source. If the ${kind} is '${name}', write it as '"${name}"' in the source; if it is '${read}', write '${read}' in '--source-prefix'.`,
+    ]);
+    // Each way the warning gives completes the source.
+    const lowered = prefix.replace(`/${name}`, `/${read}`);
+    expect(await caseWarnings(quoted, prefix)).toEqual([rewrote(quoted, prefix + rest)]);
+    expect(await caseWarnings(bare, lowered)).toEqual([rewrote(bare, lowered + rest)]);
+  });
+
   test(
       'removes a query-valued source in Google output and rejects it in vanilla output',
       async () => {
@@ -471,7 +574,7 @@ describe('sources', () => {
 
 describe('dialects and datatypes', () => {
   test(
-      'maps dialect aliases, drops non-SQL dialects, canonicalizes datatypes, and drops Opaque',
+      'maps dialect aliases and drops non-SQL dialects',
       async () => {
         const extra =
             `          - name: amount\n            datatype: Opaque\n            expression:\n              dialects:\n                - {dialect: GOOGLESQL, expression: "orders.amount"}\n                - {dialect: POSTGRESQL, expression: "orders.amount"}\n                - {dialect: TSQL, expression: "orders.amount"}\n          - name: bi_only\n            datatype: datetimetz\n            expression:\n              dialects:\n                - {dialect: MDX, expression: "[Measures].[BiOnly]"}\n`;
@@ -484,6 +587,9 @@ describe('dialects and datatypes', () => {
             {flavor: 'google'});
 
         expect(res.ok).toBe(true);
+        expect(res.warnings).toContain(
+            `field 'orders.order_id': rewrote dialect 'GOOGLE_SQL' to 'BIGQUERY'.`);
+        expect(res.files[0].content).toContain('datatype: integer');
         const fields =
             loadModels(res.files[0].content).models[0].entities[0].fields;
         expect(fields[0].type).toBe('Integer');
@@ -497,6 +603,23 @@ describe('dialects and datatypes', () => {
         expect(fields[2].type).toBe('DateTimeTz');
         expect(fields[2].expression).toBeUndefined();
       });
+
+  test.each([
+    ['a Google file', {strict: true}, ['datatype: integer', 'datatype: Opaque']],
+    [
+      'a Google file converted to vanilla',
+      {flavor: 'ossie' as const, strict: true},
+      ['datatype: Integer', 'datatype: Opaque', 'dialect: ANSI_SQL'],
+    ],
+  ])('keeps each datatype the output flavor accepts in %s', async (_, opts, lines) => {
+    const res = await importSemanticModelYaml(
+        googleDoc({extra: '            datatype: integer\n          - name: amount\n            datatype: Opaque\n            expression: amount\n'}),
+        opts);
+
+    expect(res.errors).toEqual([]);
+    expect(res.warnings.filter(w => w.startsWith('field '))).toEqual([]);
+    for (const line of lines) expect(res.files[0].content).toContain(line);
+  });
 
   test(
       'reports an error when a vanilla field or metric is left with no supported dialect',
@@ -540,6 +663,8 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
             ossieDoc({modelDescription: 'x'.repeat(2105), extra}));
         const googleRes = await importSemanticModelYaml(
             ossieDoc({extra}), {flavor: 'google'});
+        const strictRes = await importSemanticModelYaml(
+            ossieDoc({extra}), {flavor: 'google', strict: true});
 
         expect(res.ok).toBe(true);
         expect(res.warnings.some(w => w.includes('extra_model'))).toBe(true);
@@ -552,6 +677,10 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
                    w => w.includes('row_count') &&
                        w.includes('with an \'entity\' anchor')))
             .toBe(true);
+        expect(strictRes.errors.some(
+                   e => e.includes('row_count') &&
+                       e.includes('GOOGLE custom_extensions block')))
+            .toBe(true);
         const loaded = loadModels(res.files[0].content);
         expect(loaded.models).toHaveLength(1);
         expect(loaded.models[0].description).toHaveLength(2000);
@@ -559,6 +688,42 @@ describe('unsupported constructs, lengths, and strict repairs', () => {
           'valid_orders'
         ]);
       });
+
+  // A GOOGLE block comes only in strict mode, which writes no file.
+  test.each([
+    ['written natively', googleDoc, 'description: %s', false],
+    ['in a GOOGLE block', ossieDoc, `custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "%s"}'}]`, true],
+  ])('reports a relationship description over 2,000 characters %s', async (_, build, line, strict) => {
+    const res = await importSemanticModelYaml(build({
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        ${line.replace('%s', 'd'.repeat(2005))}\n`,
+    }), {strict});
+
+    expect([...res.warnings, ...res.errors]).toEqual([
+      `relationship 'oc': truncated 'description' from 2005 to 2000 characters.`,
+    ]);
+    expect(res.files.map(f => loadModels(f.content).models[0].relationships[0].description))
+        .toEqual(strict ? [] : ['d'.repeat(2000)]);
+  });
+
+  test('counts a description without its surrounding whitespace, as push does', async () => {
+    const input = googleDoc({
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: |\n          ${'d'.repeat(2000)}\n`,
+    });
+    const res = await importSemanticModelYaml(input, {strict: true});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files.map(f => f.content)).toEqual([input]);
+  });
+
+  test('cuts a description before a surrogate pair it would split', async () => {
+    const res = await importSemanticModelYaml(googleDoc({
+      extra: `    relationships:\n      - name: oc\n        from: orders\n        to: orders\n        from_columns: [order_id]\n        to_columns: [order_id]\n        description: " ${'d'.repeat(1999)}\u{1F600}${'d'.repeat(10)} "\n`,
+    }));
+
+    expect(res.warnings).toEqual(
+        [`relationship 'oc': truncated 'description' from 2011 to 1999 characters.`]);
+    expect(res.files[0].content).toContain(`description: "${'d'.repeat(1999)}"\n`);
+  });
 
   test.each([
     ['bare source in strict mode', googleDoc({source: 'orders'})],
@@ -999,6 +1164,146 @@ semantic_model:
         expect(canonicalGoogle.files[1].content)
             .toContain(`expression: ${longSql}\n`);
       });
+
+  // A relationship from `orders` to itself, with `lines` added to it.
+  const selfJoin = (lines: string) => `    relationships:
+      - name: self
+        from: orders
+        to: orders
+        from_columns: [order_id]
+        to_columns: [order_id]
+${lines}`;
+  test.each([
+    ['a padded description', '    description: "  Retail model  "\n'],
+    ['a block description', '    description: |\n      Retail model.\n'],
+    ['a string ai_context', '    ai_context: Retail model\n'],
+    ['an empty metrics list', '    metrics: []  # none yet\n'],
+    ['repeated synonyms', '    ai_context:\n      synonyms: [shop, shop, store]\n'],
+    ['an empty ai_context', '    ai_context: {}\n'],
+  ].flatMap(
+      ([what, lines]): Array<[string, string, string, string | string[]]> => [
+        [what, 'google', ossieDoc({modelAiContext: lines}), lines],
+        [what, 'ossie', googleDoc({modelAiContext: lines}), lines],
+      ]).concat([
+    [
+      'GOOGLE block values in their own keys', 'google',
+      ossieDoc({
+        modelDescription: 'Retail',
+        modelAiContext:
+            `    custom_extensions: [{vendor_name: GOOGLE, data: '{"deployments": [{"name": "prod", "target": "${BQ_PREFIX}/propertyGraphs/retail"}]}'}]\n`,
+        source: `${BQ_TABLE}\n        custom_extensions: [{vendor_name: GOOGLE, data: '{"extends": ["base"]}'}]`,
+        extra: `      - name: base\n        source: ${BQ_TABLE}\n        fields: []\n` +
+            selfJoin(
+                `        custom_extensions: [{vendor_name: GOOGLE, data: '{"description": "  Self join.\\n"}'}]\n`),
+      }),
+      [
+        '    description: "Retail"\n    deployments:\n      - name: prod\n',
+        `        source: ${BQ_TABLE}\n        extends:\n          - base\n        primary_key:`,
+        '        to_columns: [order_id]\n        description: |2\n            Self join.\n',
+      ],
+    ],
+    [
+      'a description in a GOOGLE block', 'ossie',
+      googleDoc({
+        extra: selfJoin(
+            '        description: |\n          Self join.\n        custom_extensions:\n          - vendor_name: DBT\n            data: "{}"\n'),
+      }),
+      `            data: "{}"\n          - vendor_name: GOOGLE\n            data: '{"description":"Self join.\\n"}'\n`,
+    ],
+    [
+      'custom ai_context members where custom was', 'ossie',
+      googleDoc({
+        modelAiContext:
+            '    ai_context:\n      instructions: i\n      custom:\n        team: sales\n      synonyms: [s]\n',
+        source: `${BQ_TABLE}\n        ai_context: {instructions: d, custom: {k: d}}`,
+        fieldExpr: 'order_id\n            ai_context: {instructions: f, custom: {k: f}}',
+        extra: selfJoin('        ai_context: {instructions: r, custom: {k: r}}\n') +
+            '    metrics:\n      - name: n\n        expression: COUNT(orders.order_id)\n        ai_context: {instructions: m, custom: {k: m}}\n',
+      }),
+      [
+        '    ai_context:\n      instructions: i\n      team: sales\n      synonyms: [s]\n',
+        ...['d', 'f', 'r', 'm'].map(x => `ai_context: {instructions: ${x}, k: ${x}}\n`),
+      ],
+    ],
+    [
+      'no empty value, abstract: false or empty actions', 'ossie',
+      googleDoc({
+        modelAiContext:
+            '    deployments: []\n    ai_context: {custom: {}}\n    actions: []\n    constraints: []\n',
+        source: `${BQ_TABLE}\n        abstract: false\n        extends: []`,
+        extra: selfJoin('        description: ""\n') + '# end\n',
+      }),
+      ossieDoc({extra: `${selfJoin('')}# end\n`}),
+    ],
+    [
+      'the GOOGLE block after the entities that came before deployments', 'ossie',
+      googleDoc({
+        modelAiContext: '    # Entities\n',
+        extra: `    deployments:\n      - name: prod\n        target: ${BQ_PREFIX}/propertyGraphs/retail\n`,
+      }),
+      ossieDoc({
+        modelAiContext: '    # Entities\n',
+        extra: `    custom_extensions:\n      - vendor_name: GOOGLE\n        data: '{"deployments":[{"name":"prod","target":"${BQ_PREFIX}/propertyGraphs/retail"}]}'\n`,
+      }),
+    ],
+  ]))('writes %s in a conversion to %s', async (_, flavor, input, lines) => {
+    const res = await importSemanticModelYaml(
+        input, {flavor: flavor as 'google' | 'ossie', strict: true});
+
+    expect(res.errors).toEqual([]);
+    for (const line of [lines].flat()) {
+      expect(res.files[0].content).toContain(line);
+    }
+    const again =
+        await importSemanticModelYaml(res.files[0].content, {strict: true});
+    expect(again.files[0].content).toBe(res.files[0].content);
+  });
+
+  test.each([
+    ['abstract: false', {source: `${BQ_TABLE}\n        abstract: false`}, '        abstract: false\n'],
+    [
+      'extends', {
+        source: `${BQ_TABLE}\n        extends: [base]`,
+        extra: `      - name: base\n        source: ${BQ_TABLE}\n        fields: []\n`,
+      },
+      '        extends: [base]\n',
+    ],
+    ['a relationship description', {extra: selfJoin('        description: Self join.\n')}, '        description: Self join.\n'],
+    [
+      'a metric entity',
+      {extra: '    metrics:\n      - name: n\n        entity: orders\n        expression: {dialects: [{dialect: BIGQUERY, expression: COUNT(orders.order_id)}]}\n'},
+      '        entity: orders\n',
+    ],
+    [
+      'deployments',
+      {modelAiContext: `    deployments:\n      - name: prod\n        target: ${BQ_PREFIX}/propertyGraphs/retail\n`},
+      '    deployments:\n      - name: prod\n',
+    ],
+  ])('keeps %s that a third-party vanilla file writes as a native key, writing it as Google', async (_, overrides, line) => {
+    const res = await importSemanticModelYaml(ossieDoc(overrides), {flavor: 'google'});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toContain(line);
+  });
+
+  test('refuses a native profiles key in a third-party vanilla file written as Google', async () => {
+    const res = await importSemanticModelYaml(
+        ossieDoc({modelAiContext: '    profiles:\n      - name: prod\n'}),
+        {flavor: 'google'});
+
+    expect(res.errors).toEqual(
+        [expect.stringContaining('inline \'profiles\' are not supported')]);
+  });
+
+  test('keeps a GOOGLE block when a strict import into vanilla completes a source', async () => {
+    const block = `    custom_extensions: [{vendor_name: GOOGLE, data: '{"deployments": [{"name": "prod", "target": "${BQ_PREFIX}/propertyGraphs/retail"}]}'}]\n`;
+    const res = await importSemanticModelYaml(
+        ossieDoc({source: 'orders', modelAiContext: block}),
+        {strict: true, sourcePrefix: BQ_PREFIX});
+
+    expect(res.errors).toEqual([]);
+    expect(res.files[0].content).toContain(block);
+  });
 
   test('ignores profileFiles when target flavor is google', async () => {
     const googleRes = await importSemanticModelYaml(ossieDoc(), {

@@ -3834,13 +3834,19 @@ export function unquote(part: string): string {
 // `p.d.t`, has the parts of the same path written without them. A path in one
 // pair of double quotes is one name.
 export function bareNameSegments(name: string, bigQuery: boolean): string[] {
+  return bareNameParts(name, bigQuery).map(p => p.text);
+}
+
+// The parts bareNameSegments gives, each with whether quotes wrap it.
+export function bareNameParts(name: string, bigQuery: boolean):
+    Array<{text: string; quoted: boolean}> {
   const pairs = quotePairs(name);
   if (bigQuery && name[0] === '`' && pairs.length === 1 && pairs[0][0] === 0 &&
       pairs[0][1] === name.length - 1) {
-    return bareNameSegments(name.slice(1, -1), false);
+    return bareNameParts(name.slice(1, -1), false);
   }
   const closeOf = new Map(pairs);
-  const parts: string[] = [];
+  const parts: Array<{text: string; quoted: boolean}> = [];
   let start = 0;
   while (true) {
     let part = /^[^.`"]*/.exec(name.slice(start))![0];
@@ -3857,7 +3863,7 @@ export function bareNameSegments(name: string, bigQuery: boolean): string[] {
       }
       end = close + 1;
     }
-    parts.push(part);
+    parts.push({text: part, quoted: firstClose !== undefined});
     if (end === name.length) return parts;
     if (name[end] !== '.') return [];
     start = end + 1;
