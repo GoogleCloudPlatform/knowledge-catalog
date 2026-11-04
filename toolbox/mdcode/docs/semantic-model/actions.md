@@ -285,25 +285,38 @@ rather than in the model it binds. Here it replaces the `mcp` executor the model
 declared for `TransferFunds`:
 
 ```yaml
-# payments.profiles/operational.yaml — this store owns the rows, so it writes them
+# payments.profile.operational.yaml — this store owns the rows, so it writes them
+name: operational
+entities:
+  - name: Account
+    source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
+    primary_key: [account_id]
+    fields:
+      - { name: accountId, expression: account_id }
+      - { name: balance,   expression: balance }
+      # ... and the model's remaining entities and fields, bound the same way
+relationships:
+  - { name: TransferDebits, from_columns: [debited_account_id], to_columns: [account_id] }
+actions:
+  - name: TransferFunds
+    executor:
+      sql:
+        statements:
+          - UPDATE account SET balance = balance - @amount WHERE account_id = @source
+          - UPDATE account SET balance = balance + @amount WHERE account_id = @target
+          - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
+```
+
+Your model file then names the profile in a deployment:
+
+```yaml
+# payments.yaml, beside the profile file
 semantic_model:
   - name: payments
-    deployment_target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/graphs/payments
-    entities:
-      - name: Account
-        source: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/tables/account
-        fields:
-          - { name: accountId, expression: account_id }
-          - { name: balance,   expression: balance }
-          # ... and the model's remaining entities and fields, bound the same way
-    actions:
-      - name: TransferFunds
-        executor:
-          sql:
-            statements:
-              - UPDATE account SET balance = balance - @amount WHERE account_id = @source
-              - UPDATE account SET balance = balance + @amount WHERE account_id = @target
-              - INSERT INTO transfer (transfer_id, amount, debited_account_id) VALUES (GENERATE_UUID(), @amount, @source)
+    deployments:
+      - name: operational
+        profile: operational
+        target: spanner.googleapis.com/projects/my-project/instances/my-instance/databases/bank/graphs/payments
 ```
 
 A profile is an overlay on the model's bindings: a field it does not restate

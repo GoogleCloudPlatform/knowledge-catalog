@@ -22,7 +22,7 @@ import {semanticLinkId} from '../../../src/libts/semantic/kc_ids';
 import {generateCatalogResources, KcGenerateOptions} from '../../../src/libts/semantic/knowledge_catalog';
 import {loadModels} from '../../../src/libts/semantic/loader';
 import * as resolveInheritanceModule from '../../../src/libts/semantic/resolve_inheritance';
-import {applyProfileFile, loadProfileFile, mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfileFile, loadProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 
 const OPTS = {
   project: 'dest-proj',
@@ -1022,9 +1022,12 @@ describe('a field a binding profile excludes', () => {
   });
 
   // A catalog-only push publishes the whole logical model,
-  // so it applies none of the exclusions the merge returns.
-  test('is still published by a catalog-only push, with an excluded metric', () => {
-    const merged = mergeProfileOntoDoc(`version: "0.2.0.dev0/google"
+  // so it applies none of the exclusions the profile marks.
+  test(
+      'is still published by a catalog-only push, with an excluded metric',
+      () => {
+        const {models} = loadModels(
+            `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
     entities:
@@ -1037,27 +1040,28 @@ semantic_model:
           - { name: secret, expression: secret }
     metrics:
       - { name: revenue, expression: SUM(orders.amount) }
-`, `name: ops
+`,
+            {bindingOptional: true});
+        const ops = loadProfileFile(
+            `name: ops
 entities:
   - name: orders
     source: bigquery.googleapis.com/projects/p/datasets/d/tables/orders_ops
     fields_exclude: [secret]
 metrics_exclude: "*"
-`, 'ops');
-    if ('error' in merged) throw new Error(merged.error);
-    expect(merged.excluded).toEqual([
-      {model: 'shop', entity: 'orders', field: 'secret'},
-      {model: 'shop', metric: 'revenue'},
-    ]);
-    const {models} = loadModels(merged.text, {bindingOptional: true});
-    const {entries} = generateCatalogResources(models[0], OPTS);
-    const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
-    expect(entity.aspects!['dataplex-types.global.schema'].data!.fields
-               .map((f: any) => f.name))
-        .toEqual(['id', 'amount', 'secret']);
-    expect(entries.filter(e => e.entryType.endsWith('/semantic-metric')).length)
-        .toBe(1);
-  });
+`,
+            'ops', {skipActions: true});
+        const {entries} =
+            generateCatalogResources({...models[0], profiles: [ops]}, OPTS);
+        const entity =
+            entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
+        expect(entity.aspects!['dataplex-types.global.schema'].data!.fields.map(
+                   (f: any) => f.name))
+            .toEqual(['id', 'amount', 'secret']);
+        expect(entries.filter(e => e.entryType.endsWith('/semantic-metric'))
+                   .length)
+            .toBe(1);
+      });
 });
 
 

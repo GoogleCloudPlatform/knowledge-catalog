@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {applyProfileExclusions, DEFAULT_PROFILE, ProfileExclusion, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
+import {DEFAULT_PROFILE, profileSpecOf, sourcesDialect, statesKey} from './resolve_profiles';
 import {columnsForSource, entitiesReached, stripQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {parseLeniently, YAML_OPTIONS} from './yaml_options';
@@ -38,12 +38,6 @@ export interface LoadOptions {
   // they are migrated (b/568184815, b/568186042): accepts bare table names and
   // the legacy `deployment_target:` key.
   allowLegacyBareSource?: boolean;
-  // The fields and metrics a legacy `semantic_model:` profile wrapper
-  // excludes, which the text merged from it cannot say. The check that each
-  // inherited field holds SQL leaves each excluded field off the entity that
-  // excludes it, as applying a profile file does. The loaded model does not
-  // mark them.
-  excluded?: ReadonlyArray<ProfileExclusion>;
   // The dialect of each Cloud SQL table written as its resource name and each
   // third-party table, keyed as dialectLookupKey gives, as sourceDialects read
   // them from the tables' Knowledge Catalog entries. A command looks them up
@@ -2195,16 +2189,9 @@ function convertModel(
       metrics,
     });
   }
-  // A field a legacy profile wrapper excludes is left off the entity that
-  // excludes it here, though the loaded model does not mark it.
-  let inheritedProblem: string|undefined;
-  if (inheritanceResolved) {
-    const checked = opts.excluded?.length ?
-        declaredConceptFields(applyProfileExclusions(
-            {name: m.name, entities, relationships, metrics}, opts.excluded)) :
-        concepts;
-    inheritedProblem = inheritedNoSqlProblems(entities, checked)[0];
-  }
+  const inheritedProblem = inheritanceResolved ?
+      inheritedNoSqlProblems(entities, concepts)[0] :
+      undefined;
   if (inheritedProblem) {
     throw new SemanticModelError(`Semantic model load error: model '${
         m.name}': ${inheritedProblem}`);
@@ -3783,17 +3770,14 @@ export interface LoadedModels {
  * thrown, mirroring how the deploy legs previously reported it; loader warnings
  * are prefixed with their document name.
  *
- * A document's `allowLegacyBareSource` and `excluded` set those load options
- * for that document alone.
+ * A document's `allowLegacyBareSource` sets that load option for that document
+ * alone.
  *
  * Each document needs the SQL parser as loadModels does, so call
  * `loadSqlEngine()` first. Without it, this throws the parser's plain Error.
  */
 export function loadSemanticModels(
-    docs: {
-      name: string; text: string; allowLegacyBareSource?: boolean;
-      excluded?: ReadonlyArray<ProfileExclusion>;
-    }[],
+    docs: {name: string; text: string; allowLegacyBareSource?: boolean}[],
     opts: LoadOptions = {}): LoadedModels {
   const models: LoadedModel[] = [];
   const warnings: string[] = [];
@@ -3804,7 +3788,6 @@ export function loadSemanticModels(
       ...(doc.allowLegacyBareSource !== undefined ?
               {allowLegacyBareSource: doc.allowLegacyBareSource} :
               {}),
-      ...(doc.excluded ? {excluded: doc.excluded} : {}),
     };
     try {
       loaded = loadModels(doc.text, docOpts);

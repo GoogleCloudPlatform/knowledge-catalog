@@ -20,7 +20,7 @@ import * as path from 'path';
 import {generatePropertyGraph} from '../../../src/libts/semantic/bigquery';
 import {Entity, Field, SemanticModel, SqlDialect} from '../../../src/libts/semantic/ir';
 import {loadModels} from '../../../src/libts/semantic/loader';
-import {applyProfileExclusions, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfile, pruneUnavailable} from '../../../src/libts/semantic/resolve_profiles';
 import {GenerateOptions, generateSpannerPropertyGraph} from '../../../src/libts/semantic/spanner';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
@@ -726,11 +726,18 @@ describe('key and join columns, on both engines', () => {
         entity('customers', 'Customers', ['customer_id'],
                {customer_id: 'LOWER(customer_id)', name: 'name'}),
         ['customer_id'], ['customer_id']);
-    const excluded = pruneUnavailable(applyProfileExclusions(model, [
-      {model: 'shop', entity: 'orders', field: 'order_id'},
-      {model: 'shop', entity: 'orders', field: 'customer_id'},
-      {model: 'shop', entity: 'customers', field: 'customer_id'},
-    ]), 'restricted').model;
+    const excluded =
+        pruneUnavailable(
+            applyProfile(model, {
+              name: 'restricted',
+              entities: [
+                {name: 'orders', fieldsExclude: ['order_id', 'customer_id']},
+                {name: 'customers', fieldsExclude: ['customer_id']},
+              ],
+              relationships: [],
+            }),
+            'restricted')
+            .model;
     for (const [engine, generate] of ENGINES) {
       const before = generate(model);
       const after = generate(excluded);

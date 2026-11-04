@@ -1,9 +1,8 @@
 // Behavior specification for the binding-profile passes
-// (src/libts/semantic/resolve_profiles.ts): mergeProfile overlays a profile's
-// physical bindings onto a logical model by name and enforces the binding-only
-// contract; pruneUnavailable drops what a binding cannot answer and reports it.
-// Builders are minimal literals in the readable authoring form (mergeProfile) or
-// the IR (pruneUnavailable), mirroring resolve_inheritance.test.ts.
+// (src/libts/semantic/resolve_profiles.ts): applyProfile and applyProfileFile
+// overlay a profile's physical bindings onto a loaded logical model by name and
+// enforce the binding-only contract; pruneUnavailable drops what a binding
+// cannot answer and reports it.
 
 import {beforeAll, describe, expect, spyOn, test} from 'bun:test';
 import * as yaml from 'yaml';
@@ -11,91 +10,19 @@ import * as yaml from 'yaml';
 import {Field, isFieldBound, ProfileEntityBinding, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import * as loader from '../../../src/libts/semantic/loader';
 import {fromDocument, loadModels, loadSemanticModels, SemanticModelError} from '../../../src/libts/semantic/loader';
+import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 import * as inheritance from '../../../src/libts/semantic/resolve_inheritance';
 import {resolveInheritance} from '../../../src/libts/semantic/resolve_inheritance';
+import {applyProfile, applyProfileFile, CompletenessOptions, loadProfileFile, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import * as sqlUtils from '../../../src/libts/semantic/sql_expr_utils';
-import {applyProfile, applyProfileExclusions, applyProfileFile, CompletenessOptions, loadProfileFile, mergeProfile as mergeProfileImpl, mergeProfileOntoDoc as mergeProfileOntoDocImpl, ProfileExclusion, profileForDocument, pruneUnavailable, sourcesDialect, validateProfileCompleteness, validateProfileConsistency} from '../../../src/libts/semantic/resolve_profiles';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 import {validatePushRequirements} from '../../../src/libts/semantic/validate';
 import {YAML_OPTIONS} from '../../../src/libts/semantic/yaml_options';
-import {serializeModel} from '../../../src/libts/semantic/osi_converter';
 
 beforeAll(async () => {
   await loadSqlEngine();
 });
 
-
-// Every profile file a test here merges is also applied with applyProfile,
-// which must build the same model or fail with the same error, wherever the
-// model file loads on its own. The one exception is a profile that states one
-// of a relationship's join column lists without the other. The merge takes
-// the other list from the model file, and applyProfile rejects it as the
-// completeness check does.
-function checkAgainstApply(
-    logical: unknown, profile: unknown, name: string,
-    merged: {doc?: unknown; error?: string; excluded: ProfileExclusion[]}) {
-  if (!profile || typeof profile !== 'object' || Array.isArray(profile) ||
-      (profile as any).semantic_model !== undefined) {
-    return;
-  }
-  // The merge reads no version; a load needs one, and these documents are in
-  // the Google flavor.
-  const versioned = (doc: unknown) =>
-      ({version: '0.2.0.dev0/google', ...structuredClone(doc as object)});
-  let model: SemanticModel|undefined;
-  try {
-    model = fromDocument(versioned(logical), {bindingOptional: true}).models[0];
-  } catch {
-    return;
-  }
-  if (!model) return;
-  const applied =
-      applyProfileFile(model, yaml.stringify(profile, YAML_OPTIONS), name);
-  if (merged.error) {
-    expect(applied).toEqual({error: merged.error});
-    return;
-  }
-  const relationships = (profile as any).relationships;
-  if (Array.isArray(relationships) &&
-      relationships.some(
-          r => (r?.from_columns === undefined) !==
-              (r?.to_columns === undefined))) {
-    expect('error' in applied && applied.error)
-        .toContain('has no join columns in this profile');
-    return;
-  }
-  let mergedModel: SemanticModel;
-  try {
-    mergedModel =
-        fromDocument(versioned(merged.doc), {bindingOptional: true}).models[0];
-  } catch {
-    expect('error' in applied).toBe(true);
-    return;
-  }
-  if ('error' in applied) throw new Error(applied.error);
-  expect(applied.model)
-      .toEqual(applyProfileExclusions(mergedModel, merged.excluded));
-}
-const mergeProfile = (logical: unknown, profile: unknown, name: string) => {
-  const merged = mergeProfileImpl(logical, profile, name);
-  checkAgainstApply(logical, profile, name, merged);
-  return merged;
-};
-const mergeProfileOntoDoc =
-    (logicalText: string, profileText: string, name: string) => {
-      const merged = mergeProfileOntoDocImpl(logicalText, profileText, name);
-      checkAgainstApply(
-          yaml.parse(logicalText, YAML_OPTIONS),
-          yaml.parse(profileText, YAML_OPTIONS), name,
-          'error' in merged ?
-              {error: merged.error, excluded: []} :
-              {doc: yaml.parse(merged.text, YAML_OPTIONS),
-               excluded: merged.excluded});
-      return merged;
-    };
-
-const GRAPH =
-    'bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/commerce';
 const TBL = (t: string) =>
     `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 
@@ -136,38 +63,6 @@ function logicalDoc(): any {
   };
 }
 
-// The analytical binding: BigQuery sources, lifetimeValue bound, availableCredit
-// explicitly unbound.
-function analyticalDoc(): any {
-  return {
-    semantic_model: [{
-      name: 'commerce',
-      deployment_target: GRAPH,
-      entities: [
-        {
-          name: 'Customer',
-          source: TBL('customer'),
-          fields: [
-            {name: 'key', expression: 'c_custkey'},
-            {name: 'name', expression: 'c_name'},
-            {name: 'lifetimeValue', expression: 'c_ltv'},
-            {name: 'availableCredit'},
-          ],
-        },
-        {
-          name: 'Order',
-          source: TBL('orders'),
-          fields: [
-            {name: 'key', expression: 'o_orderkey'},
-            {name: 'customerKey', expression: 'o_custkey'},
-            {name: 'orderDate', expression: 'o_orderdate'},
-          ],
-        },
-      ],
-    }],
-  };
-}
-
 const modelOf = (doc: any) => doc.semantic_model[0];
 const entityOf = (doc: any, name: string) =>
     (modelOf(doc).entities ?? modelOf(doc).datasets)
@@ -175,118 +70,14 @@ const entityOf = (doc: any, name: string) =>
 const fieldOf = (doc: any, entity: string, field: string) =>
     entityOf(doc, entity).fields.find((f: any) => f.name === field);
 
+const loadLogical = (doc: any): SemanticModel =>
+    fromDocument({version: '0.2.0.dev0/google', ...structuredClone(doc)}, {
+      bindingOptional: true
+    }).models[0];
 
-describe('mergeProfile overlays physical bindings by name', () => {
-  test('applies source and expression, preserving logical facets', () => {
-    const {doc, error} = mergeProfile(logicalDoc(), analyticalDoc(), 'analytical');
-    expect(error).toBeUndefined();
-    expect(entityOf(doc, 'Customer').source).toBe(TBL('customer'));
-    const key = fieldOf(doc, 'Customer', 'key');
-    expect(key.expression).toBe('c_custkey');
-    expect(key.label).toBe('Customer ID');  // logical facet preserved
-    expect(modelOf(doc).deployment_target).toBe(GRAPH);
-  });
-
-  test('drops model deployments when a legacy profile sets deployment_target, and keeps them when it does not', () => {
-    const deployments = [{
-      name: 'prod',
-      target: 'spanner.googleapis.com/projects/p/instances/i/databases/d/graphs/commerce',
-    }];
-    const logical = logicalDoc();
-    modelOf(logical).deployments = deployments;
-    const {doc, error} = mergeProfile(logical, analyticalDoc(), 'analytical');
-    expect(error).toBeUndefined();
-    expect(modelOf(doc).deployment_target).toBe(GRAPH);
-    expect(modelOf(doc).deployments).toBeUndefined();
-
-    const noTargetProfile = analyticalDoc();
-    delete modelOf(noTargetProfile).deployment_target;
-    const kept = mergeProfile(logical, noTargetProfile, 'analytical');
-    expect(kept.error).toBeUndefined();
-    expect(modelOf(kept.doc).deployment_target).toBeUndefined();
-    expect(modelOf(kept.doc).deployments).toEqual(deployments);
-  });
-
-  test('a field the profile does not bind has no column', () => {
-    // availableCredit is present in the profile but carries no expression, so
-    // the merge leaves it unbound (a field is unbound exactly when it has no
-    // expression -- there is no separate flag).
-    const {doc} = mergeProfile(logicalDoc(), analyticalDoc(), 'analytical');
-    const credit = fieldOf(doc, 'Customer', 'availableCredit');
-    expect(credit.expression).toBeUndefined();
-  });
-
-  test('a field the profile omits is carried through as unbound', () => {
-    const profile = analyticalDoc();
-    // Drop availableCredit entirely from the profile (silent omission).
-    entityOf(profile, 'Customer').fields =
-        entityOf(profile, 'Customer')
-            .fields.filter((f: any) => f.name !== 'availableCredit');
-    const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression)
-        .toBeUndefined();
-  });
-
-  test('selecting a profile keeps an inline binding it does not mention', () => {
-    // A profile is an overlay: a field it does not rebind keeps the binding
-    // the model file gave it.
-    const logical = logicalDoc();
-    fieldOf(logical, 'Customer', 'name').expression = 'inline_name';
-    const profile = analyticalDoc();
-    entityOf(profile, 'Customer').fields =
-        entityOf(profile, 'Customer')
-            .fields.filter((f: any) => f.name !== 'name');
-    const {doc, error} = mergeProfile(logical, profile, 'analytical');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('inline_name');
-  });
-
-  test('the inputs are never mutated', () => {
-    const logical = logicalDoc();
-    const profile = analyticalDoc();
-    const before = JSON.stringify(logical);
-    mergeProfile(logical, profile, 'analytical');
-    expect(JSON.stringify(logical)).toBe(before);
-  });
-
-  test('a profile that sets a declaration facet is rejected', () => {
-    const profile = analyticalDoc();
-    fieldOf(profile, 'Customer', 'name').label = 'Renamed';  // logical facet
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/sets 'label'/);
-  });
-
-  test('a profile that defines a metric is rejected', () => {
-    const profile = analyticalDoc();
-    modelOf(profile).metrics = [{name: 'x', expression: 'COUNT(Order.key)'}];
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/sets 'metrics'/);
-  });
-
-  test('a profile naming an unknown entity is rejected', () => {
-    const profile = analyticalDoc();
-    entityOf(profile, 'Order').name = 'Nope';
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/entity 'Nope' is not in the logical model/);
-  });
-
-  test('a profile naming an unknown field is rejected', () => {
-    const profile = analyticalDoc();
-    entityOf(profile, 'Customer').fields.push({name: 'ghost', expression: 'g'});
-    const {error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toMatch(/field 'Customer.ghost' is not in the logical model/);
-  });
-
-  test('a profile expression may be a computation, not only a column', () => {
-    const profile = analyticalDoc();
-    fieldOf(profile, 'Customer', 'lifetimeValue').expression = 'c_a + c_b';
-    const {doc, error} = mergeProfile(logicalDoc(), profile, 'analytical');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression)
-        .toBe('c_a + c_b');
-  });
-});
+const applyProfileObj = (logical: any, profile: any, name: string) =>
+    applyProfileFile(
+        loadLogical(logical), yaml.stringify(profile, YAML_OPTIONS), name);
 
 
 // An action's executor is its only physical facet: the same operation is
@@ -315,30 +106,53 @@ function logicalWithAction(defaultExecutor?: any): any {
   return doc;
 }
 
-function profileWithAction(action: any): any {
-  const p = analyticalDoc();
-  modelOf(p).actions = [action];
-  return p;
+function profileWithAction(action: any, name = 'analytical'): any {
+  return {
+    name,
+    entities: [
+      {
+        name: 'Customer',
+        source: TBL('customer'),
+        fields: [
+          {name: 'key', expression: 'c_custkey'},
+          {name: 'name', expression: 'c_name'},
+          {name: 'lifetimeValue', expression: 'c_ltv'},
+        ],
+      },
+      {
+        name: 'Order',
+        source: TBL('orders'),
+        fields: [
+          {name: 'key', expression: 'o_orderkey'},
+          {name: 'customerKey', expression: 'o_custkey'},
+          {name: 'orderDate', expression: 'o_orderdate'},
+        ],
+      },
+    ],
+    ...(action ? {actions: [action]} : {}),
+  };
 }
 
-const actionOf = (doc: any, name: string) =>
-    (modelOf(doc).actions ?? []).find((a: any) => a.name === name);
+const actionOfModel = (m: SemanticModel, name: string) =>
+    (m.actions ?? []).find(a => a.name === name)!;
 
 
 describe('an executor is a binding a profile supplies', () => {
   test('a profile binds an action the logical model leaves open', () => {
-    const {doc, error} = mergeProfile(
-        logicalWithAction(), profileWithAction({
-          name: 'IssueCredit',
-          executor: SQL_EXEC,
-        }),
+    const res = applyProfileObj(
+        logicalWithAction(),
+        profileWithAction({name: 'IssueCredit', executor: SQL_EXEC}),
         'analytical');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toEqual({
+      kind: 'sql',
+      ...SQL_EXEC,
+    });
     // The declaration is untouched: a profile moves the write, never its
     // meaning.
-    expect(actionOf(doc, 'IssueCredit').description).toBe('Credit an order');
-    expect(actionOf(doc, 'IssueCredit').affects).toEqual([
+    expect(actionOfModel(res.model, 'IssueCredit').description)
+        .toBe('Credit an order');
+    expect(actionOfModel(res.model, 'IssueCredit').affects).toEqual([
       {concept: 'Order', operation: 'modify'},
     ]);
   });
@@ -347,92 +161,75 @@ describe('an executor is a binding a profile supplies', () => {
     // The point of binding the executor rather than declaring it: the model
     // names whoever owns the write, and the store that holds the rows performs
     // it as DML instead. Same action, same blast radius, different mechanism.
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         logicalWithAction(MCP_EXEC),
         profileWithAction({name: 'IssueCredit', executor: SQL_EXEC}),
         'analytical');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(SQL_EXEC);
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toEqual({
+      kind: 'sql',
+      ...SQL_EXEC,
+    });
   });
 
   test('an action the profile does not mention keeps the model default', () => {
     // Unlike a field's column, an executor is inherited on silence. A column
     // inherited into a renamed schema binds to the wrong data quietly; an
     // executor names a whole mechanism, so a wrong one fails at the first call.
-    const {doc, error} = mergeProfile(
-        logicalWithAction(MCP_EXEC), analyticalDoc(), 'analytical');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toEqual(MCP_EXEC);
+    const res = applyProfileObj(
+        logicalWithAction(MCP_EXEC), profileWithAction(undefined),
+        'analytical');
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toEqual({
+      kind: 'mcp',
+      ...MCP_EXEC,
+    });
   });
 
   test('`executor: null` withdraws an inherited executor', () => {
     // A read-only environment has to be able to say "by no means at all",
     // because silence already means "keep the default".
-    const {doc, error} = mergeProfile(
+    const res = applyProfileObj(
         logicalWithAction(MCP_EXEC),
-        profileWithAction({name: 'IssueCredit', executor: null}),
+        profileWithAction({name: 'IssueCredit', executor: null}, 'readonly'),
         'readonly');
-    expect(error).toBeUndefined();
-    expect(actionOf(doc, 'IssueCredit').executor).toBeUndefined();
+    if ('error' in res) throw new Error(res.error);
+    expect(actionOfModel(res.model, 'IssueCredit').executor).toBeUndefined();
     // Withdrawn, not deleted: the action is still declared.
-    expect(actionOf(doc, 'IssueCredit').name).toBe('IssueCredit');
+    expect(actionOfModel(res.model, 'IssueCredit').name).toBe('IssueCredit');
   });
 
   test(
       'a profile naming an action the model does not declare is an error',
       () => {
-        const {error} = mergeProfile(
+        const res = applyProfileObj(
             logicalWithAction(),
             profileWithAction({name: 'Nonesuch', executor: SQL_EXEC}),
             'analytical');
-        expect(error).toMatch(/action 'Nonesuch' is not in the logical model/);
+        expect('error' in res && res.error)
+            .toMatch(/action 'Nonesuch' is not in the logical model/);
       });
 
   test('a model with profiles may not declare a `sql` executor', () => {
     // A statement is written in one store's table and column names and its
-    // dialect, so there is no model-level spelling of it. Left in the model it
-    // would also outlive the columns it reads: the merge has just cleared this
-    // model's inline field bindings for the profile to re-supply.
-    const {error} = mergeProfile(
+    // dialect, so there is no model-level spelling of it.
+    const res = applyProfileObj(
         logicalWithAction(SQL_EXEC),
         profileWithAction({name: 'IssueCredit', executor: MCP_EXEC}),
         'analytical');
-    expect(error).toMatch(/action 'IssueCredit'/);
-    expect(error).toMatch(/declares a 'sql' executor/);
+    expect('error' in res && res.error).toMatch(/action 'IssueCredit'/);
+    expect('error' in res && res.error).toMatch(/declares a 'sql' executor/);
   });
-
-  test(
-      'a model the profile does not name keeps its inline `sql` executor',
-      () => {
-        // The ban follows the same scope as the inline-binding strip: a model
-        // the profile never touches keeps its own columns, so its statements
-        // still match them.
-        const logical = logicalWithAction(MCP_EXEC);
-        const untouched = structuredClone(modelOf(logical));
-        untouched.name = 'ops';
-        untouched.actions = [{
-          name: 'CloseOrder',
-          parameters: [{name: 'order', type: 'Order'}],
-          executor: SQL_EXEC,
-        }];
-        logical.semantic_model.push(untouched);
-
-        const {doc, error} = mergeProfile(
-            logical, profileWithAction({name: 'IssueCredit'}), 'analytical');
-        expect(error).toBeUndefined();
-        const ops =
-            (doc as any).semantic_model.find((m: any) => m.name === 'ops');
-        expect(ops.actions[0].executor).toEqual(SQL_EXEC);
-      });
 
   test('a profile setting a logical facet on an action is rejected', () => {
     // What gates the action and what it changes are the model's to state. A
     // profile that could move a guard could turn a check off per environment.
-    const {error} = mergeProfile(
+    const res = applyProfileObj(
         logicalWithAction(MCP_EXEC),
         profileWithAction({name: 'IssueCredit', guards: ['SomeRule']}),
         'analytical');
-    expect(error).toMatch(/action 'IssueCredit' sets 'guards'/);
+    expect('error' in res && res.error)
+        .toMatch(/action 'IssueCredit' sets 'guards'/);
   });
 });
 
@@ -993,7 +790,7 @@ describe('an action a binding cannot perform is unavailable', () => {
 });
 
 
-describe('mergeProfile reads a profile file', () => {
+describe('applyProfileFile reads a profile file', () => {
   // A profile file in the sibling-file form: a top-level profile object.
   function prodProfile(): any {
     return {
@@ -1022,49 +819,65 @@ describe('mergeProfile reads a profile file', () => {
     return doc;
   }
 
-  test('rebinds what it names and leaves the rest as the model file has it', () => {
-    const {doc, error, excluded} =
-        mergeProfile(inlineBound(), prodProfile(), 'prod');
-    expect(error).toBeUndefined();
-    const customer = entityOf(doc, 'Customer');
-    expect(customer.source).toBe(TBL('customer_prod'));
-    expect(customer.primary_key).toEqual(['c_id']);
-    expect(customer.unique_keys).toEqual([['c_email']]);
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('full_name');
-    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression)
-        .toBe('inline_ltv');
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression)
-        .toBeUndefined();
-    const rel = modelOf(doc).relationships[0];
-    expect(rel.from_columns).toEqual(['cust_id']);
-    expect(rel.to_columns).toEqual(['c_id']);
-    // An excluded metric stays in the document, so a catalog push still
-    // publishes it, and the merge returns the exclusion for pruning.
-    expect(modelOf(doc).metrics.map((m: any) => m.name))
-        .toContain('avg_lifetime_value');
-    expect(excluded.filter(x => 'metric' in x))
-        .toEqual([{model: modelOf(doc).name, metric: 'avg_lifetime_value'}]);
-  });
+  test(
+      'rebinds what it names and leaves the rest as the model file has it',
+      () => {
+        const res = applyProfileObj(inlineBound(), prodProfile(), 'prod');
+        if ('error' in res) throw new Error(res.error);
+        const customer = res.model.entities.find(e => e.name === 'Customer')!;
+        expect(customer.authoredSource).toBe(TBL('customer_prod'));
+        expect(customer.keys).toEqual(['c_id']);
+        expect(customer.uniqueKeys).toEqual([['c_email']]);
+        expect(customer.fields.find(f => f.name === 'name')!.expression)
+            .toBe('full_name');
+        expect(
+            customer.fields.find(f => f.name === 'lifetimeValue')!.expression)
+            .toBe('inline_ltv');
+        expect(
+            customer.fields.find(f => f.name === 'availableCredit')!.expression)
+            .toBeUndefined();
+        expect(customer.excludedFields).toEqual(['availableCredit']);
+        const rel = res.model.relationships![0];
+        expect(rel.source.columns).toEqual(['cust_id']);
+        expect(rel.destination.columns).toEqual(['c_id']);
+        // An excluded metric stays on the model, so a catalog push still
+        // publishes it, and the profile marks it excluded for pruning.
+        expect(res.model.metrics!.map(m => m.name))
+            .toContain('avg_lifetime_value');
+        expect(res.model.excludedMetrics).toEqual(['avg_lifetime_value']);
+      });
 
-  test('a profile that rebinds one of three bound fields leaves the other two', () => {
-    const {doc, error} = mergeProfile(inlineBound(), {
-      name: 'prod',
-      entities: [{name: 'Customer', fields: [{name: 'name', expression: 'full_name'}]}],
-    }, 'prod');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toBe('full_name');
-    expect(fieldOf(doc, 'Customer', 'lifetimeValue').expression).toBe('inline_ltv');
-    expect(fieldOf(doc, 'Customer', 'availableCredit').expression).toBe('inline_credit');
-  });
+  test(
+      'a profile that rebinds one of three bound fields leaves the other two',
+      () => {
+        const res = applyProfileObj(
+            inlineBound(), {
+              name: 'prod',
+              entities: [{
+                name: 'Customer',
+                fields: [{name: 'name', expression: 'full_name'}]
+              }],
+            },
+            'prod');
+        if ('error' in res) throw new Error(res.error);
+        const customer = res.model.entities.find(e => e.name === 'Customer')!;
+        expect(customer.fields.find(f => f.name === 'name')!.expression)
+            .toBe('full_name');
+        expect(
+            customer.fields.find(f => f.name === 'lifetimeValue')!.expression)
+            .toBe('inline_ltv');
+        expect(
+            customer.fields.find(f => f.name === 'availableCredit')!.expression)
+            .toBe('inline_credit');
+      });
 
   test('metrics_exclude "*" excludes every metric and keeps each in the document', () => {
     const profile = {...prodProfile(), metrics_exclude: '*'};
-    const {doc, error, excluded} = mergeProfile(inlineBound(), profile, 'prod');
-    expect(error).toBeUndefined();
-    const names = modelOf(doc).metrics.map((m: any) => m.name);
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    if ('error' in res) throw new Error(res.error);
+    const names = res.model.metrics!.map(m => m.name);
     expect(names.length).toBeGreaterThan(0);
-    expect(excluded.flatMap(x => 'metric' in x ? [x.metric] : []))
-        .toEqual(names);
+    expect(res.model.excludedMetrics).toEqual(names);
   });
 
   test('a field expression may use the dialects form', () => {
@@ -1073,37 +886,46 @@ describe('mergeProfile reads a profile file', () => {
       name: 'name',
       expression: {dialects: [{dialect: 'BIGQUERY', expression: 'full_name'}]},
     }];
-    const {doc, error} = mergeProfile(inlineBound(), profile, 'prod');
-    expect(error).toBeUndefined();
-    expect(fieldOf(doc, 'Customer', 'name').expression).toEqual(
-        {dialects: [{dialect: 'BIGQUERY', expression: 'full_name'}]});
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    if ('error' in res) throw new Error(res.error);
+    const name =
+        res.model.entities.find(e => e.name === 'Customer')!.fields.find(
+            f => f.name === 'name')!;
+    expect(name.dialects).toEqual([
+      {dialect: 'BIGQUERY', expression: 'full_name'}
+    ]);
   });
 
   test('a field in both fields and fields_exclude is an error', () => {
     const profile = prodProfile();
     profile.entities[0].fields_exclude = ['name'];
-    expect(mergeProfile(inlineBound(), profile, 'prod').error)
-        .toMatch(/'Customer': field 'name' is in both 'fields' and 'fields_exclude'/);
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    expect('error' in res && res.error)
+        .toMatch(
+            /'Customer': field 'name' is in both 'fields' and 'fields_exclude'/);
   });
 
   test('an unknown name in fields_exclude, relationships or metrics_exclude is an error', () => {
     const a = prodProfile();
     a.entities[0].fields_exclude = ['ghost'];
-    expect(mergeProfile(inlineBound(), a, 'prod').error)
+    const resA = applyProfileObj(inlineBound(), a, 'prod');
+    expect('error' in resA && resA.error)
         .toMatch(/field 'Customer.ghost' in 'fields_exclude'/);
     const b = prodProfile();
     b.relationships = [{name: 'Ghost', from_columns: ['a'], to_columns: ['b']}];
-    expect(mergeProfile(inlineBound(), b, 'prod').error)
+    const resB = applyProfileObj(inlineBound(), b, 'prod');
+    expect('error' in resB && resB.error)
         .toMatch(/relationship 'Ghost' is not in the logical model/);
     const c = {...prodProfile(), metrics_exclude: ['ghost']};
-    expect(mergeProfile(inlineBound(), c, 'prod').error)
+    const resC = applyProfileObj(inlineBound(), c, 'prod');
+    expect('error' in resC && resC.error)
         .toMatch(/metric 'ghost' in 'metrics_exclude'/);
   });
 
   test('"*" inside a metrics_exclude list is an error', () => {
     const profile = {...prodProfile(), metrics_exclude: ['*']};
-    expect(mergeProfile(inlineBound(), profile, 'prod').error)
-        .toMatch(/"\*" on its own/);
+    const res = applyProfileObj(inlineBound(), profile, 'prod');
+    expect('error' in res && res.error).toMatch(/"\*" on its own/);
   });
 
   test('a logical declaration in a profile file is rejected', () => {
@@ -1116,7 +938,8 @@ describe('mergeProfile reads a profile file', () => {
     ]) {
       const profile = prodProfile();
       set(profile);
-      expect(mergeProfile(inlineBound(), profile, 'prod').error)
+      const res = applyProfileObj(inlineBound(), profile, 'prod');
+      expect('error' in res && res.error)
           .toMatch(/which a profile may not set/);
     }
   });
@@ -1124,8 +947,16 @@ describe('mergeProfile reads a profile file', () => {
   test('a profile file against a document with two models is an error', () => {
     const logical = inlineBound();
     logical.semantic_model.push({name: 'other', entities: []});
-    expect(mergeProfile(logical, prodProfile(), 'prod').error)
-        .toMatch(/binds one model/);
+    const res = profileForDocument(
+        {
+          name: 'sales.yaml',
+          text: yaml.stringify(
+              {version: '0.2.0.dev0/google', ...logical}, YAML_OPTIONS),
+        },
+        [{name: 'prod', text: yaml.stringify(prodProfile(), YAML_OPTIONS)}],
+        'prod');
+    expect(res.kind === 'error' && res.error)
+        .toMatch(/a document declares one model/);
   });
 });
 
@@ -1705,8 +1536,10 @@ entities:
         .toThrow(/in both 'fields' and 'fields_exclude'/);
   });
 
-  test('the merge binds an inherited field by redeclaring it with only a binding', () => {
-    const logical = {
+  test(
+      'applying a profile binds an inherited field by redeclaring it with only a binding',
+      () => {
+        const logical = {
       semantic_model: [{
         name: 'm',
         entities: [
@@ -1715,18 +1548,29 @@ entities:
         ],
       }],
     };
-    const {doc, error} = mergeProfile(logical, {
-      name: 'prod',
-      entities: [{name: 'Person', fields: [{name: 'label', expression: 'display_name'}]}],
-    }, 'prod');
-    expect(error).toBeUndefined();
-    const person = (doc as any).semantic_model[0].entities[1];
-    expect(person.fields).toEqual([{name: 'id'}, {name: 'label', expression: 'display_name'}]);
-    const excluded = mergeProfile(logical, {
-      name: 'prod', entities: [{name: 'Person', fields_exclude: ['label']}],
-    }, 'prod');
-    expect(excluded.error).toBeUndefined();
-  });
+        const res = applyProfileObj(
+            logical, {
+              name: 'prod',
+              entities: [{
+                name: 'Person',
+                fields: [{name: 'label', expression: 'display_name'}]
+              }],
+            },
+            'prod');
+        if ('error' in res) throw new Error(res.error);
+        const person = res.model.entities[1];
+        expect(person.fields.map(f => [f.name, f.expression])).toEqual([
+          ['id', undefined],
+          ['label', 'display_name'],
+        ]);
+        const excluded = applyProfileObj(
+            logical, {
+              name: 'prod',
+              entities: [{name: 'Person', fields_exclude: ['label']}],
+            },
+            'prod');
+        expect('error' in excluded).toBe(false);
+      });
 });
 
 
@@ -1748,49 +1592,27 @@ describe('profile overlay edges', () => {
     }],
   });
 
-  test('the legacy wrapper takes the new entity and relationship keys', () => {
-    const {doc, error} = mergeProfile(logical(), {
-      semantic_model: [{
-        name: 'm', version: '0.2.0.dev0/google', deployment_target: 'x',
-        entities: [{name: 'orders', source: BQ('orders2'), primary_key: ['oid'],
-                    unique_keys: [['ref']]}],
-        relationships: [{name: 'placed_by', from_columns: ['c'], to_columns: ['vid']}],
-      }],
-    }, 'prod');
-    expect(error).toBeUndefined();
-    const m = (doc as any).semantic_model[0];
-    expect(m.deployment_target).toBe('x');
-    expect(m.entities[2].primary_key).toEqual(['oid']);
-    expect(m.entities[2].unique_keys).toEqual([['ref']]);
-    expect(m.relationships[0].from_columns).toEqual(['c']);
-    expect(m.relationships[0].to_columns).toEqual(['vid']);
-    const withMetrics = logical() as any;
-    withMetrics.semantic_model[0].metrics = [{name: 'n', expression: 'COUNT(orders.o_id)'}];
-    const excluded = mergeProfile(withMetrics, {
-      semantic_model: [{name: 'm', metrics_exclude: '*'}],
-    }, 'prod');
-    expect(excluded.error).toBeUndefined();
-    expect((excluded.doc as any).semantic_model[0].metrics.length).toBe(1);
-    expect(excluded.excluded).toEqual([{model: 'm', metric: 'n'}]);
-  });
-
   test('deployment_target at the top of a profile file is rejected', () => {
-    expect(mergeProfile(logical(), {name: 'prod', deployment_target: 'x'}, 'prod').error)
-        .toMatch(/sets 'deployment_target', which a profile may not set/);
     expect(() => loadProfileFile('name: prod\ndeployment_target: x\n', 'prod'))
         .toThrow(/which a profile may not set/);
   });
 
-  test('a subtype may exclude a field a concrete ancestor binds; the ancestor keeps it', () => {
-    const merged = mergeProfile(logical(), {
-      name: 'prod', entities: [{name: 'vip', fields_exclude: ['email']}],
-    }, 'prod');
-    expect(merged.error).toBeUndefined();
-    expect(merged.excluded).toEqual([{model: 'm', entity: 'vip', field: 'email'}]);
-    // The ancestor's binding stays in the document, for the ancestor.
-    const customer = (merged.doc as any).semantic_model[0].entities[0];
-    expect(customer.fields.find((f: any) => f.name === 'email').expression).toBe('email');
-    const model: SemanticModel = {
+  test(
+      'a subtype may exclude a field a concrete ancestor binds; the ancestor keeps it',
+      () => {
+        const applied = applyProfileObj(
+            logical(), {
+              name: 'prod',
+              entities: [{name: 'vip', fields_exclude: ['email']}],
+            },
+            'prod');
+        if ('error' in applied) throw new Error(applied.error);
+        expect(applied.model.entities[1].excludedFields).toEqual(['email']);
+        // The ancestor's binding stays on the ancestor.
+        const customer = applied.model.entities[0];
+        expect(customer.fields.find(f => f.name === 'email')!.expression)
+            .toBe('email');
+        const model: SemanticModel = {
       name: 'm',
       entities: [
         {name: 'customer', dataSource: 'p.d.customer', keys: ['id'],
@@ -1799,36 +1621,15 @@ describe('profile overlay edges', () => {
       ],
       relationships: [],
     } as any;
-    expect(validateProfileCompleteness(model, {
-      name: 'prod',
-      entities: [keyedById('customer', BQ('customer'), column('email')),
-                 {...keyedById('vip', BQ('vip')), fieldsExclude: ['email']}],
-      relationships: [],
-    })).toEqual([]);
-  });
-
-  test('a YAML-only tag in a custom ai_context member survives the merge as text', () => {
-    const logicalText = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: m
-    entities:
-      - name: orders
-        ai_context:
-          custom:
-            reviewed: !!timestamp 2025-01-01
-        fields: [{name: id, datatype: Integer}]
-`;
-    const merged = mergeProfileOntoDoc(logicalText, `name: prod
-entities:
-  - name: orders
-    source: ${BQ('orders')}
-    fields: [{name: id, expression: id}]
-`, 'prod');
-    if ('error' in merged) throw new Error(merged.error);
-    const {models} = loadModels(merged.text, {bindingOptional: true});
-    expect(models[0].entities[0].aiContext)
-        .toEqual({additionalProperties: {reviewed: '2025-01-01'}});
-  });
+        expect(validateProfileCompleteness(model, {
+          name: 'prod',
+          entities: [
+            keyedById('customer', BQ('customer'), column('email')),
+            {...keyedById('vip', BQ('vip')), fieldsExclude: ['email']}
+          ],
+          relationships: [],
+        })).toEqual([]);
+      });
 
   test('a dialect list with no BIGQUERY or ANSI_SQL entry still binds the field', () => {
     const p = loadProfileFile(`name: prod
@@ -1854,7 +1655,7 @@ entities:
 });
 
 
-describe('profile merge: exclusions, duplicates and catalog names', () => {
+describe('profile application: exclusions, duplicates and catalog names', () => {
   // vip extends customer; both have their own table.
   const logical = (emailInline: boolean) => ({
     semantic_model: [{
@@ -1872,22 +1673,40 @@ describe('profile merge: exclusions, duplicates and catalog names', () => {
     const both = [{name: 'customer', fields_exclude: ['email']},
                   {name: 'vip', fields_exclude: ['email']}];
     for (const order of [(x: any[]) => x, (x: any[]) => [...x].reverse()]) {
-      const r = mergeProfile(logical(true), {name: 'prod', entities: order(both)}, 'prod');
-      expect(r.error).toBeUndefined();
-      expect(r.excluded.map(x => 'entity' in x ? x.entity : '').sort())
+      const r = applyProfileObj(
+          logical(true), {name: 'prod', entities: order(both)}, 'prod');
+      if ('error' in r) throw new Error(r.error);
+      expect(r.model.entities.filter(e => e.excludedFields?.includes('email'))
+                 .map(e => e.name)
+                 .sort())
           .toEqual(['customer', 'vip']);
     }
     // vip excluding a field customer binds only in the profile is allowed too.
-    expect(mergeProfile(logical(false), {name: 'prod', entities: [
-      {name: 'vip', fields_exclude: ['email']},
-      {name: 'customer', fields: [{name: 'email', expression: 'mail'}]},
-    ]}, 'prod').error).toBeUndefined();
+    expect(
+        'error' in applyProfileObj(
+            logical(false), {
+              name: 'prod',
+              entities: [
+                {name: 'vip', fields_exclude: ['email']},
+                {
+                  name: 'customer',
+                  fields: [{name: 'email', expression: 'mail'}]
+                },
+              ]
+            },
+            'prod'))
+        .toBe(false);
   });
 
   test('an entity or relationship listed twice is rejected', () => {
-    expect(mergeProfile(logical(true), {
-      name: 'prod', entities: [{name: 'vip'}, {name: 'vip'}],
-    }, 'prod').error).toContain("'entities' lists 'vip' twice");
+    const dup = applyProfileObj(
+        logical(true), {
+          name: 'prod',
+          entities: [{name: 'vip'}, {name: 'vip'}],
+        },
+        'prod');
+    expect('error' in dup && dup.error)
+        .toContain('\'entities\' lists \'vip\' twice');
     expect(() => loadProfileFile(
                'name: prod\nrelationships:\n  - {name: r, from_columns: [a], to_columns: [b]}\n' +
                    '  - {name: r, from_columns: [c], to_columns: [d]}\n',
@@ -2540,13 +2359,9 @@ entities:
   - name: orders
     source: "${PG('orders')}"
 `;
-    const load = (text: string) =>
-        loadSemanticModels(
-            [{name: 'shop.yaml', text}],
-            {dialect: 'POSTGRES', bindingOptional: true});
-    const merged = mergeProfileOntoDocImpl(modelText(false), profileText, 'prod');
-    if ('error' in merged) throw new Error(merged.error);
-    expect(load(merged.text).error).toBeUndefined();
+    const load = (text: string) => loadSemanticModels(
+        [{name: 'shop.yaml', text}],
+        {dialect: 'POSTGRES', bindingOptional: true});
     const applied = applyProfileFile(
         load(modelText(false)).models[0].model, profileText, 'prod',
         {load: {dialect: 'POSTGRES'}});
@@ -2640,40 +2455,14 @@ semantic_model:
   });
 
   // An abstract entity has no table, so a profile entry for one is rejected.
-  test('the merge rejects an entry for an abstract entity', () => {
+  test('applying a profile rejects an entry for an abstract entity', () => {
     const logical = {semantic_model: [{name: 'm', entities: [
       {name: 'party', abstract: true, fields: [{name: 'name'}]},
     ]}]};
-    expect(mergeProfile(logical, {name: 'prod', entities: [{name: 'party'}]}, 'prod').error)
-        .toContain("entity 'party' is abstract, so a profile cannot bind it");
-  });
-
-  test('the legacy wrapper carries only version and semantic_model, with named entries', () => {
-    const logical = {semantic_model: [{name: 'm', entities: [{name: 'o', fields: []}]}]};
-    expect(mergeProfile(logical, {semantic_model: [], name: 'prod'}, 'prod').error)
-        .toContain("carries only 'version' and 'semantic_model', not 'name'");
-    expect(mergeProfile(logical, {semantic_model: ['m']}, 'prod').error)
-        .toContain("every entry in 'semantic_model' is a mapping with a 'name'");
-  });
-
-  test('a YAML alias in the model file does not carry one entity\'s binding to another', () => {
-    const logicalText = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: m
-    entities:
-      - {name: orders, source: ${BQ('orders')}, primary_key: [id], fields: [&idf {name: id, expression: id}]}
-      - {name: refunds, source: ${BQ('refunds')}, primary_key: [id], fields: [*idf]}
-`;
-    const merged = mergeProfileOntoDoc(logicalText, `name: prod
-entities:
-  - {name: orders, source: ${BQ('orders')}, fields: [{name: id, expression: order_id}]}
-  - {name: refunds, source: ${BQ('refunds')}}
-relationships: []
-`, 'prod');
-    if ('error' in merged) throw new Error(merged.error);
-    const {models} = loadModels(merged.text);
-    expect(models[0].entities.find(e => e.name === 'refunds')!.fields[0].expression).toBe('id');
-    expect(models[0].entities.find(e => e.name === 'orders')!.fields[0].expression).toBe('order_id');
+    const res = applyProfileObj(
+        logical, {name: 'prod', entities: [{name: 'party'}]}, 'prod');
+    expect('error' in res && res.error)
+        .toContain('entity \'party\' is abstract, so a profile cannot bind it');
   });
 
   test('an inheritance error the profile itself creates is reported', () => {
@@ -2833,7 +2622,11 @@ relationships: []
       ],
       relationships: [],
     } as any;
-    const marked = applyProfileExclusions(model, [{model: 'm', entity: 'customer', field: 'email'}]);
+    const marked = applyProfile(model, {
+      name: 'p',
+      entities: [{name: 'customer', fieldsExclude: ['email']}],
+      relationships: [],
+    });
     const resolved = resolveInheritance(marked).model.entities!;
     expect(resolved.find(e => e.name === 'customer')!.fields.map(f => f.name)).toEqual(['id']);
     const vipEmail = resolved.find(e => e.name === 'vip')!.fields.find(f => f.name === 'email')!;
@@ -3504,7 +3297,12 @@ semantic_model:
   test('pruning drops a metric the profile excludes, and names it excluded', () => {
     const model = shop({expression: 'amount'});
     model.metrics = [{name: 'revenue', expression: 'SUM(orders.amount)'}] as any;
-    const marked = applyProfileExclusions(model, [{model: 'shop', metric: 'revenue'}]);
+    const marked = applyProfile(model, {
+      name: 'ops',
+      entities: [],
+      relationships: [],
+      metricsExclude: ['revenue'],
+    });
     expect(marked.excludedMetrics).toEqual(['revenue']);
     expect(model.excludedMetrics).toBeUndefined();
     const {model: pruned, report} = pruneUnavailable(marked, 'ops');
@@ -3517,7 +3315,7 @@ semantic_model:
   });
 
   // Actions are out of preview scope and gain no new checks.
-  test('a profile file may list an action twice, as the merge always allowed', () => {
+  test('a profile file may list an action twice', () => {
     expect(loadProfileFile('name: p\nactions:\n  - {name: Cancel}\n  - {name: Cancel}\n', 'p')
                .actions!.length)
         .toBe(2);
@@ -3541,12 +3339,17 @@ describe('excluding a field a subtype redeclares', () => {
         ],
       }],
     };
-    const {doc, error, excluded} = mergeProfile(
-        logical, {name: 'p', entities: [{name: 'vip', fields_exclude: ['name']}]}, 'p');
-    expect(error).toBeUndefined();
-    const vip = (doc as any).semantic_model[0].entities[1];
+    const [base] = fromDocument(logical, {bindingOptional: true}).models;
+    const applied = applyProfileFile(
+        base,
+        yaml.stringify(
+            {name: 'p', entities: [{name: 'vip', fields_exclude: ['name']}]},
+            YAML_OPTIONS),
+        'p');
+    if ('error' in applied) throw new Error(applied.error);
+    const vip = applied.model.entities[1];
     expect(vip.fields).toEqual([]);
-    expect(excluded).toEqual([{model: 'm', entity: 'vip', field: 'name'}]);
+    expect(vip.excludedFields).toEqual(['name']);
   });
 });
 
@@ -3736,7 +3539,7 @@ entities:
   });
 
   // A model with a `sql` executor reports that first, before reading a
-  // profile file that does not even parse, as the merge does.
+  // profile file that does not even parse.
   test('a sql executor in the model is reported before a broken profile file', () => {
     const withSql = {name: 'sales', text: DOC.text + `    actions:
       - name: Close
@@ -3804,10 +3607,6 @@ describe('a document mistake versus a bug', () => {
     const spy = spyOn(loader, 'parseFieldExpression').mockImplementation(boom);
     try {
       expect(() => applyProfileFile(model(), FILE, 'p')).toThrow(TypeError);
-      expect(() => mergeProfileImpl(
-                 {semantic_model: [{name: 'shop', datasets: []}]},
-                 yaml.parse(FILE), 'p'))
-          .toThrow(TypeError);
     } finally {
       spy.mockRestore();
     }
@@ -3991,7 +3790,7 @@ describe('applyProfile options', () => {
 });
 
 
-describe('applyProfile builds the model the YAML merge builds', () => {
+describe('applyProfile and applyProfileFile', () => {
   const SHOP = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: shop
@@ -4048,33 +3847,13 @@ semantic_model:
 `;
   const LOAD = {defaultProject: 'acme'};
 
-  // The model each path builds, or its error.
-  const viaMerge = (model: string, profile: string) => {
-    const merged = mergeProfileOntoDoc(model, profile, 'prod');
-    if ('error' in merged) return {error: merged.error};
-    try {
-      const {models} =
-          loadModels(merged.text, {...LOAD, bindingOptional: true});
-      return {model: applyProfileExclusions(models[0], merged.excluded)};
-    } catch (err: any) {
-      return {error: String(err?.message ?? err)};
-    }
-  };
   const viaApply = (model: string, profile: string) => {
     const {models} = loadModels(model, {...LOAD, bindingOptional: true});
     return applyProfileFile(models[0], profile, 'prod');
   };
-  // The model alone; the warnings have their own test.
-  const comparable = (r: {model: SemanticModel}|{error: string}) =>
-      'error' in r ? r : {model: r.model};
-  const same = (profile: string, model = SHOP) => {
-    const applied = viaApply(model, profile);
-    expect(comparable(applied)).toEqual(comparable(viaMerge(model, profile)));
-    return applied;
-  };
 
   test('an empty unique_keys list clears the model file\'s', () => {
-    const applied = same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: customer
     unique_keys: []
@@ -4085,7 +3864,7 @@ entities:
   });
 
   test('sources and keys', () => {
-    same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: customer
     source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer"
@@ -4095,10 +3874,19 @@ entities:
     source: "bigquery.googleapis.com/projects/acme/datasets/prod/tables/account"
     unique_keys: []
 `);
+    if ('error' in applied) throw new Error(applied.error);
+    const customer = applied.model.entities.find(e => e.name === 'customer')!;
+    expect(customer.authoredSource)
+        .toBe(
+            'bigquery.googleapis.com/projects/acme/datasets/prod/tables/customer');
+    expect(customer.keys).toEqual(['cust_id']);
+    expect(customer.uniqueKeys).toEqual([['cust_email'], ['cust_phone']]);
+    const account = applied.model.entities.find(e => e.name === 'account')!;
+    expect(account.uniqueKeys).toBeUndefined();
   });
 
   test('field bindings, dialect lists and an inherited field', () => {
-    const applied = same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: customer
     fields:
@@ -4129,10 +3917,14 @@ entities:
       {dialect: 'BIGQUERY', expression: 'e_bq'},
       {dialect: 'SPANNER', expression: 'e_sp'},
     ]);
+    const balance =
+        applied.model.entities.find(e => e.name === 'premium')!.fields.find(
+            f => f.name === 'balance')!;
+    expect(balance.expression).toBe('p_balance');
   });
 
   test('exclusions, on an entity with descendants and on leaves', () => {
-    same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 entities:
   - name: account
     fields_exclude: [note, balance]
@@ -4142,6 +3934,14 @@ entities:
     fields_exclude: [party_name]
 metrics_exclude: [customers]
 `);
+    if ('error' in applied) throw new Error(applied.error);
+    const field = (e: string, f: string) =>
+        applied.model.entities.find(x => x.name === e)!.fields.find(
+            x => x.name === f)!;
+    // premium extends account, so account's excluded field keeps its binding.
+    expect(field('account', 'balance').expression).toBe('a_balance');
+    expect(field('premium', 'tier').expression).toBeUndefined();
+    expect(applied.model.excludedMetrics).toEqual(['customers']);
   });
 
   test('an entity that names itself in extends has no descendant', () => {
@@ -4154,11 +3954,15 @@ metrics_exclude: [customers]
         fields:
           - {name: f, expression: c_f}
     relationships:`);
-    same('name: prod\nentities: [{name: loop, fields_exclude: [f]}]\n', loop);
+    const applied = viaApply(
+        loop, 'name: prod\nentities: [{name: loop, fields_exclude: [f]}]\n');
+    if ('error' in applied) throw new Error(applied.error);
+    expect(applied.model.entities.find(e => e.name === 'loop')!.fields)
+        .toEqual([{name: 'f'}]);
   });
 
   test('join columns, every metric excluded, and executors', () => {
-    same(`name: prod
+    const applied = viaApply(SHOP, `name: prod
 relationships:
   - {name: holds, from_columns: [prem_cust], to_columns: [cust_id]}
 metrics_exclude: "*"
@@ -4169,30 +3973,72 @@ actions:
   - name: Close
     executor: null
 `);
+    if ('error' in applied) throw new Error(applied.error);
+    const holds = applied.model.relationships.find(r => r.name === 'holds')!;
+    expect(holds.source.columns).toEqual(['prem_cust']);
+    expect(holds.destination.columns).toEqual(['cust_id']);
+    expect(applied.model.excludedMetrics).toEqual([
+      'total_balance',
+      'customers',
+    ]);
+    const action = (name: string) =>
+        applied.model.actions!.find(a => a.name === name)!;
+    expect(action('Notify').executor).toEqual({
+      kind: 'rest',
+      rest: {endpoint: 'https://y/notify', method: 'POST'},
+    });
+    expect(action('Close').executor).toBeUndefined();
   });
 
-  test('the same errors, with the same messages', () => {
-    const profiles = [
-      'name: prod\nentities: [{name: nope}]\n',
-      'name: prod\nentities: [{name: party, source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/party"}]\n',
-      'name: prod\nentities: [{name: account, fields: [{name: nope, expression: x}]}]\n',
-      'name: prod\nentities: [{name: account, fields_exclude: [nope]}]\n',
-      'name: prod\nrelationships: [{name: nope, from_columns: [a], to_columns: [b]}]\n',
-      'name: prod\nmetrics_exclude: [nope]\n',
-      'name: prod\nactions: [{name: Nope, executor: null}]\n',
-      'name: prod\nversion: "0.2.0.dev0/google"\n',
+  test('rejects invalid profile entries and model sql executors', () => {
+    const cases: Array<[string, string]> = [
+      [
+        'name: prod\nentities: [{name: nope}]\n',
+        'profile \'prod\': entity \'nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nentities: [{name: party, source: "bigquery.googleapis.com/projects/acme/datasets/raw/tables/party"}]\n',
+        'profile \'prod\': entity \'party\' is abstract, so a profile cannot bind it',
+      ],
+      [
+        'name: prod\nentities: [{name: account, fields: [{name: nope, expression: x}]}]\n',
+        'profile \'prod\': field \'account.nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nentities: [{name: account, fields_exclude: [nope]}]\n',
+        'profile \'prod\': field \'account.nope\' in \'fields_exclude\' is not in the logical model',
+      ],
+      [
+        'name: prod\nrelationships: [{name: nope, from_columns: [a], to_columns: [b]}]\n',
+        'profile \'prod\': relationship \'nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nmetrics_exclude: [nope]\n',
+        'profile \'prod\': metric \'nope\' in \'metrics_exclude\' is not in the logical model',
+      ],
+      [
+        'name: prod\nactions: [{name: Nope, executor: null}]\n',
+        'profile \'prod\': action \'Nope\' is not in the logical model',
+      ],
+      [
+        'name: prod\nversion: "0.2.0.dev0/google"\n',
+        'profile \'prod\' sets \'version\'; a profile file takes its version from the model file beside it, so remove the line',
+      ],
     ];
-    for (const profile of profiles) {
-      const applied = viaApply(SHOP, profile);
-      expect('error' in applied).toBe(true);
-      expect(applied).toEqual(viaMerge(SHOP, profile) as any);
+    for (const [profile, error] of cases) {
+      expect(viaApply(SHOP, profile)).toEqual({error});
     }
     const sqlModel = SHOP.replace(
         'rest: {endpoint: https://x/close, method: POST}',
         'sql: {statements: ["DELETE FROM account WHERE a_id = 1"]}');
-    const applied = viaApply(sqlModel, 'name: prod\n');
-    expect('error' in applied).toBe(true);
-    expect(applied).toEqual(viaMerge(sqlModel, 'name: prod\n') as any);
+    expect(viaApply(sqlModel, 'name: prod\n')).toEqual({
+      error:
+          'profile \'prod\': action \'Close\' in model \'shop\' declares a ' +
+          '\'sql\' executor. A statement names one database\'s own tables and ' +
+          'columns, so it belongs in the profile that binds them, not in the ' +
+          'model. Move the executor into each profile that performs this ' +
+          'write as DML.',
+    });
   });
 
   describe("the completeness check and pruning read the profile's own dialect", () => {
@@ -4773,12 +4619,6 @@ relationships:
 relationships:
   - {name: holds, from_columns: [a, b], to_columns: [c_id]}
 `);
-    // The load's message, naming the profile, which the merged load does not.
-    const merged = viaMerge(SHOP, `name: prod
-relationships:
-  - {name: holds, from_columns: [a, b], to_columns: [c_id]}
-`) as {error: string};
-    expect(lengths).toEqual({error: `profile 'prod': ${merged.error}`});
     expect(lengths).toEqual({
       error: "profile 'prod': relationship 'holds': from_columns (2) and " +
           'to_columns (1) have different lengths; the join keys are mismatched',
@@ -4807,43 +4647,34 @@ actions:
 `);
     if (!('error' in noTool)) throw new Error('expected an error');
     expect(noTool.error)
-        .toStartWith("profile 'prod': action 'Notify' 'executor': mcp.tool: ");
-    expect('error' in viaMerge(SHOP, `name: prod
-actions:
-  - {name: Notify, executor: {mcp: {server: s}}}
-`)).toBe(true);
+        .toStartWith(
+            'profile \'prod\': action \'Notify\' \'executor\': mcp.tool: ');
   });
 
   // A named profile states both join column lists itself, so one side alone
   // gets the completeness check's error, whatever join columns the model file
-  // has. The merge, which the commands use only for a legacy wrapper, takes
-  // the other list from the model file, and the load then checks the join.
+  // has.
   test('one side of a join gets the completeness error', () => {
-    const cases: Array<[string, string, string|undefined]> = [
+    const cases: Array<[string, string]> = [
       // refers has no join columns in the model file.
-      ['refers', 'from_columns: [p_cust]', 'must be given together'],
+      ['refers', 'from_columns: [p_cust]'],
       // holds joins [p_cust] to [c_id] in the model file.
-      ['holds', 'from_columns: [a, b]',
-       'from_columns (2) and to_columns (1) have different lengths'],
-      ['holds', 'to_columns: [c_email]', undefined],
+      ['holds', 'from_columns: [a, b]'],
+      ['holds', 'to_columns: [c_email]'],
     ];
-    for (const [name, columns, mergeError] of cases) {
+    for (const [name, columns] of cases) {
       const profile = `name: prod\nrelationships:\n  - {name: ${name}, ${
           columns}}\n`;
       expect({columns, ...viaApply(SHOP, profile)}).toEqual({
         columns,
         error: `profile 'prod': relationship '${name}' has no join columns ` +
-            "in this profile; a named profile states both 'from_columns' " +
-            "and 'to_columns' itself",
+            'in this profile; a named profile states both \'from_columns\' ' +
+            'and \'to_columns\' itself',
       });
-      const merged = viaMerge(SHOP, profile);
-      expect({columns, merged: 'error' in merged ? merged.error : 'loads'})
-          .toEqual({columns, merged: mergeError ?
-                        expect.stringContaining(mergeError) : 'loads'});
     }
   });
 
-  test('the warnings match the ones a load of the merged document gives', () => {
+  test('warnings reflect the applied profile', () => {
     const model = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
@@ -4864,13 +4695,6 @@ semantic_model:
               dialects:
                 - {dialect: ANSI_SQL, expression: o_tax}
 `;
-    const fromMerge = (profile: string) => {
-      const merged = mergeProfileOntoDocImpl(model, profile, 'prod');
-      if ('error' in merged) throw new Error(merged.error);
-      return loadSemanticModels([{name: 'sales', text: merged.text}],
-                                {...LOAD, bindingOptional: true})
-          .warnings;
-    };
     const fromApply = (profile: string) => {
       const loaded = loadSemanticModels(
           [{name: 'sales', text: model}], {...LOAD, bindingOptional: true});
@@ -4881,7 +4705,7 @@ semantic_model:
       return applied.warnings;
     };
     // Keys in the profile, and every field the model file warns about
-    // rebound: the merged document gives no warning at all.
+    // rebound: the applied profile gives no warning at all.
     const replacesAll = `name: prod
 entities:
   - name: orders
@@ -4891,7 +4715,6 @@ entities:
       - {name: total, expression: t}
       - {name: tax, expression: x}
 `;
-    expect(fromApply(replacesAll)).toEqual(fromMerge(replacesAll));
     expect(fromApply(replacesAll)).toEqual([]);
     // One ANSI_SQL field left as the model file binds it keeps the note, and
     // a profile text with no BIGQUERY or ANSI_SQL entry warns, prefixed.
@@ -4906,8 +4729,15 @@ entities:
           dialects:
             - {dialect: SPANNER, expression: t}
 `;
-    expect(new Set(fromApply(keepsOne))).toEqual(new Set(fromMerge(keepsOne)));
-    expect(fromApply(keepsOne).length).toBe(2);
+    expect(fromApply(keepsOne)).toEqual([
+      '[sales] field \'orders.total\': no \'BIGQUERY\' or \'ANSI_SQL\' ' +
+          'dialect; keeping the \'SPANNER\' expression as imported_expression ' +
+          '(needs transpilation to \'BIGQUERY\')',
+      '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
+          'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
+          'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
+          'for BIGQUERY-specific SQL)',
+    ]);
     // A field the profile excludes takes its warning with it.
     const excludes = `name: prod
 entities:
@@ -4918,7 +4748,6 @@ entities:
       - {name: tax, expression: x}
     fields_exclude: [o_id]
 `;
-    expect(fromApply(excludes)).toEqual(fromMerge(excludes));
     expect(fromApply(excludes).join('\n')).not.toContain("field 'orders.o_id'");
     // The warnings come in the order a load gives them: the entities', then
     // each metric's, here one naming no entity, then the actions'.
@@ -4937,12 +4766,20 @@ entities:
         loadedUnanchored.models[0].model, keyless, 'prod',
         {from: {document: 'sales', warnings: loadedUnanchored.warnings}});
     if ('error' in ordered) throw new Error(ordered.error);
-    const mergedOrder = loadSemanticModels(
-        [{name: 'sales',
-          text: (mergeProfileOntoDocImpl(unanchored, keyless, 'prod') as {text: string}).text}],
-        {...LOAD, bindingOptional: true}).warnings;
-    expect(ordered.warnings).toEqual(mergedOrder);
-    expect(ordered.warnings.at(-1)).toContain("parameter 'reason' states no 'type'");
+    expect(ordered.warnings).toEqual([
+      '[sales] dataset \'orders\': no primary_key; the entity\'s KEY will be ' +
+          'empty (invalid for graph generation)',
+      '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
+          'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
+          'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
+          'for BIGQUERY-specific SQL)',
+      '[sales] metric \'n\': expression references no known entity; it may ' +
+          'not be placeable downstream',
+      '[sales] action \'Close\': parameter \'reason\' states no \'type\' and ' +
+          'projects no field. A parameter with no field behind it declares ' +
+          'its own scalar type (String/Integer/Decimal/Float/Boolean/Date/' +
+          'Time/DateTime/DateTimeTz/Opaque).',
+    ]);
     // A metric that takes its ANSI_SQL text keeps the note, though the
     // profile rebinds every field that did.
     const withMetric = model + `    metrics:
@@ -5149,11 +4986,10 @@ semantic_model:
     const res = profileForDocument(doc, [{name: 'prod', text: prod}], 'prod');
     if (res.kind !== 'file') throw new Error(JSON.stringify(res));
     expect(res.model.metrics?.[0].entity).toBeUndefined();
-    expect(res.warnings).toContain(
-        "[sales.yaml] metric 'total': expression could not be parsed; entity " +
-        "inference was skipped (set 'entity' on the metric, or " +
-        "backtick-quote a reserved qualifier, such as `Date`.amount)");
-    // The YAML merge of the same profile builds the same model.
-    mergeProfileOntoDoc(doc.text, prod, 'prod');
+    expect(res.warnings)
+        .toContain(
+            '[sales.yaml] metric \'total\': expression could not be parsed; entity ' +
+            'inference was skipped (set \'entity\' on the metric, or ' +
+            'backtick-quote a reserved qualifier, such as `Date`.amount)');
   });
 });

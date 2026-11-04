@@ -5,7 +5,7 @@ import {describe, expect, test} from 'bun:test';
 
 import {Action, CustomExtension, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../../src/libts/semantic/ir';
 import {listed, LoadedModel, loadModels} from '../../../src/libts/semantic/loader';
-import {mergeProfileOntoDoc} from '../../../src/libts/semantic/resolve_profiles';
+import {applyProfile, applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
 import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
@@ -690,8 +690,10 @@ describe('inheritance rules', () => {
     expect(errors).toContain("field 'id' is inherited from 'party'");
   });
 
-  test('a legacy profile binds an inherited field the model does not redeclare', () => {
-    const logical = `version: "0.2.0.dev0/google"
+  test(
+      'a profile file binds an inherited field the model does not redeclare',
+      () => {
+        const logical = `version: "0.2.0.dev0/google"
 semantic_model:
   - name: sales
     entities:
@@ -705,28 +707,23 @@ semantic_model:
         fields:
           - { name: id, datatype: Integer }
 `;
-    const profile = `version: "0.2.0.dev0/google"
-semantic_model:
-  - name: sales
-    entities:
-      - name: customer
-        source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer
-        fields:
-          - { name: id, expression: c_custkey }
-          - { name: name, expression: c_name }
+        const profile = `name: analytical
+entities:
+  - name: customer
+    source: bigquery.googleapis.com/projects/p/datasets/d/tables/customer
+    fields:
+      - { name: id, expression: c_custkey }
+      - { name: name, expression: c_name }
 `;
-    const docs = (text: string, bindingOptional: boolean) =>
-        loadModels(text, {bindingOptional, allowLegacyBareSource: true})
-            .models.map(m => loaded(m, 'sales.yaml'));
-    // The catalog leg validates the logical model unpruned.
-    expect(validatePushRequirements(docs(logical, true)))
-        .toEqual([]);
-    const merged = mergeProfileOntoDoc(logical, profile, 'analytical');
-    if ('error' in merged) throw new Error(merged.error);
-    expect(validatePushRequirements(
-               docs(merged.text, false)))
-        .toEqual([]);
-  });
+        const [base] = loadModels(logical, {bindingOptional: true}).models;
+        // The catalog leg validates the logical model unpruned.
+        expect(validatePushRequirements([loaded(base, 'sales.yaml')]))
+            .toEqual([]);
+        const applied = applyProfileFile(base, profile, 'analytical');
+        if ('error' in applied) throw new Error(applied.error);
+        expect(validatePushRequirements([loaded(applied.model, 'sales.yaml')]))
+            .toEqual([]);
+      });
 
   test('a cycle or an ambiguous field is still reported on a pruned model', () => {
     const cyclic = model({
@@ -2101,6 +2098,13 @@ ${extraMetric}`;
       expect(validatePushRequirements(
                  [loaded(model({entities: [stale, sub]}))]))
           .toEqual(expected);
+      // A field a profile excludes on `sub` is not read there.
+      const profiled = applyProfile(m, {
+        name: 'p',
+        entities: [{name: 'sub', fieldsExclude: ['label']}],
+        relationships: [],
+      });
+      expect(validatePushRequirements([loaded(profiled)])).toEqual([]);
     });
 
     // serializeModel writes both texts, and the loader rejects either one with
