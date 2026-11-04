@@ -786,7 +786,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming
   the field or metric, since those databases read that token as text.
-  PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name.
+  PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name, and
+  so does a Spanner table in a PostgreSQL-dialect database.
   *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
