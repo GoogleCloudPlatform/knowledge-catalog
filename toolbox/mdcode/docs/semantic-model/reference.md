@@ -126,9 +126,10 @@ table's from its database. Import then judges each table in that dialect. When
 it cannot read a table's dialect, it warns with push's reason and skips the
 checks that need the dialect: whether a field has SQL in its table's dialect,
 what an `ANSI_SQL` text reads when every table of the model file or profile is
-such a table, and whether a profile's tables are in one database when only that
-table's entry can say. Tables of two systems are never in one database, so
-import still reports a profile that binds a BigQuery table beside such a table.
+such a table, and whether a profile's or the model file's tables are in one
+database when only that table's entry can say. Tables of two systems are never
+in one database, so import still reports a profile or model file that binds a
+BigQuery table beside such a table.
 Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
@@ -785,10 +786,8 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   database)*
 * **Each field the model file binds has a text its entity's database runs.**
   The field needs an entry in the dialect of its entity's source, an
-  `ANSI_SQL` entry, or the string form. The model file's own bindings may span
-  systems, so each entity is judged by its own source, but their Spanner tables
-  must all be in one database. `kcmd import
-  --transpile` adds a BigQuery entry for a text it can translate. Every push
+  `ANSI_SQL` entry, or the string form. `kcmd import --transpile` adds a
+  BigQuery entry for a text it can translate. Every push
   runs this check, whether or not a deployment uses those bindings. When a
   BigQuery, Spanner, MySQL or Databricks table runs an `ANSI_SQL` entry or the
   string form with a double-quoted token, push accepts it and warns, naming
@@ -796,6 +795,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   PostgreSQL, AlloyDB, SQL Server and Snowflake tables read it as a name, and
   so does a Spanner table in a PostgreSQL-dialect database.
   *(static)*
+* **The model file's own bindings are all in one database.** One database
+  means what it means for a profile ([Sources](profiles.md#sources)). Every
+  push checks them, whether or not a deployment uses them. *(static)*
 * Every class hierarchy follows the inheritance rules. `extends` forms no cycle,
   and no field is declared by two supertypes that do not extend each other. A
   subtype redeclares an inherited field only to bind it. A concrete entity
