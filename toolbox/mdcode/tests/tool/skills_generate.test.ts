@@ -24,7 +24,7 @@ import {createSemanticRuntimes} from '../../src/libts/semantic/runtime/runtime';
 import {storeLine} from '../../src/libts/semantic/runtime/store';
 import {validatePushRequirements} from '../../src/libts/semantic/validate';
 import {profiles, skillsGenerate} from '../../src/tool/commands';
-import {passGraphChecks, passSourceCheck, stubSpannerDialect} from '../libts/mocks';
+import {passGraphChecks, passSourceCheck} from '../libts/mocks';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -78,7 +78,6 @@ beforeEach(() => {
   process.chdir(dir);
   logs = [];
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
-  stubSpannerDialect();
   for (const channel of ['log', 'warn', 'error'] as const) {
     spyOn(console, channel).mockImplementation((...a: unknown[]) => {
       logs.push(a.join(' '));

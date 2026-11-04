@@ -765,9 +765,9 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `ANSI_SQL`. So does every field and metric of a profile whose sources fix
   that dialect. *(live — needs read access to the entry)*
 * **A Spanner table takes its database's dialect.** Knowledge Catalog does not
-  record whether a Spanner database is GoogleSQL or PostgreSQL, so push,
-  `kcmd profiles` and `kcmd skills-generate` read each database a source names
-  once, with the Spanner API, before they load the model:
+  record whether a Spanner database is GoogleSQL or PostgreSQL, so push and
+  `kcmd profiles` read each database a source names once, with the Spanner
+  API, before they load the model:
   `GOOGLE_STANDARD_SQL` gives `SPANNER` and `POSTGRESQL` gives `POSTGRES`. A
   database that cannot be read stops the command before anything is written.
   A field the model file binds to one of its tables then needs SQL in that
@@ -973,8 +973,7 @@ model is present), on the database the target names:
 whether or not it deploys to Spanner:
 
 * `spanner.databases.get` on each database those tables are in, to read the
-  database's SQL dialect. `kcmd profiles` and `kcmd skills-generate` need it
-  too.
+  database's SQL dialect. `kcmd profiles` needs it too.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (on by
 default; skip it with `--no-kc`):

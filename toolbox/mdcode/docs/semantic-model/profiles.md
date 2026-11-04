@@ -113,7 +113,7 @@ table. When the entry cannot be read, the command stops and says so.
 A Spanner database is GoogleSQL or PostgreSQL, and the resource name cannot
 tell which, so `kcmd` reads each database's `databaseDialect` with the Spanner
 API: `GOOGLE_STANDARD_SQL` gives `SPANNER` and `POSTGRESQL` gives `POSTGRES`.
-The same three commands read each database once before they load the model,
+Push and `kcmd profiles` read each database once before they load the model,
 which needs `spanner.databases.get` on it. When the database cannot be read,
 the command stops and says so.
 

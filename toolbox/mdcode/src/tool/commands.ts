@@ -1259,9 +1259,9 @@ function printProfileReport(model: SemanticModel, name: string): void {
 // report), then each error a plain `kcmd push` gives that belongs to it.
 // Read-only: it applies and prunes each profile and runs push's local checks
 // the way push does, but deploys nothing, so a user can see coverage and
-// whether push accepts a profile before a deployment names it. Its one service
-// call is push's Cloud SQL dialect lookup. Returns a process exit code (0 on
-// success).
+// whether push accepts a profile before a deployment names it. Its only
+// service calls are push's source dialect lookups. Returns a process exit code
+// (0 on success).
 export async function profiles(options: ProfilesOptions = {}): Promise<number> {
   ensureManifestExists('.');
   const ctx = context.ApiContext.default();
