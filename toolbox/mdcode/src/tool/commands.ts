@@ -91,8 +91,9 @@ export interface PushOptions {
   forceRemove?: boolean;
   // Skip the checks that every source names a table Knowledge Catalog knows
   // about and that the BigQuery and BigLake tables of each profile share a
-  // location. The lookup of a Cloud SQL or third-party table's entry, which
-  // push needs for the table's dialect, still runs. Semantic-model push only.
+  // location. The lookups push needs for source dialects, of a Cloud SQL or
+  // third-party table's entry and of a Spanner database, still run.
+  // Semantic-model push only.
   skipSourceCheck?: boolean;
   // No longer supported: push refuses `--no-kc`, which cac gives as false,
   // since every push publishes the model to Knowledge Catalog.
