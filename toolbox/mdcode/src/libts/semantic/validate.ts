@@ -18,7 +18,7 @@ import {deploySpanner} from './deploy_spanner';
 import {ParsedDeploymentTarget, ResolvedDeployment, resolveModelDeployments, SpannerGraphTarget, spannerGraphTargets} from './deployment_target';
 import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Executor, expressionForDialect, Field, FIELD_DEFINITION_KEYS, isFieldBound, Metric, ProfileSpec, SemanticModel, SQL_EXECUTOR_VERBS, SqlDialect} from './ir';
 import {relationshipLinkId} from './kc_ids';
-import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, SemanticModelError, undefinedEndpointProblem} from './loader';
+import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
 import {bindScalar, sentence, storeCodeFor} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
@@ -2179,6 +2179,39 @@ async function deploymentPlan(
       [narrowed]);
   if (typeof generated === 'string') return fail(`${at}: ${generated}`);
   return {deployment, at, model: narrowed, report, generated};
+}
+
+// The warnings and the note push prints on what pruning leaves out of the
+// model `plan` deploys. Each line names the model, and the document and the
+// deployment.
+export function pruningLines({deployment, model, report: r}: DeploymentPlan):
+    string[] {
+  const where = `model '${model.model.name}' (${model.document})`;
+  // What becomes of a field left out. An AlloyDB database holds no graph.
+  const outcome = deployment.engine === 'alloydb' ? 'it is unavailable there' :
+                                                    'the graph omits it';
+  const excluded = new Set(r.excludedFields);
+  const omits = (field: string, why: string) =>
+      `Warning: field '${field}' in ${where} ${why}, so ${outcome}.`;
+  // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
+  const named = (kind: string, names: string[]) => names.length ?
+      `${plural(names.length, kind, `${kind}s`)} ${
+          listed(names.map(n => `'${n}'`))}` :
+      '';
+  const unavailable = [
+    named('metric', r.droppedMetrics.map(m => m.name)),
+    named('action', r.droppedActions.map(a => a.name)),
+  ].filter(n => n).join(r.droppedMetrics.length > 1 ? ', and ' : ' and ');
+  const note = [
+    excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
+    unavailable && `leaves ${unavailable} unavailable.`,
+  ].filter(p => p).join(' It ');
+  return [
+    ...r.unboundFields.filter(f => !excluded.has(f))
+        .map(f => omits(f, 'has no expression')),
+    ...r.droppedFields.map(d => omits(d.name, d.reason)),
+    ...note ? [`Note: ${where} ${note}`] : [],
+  ];
 }
 
 

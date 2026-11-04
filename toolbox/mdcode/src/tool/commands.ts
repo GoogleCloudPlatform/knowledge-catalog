@@ -26,17 +26,17 @@ import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, u
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
-import {listed, LoadedModel, loadSemanticModels, OSSIE_VERSION, SemanticModelError, writtenSource} from '../libts/semantic/loader';
+import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import * as pullKc from '../libts/semantic/pull_kc';
-import {AvailabilityReport, DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
+import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
 import {profileTargets, storeLine} from '../libts/semantic/runtime/store';
 import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, pruningLines, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 
@@ -503,37 +503,6 @@ function checkedFileCopies(
   const files = read.map(f => ({...f, pushId, pushFileCount: read.length}));
   const error = kc.checkFileCopies(files);
   return error ? {files: [], error} : {files};
-}
-
-// The warnings and the note push prints on what pruning leaves out of model
-// `model`. Each line names the model, and `at` its document and the
-// deployment. `outcome` says what becomes of a field left out.
-function pruningLines(
-    r: AvailabilityReport, model: string, at: string,
-    outcome = 'the graph omits it'): string[] {
-  const where = `model '${model}' (${at})`;
-  const excluded = new Set(r.excludedFields);
-  const omits = (field: string, why: string) =>
-      `Warning: field '${field}' in ${where} ${why}, so ${outcome}.`;
-  // Such as "metric 'a'" or "metrics 'a' and 'b'", or '' for no names.
-  const named = (kind: string, names: string[]) => names.length ?
-      `${plural(names.length, kind, `${kind}s`)} ${
-          listed(names.map(n => `'${n}'`))}` :
-      '';
-  const unavailable = [
-    named('metric', r.droppedMetrics.map(m => m.name)),
-    named('action', r.droppedActions.map(a => a.name)),
-  ].filter(n => n).join(r.droppedMetrics.length > 1 ? ', and ' : ' and ');
-  const note = [
-    excluded.size ? `excludes ${named('field', [...excluded])}.` : '',
-    unavailable && `leaves ${unavailable} unavailable.`,
-  ].filter(p => p).join(' It ');
-  return [
-    ...r.unboundFields.filter(f => !excluded.has(f))
-        .map(f => omits(f, 'has no expression')),
-    ...r.droppedFields.map(d => omits(d.name, d.reason)),
-    ...note ? [`Note: ${where} ${note}`] : [],
-  ];
 }
 
 // Warns about each model whose model file is not named after it, when push
@@ -1132,11 +1101,7 @@ async function checkBeforeWrites(
       noDeployment ? [] : selected);
   if ('errors' in checked) return checked;
   // What pruning leaves out of each deployment's model.
-  const leftOut = checked.plans.flatMap(
-      ({deployment, model, report}) => pruningLines(
-          report, model.model.name, model.document,
-          deployment.engine === 'alloydb' ? 'it is unavailable there' :
-                                            undefined));
+  const leftOut = checked.plans.flatMap(pruningLines);
   return {plans: checked.plans, kcModels: models, fileCopies, leftOut, overviews};
 }
 
@@ -2233,11 +2198,6 @@ export async function importModel(
   });
   for (const w of written) console.log(`wrote ${w}`);
   return 0;
-}
-
-// Selects the singular or plural form based on `n` (English count agreement).
-function plural(n: number, one: string, many: string): string {
-  return n === 1 ? one : many;
 }
 
 // Prints each of `errors` once, as `Error: ...`, and gives exit code 1.
