@@ -168,12 +168,16 @@ const LOADER_SOURCE_WARNING =
 const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote';
 
 // Each kind of --source-prefix for the service `prefix` names, or every kind
-// when there is no prefix.
+// when there is no prefix. The prefix's own kind comes first, so advice names
+// its form.
 function prefixKinds(prefix?: ParsedSourcePrefix):
     typeof SOURCE_PREFIX_PATTERNS {
   const host = prefix?.base.split('/')[0];
+  const own = prefix &&
+      SOURCE_PREFIX_PATTERNS.find(k => k.re.test(prefix.base))?.form;
   return SOURCE_PREFIX_PATTERNS.filter(
-      k => host === undefined || k.form.startsWith(`${host}/`));
+      k => host === undefined || k.form.startsWith(`${host}/`))
+      .sort((a, b) => Number(b.form === own) - Number(a.form === own));
 }
 
 // The warning for `source`, which import leaves as written after a run with

@@ -931,6 +931,10 @@ describe('sources', () => {
           "Write the table's GCP resource name instead, such as " +
           `'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>'. ${PUSH} ${ADVICE}`,
     ],
+    [
+      'dotted name under a Hive database', `'"my.t"'`, {sourcePrefix: `${LAKE}/databases/sales`},
+      `such as 'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/databases/<database>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {
        const res = await importSemanticModelYaml(ossieDoc({source: src}), opts);
