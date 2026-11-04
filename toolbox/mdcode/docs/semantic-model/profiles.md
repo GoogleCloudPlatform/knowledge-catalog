@@ -116,7 +116,12 @@ or SQL Server instance, one Snowflake account, or one Databricks metastore.
 These units are the same in Cloud SQL and outside it, but a Cloud SQL table and
 a table outside Cloud SQL are never in one database. `kcmd` reads a third-party
 table's database from its entry's `fullyQualifiedName`. When the entry has
-none, the table counts in one database with the other tables of its system. A
+none, the table counts in one database with the other tables of its system.
+BigQuery runs each query in one location, so push also refuses a profile whose
+BigQuery and BigLake tables share no location. A BigLake table can be queried in
+any replica region of its catalog. A `US` catalog with replicas in `us-central1`
+and `us-east1` therefore joins datasets in either region. It cannot join a
+dataset in the `US` multi-region. `--skip-source-check` skips this check. A
 profile moves an entity between stores by swapping its source and, when the
 two stores shape the data differently, the column each field reads.
 

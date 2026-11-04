@@ -43,6 +43,7 @@ const FAILOVER_CATALOG = {
 // multi-region in upper case (the live US_TABLE writes `US`).
 const BQ_CENTRAL = `bigquery.googleapis.com/projects/${P}/datasets/us_ds/tables/orders`;
 const BQ_EU = `bigquery.googleapis.com/projects/${P}/datasets/eu_ds/tables/customers`;
+const BQ_EAST = `bigquery.googleapis.com/projects/${P}/datasets/east_ds/tables/customers`;
 const tableIn = (dataset: string, table: string, location: string) => ({
   ...US_TABLE, id: `${P}:${dataset}.${table}`,
   tableReference: {projectId: P, datasetId: dataset, tableId: table}, location,
@@ -69,6 +70,7 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
     [`getTable ${P} kcmd_demo orders`]: ok(US_TABLE),
     [`getTable ${P} us_ds orders`]: ok(tableIn('us_ds', 'orders', 'us-central1')),
     [`getTable ${P} eu_ds customers`]: ok(tableIn('eu_ds', 'customers', 'europe-west1')),
+    [`getTable ${P} east_ds customers`]: ok(tableIn('east_ds', 'customers', 'us-east1')),
     [`getInstance ${P} kcmd-src-reg`]: ok(REGIONAL_INSTANCE),
     [`getInstance ${P} kcmd-src-multi`]: ok(NAM3_INSTANCE),
     [`getInstanceConfig ${NAM3_INSTANCE.config}`]: ok(NAM3_CONFIG),
@@ -313,17 +315,18 @@ describe('sourceEntryErrors', () => {
     expect(calls).toEqual([]);
   });
 
-  // The message for profile `name`, whose tables sit at `locations`.
+  // The message for profile `name`, whose tables can be queried at `locations`.
   const spans = (name: string, locations: string) =>
-      `profile '${name}' of model 'commerce' binds tables in more than one ` +
-      `BigQuery location: ${locations}. BigQuery runs each query in one ` +
-      `location, so no query can join them. Bind them to tables in one ` +
+      `profile '${name}' of model 'commerce' binds BigQuery and BigLake tables ` +
+      `that share no location: ${locations}. BigQuery runs each query in one ` +
+      `location, so no query can join them. Bind them to tables that share a ` +
       `location, or pass --skip-source-check.`;
   // Every table below has its entry.
   const ENTRIES = [
     lookup('bigquery', 'us', BIGQUERY),
     lookup('bigquery', 'us-central1', BQ_CENTRAL),
     lookup('bigquery', 'europe-west1', BQ_EU),
+    lookup('bigquery', 'us-east1', BQ_EAST),
     lookup('biglake', 'us-central1', BIGLAKE_GCS_US),
     lookup('biglake', 'us', BIGLAKE_US),
   ];
@@ -334,17 +337,19 @@ describe('sourceEntryErrors', () => {
     // The bug's repro.
     ['a profile binding datasets in two regions', [BQ_CENTRAL, BQ_CENTRAL],
      [profile('prod', [['orders', BQ_CENTRAL], ['customers', BQ_EU]])],
-     [spans('prod', 'us-central1 (orders), europe-west1 (customers)')]],
+     [spans('prod', "us-central1 ('orders'), europe-west1 ('customers')")]],
     ['inline sources in a region and the US multi-region', [BQ_CENTRAL, BIGQUERY], [],
-     [spans('default', 'us-central1 (orders), us (customers)')]],
-    // BigQuery queries a US BigLake catalog in its primary's region.
+     [spans('default', "us-central1 ('orders'), US ('customers')")]],
+    // BigQuery queries a US BigLake catalog in any of its replicas' regions:
+    // us-central1, its primary, and us-east1. The message lists the primary
+    // first, though the catalog lists its secondary first.
     ['a US BigLake catalog whose primary is us-central1, with a us-central1 dataset',
      [BIGLAKE_GCS_US, BQ_CENTRAL], [], []],
-    ['a US BigLake catalog whose primary is us-central1, with a US dataset',
+    ['a US BigLake catalog whose secondary is us-east1, with a us-east1 dataset',
+     [BIGLAKE_GCS_US, BQ_EAST], [], []],
+    ['a US BigLake catalog with replicas in us-central1 and us-east1, with a US dataset',
      [BIGLAKE_GCS_US, BIGQUERY], [],
-     [spans('default', 'us-central1 (orders), us (customers)')]],
-    // The table writes `US` and the federated catalog's replica `US`.
-    ['a US dataset and a federated US catalog', [BIGQUERY, BIGLAKE_US], [], []],
+     [spans('default', "us-central1 or us-east1 ('orders'), US ('customers')")]],
     ['a table whose location read failed, which only its own message names', [BQ_CENTRAL, BQ_EU], [],
      [missing(BQ_EU, 'a table', `reading table '${P}.eu_ds.customers'`, 'customers')],
      {[`getTable ${P} eu_ds customers`]: NOT_FOUND}],

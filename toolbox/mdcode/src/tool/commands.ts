@@ -97,9 +97,10 @@ export interface PushOptions {
   // does not include (a removed or renamed model). Without it, an unrecognized
   // model in the group fails the push. Semantic-model KC push only.
   forceRemove?: boolean;
-  // Skip the check that every source names a table with a Knowledge Catalog
-  // entry. The lookup of a Cloud SQL or third-party table's entry, which push
-  // needs for the table's dialect, still runs. Semantic-model push only.
+  // Skip the checks that every source names a table Knowledge Catalog knows
+  // about and that the BigQuery and BigLake tables of each profile share a
+  // location. The lookup of a Cloud SQL or third-party table's entry, which
+  // push needs for the table's dialect, still runs. Semantic-model push only.
   skipSourceCheck?: boolean;
   // No longer supported: push refuses `--no-kc`, which cac gives as false,
   // since every push publishes the model to Knowledge Catalog.
@@ -421,13 +422,13 @@ async function dialectLoad(
 // Checks that every source in the inline bindings and named profiles of
 // `models` names a table with a Knowledge Catalog entry (see
 // sourceEntryErrors), and gives one message per entity that does not, and per
-// profile whose BigQuery tables sit in more than one location. With
+// profile whose BigQuery and BigLake tables share no location. With
 // --skip-source-check, says so and checks nothing.
 async function sourceCheckErrors(
     models: LoadedModel[], ctx: context.ApiContext,
     options: PushOptions): Promise<string[]> {
   if (options.skipSourceCheck) {
-    console.log('Skipping the source existence check (--skip-source-check).');
+    console.log('Skipping the source check (--skip-source-check).');
     return [];
   }
   const readers = {

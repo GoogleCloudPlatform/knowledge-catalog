@@ -26,7 +26,7 @@ const ORDER = {...CUSTOMER, name: 'Order', source: bqTable('order')};
 // multi-region; other tables get the harness's `US`.
 const IN_EU = (_p: string, dataset: string) =>
     dataset === 'eu' ? {status: 200, result: {location: 'EU'}} : undefined;
-const SKIPPING = 'Skipping the source existence check (--skip-source-check).';
+const SKIPPING = 'Skipping the source check (--skip-source-check).';
 
 // The harness's log entry for the lookup of `resourceName`'s entry.
 const lookup = (group: string, location: string, resourceName: string) =>
@@ -96,14 +96,14 @@ scenarios('push checks every source before it writes', [
     }],
   },
   {
-    name: 'a profile whose BigQuery tables sit in two locations stops the push before anything is written; --skip-source-check lets it through',
+    name: 'a profile whose BigQuery tables share no location stops the push before anything is written; --skip-source-check lets it through',
     entities: [CUSTOMER, ORDER],
     profiles: {x: {entities: {Customer: CUSTOMER, Order: {...ORDER, source: bqTable('order', 'eu')}}}},
     flags: {deployment: false},
     services: {getTable: IN_EU},
     code: 1,
-    errors: [has(`profile 'x' of model 'commerce' binds tables in more than ` +
-                 'one BigQuery location: us (Customer), eu (Order).')],
+    errors: [has(`profile 'x' of model 'commerce' binds BigQuery and BigLake ` +
+                 `tables that share no location: US ('Customer'), EU ('Order').`)],
     nothingWritten: true,
     then: [{flags: {deployment: false, skipSourceCheck: true}, code: 0,
             events: ['preflight', 'apply']}],
