@@ -1,6 +1,6 @@
-// Leaf helpers for action parameter optionality, scalar type checking, and
-// store type codes -- shared by deploy-time validation and run-time execution
-// without pulling store clients into the validation layer.
+// Leaf helpers for action parameter optionality, scalar type checking, store
+// type codes and message sentences -- shared by deploy-time validation and
+// run-time execution without pulling store clients into the validation layer.
 
 import {ActionParameter} from './ir';
 
@@ -33,6 +33,27 @@ export function storeCodeFor(dataType: string): string {
 export function sentence(text: string): string {
   const trimmed = text.trim();
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+// The first line of a multi-line diagnosis. The lines after it echo the
+// statement and point a caret at the offending token, which is worth nothing
+// here: the author has the statement open in the profile, the position in
+// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
+// place once the message is embedded in a longer sentence.
+//
+// `\n` is matched in both its forms because Spanner's top-level `error.message`
+// arrives with its newlines ESCAPED -- a literal backslash and an n survive
+// JSON.parse -- while every other message uses real ones.
+function firstLine(message: string): string {
+  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
+}
+
+// An API error's message reduced to its first line as a sentence, such as
+// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]."
+export function storeMessage(
+    message: string|undefined, status: number): string {
+  const text = (message ?? '').trim();
+  return text ? sentence(firstLine(text)) : `HTTP ${status}.`;
 }
 
 // What Spanner accepts for a DATE and a TIMESTAMP parameter. The zone is

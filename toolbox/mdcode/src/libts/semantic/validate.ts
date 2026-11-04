@@ -21,7 +21,7 @@ import {Action, ActionParameter, Constraint, coversKey, DATA_TYPES, Entity, Exec
 import {relationshipLinkId} from './kc_ids';
 import {databaseOf, HALF_BOUND_JOIN_PROBLEM, inheritedNoSqlProblems, joinLengthProblem, listed, LoadedModel, noSqlProblemOf, noSqlReason, OSSIE_VERSION, plural, SemanticModelError, undefinedEndpointProblem} from './loader';
 import {MAX_BIGQUERY_DESCRIPTION, MAX_BIGQUERY_SYNONYM_COUNT, MAX_BIGQUERY_SYNONYM_LENGTH, MAX_ENTRY_DESCRIPTION, NameKind, nameProblem, qualifierCaseError} from './names';
-import {bindScalar, sentence, storeCodeFor} from './parameters';
+import {bindScalar, storeCodeFor, storeMessage} from './parameters';
 import {DeclaredConcept, declaredConceptFields, InheritanceError, resolveInheritance} from './resolve_inheritance';
 import {appliedProfileWarnings, applyProfile, AvailabilityReport, columnBinding, DeclaredProfiles, DEFAULT_PROFILE, DialectLoad, expressionSources, fieldsOnTables, importCommand, importHint, importTranspiles, inheritanceErrorOf, inheritedNamesOf, loadProfileFile, LocalCheckError, namedProfileErrors, noTextFor, ProfileFiles, pruneUnavailable, reservedProfileNameError, resolvedEntities, sourcesDialect, statesKey, undeclaredProfileError} from './resolve_profiles';
 import {columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, selfReferenceMessage} from './sql_expr_utils';
@@ -2494,29 +2494,6 @@ function rejectedStatement(
              pending.index + 1} of its sql executor was rejected by ${store}: ${
              detail} Statements reach the store exactly as written, so every ` +
       `table and column has to be the name the database uses.`;
-}
-
-
-// The first line of a multi-line diagnosis. The lines after it echo the
-// statement and point a caret at the offending token, which is worth nothing
-// here: the author has the statement open in the profile, the position in
-// `[at 1:54]` survives, and a caret counted from column 1 lands in the wrong
-// place once the message is embedded in a longer sentence.
-//
-// `\n` is matched in both its forms because Spanner's top-level `error.message`
-// arrives with its newlines ESCAPED -- a literal backslash and an n survive
-// JSON.parse -- while every other message uses real ones.
-function firstLine(message: string): string {
-  return message.replace(/\\n/g, '\n').split('\n')[0].trim();
-}
-
-
-// An API error's message reduced to its first line as a sentence, such as
-// "Unrecognized name: accountId; Did you mean account_id? [at 1:54]."
-export function storeMessage(
-    message: string|undefined, status: number): string {
-  const text = (message ?? '').trim();
-  return text ? sentence(firstLine(text)) : `HTTP ${status}.`;
 }
 
 

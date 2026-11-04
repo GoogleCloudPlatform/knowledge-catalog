@@ -28,6 +28,7 @@ import {SemanticModel} from '../libts/semantic/ir';
 import {FILE_COPY_TYPE_ID, FileCopy, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
+import {storeMessage} from '../libts/semantic/parameters';
 import * as pullKc from '../libts/semantic/pull_kc';
 import {DeclaredProfile, DeclaredProfiles, declaredProfiles, DEFAULT_PROFILE, DialectLoad, importCommand, loadProfileFile, LocalCheckError, profileErrorMessage, profileForDocument, pruneUnavailable, sourcesDialect,} from '../libts/semantic/resolve_profiles';
 import {createSemanticRuntimes} from '../libts/semantic/runtime/runtime';
@@ -36,7 +37,7 @@ import {generateSkill, SkillPackage} from '../libts/semantic/skills';
 import {sourceDialects} from '../libts/semantic/source_dialect';
 import {sourceEntryErrors} from '../libts/semantic/source_entries';
 import {loadSqlEngine} from '../libts/semantic/sql_parser';
-import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, pruningLines, storeMessage, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
+import {DeploymentPlan, inlineBindingWarnings, kcV2Aspects, localChecks, pruningLines, validateBigQueryActionStatements, validateBigQueryDataSources, validateSpannerActionStatements, withProfileFiles} from '../libts/semantic/validate';
 import {entryGroupCoordinates, Sources} from '../libts/source';
 import {SemanticModelSource} from '../libts/sources/semantic-model';
 

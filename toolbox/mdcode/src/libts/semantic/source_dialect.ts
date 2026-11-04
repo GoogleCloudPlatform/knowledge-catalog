@@ -28,7 +28,7 @@ import type {SpannerClient} from '../gcp/spanner';
 
 import {catalogNameSegments, CloudSqlTable, cloudSqlTableOf, DIALECT_OF_ENTRY_TYPE, DIALECT_OF_FQN_PREFIX, isGoogleVendor, spannerDatabaseOf, ThirdPartyEntry, thirdPartyEntryOf} from './loader';
 import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
-import {storeMessage} from './validate';
+import {storeMessage} from './parameters';
 import {YAML_OPTIONS} from './yaml_options';
 
 // The dialect each entrySource.system gives, in lower case.
