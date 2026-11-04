@@ -513,12 +513,13 @@ semantic_model:
 });
 
 
-test('a Spanner table in a named schema is named with its schema', () => {
-  // The runtime and skills-generate name each table as readableEntities does.
-  const runtime = rt({name: 'm', relationships: [], metrics: [], entities: [{
-    name: 'station', keys: ['id'], fields: [{name: 'id', expression: 'id'}],
-    dataSource: '//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/ops.stations',
-  }]});
-  expect(readableEntities(runtime, dialectFor(runtime.store)).map(r => r.table))
-      .toEqual(['ops.stations']);
+describe('a Spanner table in a named schema', () => {
+  test('is named with its schema', () => {
+    const runtime = rt({name: 'm', relationships: [], metrics: [], entities: [{
+      name: 'station', keys: ['id'], fields: [{name: 'id', expression: 'id'}],
+      dataSource: '//spanner.googleapis.com/projects/p/instances/i/databases/d/tables/ops.stations',
+    }]});
+    expect(readableEntities(runtime, dialectFor(runtime.store)).map(r => r.table))
+        .toEqual(['ops.stations']);
+  });
 });

@@ -11,6 +11,7 @@
 // DDL generator to learn a table name would be describing a layering that is
 // not real.
 
+import {sourceTableOf} from './loader';
 import {quoteIdentifier} from './sql_identifiers';
 
 
@@ -23,12 +24,10 @@ import {quoteIdentifier} from './sql_identifiers';
 export type QuoteFn = (identifier: string) => string;
 
 
-// Maps the IR's `dataSource` to the table name a statement references within
-// its own database. A dotted source keeps its final segment, and a resource URI
-// its final path segment. A Spanner table in a named schema is
-// `.../tables/<schema>.<table>`, so it keeps both parts, each quoted. A query
-// (contains whitespace) cannot back a graph element table, so it is passed
-// through parenthesized with a warning.
+// The table `dataSource` names within its own database: its final dotted or
+// path segment, except that a Spanner table keeps its schema (`ops.stations`),
+// each part quoted. A query, which holds whitespace, is returned in
+// parentheses with a warning.
 export function boundTable(
     dataSource: string, warnings: string[], context: string,
     quote: QuoteFn): string {
@@ -45,13 +44,12 @@ export function boundTable(
         `emitting it verbatim (a graph element table requires a table)`);
     return `(${trimmed})`;
   }
-  // A BigQuery or BigLake source reaches here dotted, but a Spanner, AlloyDB or
-  // Cloud SQL source as its resource URI (see isResourceUri), so reduce a URI
-  // to its final path segment before the dotted reduction below.
+  // Reduce a URI to its final path segment. A Spanner source keeps every
+  // dotted part of it, and any other source keeps the last.
   const source = isResourceUri(trimmed) ? finalPathSegment(trimmed) : trimmed;
   const parts = splitDotted(source).map(unquote);
   const kept =
-      trimmed.startsWith('//spanner.googleapis.com/') ? parts : parts.slice(-1);
+      sourceTableOf(trimmed)?.system === 'spanner' ? parts : parts.slice(-1);
   return kept.map(quote).join('.');
 }
 
