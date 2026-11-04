@@ -741,6 +741,31 @@ columns. It also excludes the one field the store does not have, and every
 metric. The relationships, the metric, the labels and the grain themselves are
 logical and live once in the model.
 
+### Create the tables
+
+Create the operational tables in a Spanner ENTERPRISE-edition database. Spanner
+Graph requires the ENTERPRISE edition. Create the database with its three tables,
+then load a little data:
+
+```bash
+gcloud spanner databases create $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --ddl='CREATE TABLE Customers (CustomerId INT64 NOT NULL, FullName STRING(MAX)) PRIMARY KEY(CustomerId)' \
+  --ddl='CREATE TABLE Orders (OrderId INT64 NOT NULL, CustomerId INT64) PRIMARY KEY(OrderId)' \
+  --ddl='CREATE TABLE LineItems (LineId INT64 NOT NULL, OrderId INT64) PRIMARY KEY(LineId)'
+
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO Customers (CustomerId, FullName) VALUES (1,'Acme'),(2,'Globex')"
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO Orders (OrderId, CustomerId) VALUES (100,1),(101,1),(102,2)"
+gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
+  --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
+```
+
+> **Why the tables come before the Spanner push.** Deploying the Spanner graph
+> applies the DDL through the `updateDatabaseDdl` long-running operation; it does
+> not create the tables, and for a model like this one — which declares no
+> actions — it does not read them either. So the tables must exist first.
+
 ### Inspect the binding profiles
 
 The model now has two profiles. `kcmd profiles` lists them both and reports what
@@ -782,31 +807,6 @@ excludes every metric with `metrics_exclude: "*"`, which covers `revenue`. The
 `analytical` profile binds `net_amount`, so the same metric is available under
 the binding step 3 used. One model; each store
 answers the part of it that its data can back.
-
-### Create the tables
-
-Create the operational tables in a Spanner ENTERPRISE-edition database. Spanner
-Graph requires the ENTERPRISE edition. Create the database with its three tables,
-then load a little data:
-
-```bash
-gcloud spanner databases create $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --ddl='CREATE TABLE Customers (CustomerId INT64 NOT NULL, FullName STRING(MAX)) PRIMARY KEY(CustomerId)' \
-  --ddl='CREATE TABLE Orders (OrderId INT64 NOT NULL, CustomerId INT64) PRIMARY KEY(OrderId)' \
-  --ddl='CREATE TABLE LineItems (LineId INT64 NOT NULL, OrderId INT64) PRIMARY KEY(LineId)'
-
-gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="INSERT INTO Customers (CustomerId, FullName) VALUES (1,'Acme'),(2,'Globex')"
-gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="INSERT INTO Orders (OrderId, CustomerId) VALUES (100,1),(101,1),(102,2)"
-gcloud spanner databases execute-sql $SPANNER_DB --instance=$SPANNER_INSTANCE \
-  --sql="INSERT INTO LineItems (LineId, OrderId) VALUES (1,100),(2,100),(3,101),(4,102),(5,102),(6,102)"
-```
-
-> **Why the tables come before the Spanner push.** Deploying the Spanner graph
-> applies the DDL through the `updateDatabaseDdl` long-running operation; it does
-> not create the tables, and for a model like this one — which declares no
-> actions — it does not read them either. So the tables must exist first.
 
 ### Deploy the semantic model
 
