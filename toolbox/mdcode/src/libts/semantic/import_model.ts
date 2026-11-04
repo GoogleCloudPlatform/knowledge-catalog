@@ -13,6 +13,7 @@ import {columnsForSource, entitiesReached} from './sql_expr_utils';
 import {loadSqlEngine} from './sql_parser';
 import {transpileModel} from './transpile';
 import {YAML_OPTIONS} from './yaml_options';
+import {linkNodes, parseForUpdate, updateText} from './yaml_update';
 
 /** Options controlling how a semantic model YAML document is imported. */
 export interface ImportSemanticModelOptions {
@@ -37,6 +38,11 @@ export interface ImportSemanticModelOptions {
    * used when converting a Google-flavor model to vanilla (`'ossie'`).
    */
   profileFiles?: SerializedFile[];
+  /**
+   * The input file's name. The warning that a JSON input was written as YAML
+   * names it. Defaults to `<model>.yaml`.
+   */
+  fileName?: string;
 }
 
 /** Result of importing a semantic model YAML document. */
@@ -66,6 +72,17 @@ interface ParsedSourcePrefix {
 
 /** Mutable representation of a semantic model document during import. */
 interface ImportDocument {
+  /**
+   * The input, or the block YAML a JSON input is rewritten as. Import writes
+   * a changed file by changing only the parts of it that change.
+   */
+  text: string;
+  /** `text`, parsed. */
+  document: yaml.Document.Parsed;
+  /**
+   * Maps each object and array in `root` to the node of `document` it copies.
+   */
+  links: Map<object, yaml.Node>;
   /** Deep-copied root YAML document object. */
   root: Record<string, any>;
   /** First semantic model entry (`root.semantic_model[0]`). */
@@ -253,9 +270,11 @@ function parseImportDocument(
     rawYaml: string, opts: ImportSemanticModelOptions): ImportDocument|string {
   // 1. Parse raw YAML with strict YAML 1.2 options (`YAML_OPTIONS`) so syntax
   // errors and duplicate keys are caught immediately.
+  const {document, text} = parseForUpdate(rawYaml);
   let parsedDoc: unknown;
   try {
-    parsedDoc = yaml.parse(rawYaml, YAML_OPTIONS);
+    if (document.errors.length > 0) throw document.errors[0];
+    parsedDoc = document.toJS();
   } catch (err: any) {
     return `Semantic model load error: could not parse input: ${
         err?.message ?? err}`;
@@ -313,9 +332,15 @@ function parseImportDocument(
   const targetVersion: FormatVersion = opts.flavor ?
       (opts.flavor === 'google' ? GOOGLE_VERSION : OSSIE_VERSION) :
       inputVersion;
-  const warnings: string[] = [];
+  // A model file is YAML, so a JSON file is written as YAML.
+  const fileName = opts.fileName ?? `${model.name}.yaml`;
+  const warnings =
+      text === rawYaml ? [] : [`Converted '${fileName}' to YAML.`];
   const errors: string[] = [];
   return {
+    text,
+    document,
+    links: linkNodes(root, document.contents),
     root,
     model,
     datasets: asRecords(model.entities ?? model.datasets),
@@ -1039,12 +1064,16 @@ async function generateConvertedFiles(
     if (doc.errors.length > 0) return [];
   }
 
-  // 4. Switch `model.version` to `doc.targetVersion` and serialize the output
-  // file(s) with `serializeModelFiles`.
+  // 4. Switch `model.version` to `doc.targetVersion` and serialize the files
+  // with `serializeModelFiles`, each value on one line. The model file is
+  // written into the input's text to keep its comments.
   model.version = doc.targetVersion;
-  const serialized = serializeModelFiles(model);
+  const serialized = serializeModelFiles(model, {lineWidth: 0});
   doc.warnings.push(...serialized.warnings);
-  return serialized.files;
+  const [modelFile, ...profiles] = serialized.files;
+  const content =
+      writeDocument(doc, yaml.parse(modelFile.content, YAML_OPTIONS));
+  return [{...modelFile, content}, ...profiles];
 }
 
 /**
@@ -1053,8 +1082,7 @@ async function generateConvertedFiles(
  * expressions via `transpileDocument`, and returns the adapted output file.
  */
 async function generateAdaptedFiles(
-    doc: ImportDocument, rawYaml: string,
-    transpile: boolean): Promise<SerializedFile[]> {
+    doc: ImportDocument, transpile: boolean): Promise<SerializedFile[]> {
   // 1. Adapt `doc` in place to the target output version (`0.2.0.dev0/google`
   // or `0.2.0.dev0`).
   if (doc.inputVersion === OSSIE_VERSION &&
@@ -1070,11 +1098,31 @@ async function generateAdaptedFiles(
     await transpileDocument(doc);
   }
 
-  // 3. Serialize `doc.root` when modified or preserve `rawYaml` verbatim when
-  // unmodified.
-  const content =
-      doc.modified ? yaml.stringify(doc.root, {lineWidth: 0}) : rawYaml;
+  // 3. Write `doc.root` into the input's text when modified or preserve the
+  // text verbatim when unmodified.
+  const content = doc.modified ? writeDocument(doc, doc.root) : doc.text;
   return [{fileName: `${doc.model.name}.yaml`, content}];
+}
+
+/**
+ * Returns the input's text changed to hold `root`. What survives from the
+ * input keeps its text, and long SQL stays on one line.
+ */
+function writeDocument(doc: ImportDocument, root: Record<string, any>): string {
+  // The vanilla flavor lists a model's entities under `datasets:` and the
+  // Google flavor under `entities:`. Renaming the key keeps the comments of
+  // the list and of every entity in it.
+  const node = doc.document.getIn(['semantic_model', 0]);
+  const model = asRecords(root.semantic_model)[0] ?? {};
+  for (const pair of yaml.isMap(node) ? node.items : []) {
+    if (!yaml.isScalar(pair.key)) continue;
+    const from = String(pair.key.value);
+    const to = from === 'datasets' ? 'entities' :
+        from === 'entities'        ? 'datasets' :
+                                     undefined;
+    if (to && to in model && !(from in model)) pair.key.value = to;
+  }
+  return updateText(doc.text, doc.document, root, doc.links);
 }
 
 /**
@@ -1132,7 +1180,7 @@ export async function importSemanticModelYaml(
   const shouldConvert = doc.inputVersion !== doc.targetVersion && doc.strict;
   const files = shouldConvert ?
       await generateConvertedFiles(doc, opts) :
-      await generateAdaptedFiles(doc, rawYaml, !!opts.transpile);
+      await generateAdaptedFiles(doc, !!opts.transpile);
 
   // 4. Validate the primary output document and return the result.
   if (files.length > 0 && doc.errors.length === 0) {

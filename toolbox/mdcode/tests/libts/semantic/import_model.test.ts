@@ -104,7 +104,7 @@ describe('conversion, strict mode, and translation', () => {
             {flavor: 'google', sourcePrefix: BQ_PREFIX});
 
         expect(res.ok).toBe(true);
-        expect(res.files[0].content).toContain('version: 0.2.0.dev0/google');
+        expect(res.files[0].content).toContain('version: "0.2.0.dev0/google"');
         expect(res.files[0].content).toContain('entities:');
         const loaded = loadModels(res.files[0].content);
         expect(loaded.models[0].aiContext?.additionalProperties).toEqual({
@@ -605,6 +605,7 @@ semantic_model:
       examples: ["total orders"]
       custom:
         owner: analytics
+        flag: "yes"
     deployments:
       - name: prod_bq
         target: bigquery.googleapis.com/projects/acme/datasets/sales/propertyGraphs/retail
@@ -639,12 +640,17 @@ semantic_model:
         entity: orders
         expression: "COUNT(*)"
 `;
+  const longSql =
+      `CASE WHEN orders.order_id > 0 THEN 'known order' ELSE 'unknown order' END`;
   const profileYaml = `
 name: prod
 entities:
   - name: orders
     source: ${BQ_TABLE}
     primary_key: [order_id]
+    fields:
+      - name: order_id
+        expression: {dialects: [{dialect: BIGQUERY, expression: "${longSql}"}]}
 `;
 
   test(
@@ -800,6 +806,8 @@ semantic_model:
             .toBe('analytics');
         expect(parsedVanillaDoc.semantic_model[0].ai_context.custom)
             .toBeUndefined();
+        // A YAML 1.1 reader would read a plain `yes` as true.
+        expect(res.files[0].content).toContain('flag: "yes"');
         const loaded = loadModels(res.files[0].content).models[0];
         expect(loaded.entities[0].fields[0].dialects).toEqual([
           {dialect: 'ANSI_SQL', expression: 'orders.order_id'},
@@ -811,6 +819,7 @@ semantic_model:
         expect(loaded.profiles?.map(p => p.name)).toEqual(['prod']);
         expect(loaded.aiContext?.additionalProperties).toEqual({
           owner: 'analytics',
+          flag: 'yes',
         });
       });
 
@@ -985,6 +994,10 @@ semantic_model:
         expect(loadProfileFile(canonicalGoogle.files[1].content, 'prod'))
             .toEqual(loadProfileFile(profileYaml, 'prod'));
         expect(roundTrippedCanonical.files).toEqual(canonicalGoogle.files);
+        // Long SQL stays on one line in the GOOGLE block and the profile file.
+        expect(toVanilla.files[0].content).toContain(longSql);
+        expect(canonicalGoogle.files[1].content)
+            .toContain(`expression: ${longSql}\n`);
       });
 
   test('ignores profileFiles when target flavor is google', async () => {
@@ -1003,4 +1016,58 @@ semantic_model:
     expect(googleRes.errors).toEqual([]);
     expect(googleRes.files.map(f => f.fileName)).toEqual(['retail.yaml']);
   });
+});
+
+test('drops the blank lines after `{` and `[` of a JSON file', async () => {
+  // Blank lines follow `{` and `[`, and sit between two keys and between two
+  // list items. Only the last two kinds stay. The empty list stays `[]`.
+  const json = `{
+
+  "version": "0.2.0.dev0",
+
+  "semantic_model": [
+
+    {
+
+      "name": "retail",
+      "datasets": [
+
+        {"name": "orders", "source": "orders", "primary_key": [
+
+          "id"],
+
+          "fields": [{"name": "id", "expression": "id"}]},
+
+        {"name": "items", "source": "items"}
+      ],
+      "relationships": []
+    }
+  ]
+}
+`;
+
+  const res = await importSemanticModelYaml(json);
+
+  expect(res.warnings).toContain("Converted 'retail.yaml' to YAML.");
+  expect(res.files[0].content).toBe(`version: 0.2.0.dev0
+
+semantic_model:
+  - name: retail
+    datasets:
+      - name: orders
+        source: orders
+        primary_key:
+          - id
+
+        fields:
+          - name: id
+            expression:
+              dialects:
+                - dialect: ANSI_SQL
+                  expression: id
+
+      - name: items
+        source: items
+    relationships: []
+`);
 });
