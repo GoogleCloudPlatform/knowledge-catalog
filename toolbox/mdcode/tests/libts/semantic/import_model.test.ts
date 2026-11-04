@@ -768,10 +768,14 @@ describe('profile checks', () => {
      [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_GRAPH}}]\n`}),
       {flavor: 'google'}],
      UNACCEPTED],
-    ["the loader warns about a source, apart from each profile's problems",
-     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_GRAPH}, profile: pg}]\n`}),
+    ["the loader warns about a source, apart from each profile's problems and each target",
+     [googleDoc({source: 'shop.orders', extra: `    deployments: [{name: g, target: ${BQ_TABLE}, profile: pg}]\n`}),
       {flavor: 'google', profileFiles: files(orders({source: 'orders'}))}],
-     [UNACCEPTED, badSource('retail.profile.pg.yaml')]],
+     [`Model 'retail': deployment 'g' targets '${BQ_TABLE}', which is not a BigQuery graph, a Spanner graph or ` +
+      "an AlloyDB database. Write a GCP resource name: 'bigquery.googleapis.com/projects/<p>/datasets/<d>/" +
+      "propertyGraphs/<g>', 'spanner.googleapis.com/projects/<p>/instances/<i>/databases/<db>/graphs/<g>' or " +
+      "'alloydb.googleapis.com/projects/<p>/locations/<l>/clusters/<c>/databases/<db>'.",
+      UNACCEPTED, badSource('retail.profile.pg.yaml')]],
   ] as const)('checks nothing more when %s', async (_, [input, opts], messages) => {
     const res = await importSemanticModelYaml(input, opts);
     expect([...res.errors, ...res.warnings]).toEqual([messages].flat());
@@ -857,7 +861,7 @@ describe('profile checks', () => {
         // Import prints each warning once, and leaves out push's notes.
         const body = text.replace(/^(Warning|Note): /, '');
         expect(res.errors).toEqual([]);
-        expect(res.warnings.filter(w => w === body))
+        expect(text.startsWith('Note: ') ? res.warnings : res.warnings.filter(w => w === body))
             .toEqual(text.startsWith('Note: ') ? [] : [body]);
       });
 

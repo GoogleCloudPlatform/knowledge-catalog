@@ -1745,7 +1745,7 @@ async function validateOutputDocument(
       for (const m of loaded.models) validateDeploymentTargets(m, doc);
     }
     const profiles = read;
-    if (!profiles || doc.errors.length) return;
+    if (!profiles) return;
     const declaredBy = () => declaredProfiles(model, profiles).map(
         p => 'spec' in p ? {...p, label: where(p.name, model.name)} : p);
     // Push stops at a source its loader rejects. Import still reports each
@@ -1758,6 +1758,7 @@ async function validateOutputDocument(
       }
       return;
     }
+    if (doc.errors.length) return;
     const base = {document: model.name, model: loaded.models[0]};
     const own = loaded.warnings.map(w => `[${model.name}] ${w}`);
     // Push prints each warning once, after the load's. Each is a warning in
