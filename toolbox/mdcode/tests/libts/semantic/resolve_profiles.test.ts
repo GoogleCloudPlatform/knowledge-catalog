@@ -3549,9 +3549,6 @@ entities:
         DOC, [{name: 'prod', spec: loadProfileFile(FILE, 'prod')}], 'prod');
     expect(fromSpec).toEqual(fromFile);
     if (fromFile.kind !== 'file') throw new Error(JSON.stringify(fromFile));
-    // A profile's empty primary key warns, as the model file's would.
-    expect(fromFile.warnings)
-        .toContain("[sales] dataset 'orders': no primary_key; the entity's KEY will be empty (invalid for graph generation)");
   });
 
   // A profile file that binds a Cloud SQL table written as its resource name
@@ -3784,9 +3781,8 @@ describe('applyProfile options', () => {
   });
 
   test('warnings name what the profile\'s own values give, on the profile\'s tables', () => {
-    // The empty key warns. A Spanner table runs the Spanner-only text, and a
-    // BigQuery table needs it translated. Both read a double-quoted ANSI_SQL
-    // token as text.
+    // A Spanner table runs the Spanner-only text, and a BigQuery table needs
+    // it translated. Both read a double-quoted ANSI_SQL token as text.
     const quoted = base();
     quoted.metrics!.push(
         {name: 'q', dialects: [{dialect: 'ANSI_SQL', expression: 'SUM("id")'}]});
@@ -3794,7 +3790,6 @@ describe('applyProfile options', () => {
     applyProfile(quoted, rebind(SP('Orders')), {
       warnings: onSpanner, load: {sourceDialects: new Map([[SP_DB, 'SPANNER']])},
     });
-    expect(onSpanner.join('\n')).toContain("dataset 'orders': no primary_key");
     expect(onSpanner.join('\n')).not.toContain("field 'orders.amount'");
     expect(onSpanner).toContain(
         `metric 'q': Spanner reads "id" in its 'ANSI_SQL' expression as text; ` +
@@ -4829,8 +4824,6 @@ entities:
         {from: {document: 'sales', warnings: loadedUnanchored.warnings}});
     if ('error' in ordered) throw new Error(ordered.error);
     expect(ordered.warnings).toEqual([
-      '[sales] dataset \'orders\': no primary_key; the entity\'s KEY will be ' +
-          'empty (invalid for graph generation)',
       '[sales] note: no \'BIGQUERY\' dialect for one or more expressions; ' +
           'using the portable \'ANSI_SQL\' dialect verbatim (\'BIGQUERY\' ' +
           'accepts the ANSI core subset — supply \'BIGQUERY\' variants only ' +
@@ -4922,18 +4915,6 @@ semantic_model:
     } finally {
       second.mockRestore();
     }
-  });
-
-  // A concrete entity with no key warns; an abstract one, which is never a
-  // node, does not.
-  test('only a concrete entity with no key gives the missing-key warning', () => {
-    const res = profileForDocument(
-        DOC, [{name: 'prod', text: `name: prod\nentities:\n  - name: orders\n    source: "${BQ('o2')}"\n`}],
-        'prod');
-    if (res.kind !== 'file') throw new Error(JSON.stringify(res));
-    const keyWarnings = res.warnings.filter(w => w.includes('no primary_key'));
-    expect(keyWarnings.some(w => w.includes("'orders'"))).toBe(true);
-    expect(keyWarnings.some(w => w.includes("'party'"))).toBe(false);
   });
 
   // The warnings after a profile come in the order a load gives them: a

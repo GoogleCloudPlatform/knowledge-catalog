@@ -202,8 +202,7 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
   // field/relationship/metric/ model level and unique_keys on a dataset with no
   // primary_key. None of these are part of the supported subset; the loader
   // must accept and skip them.
-  const {models, warnings: loadWarnings} =
-      loadFixture('lineitem_databricks_ext.yaml');
+  const {models} = loadFixture('lineitem_databricks_ext.yaml');
 
   test(
       'the model still loads despite custom_extensions and unique_keys', () => {
@@ -212,15 +211,6 @@ describe('vendor escape hatches are accepted and ignored, not fatal', () => {
           'lineitem', 'orders'
         ]);
       });
-
-  // The graph keys a node by its first unique key when it has no primary key,
-  // so only the dataset with neither is warned about.
-  test('a dataset with only unique_keys (no primary_key) is not warned about', () => {
-    const noKey = (dataset: string) => `dataset '${dataset}': no primary_key; ` +
-        `the entity's KEY will be empty (invalid for graph generation)`;
-    expect(loadWarnings).toContain(noKey('lineitem'));
-    expect(loadWarnings).not.toContain(noKey('orders'));
-  });
 });
 
 

@@ -43,12 +43,13 @@ describe('dataset source and primary key checks', () => {
     );
   });
 
-  test('a dataset without a primary key warns (its KEY would be empty)', () => {
+  // Only a graph needs a key, and its generator warns about a missing one.
+  test('a dataset without a primary key loads with no warning', () => {
     const { warnings } = fromDocument({ version: '0.2.0.dev0',
       semantic_model: [{ name: 'm', datasets: [
         { name: 'a', source: 'bigquery.googleapis.com/projects/p/datasets/d/tables/a', fields: [] }] }],
     });
-    expect(warnings.some(w => w.includes('no primary_key'))).toBe(true);
+    expect(warnings).toEqual([]);
   });
 });
 
@@ -1180,14 +1181,12 @@ describe('gold fixtures parse from disk (real YAML files)', () => {
       w.includes("field 'orders.order_status_label'") && w.includes('imported_expression'))).toBe(true);
   });
 
-  test('lineitem_databricks_ext.yaml: unique_keys + no-primary-key warning', () => {
-        const {models, warnings} =
-            loadModels(fixture('lineitem_databricks_ext.yaml'));
+  test('lineitem_databricks_ext.yaml: unique_keys and custom_extensions', () => {
+        const {models} = loadModels(fixture('lineitem_databricks_ext.yaml'));
     const m = models[0];
     const orders = m.entities.find(e => e.name === 'orders')!;
     expect(orders.keys).toEqual([]);
     expect(orders.uniqueKeys).toEqual([['o_orderkey']]);
-    expect(warnings.some(w => w.includes("dataset 'lineitem'") && w.includes('no primary_key'))).toBe(true);
 
         // custom_extensions are preserved verbatim at model / field /
         // relationship / metric levels.

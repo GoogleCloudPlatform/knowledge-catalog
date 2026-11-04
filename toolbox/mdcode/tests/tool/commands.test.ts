@@ -419,8 +419,8 @@ semantic_model:
 });
 
 
-describe('a catalog-only push of a profile file keeps the model file\'s warnings', () => {
-  test('a key neither file states is warned about', async () => {
+describe('a push that deploys no graph gives no graph key warning', () => {
+  test('a keyless entity gets only the catalog\'s warning', async () => {
     fs.writeFileSync(
         path.join(dir, 'catalog.yaml'),
         'scope: semantic-model.test-project.us.commerce_eg\n');
@@ -430,18 +430,21 @@ describe('a catalog-only push of a profile file keeps the model file\'s warnings
 semantic_model:
   - name: commerce
     entities:
-      - name: Customer
-        source: bigquery.googleapis.com/projects/test-project/datasets/raw/tables/customer
+      - name: Wide
         fields:
-          - { name: key, expression: c_key }
+          - { name: id }
 `);
-    fs.writeFileSync(path.join(eg, 'commerce.profile.prod.yaml'),
-                     PROD_PROFILE.replace('    primary_key: [cust_key]\n', ''));
     const warnSpy = spyOn(console, 'warn').mockImplementation(() => {});
 
     expect(await push({validateOnly: true})).toBe(0);
-    expect(warnSpy.mock.calls.map(c => String(c[0])).join('\n'))
-        .toContain("[commerce] dataset 'Customer': no primary_key");
+    expect(warnSpy.mock.calls.map(c => String(c[0]))).toEqual([
+      "Warning: model 'commerce' (commerce) is non-executable: the model " +
+          "file leaves entity 'Wide' without a source, and the model " +
+          'declares no named profile. It cannot be queried until it is bound.',
+      "Warning: [commerce] entity 'Wide': no keys declared in the source " +
+          'model; declare primary_key or unique_keys in the model file to ' +
+          'record a key in Knowledge Catalog',
+    ]);
   });
 });
 

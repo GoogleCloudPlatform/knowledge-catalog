@@ -45,16 +45,20 @@ describe('loadSemanticModels', () => {
       });
 
   test('prefixes loader warnings with the originating document name', () => {
-    // A dataset with no primary_key makes the loader warn; the warning must
+    // A metric that names no entity makes the loader warn; the warning must
     // carry the document name so a multi-document push stays diagnosable.
-    const noKey = `version: 0.2.0.dev0
+    const unanchored = `version: 0.2.0.dev0
 semantic_model:
   - name: sales
     datasets:
       - name: orders
         source: bigquery.googleapis.com/projects/proj/datasets/ds/tables/tbl
+    metrics:
+      - name: n
+        expression:
+          dialects: [{dialect: BIGQUERY, expression: COUNT(*)}]
 `;
-    const res = loadSemanticModels([{name: 'sales.yaml', text: noKey}]);
+    const res = loadSemanticModels([{name: 'sales.yaml', text: unanchored}]);
     expect(res.error).toBeUndefined();
     expect(res.warnings.some(w => w.startsWith('[sales.yaml] '))).toBe(true);
   });

@@ -1639,7 +1639,9 @@ semantic_model:
       (model: SemanticModel, name: string, type: string, opts = V2) =>
           data(model, `sales/entities/${name}`, type, opts);
   const NO_KEYS = (entity: string) =>
-      `entity '${entity}': no keys declared in the source model`;
+      `entity '${entity}': no keys declared in the source model; declare ` +
+      'primary_key or unique_keys in the model file to record a key in ' +
+      'Knowledge Catalog';
   // A sql-expressions record; `qualifier` names the profile it comes from.
   const record = (qualifier?: string) =>
       (name: string, sql: string, dialect?: string) =>

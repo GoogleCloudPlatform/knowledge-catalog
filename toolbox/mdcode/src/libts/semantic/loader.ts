@@ -15,7 +15,7 @@ import * as z from 'zod';
 import {Action, ActionParameter, AffectedConcept, AiContext, ALLOWED_DIALECTS, CONCEPT_OPERATIONS, Constraint, CONSTRAINT_SEVERITIES, CustomExtension, DATA_TYPES, DataType, DialectExpression, Entity, Executor, Field, isFieldBound, Metric, normalizeDataType, ProfileSpec, Relationship, SemanticModel, SqlDialect, VIOLATION_EFFECTS,} from './ir';
 import {NameKind, nameProblem} from './names';
 import {DeclaredConcept, declaredConceptFields} from './resolve_inheritance';
-import {DEFAULT_PROFILE, fieldsOnTables, importCommand, noTextFor, profileSpecOf, sourcesDialect, statesKey, TableDialects, tableDialects} from './resolve_profiles';
+import {DEFAULT_PROFILE, fieldsOnTables, importCommand, noTextFor, profileSpecOf, sourcesDialect, TableDialects, tableDialects} from './resolve_profiles';
 import {columnsForSource, entitiesReached, withoutQualifier} from './sql_expr_utils';
 import {holdsNoSql, SqlColumn, withoutComments} from './sql_parser';
 import {doubleQuotedNames, hasDoubleQuotedColumn} from './transpile';
@@ -86,11 +86,6 @@ export function undefinedEndpointProblem(
 function sourceRequiredMessage(dataset: string): string {
   return `dataset '${dataset}': a non-abstract dataset requires a ` +
       `source; set 'source', or mark it 'abstract: true' if it has no table`;
-}
-
-function noPrimaryKeyWarning(dataset: string): string {
-  return `dataset '${
-      dataset}': no primary_key; the entity's KEY will be empty (invalid for graph generation)`;
 }
 
 function ansiFallbackNote(preferred: string): string {
@@ -2066,17 +2061,6 @@ function metricWarning(
   return undefined;
 }
 
-// The warning a concrete entity with neither a primary key nor a unique key
-// gives, or undefined. A unique key is enough, as the graph keys the entity's
-// node by the first one.
-function keyWarning(
-    entity: Pick<Entity, 'name'|'keys'|'uniqueKeys'|'abstract'>): string|
-    undefined {
-  return !statesKey(entity.keys, entity.uniqueKeys) && !entity.abstract ?
-      noPrimaryKeyWarning(entity.name) :
-      undefined;
-}
-
 // Infers the entities a metric's expressions reach across all dialect entries,
 // and returns the warning the metric gives when an expression could not be
 // parsed or when it states no `entity` and its expressions name none. An
@@ -2135,18 +2119,16 @@ export function inferMetricEntities(
 }
 
 // Every warning a load gives about `model`'s entities and metrics, in the
-// order a load gives them: each concrete entity's missing key, each field's
-// expression warning, then each metric's expression warning and its warning
-// when it names no entity. A metric a profile excludes gives none. With
-// `profiled`, the profile check reports a field or metric its tables cannot
-// run, so no warning repeats it. A profile changes only these; a load's other
-// warnings, about actions, come after them.
+// order a load gives them: each field's expression warning, then each metric's
+// expression warning and its warning when it names no entity. A metric a
+// profile excludes gives none. With `profiled`, the profile check reports a
+// field or metric its tables cannot run, so no warning repeats it. A profile
+// changes only these; a load's other warnings, about actions, come after them.
 export function entityAndMetricWarnings(
     model: SemanticModel, preferred: string = DEFAULT_DIALECT,
     profiled = false): string[] {
   const entities = model.entities ?? [];
-  const out = entities.map(keyWarning).filter((w): w is string => !!w);
-  out.push(...fieldWarnings(model, preferred, profiled));
+  const out = fieldWarnings(model, preferred, profiled);
   const entityNames = entities.map(e => e.name);
   const impliedDialect = sourcesDialect(model);
   const excluded = new Set(model.excludedMetrics);
@@ -2373,15 +2355,12 @@ function convertDataset(
   const ctxLabel = `dataset '${ds.name}'`;
   // An abstract entity has no physical table, so it carries no source (empty
   // dataSource) and no key -- both are meaningless for a class never
-  // materialized. Only a concrete entity is parsed/warned for those.
+  // materialized. Only a concrete entity's source is parsed.
   const parsedSource = ds.source !== undefined ?
       parseSource(ds.source, opts, ctxLabel, warnings, version) :
       undefined;
   const dataSource = parsedSource ? parsedSource.dataSource : '';
   const keys = ds.primary_key ?? [];
-  const kw = keyWarning(
-      {name: ds.name, keys, uniqueKeys: ds.unique_keys, abstract: ds.abstract});
-  if (kw) warnings.push(kw);
   const fields = (ds.fields ?? []).map(
       f => convertField(f, ds.name, version, dialect));
   rejectDuplicateNames(
