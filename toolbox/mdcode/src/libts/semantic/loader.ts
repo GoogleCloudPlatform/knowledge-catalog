@@ -3152,7 +3152,7 @@ export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
 // that say where its catalog entry lives, and its resource name with no
 // leading `//`, which is its entry id. A Cloud SQL table is cloudSqlTableOf's.
 export type SourceTable = {resourceName: string; project: string}&(
-    {system: 'bigquery'; dataset: string}|
+    {system: 'bigquery'; dataset: string; table: string}|
     {system: 'biglake'; catalog: string}|
     {system: 'spanner'; instance: string}|
     {system: 'alloydb'; location: string});
@@ -3162,7 +3162,12 @@ export function sourceTableOf(source: string): SourceTable|undefined {
   const uri = asResourceUri(source.trim());
   const resourceName = uri.slice(2);
   let m = uri.match(BIGQUERY_TABLE_URI);
-  if (m) return {system: 'bigquery', resourceName, project: m[1], dataset: m[2]};
+  if (m) {
+    return {
+      system: 'bigquery', resourceName, project: m[1], dataset: m[2],
+      table: m[3],
+    };
+  }
   m = uri.match(BIGLAKE_TABLE_URI);
   if (m) return {system: 'biglake', resourceName, project: m[1], catalog: m[2]};
   m = uri.match(SPANNER_TABLE_URI);

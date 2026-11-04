@@ -7,13 +7,20 @@ import * as context from './context';
 
 
 // A BigLake Iceberg REST catalog, as getCatalog returns it. The API writes its
-// fields in kebab case. `replicas` names the regions the catalog lives in,
-// written as the API writes them: `us-central1` for a regional catalog, `US`
-// for a multi-region one.
+// fields in kebab case. `replicas` names the regions that hold the catalog,
+// written as the API writes them. A regional or federated catalog lists one
+// replica with no state: `us-central1`, or `US` for a federated multi-region
+// one. A multi-region catalog of Cloud Storage tables lists one replica per
+// region, one of them `STATE_PRIMARY` and the rest `STATE_SECONDARY`, and
+// lists none for a few seconds after it is created (live, 2026-11-03). A
+// table's entry sits in the region that was the primary when the table was
+// created, so after a failover an older table's entry can sit in a former
+// primary's region, now a secondary's; while the failover runs, the new
+// primary reads `STATE_PRIMARY_IN_PROGRESS` (from review on #623, 2026-11-03).
 export interface Catalog {
   name?: string;
   'catalog-type'?: string;
-  replicas?: Array<{region?: string}>;
+  replicas?: Array<{region?: string; state?: string}>;
   'storage-regions'?: string[];
   [key: string]: any;
 }

@@ -5,7 +5,7 @@ import {BigLakeClient} from '../../src/libts/gcp/biglake';
 import * as bigquery from '../../src/libts/gcp/bigquery';
 import * as spanner from '../../src/libts/gcp/spanner';
 
-import {REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE} from './gcp/location_responses';
+import {REGIONAL_CATALOG, REGIONAL_INSTANCE} from './gcp/location_responses';
 
 // Bypass actual gcloud CLI calls by using the explicit constructor
 export const TEST_API_CONTEXT = new gcp.ApiContext('test-project', 'test-location', 'test-token');
@@ -31,15 +31,16 @@ export function passGraphChecks(): void {
 }
 
 // Makes push's source check find a Knowledge Catalog entry for every table, as
-// Dataplex does for a table that exists. Each Spanner instance and BigLake
+// Dataplex does for a table that exists. Each BigQuery table is in `US`; each
+// Spanner instance (with a regional config, which is not read) and BigLake
 // catalog is in us-central1, shaped as the live responses in
-// gcp/location_responses.ts are; passGraphChecks gives each dataset's location.
+// gcp/location_responses.ts are.
 export function passSourceCheck(): void {
   const ok = (result: object) => ({status: 200, result}) as any;
+  spyOn(bigquery.BigQueryClient.prototype, 'getTable')
+      .mockResolvedValue(ok({location: 'US'}));
   spyOn(spanner.SpannerClient.prototype, 'getInstance')
       .mockResolvedValue(ok(REGIONAL_INSTANCE));
-  spyOn(spanner.SpannerClient.prototype, 'getInstanceConfig')
-      .mockResolvedValue(ok(REGIONAL_CONFIG));
   spyOn(BigLakeClient.prototype, 'getCatalog')
       .mockResolvedValue(ok(REGIONAL_CATALOG));
   spyOn(gcp.CatalogClient.prototype, 'lookupEntry').mockResolvedValue(ok({}));

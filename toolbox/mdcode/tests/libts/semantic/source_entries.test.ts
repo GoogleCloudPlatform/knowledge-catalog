@@ -11,11 +11,13 @@ import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import {Entity, ProfileSpec} from '../../../src/libts/semantic/ir';
 import {sourceEntryErrors, SourceReaders} from '../../../src/libts/semantic/source_entries';
-import {entryDenied, MULTI_REGION_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, US_DATASET} from '../gcp/location_responses';
+import {entryDenied, entryInvalid, FEDERATED_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
 
 const BIGQUERY = `bigquery.googleapis.com/projects/${P}/datasets/kcmd_demo/tables/orders`;
 const BIGLAKE = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-src-biglake-57138/namespaces/sales/tables/orders`;
 const BIGLAKE_US = 'biglake.googleapis.com/projects/looker-private-demo/catalogs/snowflake/namespaces/sales/tables/orders';
+const BIGLAKE_GCS_US = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-biglake-probe-6890/namespaces/sales/tables/orders`;
+const BIGLAKE_FAILOVER = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-biglake-failover/namespaces/sales/tables/orders`;
 const SPANNER = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-reg/databases/sales/tables/Orders`;
 const SPANNER_NAM3 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-multi/databases/sales/tables/Orders`;
 const SPANNER_NAM22 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-nam22/databases/sales/tables/Orders`;
@@ -24,6 +26,18 @@ const SPANNER_NAM22 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-n
 const NAM22_INSTANCE = {
   name: `projects/${P}/instances/kcmd-src-nam22`,
   config: NAM22_CONFIG.name,
+};
+// A US catalog during a failover, made up, never seen live: for a few seconds
+// the new primary reads STATE_PRIMARY_IN_PROGRESS, so no replica is
+// STATE_PRIMARY (from review on #623, 2026-11-03). The secondary comes first,
+// so the order the check looks in is its own.
+const FAILOVER_CATALOG = {
+  ...MULTI_REGION_GCS_CATALOG,
+  name: `projects/${P}/catalogs/kcmd-biglake-failover`,
+  replicas: [
+    {region: 'us-central1', state: 'STATE_SECONDARY'},
+    {region: 'us-east1', state: 'STATE_PRIMARY_IN_PROGRESS'},
+  ],
 };
 const ALLOYDB = `alloydb.googleapis.com/projects/${P}/locations/us-east4/clusters/kcmd-src-alloy/databases/sales/schemas/public/tables/orders`;
 
@@ -38,21 +52,27 @@ function lookup(group: string, location: string, resourceName: string): string {
 const ok = (result: object) => ({status: 200, result});
 
 // Readers that answer from the live responses, keyed by what each call
-// names, and record each call. A dataset, instance, config or catalog they do
+// names, and record each call. A table, instance, config or catalog they do
 // not know answers 404; an entry not in `entries` answers 403, as a missing
 // entry or one in another location does. `override` replaces one answer.
 function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|Error> = {}) {
   const calls: string[] = [];
   const answers: Record<string, ApiResult<any>> = {
-    [`getDataset ${P} kcmd_demo`]: ok(US_DATASET),
+    [`getTable ${P} kcmd_demo orders`]: ok(US_TABLE),
     [`getInstance ${P} kcmd-src-reg`]: ok(REGIONAL_INSTANCE),
     [`getInstance ${P} kcmd-src-multi`]: ok(NAM3_INSTANCE),
-    [`getInstanceConfig ${REGIONAL_INSTANCE.config}`]: ok(REGIONAL_CONFIG),
     [`getInstanceConfig ${NAM3_INSTANCE.config}`]: ok(NAM3_CONFIG),
     [`getInstance ${P} kcmd-src-nam22`]: ok(NAM22_INSTANCE),
     [`getInstanceConfig ${NAM22_CONFIG.name}`]: ok(NAM22_CONFIG),
     [`getCatalog ${P} kcmd-src-biglake-57138`]: ok(REGIONAL_CATALOG),
-    'getCatalog looker-private-demo snowflake': ok(MULTI_REGION_CATALOG),
+    'getCatalog looker-private-demo snowflake': ok(FEDERATED_CATALOG),
+    // Live, the primary came first; nothing promises that order, so here the
+    // secondary does.
+    [`getCatalog ${P} kcmd-biglake-probe-6890`]: ok({
+      ...MULTI_REGION_GCS_CATALOG,
+      replicas: [...MULTI_REGION_GCS_CATALOG.replicas].reverse(),
+    }),
+    [`getCatalog ${P} kcmd-biglake-failover`]: ok(FAILOVER_CATALOG),
   };
   const answer = async (call: string, missing: ApiResult<any>) => {
     calls.push(call);
@@ -65,7 +85,7 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
       lookupEntry: (project, location, name) =>
           answer(`lookupEntry ${project} ${location} ${name}`, entryDenied(name)),
     },
-    bigquery: {getDataset: (p, d) => answer(`getDataset ${p} ${d}`, NOT_FOUND)},
+    bigquery: {getTable: (p, d, t) => answer(`getTable ${p} ${d} ${t}`, NOT_FOUND)},
     biglake: {getCatalog: (p, c) => answer(`getCatalog ${p} ${c}`, NOT_FOUND)},
     spanner: {
       getInstance: (p, i) => answer(`getInstance ${p} ${i}`, NOT_FOUND),
@@ -87,26 +107,59 @@ const notFound = (entity: string, profile: string, source: string, hint = '') =>
     `table Knowledge Catalog knows about. The table may not exist, or you may ` +
     `not be allowed to read its catalog entry.${hint} Fix the source, or pass ` +
     `--skip-source-check.`;
+// The start of the messages for an inline source.
+const at = (source: string) => `entity 'orders' in profile 'default': source '${source}'`;
 // The message for an inline source whose check failed for another reason.
 const couldNotCheck = (source: string, detail: string) =>
-    `entity 'orders' in profile 'default': source '${source}' could not be ` +
-    `checked; try again, or pass --skip-source-check: ${detail}`;
+    `${at(source)} could not be checked; try again, or pass ` +
+    `--skip-source-check: ${detail}`;
+// The message for an inline source whose location read `what` answered 404,
+// so the `kind` it names, such as `a table`, does not exist.
+const missing = (source: string, kind: string, what: string) =>
+    `${at(source)} names ${kind} that does not exist: ${what} found ` +
+    `nothing (HTTP 404). Fix the source, or pass --skip-source-check.`;
+// The message for an inline source whose location read `what` answered 403
+// with `message`.
+const refused = (source: string, what: string, message: string, hint = '') =>
+    `${at(source)} could not be checked: ${what} was refused (HTTP 403). ` +
+    `${message}${hint} The source's catalog entry was not looked up. Fix the ` +
+    `access or the source, or pass --skip-source-check.`;
 const ALLOYDB_HINT = ' A new AlloyDB cluster can take hours to appear in the ' +
     'catalog after Dataplex integration is turned on.';
+const CONFIG_HINT = ' Reading it needs the permission ' +
+    'spanner.instanceConfigs.get on the project, which roles/spanner.viewer ' +
+    'includes and the Spanner database roles do not.';
 
 describe('sourceEntryErrors', () => {
-  // [label, source, the lookup of its entry, the reads before it, hint]
+  // [label, source, the lookup that finds its entry, the reads and lookups
+  // before it, hint]
   const SYSTEMS: Array<[string, string, string, string[], string?]> = [
-    // A BigQuery entry sits in its dataset's location, which reads `US`.
+    // A BigQuery entry sits in its table's location, which reads `US`.
     ['BigQuery', BIGQUERY, lookup('bigquery', 'us', BIGQUERY),
-     [`getDataset ${P} kcmd_demo`]],
+     [`getTable ${P} kcmd_demo orders`]],
     ['regional BigLake', BIGLAKE, lookup('biglake', 'us-central1', BIGLAKE),
      [`getCatalog ${P} kcmd-src-biglake-57138`]],
-    ['multi-region BigLake', BIGLAKE_US, lookup('biglake', 'us', BIGLAKE_US),
+    ['federated multi-region BigLake', BIGLAKE_US, lookup('biglake', 'us', BIGLAKE_US),
      ['getCatalog looker-private-demo snowflake']],
-    // A Spanner entry sits in its config's default leader region.
-    ['regional Spanner', SPANNER, lookup('spanner', 'us-central1', SPANNER),
-     [`getInstance ${P} kcmd-src-reg`, `getInstanceConfig ${REGIONAL_INSTANCE.config}`]],
+    ['multi-region BigLake, whose primary replica is not listed first', BIGLAKE_GCS_US,
+     lookup('biglake', 'us-central1', BIGLAKE_GCS_US),
+     [`getCatalog ${P} kcmd-biglake-probe-6890`]],
+    // After a failover, an older table's entry sits in a former primary's
+    // region, now a secondary's: the primary's region is looked in first.
+    ['multi-region BigLake, whose entry sits in its secondary\'s region', BIGLAKE_GCS_US,
+     lookup('biglake', 'us-east1', BIGLAKE_GCS_US),
+     [`getCatalog ${P} kcmd-biglake-probe-6890`,
+      lookup('biglake', 'us-central1', BIGLAKE_GCS_US)]],
+    ['multi-region BigLake during a failover, with no STATE_PRIMARY replica',
+     BIGLAKE_FAILOVER, lookup('biglake', 'us-central1', BIGLAKE_FAILOVER),
+     [`getCatalog ${P} kcmd-biglake-failover`,
+      lookup('biglake', 'us-east1', BIGLAKE_FAILOVER)]],
+    // A Spanner entry sits in its config's default leader region. A regional
+    // config's name gives it, so the config is not read; the live config
+    // agrees.
+    ['regional Spanner', SPANNER,
+     lookup('spanner', REGIONAL_CONFIG.replicas.find(r => r.defaultLeaderLocation)!.location, SPANNER),
+     [`getInstance ${P} kcmd-src-reg`]],
     ['nam3 Spanner', SPANNER_NAM3, lookup('spanner', 'us-east4', SPANNER_NAM3),
      [`getInstance ${P} kcmd-src-multi`, `getInstanceConfig ${NAM3_INSTANCE.config}`]],
     ['nam22 Spanner, whose leader is not its first replica', SPANNER_NAM22,
@@ -120,43 +173,67 @@ describe('sourceEntryErrors', () => {
       const {readers, calls} = fakeReaders([entry]);
       expect(await sourceEntryErrors(inline(source), readers)).toEqual([]);
       expect(calls).toEqual([...reads, entry]);
-      // Without the entry, the source fails.
+      // Without the entry, in any location, the source fails.
       expect(await sourceEntryErrors(inline(source), fakeReaders([]).readers))
           .toEqual([notFound('orders', 'default', source, hint)]);
     });
   }
 
+  const NAM3_CONFIG_READ = `reading instance config '${NAM3_INSTANCE.config}'`;
+  const INSTANCE_DENIED = spannerDenied('spanner.instances.get', REGIONAL_INSTANCE.name);
+  const CONFIG_DENIED = spannerDenied('spanner.instanceConfigs.get', NAM3_INSTANCE.config);
+  // The loader accepts this table ID; BigQuery rejects it.
+  const BIGQUERY_INVALID = BIGQUERY.replace(/orders$/, 'orders!x');
+  const ALLOYDB_LOOKUP = lookup('alloydb', 'us-east4', ALLOYDB);
+  const ENTRY_INVALID = entryInvalid(ALLOYDB_LOOKUP.split(' ')[3]);
   // [label, source, the read that fails, its answer, the message]
   const FAILED_READS: Array<[string, string, string, ApiResult<any>|Error, string]> = [
-    ['a missing dataset', BIGQUERY, `getDataset ${P} kcmd_demo`, NOT_FOUND,
-     notFound('orders', 'default', BIGQUERY)],
+    // A missing table or dataset, catalog or instance answers 404.
+    ['a missing table', BIGQUERY, `getTable ${P} kcmd_demo orders`, NOT_FOUND,
+     missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`)],
     ['a missing catalog', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, NOT_FOUND,
-     notFound('orders', 'default', BIGLAKE)],
+     missing(BIGLAKE, 'a catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`)],
     ['a missing instance', SPANNER, `getInstance ${P} kcmd-src-reg`, NOT_FOUND,
-     notFound('orders', 'default', SPANNER)],
-    ['an instance config that fails', SPANNER,
-     `getInstanceConfig ${REGIONAL_INSTANCE.config}`, {status: 503, message: 'unavailable'},
-     couldNotCheck(SPANNER, `reading instance config '${
-         REGIONAL_INSTANCE.config}' failed (HTTP 503: unavailable).`)],
-    ['a lookup that throws', ALLOYDB, lookup('alloydb', 'us-east4', ALLOYDB),
+     missing(SPANNER, 'an instance', `reading instance 'kcmd-src-reg'`)],
+    // Spanner answers 403 for an instance or config the caller may not read.
+    ['a refused instance read', SPANNER, `getInstance ${P} kcmd-src-reg`,
+     INSTANCE_DENIED,
+     refused(SPANNER, `reading instance 'kcmd-src-reg'`, INSTANCE_DENIED.message)],
+    ['a refused instance config read', SPANNER_NAM3,
+     `getInstanceConfig ${NAM3_INSTANCE.config}`, CONFIG_DENIED,
+     refused(SPANNER_NAM3, NAM3_CONFIG_READ, CONFIG_DENIED.message, CONFIG_HINT)],
+    // A 5xx or a thrown call may pass on retry; a 400 never will.
+    ['an instance config that fails', SPANNER_NAM3,
+     `getInstanceConfig ${NAM3_INSTANCE.config}`, {status: 503, message: 'unavailable'},
+     couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} failed (HTTP 503: unavailable).`)],
+    ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,
      new Error('socket hang up'),
      couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],
+    ['an invalid table ID', BIGQUERY_INVALID, `getTable ${P} kcmd_demo orders!x`,
+     INVALID_TABLE_ID,
+     `${at(BIGQUERY_INVALID)} could not be checked: reading table '${P}.kcmd_demo.orders!x' ` +
+         `failed (HTTP 400: ${INVALID_TABLE_ID.message}). Fix the source, or pass ` +
+         `--skip-source-check.`],
+    ['a lookup that answers 400', ALLOYDB, ALLOYDB_LOOKUP, ENTRY_INVALID,
+     `${at(ALLOYDB)} could not be checked: looking up its Knowledge Catalog entry ` +
+         `failed (HTTP 400: ${ENTRY_INVALID.message}). Fix the source, or pass ` +
+         `--skip-source-check.`],
     // The services have always given these fields; the guards keep an answer
     // without one from crashing the push.
-    ['a dataset with no location', BIGQUERY, `getDataset ${P} kcmd_demo`,
-     ok({...US_DATASET, location: undefined}),
-     couldNotCheck(BIGQUERY, `reading the location of dataset '${P}.kcmd_demo' gave no location.`)],
+    ['a table with no location', BIGQUERY, `getTable ${P} kcmd_demo orders`,
+     ok({...US_TABLE, location: undefined}),
+     couldNotCheck(BIGQUERY, `reading table '${P}.kcmd_demo.orders' gave no location.`)],
+    // A catalog lists no replicas for a few seconds after it is created.
     ['a catalog with no region', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`,
      ok({...REGIONAL_CATALOG, replicas: []}),
      couldNotCheck(BIGLAKE, `reading the region of catalog 'kcmd-src-biglake-57138' gave no region.`)],
     ['an instance with no config', SPANNER, `getInstance ${P} kcmd-src-reg`,
      ok({name: REGIONAL_INSTANCE.name}),
      couldNotCheck(SPANNER, `reading instance 'kcmd-src-reg' gave no instance config.`)],
-    ['a config with no default leader', SPANNER,
-     `getInstanceConfig ${REGIONAL_INSTANCE.config}`,
-     ok({...REGIONAL_CONFIG, replicas: REGIONAL_CONFIG.replicas.slice(1)}),
-     couldNotCheck(SPANNER, `reading instance config '${
-         REGIONAL_INSTANCE.config}' gave no default leader.`)],
+    ['a config with no default leader', SPANNER_NAM3,
+     `getInstanceConfig ${NAM3_INSTANCE.config}`,
+     ok({...NAM3_CONFIG, replicas: NAM3_CONFIG.replicas.slice(1)}),
+     couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} gave no default leader.`)],
   ];
   for (const [label, source, call, answer, message] of FAILED_READS) {
     test(`${label} fails the source, and nothing after it is read`, async () => {
@@ -166,26 +243,31 @@ describe('sourceEntryErrors', () => {
     });
   }
 
-  test('each table, dataset and instance is read once', async () => {
-    const SPANNER_2 = SPANNER.replace(/Orders$/, 'Items');
+  test('each table, catalog, instance and instance config is read once', async () => {
+    const SPANNER_2 = SPANNER_NAM3.replace(/Orders$/, 'Items');
+    const BIGLAKE_2 = BIGLAKE_GCS_US.replace(/orders$/, 'items');
     const entries = [
       lookup('bigquery', 'us', BIGQUERY),
-      lookup('spanner', 'us-central1', SPANNER),
-      lookup('spanner', 'us-central1', SPANNER_2),
+      lookup('spanner', 'us-east4', SPANNER_NAM3),
+      lookup('spanner', 'us-east4', SPANNER_2),
+      lookup('biglake', 'us-central1', BIGLAKE_GCS_US),
+      lookup('biglake', 'us-central1', BIGLAKE_2),
     ];
     const {readers, calls} = fakeReaders(entries);
     const model = {
       entities: [entity('orders', BIGQUERY), entity('items', SPANNER_2)],
       profiles: [
-        profile('a', [['orders', BIGQUERY], ['items', SPANNER]]),
+        profile('a', [['orders', BIGQUERY], ['items', SPANNER_NAM3]]),
         profile('b', [['orders', BIGQUERY]]),
+        profile('c', [['orders', BIGLAKE_GCS_US], ['items', BIGLAKE_2]]),
       ],
     };
     expect(await sourceEntryErrors(model, readers)).toEqual([]);
     expect(calls.sort()).toEqual([
-      `getDataset ${P} kcmd_demo`,
-      `getInstance ${P} kcmd-src-reg`,
-      `getInstanceConfig ${REGIONAL_INSTANCE.config}`,
+      `getTable ${P} kcmd_demo orders`,
+      `getInstance ${P} kcmd-src-multi`,
+      `getInstanceConfig ${NAM3_INSTANCE.config}`,
+      `getCatalog ${P} kcmd-biglake-probe-6890`,
       ...entries,
     ].sort());
   });

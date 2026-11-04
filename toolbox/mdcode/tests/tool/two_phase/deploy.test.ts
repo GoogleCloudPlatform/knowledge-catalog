@@ -30,10 +30,9 @@ const spannerAnswers =
       called: {spannerDml: 0},
     });
 const DISABLED = 'Cloud Spanner API is disabled.';
-// Every dataset's location is unreadable, the sources' too, so a push that
-// uses it passes --skip-source-check (SKIP) to reach the graph's checks.
+// Every dataset's location is unreadable. The source check reads tables, not
+// datasets, so it still passes.
 const DENIED = {getDataset: {status: 403, message: 'Access Denied'}};
-const SKIP = {skipSourceCheck: true};
 const NO_LOCATION = (project: string) =>
     `Warning: could not read location of dataset ${project}.d (Access ` +
     'Denied); letting BigQuery infer the query location';
@@ -126,9 +125,11 @@ scenarios('push writes nothing when a check fails', [
         "'c_key' not found.")],
     // The dry run runs in the dataset's project and location.
     check: r => {
-      // The source check reads table customer's dataset first.
-      expect(r.fake.getDataset.mock.calls)
-          .toEqual([['test-project', 'd'], ['graph-project', 'd']]);
+      // The source check reads table customer; the dry run, the graph's
+      // dataset.
+      expect(r.fake.getTable.mock.calls)
+          .toEqual([['test-project', 'd', 'customer']]);
+      expect(r.fake.getDataset.mock.calls).toEqual([['graph-project', 'd']]);
       expect(r.fake.query.mock.calls
                  .filter(c => c[3] === true && c[1].includes('PROPERTY GRAPH'))
                  .map(c => [c[0], c[2]]))
@@ -136,7 +137,7 @@ scenarios('push writes nothing when a check fails', [
     },
     // A dataset whose location cannot be read prints that warning too.
     then: [{
-      flags: SKIP, services: DENIED, warnings: [NO_LOCATION('graph-project')],
+      flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')],
     }],
   },
 ], {
@@ -375,8 +376,9 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ],
     profiles: {pg: boundAt(`${ALLOYDB}/schemas/public/tables/customer`)},
     events: ['preflight', 'apply', 'deploy bq'],
-    // The source check reads table customer's dataset, then the graph's.
-    calls: ['generate bq', 'getDataset', 'getDataset', 'bqDml bq', 'deploy bq'],
+    // The source check reads table customer, then push reads the graph's
+    // dataset.
+    calls: ['generate bq', 'getTable', 'getDataset', 'bqDml bq', 'deploy bq'],
     warnings: [ALLOYDB_NOTE],
     check: r => expect(r.printed.filter(
                            l => l.includes('-- Deployment') || l === ALLOYDB_NOTE))
@@ -418,7 +420,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       // A dataset whose location cannot be read prints that warning once,
       // and a push that deploys prints every warning before it writes.
       {
-        flags: {validateOnly: true, ...SKIP},
+        flags: {validateOnly: true},
         services: DENIED,
         warnings: [
           NO_LOCATION('test-project'), 'Warning: ddl warning g1',
@@ -426,7 +428,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
         ],
       },
       {
-        flags: SKIP,
+        flags: {},
         services: DENIED,
         warnings: [
           NO_LOCATION('test-project'), 'Warning: ddl warning g1',
