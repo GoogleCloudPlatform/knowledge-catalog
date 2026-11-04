@@ -70,7 +70,7 @@ export async function sourceDialects(
     } = {}): Promise<SourceDialects> {
   // Keyed as dialectLookupKey gives or by a Spanner database's resource name,
   // so both spellings of one table, and the tables of one Spanner database, are
-  // one lookup.
+  // one lookup. A database's lookup names the first of its tables.
   const lookups = new Map<string, () => Promise<Dialect>>();
   for (const source of sourcesToLookUp(texts)) {
     const table = cloudSqlTableOf(source);
@@ -80,7 +80,7 @@ export async function sourceDialects(
     const entry = thirdParty ? thirdPartyEntryOf(source) : undefined;
     if (entry) lookups.set(entry.name, () => thirdPartyDialect(catalog, entry));
     const database = spanner && spannerDatabaseOf(source);
-    if (database) {
+    if (database && !lookups.has(database.resourceName)) {
       lookups.set(
           database.resourceName,
           () => spannerDialect(spanner, database, source));

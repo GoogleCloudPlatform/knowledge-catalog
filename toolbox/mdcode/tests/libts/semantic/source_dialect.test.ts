@@ -113,7 +113,7 @@ describe('sourceDialects', () => {
     ]);
   });
 
-  test('another failure is reported with its status, and a thrown error does not escape', async () => {
+  test('another failure is reported with its status, a thrown error does not escape, and a Spanner database\'s error names its first table', async () => {
     const failing: EntryLookup = {
       async lookupEntry(_p, _l, name) {
         if (name.includes('/pg/')) return {status: 503, message: 'unavailable'};
@@ -122,7 +122,8 @@ describe('sourceDialects', () => {
     };
     const spanner = {getDatabase: async () => { throw new Error('socket hang up'); }};
     const {errors} = await sourceDialects(
-        [POSTGRES, MYSQL, THIRD_PARTY_FILE, `source: ${SPANNER}/x/tables/t`],
+        [POSTGRES, MYSQL, THIRD_PARTY_FILE, `source: ${SPANNER}/x/tables/t`,
+         `source: ${SPANNER}/x/tables/u`],
         failing, {spanner});
     // Sorted, so the order does not depend on which lookup answers first.
     expect(errors).toEqual([
