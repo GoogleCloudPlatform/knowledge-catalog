@@ -517,7 +517,7 @@ function check(input: string, output: string) {
 
 // The models and the changes import makes to them.
 const BQ = 'bigquery.googleapis.com/projects/acme/datasets/sales/tables/orders';
-const CASE = "CASE WHEN orders.status = 'open' THEN 1 ELSE 0 END";
+const CASE = "CASE WHEN status = 'open' THEN 1 ELSE 0 END";
 const sql = (expression: string, dialect = 'ANSI_SQL') =>
     ({dialects: [{dialect, expression}]});
 // The `ai_context` members a conversion moves, one of them empty.
@@ -533,7 +533,7 @@ const vanilla = (): any => ({
       primary_key: ['order_id'],
       description: 'Net revenue after refunds and discounts,\nin US dollars.',
       fields: [
-        {name: 'order_id', datatype: 'Integer', expression: sql('orders.order_id')},
+        {name: 'order_id', datatype: 'Integer', expression: sql('order_id')},
         {name: 'status', expression: sql(CASE)},
       ],
     }],
@@ -578,9 +578,9 @@ const related = (model: () => any, relationship: object) => changed(model, m => 
   ds(m).push({
     name: 'customers', source: BQ.replace('orders', 'customers'),
     primary_key: ['customer_id'],
-    fields: [{name: 'customer_id', expression: expr('customers.customer_id')}],
+    fields: [{name: 'customer_id', expression: expr('customer_id')}],
   });
-  fields(m).push({name: 'customer_id', expression: expr('orders.customer_id')});
+  fields(m).push({name: 'customer_id', expression: expr('customer_id')});
   m.semantic_model[0].relationships = [{
     name: 'placed_by', from: 'orders', to: 'customers',
     from_columns: ['customer_id'], to_columns: ['customer_id'], ...relationship,
@@ -611,15 +611,15 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a last metric removed', changed(vanilla, m => m.semantic_model[0].metrics.push(ROW_COUNT))],
   ['every metric removed', changed(vanilla, m => m.semantic_model[0].metrics = [ROW_COUNT])],
   ['an extra model removed', changed(vanilla, m => m.semantic_model.push({name: 'other', datasets: []}))],
-  ['a dialect entry added', changed(vanilla, m => fields(m)[0].expression = sql('NVL(orders.order_id, 0)', 'snowflake')),
+  ['a dialect entry added', changed(vanilla, m => fields(m)[0].expression = sql('NVL(order_id, 0)', 'snowflake')),
    {transpile: true}],
   ['a dialect entry added after two', changed(vanilla, m => fields(m)[0].expression = {dialects: [
-     {dialect: 'POSTGRES', expression: 'CAST(orders.order_id AS INTEGER)'},
-     {dialect: 'SNOWFLAKE', expression: 'NVL(orders.order_id, 0)'},
+     {dialect: 'POSTGRES', expression: 'CAST(order_id AS INTEGER)'},
+     {dialect: 'SNOWFLAKE', expression: 'NVL(order_id, 0)'},
    ]}), {transpile: true}],
   ['a string expression translated', changed(google, m => fields(m)[0].expression = '"orders"."order_id"'),
    {transpile: true}],
-  ['a string expression wrapped', changed(vanilla, m => fields(m)[0].expression = 'orders.order_id')],
+  ['a string expression wrapped', changed(vanilla, m => fields(m)[0].expression = 'order_id')],
   ['a third-party file adapted to Google', changed(vanilla, m => m.semantic_model[0].ai_context.owner = 'analytics'),
    {flavor: 'google'}],
   ['a relationship description moved', related(vanilla, {description: 'One customer.', custom_extensions: null})],
@@ -635,7 +635,7 @@ const CHANGES: Array<[string, () => any, object?]> = [
   ['a conversion to vanilla', google, {...STRICT, flavor: 'ossie'}],
   ['a conversion to vanilla with a profile file', google, {
      ...STRICT, flavor: 'ossie',
-     profileFiles: [{fileName: 'retail.profile.prod.yaml', content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ}\n    primary_key: [order_id]\n`}],
+     profileFiles: [{fileName: 'retail.profile.prod.yaml', content: `name: prod\nentities:\n  - name: orders\n    source: ${BQ}\n    primary_key: [order_id]\n    fields:\n      - {name: order_id, expression: order_id}\n      - {name: status, expression: "${CASE}"}\n`}],
    }],
 ];
 const STYLES: Array<[string, Partial<Style>]> = [

@@ -1,7 +1,7 @@
 // Tests that push refuses a deployment whose tables are outside the database
 // it deploys to, and that it probes each BigQuery table in the location of
-// the graph's dataset (src/tool/commands.ts, checkBeforeWrites and
-// liveErrors).
+// the graph's dataset (src/libts/semantic/validate.ts, localChecks, and
+// src/tool/commands.ts, liveErrors).
 
 import {expect} from 'bun:test';
 

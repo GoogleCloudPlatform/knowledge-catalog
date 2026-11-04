@@ -29,7 +29,7 @@ semantic_model:
         fields:
           - name: order_id
             expression:
-              dialects: [{dialect: BIGQUERY, expression: orders.order_id}]
+              dialects: [{dialect: BIGQUERY, expression: order_id}]
 `;
 const model = (source = `${PREFIX}/tables/orders`) =>
     MODEL.replace('SOURCE', source);

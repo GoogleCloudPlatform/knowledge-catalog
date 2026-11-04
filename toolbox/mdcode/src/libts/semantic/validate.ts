@@ -3,10 +3,11 @@
 // Runs once over the shared, already-parsed models (see loadSemanticModels)
 // before any destination leg, so a real `kcmd push` AND a `--validate-only` dry
 // run enforce the same requirements. Returns one message per violation (an
-// empty array means valid); the caller (commands.ts) prints them and aborts the
-// push. Kept separate from the loader -- which validates a document against the
-// schema -- because these are deployment requirements, not schema rules, and
-// they read the GOOGLE deployment-target extension the BigQuery leg owns.
+// empty array means valid); push prints them and aborts, and `kcmd import`
+// reports them. Kept separate from the loader -- which validates a document
+// against the schema -- because these are deployment requirements, not schema
+// rules, and they read the GOOGLE deployment-target extension the BigQuery leg
+// owns.
 
 import {BigQueryClient} from '../gcp/bigquery';
 import {ApiContext} from '../gcp/context';
@@ -1624,9 +1625,9 @@ function metricNoSqlError(
 //        E, declared or inherited, since the graph renders a field that names
 //        a sibling from that sibling's SQL (see selfReferenceErrors).
 //
-// Exported so `commands.ts` can also run it on the unpruned model before
-// `pruneUnavailable` drops unbound fields and metrics on a graph push. When
-// given, `flaggedMetrics` collects the name of each metric it reports.
+// deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
+// drops unbound fields and metrics on a graph push. When given,
+// `flaggedMetrics` collects the name of each metric it reports.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
     flaggedMetrics?: Set<string>): string[] {
@@ -1653,7 +1654,12 @@ export function validateExpressionReferences(
             .map(e => [e.name, e]));
     const impliedDialect = sourcesDialect(model);
     const addUnreadableWarning =
-        (what: string, total: number, unreadDialects: string[]) => {
+        (what: string, total: number, unread: string[]) => {
+          // A caller that looked up no table's dialect reads no ANSI_SQL
+          // text when every table needs the lookup, so it warns about none.
+          const unreadDialects = impliedDialect === null ?
+              unread.filter(d => d !== 'ANSI_SQL') :
+              unread;
           if (!unreadDialects.length) return;
           if (unreadDialects.length === total) {
             warnings.push(
