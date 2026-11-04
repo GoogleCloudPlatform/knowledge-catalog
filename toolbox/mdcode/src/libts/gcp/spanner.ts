@@ -48,9 +48,21 @@ export interface SpannerType {
 
 // A Spanner instance, as getInstance returns it. `config` is the full name of
 // its instance config, `projects/<p>/instanceConfigs/<c>`.
+// `replicaComputeCapacity` names each region the instance has replicas in,
+// once, witness regions included, in no particular order and with no leader
+// marked: a nam3 instance listed us-east1, us-east4 and us-central1, though
+// its config's default leader is us-east4 (live, 2026-11-04). Reading it
+// needs only spanner.instances.get. `resourceLocation` is a broad location,
+// such as `us`, and not a Dataplex region.
 export interface Instance {
   name?: string;
   config?: string;
+  replicaComputeCapacity?: Array<{
+    replicaSelection?: {location?: string};
+    processingUnits?: number;
+    nodeCount?: number;
+  }>;
+  resourceLocation?: string;
   [key: string]: any;
 }
 
