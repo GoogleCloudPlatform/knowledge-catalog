@@ -594,9 +594,8 @@ export const FILE_COPY_TYPE_ID = 'semantic-model-file';
 export const PUSH_ID_LABEL = 'kcmd-push-id';
 
 // The entrySource label every push puts on the model entry: PUSH_WRITING with
-// the model entry's write and PUSH_FINISHED as the push's last write. A model
-// an older kcmd pushed has no such label. kcmd owns this label and
-// PUSH_ID_LABEL, and no other.
+// the model entry's write and PUSH_FINISHED as the push's last write. kcmd
+// owns this label and PUSH_ID_LABEL, and no other.
 export const PUSH_STATE_LABEL = 'kcmd-push-state';
 export const PUSH_WRITING = 'writing';
 export const PUSH_FINISHED = 'finished';

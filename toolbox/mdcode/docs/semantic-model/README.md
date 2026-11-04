@@ -377,7 +377,8 @@ Every push, with or without `KC_V2_ASPECTS=1`, also sets the `kcmd-push-state`
 label of the model entry to `writing` when it writes the model entry, before the
 model's other entries, and to `finished` with its last write, after it deletes
 what the model no longer has. Pull refuses a model entry still labeled `writing`
-in the same way. A model an older `kcmd` pushed has no such label.
+in the same way. A model with no such label, such as one an older `kcmd` pushed,
+counts as finished.
 
 Pull cannot catch a push that stopped before it changed the model entry. The
 catalog then still holds what the previous push left, and pull returns that.

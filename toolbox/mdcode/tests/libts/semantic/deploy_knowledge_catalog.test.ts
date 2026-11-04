@@ -152,8 +152,7 @@ function stubClient(opts: {
   links?: (entry: string) => ApiResult<any>,
   // Result of deleteEntryLink, keyed by the entry-link id. Default: 200.
   delLink?: (linkId: string) => ApiResult<any>,
-  // Result of getEntry, which push makes for an entry the listing lacks when
-  // create returns 409, keyed by entry id. Default: 200 with no entrySource.
+  // Result of getEntry, keyed by entry id. Default: 200 with no entrySource.
   getEntry?: (entryId: string) => ApiResult<any>,
   // Result of getEntryType / getAspectType, keyed by typeId. Default: 200.
   entryType?: (typeId: string) => ApiResult<any>,
