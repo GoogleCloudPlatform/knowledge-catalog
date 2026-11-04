@@ -9,7 +9,9 @@
 // `schema` aspect), and hands the hydrated entries to the pure reader
 // (`kc_converter.modelsFromCatalogResources`). With the first-generation
 // aspects it also returns the file copies a push stored of the model and
-// profile files, for the caller to write instead of the rebuilt model.
+// profile files, for the caller to write instead of the rebuilt model. With
+// the second-generation types, a model an older kcmd pushed with the first-
+// generation ones is left out, and a warning names it.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -22,7 +24,7 @@ import {catalogContainer, CatalogClient, Entry, EntryLink} from '../gcp/dataplex
 
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
-import {linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
+import {FirstGenerationModel, linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
 import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {entryIdOf, Namer} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
@@ -35,10 +37,13 @@ export interface KcPullOptions {
   // Id of the source entry group to pull from.
   entryGroup: string;
   // Read the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
+  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false). A
+  // model an older kcmd pushed with the first-generation types is then left
+  // out with a warning.
   v2Aspects?: boolean;
-  // The project of the schema-join entry link type, which only a pull with
-  // v2Aspects off reads. Defaults to `dataplex-types`.
+  // The project of the schema-join entry link type, which a pull with
+  // v2Aspects off reads, and one with it on only to name the links in that
+  // warning. Defaults to `dataplex-types`.
   systemTypeProject?: string;
 }
 
@@ -70,28 +75,28 @@ export async function pullKnowledgeCatalog(
   // data, so each entry needs its own lookupEntry, and those fetches are
   // independent. The pool preserves input order so warnings stay deterministic.
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
+  // With v2Aspects on, the ids of the file copies, which are not fetched.
+  const copyIds: string[] = [];
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
     // With v2Aspects on, a pull returns no file copies, so it fetches none.
-    if (opts.v2Aspects && isFileCopyEntry(entry)) continue;
+    if (opts.v2Aspects && isFileCopyEntry(entry)) {
+      copyIds.push(entryIdOf(entry.name));
+      continue;
+    }
     const aspectTypes = semanticAspectTypes(entry.entryType, opts.v2Aspects);
     if (aspectTypes) targets.push({entry, aspectTypes});
     // else: not part of a semantic model; ignore it.
   }
 
   // An entry group holds exactly one semantic model. Zero anchors is a clean
-  // "nothing to pull" (the reader returns no models); more than one is an
-  // unexpected catalog state we refuse to guess through -- name the anchors and
-  // fail so it can be fixed at the source.
+  // "nothing to pull" (the reader returns no models). With v2Aspects on, a
+  // model an older kcmd pushed is not counted, so the check waits for the
+  // read.
   const anchors = targets.filter(
       t => t.entry.entryType?.endsWith('/entryTypes/semantic-model'));
-  if (anchors.length > 1) {
-    const ids = anchors.map(a => entryIdOf(a.entry.name)).sort();
-    throw new Error(
-        `entry group ${destination} holds ${anchors.length} semantic models (${
-            ids.join(
-                ', ')}); expected exactly one. Remove the extra anchor(s) ` +
-        `from the catalog and pull again.`);
+  if (!opts.v2Aspects) {
+    checkOneModel(destination, anchors.map(a => entryIdOf(a.entry.name)));
   }
 
   // Hydrate every semantic entry. A failed fetch means part of the model would
@@ -102,38 +107,12 @@ export async function pullKnowledgeCatalog(
           fetchEveryAspect(cat, opts, entry, aspectTypes) :
           fetchEntry(cat, opts, entry, aspectTypes));
 
-  // Second fetch pass: with the first-generation types, the schema-join links
-  // of the relationships, which listing entries does not return. Links are
-  // listed per entity entry and deduplicated, since each comes back from both
-  // endpoints, and a failed lookup aborts the pull. With v2Aspects on, pull
-  // reads no link.
-  const entityEntries = opts.v2Aspects ? [] : hydrated.filter(
-      e => e.entryType?.endsWith('/entryTypes/semantic-entity'));
-  const linkLists =
-      await mapConcurrent(entityEntries, HYDRATE_CONCURRENCY, async entry => {
-        const res = await cat.lookupEntryLinks(opts.project, opts.location, {
-          entry: entry.name,
-          entryLinkTypes:
-              [new Namer(opts).typeName('entryLink', 'schema-join')],
-        });
-        if (res.status !== 200 || !res.result) {
-          throw new Error(
-              `failed to fetch entry links for '${entry.name}' ` +
-              `(status ${res.status}); pull aborted`);
-        }
-        return res.result;
-      });
-
-  const seenLinks = new Set<string>();
-  const entryLinks: EntryLink[] = [];
-  for (const links of linkLists) {
-    for (const link of links) {
-      const key = linkDedupKey(link);
-      if (seenLinks.has(key)) continue;
-      seenLinks.add(key);
-      entryLinks.push(link);
-    }
-  }
+  // With the first-generation types, the schema-join links of the
+  // relationships, which listing entries does not return. With v2Aspects on,
+  // pull reads no link to rebuild a model.
+  const entryLinks = await fetchSchemaJoinLinks(
+      cat, opts,
+      opts.v2Aspects ? [] : hydrated.filter(isEntityEntry));
 
   const read = modelsFromCatalogResources(
       hydrated, entryLinks, {v2Aspects: opts.v2Aspects});
@@ -147,8 +126,22 @@ export async function pullKnowledgeCatalog(
       `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
       undefined;
   if (opts.v2Aspects) {
-    if (writingReason) throw notFinished(read.models[0].name, writingReason);
+    // A model an older kcmd pushed is not in `read.models`, so the model is
+    // named from its entry, as the reader names it.
+    if (writingReason) {
+      throw notFinished(
+          anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
+          writingReason);
+    }
+    const left = new Set(
+        (read.firstGeneration ?? []).map(m => entryIdOf(m.entries[0].name)));
+    checkOneModel(
+        destination,
+        anchors.map(a => entryIdOf(a.entry.name)).filter(id => !left.has(id)));
     warnings.push(...read.warnings);
+    for (const m of read.firstGeneration ?? []) {
+      warnings.push(await firstGenerationWarning(cat, opts, m, copyIds));
+    }
     return {...read, warnings: [...new Set(warnings)]};
   }
   // A copy belongs to the group's one model, so with no model there are none.
@@ -163,12 +156,10 @@ export async function pullKnowledgeCatalog(
   // writes the model. Without it the rebuilt model is written, as for a model
   // pushed before copies were stored.
   const model = read.models[0].name;
-  // The model's own copies sit under its anchor's `.files.` prefix. A copy
-  // another model left behind is not one of them.
-  const own = `${entryIdOf(anchors[0].entry.name)}.files.`;
   const before = warnings.length;
   const copies = readFileCopies(
-      hydrated.filter(e => entryIdOf(e.name).startsWith(own)), warnings);
+      hydrated.filter(e => isOwnCopy(anchors[0].entry.name, entryIdOf(e.name))),
+      warnings);
   const skipped = warnings.slice(before);
   // Every copy one push stores carries that push's id and how many copies it
   // stored. Copies whose ids differ, or of which only some carry one, or a
@@ -224,6 +215,92 @@ function notFinished(model: string, reason: string, more = ''): Error {
   return new Error(
       `the last push of model '${model}' did not finish: ${reason}, so pull ` +
       `writes nothing. Push again, then pull.${more}`);
+}
+
+
+// Throws when `anchorIds` names more than one model: an entry group holds
+// exactly one, and more is an unexpected catalog state pull refuses to guess
+// through, so it names them to be fixed at the source.
+function checkOneModel(destination: string, anchorIds: string[]): void {
+  if (anchorIds.length <= 1) return;
+  throw new Error(
+      `entry group ${destination} holds ${anchorIds.length} semantic models (${
+          [...anchorIds].sort().join(
+              ', ')}); expected exactly one. Remove the extra anchor(s) ` +
+      `from the catalog and pull again.`);
+}
+
+function isEntityEntry(entry: Entry): boolean {
+  return entry.entryType?.endsWith('/entryTypes/semantic-entity') ?? false;
+}
+
+// The schema-join links of `entities`. Links are listed per entity entry and
+// deduplicated, since each comes back from both endpoints, and a failed
+// lookup aborts the pull.
+async function fetchSchemaJoinLinks(
+    cat: CatalogClient, opts: KcPullOptions,
+    entities: Entry[]): Promise<EntryLink[]> {
+  const linkLists =
+      await mapConcurrent(entities, HYDRATE_CONCURRENCY, async entry => {
+        const res = await cat.lookupEntryLinks(opts.project, opts.location, {
+          entry: entry.name,
+          entryLinkTypes:
+              [new Namer(opts).typeName('entryLink', 'schema-join')],
+        });
+        if (res.status !== 200 || !res.result) {
+          throw new Error(
+              `failed to fetch entry links for '${entry.name}' ` +
+              `(status ${res.status}); pull aborted`);
+        }
+        return res.result;
+      });
+
+  const seenLinks = new Set<string>();
+  const entryLinks: EntryLink[] = [];
+  for (const links of linkLists) {
+    for (const link of links) {
+      const key = linkDedupKey(link);
+      if (seenLinks.has(key)) continue;
+      seenLinks.add(key);
+      entryLinks.push(link);
+    }
+  }
+  return entryLinks;
+}
+
+// True when the file copy `copyId` belongs to the model of the entry
+// `anchor`: a model's own copies sit under its entry id's `.files.` prefix,
+// and a copy another model left behind is not one of them.
+function isOwnCopy(anchor: string, copyId: string): boolean {
+  return copyId.startsWith(`${entryIdOf(anchor)}.files.`);
+}
+
+// The aspect types a first-generation push writes that the second-generation
+// types store differently, in the order the warning names them.
+const FIRST_GEN_ASPECTS = ['semantic-model', 'semantic-entity', 'semantic-metric'];
+
+// The warning for a model an older kcmd pushed, which a pull with v2Aspects
+// on leaves out. It names the first-generation aspect types found on the
+// model's entries, `schema-join` when its entities have such links, and the
+// file copies when any of `copyIds` is the model's.
+async function firstGenerationWarning(
+    cat: CatalogClient, opts: KcPullOptions, model: FirstGenerationModel,
+    copyIds: string[]): Promise<string> {
+  const found = new Set(model.entries.flatMap(
+      e => Object.values(e.aspects ?? {})
+               .map(a => a.aspectType?.split('/aspectTypes/')[1])));
+  const links =
+      await fetchSchemaJoinLinks(cat, opts, model.entries.filter(isEntityEntry));
+  const types = [
+    ...FIRST_GEN_ASPECTS.filter(t => found.has(t)),
+    ...(links.length ? ['schema-join'] : []),
+  ];
+  const anchor = model.entries[0].name;
+  const copies = copyIds.some(id => isOwnCopy(anchor, id)) ? '; file copies' : '';
+  return `model '${model.name}' in entry group '${opts.entryGroup}' was ` +
+      `pushed by an older kcmd (first-generation aspects: ${types.join(', ')}${
+             copies}). Pull wrote nothing for it; push it again with the ` +
+      `current kcmd`;
 }
 
 

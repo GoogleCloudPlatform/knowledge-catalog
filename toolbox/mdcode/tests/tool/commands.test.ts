@@ -26,6 +26,7 @@ import {kcV2Aspects} from '../../src/libts/semantic/validate';
 import {profiles, pull, push, skillsGenerate} from '../../src/tool/commands';
 import {entryDenied} from '../libts/gcp/location_responses';
 import {passGraphChecks, passSourceCheck} from '../libts/mocks';
+import {FIRST_GEN_MODEL_FILE, FIRST_GEN_OPTS, firstGenEntries, firstGenLinks} from '../libts/semantic/fixtures/first_gen_entries';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 
@@ -1806,6 +1807,67 @@ describe('pull with stored file copies', () => {
          expect(await pull()).toBe(0);
          expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
              .not.toContain('refund');
+       });
+
+  test('with KC_V2_ASPECTS on, a pull of an entry group only an older kcmd ' +
+           'pushed exits 0, writes no model, and names what it left out',
+       async () => {
+         process.env.KC_V2_ASPECTS = '1';
+         const {project, location, entryGroup} = FIRST_GEN_OPTS;
+         fs.writeFileSync(
+             'catalog.yaml',
+             `scope: semantic-model.${project}.${location}.${entryGroup}\n`);
+         const {entries} = fakeCatalog();
+         for (const e of firstGenEntries()) entries.set(e.name, e);
+         // Dataplex returns the captured link from each of its entities.
+         spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+             .mockResolvedValue({status: 200, result: firstGenLinks()});
+         const logSpy = console.log as Mock<any>;
+         const warnSpy = console.warn as Mock<any>;
+
+         expect(await pull()).toBe(0);
+         expect(messages(warnSpy)).toBe(
+             `Warning: model 'shop' in entry group '${entryGroup}' was pushed ` +
+             `by an older kcmd (first-generation aspects: semantic-model, ` +
+             `semantic-entity, semantic-metric, schema-join; file copies). ` +
+             `Pull wrote nothing for it; push it again with the current kcmd`);
+         expect(messages(logSpy)).toContain('Wrote nothing.');
+         expect(fs.existsSync(path.join('catalog', 'EntryGroups', entryGroup)))
+             .toBe(false);
+       });
+
+  test('with KC_V2_ASPECTS on, the local files of a model the pull left out ' +
+           'are kept, even under --force-remove',
+       async () => {
+         process.env.KC_V2_ASPECTS = '1';
+         writeRoundTripWorkspace();
+         const shop = new Map([
+           ['shop.yaml', FIRST_GEN_MODEL_FILE],
+           ['shop.overview.md', 'The shop.\n'],
+           ['shop/entities/orders.overview.md', 'An order.\n'],
+         ]);
+         for (const [name, text] of shop) {
+           fs.mkdirSync(path.dirname(local(name)), {recursive: true});
+           fs.writeFileSync(local(name), text);
+         }
+         const warnSpy = console.warn as Mock<any>;
+         spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue({
+           models: [{...COMMERCE, entities: [{
+             name: 'Customer', dataSource: '', keys: [], fields: [{name: 'id'}],
+           }]}],
+           warnings: [],
+           secondGeneration: true,
+           firstGeneration: [{name: 'shop', entries: []}],
+         });
+
+         for (const forceRemove of [false, true]) {
+           expect(await pull({forceRemove})).toBe(0);
+           for (const [name, text] of shop) {
+             expect(fs.readFileSync(local(name), 'utf8')).toBe(text);
+           }
+         }
+         expect(console.error).not.toHaveBeenCalled();
+         expect(messages(warnSpy)).not.toContain('shop');
        });
 });
 
