@@ -102,8 +102,8 @@ scenarios('push checks every source before it writes', [
     flags: {deployment: false},
     services: {getTable: IN_EU},
     code: 1,
-    errors: [has(`profile 'x' of model 'commerce' binds BigQuery and BigLake ` +
-                 `tables that share no location: US ('Customer'), EU ('Order').`)],
+    errors: [has(`profile 'x' of model 'commerce' binds tables that share no ` +
+                 `BigQuery location: US ('Customer'), EU ('Order').`)],
     nothingWritten: true,
     then: [{flags: {deployment: false, skipSourceCheck: true}, code: 0,
             events: ['preflight', 'apply']}],

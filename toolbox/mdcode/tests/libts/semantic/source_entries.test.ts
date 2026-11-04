@@ -317,8 +317,8 @@ describe('sourceEntryErrors', () => {
 
   // The message for profile `name`, whose tables can be queried at `locations`.
   const spans = (name: string, locations: string) =>
-      `profile '${name}' of model 'commerce' binds BigQuery and BigLake tables ` +
-      `that share no location: ${locations}. BigQuery runs each query in one ` +
+      `profile '${name}' of model 'commerce' binds tables that share no ` +
+      `BigQuery location: ${locations}. BigQuery runs each query in one ` +
       `location, so no query can join them. Bind them to tables that share a ` +
       `location, or pass --skip-source-check.`;
   // Every table below has its entry.
@@ -350,6 +350,8 @@ describe('sourceEntryErrors', () => {
     ['a US BigLake catalog with replicas in us-central1 and us-east1, with a US dataset',
      [BIGLAKE_GCS_US, BIGQUERY], [],
      [spans('default', "us-central1 or us-east1 ('orders'), US ('customers')")]],
+    // The table writes `US` and the federated catalog's replica `US`.
+    ['a US dataset and a federated US catalog', [BIGQUERY, BIGLAKE_US], [], []],
     ['a table whose location read failed, which only its own message names', [BQ_CENTRAL, BQ_EU], [],
      [missing(BQ_EU, 'a table', `reading table '${P}.eu_ds.customers'`, 'customers')],
      {[`getTable ${P} eu_ds customers`]: NOT_FOUND}],

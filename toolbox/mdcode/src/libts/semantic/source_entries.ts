@@ -142,8 +142,8 @@ export async function sourceEntryErrors(
         ({regions, entities}) => `${regions.map(shown).join(' or ')} (${
             entities.map(e => `'${e}'`).join(', ')})`);
     errors.push(
-        `profile '${profile}' of model '${model.name}' binds BigQuery and ` +
-        `BigLake tables that share no location: ${listed.join(', ')}. ` +
+        `profile '${profile}' of model '${model.name}' binds tables that ` +
+        `share no BigQuery location: ${listed.join(', ')}. ` +
         `BigQuery runs each query in one location, so no query can join ` +
         `them. Bind them to tables that share a location, or pass ` +
         `--skip-source-check.`);
