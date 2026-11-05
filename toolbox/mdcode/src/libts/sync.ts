@@ -577,6 +577,8 @@ export class CatalogSync {
       const requested = [...aspectTypes.keys()];
       const system = new Set(this._snapshot.manifest.source.systemAspects);
       const leftOut = new Map<string, number>();
+      let wouldCreate = 0;
+      let wouldUpdate = 0;
       for (const entry of entries) {
         // TODO: Handle local modification conflicts.
         // TODO: Handle config changes or service deletions that require removing local entries.
@@ -594,7 +596,15 @@ export class CatalogSync {
         // lookupEntry sets every returned aspect's type.
         const stored = new Set(Object.values(res.result.aspects ?? {})
                                    .map(a => gcp._nameToTypeRef(a.aspectType!)));
-        await this._snapshot._storeEntry(res.result);
+        if (options?.dryRun) {
+          // Reconstruct and report only; never touch the local snapshot.
+          const { localName, exists } = this._snapshot._previewStoreEntry(res.result);
+          console.log(`would ${exists ? 'update' : 'create'} ${localName}`);
+          if (exists) wouldUpdate++;
+          else wouldCreate++;
+        } else {
+          await this._snapshot._storeEntry(res.result);
+        }
 
         const onEntry = await this._catalog.lookupEntryAspectTypes(
             nameParts[1], nameParts[3], entry.name);
@@ -609,6 +619,11 @@ export class CatalogSync {
             `Warning: pull left out aspect type '${type}' on ${count} ` +
             `${count === 1 ? 'entry' : 'entries'}; list it under ` +
             `snapshot.aspects in catalog.yaml to pull it.`);
+      }
+      if (options?.dryRun) {
+        console.log(
+            `Dry run: would write ${wouldCreate} new and ${wouldUpdate} updated ` +
+            `entr${wouldCreate + wouldUpdate === 1 ? 'y' : 'ies'}; no files written (--dry-run).`);
       }
       return { success: true };
     }

@@ -319,11 +319,16 @@ export async function pull(options: PullOptions = {}): Promise<number> {
   const catalog = new dataplex.CatalogClient(ctx);
   const sync = new kcmd.CatalogSync(catalog, snapshot);
 
-  console.log('Pulling catalog entries...');
-  const result = await sync.pull();
+  console.log(
+      options.dryRun ? 'Reconstructing catalog entries (dry run)...' :
+                       'Pulling catalog entries...');
+  const result = await sync.pull({
+    dryRun: options.dryRun,
+    forceRemove: options.forceRemove,
+  });
 
   if (result.success) {
-    console.log('Successfully updated local snapshot.');
+    if (!options.dryRun) console.log('Successfully updated local snapshot.');
     return 0;
   } else {
     console.error('Error pulling catalog entries:', result.details);

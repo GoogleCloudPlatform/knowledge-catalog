@@ -48,7 +48,7 @@ cli.command('init', 'Initialize a new catalog snapshot')
 cli.command('pull', 'Pull catalog entries')
     .option(
         '--dry-run',
-        'Reconstruct and report only; do not write or delete files (semantic-model and OKF layouts)')
+        'Reconstruct and report only; do not write or delete files')
     .option(
         '--force-remove',
         'Delete a differently-named local model or stale local OKF concept file not in Knowledge Catalog')

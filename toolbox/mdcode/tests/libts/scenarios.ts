@@ -101,9 +101,11 @@ function runScenario(scenario: any) {
       for (const actionStep of actions) {
         const { action, ...params } = actionStep;
         switch (action) {
-          case 'pull':
-            await sync.pull();
+          case 'pull': {
+            const res = await sync.pull(params.options);
+            expect(res.success).toBe(true);
             break;
+          }
           case 'push':
             await sync.push(params.options);
             break;

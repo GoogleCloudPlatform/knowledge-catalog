@@ -243,6 +243,14 @@ export class CatalogSnapshot {
     await this._layout.saveEntry(localName, local);
   }
 
+  // Reports what _storeEntry would do with a Dataplex entry, without writing:
+  // the local name it maps to and whether a local copy already exists. Used by
+  // `pull --dry-run`.
+  _previewStoreEntry(entry: dataplex.Entry): { localName: string; exists: boolean } {
+    const localName = this.manifest.source.localName(entry);
+    return { localName, exists: this._layout.entryExists(localName) };
+  }
+
   // Fetches a Dataplex entry from its local metadata representation.
   // This is only meant to be used within the syncing process (as part of push operations).
   async _fetchEntry(name: string): Promise<dataplex.Entry | undefined> {
