@@ -595,7 +595,15 @@
           "$ref": "#/$defs/DeploymentTarget"
         },
         "profile": {
-          "$ref": "#/$defs/ModelName"
+          "anyOf": [
+            {
+              "const": "default"
+            },
+            {
+              "$ref": "#/$defs/ProfileName"
+            }
+          ],
+          "description": "The profile whose bindings the deployment uses: 'default', the model file's own bindings, or a profile the model declares."
         }
       }
     },
@@ -958,6 +966,19 @@
         }
       ]
     },
+    "ProfileName": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/ModelName"
+        },
+        {
+          "not": {
+            "pattern": "^[Dd][Ee][Ff][Aa][Uu][Ll][Tt]$"
+          }
+        }
+      ],
+      "description": "A profile name. 'default', in any casing, is reserved."
+    },
     "FieldName": {
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,299}$",
@@ -971,17 +992,7 @@
       "additionalProperties": false,
       "properties": {
         "name": {
-          "allOf": [
-            {
-              "$ref": "#/$defs/ModelName"
-            },
-            {
-              "not": {
-                "pattern": "^[Dd][Ee][Ff][Aa][Uu][Ll][Tt]$"
-              }
-            }
-          ],
-          "description": "A profile name. 'default', in any casing, is reserved."
+          "$ref": "#/$defs/ProfileName"
         },
         "entities": {
           "type": "array",

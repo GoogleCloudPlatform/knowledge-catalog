@@ -464,9 +464,9 @@ const MODEL_CASES: Case[] = [
       }), valid],
     ];
   }),
-  ['a deployment profile with a space', base(m => {
-    m.deployments = [{ name: 'prod', target: TARGET.bigquery, profile: 'prod us' }];
-  }), false],
+  ...['prod us', 'Default', 'DEFAULT'].map((profile): Case => [
+    `a deployment profile '${profile}'`,
+    base(m => { m.deployments = [{ name: 'prod', target: TARGET.bigquery, profile }]; }), false]),
   // Rules about what a metric's SQL reads, which no JSON Schema can see.
   ['a metric reading a field with no expression', base(m => {
     m.entities[0].fields.push({ name: 'amount' });
