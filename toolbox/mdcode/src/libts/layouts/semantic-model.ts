@@ -521,7 +521,8 @@ export function parseOverviewSidecar(
       new Error(`Overview sidecar '${file}': ${problem}`);
   let split: {metadata?: any; body: string};
   try {
-    split = splitFrontmatter(text);
+    // Some editors save a byte order mark before the first line.
+    split = splitFrontmatter(text.replace(/^\uFEFF/, ''));
   } catch (err: any) {
     throw fail(`its frontmatter does not parse: ${err?.message ?? err}`);
   }
