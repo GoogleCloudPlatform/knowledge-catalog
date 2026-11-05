@@ -228,7 +228,13 @@ describe('init --semantic-model: entry-group provisioning', () => {
     // What an OLDER kcmd sees against a project a newer one provisioned: its
     // template lacks the newer fields, so the patch is a field removal.
     ['a refused template change', async () => err(400, REFUSED),
-     id => expect.stringContaining(`aspect-types delete ${id} --project=proj`)],
+     id => expect.stringContaining(
+         'To move it forward, delete the entry type and then the aspect ' +
+         'type, and re-run this command: gcloud dataplex entry-types delete ' +
+         `${id} --project=proj --location=global && gcloud dataplex ` +
+         `aspect-types delete ${id} --project=proj --location=global. ` +
+         'Deleting the entry type also deletes every entry of that type in ' +
+         'the project, so push the models that had them again afterwards.')],
     ['a 400 for another reason', async () => err(400, 'denied'),
      id => retryWarning(id, 'denied')],
     ['a 429', async () => err(429, 'Quota exceeded'),

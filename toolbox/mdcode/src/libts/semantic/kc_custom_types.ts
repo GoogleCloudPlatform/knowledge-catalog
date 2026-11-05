@@ -864,8 +864,8 @@ async function provisionOne(
                /Backwards incompatible template change/i.test(reason)) {
       // Dataplex refuses a backwards-incompatible template change with this
       // message, and the same template gets the same answer on every run.
-      // kcmd never deletes a type, so the warning names the gcloud command
-      // that does.
+      // kcmd never deletes a type, so the warning names the gcloud commands
+      // that do.
       const resource = customAspectTypeName(type.id, dest);
       warnings.push(
           `left the existing ${aspectLabel} unchanged (${reason}). It is ` +
@@ -873,11 +873,13 @@ async function provisionOne(
           `this build states -- a template field that was removed or ` +
           `renumbered is a backwards-incompatible change and is refused. A ` +
           `push will fail wherever the two disagree. To move it forward, ` +
-          `delete it and re-run this command: gcloud dataplex aspect-types ` +
-          `delete ${type.id} --project=${home.project} ` +
-          `--location=${home.location}. Deleting takes the aspects of every ` +
-          `entry already published with this type, so re-push those models ` +
-          `afterwards.`);
+          `delete the entry type and then the aspect type, and re-run this ` +
+          `command: gcloud dataplex entry-types delete ${type.id} ` +
+          `--project=${home.project} --location=${home.location} && gcloud ` +
+          `dataplex aspect-types delete ${type.id} --project=${home.project} ` +
+          `--location=${home.location}. Deleting the entry type also deletes ` +
+          `every entry of that type in the project, so push the models that ` +
+          `had them again afterwards.`);
     } else if (reason) {
       // Any other failure, such as a 429 from the write quota, a 5xx, a failed
       // operation or a network error, can pass on a later run.
