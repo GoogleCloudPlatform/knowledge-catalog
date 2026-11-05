@@ -257,8 +257,8 @@ function rename(m: any, kind: Part|'deployment', name: string): void {
 }
 
 // `loaderBug` says why kcmd disagrees with the schema on this case: a bug,
-// whose entry is removed once the loader is fixed, or a rule no JSON Schema
-// can state. The test then expects the disagreement.
+// whose entry is removed once the loader is fixed, or a rule the schema does
+// not state. The test then expects the disagreement.
 type Case = [label: string, doc: any, valid: boolean, loaderBug?: string];
 
 // The loader accepts an empty name or description here; the schema does not.
@@ -418,6 +418,20 @@ const MODEL_CASES: Case[] = [
         { parameters: [{ name: 'id', type: 'Integer', required: true }] } : {}),
     }];
   }), valid]),
+  // Push refuses a sql statement that is not a single write. Actions are out
+  // of preview scope, so the schema gains no rule for it.
+  ...([
+    ['two statements', 'DELETE FROM orders WHERE id = @id; DELETE FROM orders WHERE id = @id'],
+    ['only a comment', '-- DELETE FROM orders WHERE id = @id'],
+    ['a query', 'SELECT 1'],
+  ] as const).map(([what, statement]): Case => [`a sql executor statement that is ${what}`,
+    base(m => {
+      m.actions = [{
+        name: 'cancel_order', description: 'Cancels an order.',
+        executor: { sql: { statements: [statement] } },
+        parameters: [{ name: 'id', type: 'Integer', required: true }],
+      }];
+    }), true, 'actions are out of preview scope']),
   // A constraint states a non-blank judgment and its on_violation.
   ...([
     ['no judgment', { name: 'c', on_violation: 'warn' }],
