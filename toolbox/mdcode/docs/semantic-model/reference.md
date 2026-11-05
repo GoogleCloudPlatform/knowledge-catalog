@@ -37,6 +37,7 @@ Knowledge Catalog.
 |------|--------|
 | `--deployment <names>` | Deploy only these entries of the model's `deployments:` list, comma-separated or repeated, in the order given. Push still publishes the model to Knowledge Catalog first. |
 | `--no-deployment` | Publish the model to Knowledge Catalog and deploy no graph, after the validation phase below. Push refuses it with `--deployment`, in either order. |
+| `--skip-source-check` | Skip the source check, which looks up the Knowledge Catalog entry of each BigQuery, BigLake, Spanner and AlloyDB table a source names and checks that each profile's BigQuery and BigLake tables share a location. See [Validation](#validation). Push prints a line saying it skips the check. It still reads the dialect of each Cloud SQL, Spanner and third-party table. |
 | `--validate-only` | Run every validation check and report pass/fail, but write nothing. |
 | `--print` | Print each destination's generated artifact (BigQuery or Spanner Graph SQL DDL, Knowledge Catalog entry plan). Combine with `--validate-only` to preview without deploying. |
 | `--force-remove` | Delete models in the entry group that this push no longer includes (see [Updating and removing models](README.md#updating-and-removing-models)). |
@@ -905,6 +906,21 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   deployment this way, whether or not `--deployment` names it, and under
   `--no-deployment` too. It reads each entity's `source` from the profile the
   deployment names, or from the model file when it names none. *(static)*
+* **Every source names a table Knowledge Catalog knows about.** Every push
+  runs this source check before it writes anything, under `--no-deployment`
+  and `--validate-only` too. It looks up the Knowledge Catalog entry of each
+  BigQuery, BigLake, Spanner and AlloyDB table a source names. It checks the
+  model file's own bindings and every profile, whether or not a deployment
+  uses them. A table with no entry stops the push. So does a table you can
+  query but whose entry you may not read, and a table whose location push
+  cannot read. The check also refuses a profile whose BigQuery and BigLake
+  tables share no location, since BigQuery runs each query in one location
+  ([Sources](profiles.md#sources)). The model file's own bindings count as a
+  profile here. Push reads the entry of a Cloud SQL or third-party table for
+  its dialect instead, and a missing entry stops the push even with
+  `--skip-source-check`. That flag skips the source check and its location
+  rule. `kcmd profiles` does not run the source check.
+  *(live — needs the reads listed under [Permissions](#permissions))*
 * **Every entity's source table is reachable.** For a **BigQuery-targeting**
   model, each `source` is probed with a dry-run query, so BigQuery resolves it
   exactly as the deploy will — a BigQuery table or a BigLake table (e.g. an
@@ -974,11 +990,10 @@ model is present), on the database the target names:
   plans each statement on a session, and a `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
-* `spanner.instances.get` on the instance, to find the region of each Spanner
-  table's Knowledge Catalog entry in the source check and to read the
-  instance's edition before any write. `spanner.databases.get` lets push check
-  that the database exists. Both come with `roles/spanner.databaseUser`
-  granted on the instance or its project.
+* `spanner.instances.get` on the instance, to read the instance's edition
+  before any write. `spanner.databases.get` lets push check that the database
+  exists. Both come with `roles/spanner.databaseUser` granted on the instance
+  or its project.
 
 **Spanner sources** — for a model whose `source` values name Spanner tables,
 whether or not it deploys to Spanner:
@@ -986,6 +1001,22 @@ whether or not it deploys to Spanner:
 * `spanner.databases.get` on each database those tables are in, to read the
   database's SQL dialect. `kcmd profiles` needs it too, and `kcmd import` uses
   it when it can.
+
+**Source check** — for every push, on the tables the sources name. Push makes
+none of these reads with `--skip-source-check`:
+
+* `bigquery.tables.get` on each BigQuery table, to read the table's location
+* `biglake.catalogs.get` on the catalog of each BigLake table, to read its
+  replica regions, whether push reads it through the Iceberg REST catalog API
+  or, for a Hive catalog, the Hive API
+* `spanner.instances.get` on the instance of each Spanner table, to read the
+  instance's config. `spanner.instanceConfigs.get` on the project only saves
+  lookups. With it, push reads the region of a multi-region or custom config's
+  default leader and looks the entry up there. Without it, push looks the
+  entry up in each region the instance has replicas in.
+* read access to each table's Knowledge Catalog entry. Dataplex checks the
+  caller's permission on the table in its own system, such as
+  `bigquery.tables.get` for a BigQuery table.
 
 **Knowledge Catalog / Dataplex** — for the Knowledge Catalog push (every push
 publishes to Knowledge Catalog):

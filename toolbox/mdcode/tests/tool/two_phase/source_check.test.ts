@@ -79,6 +79,21 @@ scenarios('push checks every source before it writes', [
     ],
   },
   {
+    name: 'a missing table in the model file\'s own bindings stops a catalog-only push and a --validate-only push before the preflight, as profile \'default\'',
+    flags: {deployment: false},
+    services: {lookupEntry: missing(bqTable('customer'))},
+    code: 1,
+    errors: [notFound('Customer', 'default', bqTable('customer'))],
+    called: {preflight: 0},
+    nothingWritten: true,
+    then: [{
+      flags: {validateOnly: true},
+      code: 1,
+      errors: [notFound('Customer', 'default', bqTable('customer'))],
+      called: {preflight: 0},
+    }],
+  },
+  {
     name: 'a BigQuery table is found in its location, not the push\'s, and push stops when its table does not exist',
     entities: [{...CUSTOMER, source: bqTable('customer', 'eu')}],
     flags: {deployment: false},
