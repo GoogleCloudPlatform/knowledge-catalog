@@ -1649,10 +1649,11 @@ function metricNoSqlError(
 //
 // deploymentPlan also runs it on the unpruned model before `pruneUnavailable`
 // drops unbound fields and metrics on a graph push. When given,
-// `flaggedMetrics` collects the name of each metric it reports.
+// `flaggedMetrics` collects the name of each metric it reports, and
+// `asDialect` is the dialect an ANSI_SQL text is read in.
 export function validateExpressionReferences(
     models: LoadedModel[], fieldsPruned = false, warnings: string[] = [],
-    flaggedMetrics?: Set<string>): string[] {
+    flaggedMetrics?: Set<string>, asDialect?: string): string[] {
   const errors: string[] = [];
   for (const {document, model} of models) {
     errors.push(...fieldNoSqlErrors(model, document));
@@ -1674,7 +1675,7 @@ export function validateExpressionReferences(
                        .model.entities) ??
          model.entities ?? [])
             .map(e => [e.name, e]));
-    const impliedDialect = sourcesDialect(model);
+    const impliedDialect = asDialect ?? sourcesDialect(model);
     const addUnreadableWarning =
         (what: string, total: number, unread: string[]) => {
           // A caller that looked up no table's dialect reads no ANSI_SQL
@@ -1863,6 +1864,21 @@ export function validateExpressionReferences(
       }
       if (errors.length > before) flaggedMetrics?.add(metric.name);
     }
+  }
+  // With no dialect read, a rule that reads SQL reports what it reports in
+  // every dialect the model's tables can have.
+  for (const m of asDialect ? [] : models) {
+    if (sourcesDialect(m.model) !== null) continue;
+    const possible = (m.model.entities ?? []).filter(e => !e.abstract).reduce(
+        (all: string[]|undefined, e) => {
+          const can = tableDialects(e, true)?.dialects ?? [];
+          return all ? all.filter(d => can.includes(d)) : can;
+        },
+        undefined) ?? [];
+    const runs = possible.map(
+        d => validateExpressionReferences([m], fieldsPruned, [], undefined, d));
+    errors.push(...(runs[0] ?? []).filter(
+        e => !errors.includes(e) && runs.every(r => r.includes(e))));
   }
   return errors;
 }

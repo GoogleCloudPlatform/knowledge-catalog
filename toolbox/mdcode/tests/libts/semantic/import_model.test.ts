@@ -651,11 +651,13 @@ describe('profile checks', () => {
       "SQLSERVER or ANSI_SQL, and the model file binds entity 'orders' to a Cloud SQL source."],
      []],
     ["reports once a deployment's error that both its checks give",
-     model(AMOUNT('amount') + `    deployments: [{name: g, target: ${BQ_PREFIX}/propertyGraphs/g, profile: pg}]\n` +
-           '    metrics:\n      - {name: total, entity: orders, expression: SUM(amount)}\n', MYSQL('orders')),
-     pg(KEYED + AMOUNT('amount').slice(4)),
+     model(AMOUNT('amount') + `    deployments: [{name: g, target: ${ALLOYDB_DB}, profile: pg}]\n` +
+           `    metrics:\n      - {name: total, entity: orders, expression: 'SUM("amount")'}\n`, MYSQL('orders')),
+     pg(KEYED + AMOUNT('amount').slice(4)).map(f => ({...f, content: f.content.replace(
+         /source: .*/, `source: ${ALLOYDB_DB}/schemas/public/tables/orders`)})),
      ["metric 'total' in model 'retail' (sales, deployment 'g'): 'amount' must be written as " +
-      "'entity.field'; a metric reads fields, never columns."], []],
+      "'entity.field'; a metric reads fields, never columns."],
+     [`metric 'total': ${READS('MySQL', 'MYSQL', true, '"amount"')}`]],
     ['reports a field that reads the column of the entity it is inherited from',
      model(`      - name: items\n        extends: [orders]\n        source: ${BQ_PREFIX}/tables/items\n        primary_key: [order_id]\n`), [],
      ["entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
@@ -742,6 +744,14 @@ describe('profile checks', () => {
         "entity 'items' in model 'retail' (sales): field 'order_id' is inherited from 'orders', " +
             "whose expression reads column 'order_id' of that entity's table; restate it with an " +
             "expression for this entity's table."]});
+      const refs = await importSemanticModelYaml(
+          model(AMOUNT('orders.nope') + TOTAL.replace('orders.amount', 'amount'), table),
+          {...strict, flavor: 'google'});
+      expect({table, errors: refs.errors}).toEqual({table, errors: [
+        "field 'orders.amount' in model 'retail' (sales) references 'orders.nope', which is not " +
+            "a declared or inherited field of 'orders'.",
+        "metric 'total' in model 'retail' (sales): 'amount' must be written as 'entity.field'; " +
+            'a metric reads fields, never columns.']});
     }
   });
 
