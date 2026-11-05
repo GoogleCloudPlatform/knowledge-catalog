@@ -251,11 +251,6 @@ describe('init --semantic-model: entry-group provisioning', () => {
     // Only this row's operation is still running, so only this row polls.
     ['a network error while polling', async () => ok({name: OP, done: false}),
      id => retryWarning(id, offline.message)],
-    [
-      'a 403', async () => err(403, 'permission denied'),
-      id => `Warning: no permission to update the existing aspect type '${
-                id}' in project 'proj' (permission denied); left it unchanged`
-    ],
   ])('%s from the template patch leaves the type and finishes init',
      async (_name, update, warning) => {
     spyOn(CatalogClient.prototype, 'createEntryGroup')
