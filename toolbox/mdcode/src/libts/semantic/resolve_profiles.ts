@@ -1559,13 +1559,18 @@ export function validateProfileCompleteness(
     }
     const lookedUp = profiledEntity.sourceDialect;
     stated.push({source: pe.source, lookedUp});
-    // One query reaches every database of a SQL Server instance, so a Cloud SQL
-    // table whose engine was not looked up is keyed by its instance too. A
-    // third-party table is in the database its entry's fullyQualifiedName
-    // names.
-    const table = (lookedUp === 'SQLSERVER' || lookedUp === undefined) &&
-        cloudSqlTableOf(pe.source);
-    const key = table ? table.resourceName.split('/databases/')[0] :
+    // One query reaches every database of a SQL Server instance, so a SQL
+    // Server table is keyed by its instance. A third-party table is in the
+    // database its entry's fullyQualifiedName names. A Cloud SQL table in a
+    // schema may be either engine's, so for it and for a third-party table
+    // the entry decides the database. When no lookup read the entry, the rule
+    // leaves the table out.
+    const table = cloudSqlTableOf(pe.source);
+    if (lookedUp === undefined && (table?.inSchema || db === 'thirdparty')) {
+      continue;
+    }
+    const key = table && lookedUp === 'SQLSERVER' ?
+        table.resourceName.split('/databases/')[0] :
         db !== 'thirdparty' ? db :
         opts.sourceDatabases?.get(pe.source.trim()) ?? `thirdparty/${lookedUp}`;
     if (!databases.has(key)) databases.set(key, e.name);

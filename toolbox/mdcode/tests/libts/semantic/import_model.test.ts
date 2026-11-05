@@ -604,7 +604,9 @@ describe('profile checks', () => {
   // A Cloud SQL for MySQL table, whose dialect only a lookup gives.
   const MYSQL = (t: string) =>
       `cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/i/databases/app/tables/${t}`;
-  // [label, model, profile files, errors, warnings]
+  // [label, model, profile files, errors, warnings, the lookup, if any]. The
+  // lookup is a rest parameter, since bun passes a done callback to a named
+  // parameter that a row leaves out.
   test.each([
     ['reads no ANSI_SQL text of a profile whose tables only a lookup gives the dialect of',
      model(`          - {name: x}\n          - {name: y, expression: '"orders"."x"'}\n`),
@@ -669,12 +671,27 @@ describe('profile checks', () => {
      UNBOUND, [], [],
      ["model 'retail' (sales) is non-executable: the model file leaves entity 'orders' without " +
       'a source, and the model declares no named profile. It cannot be queried until it is bound.']],
-  ])('%s', async (_, input, profileFiles, errors, warnings) => {
-    const res = await importSemanticModelYaml(
-        input, {...strict, flavor: 'google', profileFiles});
-    expect(res.errors).toEqual(errors);
-    expect(res.warnings).toEqual(warnings);
-  });
+    ["warns about a profile's table it cannot read, and leaves it out of the one-database rule",
+     model(`      - name: customers\n        source: ${BQ_PREFIX}/tables/customers\n` +
+           '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n'),
+     [{fileName: 'sales.profile.pg.yaml', content: 'name: pg\nentities:\n' +
+       [['orders', 'order_id'], ['customers', 'id']].map(([e, key]) =>
+           `  - name: ${e}\n    source: ${CLOUDSQL_PREFIX}/tables/${e}\n    primary_key: [${key}]\n` +
+           `    fields:\n      - {name: ${key}, expression: ${key}}\n`).join('')}],
+     [], [expect.stringContaining(
+         `source '${CLOUDSQL_PREFIX}/tables/customers': kcmd reads a Cloud SQL table's dialect`)],
+     // The entry of orders names PostgreSQL, and the entry of customers answers 403.
+     (texts: string[]) => sourceDialects(texts, {
+       lookupEntry: async (_p, _l, name) => name.endsWith('/customers') ? entryDenied(name) :
+           {status: 200, result: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-postgresql-table'}},
+     })],
+  ] as Array<[string, string, Array<{fileName: string; content: string}>, string[], string[], any?]>)(
+      '%s', async (_, input, profileFiles, errors, warnings, ...[readDialects]) => {
+        const res = await importSemanticModelYaml(
+            input, {...strict, flavor: 'google', profileFiles, readDialects});
+        expect(res.errors).toEqual(errors);
+        expect(res.warnings).toEqual(warnings);
+      });
 
   // Push's lookup, reading each Cloud SQL or third-party entry as `entry` and
   // each Spanner database's dialect as `spanner`. Without them, each read gets
