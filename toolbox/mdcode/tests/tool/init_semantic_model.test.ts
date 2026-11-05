@@ -265,7 +265,8 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(await init({semanticModel: 'proj.us.sales-group'})).toBe(0);
     expect(fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
         .toBe(true);
-    // The types do not exist, so init says what that stops.
+    // The types do not exist, so init warns that models that need them cannot
+    // be pushed.
     expect(warned).toEqual([
       `Warning: no permission to create aspect type '${CUSTOM_TYPES[0].id}' ` +
       `in project 'proj' (permission denied); models that need it cannot be ` +
@@ -274,8 +275,9 @@ describe('init --semantic-model: entry-group provisioning', () => {
   });
 
   // A teammate in a project an administrator set up may publish entries but
-  // not create or update types. Dataplex may answer the create of a type that
-  // exists with 409 or with 403. The types exist, so push has what it needs.
+  // not create or update types, so each create answers 403. A caller who may
+  // create types but not update them gets 409 instead. The types exist, so
+  // push has what it needs.
   test.each([409, 403])(
       'init finishes when the types exist, their create answers %d and ' +
           'updating them is refused',

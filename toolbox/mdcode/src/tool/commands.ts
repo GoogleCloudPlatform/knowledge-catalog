@@ -24,7 +24,7 @@ import * as deploySpannerLeg from '../libts/semantic/deploy_spanner';
 import {googleDeploymentTargets, parseDeploymentSelection, ResolvedDeployment, unnamedDeployments} from '../libts/semantic/deployment_target';
 import {importSemanticModelYaml} from '../libts/semantic/import_model';
 import {SemanticModel} from '../libts/semantic/ir';
-import {provisionCustomTypes} from '../libts/semantic/kc_custom_types';
+import {existsAfterCreate, provisionCustomTypes} from '../libts/semantic/kc_custom_types';
 import {LoadedModel, loadSemanticModels, OSSIE_VERSION, plural, SemanticModelError, writtenSource} from '../libts/semantic/loader';
 import {SerializedFile, serializeModel, serializeModelFiles} from '../libts/semantic/osi_converter';
 import {storeMessage} from '../libts/semantic/parameters';
@@ -201,13 +201,10 @@ export async function init(options: InitOptions): Promise<number> {
     const catalog = new dataplex.CatalogClient(ctx);
     const res = await catalog.createEntryGroup(
         source.project, source.location, source.entryGroup);
-    // A caller without create permission may be refused the create of an
-    // entry group that exists. A lookup tells the two apart.
-    const exists = res.status === 409 ||
-        (res.status === 403 &&
-         (await catalog.getEntryGroup(
-              source.project, source.location, source.entryGroup))
-                 .status === 200);
+    const exists = await existsAfterCreate(
+        res.status,
+        () => catalog.getEntryGroup(
+            source.project, source.location, source.entryGroup));
     if (res.status !== 200 && !exists) {
       console.error(
           `Error: failed to create entry group '${source.name}': ` +

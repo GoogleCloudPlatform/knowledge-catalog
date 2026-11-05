@@ -707,6 +707,14 @@ export async function provisionCustomTypes(
   return warnings.length ? {warnings} : {};
 }
 
+// Whether a create's answer `status` means the resource exists: a 409, or a
+// 403 for a resource that `lookup` finds. Dataplex answers 403 to a caller
+// without create permission whether or not the resource exists.
+export async function existsAfterCreate(
+    status: number, lookup: () => Promise<{status: number}>): Promise<boolean> {
+  return status === 409 || (status === 403 && (await lookup()).status === 200);
+}
+
 // One custom type: its aspect type, then the entry type that requires it.
 async function provisionOne(
     cat: CatalogClient, dest: {project: string},
@@ -726,19 +734,11 @@ async function provisionOne(
     };
   };
 
-  // A caller without create permission may be refused the create of a type
-  // that already exists. A lookup tells the two apart, so a type that exists
-  // is treated as existing.
-  const refusedButExists =
-      async (status: number, lookup: () => Promise<{status: number}>) =>
-          status === 403 && (await lookup()).status === 200;
-
   const warnings: string[] = [];
   const aspectLabel = `aspect type '${type.id}'`;
   const aspect = await cat.createAspectType(
       home.project, home.location, type.id, type.aspectType);
-  if (aspect.status === 409 ||
-      await refusedButExists(
+  if (await existsAfterCreate(
           aspect.status,
           () => cat.getAspectType(home.project, home.location, type.id))) {
     const upd = await cat.updateAspectType(
@@ -805,8 +805,7 @@ async function provisionOne(
         requiredAspects: [{type: customAspectTypeName(type.id, dest)}],
       });
   const collected = warnings.length ? {warnings} : {};
-  if (entryType.status === 409 ||
-      await refusedButExists(
+  if (await existsAfterCreate(
           entryType.status,
           () => cat.getEntryType(home.project, home.location, type.id))) {
     return collected;
