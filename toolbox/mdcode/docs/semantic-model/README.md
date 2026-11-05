@@ -357,6 +357,9 @@ model's files; a group with more than one `semantic-model` anchor is an
 unexpected state, so pull stops and names the anchors rather than guess which to
 keep.
 
+For a model an older `kcmd` pushed, pull writes nothing and warns. Push that
+model again with the current `kcmd`.
+
 Pull overwrites a model that already exists locally in place. If the catalog's
 model has a **different name** than the one on disk, writing it would leave the
 entry group holding two models — so by default pull stops and reports the
@@ -374,7 +377,7 @@ their number differs from that count, or when the label names a push whose
 copies the catalog does not hold. Each of these means the last push stopped
 partway. Pull then writes and deletes nothing and asks you to push again.
 
-Every push, with or without `KC_V2_ASPECTS=1`, also sets the `kcmd-push-state`
+Every push, with or without `KC_V2_ASPECTS=0`, also sets the `kcmd-push-state`
 label of the model entry to `writing` when it writes the model entry, before the
 model's other entries, and to `finished` with its last write, after it deletes
 what the model no longer has. Pull refuses a model entry still labeled `writing`

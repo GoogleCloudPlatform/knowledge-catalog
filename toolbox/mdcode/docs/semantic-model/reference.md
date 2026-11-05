@@ -109,8 +109,8 @@ descriptions, fields, keys, metrics, relationships, inheritance, actions and
 constraints. They also cover the model file's own bindings and each profile
 import writes. For each deployment they cover its profile, bindings, metrics,
 tables and graph. A profile file beside a vanilla `<file>` and a
-`<model>.profiles/` directory beside `<file>` are checked too. With
-`KC_V2_ASPECTS=1`, the checks also make sure Knowledge Catalog can store each
+`<model>.profiles/` directory beside `<file>` are checked too. Unless
+`KC_V2_ASPECTS=0`, the checks also make sure Knowledge Catalog can store each
 aspect push writes. The deployment checks include the names a BigQuery or
 Spanner graph cannot hold and BigQuery's description and synonym limits. Import
 reports what these checks reject as an error under
