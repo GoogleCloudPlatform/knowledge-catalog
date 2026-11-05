@@ -321,9 +321,11 @@ model has no `kcmd-push-id` label and no stored copy, such as a model an older
 after the model. [Pull](README.md#pull) says when `pull` refuses the catalog
 instead.
 
-With `KC_V2_ASPECTS=1`, pull rebuilds the model file, profile files and overview
-sidecars from the metadata, and writes each metric's entity as `entity:`,
-declared or derived. See [Reference](reference.md#with-kc_v2_aspects1).
+With the second-generation types (the default), pull rebuilds the model file,
+profile files and overview sidecars from the metadata, and writes each metric's
+entity as `entity:`, declared or derived. See
+[Reference](reference.md#the-second-generation-types). A model an older `kcmd`
+pushed is left out with a warning.
 
 `pull` returns what push wrote — the **Recovered by `pull`** column above is the
 summary. Two things about *how* it comes back:

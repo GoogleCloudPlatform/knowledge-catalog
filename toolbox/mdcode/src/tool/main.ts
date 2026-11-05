@@ -61,7 +61,7 @@ cli.command('push', 'Push catalog entries')
         'Delete Knowledge Catalog models in the entry group that this push does not include (removed/renamed models); semantic-model push only')
     .option(
         '--emit-expressions',
-        'No longer supported on push; set KC_V2_ASPECTS=1 to publish expression fields')
+        'No longer supported; push publishes expression fields by default')
     .option(
         '--dry-run',
         'Run every check and show what would change, without applying anything')

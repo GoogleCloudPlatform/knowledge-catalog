@@ -124,9 +124,9 @@ beforeEach(() => {
   process.chdir(dir);
   logs = [];
   errs = [];
-  // Each test starts with KC_V2_ASPECTS off, whatever the shell sets.
+  // Each test starts with KC_V2_ASPECTS=0, whatever the shell sets.
   savedV2Aspects = process.env.KC_V2_ASPECTS;
-  delete process.env.KC_V2_ASPECTS;
+  process.env.KC_V2_ASPECTS = '0';
   // No test may reach the network.
   spyOn(globalThis, 'fetch').mockImplementation((() => {
     throw new Error('a test made a network call');
@@ -1124,7 +1124,7 @@ semantic_model:
            expect(warned.splice(0))
                .toEqual([warning, sidecar].map(w => `Warning: ${w}`));
          }
-         delete process.env.KC_V2_ASPECTS;
+         process.env.KC_V2_ASPECTS = '0';
          for (const m of [model, deployed]) {
            writeScope({'commerce.yaml': m});
            expect(await profiles()).toBe(0);

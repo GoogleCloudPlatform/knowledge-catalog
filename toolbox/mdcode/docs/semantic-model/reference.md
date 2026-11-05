@@ -77,7 +77,7 @@ the same scope you authored under. See [Pull](README.md#pull) for behavior.
 | Flag | Effect |
 |------|--------|
 | `--dry-run` | Read the catalog and report what would be written, but write or delete no files. |
-| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. With `KC_V2_ASPECTS=1`, it also deletes a local profile file or overview sidecar the pull did not write. |
+| `--force-remove` | Replace a differently-named local model with the catalog's (see [Pull](README.md#pull)); without it, a pull that would leave the entry group holding two models fails. Also deletes a local profile file the catalog has no copy of, when the catalog holds copies of the model's files. With the second-generation types (the default), it also deletes a local profile file or overview sidecar the pull did not write. |
 
 ### import
 
@@ -109,8 +109,8 @@ descriptions, fields, keys, metrics, relationships, inheritance, actions and
 constraints. They also cover the model file's own bindings and each profile
 import writes. For each deployment they cover its profile, bindings, metrics,
 tables and graph. A profile file beside a vanilla `<file>` and a
-`<model>.profiles/` directory beside `<file>` are checked too. With
-`KC_V2_ASPECTS=1`, the checks also make sure Knowledge Catalog can store each
+`<model>.profiles/` directory beside `<file>` are checked too. Unless
+`KC_V2_ASPECTS=0`, the checks also make sure Knowledge Catalog can store each
 aspect push writes. The deployment checks include the names a BigQuery or
 Spanner graph cannot hold and BigQuery's description and synonym limits. Import
 reports what these checks reject as an error under
@@ -462,8 +462,9 @@ with a warning. `abstract` is an explicit marker: a non-abstract entity with no
 `source` is treated as a binding error and fails the push, never
 silently dropped as if it were table-less. With the first-generation types, the
 Knowledge Catalog leg skips an abstract entity with a warning and publishes its
-concrete subtypes. With `KC_V2_ASPECTS=1`, every entity gets an entry, and a
-`reference` link runs from each entity to each parent it extends.
+concrete subtypes. With the second-generation types (the default), every
+entity gets an entry, and a `reference` link runs from each entity to each
+parent it extends.
 
 A supertype **may** instead be concrete — carry its own `source` and key. It then
 becomes both its own node table and a label on its subtypes. Every subtype table
@@ -617,11 +618,14 @@ copy of each model file and profile file, which pull returns. For exactly what
 the metadata stores and what is never stored, see
 [What push and pull preserve](fidelity.md#to-knowledge-catalog).
 
-### With `KC_V2_ASPECTS=1`
+### The second-generation types
 
-With `KC_V2_ASPECTS=1`, push and pull use a newer set of Knowledge Catalog
-types. Each relationship other than a many-to-many association has an entry of
-its own. Entry ids are `<model>`, `<model>/entities/<entity>`,
+Push and pull use a newer set of Knowledge Catalog types by default.
+`KC_V2_ASPECTS=0` temporarily restores the first-generation types described
+above; that path will be removed.
+
+Each relationship other than a many-to-many association has an entry of its
+own. Entry ids are `<model>`, `<model>/entities/<entity>`,
 `<model>/metrics/<metric>` and `<model>/relationships/<relationship>`.
 
 A `semantic-link` joins each ordered pair of related entities. Built-in
@@ -983,14 +987,14 @@ and each aspect type attached, so a push needs, on the destination entry group:
 * `dataplex.entryLinks.create` and `dataplex.entryLinks.delete` — the
   `schema-join` links, when the model has relationships
 * `dataplex.entryGroups.useSchemaAspect` — every entity carries the built-in
-  `schema` aspect (its fields, keys, unique keys, and labels; with
-  `KC_V2_ASPECTS=1`, the fields it declares and no keys)
+  `schema` aspect (its fields, keys, unique keys, and labels; with the
+  second-generation types, the fields it declares and no keys)
 * `dataplex.entryGroups.useGuidelinesAspect` — when the model, an entity, or a
   metric carries `ai_context.instructions`
 * `dataplex.entryGroups.useSchemaJoinAspect` and
   `dataplex.entryGroups.useSchemaJoinEntryLink` — when the model has relationships
-* `dataplex.entryGroups.useReferenceEntryLink` — with `KC_V2_ASPECTS=1`, when
-  the model has relationships or an entity extends another
+* `dataplex.entryGroups.useReferenceEntryLink` — with the second-generation
+  types, when the model has relationships or an entity extends another
 * the `use<AspectType>Aspect` permission for the `semantic-model`,
   `semantic-entity`, and `semantic-metric` aspect types the push attaches — i.e.
   `dataplex.entryGroups.useSemanticModelAspect`, `useSemanticEntityAspect`, and
