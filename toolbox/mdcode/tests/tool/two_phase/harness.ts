@@ -176,9 +176,10 @@ const SERVICES = {
   // and each table's entry is found. A case of a missing table answers
   // lookupEntry with entryDenied.
   getTable: [BigQueryClient.prototype, 'getTable', ok({location: 'US'})],
-  // The edition check reads each Spanner instance too. This answer names no
-  // edition, so the check passes it.
-  getInstance: [SpannerClient.prototype, 'getInstance', ok(REGIONAL_INSTANCE)],
+  // The edition check reads each Spanner instance too. A live answer always
+  // names an edition. This one names ENTERPRISE, so the check passes it.
+  getInstance: [SpannerClient.prototype, 'getInstance',
+                ok({...REGIONAL_INSTANCE, edition: 'ENTERPRISE'})],
   getInstanceConfig: [SpannerClient.prototype, 'getInstanceConfig', ok(NAM3_CONFIG)],
   getCatalog: [BigLakeClient.prototype, 'getCatalog', ok(REGIONAL_CATALOG)],
   getHiveCatalog:
