@@ -77,18 +77,28 @@ describe('init --semantic-model: entry-group provisioning', () => {
   test(
       'creates the destination entry group and the local layout dir',
       async () => {
+        // The create returns an operation, as the live API does, and init
+        // waits for it.
+        const groupOp = 'projects/proj/locations/us/operations/eg-op';
         const group =
             spyOn(CatalogClient.prototype, 'createEntryGroup')
-                .mockImplementation(async () => ok({name: 'sales-group'}));
+                .mockImplementation(async () => ok({name: groupOp, done: false}));
+        const polled = spyOn(CatalogClient.prototype, 'getOperation')
+                           .mockImplementation(
+                               async () => ok({name: groupOp, done: true}));
 
         const code = await init({semanticModel: 'proj.us.sales-group'});
 
         expect(code).toBe(0);
         expect(group).toHaveBeenCalledTimes(1);
-        const [project, location, entryGroupId] = group.mock.calls[0];
+        expect(polled).toHaveBeenCalledWith(groupOp);
+        const [project, location, entryGroupId, entryGroup] =
+            group.mock.calls[0];
         expect(project).toBe('proj');
         expect(location).toBe('us');
         expect(entryGroupId).toBe('sales-group');
+        // A plain entry group: no type is sent.
+        expect(entryGroup).toBeUndefined();
         expect(
             fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
             .toBe(true);
@@ -124,6 +134,39 @@ describe('init --semantic-model: entry-group provisioning', () => {
     expect(fs.readFileSync('catalog.yaml', 'utf8'))
         .toBe('scope: semantic-model.proj.us.sales-group\n');
   });
+
+  test('waits for the entry-group operation and fails when it fails',
+       async () => {
+         const groupOp = 'projects/proj/locations/us/operations/eg-op';
+         spyOn(CatalogClient.prototype, 'createEntryGroup')
+             .mockImplementation(async () => ok({name: groupOp, done: false}));
+         const polled = spyOn(CatalogClient.prototype, 'getOperation')
+                            .mockImplementation(async () => ok({
+                                                  name: groupOp,
+                                                  done: true,
+                                                  error: {
+                                                    code: 7,
+                                                    message:
+                                                        'Permission ' +
+                                                        '\'dataplex.entryGroups.setIamPolicy\' ' +
+                                                        'denied',
+                                                  },
+                                                }));
+         const aspectType = spyOn(CatalogClient.prototype, 'createAspectType');
+         const error = spyOn(console, 'error').mockImplementation(() => {});
+
+         const code = await init({semanticModel: 'proj.us.sales-group'});
+
+         expect(code).toBe(1);
+         expect(polled).toHaveBeenCalledWith(groupOp);
+         expect(String(error.mock.calls[0][0]))
+             .toContain('dataplex.entryGroups.setIamPolicy');
+         // Nothing else is provisioned for a group that was not created.
+         expect(aspectType).not.toHaveBeenCalled();
+         expect(
+             fs.existsSync(path.join('catalog', 'EntryGroups', 'sales-group')))
+             .toBe(false);
+       });
 
   test('an already-existing entry group (409) is success', async () => {
     const group =

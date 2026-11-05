@@ -1026,6 +1026,7 @@ and each aspect type attached, so a push needs, on the destination entry group:
 needs more than push does, in the destination project:
 
 * `dataplex.entryGroups.create` — the destination entry group
+* `dataplex.operations.get` — to wait for its creates and updates to finish
 * `dataplex.aspectTypes.create` / `dataplex.aspectTypes.update` and
   `dataplex.entryTypes.create` — the custom `semantic-action` and
   `semantic-constraint` pairs. Init patches an aspect

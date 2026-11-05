@@ -8,7 +8,7 @@ import {describe, expect, spyOn, test} from 'bun:test';
 
 import {ApiContext} from '../../../src/libts/gcp/context';
 import {ResourceManagerClient} from '../../../src/libts/gcp/crm';
-import {_fixEntry, CatalogClient, Entry, EntryLink, FixOptions} from '../../../src/libts/gcp/dataplex';
+import {_fixEntry, CatalogClient, createContextSet, createEntryGroupAndWait, Entry, EntryLink, FixOptions, isOperation} from '../../../src/libts/gcp/dataplex';
 
 const CTX = new ApiContext('test-project', 'us', 'test-token');
 const SCHEMA_JOIN =
@@ -462,3 +462,190 @@ test('GCP_LOG logs each request as its method and URL, with any body on ' +
          [`[GCP_LOG] POST ${v1}/x\n`, '{"a":1}'],
        ]);
      });
+
+
+describe('isOperation', () => {
+  test('is true for a long-running operation only', () => {
+    expect(isOperation({name: 'projects/p/locations/l/operations/x'}))
+        .toBe(true);
+    expect(isOperation({name: 'projects/p/locations/l/entryGroups/g'}))
+        .toBe(false);
+    expect(isOperation(undefined)).toBe(false);
+    expect(isOperation(null)).toBe(false);
+    expect(isOperation({})).toBe(false);
+    expect(isOperation({name: 7})).toBe(false);
+  });
+});
+
+
+// A client whose create answers `create`, whose group reads answer `lookups`
+// in turn (the last one repeats), and whose operation poll answers `poll`.
+function creatingClient(
+    create: {status: number; result?: unknown; message?: string},
+    lookups: Array<{status: number; result?: unknown; message?: string}> =
+        [{status: 404, message: 'not found'}],
+    poll: {operation?: unknown; error?: string; unreadable?: boolean} = {}) {
+  const c = new CatalogClient(CTX);
+  const createSpy = spyOn(c, 'createEntryGroup')
+                        .mockImplementation(async () => create as any);
+  let read = 0;
+  const lookupSpy = spyOn(c, 'getEntryGroup')
+                        .mockImplementation(
+                            async () => lookups[Math.min(read++, lookups.length - 1)] as any);
+  const pollSpy =
+      spyOn(c, 'pollOperation').mockImplementation(async () => poll as any);
+  return {c, createSpy, lookupSpy, pollSpy};
+}
+
+const OP = 'projects/p/locations/us/operations/op-1';
+const UNREADABLE = {
+  error: `creating entry group 'p.us.g': reading ${OP}: permission denied`,
+  unreadable: true,
+};
+
+
+describe('createEntryGroupAndWait', () => {
+  test('creates a plain group and waits for the operation', async () => {
+    const {c, createSpy, pollSpy} =
+        creatingClient({status: 200, result: {name: OP}});
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: true});
+    expect(createSpy.mock.calls[0]).toEqual(['p', 'us', 'g', undefined]);
+    expect(pollSpy.mock.calls[0])
+        .toEqual([{name: OP}, 'creating entry group \'p.us.g\'', 120000]);
+  });
+
+  test('a create whose operation fails returns the operation\'s error once',
+       async () => {
+         const {c} = creatingClient(
+             {status: 200, result: {name: OP}}, undefined,
+             {error: 'creating entry group \'p.us.g\': boom'});
+         expect(await createEntryGroupAndWait(c, 'p', 'us', 'g')).toEqual({
+           created: false,
+           error: 'creating entry group \'p.us.g\': boom',
+         });
+       });
+
+  test('an unreadable operation falls back to reading the group', async () => {
+    const {c, lookupSpy} = creatingClient(
+        {status: 200, result: {name: OP}},
+        [{status: 404, message: 'not found'}, {status: 200, result: {name: 'g'}}],
+        UNREADABLE);
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: true});
+    expect(lookupSpy).toHaveBeenCalledTimes(2);
+  });
+
+  test('a group that never shows up within the time is an error', async () => {
+    const {c} = creatingClient(
+        {status: 200, result: {name: OP}}, undefined, UNREADABLE);
+    expect(await createEntryGroupAndWait(
+               c, 'p', 'us', 'g', undefined, undefined, 100))
+        .toEqual({
+          created: false,
+          error: `${UNREADABLE.error}; the entry group was not ready within ` +
+              '100ms either',
+        });
+  });
+
+  test('a group that exists is success without a lookup', async () => {
+    const {c, lookupSpy} = creatingClient({status: 409});
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: false});
+    expect(lookupSpy).not.toHaveBeenCalled();
+  });
+
+  test('a refused create is success only for a group the caller can read',
+       async () => {
+         const group = {name: 'g'};
+         expect(await createEntryGroupAndWait(
+                    creatingClient({status: 403, message: 'denied'},
+                                   [{status: 200, result: group}]).c,
+                    'p', 'us', 'g'))
+             .toEqual({created: false, existing: group});
+         expect(await createEntryGroupAndWait(
+                    creatingClient({status: 403, message: 'denied'}).c, 'p',
+                    'us', 'g'))
+             .toEqual({
+               created: false,
+               error: 'creating entry group \'p.us.g\': denied',
+             });
+       });
+
+  test('a result that is not an operation is not waited on', async () => {
+    const {c, pollSpy} = creatingClient({status: 200, result: {name: 'g'}});
+    expect(await createEntryGroupAndWait(c, 'p', 'us', 'g'))
+        .toEqual({created: true});
+    expect(pollSpy).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('createContextSet', () => {
+  test('creates the group typed context-set, with the metadata, and waits',
+       async () => {
+         const {c, createSpy, pollSpy} =
+             creatingClient({status: 200, result: {name: OP}});
+         expect(await createContextSet(
+                    c, 'p', 'us', 'g', {displayName: 'Sales', description: 'd'}))
+             .toEqual({created: true});
+         expect(createSpy.mock.calls[0]).toEqual([
+           'p', 'us', 'g',
+           {
+             type: 'context-set',
+             labels: {type: 'context-set'},
+             displayName: 'Sales',
+             description: 'd',
+           },
+         ]);
+         expect(pollSpy.mock.calls[0][1])
+             .toBe('creating context set \'p.us.g\'');
+       });
+
+  test('an unreadable operation waits until the group reads back typed',
+       async () => {
+         const {c, lookupSpy} = creatingClient(
+             {status: 200, result: {name: OP}},
+             [
+               {status: 200, result: {name: 'g'}},
+               {status: 200, result: {name: 'g', type: 'context-set'}},
+             ],
+             UNREADABLE);
+         expect(await createContextSet(c, 'p', 'us', 'g'))
+             .toEqual({created: true});
+         expect(lookupSpy).toHaveBeenCalledTimes(2);
+       });
+
+  test('an existing context set is success, and is returned', async () => {
+    const group = {name: 'g', type: 'context-set'};
+    expect(await createContextSet(
+               creatingClient({status: 409}, [{status: 200, result: group}]).c,
+               'p', 'us', 'g'))
+        .toEqual({created: false, existing: group});
+  });
+
+  test('an existing group of another type is an error', async () => {
+    const group = {name: 'g'};
+    expect(await createContextSet(
+               creatingClient({status: 409}, [{status: 200, result: group}]).c,
+               'p', 'us', 'g'))
+        .toEqual({
+          created: false,
+          existing: group,
+          error: 'entry group \'p.us.g\' exists but is not a context set, ' +
+              'and an entry group\'s type cannot be changed; use a new ' +
+              'context set ID.',
+        });
+  });
+
+  test('a denied create returns Dataplex\'s error as it is', async () => {
+    const denied = 'Permission \'dataplex.entryGroups.createContextSet\' denied';
+    expect(await createContextSet(
+               creatingClient({status: 403, message: denied}).c, 'p', 'us',
+               'g'))
+        .toEqual({
+          created: false,
+          error: `creating context set 'p.us.g': ${denied}`,
+        });
+  });
+});
