@@ -1001,7 +1001,8 @@ describe('profile checks', () => {
     ['an entity the catalog holds without keys',
      model('').replace('        primary_key: [order_id]\n', ''), [],
      () => "Warning: [retail] entity 'orders': no keys declared in the source model; declare " +
-         'primary_key or unique_keys in the model file to record a key in Knowledge Catalog'],
+         'primary_key or unique_keys in the model file or in a profile to record a key in ' +
+         'Knowledge Catalog'],
     ['a field pruning leaves out',
      model(`          - {name: extra}\n    deployments: [{name: a, target: ${ALLOYDB_DB}}]\n`,
            `${ALLOYDB_DB}/schemas/public/tables/orders`), [],

@@ -442,8 +442,8 @@ semantic_model:
           "file leaves entity 'Wide' without a source, and the model " +
           'declares no named profile. It cannot be queried until it is bound.',
       "Warning: [commerce] entity 'Wide': no keys declared in the source " +
-          'model; declare primary_key or unique_keys in the model file to ' +
-          'record a key in Knowledge Catalog',
+          'model; declare primary_key or unique_keys in the model file or ' +
+          'in a profile to record a key in Knowledge Catalog',
     ]);
   });
 });
