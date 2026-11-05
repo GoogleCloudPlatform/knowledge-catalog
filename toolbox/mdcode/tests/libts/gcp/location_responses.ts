@@ -7,7 +7,9 @@
 //   (`US`); its entries sit in `us` (2026-11-03).
 // - A Spanner instance names its config by full name, and the config marks
 //   one replica as its default leader, where the entries sit: us-central1 for
-//   `regional-us-central1`, us-east4 for `nam3`.
+//   `regional-us-central1`, us-east4 for `nam3`. The instance also lists the
+//   regions it has replicas in, the leader's among them, marking none as
+//   leader (2026-11-04).
 // - A regional or federated BigLake catalog lists one replica, with no state;
 //   a federated multi-region catalog writes it in upper case (`US`). A
 //   multi-region catalog of Cloud Storage tables lists a primary and a
@@ -35,6 +37,7 @@ export const US_TABLE = {
   location: 'US',
 };
 
+// getInstance on 2026-10-27; replicaComputeCapacity was not captured then.
 export const REGIONAL_INSTANCE = {
   name: `projects/${P}/instances/kcmd-src-reg`,
   config: `projects/${P}/instanceConfigs/regional-us-central1`,
@@ -47,9 +50,20 @@ export const REGIONAL_CONFIG = {
     {location: 'us-central1', type: 'READ_WRITE'},
   ],
 };
+// getInstance with no field mask, for a nam3 instance on 2026-11-04 (a
+// throwaway instance, since deleted, renamed here); the other fields trimmed.
+// Its replicas list each region once, witness included, marking no leader;
+// the default leader, us-east4, is not first. Its table's entry was found in
+// us-east4 only: us-east1, us-central1 and `us` answered 403.
 export const NAM3_INSTANCE = {
   name: `projects/${P}/instances/kcmd-src-multi`,
   config: `projects/${P}/instanceConfigs/nam3`,
+  replicaComputeCapacity: [
+    {replicaSelection: {location: 'us-east1'}, processingUnits: 100},
+    {replicaSelection: {location: 'us-east4'}, processingUnits: 100},
+    {replicaSelection: {location: 'us-central1'}, processingUnits: 100},
+  ],
+  resourceLocation: 'us',
 };
 export const NAM3_CONFIG = {
   name: `projects/${P}/instanceConfigs/nam3`,

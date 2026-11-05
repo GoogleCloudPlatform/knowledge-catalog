@@ -22,7 +22,12 @@
 //   its region, `regional-us-central1` for us-central1, so it is not read;
 //   any other config is, with getInstanceConfig: `nam3` gives us-east4. That
 //   read needs spanner.instanceConfigs.get, which the Spanner database roles
-//   lack. A database's own default leader does not move the entry.
+//   lack. When it is refused, the entry is looked up in each region the
+//   instance has replicas in, which getInstance lists, in the order listed,
+//   until one finds it: the default leader's region is one of them, and the
+//   list marks no leader (live, 2026-11-04). The instance's
+//   `resourceLocation`, such as `us`, is not a Dataplex region. A database's
+//   own default leader does not move the entry.
 // - AlloyDB: the location the source names.
 //
 // Dataplex keeps locations in lower case. A lookup in the wrong location
@@ -35,8 +40,10 @@
 // the entry was never looked up, so the message says which read it was, and
 // what the service said: Spanner answers 403 for a project the caller may not
 // read, whether or not the instance exists, so a 403 does not say the table
-// is missing. A read that fails another way says to try again when a retry
-// may pass (a thrown call, a 429 or a 5xx), and to fix the source otherwise.
+// is missing. A refused Spanner instance config read is the exception: the
+// entry is then looked up in each replica region the instance lists. A read
+// that fails another way says to try again when a retry may pass (a thrown
+// call, a 429 or a 5xx), and to fix the source otherwise.
 //
 // A Cloud SQL or third-party source is not looked up here: sourceDialects
 // already looks up its entry directly, and fails the push when it is missing.
@@ -47,7 +54,7 @@ import type {BigLakeClient, Catalog} from '../gcp/biglake';
 import type {BigQueryClient} from '../gcp/bigquery';
 import type {SpannerClient} from '../gcp/spanner';
 
-import {EntryLookup, lookupSystemEntry, read} from './catalog_entry';
+import {EntryLookup, lookupSystemEntry, Read, read} from './catalog_entry';
 import type {SemanticModel} from './ir';
 import {SourceTable, sourceTableOf, writtenSource} from './loader';
 import {DEFAULT_PROFILE} from './resolve_profiles';
@@ -61,8 +68,9 @@ export interface SourceReaders {
 }
 
 // What a location read gave: the value read, or what is wrong with the
-// source, as the message gives it after the source's name.
-type Checked<T> = {result: T}|{problem: string};
+// source, as the message gives it after the source's name. `unfound`, when
+// set, is said after the message that no location had the entry.
+type Checked<T> = {result: T; unfound?: string}|{problem: string};
 
 // One message for each entity, in the inline bindings (named `default`) or in
 // a profile, whose source names a table with no Knowledge Catalog entry, in
@@ -175,7 +183,8 @@ async function problemOf(
              table.system === 'alloydb' ?
                  ' A new AlloyDB cluster can take hours to appear in the ' +
                      'catalog after Dataplex integration is turned on.' :
-                 ''} Fix the source, or pass --skip-source-check.`;
+                 ''}${locations.unfound ?? ''} Fix the source, or pass ` +
+      `--skip-source-check.`;
 }
 
 // `location`, which is kept in lower case, as BigQuery writes it: a
@@ -184,12 +193,20 @@ function shown(location: string): string {
   return location.includes('-') ? location : location.toUpperCase();
 }
 
-// Said when reading an instance config is refused (live on
-// bigquery-public-data and dataplex-staging-types, 2026-10-27: Spanner answers
-// 403 naming this permission, even for a Google-managed config such as nam3).
+// Said when reading an instance config is refused and the instance lists no
+// replica regions to look in instead (live on bigquery-public-data and
+// dataplex-staging-types, 2026-10-27: Spanner answers 403 naming this
+// permission, even for a Google-managed config such as nam3).
 const CONFIG_REFUSED_HINT = ' Reading it needs the permission ' +
     'spanner.instanceConfigs.get on the project, which roles/spanner.viewer ' +
     'includes and the Spanner database roles do not.';
+
+// Said when reading an instance is refused: a Spanner database role gives
+// spanner.instances.get only when granted on the instance or its project
+// (from review on #630, 2026-11-04).
+const INSTANCE_REFUSED_HINT = ' The Spanner database roles include ' +
+    'spanner.instances.get, but a role granted on one database does not ' +
+    'apply to its instance.';
 
 // Said when a BigLake catalog read fails in a way a retry cannot fix and the
 // other kind of catalog's API finds the catalog. The status alone does not
@@ -201,10 +218,11 @@ const ICEBERG_FORM_HINT = ` A table in an Iceberg REST catalog is written ` +
     `with 'namespaces/<namespace>'.`;
 
 // The locations where `table`'s catalog entry may sit, as Dataplex writes
-// them, in lower case, in the order to look in: one for a BigQuery, Spanner
-// or AlloyDB table, and one per replica for a BigLake table. `cache` keeps
-// each instance's read and each catalog's read through each API, so each is
-// made once; each table is read once already.
+// them, in lower case, in the order to look in: one for a BigQuery or AlloyDB
+// table; one for a Spanner table, or one per replica region of its instance
+// when reading its config is refused; and one per replica for a BigLake table.
+// `cache` keeps each instance's read and each catalog's read through each
+// API, so each is made once; each table is read once already.
 async function locationsOf(
     table: SourceTable, readers: SourceReaders,
     cache: Map<string, Promise<unknown>>): Promise<Checked<string[]>> {
@@ -247,7 +265,8 @@ async function locationsOf(
         const what = `reading instance '${table.instance}'`;
         const instance = await readLocation(
             what, 'an instance',
-            () => readers.spanner.getInstance(project, table.instance));
+            () => readers.spanner.getInstance(project, table.instance),
+            status => status === 403 ? INSTANCE_REFUSED_HINT : '');
         if ('problem' in instance) return instance;
         const configName = instance.result.config;
         if (!configName) {
@@ -259,9 +278,25 @@ async function locationsOf(
         const region = configName.match(/\/instanceConfigs\/regional-(.+)$/);
         if (region) return {result: [region[1]]};
         const configWhat = `reading instance config '${configName}'`;
-        const config = await readLocation(
-            configWhat, 'an instance config',
-            () => readers.spanner.getInstanceConfig(configName),
+        const res = await read(
+            configWhat, () => readers.spanner.getInstanceConfig(configName));
+        // The default leader's region is one of the instance's replica
+        // regions, so when the config read is refused, each is looked in.
+        if ('unreadable' in res && res.status === 403) {
+          const regions = (instance.result.replicaComputeCapacity ?? [])
+                              .map(r => r.replicaSelection?.location)
+                              .filter((l): l is string => !!l);
+          if (regions.length) {
+            return {
+              result: regions,
+              unfound: ` Instance config '${configName}' could not be read ` +
+                  `(HTTP 403), so the entry was looked up in each of the ` +
+                  `instance's replica regions: ${regions.join(', ')}.`,
+            };
+          }
+        }
+        const config = await checked(
+            res, configWhat, 'an instance config',
             status => status === 403 ? CONFIG_REFUSED_HINT : '');
         // A config marks exactly one replica as its default leader.
         return 'result' in config ?
@@ -274,17 +309,27 @@ async function locationsOf(
   }
 }
 
-// Makes the location read `call`, which `what` names. A 404 says the source
-// names `kind`, such as `a table`, that does not exist (the services answer
-// 404 for a missing table, dataset, catalog or instance; live, 2026-10-27 and
+// Gives the sentence to add to a location read's problem for a status a retry
+// cannot pass, or ''.
+type HintFor = (status: number) => string|Promise<string>;
+
+// Makes the location read `call`, which `what` names, and judges its answer
+// with checked.
+async function readLocation<T>(
+    what: string, kind: string, call: () => Promise<ApiResult<T>>,
+    hintFor?: HintFor): Promise<Checked<T>> {
+  return checked(await read(what, call), what, kind, hintFor);
+}
+
+// What the location read `what` gave in `res`. A 404 says the source names
+// `kind`, such as `a table`, that does not exist (the services answer 404 for
+// a missing table, dataset, catalog or instance; live, 2026-10-27 and
 // 2026-11-03). A 403 says the read was refused, followed by the service's
 // message. When a retry cannot pass, `hintFor` gives a sentence to add for the
 // status.
-async function readLocation<T>(
-    what: string, kind: string, call: () => Promise<ApiResult<T>>,
-    hintFor: (status: number) => string|Promise<string> = () => ''):
-    Promise<Checked<T>> {
-  const res = await read(what, call);
+async function checked<T>(
+    res: Read<T>, what: string, kind: string,
+    hintFor: HintFor = () => ''): Promise<Checked<T>> {
   if ('result' in res) return res;
   const {status} = res;
   const hint = status === undefined || isTransientStatus(status) ?

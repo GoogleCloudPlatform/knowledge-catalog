@@ -29,8 +29,9 @@ const GET_HIVE_AS_ICEBERG = `getCatalog sqlgen-testing ${HIVE_ID}`;
 const SPANNER = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-reg/databases/sales/tables/Orders`;
 const SPANNER_NAM3 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-multi/databases/sales/tables/Orders`;
 const SPANNER_NAM22 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-nam22/databases/sales/tables/Orders`;
-// The nam22 config is live; the instance is made up, in the shape of the live
-// ones.
+// The nam22 config is live; the instance is made up, and lists no replica
+// regions, as the instance read on 2026-10-27 was captured (whether Spanner
+// ever leaves them out is not known).
 const NAM22_INSTANCE = {
   name: `projects/${P}/instances/kcmd-src-nam22`,
   config: NAM22_CONFIG.name,
@@ -164,11 +165,17 @@ const CONFIG_HINT = ' Reading it needs the permission ' +
     'includes and the Spanner database roles do not.';
 const HIVE_FORM = " A table in a Hive catalog is written with 'databases/<database>'.";
 const ICEBERG_FORM = " A table in an Iceberg REST catalog is written with 'namespaces/<namespace>'.";
+const INSTANCE_HINT = ' The Spanner database roles include ' +
+    'spanner.instances.get, but a role granted on one database does not ' +
+    'apply to its instance.';
 
 describe('sourceEntryErrors', () => {
+  const CONFIG_DENIED = spannerDenied('spanner.instanceConfigs.get', NAM3_INSTANCE.config);
   // [label, source, the lookup that finds its entry, the reads and lookups
-  // before it, hint]
-  const SYSTEMS: Array<[string, string, string, string[], string?]> = [
+  // before it, hint, answers that replace the live ones, the lookups after it
+  // when no location has the entry]
+  const SYSTEMS: Array<[string, string, string, string[], string?,
+                        Record<string, ApiResult<any>>?, string[]?]> = [
     // A BigQuery entry sits in its table's location, which reads `US`.
     ['BigQuery', BIGQUERY, lookup('bigquery', 'us', BIGQUERY),
      [`getTable ${P} kcmd_demo orders`]],
@@ -178,7 +185,8 @@ describe('sourceEntryErrors', () => {
      ['getCatalog looker-private-demo snowflake']],
     ['multi-region BigLake, whose primary replica is not listed first', BIGLAKE_GCS_US,
      lookup('biglake', 'us-central1', BIGLAKE_GCS_US),
-     [`getCatalog ${P} kcmd-biglake-probe-6890`]],
+     [`getCatalog ${P} kcmd-biglake-probe-6890`], undefined, undefined,
+     [lookup('biglake', 'us-east1', BIGLAKE_GCS_US)]],
     // After a failover, an older table's entry sits in a former primary's
     // region, now a secondary's: the primary's region is looked in first.
     ['multi-region BigLake, whose entry sits in its secondary\'s region', BIGLAKE_GCS_US,
@@ -204,23 +212,38 @@ describe('sourceEntryErrors', () => {
     ['nam22 Spanner, whose leader is not its first replica', SPANNER_NAM22,
      lookup('spanner', 'us-east5', SPANNER_NAM22),
      [`getInstance ${P} kcmd-src-nam22`, `getInstanceConfig ${NAM22_CONFIG.name}`]],
+    // When the config read is refused, the entry is looked up in each region
+    // the instance lists, in its order, and nowhere else: live, it sat in
+    // us-east4, the config's default leader, which the instance lists second.
+    ['nam3 Spanner whose config read is refused', SPANNER_NAM3,
+     lookup('spanner', 'us-east4', SPANNER_NAM3),
+     [`getInstance ${P} kcmd-src-multi`, `getInstanceConfig ${NAM3_INSTANCE.config}`,
+      lookup('spanner', 'us-east1', SPANNER_NAM3)],
+     ` Instance config '${NAM3_INSTANCE.config}' could not be read (HTTP 403), ` +
+         `so the entry was looked up in each of the instance's replica regions: ` +
+         `us-east1, us-east4, us-central1.`,
+     {[`getInstanceConfig ${NAM3_INSTANCE.config}`]: CONFIG_DENIED},
+     [lookup('spanner', 'us-central1', SPANNER_NAM3)]],
     // An AlloyDB entry sits in the location its source names.
     ['AlloyDB', ALLOYDB, lookup('alloydb', 'us-east4', ALLOYDB), [], ALLOYDB_HINT],
   ];
-  for (const [label, source, entry, reads, hint] of SYSTEMS) {
+  for (const [label, source, entry, reads, hint, override, after = []] of SYSTEMS) {
     test(`${label}: its entry is looked up in its table's location`, async () => {
-      const {readers, calls} = fakeReaders([entry]);
+      const {readers, calls} = fakeReaders([entry], override);
       expect(await sourceEntryErrors(inline(source), readers)).toEqual([]);
       expect(calls).toEqual([...reads, entry]);
-      // Without the entry, in any location, the source fails.
-      expect(await sourceEntryErrors(inline(source), fakeReaders([]).readers))
+      // Without the entry, in any location, the source fails, once every
+      // location has been looked in.
+      const without = fakeReaders([], override);
+      expect(await sourceEntryErrors(inline(source), without.readers))
           .toEqual([notFound('orders', 'default', source, hint)]);
+      expect(without.calls).toEqual([...reads, entry, ...after]);
     });
   }
 
   const NAM3_CONFIG_READ = `reading instance config '${NAM3_INSTANCE.config}'`;
   const INSTANCE_DENIED = spannerDenied('spanner.instances.get', REGIONAL_INSTANCE.name);
-  const CONFIG_DENIED = spannerDenied('spanner.instanceConfigs.get', NAM3_INSTANCE.config);
+  const NAM22_CONFIG_DENIED = spannerDenied('spanner.instanceConfigs.get', NAM22_CONFIG.name);
   // The loader accepts this table ID; BigQuery rejects it.
   const BIGQUERY_INVALID = BIGQUERY.replace(/orders$/, 'orders!x');
   const ALLOYDB_LOOKUP = lookup('alloydb', 'us-east4', ALLOYDB);
@@ -250,10 +273,13 @@ describe('sourceEntryErrors', () => {
     // Spanner answers 403 for an instance or config the caller may not read.
     ['a refused instance read', SPANNER, `getInstance ${P} kcmd-src-reg`,
      INSTANCE_DENIED,
-     refused(SPANNER, `reading instance 'kcmd-src-reg'`, INSTANCE_DENIED.message)],
-    ['a refused instance config read', SPANNER_NAM3,
-     `getInstanceConfig ${NAM3_INSTANCE.config}`, CONFIG_DENIED,
-     refused(SPANNER_NAM3, NAM3_CONFIG_READ, CONFIG_DENIED.message, CONFIG_HINT)],
+     refused(SPANNER, `reading instance 'kcmd-src-reg'`, INSTANCE_DENIED.message,
+             INSTANCE_HINT)],
+    // With no replica regions to look in instead.
+    ['a refused instance config read, for an instance that lists no replica regions',
+     SPANNER_NAM22, `getInstanceConfig ${NAM22_CONFIG.name}`, NAM22_CONFIG_DENIED,
+     refused(SPANNER_NAM22, `reading instance config '${NAM22_CONFIG.name}'`,
+             NAM22_CONFIG_DENIED.message, CONFIG_HINT)],
     // A 5xx or a thrown call may pass on retry; a 400 never will.
     ['an instance config that fails', SPANNER_NAM3,
      `getInstanceConfig ${NAM3_INSTANCE.config}`, UNAVAILABLE,

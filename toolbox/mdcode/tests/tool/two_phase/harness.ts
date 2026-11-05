@@ -18,7 +18,7 @@ import {SemanticModel} from '../../../src/libts/semantic/ir';
 import {LoadedModel} from '../../../src/libts/semantic/loader';
 import * as validateMod from '../../../src/libts/semantic/validate';
 import * as commands from '../../../src/tool/commands';
-import {REGIONAL_CATALOG, REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
+import {NAM3_CONFIG, REGIONAL_CATALOG, REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
 export const CTX = new ApiContext('test-project', 'us', 'test-token');
 const BQ = 'bigquery.googleapis.com/projects/test-project/datasets';
@@ -171,10 +171,12 @@ const SERVICES = {
   // The source check's reads. Each BigQuery table is in `US`, as the graph's
   // dataset is; each Spanner instance (with a regional config, which is not
   // read) and BigLake catalog is in us-central1, shaped as the live responses
-  // are; and each table's entry is found. A case of a missing table answers
+  // are; an instance config read, made only for another config, gives nam3;
+  // and each table's entry is found. A case of a missing table answers
   // lookupEntry with entryDenied.
   getTable: [BigQueryClient.prototype, 'getTable', ok({location: 'US'})],
   getInstance: [SpannerClient.prototype, 'getInstance', ok(REGIONAL_INSTANCE)],
+  getInstanceConfig: [SpannerClient.prototype, 'getInstanceConfig', ok(NAM3_CONFIG)],
   getCatalog: [BigLakeClient.prototype, 'getCatalog', ok(REGIONAL_CATALOG)],
   getHiveCatalog:
       [BigLakeClient.prototype, 'getHiveCatalog', ok(REGIONAL_CATALOG)],

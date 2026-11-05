@@ -6,7 +6,7 @@
 
 import {expect} from 'bun:test';
 
-import {entryDenied, NOT_FOUND} from '../../libts/gcp/location_responses';
+import {entryDenied, NAM3_INSTANCE, NOT_FOUND, spannerDenied} from '../../libts/gcp/location_responses';
 
 import {boundAt, bqTable, CUSTOMER, has, PushRun, scenarios, SPANNER_CUSTOMER} from './harness';
 
@@ -107,6 +107,25 @@ scenarios('push checks every source before it writes', [
     nothingWritten: true,
     then: [{flags: {deployment: false, skipSourceCheck: true}, code: 0,
             events: ['preflight', 'apply']}],
+  },
+  {
+    name: 'a Spanner table whose instance config cannot be read is found in one of its instance\'s replica regions',
+    profiles: {x: boundAt(SPANNER_CUSTOMER)},
+    flags: {deployment: false},
+    services: {
+      getInstance: {status: 200, result: NAM3_INSTANCE},
+      getInstanceConfig: spannerDenied('spanner.instanceConfigs.get', NAM3_INSTANCE.config),
+      // As live, the entry sits only in the config's default leader region.
+      lookupEntry: (_p: string, location: string, name: string) =>
+          name.includes('/@spanner/') && location !== 'us-east4' ?
+          entryDenied(name) : undefined,
+    },
+    code: 0,
+    check: r => expect(lookups(r)).toEqual([
+      lookup('bigquery', 'us', bqTable('customer')),
+      lookup('spanner', 'us-east1', SPANNER_CUSTOMER),
+      lookup('spanner', 'us-east4', SPANNER_CUSTOMER),
+    ].sort()),
   },
   {
     name: 'a Cloud SQL table is looked up once, for its dialect, and a missing one fails the push with or without --skip-source-check',
