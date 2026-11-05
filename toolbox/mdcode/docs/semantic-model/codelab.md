@@ -750,9 +750,10 @@ logical and live once in the model.
 
 ### Create the tables
 
-Create the operational tables in a Spanner ENTERPRISE-edition database. Spanner
-Graph requires the ENTERPRISE edition. Create the database with its three tables,
-then load a little data:
+Create the operational tables in a database on an Enterprise or Enterprise Plus
+edition instance, or a free trial instance. Spanner Graph needs one of these,
+and push refuses a Standard edition instance. Create the database with its three
+tables, then load a little data:
 
 ```bash
 gcloud spanner databases create $SPANNER_DB --instance=$SPANNER_INSTANCE \

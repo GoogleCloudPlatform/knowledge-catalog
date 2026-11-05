@@ -1041,9 +1041,10 @@ async function checkBeforeWrites(
 }
 
 // The errors of one deployment's live checks, which change nothing. They read
-// the dataset or database, probe each BigQuery source and dry-run the BigQuery
-// DDL in the dataset's location, and check each action's DML. A dataset whose
-// location cannot be read adds a warning to `warnings`.
+// the BigQuery dataset or the Spanner database and instance, probe each
+// BigQuery source and dry-run the BigQuery DDL in the dataset's location, and
+// check each action's DML. A dataset whose location cannot be read, or an
+// instance whose edition cannot be read, adds a warning to `warnings`.
 async function liveErrors(
     plan: DeploymentPlan, ctx: context.ApiContext, defaultProject: string,
     warnings: string[]): Promise<string[]> {
@@ -1057,6 +1058,28 @@ async function liveErrors(
     if (found.status !== 200) {
       return [`${at}: database ${name} could not be read: ${
           storeMessage(found.message, found.status)}`];
+    }
+    // Spanner Graph needs an Enterprise or Enterprise Plus edition instance, so
+    // push refuses an instance whose edition is STANDARD. Under
+    // --skip-source-check, push warns and skips this check when it cannot read
+    // the instance.
+    const read = await spanner.getInstance(project, instance);
+    if (read.status !== 200) {
+      warnings.push(
+          `could not read the edition of instance ${project}/${instance} (${
+              read.message || read.status}); Spanner Graph needs ` +
+          `an Enterprise or Enterprise Plus edition instance`);
+    }
+    if (read.status === 200 && read.result?.edition === 'STANDARD') {
+      return [
+        `${at}: instance ${project}/${instance} is a Standard edition ` +
+        `instance, and Spanner Graph needs an Enterprise or Enterprise Plus ` +
+        `edition instance. Upgrade the instance (gcloud spanner instances ` +
+        `update ${instance} --edition=ENTERPRISE --project=${project}). To ` +
+        `publish the model to Knowledge Catalog without this graph, leave ` +
+        `the deployment out with --deployment or --no-deployment, or remove ` +
+        `it.`,
+      ];
     }
     return validateSpannerActionStatements([model], spanner);
   }

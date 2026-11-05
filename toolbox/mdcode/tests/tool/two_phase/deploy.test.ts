@@ -6,6 +6,7 @@
 import {expect} from 'bun:test';
 
 import {BigQueryClient} from '../../../src/libts/gcp/bigquery';
+import {REGIONAL_INSTANCE} from '../../libts/gcp/location_responses';
 
 import {ALLOYDB, at, boundAt, boundTo, bqGraph, bqTable, Case, CTX, CUSTOMER, deploymentNames, err, EXPRESSION_KEY, has, kcResult, modelFile, msg, PREPARED, pushed, PushRun, REAL, refused, scenarios, Scope, SPANNER_CUSTOMER, spannerGraph, when} from './harness';
 
@@ -20,6 +21,11 @@ const stops = (error: unknown, flags = {}) =>
 const ONE_MODEL = err(
     "entry group 'commerce_eg' would receive 2 models, but only one model " +
     'per entry group is supported; split them into separate entry groups.');
+// A Spanner deployment of database test-project/i/db.
+const SPANNER_DEPLOYMENT = {
+  deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
+  profiles: {ops: boundAt(SPANNER_CUSTOMER)},
+};
 // The dialect lookup reads the database before any other check does. With
 // `error`, only the deployment's own read, the second, gets the answer.
 const spannerAnswers = (
@@ -27,8 +33,7 @@ const spannerAnswers = (
   let reads = 0;
   return {
     name: `a Spanner deployment whose database ${what} writes nothing`,
-    deployments: [{name: 'sp', target: spannerGraph('g'), profile: 'ops'}],
-    profiles: {ops: boundAt(SPANNER_CUSTOMER)},
+    ...SPANNER_DEPLOYMENT,
     services: {
       getDatabase: () => !error || reads++ ? {status, message} : undefined,
     },
@@ -45,6 +50,22 @@ const DENIED = {getDataset: {status: 403, message: 'Access Denied'}};
 const NO_LOCATION = (project: string) =>
     `Warning: could not read location of dataset ${project}.d (Access ` +
     'Denied); letting BigQuery infer the query location';
+// The instance read answers REGIONAL_INSTANCE with `fields` changed.
+const instanceIs = (fields: object) =>
+    ({getInstance: {status: 200, result: {...REGIONAL_INSTANCE, ...fields}}});
+// Answers `answer` to each read of the database after the first, which is the
+// dialect lookup's.
+const afterDialectLookup = (answer: object) => {
+  let reads = 0;
+  return when(() => reads++ > 0, answer);
+};
+const STANDARD_REFUSED = err(
+    `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
+    'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
+    'instance. Upgrade the instance (gcloud spanner instances update i ' +
+    '--edition=ENTERPRISE --project=test-project). To publish the model to ' +
+    'Knowledge Catalog without this graph, leave the deployment out with ' +
+    '--deployment or --no-deployment, or remove it.');
 
 scenarios('push writes nothing when a check fails', [
   {
@@ -152,6 +173,21 @@ scenarios('push writes nothing when a check fails', [
       flags: {}, services: DENIED, warnings: [NO_LOCATION('graph-project')],
     }],
   },
+  {
+    name: 'a Spanner deployment on a Standard edition instance writes nothing and checks no DML, also under --validate-only or --skip-source-check, and a missing database is reported first',
+    ...SPANNER_DEPLOYMENT,
+    services: instanceIs({edition: 'STANDARD'}),
+    errors: [STANDARD_REFUSED],
+    called: {spannerDml: 0},
+    then: [
+      {flags: {validateOnly: true}, errors: [STANDARD_REFUSED]},
+      {flags: {skipSourceCheck: true}, errors: [STANDARD_REFUSED]},
+      {
+        services: {getDatabase: afterDialectLookup({status: 404})},
+        errors: [err(`${at('sp')}: database test-project/i/db not found`)],
+      },
+    ].map(step => ({code: 1, nothingWritten: true, called: {spannerDml: 0}, ...step})),
+  },
 ], {
   deployments: ['g1', 'g2'],
   code: 1,
@@ -253,6 +289,7 @@ const placedBy = (...names: string[]) => ({
     },
   },
 });
+const SP_DEPLOYED = ['preflight', 'apply', 'deploy sp'];
 const ALLOYDB_NOTE = "Note: deployment 'ad' targets an AlloyDB database, " +
     'which has no property graph, so push deploys no graph there. The model ' +
     'runs against that database as published to Knowledge Catalog.';
@@ -329,6 +366,50 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     code: 1,
     errors: [`Error pushing semantic model to BigQuery: Failed to deploy ` +
              `'g': ${LIMIT}`],
+  },
+  {
+    name: 'a Spanner deployment deploys on an Enterprise or Enterprise Plus edition instance, and under --skip-source-check when its instance cannot be read',
+    ...SPANNER_DEPLOYMENT,
+    services: instanceIs({edition: 'ENTERPRISE'}),
+    events: SP_DEPLOYED,
+    warnings: [],
+    then: [
+      {services: instanceIs({edition: 'ENTERPRISE_PLUS'})},
+      // The source check fails when it cannot read the instance.
+      {
+        flags: {skipSourceCheck: true},
+        services: {getInstance: {status: 403}},
+        warnings: [
+          'Warning: could not read the edition of instance test-project/i ' +
+          '(403); Spanner Graph needs an Enterprise or Enterprise Plus ' +
+          'edition instance',
+        ],
+      },
+      {
+        flags: {skipSourceCheck: true},
+        services: {getInstance: {status: 403, message: 'Access Denied'}},
+        warnings: [
+          'Warning: could not read the edition of instance test-project/i ' +
+          '(Access Denied); Spanner Graph needs an Enterprise or Enterprise ' +
+          'Plus edition instance',
+        ],
+      },
+    ].map(step => ({code: 0, events: SP_DEPLOYED, warnings: [], ...step})),
+  },
+  {
+    name: 'a Spanner deployment on a Standard edition instance lets the model publish when push leaves it out with --no-deployment or --deployment, or when it is removed',
+    ...SPANNER_DEPLOYMENT,
+    services: instanceIs({edition: 'STANDARD'}),
+    flags: {deployment: false},
+    events: ['preflight', 'apply'],
+    then: [
+      {
+        deployments: [...SPANNER_DEPLOYMENT.deployments, 'g'],
+        flags: {deployment: ['g']},
+        events: ['preflight', 'apply', 'deploy g'],
+      },
+      {deployments: [], events: ['preflight', 'apply']},
+    ].map(step => ({code: 0, ...step})),
   },
   {
     name: 'a profile that gives the join columns deploys, and with KC_V2_ASPECTS=1 so do relationships whose link IDs collide',

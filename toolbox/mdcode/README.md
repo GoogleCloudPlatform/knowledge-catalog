@@ -191,6 +191,9 @@ still works but falls back to BigQuery's own location inference. Each dataset
 `bigquery.googleapis.com/projects/<p>/datasets/<d>/tables/<t>`.
 (A Spanner target names its tables inside one database. Spanner Graph has no
 `MEASURE`, so a Spanner deployment uses a profile that excludes every metric.)
+Spanner Graph needs an Enterprise or Enterprise Plus edition instance, or a free
+trial instance. Push refuses a Spanner target on a Standard edition instance
+before it writes anything.
 
 `kcmd push` publishes the model and its sibling profile files to Knowledge
 Catalog before deploying the selected `deployments` entries (see
