@@ -1820,8 +1820,9 @@ describe('pull with stored file copies', () => {
          const {entries} = fakeCatalog();
          for (const e of firstGenEntries()) entries.set(e.name, e);
          // Dataplex returns the captured link from each of its entities.
-         spyOn(CatalogClient.prototype, 'lookupEntryLinks')
-             .mockResolvedValue({status: 200, result: firstGenLinks()});
+         const links = spyOn(CatalogClient.prototype, 'lookupEntryLinks')
+                           .mockResolvedValue(
+                               {status: 200, result: firstGenLinks()});
          const logSpy = console.log as Mock<any>;
          const warnSpy = console.warn as Mock<any>;
 
@@ -1829,15 +1830,16 @@ describe('pull with stored file copies', () => {
          expect(messages(warnSpy)).toBe(
              `Warning: model 'shop' in entry group '${entryGroup}' was pushed ` +
              `by an older kcmd (first-generation aspects: semantic-model, ` +
-             `semantic-entity, semantic-metric, schema-join; file copies). ` +
-             `Pull wrote nothing for it; push it again with the current kcmd`);
+             `semantic-entity, semantic-metric; file copies). Pull wrote ` +
+             `nothing for it; push it again with the current kcmd`);
          expect(messages(logSpy)).toContain('Wrote nothing.');
+         expect(links).not.toHaveBeenCalled();
          expect(fs.existsSync(path.join('catalog', 'EntryGroups', entryGroup)))
              .toBe(false);
        });
 
-  test('with KC_V2_ASPECTS on, the local files of a model the pull left out ' +
-           'are kept, even under --force-remove',
+  test('with KC_V2_ASPECTS on, a pull that leaves out a model an older kcmd ' +
+           'pushed deletes no local file, even under --force-remove',
        async () => {
          process.env.KC_V2_ASPECTS = '1';
          writeRoundTripWorkspace();
@@ -1850,14 +1852,25 @@ describe('pull with stored file copies', () => {
            fs.mkdirSync(path.dirname(local(name)), {recursive: true});
            fs.writeFileSync(local(name), text);
          }
+         const commerce = fs.readFileSync(local('commerce.yaml'), 'utf8');
          const warnSpy = console.warn as Mock<any>;
+         // What pullKnowledgeCatalog returns with v2Aspects on for a group
+         // holding only the captured first-generation model: no model, and
+         // the one it left out with its warning.
+         const warning = 'model \'shop\' in entry group \'commerce_eg\' was ' +
+             'pushed by an older kcmd (first-generation aspects: ' +
+             'semantic-model, semantic-entity, semantic-metric; file ' +
+             'copies). Pull wrote nothing for it; push it again with the ' +
+             'current kcmd';
          spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue({
-           models: [{...COMMERCE, entities: [{
-             name: 'Customer', dataSource: '', keys: [], fields: [{name: 'id'}],
-           }]}],
-           warnings: [],
-           secondGeneration: true,
-           firstGeneration: [{name: 'shop', entries: []}],
+           models: [],
+           warnings: [warning],
+           firstGeneration: [{
+             name: 'shop',
+             entries: firstGenEntries().filter(e => [
+               'semantic-model', 'semantic-entity', 'semantic-metric'
+             ].some(t => e.entryType.endsWith(`/entryTypes/${t}`))),
+           }],
          });
 
          for (const forceRemove of [false, true]) {
@@ -1865,9 +1878,12 @@ describe('pull with stored file copies', () => {
            for (const [name, text] of shop) {
              expect(fs.readFileSync(local(name), 'utf8')).toBe(text);
            }
+           expect(fs.readFileSync(local('commerce.yaml'), 'utf8'))
+               .toBe(commerce);
          }
          expect(console.error).not.toHaveBeenCalled();
-         expect(messages(warnSpy)).not.toContain('shop');
+         expect(messages(warnSpy))
+             .toBe(`Warning: ${warning}\nWarning: ${warning}`);
        });
 });
 

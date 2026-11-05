@@ -1615,9 +1615,8 @@ function reportCatalogResult(
 // those instead of the model rebuilt from the aspects. A model rebuilt from
 // the second-generation types is written the same way, as its model file,
 // profile files and overview sidecars. With KC_V2_ASPECTS on, a model an
-// older kcmd pushed is left out with a warning, and its local files are
-// kept, even under --force-remove. Returns a process exit code (0 on
-// success).
+// older kcmd pushed is left out with a warning, and nothing is written.
+// Returns a process exit code (0 on success).
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
     options: PullOptions): Promise<number> {
@@ -1646,13 +1645,10 @@ async function pullSemanticModel(
 
   // A pull returns file copies only with the model they belong to.
   const rawFiles = result.rawFiles ?? [];
-  // A model an older kcmd pushed is left out, and its warning printed above,
-  // so its local files are kept.
-  const leftOut = (result.firstGeneration ?? []).map(m => m.name);
   if (!result.models.length) {
     console.log(
-        leftOut.length ? 'Wrote nothing.' :
-                         'No semantic models found; nothing to pull.');
+        result.firstGeneration ? 'Wrote nothing.' :
+                                 'No semantic models found; nothing to pull.');
     return 0;
   }
 
@@ -1664,8 +1660,8 @@ async function pullSemanticModel(
   // Compare by the on-disk path each name maps to, not the raw name: a catalog
   // model name and a local document whose names sanitize to the same file (e.g.
   // 'a/b' -> 'a_b.yaml') are the same model, not a stale conflict.
-  const catalogPaths = new Set(
-      [...catalogNames, ...leftOut].map(n => layout.modelPath(n)));
+  const catalogPaths =
+      new Set(result.models.map(m => layout.modelPath(m.name)));
   const staleLocal = layout.modelDocuments()
                          .map(d => d.name)
                          .filter(n => !catalogPaths.has(layout.modelPath(n)));
@@ -1724,7 +1720,7 @@ async function pullSemanticModel(
       });
     }
     return writePulledFiles(
-        layout, model.name, files, options, {sidecars: true, keep: leftOut});
+        layout, model.name, files, options, {sidecars: true});
   }
 
   let created = 0;
@@ -1801,11 +1797,10 @@ function localProfileActions(
 // Writes the files a pull returned or rebuilt for `model`, and skips a name
 // push does not store. Then it names each local profile file, and with
 // `sidecars` each overview sidecar, that the pull did not write, or deletes it
-// under --force-remove. The sidecars of the models in `keep` are left alone.
+// under --force-remove.
 function writePulledFiles(
     layout: SemanticModelLayout, model: string, files: FileCopy[],
-    options: PullOptions,
-    {sidecars = false, keep = [] as string[]} = {}): number {
+    options: PullOptions, {sidecars = false} = {}): number {
   const written = new Set<string>();
   const counts = {created: 0, updated: 0, unchanged: 0};
   const forms = [
@@ -1845,8 +1840,6 @@ function writePulledFiles(
   const local: Array<{path: string; profileName?: string; kind: string}> = [
     ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
     ...(sidecars ? layout.overviewSidecarPaths() : [])
-        .filter(f => !keep.some(
-                    m => f.entryId === m || f.entryId.startsWith(`${m}/`)))
         .map(f => ({path: f.path, kind: 'overview sidecar'})),
   ];
   for (const stale of local) {

@@ -179,8 +179,7 @@ export function modelsFromCatalogResources(
   const models = anchors.filter(a => !isFirstGeneration(a)).map(anchor => {
     const name = nameOf(anchor);
     const children = (pool: Entry[]) => childrenOf(anchor.name, pool);
-    if (opts.v2Aspects &&
-        aspectData(anchor, 'semantic-model').specVersion !== undefined) {
+    if (opts.v2Aspects) {
       secondGeneration = true;
       const [entities, metrics, relationships] =
           [entityEntries, metricEntries, relationshipEntries].map(children);

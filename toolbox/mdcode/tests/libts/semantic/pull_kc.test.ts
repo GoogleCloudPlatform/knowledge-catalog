@@ -293,43 +293,24 @@ describe('pullKnowledgeCatalog: relationship links', () => {
 
 
 describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
-  const other: SemanticModel = {
-    name: 'inventory',
-    entities: [{name: 'items', dataSource: 'p.d.items', keys: [], fields: []}],
-    relationships: [],
-    metrics: [],
-  };
-  // With v2Aspects on, the model an older kcmd pushed is not counted.
-  for (const [label, entries, opts] of [
-         [
-           'with v2Aspects off', () => [...entriesFor(SALES), ...entriesFor(other)],
-           OPTS
-         ],
-         [
-           'with v2Aspects on, beside a model an older kcmd pushed',
-           () => [
-             ...firstGenEntries(),
-             ...[SALES, other].flatMap(
-                 m => generateCatalogResources(
-                          {...m, version: '0.2.0.dev0/google'}, FIRST_GEN_V2)
-                          .entries),
-           ],
-           FIRST_GEN_V2
-         ],
-       ] as const) {
-    test(`more than one semantic model in the group is a hard error ${label}`,
-         async () => {
-           stubClient(entries(), entries());
+  test(
+      'more than one semantic model in the group is a hard error', async () => {
+        const other: SemanticModel = {
+          name: 'inventory',
+          entities:
+              [{name: 'items', dataSource: 'p.d.items', keys: [], fields: []}],
+          relationships: [],
+          metrics: [],
+        };
+        const entries = [...entriesFor(SALES), ...entriesFor(other)];
+        stubClient(entries, entries);
 
-           const cat = new CatalogClient({} as any);
-           // An entry group holds exactly one model; two anchors is an
-           // unexpected catalog state the pull refuses to guess through,
-           // naming both.
-           await expect(pullKnowledgeCatalog(cat, opts))
-               .rejects.toThrow(
-                   /holds 2 semantic models \(inventory, sales\).*expected exactly one/i);
-         });
-  }
+        const cat = new CatalogClient({} as any);
+        // An entry group holds exactly one model; two anchors is an unexpected
+        // catalog state the pull refuses to guess through, naming both.
+        await expect(pullKnowledgeCatalog(cat, OPTS))
+            .rejects.toThrow(/holds 2 semantic models.*expected exactly one/i);
+      });
 
   test('an empty group reconstructs no models (a clean no-op)', async () => {
     stubClient([], []);
@@ -770,43 +751,34 @@ describe('pullKnowledgeCatalog: a model an older kcmd pushed', () => {
       `by an older kcmd (first-generation aspects: ${found}). Pull wrote ` +
       `nothing for it; push it again with the current kcmd`;
   const ALL = 'semantic-model, semantic-entity, semantic-metric';
-  // A second-generation model pushed into the same entry group.
-  const current = () =>
-      generateCatalogResources(
-          {...SALES, version: '0.2.0.dev0/google'}, FIRST_GEN_V2)
-          .entries;
   const cat = new CatalogClient({} as any);
 
-  for (const [label, entries, links, models, found] of [
-         ['as captured', firstGenEntries, firstGenLinks(), [],
-          `${ALL}, schema-join; file copies`],
+  for (const [label, entries, found] of [
+         ['as captured', firstGenEntries, `${ALL}; file copies`],
          // The captured model entry is labeled, which a pull with
          // v2Aspects off would refuse with no copy.
-         ['with no file copy or link',
-          () => firstGenEntries().filter(e => !isCopy(e)), [], [], ALL],
-         ['beside a second-generation model',
-          () => [...firstGenEntries(), ...current()], firstGenLinks(),
-          ['sales'], `${ALL}, schema-join; file copies`],
+         ['with no file copy', () => firstGenEntries().filter(e => !isCopy(e)),
+          ALL],
        ] as const) {
     test(`with v2Aspects on, ${label}: it is left out with a warning, and no ` +
              'copy is fetched',
          async () => {
            const listed = entries();
            const {lookup, lookupLinks} =
-               stubClient(listed, listed, undefined, [...links]);
+               stubClient(listed, listed, undefined, firstGenLinks());
 
            const result = await pullKnowledgeCatalog(cat, FIRST_GEN_V2);
 
-           expect(result.models.map(m => m.name)).toEqual([...models]);
-           expect(result.secondGeneration).toBe(models.length ? true : undefined);
+           expect(result.models).toEqual([]);
+           expect(result.secondGeneration).toBeUndefined();
            expect(result.firstGeneration?.map(m => m.name)).toEqual(['shop']);
            expect(result.warnings).toEqual([warning(found)]);
            expect(result.rawFiles).toBeUndefined();
            const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
            expect(listed.filter(isCopy).some(e => fetched.includes(e.name)))
                .toBe(false);
-           // Only the old model's two entities are asked for links.
-           expect(lookupLinks).toHaveBeenCalledTimes(2);
+           // With v2Aspects on, pull reads no link.
+           expect(lookupLinks).not.toHaveBeenCalled();
          });
   }
 
