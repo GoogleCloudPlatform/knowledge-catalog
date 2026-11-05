@@ -53,6 +53,12 @@ const NO_LOCATION = (project: string) =>
 // The instance read answers REGIONAL_INSTANCE with `fields` changed.
 const instanceIs = (fields: object) =>
     ({getInstance: {status: 200, result: {...REGIONAL_INSTANCE, ...fields}}});
+// Answers `answer` to each read of the database after the first, which is the
+// dialect lookup's.
+const afterDialectLookup = (answer: object) => {
+  let reads = 0;
+  return when(() => reads++ > 0, answer);
+};
 const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
@@ -177,7 +183,7 @@ scenarios('push writes nothing when a check fails', [
       {flags: {validateOnly: true}, errors: [STANDARD_REFUSED]},
       {flags: {skipSourceCheck: true}, errors: [STANDARD_REFUSED]},
       {
-        services: {getDatabase: {status: 404, message: 'Not found'}},
+        services: {getDatabase: afterDialectLookup({status: 404})},
         errors: [err(`${at('sp')}: database test-project/i/db not found`)],
       },
     ].map(step => ({code: 1, nothingWritten: true, called: {spannerDml: 0}, ...step})),
