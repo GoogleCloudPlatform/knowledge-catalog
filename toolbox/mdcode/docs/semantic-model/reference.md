@@ -186,13 +186,13 @@ graph as `push --validate-only` does, but deploys nothing, so you can compare
 coverage before choosing one. Like push, it reads the Knowledge Catalog entry
 of each Cloud SQL table written as its resource name and of each third-party
 table, and each Spanner database a source names, for the dialect.
-The other checks that need a service run only at push time: the BigQuery source
-table probe, the dry runs of action statements and of each BigQuery graph's DDL,
-the check that a deployment's BigQuery dataset or Spanner database exists, the
-check of a Spanner deployment's instance edition, and (on a push without
-`--validate-only`) the Knowledge Catalog checks on the entry group. It exits
-non-zero when push would reject a binding. Under each profile it prints the
-errors of that profile's own
+The other checks that need a service run only at push time: the source check,
+the BigQuery source table probe, the dry runs of action statements and of each
+BigQuery graph's DDL, the check that a deployment's BigQuery dataset or Spanner
+database exists, the check of a Spanner deployment's instance edition, and (on
+a push without `--validate-only`) the Knowledge Catalog checks on the entry
+group. It exits non-zero when push would reject a binding. Under each profile it
+prints the errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
 names no profile print under `default`. With `--profile <name>`, the other
 profiles' errors print above the profiles too, since any of them stops the
@@ -527,9 +527,10 @@ differs from BigQuery Graph in five ways:
   the database the target names.
 
 Spanner Graph needs an Enterprise or Enterprise Plus edition instance, or a
-free trial instance. In its first phase, push reads each Spanner deployment's
-instance. It refuses a deployment on a Standard edition instance before
-anything is written, also under `--validate-only` and `--skip-source-check`.
+free trial instance. In its first phase, push reads the instance of each
+Spanner deployment it would deploy. It refuses such a deployment on a Standard
+edition instance before anything is written, also under `--validate-only` and
+`--skip-source-check`.
 When push cannot read the instance under `--skip-source-check`, it warns that
 it could not read the edition and skips this check. A graph on a Standard
 edition instance then fails in the second phase, after Knowledge Catalog is
@@ -974,9 +975,11 @@ model is present), on the database the target names:
   plans each statement on a session, and a `PLAN` of a DML statement has to open
   the read-write transaction it would write in even though it never commits one.
   All four come with `roles/spanner.databaseUser`.
-* `spanner.instances.get` on the instance, to read its edition before any
-  write. It comes with `roles/spanner.databaseUser` granted on the instance or
-  its project.
+* `spanner.instances.get` on the instance, to find the region of each Spanner
+  table's Knowledge Catalog entry in the source check and to read the
+  instance's edition before any write. `spanner.databases.get` lets push check
+  that the database exists. Both come with `roles/spanner.databaseUser`
+  granted on the instance or its project.
 
 **Spanner sources** — for a model whose `source` values name Spanner tables,
 whether or not it deploys to Spanner:
