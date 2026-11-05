@@ -938,8 +938,8 @@ function repairDataset(ds: Record<string, any>, doc: ImportDocument): void {
   const dsLabel = `${word} '${ds.name}'`;
   if (typeof ds.source === 'string') {
     const trimmed = ds.source.trim();
-    // Push rejects whitespace around a source.
-    if (trimmed !== ds.source) {
+    // Push rejects whitespace around a source. A query is reported below.
+    if (trimmed !== ds.source && !hasUnquotedWhitespace(trimmed)) {
       doc.warnOrError(
           `${dsLabel}: removed the whitespace around source '${trimmed}'.`);
       ds.source = trimmed;
@@ -1085,9 +1085,10 @@ async function readSourceDialects(
 
 /**
  * Phase 3 (Repair): Repairs third-party constructs in-place on `doc` (pruning
- * extra models, repairing datasets and their fields, pruning unanchored
- * metrics, and truncating descriptions > 2,000 chars). Returns the source
- * dialects it reads after repairing the datasets.
+ * extra models, removing the whitespace around deployment targets, repairing
+ * datasets and their fields, pruning unanchored metrics, and truncating
+ * descriptions > 2,000 chars). Returns the source dialects it reads after
+ * repairing the datasets.
  */
 async function repairDocument(
     doc: ImportDocument,
@@ -1107,6 +1108,18 @@ async function repairDocument(
     doc.modified = true;
   }
   truncateDescription(doc.model, `model '${doc.model.name}'`, doc);
+  // Remove the whitespace around each deployment target, which push rejects
+  // as it does around a source. A vanilla model's targets sit in a GOOGLE
+  // block, which only --input first-party reads. That mode writes nothing on
+  // an error, so push's own check reports them.
+  for (const d of asRecords(doc.model.deployments)) {
+    if (typeof d.target !== 'string' || d.target === d.target.trim()) continue;
+    d.target = d.target.trim();
+    doc.modified = true;
+    doc.warnOrError(
+        `deployment '${d.name}': removed the whitespace around target '${
+            d.target}'.`);
+  }
 
   // 2. Repair each dataset (its table `source`, `description`, and `fields`).
   for (const ds of doc.datasets) {

@@ -1308,20 +1308,31 @@ describe('sources', () => {
     expect(await caseWarnings(bare, lowered)).toEqual([rewrote(bare, lowered + rest)]);
   });
 
-  test('removes the whitespace around a source, and refuses it in strict mode', async () => {
-    const input = ossieDoc({source: `" ${BQ_TABLE}"`});
-    const res = await importSemanticModelYaml(input, {flavor: 'google'});
-    expect(res.warnings).toEqual(
-        [`entity 'orders': removed the whitespace around source '${BQ_TABLE}'.`]);
-    expect(res.files[0].content).toContain(`source: "${BQ_TABLE}"\n`);
-    expect((await importSemanticModelYaml(input, {strict: true})).errors).toEqual(
-        [`dataset 'orders': removed the whitespace around source '${BQ_TABLE}'.`]);
-  });
+  const BQ_GRAPH = `${BQ_PREFIX}/propertyGraphs/g`;
+  // [what, the input, the report, the line import writes]
+  test.each([
+    ['a source', googleDoc({source: `" ${BQ_TABLE}"`}),
+     `entity 'orders': removed the whitespace around source '${BQ_TABLE}'.`,
+     `source: "${BQ_TABLE}"\n`],
+    ['a deployment target',
+     googleDoc({extra: `    deployments: [{name: g, target: "${BQ_GRAPH} "}]\n`}),
+     `deployment 'g': removed the whitespace around target '${BQ_GRAPH}'.`,
+     `target: "${BQ_GRAPH}"}]\n`],
+  ])('removes the whitespace around %s, and refuses it in strict mode',
+     async (_, input, report, written) => {
+       const res = await importSemanticModelYaml(input, {flavor: 'google'});
+       expect(res.warnings).toEqual([report]);
+       expect(res.files[0].content).toContain(written);
+       expect((await importSemanticModelYaml(input, {flavor: 'google', strict: true}))
+                  .errors).toEqual([report]);
+     });
 
   test(
       'removes a query-valued source in Google output and rejects it in vanilla output',
       async () => {
-        const query = '"SELECT * FROM sales.orders"';
+        // A query written as a block scalar ends in a newline. Import reports
+        // the query alone.
+        const query = '"SELECT * FROM sales.orders\\n"';
         const googleRes = await importSemanticModelYaml(
             ossieDoc({source: query}), {flavor: 'google'});
         const ossieRes = await importSemanticModelYaml(
@@ -1331,6 +1342,7 @@ describe('sources', () => {
         expect(googleRes.warnings).toContain(
             "entity 'orders': removed query-valued source 'SELECT * FROM " +
             "sales.orders'; entity is now unbound.");
+        expect(googleRes.warnings.join('\n')).not.toContain('whitespace');
         const loaded =
             loadModels(googleRes.files[0].content, {bindingOptional: true});
         expect(loaded.models[0].entities[0].dataSource).toBe('');
