@@ -169,12 +169,16 @@ const LOADER_SOURCE_WARNING =
 const NO_QUOTE = 'kcmd cannot name a table whose name holds a quote';
 
 // Each kind of --source-prefix for the service `prefix` names, or every kind
-// when there is no prefix.
+// when there is no prefix. The prefix's own kind comes first, so advice names
+// its form.
 function prefixKinds(prefix?: ParsedSourcePrefix):
     typeof SOURCE_PREFIX_PATTERNS {
   const host = prefix?.base.split('/')[0];
+  const own = prefix &&
+      SOURCE_PREFIX_PATTERNS.find(k => k.re.test(prefix.base))?.form;
   return SOURCE_PREFIX_PATTERNS.filter(
-      k => host === undefined || k.form.startsWith(`${host}/`));
+      k => host === undefined || k.form.startsWith(`${host}/`))
+      .sort((a, b) => Number(b.form === own) - Number(a.form === own));
 }
 
 // The warning for `source`, which import leaves as written after a run with
@@ -259,6 +263,10 @@ const SOURCE_PREFIX_PATTERNS:
   {
     re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)$/,
     form: TABLE_FORMS.biglake,
+  },
+  {
+    re: /^biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/databases\/([^/.]+)$/,
+    form: TABLE_FORMS.biglakeHive,
   },
   {
     re: /^spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)$/,
@@ -364,7 +372,7 @@ function parseImportDocument(
     }
   }
 
-  // 3. Validate `opts.sourcePrefix` against the 9 supported first-party GCP
+  // 3. Validate `opts.sourcePrefix` against the supported first-party GCP
   // container resource name patterns, or as an entry group, before doing any
   // document work.
   let sourcePrefix: ParsedSourcePrefix|undefined;
@@ -392,10 +400,10 @@ function parseImportDocument(
     } else {
       return `Invalid sourcePrefix '${opts.sourcePrefix}'; expected the GCP ` +
           `resource name of a BigQuery project or dataset, a BigLake ` +
-          `catalog or namespace, a Spanner database, an AlloyDB database ` +
-          `or schema, or a Cloud SQL database or schema (with no leading ` +
-          `'//'), or the name of a Knowledge Catalog entry group ` +
-          `('projects/<p>/locations/<l>/entryGroups/<g>').`;
+          `catalog, namespace or Hive database, a Spanner database, an ` +
+          `AlloyDB database or schema, or a Cloud SQL database or schema ` +
+          `(with no leading '//'), or the name of a Knowledge Catalog entry ` +
+          `group ('projects/<p>/locations/<l>/entryGroups/<g>').`;
     }
   }
 

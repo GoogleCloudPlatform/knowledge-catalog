@@ -147,8 +147,12 @@ describe('conversion, strict mode, and translation', () => {
       'version'
     ],
     [
-      'invalid FQN sourcePrefix', ossieDoc(),
-      {sourcePrefix: 'bigquery:acme.sales'}, 'bigquery:acme.sales'
+      'invalid FQN sourcePrefix', ossieDoc(), {sourcePrefix: 'bigquery:acme.sales'},
+      "Invalid sourcePrefix 'bigquery:acme.sales'; expected the GCP resource name of a BigQuery " +
+          'project or dataset, a BigLake catalog, namespace or Hive database, a Spanner database, ' +
+          "an AlloyDB database or schema, or a Cloud SQL database or schema (with no leading '//'), " +
+          "or the name of a Knowledge Catalog entry group " +
+          "('projects/<p>/locations/<l>/entryGroups/<g>')."
     ],
     [
       'BigLake sourcePrefix with dot in catalog', ossieDoc(),
@@ -973,7 +977,8 @@ describe('sources', () => {
   });
 
   // A path in one pair of backticks gives its parts under a BigLake prefix,
-  // and a part in double quotes keeps its dot.
+  // a part in double quotes keeps its dot, and a Hive database prefix
+  // completes the database form.
   const LAKE = 'biglake.googleapis.com/projects/acme/catalogs/lake';
   const LAKE_TABLE = `${LAKE}/namespaces/sales/tables/orders`;
   const ALLOYDB_APP =
@@ -981,6 +986,7 @@ describe('sources', () => {
   test.each([
     ['`acme.lake.sales.orders`', LAKE, LAKE_TABLE],
     ['`acme.lake.sales.orders`', `${LAKE}/namespaces/sales`, LAKE_TABLE],
+    ['sales.orders', `${LAKE}/databases/sales`, `${LAKE}/databases/sales/tables/orders`],
     ['public."order.items"', CLOUDSQL_PREFIX, `${CLOUDSQL_PREFIX}/tables/order.items`],
     ['public."order.items"', ALLOYDB_APP, `${ALLOYDB_APP}/schemas/public/tables/order.items`],
   ])('qualifies %s from %s', async (bare, sourcePrefix, table) => {
@@ -1056,6 +1062,10 @@ describe('sources', () => {
       "the quoted name 'my.ns' is one namespace name, and a BigLake namespace name cannot hold a dot. " +
           "Write the table's GCP resource name instead, such as " +
           `'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>'. ${PUSH} ${ADVICE}`,
+    ],
+    [
+      'dotted name under a Hive database', `'"my.t"'`, {sourcePrefix: `${LAKE}/databases/sales`},
+      `such as 'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/databases/<database>/tables/<table>'. ${PUSH} ${ADVICE}`,
     ],
   ])('leaves %s as written with a warning and writes the file',
      async (_, src, opts, tail) => {

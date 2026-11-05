@@ -11,13 +11,21 @@ import {CatalogClient} from '../../../src/libts/gcp/dataplex';
 import {SpannerClient} from '../../../src/libts/gcp/spanner';
 import {Entity, ProfileSpec} from '../../../src/libts/semantic/ir';
 import {sourceEntryErrors, SourceReaders} from '../../../src/libts/semantic/source_entries';
-import {entryDenied, entryInvalid, FEDERATED_CATALOG, INVALID_TABLE_ID, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
+import {entryDenied, entryInvalid, FEDERATED_CATALOG, HIVE_CATALOG, INVALID_TABLE_ID, invalidHiveId, MULTI_REGION_GCS_CATALOG, NAM22_CONFIG, NAM3_CONFIG, NAM3_INSTANCE, NOT_FOUND, NOT_ICEBERG, P, REGIONAL_CATALOG, REGIONAL_CONFIG, REGIONAL_INSTANCE, spannerDenied, US_TABLE} from '../gcp/location_responses';
 
 const BIGQUERY = `bigquery.googleapis.com/projects/${P}/datasets/kcmd_demo/tables/orders`;
 const BIGLAKE = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-src-biglake-57138/namespaces/sales/tables/orders`;
 const BIGLAKE_US = 'biglake.googleapis.com/projects/looker-private-demo/catalogs/snowflake/namespaces/sales/tables/orders';
 const BIGLAKE_GCS_US = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-biglake-probe-6890/namespaces/sales/tables/orders`;
 const BIGLAKE_FAILOVER = `biglake.googleapis.com/projects/${P}/catalogs/kcmd-biglake-failover/namespaces/sales/tables/orders`;
+const HIVE_ID = 'sqlgen_jharshit_atscale_hive_us';
+const BIGLAKE_HIVE = `biglake.googleapis.com/projects/sqlgen-testing/catalogs/${HIVE_ID}/databases/hive_db_us_d4/tables/jharshit_autogen_hive_us_t8`;
+// Each kind of catalog's table, written as the other kind's.
+const BIGLAKE_US_AS_HIVE = BIGLAKE_US.replace('namespaces', 'databases');
+const BIGLAKE_AS_HIVE = BIGLAKE.replace('namespaces', 'databases');
+const HIVE_AS_ICEBERG = BIGLAKE_HIVE.replace('databases', 'namespaces');
+const GET_HIVE = `getHiveCatalog sqlgen-testing ${HIVE_ID}`;
+const GET_HIVE_AS_ICEBERG = `getCatalog sqlgen-testing ${HIVE_ID}`;
 const SPANNER = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-reg/databases/sales/tables/Orders`;
 const SPANNER_NAM3 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-multi/databases/sales/tables/Orders`;
 const SPANNER_NAM22 = `spanner.googleapis.com/projects/${P}/instances/kcmd-src-nam22/databases/sales/tables/Orders`;
@@ -85,6 +93,7 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
       replicas: [...MULTI_REGION_GCS_CATALOG.replicas].reverse(),
     }),
     [`getCatalog ${P} kcmd-biglake-failover`]: ok(FAILOVER_CATALOG),
+    [GET_HIVE]: ok(HIVE_CATALOG),
   };
   const answer = async (call: string, missing: ApiResult<any>) => {
     calls.push(call);
@@ -98,7 +107,10 @@ function fakeReaders(entries: string[], override: Record<string, ApiResult<any>|
           answer(`lookupEntry ${project} ${location} ${name}`, entryDenied(name)),
     },
     bigquery: {getTable: (p, d, t) => answer(`getTable ${p} ${d} ${t}`, NOT_FOUND)},
-    biglake: {getCatalog: (p, c) => answer(`getCatalog ${p} ${c}`, NOT_FOUND)},
+    biglake: {
+      getCatalog: (p, c) => answer(`getCatalog ${p} ${c}`, NOT_FOUND),
+      getHiveCatalog: (p, c) => answer(`getHiveCatalog ${p} ${c}`, NOT_FOUND),
+    },
     spanner: {
       getInstance: (p, i) => answer(`getInstance ${p} ${i}`, NOT_FOUND),
       getInstanceConfig: c => answer(`getInstanceConfig ${c}`, NOT_FOUND),
@@ -131,9 +143,14 @@ const couldNotCheck = (source: string, detail: string) =>
     `--skip-source-check: ${detail}`;
 // The message for an inline source whose location read `what` answered 404,
 // so the `kind` it names, such as `a table`, does not exist.
-const missing = (source: string, kind: string, what: string, entity?: string) =>
+const missing = (source: string, kind: string, what: string, entity?: string, hint = '') =>
     `${at(source, entity)} names ${kind} that does not exist: ${what} found ` +
-    `nothing (HTTP 404). Fix the source, or pass --skip-source-check.`;
+    `nothing (HTTP 404).${hint} Fix the source, or pass --skip-source-check.`;
+// The message for an inline source whose location read `what` answered 400
+// with `message`.
+const failed = (source: string, what: string, message: string, hint = '') =>
+    `${at(source)} could not be checked: ${what} failed (HTTP 400: ${message}).` +
+    `${hint} Fix the source, or pass --skip-source-check.`;
 // The message for an inline source whose location read `what` answered 403
 // with `message`.
 const refused = (source: string, what: string, message: string, hint = '') =>
@@ -145,6 +162,8 @@ const ALLOYDB_HINT = ' A new AlloyDB cluster can take hours to appear in the ' +
 const CONFIG_HINT = ' Reading it needs the permission ' +
     'spanner.instanceConfigs.get on the project, which roles/spanner.viewer ' +
     'includes and the Spanner database roles do not.';
+const HIVE_FORM = " A table in a Hive catalog is written with 'databases/<database>'.";
+const ICEBERG_FORM = " A table in an Iceberg REST catalog is written with 'namespaces/<namespace>'.";
 
 describe('sourceEntryErrors', () => {
   // [label, source, the lookup that finds its entry, the reads and lookups
@@ -170,6 +189,10 @@ describe('sourceEntryErrors', () => {
      BIGLAKE_FAILOVER, lookup('biglake', 'us-central1', BIGLAKE_FAILOVER),
      [`getCatalog ${P} kcmd-biglake-failover`,
       lookup('biglake', 'us-east1', BIGLAKE_FAILOVER)]],
+    // After a fail back, a table made during the failover has its entry only
+    // in the secondary's region (live, 2026-11-04).
+    ['Hive BigLake, whose entry sits in its secondary\'s region', BIGLAKE_HIVE,
+     lookup('biglake', 'us-east1', BIGLAKE_HIVE), [GET_HIVE, lookup('biglake', 'us', BIGLAKE_HIVE)]],
     // A Spanner entry sits in its config's default leader region. A regional
     // config's name gives it, so the config is not read; the live config
     // agrees.
@@ -202,13 +225,26 @@ describe('sourceEntryErrors', () => {
   const BIGQUERY_INVALID = BIGQUERY.replace(/orders$/, 'orders!x');
   const ALLOYDB_LOOKUP = lookup('alloydb', 'us-east4', ALLOYDB);
   const ENTRY_INVALID = entryInvalid(ALLOYDB_LOOKUP.split(' ')[3]);
-  // [label, source, the read that fails, its answer, the message]
-  const FAILED_READS: Array<[string, string, string, ApiResult<any>|Error, string]> = [
+  const CAPS_ID = HIVE_ID.toUpperCase();
+  const HIVE_CAPS = BIGLAKE_HIVE.replace(HIVE_ID, CAPS_ID);
+  const HIVE_MISSING = BIGLAKE_HIVE.replace(HIVE_ID, 'no_such_catalog');
+  const UNAVAILABLE = {status: 503, message: 'unavailable'};
+  const INVALID_HYPHEN_ID = invalidHiveId('kcmd-src-biglake-57138');
+  const notIceberg = (hint?: string) =>
+      failed(HIVE_AS_ICEBERG, `reading the region of catalog '${HIVE_ID}'`, NOT_ICEBERG.message, hint);
+  // [label, source, the read that fails, its answer, the message, the reads
+  // after it, with their answers]
+  const FAILED_READS: Array<[string, string, string, ApiResult<any>|Error, string,
+                             Record<string, ApiResult<any>>?]> = [
     // A missing table or dataset, catalog or instance answers 404.
     ['a missing table', BIGQUERY, `getTable ${P} kcmd_demo orders`, NOT_FOUND,
      missing(BIGQUERY, 'a table', `reading table '${P}.kcmd_demo.orders'`)],
     ['a missing catalog', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, NOT_FOUND,
-     missing(BIGLAKE, 'a catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`)],
+     missing(BIGLAKE, 'a catalog', `reading the region of catalog 'kcmd-src-biglake-57138'`),
+     {[`getHiveCatalog ${P} kcmd-src-biglake-57138`]: INVALID_HYPHEN_ID}],
+    ['a missing Hive catalog', HIVE_MISSING, 'getHiveCatalog sqlgen-testing no_such_catalog', NOT_FOUND,
+     missing(HIVE_MISSING, 'a Hive catalog', "reading the region of Hive catalog 'no_such_catalog'"),
+     {'getCatalog sqlgen-testing no_such_catalog': NOT_FOUND}],
     ['a missing instance', SPANNER, `getInstance ${P} kcmd-src-reg`, NOT_FOUND,
      missing(SPANNER, 'an instance', `reading instance 'kcmd-src-reg'`)],
     // Spanner answers 403 for an instance or config the caller may not read.
@@ -220,20 +256,37 @@ describe('sourceEntryErrors', () => {
      refused(SPANNER_NAM3, NAM3_CONFIG_READ, CONFIG_DENIED.message, CONFIG_HINT)],
     // A 5xx or a thrown call may pass on retry; a 400 never will.
     ['an instance config that fails', SPANNER_NAM3,
-     `getInstanceConfig ${NAM3_INSTANCE.config}`, {status: 503, message: 'unavailable'},
+     `getInstanceConfig ${NAM3_INSTANCE.config}`, UNAVAILABLE,
      couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} failed (HTTP 503: unavailable).`)],
+    ['a catalog read that answers 503', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, UNAVAILABLE,
+     couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed (HTTP 503: unavailable).")],
+    ['a catalog read that throws', BIGLAKE, `getCatalog ${P} kcmd-src-biglake-57138`, new Error('socket hang up'),
+     couldNotCheck(BIGLAKE, "reading the region of catalog 'kcmd-src-biglake-57138' failed: socket hang up")],
     ['a lookup that throws', ALLOYDB, ALLOYDB_LOOKUP,
      new Error('socket hang up'),
      couldNotCheck(ALLOYDB, 'looking up its Knowledge Catalog entry failed: socket hang up')],
     ['an invalid table ID', BIGQUERY_INVALID, `getTable ${P} kcmd_demo orders!x`,
      INVALID_TABLE_ID,
-     `${at(BIGQUERY_INVALID)} could not be checked: reading table '${P}.kcmd_demo.orders!x' ` +
-         `failed (HTTP 400: ${INVALID_TABLE_ID.message}). Fix the source, or pass ` +
-         `--skip-source-check.`],
+     failed(BIGQUERY_INVALID, `reading table '${P}.kcmd_demo.orders!x'`, INVALID_TABLE_ID.message)],
     ['a lookup that answers 400', ALLOYDB, ALLOYDB_LOOKUP, ENTRY_INVALID,
-     `${at(ALLOYDB)} could not be checked: looking up its Knowledge Catalog entry ` +
-         `failed (HTTP 400: ${ENTRY_INVALID.message}). Fix the source, or pass ` +
-         `--skip-source-check.`],
+     failed(ALLOYDB, 'looking up its Knowledge Catalog entry', ENTRY_INVALID.message)],
+    // A catalog read that a retry cannot pass is followed by a read through the
+    // other kind of catalog's API. The message says how a table in that kind of
+    // catalog is written only when that read finds the catalog. The Hive API
+    // refuses an id with a hyphen or a capital letter.
+    ['a Hive catalog written with namespaces/', HIVE_AS_ICEBERG, GET_HIVE_AS_ICEBERG, NOT_ICEBERG,
+     notIceberg(HIVE_FORM), {[GET_HIVE]: ok(HIVE_CATALOG)}],
+    ['a Hive catalog written with namespaces/, whose Hive read answers 403', HIVE_AS_ICEBERG,
+     GET_HIVE_AS_ICEBERG, NOT_ICEBERG, notIceberg(), {[GET_HIVE]: {status: 403, message: 'denied'}}],
+    ['a Hive catalog written with namespaces/, whose Hive read answers 503', HIVE_AS_ICEBERG,
+     GET_HIVE_AS_ICEBERG, NOT_ICEBERG, notIceberg(), {[GET_HIVE]: UNAVAILABLE}],
+    ['an Iceberg REST catalog written with databases/', BIGLAKE_AS_HIVE, `getHiveCatalog ${P} kcmd-src-biglake-57138`,
+     INVALID_HYPHEN_ID, failed(BIGLAKE_AS_HIVE, "reading the region of Hive catalog 'kcmd-src-biglake-57138'",
+                               INVALID_HYPHEN_ID.message, ICEBERG_FORM),
+     {[`getCatalog ${P} kcmd-src-biglake-57138`]: ok(REGIONAL_CATALOG)}],
+    ['a Hive catalog id in capitals', HIVE_CAPS, `getHiveCatalog sqlgen-testing ${CAPS_ID}`, invalidHiveId(CAPS_ID),
+     failed(HIVE_CAPS, `reading the region of Hive catalog '${CAPS_ID}'`, invalidHiveId(CAPS_ID).message),
+     {[`getCatalog sqlgen-testing ${CAPS_ID}`]: NOT_FOUND}],
     // The services have always given these fields; the guards keep an answer
     // without one from crashing the push.
     ['a table with no location', BIGQUERY, `getTable ${P} kcmd_demo orders`,
@@ -251,11 +304,11 @@ describe('sourceEntryErrors', () => {
      ok({...NAM3_CONFIG, replicas: NAM3_CONFIG.replicas.slice(1)}),
      couldNotCheck(SPANNER_NAM3, `${NAM3_CONFIG_READ} gave no default leader.`)],
   ];
-  for (const [label, source, call, answer, message] of FAILED_READS) {
-    test(`${label} fails the source, and nothing after it is read`, async () => {
-      const {readers, calls} = fakeReaders([], {[call]: answer});
+  for (const [label, source, call, answer, message, after = {}] of FAILED_READS) {
+    test(`${label} fails the source, and only the listed reads follow it`, async () => {
+      const {readers, calls} = fakeReaders([], {[call]: answer, ...after});
       expect(await sourceEntryErrors(inline(source), readers)).toEqual([message]);
-      expect(calls.at(-1)).toBe(call);
+      expect(calls.slice(calls.indexOf(call))).toEqual([call, ...Object.keys(after)]);
     });
   }
 
@@ -285,6 +338,18 @@ describe('sourceEntryErrors', () => {
       `getCatalog ${P} kcmd-biglake-probe-6890`,
       ...entries,
     ].sort());
+  });
+
+  // The Hive API answers 404 for an Iceberg REST catalog. That wrong form
+  // does not fail the catalog's right form.
+  test('a catalog written in both forms is read once through each API', async () => {
+    const entry = lookup('biglake', 'us', BIGLAKE_US);
+    const {readers, calls} = fakeReaders([entry]);
+    const m = model([entity('orders', BIGLAKE_US_AS_HIVE)], [profile('iceberg', [['orders', BIGLAKE_US]])]);
+    expect(await sourceEntryErrors(m, readers)).toEqual([missing(BIGLAKE_US_AS_HIVE, 'a Hive catalog',
+        "reading the region of Hive catalog 'snowflake'", undefined, ICEBERG_FORM)]);
+    expect(calls.sort()).toEqual(
+        ['getCatalog looker-private-demo snowflake', 'getHiveCatalog looker-private-demo snowflake', entry]);
   });
 
   test('every entity of a failing source is reported, in model order', async () => {

@@ -200,7 +200,7 @@
         },
         {
           "title": "BigLake table",
-          "pattern": "^biglake\\.googleapis\\.com/projects/[^/]+/catalogs/[^/.]+/namespaces/[^/.]+/tables/[^/.]+$"
+          "pattern": "^biglake\\.googleapis\\.com/projects/[^/]+/catalogs/[^/.]+/(namespaces|databases)/[^/.]+/tables/[^/.]+$"
         },
         {
           "title": "Spanner table",

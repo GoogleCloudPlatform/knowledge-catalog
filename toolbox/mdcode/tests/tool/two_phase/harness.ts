@@ -176,6 +176,8 @@ const SERVICES = {
   getTable: [BigQueryClient.prototype, 'getTable', ok({location: 'US'})],
   getInstance: [SpannerClient.prototype, 'getInstance', ok(REGIONAL_INSTANCE)],
   getCatalog: [BigLakeClient.prototype, 'getCatalog', ok(REGIONAL_CATALOG)],
+  getHiveCatalog:
+      [BigLakeClient.prototype, 'getHiveCatalog', ok(REGIONAL_CATALOG)],
   lookupEntry: [CatalogClient.prototype, 'lookupEntry', ok({})],
   getEntryType: [CatalogClient.prototype, 'getEntryType', ok({})],
   getAspectType: [CatalogClient.prototype, 'getAspectType', ok({})],

@@ -160,6 +160,7 @@ function loaderErrors(doc: unknown): string|undefined {
 const SOURCE = {
   bigquery: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders',
   biglake: 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/orders',
+  biglakeHive: 'biglake.googleapis.com/projects/p/catalogs/c/databases/db/tables/orders',
   spanner: 'spanner.googleapis.com/projects/p/instances/i/databases/db/tables/orders',
   alloydb: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/schemas/s/tables/orders',
   cloudsqlMysql: 'cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/db/tables/orders',
@@ -175,6 +176,7 @@ const TARGET = {
 const BAD_SOURCE: Record<keyof typeof SOURCE, string> = {
   bigquery: 'bigquery.googleapis.com/projects/p/datasets/d/tables/orders.v2',
   biglake: 'biglake.googleapis.com/projects/p/catalogs/c/tables/orders',
+  biglakeHive: 'biglake.googleapis.com/projects/p/catalogs/c/schemas/db/tables/orders',
   spanner: 'spanner.googleapis.com/projects/p/instances/i/tables/orders',
   alloydb: 'alloydb.googleapis.com/projects/p/locations/l/clusters/c/databases/db/tables/orders',
   cloudsqlMysql: 'cloudsql.googleapis.com/projects/p/instances/i/databases/db/tables/orders',

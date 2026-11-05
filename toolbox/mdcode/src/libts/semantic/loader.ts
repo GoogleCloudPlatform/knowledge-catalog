@@ -3114,8 +3114,10 @@ const MAX_CATALOG_NAME_LENGTH = 4000;
 
 const BIGQUERY_TABLE_URI =
     /^\/\/bigquery\.googleapis\.com\/projects\/([^/]+)\/datasets\/([^/.]+)\/tables\/([^/.]+)$/;
+// A BigLake table sits in a namespace of an Iceberg REST catalog, or in a
+// database of a Hive catalog.
 const BIGLAKE_TABLE_URI =
-    /^\/\/biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/namespaces\/([^/.]+)\/tables\/([^/.]+)$/;
+    /^\/\/biglake\.googleapis\.com\/projects\/([^/]+)\/catalogs\/([^/.]+)\/(namespaces|databases)\/([^/.]+)\/tables\/([^/.]+)$/;
 const SPANNER_TABLE_URI =
     /^\/\/spanner\.googleapis\.com\/projects\/([^/]+)\/instances\/([^/]+)\/databases\/([^/]+)\/tables\/[^/]+$/;
 const ALLOYDB_TABLE_URI =
@@ -3166,7 +3168,7 @@ export function cloudSqlTableOf(source: string): CloudSqlTable|undefined {
 // leading `//`, which is its entry id. A Cloud SQL table is cloudSqlTableOf's.
 export type SourceTable = {resourceName: string; project: string}&(
     {system: 'bigquery'; dataset: string; table: string}|
-    {system: 'biglake'; catalog: string}|
+    {system: 'biglake'; catalog: string; hive: boolean}|
     {system: 'spanner'; instance: string}|
     {system: 'alloydb'; location: string});
 
@@ -3182,7 +3184,10 @@ export function sourceTableOf(source: string): SourceTable|undefined {
     };
   }
   m = uri.match(BIGLAKE_TABLE_URI);
-  if (m) return {system: 'biglake', resourceName, project: m[1], catalog: m[2]};
+  if (m) {
+    const hive = m[3] === 'databases';
+    return {system: 'biglake', resourceName, project: m[1], catalog: m[2], hive};
+  }
   m = uri.match(SPANNER_TABLE_URI);
   if (m) return {system: 'spanner', resourceName, project: m[1], instance: m[2]};
   m = uri.match(ALLOYDB_TABLE_URI);
@@ -3280,7 +3285,8 @@ export const NO_SPACE = 'kcmd cannot name a table whose name holds a space';
 
 // The resource name of a table in each Google Cloud service a source can
 // name, with a placeholder for each name in it. A Cloud SQL table has one
-// form without a schema and one with.
+// form without a schema and one with, and a BigLake table one for each kind
+// of catalog.
 export const TABLE_FORMS = {
   bigquery:
       'bigquery.googleapis.com/projects/<project>/datasets/<dataset>/tables/<table>',
@@ -3294,12 +3300,16 @@ export const TABLE_FORMS = {
       'cloudsql.googleapis.com/projects/<project>/locations/<location>/instances/<instance>/databases/<database>/schemas/<schema>/tables/<table>',
   biglake:
       'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/namespaces/<namespace>/tables/<table>',
+  biglakeHive:
+      'biglake.googleapis.com/projects/<project>/catalogs/<catalog>/databases/<database>/tables/<table>',
 };
 
-// The databases each Cloud SQL form in TABLE_FORMS is for.
-const CLOUD_SQL_DATABASES: Record<string, string> = {
+// What each form in TABLE_FORMS is for, where its service has two.
+const FORM_USES: Record<string, string> = {
   cloudsql: 'MySQL',
   cloudsqlSchema: 'PostgreSQL, SQL Server',
+  biglake: 'Iceberg REST catalog',
+  biglakeHive: 'Hive catalog',
 };
 
 // `form` with its last placeholders replaced by `parts`, in order, or
@@ -3567,8 +3577,8 @@ export function sourceToDataSource(source: string): string {
   if (bqUri) return `${bqUri[1]}.${bqUri[2]}.${bqUri[3]}`;
   const biglakeUri = value.match(BIGLAKE_TABLE_URI);
   if (biglakeUri) {
-    const [, project, catalog, namespace, table] = biglakeUri;
-    return `${project}.${catalog}.${namespace}.${table}`;
+    const [, project, catalog, , parent, table] = biglakeUri;
+    return `${project}.${catalog}.${parent}.${table}`;
   }
   return value;
 }
@@ -3825,13 +3835,13 @@ export function parseSource(
   }
 
   // Each table form with its placeholders shortened, such as <p> for
-  // <project>, and the databases a Cloud SQL form is for.
+  // <project>, and what it is for where its service has two.
   const forms = Object.entries(TABLE_FORMS).map(([kind, form]) => {
     const short = form.replace(
         /<(\w+)>/g,
         (_, name: string) => `<${name === 'database' ? 'db' : name[0]}>`);
-    const databases = CLOUD_SQL_DATABASES[kind];
-    return `'${short}'${databases ? ` (${databases})` : ''}`;
+    const use = FORM_USES[kind];
+    return `'${short}'${use ? ` (${use})` : ''}`;
   });
   throw new SemanticModelError(
       `Semantic model load error: ${ctx}: source '${trimmed}' is not a valid ` +

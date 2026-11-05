@@ -101,7 +101,31 @@ export const MULTI_REGION_GCS_CATALOG = {
   ],
 };
 
+// A Hive catalog, read in sqlgen-testing on 2026-11-04. It lists its primary
+// replica first, and its tables' entries sit in `us`.
+export const HIVE_CATALOG = {
+  name: 'projects/sqlgen-testing/catalogs/sqlgen_jharshit_atscale_hive_us',
+  replicas: [{region: 'US', state: 'STATE_PRIMARY'},
+             {region: 'us-east1', state: 'STATE_SECONDARY'}],
+};
+
 export const NOT_FOUND = {status: 404, message: 'Not found'};
+
+// The Iceberg REST catalog API's answer for HIVE_CATALOG (live, 2026-11-04).
+export const NOT_ICEBERG = {
+  status: 400,
+  message: 'Catalog sqlgen_jharshit_atscale_hive_us is not an Iceberg Catalog.',
+};
+
+// The Hive API's answer for an id with a hyphen or a capital letter (live,
+// 2026-11-04).
+export function invalidHiveId(id: string) {
+  return {
+    status: 400,
+    message: `Invalid catalog name: '${id}'. Must be a match of regex ` +
+        `'^[a-z0-9][a-z0-9_]{0,255}$'`,
+  };
+}
 
 // BigQuery's tables.get answer for the table ID `orders!x`, which the loader
 // accepts and BigQuery rejects (live, 2026-11-04; the message is the body's

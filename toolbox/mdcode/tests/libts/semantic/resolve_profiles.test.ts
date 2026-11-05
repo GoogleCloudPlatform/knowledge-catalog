@@ -1943,11 +1943,13 @@ describe('completeness sees the model as the profile does', () => {
   });
 
   test('a BigLake table shares BigQuery\'s database', () => {
-    expect(validateProfileCompleteness(model(true), spec([
-      {name: 'customer',
-       source: 'biglake.googleapis.com/projects/p/catalogs/c/namespaces/n/tables/t'},
-      {name: 'vip', source: BQ('v')},
-    ]))).toEqual([]);
+    for (const parent of ['namespaces/n', 'databases/d']) {
+      expect(validateProfileCompleteness(model(true), spec([
+        {name: 'customer',
+         source: `biglake.googleapis.com/projects/p/catalogs/c/${parent}/tables/t`},
+        {name: 'vip', source: BQ('v')},
+      ]))).toEqual([]);
+    }
   });
 });
 
