@@ -9,7 +9,9 @@
 // `schema` aspect), and hands the hydrated entries to the pure reader
 // (`kc_converter.modelsFromCatalogResources`). With the first-generation
 // aspects it also returns the file copies a push stored of the model and
-// profile files, for the caller to write instead of the rebuilt model.
+// profile files, for the caller to write instead of the rebuilt model. With
+// the second-generation types, a model an older kcmd pushed with the first-
+// generation ones is left out, and a warning names it.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -22,7 +24,7 @@ import {catalogContainer, CatalogClient, Entry, EntryLink} from '../gcp/dataplex
 
 import {actionAspectTypes} from './kc_actions';
 import {constraintAspectTypes} from './kc_constraints';
-import {linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
+import {FirstGenerationModel, linkDedupKey, modelsFromCatalogResources, ReadResult} from './kc_converter';
 import {ACTION_TYPE_ID, CONSTRAINT_TYPE_ID, FILE_COPY_TYPE_ID, FileCopy, PUSH_ID_LABEL, PUSH_STATE_LABEL, PUSH_WRITING} from './kc_custom_types';
 import {entryIdOf, Namer} from './kc_ids';
 import {loadSqlEngine} from './sql_parser';
@@ -35,7 +37,9 @@ export interface KcPullOptions {
   // Id of the source entry group to pull from.
   entryGroup: string;
   // Read the second-generation built-in aspect fields and entry-id layout
-  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false).
+  // (selected via KC_V2_ASPECTS=1). Off by default (absent means false). A
+  // model an older kcmd pushed with the first-generation types is then left
+  // out with a warning.
   v2Aspects?: boolean;
   // The project of the schema-join entry link type, which only a pull with
   // v2Aspects off reads. Defaults to `dataplex-types`.
@@ -70,10 +74,15 @@ export async function pullKnowledgeCatalog(
   // data, so each entry needs its own lookupEntry, and those fetches are
   // independent. The pool preserves input order so warnings stay deterministic.
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
+  // With v2Aspects on, the ids of the file copies, which are not fetched.
+  const copyIds: string[] = [];
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
     // With v2Aspects on, a pull returns no file copies, so it fetches none.
-    if (opts.v2Aspects && isFileCopyEntry(entry)) continue;
+    if (opts.v2Aspects && isFileCopyEntry(entry)) {
+      copyIds.push(entryIdOf(entry.name));
+      continue;
+    }
     const aspectTypes = semanticAspectTypes(entry.entryType, opts.v2Aspects);
     if (aspectTypes) targets.push({entry, aspectTypes});
     // else: not part of a semantic model; ignore it.
@@ -147,8 +156,17 @@ export async function pullKnowledgeCatalog(
       `its model entry's ${PUSH_STATE_LABEL} label still says ${PUSH_WRITING}` :
       undefined;
   if (opts.v2Aspects) {
-    if (writingReason) throw notFinished(read.models[0].name, writingReason);
+    // A model an older kcmd pushed is not in `read.models`, so the model is
+    // named from its entry, as the reader names it.
+    if (writingReason) {
+      throw notFinished(
+          anchor!.entrySource?.displayName ?? entryIdOf(anchor!.name),
+          writingReason);
+    }
     warnings.push(...read.warnings);
+    for (const m of read.firstGeneration ?? []) {
+      warnings.push(firstGenerationWarning(opts, m, copyIds));
+    }
     return {...read, warnings: [...new Set(warnings)]};
   }
   // A copy belongs to the group's one model, so with no model there are none.
@@ -163,12 +181,10 @@ export async function pullKnowledgeCatalog(
   // writes the model. Without it the rebuilt model is written, as for a model
   // pushed before copies were stored.
   const model = read.models[0].name;
-  // The model's own copies sit under its anchor's `.files.` prefix. A copy
-  // another model left behind is not one of them.
-  const own = `${entryIdOf(anchors[0].entry.name)}.files.`;
   const before = warnings.length;
   const copies = readFileCopies(
-      hydrated.filter(e => entryIdOf(e.name).startsWith(own)), warnings);
+      hydrated.filter(e => isOwnCopy(anchors[0].entry.name, entryIdOf(e.name))),
+      warnings);
   const skipped = warnings.slice(before);
   // Every copy one push stores carries that push's id and how many copies it
   // stored. Copies whose ids differ, or of which only some carry one, or a
@@ -224,6 +240,36 @@ function notFinished(model: string, reason: string, more = ''): Error {
   return new Error(
       `the last push of model '${model}' did not finish: ${reason}, so pull ` +
       `writes nothing. Push again, then pull.${more}`);
+}
+
+
+// True when the file copy `copyId` belongs to the model of the entry
+// `anchor`: a model's own copies sit under its entry id's `.files.` prefix,
+// and a copy another model left behind is not one of them.
+function isOwnCopy(anchor: string, copyId: string): boolean {
+  return copyId.startsWith(`${entryIdOf(anchor)}.files.`);
+}
+
+// The model, entity and metric aspect types a first-generation push writes, in
+// the order the warning names them.
+const FIRST_GEN_ASPECTS = ['semantic-model', 'semantic-entity', 'semantic-metric'];
+
+// The warning for a model an older kcmd pushed, which a pull with v2Aspects
+// on leaves out. It names the first-generation aspect types found on the
+// model's entries, and the file copies when any of `copyIds` is the model's.
+function firstGenerationWarning(
+    opts: KcPullOptions, model: FirstGenerationModel,
+    copyIds: string[]): string {
+  const found = new Set(model.entries.flatMap(
+      e => Object.values(e.aspects ?? {})
+               .map(a => a.aspectType?.split('/aspectTypes/')[1])));
+  const types = FIRST_GEN_ASPECTS.filter(t => found.has(t));
+  const anchor = model.entries[0].name;
+  const copies = copyIds.some(id => isOwnCopy(anchor, id)) ? '; file copies' : '';
+  return `model '${model.name}' in entry group '${opts.entryGroup}' was ` +
+      `pushed by an older kcmd (first-generation aspects: ${types.join(', ')}${
+             copies}). Pull wrote nothing for it; push it again with the ` +
+      `current kcmd`;
 }
 
 

@@ -1614,8 +1614,9 @@ function reportCatalogResult(
 // the catalog holds file copies of the model and profile files, pull writes
 // those instead of the model rebuilt from the aspects. A model rebuilt from
 // the second-generation types is written the same way, as its model file,
-// profile files and overview sidecars. Returns a process exit code (0 on
-// success).
+// profile files and overview sidecars. With KC_V2_ASPECTS on, a model an
+// older kcmd pushed is left out with a warning, and nothing is written.
+// Returns a process exit code (0 on success).
 async function pullSemanticModel(
     ctx: context.ApiContext, snapshot: kcmd.CatalogSnapshot,
     options: PullOptions): Promise<number> {
@@ -1645,7 +1646,9 @@ async function pullSemanticModel(
   // A pull returns file copies only with the model they belong to.
   const rawFiles = result.rawFiles ?? [];
   if (!result.models.length) {
-    console.log('No semantic models found; nothing to pull.');
+    console.log(
+        result.firstGeneration ? 'Wrote nothing.' :
+                                 'No semantic models found; nothing to pull.');
     return 0;
   }
 

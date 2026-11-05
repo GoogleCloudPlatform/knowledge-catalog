@@ -76,6 +76,16 @@ export interface ReadResult {
   // With the second-generation types, the overview sidecar of each entry
   // whose overview holds content, contentType or links, by entry id.
   overviews?: Map<string, OverviewSidecar>;
+  // With the second-generation types, each model an older kcmd pushed with
+  // the first-generation types, which is left out of `models`.
+  firstGeneration?: FirstGenerationModel[];
+}
+
+// A model a second-generation read leaves out: its name, and its model entry
+// followed by the entries under it.
+export interface FirstGenerationModel {
+  name: string;
+  entries: Entry[];
 }
 
 // A guard naming a constraint this pull did not recover -- because its entry was
@@ -114,7 +124,8 @@ function warnDanglingGuards(
  *
  * With `opts.v2Aspects` set, a model whose `semantic-model` aspect has
  * `specVersion` is rebuilt from the second-generation types (see
- * readModelV2), which reads no entry link.
+ * readModelV2), which reads no entry link. A model without it is returned in
+ * `firstGeneration` instead of being rebuilt.
  */
 export function modelsFromCatalogResources(
     entries: Entry[], entryLinks: EntryLink[] = [],
@@ -150,11 +161,25 @@ export function modelsFromCatalogResources(
 
   let secondGeneration = false;
   const overviews = new Map<string, OverviewSidecar>();
-  const models = anchors.map(anchor => {
-    const name = anchor.entrySource?.displayName ?? idOf(anchor.name);
+  const nameOf = (anchor: Entry) =>
+      anchor.entrySource?.displayName ?? idOf(anchor.name);
+  // With the second-generation types, a model whose model entry has no
+  // specVersion was pushed with the first-generation types. It is left out
+  // rather than rebuilt from them.
+  const isFirstGeneration = (anchor: Entry) => !!opts.v2Aspects &&
+      aspectData(anchor, 'semantic-model').specVersion === undefined;
+  const firstGeneration = anchors.filter(isFirstGeneration).map(anchor => ({
+    name: nameOf(anchor),
+    entries: [
+      anchor,
+      ...[entityEntries, metricEntries, actionEntries, constraintEntries]
+          .flatMap(pool => childrenOf(anchor.name, pool)),
+    ],
+  }));
+  const models = anchors.filter(a => !isFirstGeneration(a)).map(anchor => {
+    const name = nameOf(anchor);
     const children = (pool: Entry[]) => childrenOf(anchor.name, pool);
-    if (opts.v2Aspects &&
-        aspectData(anchor, 'semantic-model').specVersion !== undefined) {
+    if (opts.v2Aspects) {
       secondGeneration = true;
       const [entities, metrics, relationships] =
           [entityEntries, metricEntries, relationshipEntries].map(children);
@@ -224,6 +249,7 @@ export function modelsFromCatalogResources(
     models,
     warnings: [...new Set(warnings)],
     ...(secondGeneration ? {secondGeneration, overviews} : {}),
+    ...(firstGeneration.length ? {firstGeneration} : {}),
   };
 }
 
