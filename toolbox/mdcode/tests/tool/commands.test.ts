@@ -859,7 +859,7 @@ semantic_model:
 
 // A model file with a deployment, whose comments, key order and flow style the
 // serializer would not reproduce.
-const ROUND_TRIP_MODEL = `# The commerce model. Comments survive the round trip.
+const ROUND_TRIP_MODEL = `# The commerce model.
 version: "0.2.0.dev0/google"
 semantic_model:
   - description: Orders and customers   # description before name
@@ -1007,6 +1007,40 @@ function messages(spy: any): string {
 
 // The catalog answers a Cloud SQL table's entry with its engine's type, which
 // gives the push the table's dialect, as it answers every other table's.
+describe('push checks that each file is valid UTF-8', () => {
+  // A Latin-1 é in a comment. Read as UTF-8, it becomes U+FFFD.
+  const latin1 = (text: string) => Buffer.concat(
+      [Buffer.from('# caf'), Buffer.from([0xe9]), Buffer.from(`\n${text}`)]);
+  for (const [file, text] of [
+         ['commerce.yaml', ROUND_TRIP_MODEL],
+         ['commerce.profile.prod.yaml', ROUND_TRIP_PROFILE],
+       ]) {
+    test(`a ${file} that is not valid UTF-8 fails the push, naming it`,
+         async () => {
+           writeRoundTripWorkspace();
+           fs.writeFileSync(path.join(entryGroupDir(), file), latin1(text));
+           const {create} = fakeCatalog();
+           const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+
+           expect(await push({deployment: false})).toBe(1);
+           expect(messages(errorSpy))
+               .toContain(
+                   `Error: File '${file}' is not valid UTF-8; save it as ` +
+                   `UTF-8.`);
+           expect(create).not.toHaveBeenCalled();
+         });
+  }
+
+  test('a file holding U+FFFD as text is pushed', async () => {
+    writeRoundTripWorkspace(
+        `# \uFFFD marks a lost character.\n${ROUND_TRIP_PROFILE}`);
+    fakeCatalog();
+
+    expect(await push({deployment: false})).toBe(0);
+  });
+});
+
+
 describe('a profile file that binds a Cloud SQL table', () => {
   const CLOUDSQL = 'cloudsql.googleapis.com/projects/test-project/locations/' +
       'us-central1/instances/shop/databases/sales';
@@ -1516,8 +1550,8 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          expect(messages(warnSpy)).toBe(
              `Warning: model 'shop' in entry group '${entryGroup}' was pushed ` +
              `by an older kcmd (first-generation aspects: semantic-model, ` +
-             `semantic-entity, semantic-metric; file copies). Pull wrote ` +
-             `nothing for it; push it again with the current kcmd`);
+             `semantic-entity, semantic-metric). Pull wrote nothing for it; ` +
+             `push it again with the current kcmd`);
          expect(messages(logSpy)).toContain('Wrote nothing.');
          expect(links).not.toHaveBeenCalled();
          expect(fs.existsSync(path.join('catalog', 'EntryGroups', entryGroup)))
@@ -1544,9 +1578,8 @@ describe('a pull with KC_V2_ASPECTS on', () => {
          // the one it left out with its warning.
          const warning = 'model \'shop\' in entry group \'commerce_eg\' was ' +
              'pushed by an older kcmd (first-generation aspects: ' +
-             'semantic-model, semantic-entity, semantic-metric; file ' +
-             'copies). Pull wrote nothing for it; push it again with the ' +
-             'current kcmd';
+             'semantic-model, semantic-entity, semantic-metric). Pull wrote ' +
+             'nothing for it; push it again with the current kcmd';
          spyOn(pullKc, 'pullKnowledgeCatalog').mockResolvedValue({
            models: [],
            warnings: [warning],

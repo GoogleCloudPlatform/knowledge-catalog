@@ -356,8 +356,8 @@ Each entity, the metric,
 and the model itself are now governed entries, joined by a schema-join link —
 discoverable, access-controlled, and the single definition the rest of your work
 reads from. `kcmd pull` rebuilds the model YAML from these entries, confirming
-the round-trip; comments, key order and formatting are not kept. Physical bindings can be governed here too, alongside
-the logical model.
+the round-trip; comments, key order and formatting are not kept. Physical
+bindings can be governed here too, alongside the logical model.
 
 > This write needs the `semantic-model` / `semantic-entity` / `semantic-metric`
 > entry types and write access to the entry group. See

@@ -973,6 +973,29 @@ semantic_model:
          });
   }
 
+  // Push refuses a model or profile file that is not valid UTF-8 before any
+  // graph deploys, so every push of the scope fails, once.
+  test('prints push\'s error once for a file that is not valid UTF-8',
+       async () => {
+         writeScope({'commerce.yaml': commerce()});
+         fs.writeFileSync(
+             path.join(
+                 dir, 'catalog', 'EntryGroups', 'commerce_eg',
+                 'commerce.profile.prod.yaml'),
+             Buffer.concat([
+               Buffer.from('# caf'), Buffer.from([0xe9]),
+               Buffer.from(`\n${profileFile('prod')}`)
+             ]));
+         const error = 'File \'commerce.profile.prod.yaml\' is not valid ' +
+             'UTF-8; save it as UTF-8.';
+         const pushed = await pushResult();
+         expect(pushed).toEqual(
+             {code: 1, errors: [expect.stringContaining(error)]});
+         expect(await profiles()).toBe(1);
+         expect(rejects(logs, '')).toEqual(pushed.errors);
+         expect(logs.filter(l => l.includes(error))).toHaveLength(1);
+       });
+
   // Customer's c_id and 200 fields that each read a column with a long name.
   // Each file that binds them all adds about 48 KB to customer's aspect.
   const WIDE = `fields: [{ name: c_id, expression: c_id }, ${

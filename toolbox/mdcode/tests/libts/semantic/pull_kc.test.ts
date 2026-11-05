@@ -374,38 +374,32 @@ describe('pullKnowledgeCatalog: single-model invariant and robustness', () => {
 
 describe('pullKnowledgeCatalog: a model an older kcmd pushed', () => {
   const isCopy = (e: Entry) => e.entryType.endsWith('/semantic-model-file');
-  const warning = (found: string) =>
+  const WARNING =
       `model 'shop' in entry group 'kcmd-v1-prod-test-20261104' was pushed ` +
-      `by an older kcmd (first-generation aspects: ${found}). Pull wrote ` +
-      `nothing for it; push it again with the current kcmd`;
-  const ALL = 'semantic-model, semantic-entity, semantic-metric';
+      `by an older kcmd (first-generation aspects: semantic-model, ` +
+      `semantic-entity, semantic-metric). Pull wrote nothing for it; push it ` +
+      `again with the current kcmd`;
   const cat = new CatalogClient({} as any);
 
-  for (const [label, entries, found] of [
-         ['as captured', firstGenEntries, `${ALL}; file copies`],
-         ['with no file copy', () => firstGenEntries().filter(e => !isCopy(e)),
-          ALL],
-       ] as const) {
-    test(`with v2Aspects on, ${label}: it is left out with a warning, and no ` +
-             'copy is fetched',
-         async () => {
-           const listed = entries();
-           const {lookup, lookupLinks} =
-               stubClient(listed, listed, undefined, firstGenLinks());
+  test('with v2Aspects on, it is left out with a warning, and no copy is ' +
+           'fetched',
+       async () => {
+         const listed = firstGenEntries();
+         const {lookup, lookupLinks} =
+             stubClient(listed, listed, undefined, firstGenLinks());
 
-           const result = await pullKnowledgeCatalog(cat, FIRST_GEN_V2);
+         const result = await pullKnowledgeCatalog(cat, FIRST_GEN_V2);
 
-           expect(result.models).toEqual([]);
-           expect(result.secondGeneration).toBeUndefined();
-           expect(result.firstGeneration?.map(m => m.name)).toEqual(['shop']);
-           expect(result.warnings).toEqual([warning(found)]);
-           const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
-           expect(listed.filter(isCopy).some(e => fetched.includes(e.name)))
-               .toBe(false);
-           // With v2Aspects on, pull reads no link.
-           expect(lookupLinks).not.toHaveBeenCalled();
-         });
-  }
+         expect(result.models).toEqual([]);
+         expect(result.secondGeneration).toBeUndefined();
+         expect(result.firstGeneration?.map(m => m.name)).toEqual(['shop']);
+         expect(result.warnings).toEqual([WARNING]);
+         const fetched = lookup.mock.calls.map((c: any[]) => c[2]);
+         expect(listed.filter(isCopy).some(e => fetched.includes(e.name)))
+             .toBe(false);
+         // With v2Aspects on, pull reads no link.
+         expect(lookupLinks).not.toHaveBeenCalled();
+       });
 
   // A pull with v2Aspects off reads the first-generation aspects, and leaves
   // out the file copy as a pull with v2Aspects on does.

@@ -19,11 +19,10 @@
 // Publish sequence (split into read-only `preflightKnowledgeCatalog` and write
 // `applyKnowledgeCatalog`):
 //   * Preflight validates that exactly one model is deployed per entry group,
-//     snapshots the destination
-//     entry group to guard against foreign models (unless `--force-remove` is
-//     set), and checks that any required custom entry/aspect types exist in
-//     the target project. With the second-generation aspects, it also checks
-//     every aspect's size.
+//     snapshots the destination entry group to guard against foreign models
+//     (unless `--force-remove` is set), and checks that any required custom
+//     entry/aspect types exist in the target project. With the
+//     second-generation aspects, it also checks every aspect's size.
 //   * Apply creates or updates each model's entries in dependency order: the
 //     `semantic-model` anchor first, then independent child entries
 //     concurrently, and finally dependent child entries (`semantic-metric` and
@@ -306,8 +305,8 @@ export async function deployEmittedModels(
  * The method performs the following checks:
  *   1. Validates locally that `emitted` contains a single model and, with
  *      `opts.v2Aspects` set, that every aspect size and instance count is
- *      within its limit. Builds the
- *      dry-run plan and returns early when `opts.validateOnly` is set.
+ *      within its limit. Builds the dry-run plan and returns early when
+ *      `opts.validateOnly` is set.
  *   2. Lists the destination entry group and validates that it contains no
  *      foreign models unless `--force-remove` is set.
  *   3. Validates that every custom type used by the model exists in the
@@ -1559,11 +1558,6 @@ async function writeEntry(
   return {};
 }
 
-// The entrySource label an older kcmd put on the model entry when it stored
-// file copies. No push sets it now. An update drops it, so a model entry an
-// older kcmd wrote loses it on the next push.
-const OLD_PUSH_ID_LABEL = 'kcmd-push-id';
-
 // The entrySource fields another writer may set, which an update keeps.
 const KEPT_SOURCE_FIELDS =
     ['resource', 'system', 'platform', 'createTime', 'updateTime'] as const;
@@ -1588,18 +1582,16 @@ const KEPT_SOURCE_FIELDS =
  * fields from `source`, the entrySource the entry had before this push. Of
  * those fields kcmd owns the display name and the description. The update
  * keeps another writer's `resource`, `system`, `platform`, `createTime` and
- * `updateTime`, and every label but the `kcmd-push-id` an older kcmd set,
- * which it drops. A label `entry` carries, such as the model entry's
- * `kcmd-push-state`, replaces the stored one. Dataplex refuses an update that
- * leaves out an `updateTime` the entry has, or moves it back. A kept field
- * another writer changes after `source` was read is written back with the old
- * value. For `updateTime` the update fails instead.
+ * `updateTime`, and every label. A label `entry` carries, such as the model
+ * entry's `kcmd-push-state`, replaces the stored one. Dataplex refuses an
+ * update that leaves out an `updateTime` the entry has, or moves it back. A
+ * kept field another writer changes after `source` was read is written back
+ * with the old value. For `updateTime` the update fails instead.
  */
 async function updateEntry(
     cat: CatalogClient, opts: KcDeployOptions, entry: Entry,
     source?: Entry['entrySource']): Promise<WriteOutcome> {
-  const {[OLD_PUSH_ID_LABEL]: _old, ...others} = source?.labels ?? {};
-  const labels = {...others, ...entry.entrySource?.labels};
+  const labels = {...source?.labels, ...entry.entrySource?.labels};
   const kept = Object.fromEntries(
       KEPT_SOURCE_FIELDS.filter(k => source?.[k] !== undefined)
           .map(k => [k, source![k]]));

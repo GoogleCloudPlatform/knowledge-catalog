@@ -9,8 +9,7 @@
 // `schema` aspect), and hands the hydrated entries to the pure reader
 // (`kc_converter.modelsFromCatalogResources`). With the second-generation
 // types, a model an older kcmd pushed with the first-generation ones is left
-// out, and a warning names it. The file copies an older kcmd stored of the
-// model and profile files are not read.
+// out, and a warning names it.
 //
 // TODO(#278): Layer 2 push/pull symmetry. This is the pull half over the
 // pure `kc_converter` codec; the push half (`deployKnowledgeCatalog`) still
@@ -63,14 +62,8 @@ export async function pullKnowledgeCatalog(
   // data, so each entry needs its own lookupEntry, and those fetches are
   // independent. The pool preserves input order so warnings stay deterministic.
   const targets: {entry: Entry; aspectTypes: string[]}[] = [];
-  // The ids of the file copies an older kcmd stored, which are not fetched.
-  const copyIds: string[] = [];
   for await (const entry of cat.listEntries(
       opts.project, opts.location, opts.entryGroup)) {
-    if (isFileCopyEntry(entry)) {
-      copyIds.push(entryIdOf(entry.name));
-      continue;
-    }
     const aspectTypes = semanticAspectTypes(entry.entryType, opts.v2Aspects);
     if (aspectTypes) targets.push({entry, aspectTypes});
     // else: not part of a semantic model; ignore it.
@@ -152,7 +145,7 @@ export async function pullKnowledgeCatalog(
   }
   const warnings = [...read.warnings];
   for (const m of read.firstGeneration ?? []) {
-    warnings.push(firstGenerationWarning(opts, m, copyIds));
+    warnings.push(firstGenerationWarning(opts, m));
   }
   return {...read, warnings: [...new Set(warnings)]};
 }
@@ -165,45 +158,23 @@ function notFinished(model: string, reason: string): Error {
 }
 
 
-// True when the file copy `copyId` belongs to the model of the entry
-// `anchor`: an older kcmd stored a model's copies under its entry id's
-// `.files.` prefix, and a copy another model left behind is not one of them.
-function isOwnCopy(anchor: string, copyId: string): boolean {
-  return copyId.startsWith(`${entryIdOf(anchor)}.files.`);
-}
-
-// The entry type of the file copies an older kcmd stored, a custom type in
-// the destination project.
-const OLD_FILE_COPY_TYPE_ID = 'semantic-model-file';
-
-// True when an entry is a file copy an older kcmd stored, matched by its
-// entry type's id suffix so the project the custom type lives in need not be
-// known.
-function isFileCopyEntry(entry: Entry): boolean {
-  return entry.entryType?.endsWith(`/entryTypes/${OLD_FILE_COPY_TYPE_ID}`) ??
-      false;
-}
-
 // The model, entity and metric aspect types a first-generation push writes, in
 // the order the warning names them.
 const FIRST_GEN_ASPECTS = ['semantic-model', 'semantic-entity', 'semantic-metric'];
 
 // The warning for a model an older kcmd pushed, which a pull with v2Aspects
 // on leaves out. It names the first-generation aspect types found on the
-// model's entries, and the file copies when any of `copyIds` is the model's.
+// model's entries.
 function firstGenerationWarning(
-    opts: KcPullOptions, model: FirstGenerationModel,
-    copyIds: string[]): string {
+    opts: KcPullOptions, model: FirstGenerationModel): string {
   const found = new Set(model.entries.flatMap(
       e => Object.values(e.aspects ?? {})
                .map(a => a.aspectType?.split('/aspectTypes/')[1])));
   const types = FIRST_GEN_ASPECTS.filter(t => found.has(t));
-  const anchor = model.entries[0].name;
-  const copies = copyIds.some(id => isOwnCopy(anchor, id)) ? '; file copies' : '';
   return `model '${model.name}' in entry group '${opts.entryGroup}' was ` +
-      `pushed by an older kcmd (first-generation aspects: ${types.join(', ')}${
-             copies}). Pull wrote nothing for it; push it again with the ` +
-      `current kcmd`;
+      `pushed by an older kcmd (first-generation aspects: ${
+             types.join(', ')}). Pull wrote nothing for it; push it again ` +
+      `with the current kcmd`;
 }
 
 

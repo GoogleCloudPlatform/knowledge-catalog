@@ -68,8 +68,9 @@ kcmd pull
 ```
 
 Rebuilds the model file and profile files from the Knowledge Catalog entries,
-so comments, key order and formatting are not kept. (A later `kcmd` will keep
-them when the local file exists.) When the model entry's `kcmd-push-state` label says the last push stopped partway, it writes nothing. Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
+so comments, key order and formatting are not kept. When the model entry's
+`kcmd-push-state` label says the last push stopped partway, it writes nothing.
+Reads only from Knowledge Catalog (never BigQuery); its coordinates come from
 the same scope you authored under. See [Pull](README.md#pull) for behavior.
 
 | Flag | Effect |
@@ -187,8 +188,8 @@ of each Cloud SQL table written as its resource name and of each third-party
 table, and each Spanner database a source names, for the dialect.
 The other checks that need a service run only at push time: the BigQuery source
 table probe, the dry runs of action statements and of each BigQuery graph's DDL,
-the check that a deployment's BigQuery dataset or Spanner database exists, the
-lookup of the file-copy type, and (on a push without `--validate-only`) the
+the check that a deployment's BigQuery dataset or Spanner database exists, and
+(on a push without `--validate-only`) the
 Knowledge Catalog checks on the entry group. It exits non-zero when push would
 reject a binding. Under each profile it prints the errors of that profile's own
 checks and of each deployment that uses it. The errors of a deployment that
@@ -255,7 +256,8 @@ on a `GOOGLE` block profile that does not load, and on a profile named
 `default` in any letter case. It does not run
 push's checks that every named profile applies to the model and that each is
 complete. So it still writes a skill when a profile leaves an entity without a
-source. It does not check that the entry group holds one model, or that
+source. It does not run push's check that each model file and profile file is
+valid UTF-8. It does not check that the entry group holds one model, or that
 two models deploy to different graphs. Of push's checks on
 the model itself, it runs only the one on inheritance. It fails when an
 `extends` names an entity the model does not declare, when `extends` forms a
@@ -551,14 +553,11 @@ creates them in your own project at `global`; push still writes only entries.
 | Constraint | `semantic-constraint` (custom type) | entry | `<model>.constraints.<constraint>` |
 
 The model entry also carries the `kcmd-push-state` label, which reads `writing`
-until the push's last write sets it to `finished`. An older `kcmd` also stored a
-copy of each model file and profile file, as `<model>.files.<file>` entries of a
-custom `semantic-model-file` type, and put a `kcmd-push-id` label on the model
-entry. The next push deletes those copies and drops that label. On each entry,
-push owns the `schema`, `semantic-*` and `guidelines` aspects it writes, the
-display name, the description and the `kcmd-push-state` label. When it updates
-an entry, it keeps every other label and the source `resource`, `system`,
-`platform`, `createTime` and `updateTime` another tool set.
+until the push's last write sets it to `finished`. On each entry, push owns the
+`schema`, `semantic-*` and `guidelines` aspects it writes, the display name, the
+description and the `kcmd-push-state` label. When it updates an entry, it keeps
+every other label and the source `resource`, `system`, `platform`, `createTime`
+and `updateTime` another tool set.
 
 An entity entry carries its columns in the `schema` aspect (name, data type,
 description, and any `label` per field), plus the entity's keys and unique keys
@@ -610,8 +609,8 @@ constraint will not push, and loading the pulled model names the constraint and
 says the word is missing. That is the outcome to want when the catalog no
 longer says how a breach routes.
 
-The catalog's metadata does not hold your whole model, so push also stores a
-copy of each model file and profile file, which pull returns. For exactly what
+The catalog's metadata does not hold your whole model, and pull rebuilds the
+model file and profile files from that metadata alone. For exactly what
 the metadata stores and what is never stored, see
 [What push and pull preserve](fidelity.md#to-knowledge-catalog).
 
@@ -1019,10 +1018,10 @@ needs more than push does, in the destination project:
   type that is already there, so a project set up by an older `kcmd` picks up
   template additions; an entry type that is already there is left alone.
 
-The entry group is required. When the entry group or a type already exists, init goes on even if you
-may not create or update it, and reports a refusal to update a type as a
-warning, so a teammate without these permissions can still run init in a
-project someone else set up. Actions and constraints are optional
+The entry group is required. When the entry group or a type already exists,
+init goes on even if you may not create or update it, and reports a refusal to
+update a type as a warning, so a teammate without these permissions can still
+run init in a project someone else set up. Actions and constraints are optional
 constructs, so init reports a refusal to create their types as a warning and
 carries on; every model that declares neither still pushes and pulls. Any other
 failure to create a type stops init, rather than leaving a later push to hit an

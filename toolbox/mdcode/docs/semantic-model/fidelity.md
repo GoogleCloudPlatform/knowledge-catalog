@@ -28,8 +28,8 @@ agree on every structural row and differ only where a Spanner target has no
 | Entity (name, `source`)                                        | `semantic-entity` entry¹⁰       | ✓                                              | `NODE TABLE`                                                         | `NODE TABLE`                                                         |
 | Field                                                          | `schema` aspect column          | ✓ (type collapses²)                            | column on the node table¹                                            | column on the node table¹                                            |
 | Field `label`                                                  | `schema` per-field annotation   | ✓                                              | into `OPTIONS(description)`                                          | — dropped                                                            |
-| Field expression (canonical SQL)                               | — omitted by default (`v2` only)| ✓ from stored file copy                        | builds the DDL                                                       | builds the DDL                                                       |
-| Field dimension role (`is_time`)                               | — omitted by default³           | ✓ from stored file copy³                       | noted in `OPTIONS(description)`                                      | — dropped                                                            |
+| Field expression (canonical SQL)                               | `sql-expressions` aspect³       | ✓³                                             | builds the DDL                                                       | builds the DDL                                                       |
+| Field dimension role (`is_time`)                               | `schema` per-field `semantic`³  | ✓³                                             | noted in `OPTIONS(description)`                                      | — dropped                                                            |
 | Primary key                                                    | `schema.primaryKey`             | ✓                                              | `KEY(...)` on the node table                                         | `KEY(...)` on the node table                                         |
 | Unique keys                                                    | `schema.uniqueConstraints`      | ✓                                              | the first is `KEY(...)` when there is no primary key; else dropped   | the first is `KEY(...)` when there is no primary key; else dropped   |
 | Metric                                                         | `semantic-metric` entry         | name, entity, description, instructions, type⁵ | `MEASURE`⁴                                                           | — dropped (no `MEASURE`)                                             |
@@ -45,7 +45,7 @@ agree on every structural row and differ only where a Spanner target has no
 | Model-level `description` / `instructions`                     | on the model entry              | ✓⁸                                             | — dropped⁸                                                           | — dropped⁸                                                           |
 | Model-level `ai_context.synonyms` / `examples`                 | — not stored                    | —                                              | — dropped                                                            | — dropped                                                            |
 | `deployments` (`name`, `target`, `profile`)                    | recorded on the model entry     | ✓                                              | names the graph                                                      | names the graph                                                      |
-| Binding profile (`<model>.profile.<name>.yaml`)                | stored as `semantic-model-file`¹⁴| ✓¹⁴                                            | one graph per BigQuery deployment                                    | one graph per Spanner deployment                                     |
+| Binding profile (`<model>.profile.<name>.yaml`)                | on the model's entries¹⁴        | ✓¹⁴                                            | one graph per BigQuery deployment                                    | one graph per Spanner deployment                                     |
 | Vendor-dialect `expression` variant (non-canonical `dialects[]` entry)¹¹ | — not stored          | —                                              | — not used; a field or metric with only vendor text is left out     | — not used; a field with only vendor text is left out               |
 | `custom_extensions` from a vendor other than GOOGLE            | — not stored                    | —⁹                                             | — not in graph                                                       | — not in graph                                                       |
 
@@ -55,18 +55,19 @@ agree on every structural row and differ only where a Spanner target has no
    `String` → un-typed. A field with no type and a `String` field both store
    `dataType STRING` (with `metadataType` `OTHER` and `STRING` respectively),
    and `pull` writes no `datatype` for either, so only `String` is lost.
-3. **Dimension role.** The default v1 catalog aspects omit the per-field
-   `semantics` block, so when rebuilding from v1 catalog metadata alone (with no
-   stored file copy) the dimension marker is absent. A normal `pull` restores
-   the exact authored `dimension` from the stored copy of the model file.
+3. **Expressions and dimension role.** The second-generation types (the
+   default) store each field's expression in its entity's `sql-expressions`
+   aspect, and its dimension role and `is_time` in the `schema` aspect, and
+   `pull` rebuilds both from there. The first-generation types
+   (`KC_V2_ASPECTS=0`) omit the per-field `semantics` block, so a model pushed
+   with them comes back with no field expression and no dimension marker.
 4. **Metric shape.** A metric must resolve to exactly one entity, or the push
    is rejected. It must also reduce to one supported aggregate over one
    operand: `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`. Otherwise the push is
    rejected.
-5. **Metric type.** When rebuilding from v1 catalog metadata alone, a metric's
+5. **Metric type.** When rebuilding from v1 catalog metadata, a metric's
    data type round-trips only for a concrete type (e.g. `Decimal`) — an
-   untyped, `String`, or `Opaque` metric comes back un-typed. A normal `pull`
-   restores the authored file copy verbatim.
+   untyped, `String`, or `Opaque` metric comes back un-typed.
 6. **Relationship name.** Relationship names come back lowercased
    (`Places_Order` → `places_order`) — the catalog stores the name only in the
    link id. See [Writer-side follow-up](#writer-side-follow-up).
@@ -148,7 +149,13 @@ agree on every structural row and differ only where a Spanner target has no
     realizations in sibling `<model>.profile.<name>.yaml` files and reference
     them from `deployments` (see [Binding profiles](profiles.md) and
     [Reference → push](reference.md#push)); two deployments claiming the same
-    target are rejected before anything deploys.
+    target are rejected before anything deploys. With the second-generation
+    types (the default), push records each named profile and what it binds on
+    the model's entries, and `pull` rebuilds one profile file per named
+    profile from them. The catalog stores no profile's actions, so a pulled
+    profile file keeps the actions the local one binds. The first-generation
+    types (`KC_V2_ASPECTS=0`) hold no profile, so a pull with them writes no
+    profile file and keeps the local ones.
 15. **Relationships with no link.** Knowledge Catalog keeps one `schema-join`
     link between two entries, so when several relationships join the same two
     entities, push links the first one it can publish and skips the rest with
@@ -162,13 +169,10 @@ built-in system type under `dataplex-types/global`, apart from the custom
 provisions. A push references those types and never creates them (see
 [Reference → What gets created in Knowledge Catalog](reference.md#what-gets-created-in-knowledge-catalog)).
 
-Every push publishes the model file as written (plus raw file copies of the
-model and every sibling `<model>.profile.<name>.yaml` file) to Knowledge
-Catalog: every entity, metric, and relationship the document declares, apart
-from the relationships in footnote 15. A `pull` returns the authored model and
-profile files from their stored
-copies; only a model file that `pull` rebuilds from catalog metadata when no
-stored copy is present comes back from the aspects alone.
+Every push publishes the model file as written to Knowledge Catalog: every
+entity, metric, and relationship the document declares, apart from the
+relationships in footnote 15. A `pull` rebuilds the model and profile files
+from that metadata alone, so comments, key order and formatting are not kept.
 
 A logical model still produces complete entries. Each entity's `source` is
 recorded empty (`resources: []`) because there is no table behind it, and a
@@ -177,19 +181,20 @@ relationship that carries no join columns is skipped with a warning.
 **Model file and sibling profile files.** A model may define several physical
 realizations — an analytical binding onto BigQuery (`<model>.profile.analytical.yaml`)
 and an operational one onto Spanner (`<model>.profile.operational.yaml`), say —
-and list both in `deployments`. Push stores raw copies of `<model>.yaml` and
-every `<model>.profile.<name>.yaml` as `semantic-model-file` entries (see
+and list both in `deployments`. Push records each named profile in the catalog
+metadata, and `pull` rebuilds the profile files from it (footnote 14; see
 [Reference → push](reference.md#push)).
 
-In the v1 catalog aspects, SQL expressions are omitted because the published v1
-system-type templates do not carry a per-field `semantics` block or a
-`semantic-metric.expression` field (with `KC_V2_ASPECTS=1`, expressions are
-stored in the `sql-expressions` aspect). The v1 catalog aspects also do not
-store `ai_context.synonyms` / `examples`, field-level `ai_context` (only model,
+In the v1 catalog aspects (`KC_V2_ASPECTS=0`), SQL expressions are omitted
+because the published v1 system-type templates do not carry a per-field
+`semantics` block or a `semantic-metric.expression` field (with the
+second-generation types, the default, expressions are stored in the
+`sql-expressions` aspect). The v1 catalog aspects also do not store
+`ai_context.synonyms` / `examples`, field-level `ai_context` (only model,
 entity, and metric `instructions` have a home, in the `guidelines` aspect), or
 the original vendor SQL (`importedExpression` — for example the `SNOWFLAKE` or
-`DATABRICKS` form a metric was imported from). All of those survive in the
-stored `semantic-model-file` copies and in your authored document.
+`DATABRICKS` form a metric was imported from). A pull of a model pushed with
+them cannot return any of those; they survive only in your authored document.
 
 **Actions** follow the same one-entry-per-element rule as everything else: each
 becomes a `semantic-action` entry under the model entry, carrying its executor,
@@ -309,8 +314,8 @@ and round-trip losslessly through `pull` — see
 
 ## What pull recovers
 
-`pull` rebuilds the model file from the catalog metadata, which is what
-follows describes, so comments, key order and formatting are not kept.
+`pull` rebuilds the model file from the catalog metadata that the rest of this
+section describes. Comments, key order and formatting are not kept.
 [Pull](README.md#pull) says when `pull` refuses the catalog instead.
 
 With the second-generation types (the default), pull rebuilds the model file,
@@ -333,8 +338,8 @@ summary. Two things about *how* it comes back:
   type round-trips only for a concrete type (e.g. `Decimal`); an untyped,
   `String`, or `Opaque` metric comes back un-typed, because the metric aspect
   stores a data type but no metadata type to mark it `Opaque`.
-- When rebuilding from v1 catalog metadata alone (with no stored file copy), a
-  field's dimension role is omitted because the v1 `schema` aspect carries no
+- When rebuilding from v1 catalog metadata (`KC_V2_ASPECTS=0`), a field's
+  dimension role is omitted because the v1 `schema` aspect carries no
   per-field `semantics` block.
 - Ordering: field order within each entity is preserved, but the order of
   entities and metrics is not — they come back in the catalog's own order, not

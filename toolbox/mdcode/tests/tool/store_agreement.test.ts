@@ -25,8 +25,9 @@
 // and join columns. So a
 // model whose profile file or GOOGLE block profile those checks refuse still
 // gets a store and a skill under the default profile. The runtime skips the
-// checks of push's Knowledge Catalog leg, such as one model per entry group.
-// Two models that deploy to one graph each get a skill.
+// checks of push's Knowledge Catalog leg, such as one model per entry group,
+// and push's check that each model and profile file is valid UTF-8. Two
+// models that deploy to one graph each get a skill.
 //
 // Live checks are mocked, and no case reaches the network.
 
@@ -767,6 +768,36 @@ semantic_model:
            expect(r[k].out).toContain("Error: Model document 'commerce'");
            expect(r[k].out).not.toContain("sets 'bogus'");
          }
+       });
+
+  test('a profile file that is not valid UTF-8: push refuses it, the runtime reads it',
+       async () => {
+         writeScope({'commerce.yaml': `version: "0.2.0.dev0/google"
+semantic_model:
+  - name: commerce
+    deployments:
+      - name: prod
+        target: ${SPANNER_DB}/graphs/commerce
+    entities:
+      - name: Order
+        source: ${SPANNER_DB}/tables/Orders
+        primary_key: [key]
+        fields:
+          - { name: key, expression: OrderId }
+`});
+         fs.writeFileSync(
+             path.join(eg(), 'commerce.profile.prod.yaml'),
+             Buffer.concat([
+               Buffer.from('name: prod\n# '),
+               Buffer.from([0xff]),
+               Buffer.from(PROD_PROFILE.replace('name: prod', '')),
+             ]));
+         const r = await runAll();
+         expect(codes(r)).toEqual({push: 1, report: 1, printStore: 0, skills: 0});
+         expect(r.push.out)
+             .toContain(
+                 'File \'commerce.profile.prod.yaml\' is not valid UTF-8; ' +
+                 'save it as UTF-8.');
        });
 
   test('a deployment that names profile default: push and the runtime use it',

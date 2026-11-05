@@ -176,8 +176,8 @@ Some relationships get no link, and push warns about each one before it writes
 to Knowledge Catalog. `kcmd push --validate-only` gives the same warnings.
 Knowledge Catalog keeps one `schema-join` link between two entries, so when
 several relationships join the same two entities, only the first one that push
-can publish gets a link. Push rejects a relationship from an entity to itself, and relationships in both
-directions between two entities.
+can publish gets a link. Push rejects a relationship from an entity to itself,
+and relationships in both directions between two entities.
 
 Those entries are the single governed definition of the business. They are
 access-controlled, searchable, and joined into the dynamic knowledge graph that
@@ -332,9 +332,9 @@ BigQuery line.
 `kcmd pull` is the inverse of push's Knowledge Catalog leg: it rebuilds the
 model file and profile files from the `semantic-*` entries and writes them to
 `catalog/EntryGroups/<entryGroupId>/`. Because pull rebuilds the files from
-the catalog, comments, key order and formatting are not kept; a later `kcmd`
-will keep them when the local file exists. Use it to recover a workspace from a catalog someone else deployed, or to see
-what the catalog actually holds.
+the catalog, comments, key order and formatting are not kept. Use it to recover
+a workspace from a catalog someone else deployed, or to see what the catalog
+actually holds.
 
 ```bash
 kcmd pull

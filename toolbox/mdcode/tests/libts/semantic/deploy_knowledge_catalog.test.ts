@@ -329,32 +329,58 @@ describe('deployKnowledgeCatalog: re-push upserts', () => {
 });
 
 
-describe('deployKnowledgeCatalog: other writers\' fields and the old push id label', () => {
+// A call whose request cannot be sent, such as when the network is down,
+// throws: the API client lets fetch's `TypeError: fetch failed` through.
+describe('deployKnowledgeCatalog: a thrown error', () => {
+  const fetchFailed = (): never => {
+    throw new TypeError('fetch failed');
+  };
+
+  test('a write that throws fails the push with its message', async () => {
+    stubClient({create: fetchFailed});
+
+    const result = await deployKnowledgeCatalog(models(DOCS), CTX, OPTS);
+
+    expect(result).toMatchObject({success: false, details: 'fetch failed'});
+  });
+
+  test('a delete of another model that throws fails the push before any ' +
+           'write',
+       async () => {
+         const {create} = stubClient({
+           existing: [{id: 'old', type: MODEL_TYPE}],
+           del: fetchFailed,
+         });
+
+         const result = await deployKnowledgeCatalog(
+             models(DOCS), CTX, {...OPTS, forceRemove: true});
+
+         expect(result).toMatchObject({success: false, details: 'fetch failed'});
+         expect(create).not.toHaveBeenCalled();
+       });
+});
+
+
+describe('deployKnowledgeCatalog: other writers\' fields', () => {
   // The entry each update call sent for entry `id`.
   const updated = (update: any, id: string) => update.mock.calls.find(
       (c: any[]) => c[0].name.endsWith(`/entries/${id}`))!;
   const ENTITY = 'sales.entities.orders';
-  // Labels another writer set on the model entry and on entity `entity`. The
-  // model entry also has the push id label an older kcmd set when it stored
-  // file copies.
+  // Labels another writer set on the model entry and on entity `entity`.
   const labeled = (entity = ENTITY):
       {id: string; type: string; labels: Record<string, string>}[] => [
-    {
-      id: 'sales',
-      type: MODEL_TYPE,
-      labels: {'owner': 'data-team', 'kcmd-push-id': 'earlier'},
-    },
+    {id: 'sales', type: MODEL_TYPE, labels: {'owner': 'data-team'}},
     {id: entity, type: ENTITY_TYPE, labels: {'owner': 'data-team'}},
   ];
   const exists = () => err(409, 'entry already exists');
 
-  // The update replaces the whole entrySource, so it carries them over, all
-  // but the old push id label, with either flag.
+  // The update replaces the whole entrySource, so it carries them over, with
+  // either flag.
   for (const [opts, entity] of [
          [OPTS, ENTITY], [V2_OPTS, 'sales/entities/orders']
        ] as [typeof V2_OPTS | typeof OPTS, string][]) {
-    test(`a re-push keeps the labels another writer set and drops the old ` +
-             `push id (v2Aspects ${opts === V2_OPTS})`,
+    test(`a re-push keeps the labels another writer set (v2Aspects ${
+             opts === V2_OPTS})`,
          async () => {
            const {update} =
                stubClient({create: exists, existing: labeled(entity)});
@@ -412,7 +438,7 @@ describe('deployKnowledgeCatalog: other writers\' fields and the old push id lab
        async () => {
          const source = {
            system: 'other-tool',
-           labels: {'owner': 'data-team', 'kcmd-push-id': 'earlier'},
+           labels: {'owner': 'data-team'},
          };
          const {getEntry, update} = stubClient({
            create: exists,
@@ -1909,8 +1935,8 @@ describe('deployKnowledgeCatalog: whole-model removal (--force-remove)', () => {
          expect(create).toHaveBeenCalledTimes(3);
        });
 
-  // Nothing else of the model is deleted either, so pull still finds it
-  // whole, with the copies an older kcmd stored.
+  // Nothing else of the model is deleted either, so the catalog still holds
+  // the whole model.
   test('--force-remove deletes nothing else when deleting the omitted ' +
            'model\'s anchor fails',
        async () => {

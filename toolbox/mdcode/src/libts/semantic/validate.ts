@@ -2038,10 +2038,10 @@ export function withProfileFiles(base: LoadedModel, profileDocs: ProfileFiles):
   return {document, model: profiles.length ? {...model, profiles} : model};
 }
 
-// Runs push's offline checks that follow withProfileFiles and the sidecar
-// check, through the graph generation. Returns the errors of the first stage
-// that finds any, or else a plan for each deployment `selected` names, or for
-// every deployment when it is unset.
+// Runs push's offline checks that follow withProfileFiles and the UTF-8 and
+// sidecar checks, through the graph generation. Returns the errors of the
+// first stage that finds any, or else a plan for each deployment `selected`
+// names, or for every deployment when it is unset.
 export async function localChecks(
     scope: LocalCheckScope, warn: (w: string) => void, selected?: string[]):
     Promise<{plans: DeploymentPlan[]}|{errors: LocalCheckError[]}> {

@@ -445,6 +445,21 @@ function declaredProfilesReader(profileDocs: ProfileDocs): DeclaredProfiles {
   };
 }
 
+// The error naming the file at `localPath` when it is not valid UTF-8, or
+// undefined when it is. A file read as UTF-8 has each invalid byte replaced by
+// U+FFFD, which the catalog would store and the next pull would write into the
+// file, so only a text holding U+FFFD needs its bytes checked.
+function checkUtf8(
+    localPath: string, fileName: string, text: string): string|undefined {
+  if (!text.includes('\uFFFD')) return undefined;
+  try {
+    new TextDecoder('utf-8', {fatal: true}).decode(fs.readFileSync(localPath));
+    return undefined;
+  } catch {
+    return `File '${fileName}' is not valid UTF-8; save it as UTF-8.`;
+  }
+}
+
 // What checkCatalogAspects reports for a flag-on push of `models` to `source`
 // with the overview sidecars `overviews`.
 function catalogAspects(
@@ -991,6 +1006,19 @@ async function checkBeforeWrites(
     const model = withProfileFiles(base, profileDocs);
     if ('errors' in model) return stop(model.errors);
     models.push(model);
+    // The model file and each profile file must be valid UTF-8.
+    // withProfileFiles has read the profile files, so profileDocs does not
+    // throw here.
+    const modelPath = layout.modelPath(base.document);
+    const modelFile = {
+      path: modelPath,
+      fileName: fileNameOf(layout, base.document, modelPath),
+      text: docs.find(d => d.name === base.document)!.text,
+    };
+    for (const file of [modelFile, ...profileDocs(base.document)]) {
+      const error = checkUtf8(file.path, file.fileName, file.text);
+      if (error) return fail(error);
+    }
   }
   // With KC_V2_ASPECTS on, the catalog writes each overview sidecar.
   let overviews: Map<string, OverviewSidecar>|undefined;
@@ -1717,11 +1745,12 @@ function writePulledFiles(
     }
   }
 
-  // Pull writes each file back to the path it came from, so a local profile
+  // Pull writes each file to the path push reads it from, so a local profile
   // file or overview sidecar the catalog does not have is stale.
   const local: Array<{path: string; profileName?: string; kind: string}> = [
     ...layout.localProfileFiles(model).map(f => ({...f, kind: 'profile file'})),
-    ...layout.overviewSidecarPaths().map(f => ({path: f.path, kind: 'overview sidecar'})),
+    ...layout.overviewSidecarPaths().map(
+        f => ({path: f.path, kind: 'overview sidecar'})),
   ];
   for (const stale of local) {
     if (written.has(path.resolve(stale.path))) continue;
@@ -1757,8 +1786,7 @@ function writePulledFiles(
 // Where pull writes the catalog's file `fileName` of `model`, and how.
 // Undefined unless the name is relative, holds no `..` segment or NUL byte, and
 // names `<model>.yaml`, `<model>.profile.<name>.yaml` or, with `sidecars`, an
-// overview sidecar
-// that push reads: `<model>.overview.md` or
+// overview sidecar that push reads: `<model>.overview.md` or
 // `<model>/{entities,metrics,relationships}/<name>.overview.md`.
 function pulledFileTarget(
     layout: SemanticModelLayout, model: string, fileName: string,
