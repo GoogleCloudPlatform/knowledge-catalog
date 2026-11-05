@@ -2120,12 +2120,13 @@ async function deploymentPlan(
   const spanner = spannerMetricsErrors(document, model, deployment);
   if (spanner.length) return fail(...spanner);
   let applied = model;
+  // The profile's warnings, which print only once every check below passes.
+  const warnings: string[] = [];
   if (deployment.profile !== DEFAULT_PROFILE) {
     // localChecks has checked that the model declares the profile and that
     // its file loads, so `model.profiles` holds it.
     let spec = model.profiles!.find(p => p.name === deployment.profile)!;
     const file = files.find(p => p.name === deployment.profile);
-    const warnings: string[] = [];
     try {
       // A profile in a GOOGLE block has no file and applies as loaded.
       if (file) spec = loadProfileFile(file.text, file.name);
@@ -2138,9 +2139,6 @@ async function deploymentPlan(
     } catch (err) {
       if (!(err instanceof SemanticModelError)) throw err;
       return fail(`${at}: ${err.message}`);
-    }
-    for (const w of warnings) {
-      warn(`profile '${deployment.profile}': [${document}] ${w}`);
     }
   }
   // Messages name the deployment.
@@ -2169,13 +2167,16 @@ async function deploymentPlan(
   ];
   if (errors.length) return {errors};
   // An AlloyDB database holds no graph.
-  if (deployment.engine === 'alloydb') {
-    return {deployment, at, model: narrowed, report};
-  }
-  const generated = await generateOffline(
-      deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
-      [narrowed]);
+  const generated = deployment.engine === 'alloydb' ?
+      undefined :
+      await generateOffline(
+          deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
+          [narrowed]);
   if (typeof generated === 'string') return fail(`${at}: ${generated}`);
+  // Push prints no warning of a profile it rejects.
+  for (const w of warnings) {
+    warn(`profile '${deployment.profile}': [${document}] ${w}`);
+  }
   return {deployment, at, model: narrowed, report, generated};
 }
 
