@@ -323,7 +323,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
       () => {
         // The entity has no primary key, so it has no node table to carry a
         // MEASURE. The skip reason must name the missing KEY, not a misleading
-        // "aggregate not supported".
+        // "cannot be a measure".
         const model = orders();
         model.entities.push(
             {name: 'dim', dataSource: 'dim', keys: [], fields: []});
@@ -335,7 +335,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
             .toBe(true);
         expect(warnings.some(
                    w => w.includes('metric \'dim_total\'') &&
-                       w.includes('not a single supported aggregate')))
+                       w.includes('cannot be a measure')))
             .toBe(false);
       });
 
@@ -353,7 +353,7 @@ describe('IR-contract metric cases the loader cannot produce', () => {
         const {ddl, warnings} = generatePropertyGraph(model, GEN_OPTS);
         expect(warnings.some(
                    w => w.includes('metric \'weird_sum\'') &&
-                       w.includes('not a single supported aggregate')))
+                       w.includes('cannot be a measure')))
             .toBe(false);
         expect(ddl).toContain('AS weird_sum');
       });
@@ -456,6 +456,182 @@ describe('the SQL parser reads a metric\'s entity and aggregate', () => {
     }, GEN_OPTS);
     expect(warnings).toEqual([]);
     expect(ddl).toContain('MEASURE(SUM(days)) AS total_days');
+  });
+});
+
+
+describe('a metric that combines aggregates on one entity lowers to one measure', () => {
+  // orders, keyed on its column, with a field bound to another column, and
+  // customers.
+  const model = (...metrics: SemanticModel['metrics']): SemanticModel => ({
+    name: 'm',
+    relationships: [],
+    metrics,
+    entities: [
+      {
+        name: 'orders',
+        dataSource: 'p.d.orders',
+        keys: ['order_id'],
+        fields: [
+          {name: 'order_id', expression: 'order_id'},
+          {name: 'amount', expression: 'amount'},
+          {name: 'status', expression: 'status'},
+          {name: 'net', expression: 'net_amount'},
+        ],
+      },
+      {
+        name: 'customers',
+        dataSource: 'p.d.customers',
+        keys: ['c_id'],
+        fields: [{name: 'c_id', expression: 'c_id'}],
+      },
+    ],
+  });
+  // The properties of the orders node table, one per line.
+  const ordersProperties = (ddl: string) => {
+    const lines = ddl.slice(ddl.indexOf('PROPERTIES(') + 'PROPERTIES('.length)
+                      .split('\n')
+                      .map(line => line.trim())
+                      .filter(line => line);
+    return lines.slice(0, lines.findIndex(line => line.startsWith(')')));
+  };
+
+  test('a ratio, a scaled aggregate, SAFE_DIVIDE and CASE over aggregates', () => {
+    const {ddl, warnings} = generatePropertyGraph(model(
+        {
+          name: 'avg_order_value',
+          expression: 'SUM(orders.amount) / COUNT(orders.order_id)'
+        },
+        {name: 'revenue_k', expression: 'SUM(orders.amount) / 1000'},
+        {
+          name: 'fulfilled_share',
+          expression: 'SAFE_DIVIDE(SUM(IF(orders.status = \'F\', ' +
+              'orders.amount, 0)), SUM(orders.amount))'
+        },
+        {
+          name: 'aov_safe',
+          expression: 'CASE WHEN COUNT(orders.order_id) = 0 THEN NULL ' +
+              'ELSE SUM(orders.amount) / COUNT(orders.order_id) END'
+        },
+    ), GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ordersProperties(ddl)).toEqual([
+      'order_id,',
+      'amount,',
+      'status,',
+      'net_amount AS net,',
+      'IF(status = \'F\', amount, 0) AS fulfilled_share_input,',
+      'MEASURE(SUM(amount) / COUNT(order_id)) AS avg_order_value,',
+      'MEASURE(SUM(amount) / 1000) AS revenue_k,',
+      'MEASURE(SAFE_DIVIDE(SUM(fulfilled_share_input), SUM(amount))) AS ' +
+          'fulfilled_share,',
+      'MEASURE(CASE WHEN COUNT(order_id) = 0 THEN NULL ELSE SUM(amount) / ' +
+          'COUNT(order_id) END) AS aov_safe',
+    ]);
+  });
+
+  test('each operand is exposed as a single aggregate\'s is', () => {
+    const {ddl, warnings} = generatePropertyGraph(model(
+        // Two aggregates over one field share its property.
+        {name: 'range', expression: 'MAX(orders.amount) - MIN(orders.amount)'},
+        // Two different inline operands get one property each, and a later
+        // metric's same operand reuses the first.
+        {
+          name: 'm',
+          expression: 'SUM(orders.amount * 2) / SUM(orders.amount + 1)'
+        },
+        {name: 'n', expression: 'AVG(orders.amount + 1) * 2'},
+        // A field bound to another column is aggregated by its name.
+        {name: 'net_per_order', expression: 'SUM(orders.net) / COUNT(*)'},
+        {
+          name: 'distinct_share',
+          expression: 'COUNT(DISTINCT orders.status) / COUNT(orders.status)'
+        },
+    ), GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ordersProperties(ddl).slice(4)).toEqual([
+      'amount * 2 AS m_input,',
+      'amount + 1 AS m_input_2,',
+      'MEASURE(MAX(amount) - MIN(amount)) AS `range`,',
+      'MEASURE(SUM(m_input) / SUM(m_input_2)) AS m,',
+      'MEASURE(AVG(m_input_2) * 2) AS n,',
+      'MEASURE(SUM(net) / COUNT(order_id)) AS net_per_order,',
+      'MEASURE(COUNT(DISTINCT status) / COUNT(status)) AS distinct_share',
+    ]);
+  });
+
+  test('a qualifier the parser reserves as a keyword leaves no stand-in behind', () => {
+    const {ddl, warnings} = generatePropertyGraph({
+      name: 'm',
+      relationships: [],
+      metrics: [{
+        name: 'avg_days',
+        expression: 'SUM(Date.days) / COUNT(DISTINCT Date.d_id)'
+      }],
+      entities: [{
+        name: 'Date',
+        dataSource: 'p.d.dates',
+        keys: ['d_id'],
+        fields: [{name: 'd_id', expression: 'd_id'}],
+      }],
+    }, GEN_OPTS);
+    expect(warnings).toEqual([]);
+    expect(ddl).toContain(
+        'MEASURE(SUM(days) / COUNT(DISTINCT d_id)) AS avg_days');
+  });
+
+  test('a metric that cannot be a measure is skipped with the reason push gives', () => {
+    for (const [expression, body, why] of [
+           ['orders.amount - SUM(orders.status)', 'amount - SUM(status)',
+            'it reads column \'amount\' outside an aggregate'],
+           ['STDDEV(orders.amount)', 'STDDEV(amount)',
+            'it uses STDDEV, which BigQuery does not allow in a measure ' +
+                '(SUM, AVG, COUNT, MIN, MAX)'],
+           ['SUM(MAX(orders.amount))', 'SUM(MAX(amount))',
+            'it nests an aggregate, a window or a subquery'],
+           ['SUM(orders.amount) OVER ()', 'SUM(amount) OVER ()',
+            'it uses a window or a subquery'],
+           ['MIN(orders.amount, orders.net)', 'MIN(amount, net)',
+            'it calls MIN with 2 operands, where an aggregate in a measure ' +
+                'takes one'],
+           ['orders.amount * 2', 'amount * 2',
+            'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+         ]) {
+      const {ddl, warnings} = generatePropertyGraph(
+          model({name: 'm', expression, entity: 'orders'}), GEN_OPTS);
+      expect({expression, warnings}).toEqual({
+        expression,
+        warnings: [`metric 'm' expression '${body}' cannot be a measure: ${
+            why}; skipped`],
+      });
+      expect(ddl).not.toContain('MEASURE(');
+    }
+  });
+
+  test('an operand it cannot read skips the metric before any is exposed', () => {
+    const withLegacy = model(
+        {name: 'm', expression: 'SUM(orders.amount * 2) / SUM(orders.legacy)'});
+    withLegacy.entities[0].fields.push({
+      name: 'legacy',
+      dialects: [{dialect: 'SNOWFLAKE', expression: 'legacy::text'}],
+    });
+    const {ddl, warnings} = generatePropertyGraph(withLegacy, GEN_OPTS);
+    expect(warnings).toContain(
+        'metric \'m\' aggregates field \'legacy\', which has no ' +
+        '\'BIGQUERY\' or \'ANSI_SQL\' expression; skipped (nothing to emit ' +
+        'as a MEASURE)');
+    expect(ddl).not.toContain('m_input');
+  });
+
+  test('one over two entities is left to the check that it reads one', () => {
+    const {warnings} = generatePropertyGraph(model({
+      name: 'm',
+      expression: 'SUM(orders.amount) / COUNT(customers.c_id)'
+    }), GEN_OPTS);
+    expect(warnings).toEqual([
+      'metric \'m\' spans multiple tables (orders, customers); skipped ' +
+          '(cannot be a single MEASURE)',
+    ]);
   });
 });
 
@@ -778,7 +954,7 @@ describe(
     'emitter never produces a MEASURE shape BigQuery rejects (x20 record §A)',
     () => {
       // For each NODE block: the names it exposes as (non-measure) properties,
-      // and the aggregate operand of each MEASURE it declares.
+      // and the operand of every aggregate in each MEASURE it declares.
       function parseNodeMeasures(ddl: string): Record < string, {
         exposed: Set<string>;
         operands: string[]
@@ -818,10 +994,26 @@ describe(
             continue;
           }
           if (!inProps || !cur) continue;
-          const meas = t.match(
-              /^MEASURE\(\s*\w+\(\s*(?:DISTINCT\s+)?(.*?)\)\s*\)\s+AS\s+\w+,?$/);
-          if (meas) {
-            nodes[cur].operands.push(meas[1].trim());
+          if (t.startsWith('MEASURE(')) {
+            // The text inside the `(` at `open` in `text` and the `)` that
+            // closes it.
+            const closed = (text: string, open: number) => {
+              let depth = 0;
+              for (let i = open; i < text.length; i++) {
+                if (text[i] === '(') depth++;
+                if (text[i] === ')' && --depth === 0) {
+                  return text.slice(open + 1, i);
+                }
+              }
+              return text.slice(open + 1);
+            };
+            const body = closed(t, 'MEASURE'.length);
+            for (const agg of body.matchAll(/\b(?:SUM|AVG|COUNT|MIN|MAX)\(/gi)) {
+              nodes[cur].operands.push(
+                  closed(body, agg.index + agg[0].length - 1)
+                      .replace(/^\s*DISTINCT\s+/i, '')
+                      .trim());
+            }
             continue;
           }
           // A non-measure property line: record the name it exposes (after AS,
@@ -857,6 +1049,13 @@ describe(
         assertLegalMeasures(
             generatePropertyGraph(loadFixture('sales_fanout.yaml'), GEN_OPTS)
                 .ddl);
+      });
+
+      test('a measure that combines aggregates aggregates only properties', () => {
+        const {ddl} = generatePropertyGraph(
+            loadFixture('metric_skips.yaml'), GEN_OPTS);
+        expect(ddl).toContain('MEASURE(SUM(amount) / COUNT(o_orderkey)) AS aov');
+        assertLegalMeasures(ddl);
       });
 
       test('every lowered operand shape stays a legal MEASURE', () => {

@@ -2,12 +2,13 @@
 #
 # A metric that cannot become a single BigQuery graph MEASURE is SKIPPED and
 # reported, never emitted as DDL BigQuery would reject. Read the golden's
-# `-- warnings --` block to see each reason; the graph still emits the one valid
-# measure (`revenue`) and its edge, proving skips are isolated:
+# `-- warnings --` block to see each reason; the graph still emits the valid
+# measures and its edge, proving skips are isolated:
 #   - clv     aggregate spans two tables (orders, customers) -> cannot bind to one KEY.
-#   - aov     a ratio of two aggregates -> not a single aggregate over one operand.
 #   - spread  STDDEV -> outside the SUM/AVG/COUNT/MIN/MAX set BigQuery allows in a measure.
 #   - status  metric name collides with an existing field property.
+# `aov`, a ratio of two aggregates on one entity, is one valid measure beside
+# `revenue`.
 
 version: "0.2.0.dev0"
 

@@ -3071,8 +3071,8 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
         .toEqual([NO_DEFAULT]);
   });
 
-  // A BigQuery graph turns each metric into a measure: one aggregate on the
-  // node table of a keyed entity.
+  // A BigQuery graph turns each metric into a measure on the node table of a
+  // keyed entity: aggregates of the five, with every column inside one.
   describe('BigQuery', () => {
     // The model with metric `metric` on a BigQuery deployment, with
     // `purchase` merged into entity purchase. bigQuery gives its errors.
@@ -3089,32 +3089,50 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     const anchored = (e: string) =>
         `{ name: m, entity: purchase, expression: "${e}" }`;
 
-    test('rejects a metric that is not one aggregate or whose entity has no key, on BigQuery only, and passes one aggregate', () => {
-      for (const e of [
-             'SUM(purchase.amount) / 2', 'COUNTIF(purchase.amount > 0)',
-             'SUM(purchase.amount) OVER ()', 'MIN(purchase.amount, purchase.p_id)',
+    test('rejects a metric that cannot be a measure or whose entity has no key, on BigQuery only, and passes one that can', () => {
+      const STDDEV = 'it uses STDDEV, which BigQuery does not allow in a ' +
+          'measure (SUM, AVG, COUNT, MIN, MAX)';
+      for (const [e, why] of [
+             ['purchase.amount - SUM(purchase.p_id)',
+              "it reads column 'amount' outside an aggregate"],
+             ['STDDEV(purchase.amount)', STDDEV],
+             ['COUNTIF(purchase.amount > 0)',
+              'it uses COUNTIF, which BigQuery does not allow in a measure ' +
+                  '(SUM, AVG, COUNT, MIN, MAX)'],
+             ['SUM(MAX(purchase.amount))',
+              'it nests an aggregate, a window or a subquery'],
+             ['SUM(purchase.amount) OVER ()', 'it uses a window or a subquery'],
+             ['MIN(purchase.amount, purchase.p_id)',
+              'it calls MIN with 2 operands, where an aggregate in a measure ' +
+                  'takes one'],
+             ['purchase.amount * 2',
+              'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
            ]) {
-        expect({e, errors: bigQuery(anchored(e))}).toEqual({e, errors: [
-          MEASURE('it is not SUM, AVG, COUNT, MIN or MAX over one operand'),
-        ]});
+        expect({e, errors: bigQuery(anchored(e))})
+            .toEqual({e, errors: [MEASURE(why)]});
       }
       // Two BigQuery deployments, on graphs g and g2, get one message that
       // names both.
       expect(check(commerce({
         deployments: `${BQ}      - name: dev\n        target: ${BQ_TARGET}2\n`,
-        metric: anchored('SUM(purchase.amount) / 2'),
+        metric: anchored('STDDEV(purchase.amount)'),
       }))).toEqual([
         "model 'commerce' (commerce) deployments 'bigquery' and 'dev' target " +
-        "BigQuery, where metric 'm' cannot be a measure: it is not SUM, AVG, " +
-        'COUNT, MIN or MAX over one operand.',
+        `BigQuery, where metric 'm' cannot be a measure: ${STDDEV}.`,
       ]);
       expect(check(commerce({
         deployments: deployment('spanner') + deployment('alloydb'),
-        metric: '{ name: m, expression: "SUM(purchase.amount) / 2" }',
+        metric: '{ name: m, expression: "STDDEV(purchase.amount)" }',
       }))).toEqual([]);
       for (const e of [
              'SUM(purchase.amount)', 'COUNT(DISTINCT purchase.p_id)',
              '(MAX(purchase.amount)) -- top',
+             'SUM(purchase.amount) / COUNT(purchase.p_id)',
+             'SUM(purchase.amount) / 2',
+             "SAFE_DIVIDE(SUM(IF(purchase.note = 'F', purchase.amount, 0)), " +
+                 'SUM(purchase.amount))',
+             'CASE WHEN COUNT(purchase.p_id) = 0 THEN NULL ' +
+                 'ELSE SUM(purchase.amount) / COUNT(purchase.p_id) END',
            ]) {
         expect({e, errors: bigQuery(`{ name: m, expression: "${e}" }`)})
             .toEqual({e, errors: []});
@@ -3136,12 +3154,16 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       // The rule that a metric resolves to exactly one entity: two entities,
       // or two that no relationship connects, so that pruning drops the
       // metric first.
+      // A metric whose aggregates read one entity each reads both too.
       const two =
-          onBigQuery(anchored('SUM(purchase.amount + customer.c_id) / 2'));
+          onBigQuery(anchored('STDDEV(purchase.amount + customer.c_id)'));
+      const ratio = onBigQuery(
+          anchored('SUM(purchase.amount) / COUNT(customer.c_id)'));
       const apart =
-          onBigQuery(anchored('SUM(purchase.amount * shop.c_id) / 2'));
+          onBigQuery(anchored('STDDEV(purchase.amount * shop.c_id)'));
       apart.entities.push({...apart.entities[0], name: 'shop'});
       for (const [m, read] of [[two, 'purchase, customer'],
+                               [ratio, 'purchase, customer'],
                                [apart, 'purchase, shop']] as const) {
         expect(check(m)).toEqual([]);
         expect(validatePushRequirements([loaded(m, 'commerce')])
@@ -3151,29 +3173,31 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
       }
       // A function namespace named like an entity reads no entity, so that
       // rule passes the metric, and this one reports it.
-      const safe = onBigQuery(anchored('safe.divide(SUM(purchase.amount), 2)'));
+      const safe =
+          onBigQuery(anchored('safe.divide(STDDEV(purchase.amount), 2)'));
       safe.entities.push({...safe.entities[0], name: 'safe'});
       expect(check(safe)).toEqual([
-        MEASURE('it is not SUM, AVG, COUNT, MIN or MAX over one operand'),
+        MEASURE('it uses STDDEV, which BigQuery does not allow in a measure ' +
+                '(SUM, AVG, COUNT, MIN, MAX)'),
       ]);
       expect(validatePushRequirements([loaded(safe, 'commerce')])
                  .filter(e => e.includes("metric 'm'")))
           .toEqual([]);
       // The reference rules: a field the entity does not declare.
-      expect(bigQuery(anchored('SUM(purchase.amt) / 2'))).toEqual([]);
+      expect(bigQuery(anchored('STDDEV(purchase.amt)'))).toEqual([]);
       // The binding rule: a field with no expression.
       expect(check(commerce({
         unbound: true,
         deployments: BQ,
-        metric: '{ name: m, expression: "SUM(purchase.note) / 2" }',
+        metric: '{ name: m, expression: "STDDEV(purchase.note)" }',
       }))).toEqual([
         NAME_AND_NOTE('bigquery'), READS('bigquery', 'm', 'purchase.note'),
       ]);
       // The inheritance rules: an abstract entity, and one that another extends.
-      expect(bigQuery(anchored('SUM(purchase.amount) / 2'), {abstract: true}))
+      expect(bigQuery(anchored('STDDEV(purchase.amount)'), {abstract: true}))
           .toEqual([]);
       const extended = onBigQuery(
-          '{ name: m, entity: customer, expression: "SUM(customer.c_id) / 2" }');
+          '{ name: m, entity: customer, expression: "STDDEV(customer.c_id)" }');
       extended.entities.push(
           {...extended.entities[0], name: 'vip', extends: ['customer']});
       expect(check(extended)).toEqual([]);
@@ -3208,18 +3232,18 @@ ${abstract ? '        abstract: true\n' : '        primary_key: [c_id]\n'}\
     });
 
     test('a BigQuery deployment holds each metric its profile leaves to the measure rules, with the keys the profile states', () => {
-      const ratio = '{ name: m, entity: purchase, ' +
-          'expression: "SUM(purchase.amount) / 2" }';
+      const spread = '{ name: m, entity: purchase, ' +
+          'expression: "STDDEV(purchase.amount)" }';
       // A metric the profile excludes, or prunes for a field it excludes, is
       // held to none of this.
-      expect(underOps('bigquery', ratio, {metricsExclude: ['m']})).toEqual([]);
+      expect(underOps('bigquery', spread, {metricsExclude: ['m']})).toEqual([]);
       const noAmount =
           {entities: [{name: 'purchase', fieldsExclude: ['amount']}]};
-      expect(underOps('bigquery', ratio, noAmount)).toEqual([]);
-      expect(underOps('bigquery', ratio)).toEqual([
+      expect(underOps('bigquery', spread, noAmount)).toEqual([]);
+      expect(underOps('bigquery', spread)).toEqual([
         "model 'commerce' (commerce) deployment 'bigquery' targets BigQuery, " +
-            "where metric 'm' cannot be a measure: it is not SUM, AVG, COUNT, " +
-            'MIN or MAX over one operand.',
+            "where metric 'm' cannot be a measure: it uses STDDEV, which " +
+            'BigQuery does not allow in a measure (SUM, AVG, COUNT, MIN, MAX).',
       ]);
       // Purchase has no key in the model file, and profile ops states one.
       const keyed = {entities: [{name: 'purchase', primaryKey: ['p_id']}]};
