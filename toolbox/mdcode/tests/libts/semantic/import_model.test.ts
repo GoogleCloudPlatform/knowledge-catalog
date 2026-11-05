@@ -604,6 +604,14 @@ describe('profile checks', () => {
   // A Cloud SQL for MySQL table, whose dialect only a lookup gives.
   const MYSQL = (t: string) =>
       `cloudsql.googleapis.com/projects/acme/locations/us-central1/instances/i/databases/app/tables/${t}`;
+  // Entity customers, on a BigQuery table.
+  const CUSTOMERS_BQ = `      - name: customers\n        source: ${BQ_PREFIX}/tables/customers\n` +
+      '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n';
+  // Profile pg, binding orders and then customers to `sources`.
+  const pgOn = (...sources: string[]) => [{fileName: 'sales.profile.pg.yaml', content:
+      'name: pg\nentities:\n' + [['orders', 'order_id'], ['customers', 'id']].map(([e, key], i) =>
+          `  - name: ${e}\n    source: ${sources[i]}\n    primary_key: [${key}]\n` +
+          `    fields:\n      - {name: ${key}, expression: ${key}}\n`).join('')}];
   // [label, model, profile files, errors, warnings, the lookup, if any]. The
   // lookup is a rest parameter, since bun passes a done callback to a named
   // parameter that a row leaves out.
@@ -671,13 +679,9 @@ describe('profile checks', () => {
      UNBOUND, [], [],
      ["model 'retail' (sales) is non-executable: the model file leaves entity 'orders' without " +
       'a source, and the model declares no named profile. It cannot be queried until it is bound.']],
-    ["warns about a profile's table it cannot read, and leaves it out of the one-database rule",
-     model(`      - name: customers\n        source: ${BQ_PREFIX}/tables/customers\n` +
-           '        primary_key: [id]\n        fields:\n          - {name: id, expression: id}\n'),
-     [{fileName: 'sales.profile.pg.yaml', content: 'name: pg\nentities:\n' +
-       [['orders', 'order_id'], ['customers', 'id']].map(([e, key]) =>
-           `  - name: ${e}\n    source: ${CLOUDSQL_PREFIX}/tables/${e}\n    primary_key: [${key}]\n` +
-           `    fields:\n      - {name: ${key}, expression: ${key}}\n`).join('')}],
+    ["warns about a profile's table it cannot read, and accepts it beside a table of its database",
+     model(CUSTOMERS_BQ),
+     pgOn(`${CLOUDSQL_PREFIX}/tables/orders`, `${CLOUDSQL_PREFIX}/tables/customers`),
      [], [expect.stringContaining(
          `source '${CLOUDSQL_PREFIX}/tables/customers': kcmd reads a Cloud SQL table's dialect`)],
      // The entry of orders names PostgreSQL, and the entry of customers answers 403.
@@ -685,6 +689,12 @@ describe('profile checks', () => {
        lookupEntry: async (_p, _l, name) => name.endsWith('/customers') ? entryDenied(name) :
            {status: 200, result: {entryType: 'projects/p/locations/global/entryTypes/cloudsql-postgresql-table'}},
      })],
+    ["refuses a profile's BigQuery table beside a Cloud SQL table it cannot read",
+     model(CUSTOMERS_BQ), pgOn(`${CLOUDSQL_PREFIX}/tables/orders`, `${BQ_PREFIX}/tables/customers`),
+     ["[sales.profile.pg.yaml] profile 'pg' binds entities in more than one database " +
+      "('customers', 'orders'); a profile reads from one system a single query can reach"],
+     [expect.stringContaining(`source '${CLOUDSQL_PREFIX}/tables/orders': kcmd reads`)],
+     (texts: string[]) => sourceDialects(texts, {lookupEntry: async (_p, _l, name) => entryDenied(name)})],
   ] as Array<[string, string, Array<{fileName: string; content: string}>, string[], string[], any?]>)(
       '%s', async (_, input, profileFiles, errors, warnings, ...[readDialects]) => {
         const res = await importSemanticModelYaml(

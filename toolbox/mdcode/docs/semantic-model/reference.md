@@ -134,10 +134,11 @@ about. For its checks, import reads only each table's dialect, as push does: a
 Cloud SQL or third-party table's from its Knowledge Catalog entry, and a Spanner
 table's from its database. Import then judges each table in that dialect. When
 it cannot read a table's dialect, it warns with push's reason and skips the
-checks that need the dialect: whether a Cloud SQL for PostgreSQL or SQL Server
-table or a third-party table is in one database with the profile's other
-tables, whether a field has SQL in its table's dialect, and what an `ANSI_SQL`
-text reads when every table of the model file or profile is such a table.
+checks that need the dialect: whether a field has SQL in its table's dialect,
+what an `ANSI_SQL` text reads when every table of the model file or profile is
+such a table, and whether a profile's tables are in one database when only that
+table's entry can say. Tables of two systems are never in one database, so
+import still reports a profile that binds a BigQuery table beside such a table.
 Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
