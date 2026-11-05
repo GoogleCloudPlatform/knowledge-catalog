@@ -377,6 +377,9 @@ const MODEL_CASES: Case[] = [
   ] as const).map(([what, edit]): Case => [
     `an abstract entity with ${what}`,
     docOf(fullModel(), m => edit(m.entities[0])), false]),
+  ['an abstract entity with an empty primary_key',
+    docOf(fullModel(), m => { m.entities[0].primary_key = []; }), false,
+    'push refuses only a non-empty key on an abstract entity'],
 
   // Descriptions: the model, an entity, a metric and a relationship hold 2000.
   ...(['model', 'entity', 'metric', 'relationship'] as const).flatMap(kind =>
