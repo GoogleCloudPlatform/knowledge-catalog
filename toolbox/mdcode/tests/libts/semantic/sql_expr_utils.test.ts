@@ -4,7 +4,7 @@
 
 import {beforeAll, describe, expect, test} from 'bun:test';
 
-import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, isSingleAggregate, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
+import {columnReferences, columnsForSource, entitiesReached, fieldsReadOn, isColumnName, measureAggregates, measureEntities, qualifiedColumns, requalified, selfReferenceMessage, singleAggregate, unusedName, withoutQualifier, withSiblingsSpliced} from '../../../src/libts/semantic/sql_expr_utils';
 import {loadSqlEngine} from '../../../src/libts/semantic/sql_parser';
 
 beforeAll(async () => {
@@ -507,33 +507,100 @@ describe('singleAggregate', () => {
     expect(agg('SUM(o.amount) / 2')).toBeUndefined();
   });
 });
-describe('isSingleAggregate', () => {
-  test('reads one of the five aggregates over one operand, and nothing else', () => {
-    const read = (text: string, dialect = 'BIGQUERY') =>
-        ({text, single: isSingleAggregate(text, dialect)});
+describe('measureAggregates', () => {
+  const problem = (text: string, dialect = 'BIGQUERY') => {
+    const read = measureAggregates(text, dialect);
+    return {text, problem: 'problem' in read ? read.problem : undefined};
+  };
+
+  test('reads aggregates of the five over one operand, with scalar SQL around them', () => {
     for (const text of [
            'SUM(o.amount)', 'avg(o.amount * o.qty)', 'COUNT(DISTINCT o.id)',
            'SUM(ALL o.amount)', 'COUNT(*)', '(SUM(o.amount))',
            'SUM(o.amount) -- net', '/* net */ MIN(o.amount)', 'SUM((o.amount))',
            'SUM(IF(o.a, o.b, 0))', 'SUM(CASE WHEN o.a THEN o.b END)',
            'MAX(GREATEST(o.a, o.b))', 'SUM(SAFE.DIVIDE(o.a, o.b))',
+           'SUM(o.amount) / COUNT(o.id)', 'SUM(o.amount) + 0',
+           'SUM(o.amount) / 1000', 'COUNT(*) * 2',
+           'SAFE_DIVIDE(SUM(IF(o.s = \'F\', o.a, 0)), SUM(o.a))',
+           'CASE WHEN COUNT(o.id) = 0 THEN NULL ELSE SUM(o.a) / COUNT(o.id) END',
+           'ROUND(AVG(o.a), 2)', '-MAX(o.a)', 'IFNULL(SUM(o.a), 0)',
          ]) {
-      expect(read(text)).toEqual({text, single: true});
+      expect(problem(text)).toEqual({text, problem: undefined});
     }
-    expect(read('MIN(o.amount)', 'POSTGRES').single).toBe(true);
-    expect(read('MAX(o.amount)', 'ANSI_SQL').single).toBe(true);
-    for (const text of [
-           'o.amount', 'SUM(o.amount) / COUNT(o.id)', 'SUM(o.amount) + 0',
-           'COUNTIF(o.amount > 0)', 'APPROX_COUNT_DISTINCT(o.id)',
-           'SUM(o.amount) OVER ()', 'COUNT(o.a, o.b)', 'MIN(o.a, o.b)',
-           'COUNT(DISTINCT o.a, o.b)', 'SUM(*)', 'COUNT(DISTINCT *)',
-           'SUM(o.amount) FILTER (WHERE o.amount > 0)',
-           'SUM(o.amount ORDER BY o.id)', 'SUM(o.amount IGNORE NULLS)',
-           'MAX(o.amount HAVING MAX o.id)', 'SUM(MAX(o.amount))',
-           'SUM(SUM(o.amount) OVER ())', 'SUM((SELECT 1))', 'COUNT((*))',
-           'SUM(((o.a, o.b)))', 'SUM(', '  ', 'SUM(o.amount);',
-         ]) {
-      expect(read(text)).toEqual({text, single: false});
+    expect(problem('MIN(o.amount)', 'POSTGRES').problem).toBeUndefined();
+    expect(problem('MAX(o.amount)', 'ANSI_SQL').problem).toBeUndefined();
+  });
+
+  test('gives each aggregate where it is written, with its operand', () => {
+    const text = 'SAFE_DIVIDE(SUM(IF(o.s = \'é\', o.a, 0)), count(DISTINCT o.a))';
+    expect(measureAggregates(text, 'BIGQUERY')).toEqual({
+      aggregates: [
+        {start: 12, end: 38, fn: 'SUM', operand: 'IF(o.s = \'é\', o.a, 0)',
+         distinct: false},
+        {start: 40, end: 59, fn: 'count', operand: 'o.a', distinct: true},
+      ]
+    });
+    expect(measureAggregates('COUNT(*) + 0', 'BIGQUERY')).toEqual({
+      aggregates: [{start: 0, end: 8, fn: 'COUNT', operand: '*', distinct: false}]
+    });
+  });
+
+  test('says why anything else cannot be a measure', () => {
+    const expected: Array<[string, string]> = [
+      ['o.amount', 'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+      ['o.amount * 2', 'it holds no aggregate (SUM, AVG, COUNT, MIN, MAX)'],
+      ['o.amount - SUM(o.discount)',
+       'it reads column \'amount\' outside an aggregate'],
+      ['CASE WHEN o.flag THEN SUM(o.a) END',
+       'it reads column \'flag\' outside an aggregate'],
+      ['SUM(o.a) + SAFE.SUM(o.b)', 'it reads column \'b\' outside an aggregate'],
+      ['STDDEV(o.amount)',
+       'it uses STDDEV, which BigQuery does not allow in a measure (SUM, AVG, ' +
+           'COUNT, MIN, MAX)'],
+      ['SUM(o.a) / COUNTIF(o.amount > 0)',
+       'it uses COUNTIF, which BigQuery does not allow in a measure (SUM, ' +
+           'AVG, COUNT, MIN, MAX)'],
+      ['APPROX_COUNT_DISTINCT(o.id)',
+       'it uses APPROX_COUNT_DISTINCT, which BigQuery does not allow in a ' +
+           'measure (SUM, AVG, COUNT, MIN, MAX)'],
+      ['CORR(o.a, o.b)',
+       'it uses CORR, which BigQuery does not allow in a measure (SUM, AVG, ' +
+           'COUNT, MIN, MAX)'],
+      ['SUM(o.amount) OVER ()', 'it uses a window or a subquery'],
+      ['SUM(o.a) / (SELECT 1)', 'it uses a window or a subquery'],
+      ['SUM(MAX(o.amount))', 'it nests an aggregate, a window or a subquery'],
+      ['SUM(SUM(o.amount) OVER ())',
+       'it nests an aggregate, a window or a subquery'],
+      ['SUM((SELECT 1))', 'it nests an aggregate, a window or a subquery'],
+      ['MIN(o.a, o.b)',
+       'it calls MIN with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ['COUNT(o.a, o.b)',
+       'it calls COUNT with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ['COUNT(DISTINCT o.a, o.b)',
+       'it calls COUNT with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ['SUM(((o.a, o.b)))',
+       'it calls SUM with 2 operands, where an aggregate in a measure takes ' +
+           'one'],
+      ...['SUM(*)', 'COUNT(DISTINCT *)', 'COUNT((*))',
+          'SUM(o.amount) FILTER (WHERE o.amount > 0)',
+          'SUM(o.amount ORDER BY o.id)', 'SUM(o.amount IGNORE NULLS)']
+          .map((text): [string, string] => [
+            text,
+            `it calls ${text.slice(0, text.indexOf('('))} with something ` +
+                `other than one operand and DISTINCT or ALL`
+          ]),
+      ['MAX(o.amount HAVING MAX o.id)',
+       'it calls MAX with something other than one operand and DISTINCT or ALL'],
+      ['SUM(', 'the SQL parser cannot read it as one expression'],
+      ['  ', 'the SQL parser cannot read it as one expression'],
+      ['SUM(o.amount);', 'the SQL parser cannot read it as one expression'],
+    ];
+    for (const [text, why] of expected) {
+      expect(problem(text)).toEqual({text, problem: why});
     }
   });
 });

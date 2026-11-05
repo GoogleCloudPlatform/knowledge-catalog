@@ -328,7 +328,7 @@ becomes one part of that graph:
 | Model | `PROPERTY GRAPH` | named by the deployment-target URI |
 | Entity | `NODE TABLE` | backed by the entity's `source` table, keyed by its primary key, or by its first unique key when it has none. A measure reads only one of the rows whose key is NULL, and `COUNT(*)` skips them, so a unique key used this way should hold no NULLs. The node table lists the entity's bound fields and its measures, and one with neither is written with `NO PROPERTIES`. |
 | Relationship | `EDGE TABLE` | connects the two entities' node tables; a foreign-key edge declares no fields of its own, so it is written with `NO PROPERTIES` and exposes none of its table's columns |
-| Metric | `MEASURE` on a node table | must resolve to a single entity and reduce to one supported aggregate over one operand (otherwise the push is rejected; see [Validation](#validation)) |
+| Metric | `MEASURE` on a node table | must resolve to a single entity and read every column inside `SUM`, `AVG`, `COUNT`, `MIN` or `MAX`, each over one operand; scalar SQL may combine them, as in `SUM(amount) / COUNT(id)` (otherwise the push is rejected; see [Validation](#validation)) |
 | Entity `extends` | extra `LABEL` clauses on the subclass node table | the subclass also matches its supertypes; the supertypes' fields flatten down (see [Class hierarchies](#class-hierarchies-extends--labels)) |
 | Action | *nothing* | an action reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
 | Constraint | *nothing* | a constraint reaches Knowledge Catalog only (see below); the BigQuery push deploys none and warns once |
@@ -729,9 +729,10 @@ and [§4.1](model_spec.md#41-narrowings-stricter-than-ossie).
   `fields_exclude`. An AlloyDB deployment reads only
   the `ALLOYDB` or `ANSI_SQL` text of each metric and field. A Spanner
   deployment deploys no metric. A BigQuery deployment turns each metric into a
-  measure, so each metric must be `SUM`, `AVG`, `COUNT`, `MIN` or `MAX` over
-  one operand, and the entity it belongs to needs a primary key or a unique
-  key. The measure rule skips a metric that has only a vendor text. A
+  measure, so each metric must read every column inside `SUM`, `AVG`, `COUNT`,
+  `MIN` or `MAX`, each over one operand, and the entity it belongs to needs a
+  primary key or a unique key. Scalar SQL may combine the aggregates, as in
+  `SUM(orders.amount) / COUNT(orders.order_id)`. The measure rule skips a metric that has only a vendor text. A
   BigQuery or Spanner graph cannot hold an entity and a relationship whose
   names match ignoring case. A BigQuery graph also cannot hold a metric named
   like a field of another entity, ignoring case. BigQuery limits the options

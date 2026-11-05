@@ -473,7 +473,11 @@ const MODEL_CASES: Case[] = [
     m.metrics.push({ name: 'orders_per_customer',
       expression: 'COUNT(orders.id) / COUNT(DISTINCT orders.customer_id)' });
     m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
-  }), true, 'no JSON Schema can see whether a metric is one aggregate'],
+  }), true],
+  ['a STDDEV metric on a BigQuery deployment', base(m => {
+    m.metrics.push({ name: 'amount_spread', expression: 'STDDEV(orders.amount)' });
+    m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
+  }), true, 'no JSON Schema can see whether a metric can be a BigQuery measure'],
 
   ['an action with custom_extensions', base(m => {
     m.actions = [{ name: 'cancel_order', custom_extensions: [{ vendor_name: 'DBT', data: '{}' }] }];
