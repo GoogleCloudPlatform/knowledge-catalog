@@ -1388,10 +1388,11 @@ export async function profiles(options: ProfilesOptions = {}): Promise<number> {
       // Push publishes the profile without its actions, so a profile whose
       // actions do not apply still gives the warnings of what it publishes.
       // Push prints none for a profile it rejects.
-      const published = res.kind === 'error' && !errors.length ?
+      const published = errors.length ? undefined :
+          res.kind === 'error' ?
           profileForDocument(doc, available, name, load, {skipActions: true}) :
           res;
-      if (published.kind === 'file') {
+      if (published?.kind === 'file') {
         for (const w of published.warnings) {
           console.warn(`  profile '${name}': warning: ${w}`);
         }
