@@ -7,9 +7,9 @@
 // fixture
 // CANNOT express, because the open AI-first format the loader reads is a subset
 // of the IR:
-//   - the logical DataType -> schema `dataType`/`metadataType` mapping and the
-//     DIMENSION role (the corpus fixtures declare no field `datatype`, so every
-//     field falls back to STRING/DEFAULT);
+//   - the logical DataType -> schema `dataType`/`metadataType` mapping (the
+//     corpus fixtures declare no field `datatype`, so every field falls back
+//     to Opaque) and the first-generation DIMENSION role;
 //   - the `dataSource` -> resource-path forms (BigQuery URI vs. verbatim);
 //   - IR-contract cases the loader never produces (a metric with an explicit
 //     type, a cross-entity metric with no attach entity, duplicate ids).
@@ -27,17 +27,19 @@ import {applyProfileFile, loadProfileFile} from '../../../src/libts/semantic/res
 const OPTS = {
   project: 'dest-proj',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
+  v2Aspects: true
 };
+// The first-generation layout, for tests of the first-generation writer.
+const FIRST_GEN = {...OPTS, v2Aspects: false};
 // The expression fields (per-field schema semantics, metric expression) are
 // gated off by default; this turns them on to assert their content.
-const OPTS_EXPR = {
-  ...OPTS,
+const FIRST_GEN_EXPR = {
+  ...FIRST_GEN,
   emitExpressions: true
 };
 
-const V2 = {...OPTS, v2Aspects: true};
-const V2_EXPR = {...V2, emitExpressions: true};
+const OPTS_EXPR = {...OPTS, emitExpressions: true};
 const KEY = (type: string) => `dataplex-types.global.${type}`;
 const DATAPLEX = 'projects/dataplex-types/locations/global';
 const EG = 'projects/dest-proj/locations/us/entryGroups/eg';
@@ -54,15 +56,15 @@ const TABLE = (t: string) =>
     `bigquery.googleapis.com/projects/p/datasets/d/tables/${t}`;
 const GRAPH = (g: string) =>
     `bigquery.googleapis.com/projects/p/datasets/d/propertyGraphs/${g}`;
-// The entry whose name ends in /entries/<suffix>, emitted under V2 unless
+// The entry whose name ends in /entries/<suffix>, emitted under OPTS unless
 // `opts` says otherwise, and the data of one of its aspects.
 function entry(
-    model: SemanticModel, suffix: string, opts: KcGenerateOptions = V2) {
+    model: SemanticModel, suffix: string, opts: KcGenerateOptions = OPTS) {
   return generateCatalogResources(model, opts)
       .entries.find(e => e.name.endsWith(`/entries/${suffix}`))!;
 }
 function data(model: SemanticModel, suffix: string, type: string,
-              opts: KcGenerateOptions = V2): any {
+              opts: KcGenerateOptions = OPTS): any {
   return entry(model, suffix, opts).aspects![KEY(type)]?.data;
 }
 const load = (text: string): SemanticModel =>
@@ -102,8 +104,10 @@ function modelWithField(
   return {name: 'm', entities: [entity], relationships: [], metrics: []};
 }
 
-// The schema-aspect field record for the sole field of modelWithField.
-function schemaField(model: SemanticModel, opts = OPTS): Record<string, any> {
+// The schema-aspect field record for the sole field of modelWithField, in the
+// first-generation layout unless `opts` says otherwise.
+function schemaField(
+    model: SemanticModel, opts = FIRST_GEN): Record<string, any> {
   const {entries} = generateCatalogResources(model, opts);
   const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
   const schema = entity.aspects!['dataplex-types.global.schema'].data!;
@@ -134,6 +138,15 @@ describe(
         });
       }
 
+      test(
+          'the second generation keeps the logical type as the dataType',
+          () => {
+            for (const [type, , metadataType] of cases) {
+              expect(schemaField(modelWithField(type), OPTS))
+                  .toMatchObject({dataType: type, metadataType});
+            }
+          });
+
       test('an un-typed field falls back to Opaque (STRING / OTHER)', () => {
         const f = schemaField(modelWithField(undefined));
         expect(f.dataType).toBe('STRING');
@@ -145,12 +158,12 @@ describe(
 describe(
     'a field with dimension metadata gets role DIMENSION, else DEFAULT', () => {
       test('dimension -> DIMENSION', () => {
-        expect(schemaField(modelWithField('String', true), OPTS_EXPR)
+        expect(schemaField(modelWithField('String', true), FIRST_GEN_EXPR)
                    .semantics.role)
             .toBe('DIMENSION');
       });
       test('no dimension -> DEFAULT', () => {
-        expect(schemaField(modelWithField('String', false), OPTS_EXPR)
+        expect(schemaField(modelWithField('String', false), FIRST_GEN_EXPR)
                    .semantics.role)
             .toBe('DEFAULT');
       });
@@ -177,7 +190,7 @@ describe('the schema aspect carries the target expression in semantics', () => {
             }],
           }],
         };
-        const f = schemaField(model, OPTS_EXPR);
+        const f = schemaField(model, FIRST_GEN_EXPR);
         expect(f.semantics.expression).toBe('CAST(e.f AS INT64)');
         // importedExpression is the vendor/MAQL form; KC has no consumer for
         // it.
@@ -195,7 +208,7 @@ describe('the schema semantics block is gated behind emitExpressions', () => {
   });
   test(
       'emitExpressions re-adds the semantics block (expression + role)', () => {
-        const f = schemaField(modelWithField('String', true), OPTS_EXPR);
+        const f = schemaField(modelWithField('String', true), FIRST_GEN_EXPR);
         expect(f.semantics).toEqual({expression: 'e.f', role: 'DIMENSION'});
       });
 });
@@ -205,9 +218,8 @@ describe(
     'the schema aspect carries keys, unique constraints, and labels', () => {
       // Entity keys / unique keys and a field label ride the built-in `schema`
       // aspect (primaryKey / uniqueConstraints / per-field annotations); all
-      // three are in the CLOSED schema template, so they emit on a default push
-      // (no
-      // --emit-expressions gating).
+      // three are in the CLOSED schema template, so a first-generation push
+      // emits them with no --emit-expressions gating.
       const model: SemanticModel = {
         name: 'm',
         relationships: [],
@@ -223,7 +235,7 @@ describe(
           ],
         }],
       };
-      const {entries} = generateCatalogResources(model, OPTS);
+      const {entries} = generateCatalogResources(model, FIRST_GEN);
       const schema =
           entries.find(e => e.entryType.endsWith('/semantic-entity'))!
               .aspects!['dataplex-types.global.schema']
@@ -261,7 +273,7 @@ describe(
                 ]
               }],
             };
-            const s = generateCatalogResources(bare, OPTS)
+            const s = generateCatalogResources(bare, FIRST_GEN)
                           .entries
                           .find(e => e.entryType.endsWith('/semantic-entity'))!
                           .aspects!['dataplex-types.global.schema']
@@ -289,7 +301,7 @@ describe(
                 fields: [{name: 'a', expression: 'e.a'}],
               }],
             };
-            const s = generateCatalogResources(degenerate, OPTS)
+            const s = generateCatalogResources(degenerate, FIRST_GEN)
                           .entries
                           .find(e => e.entryType.endsWith('/semantic-entity'))!
                           .aspects!['dataplex-types.global.schema']
@@ -325,7 +337,7 @@ describe('ai_context.instructions emits a guidelines aspect', () => {
       aiContext: {instructions: 'Metric doc.'},
     }],
   };
-  const {entries} = generateCatalogResources(model, OPTS);
+  const {entries} = generateCatalogResources(model, FIRST_GEN);
   const byType = (suffix: string) =>
       entries.find(e => e.entryType.endsWith(suffix))!;
 
@@ -347,7 +359,7 @@ describe('ai_context.instructions emits a guidelines aspect', () => {
     // instructions omits the aspect entirely.
     const plain: SemanticModel =
         {name: 'm', entities: [], relationships: [], metrics: []};
-    const anchor = generateCatalogResources(plain, OPTS).entries[0];
+    const anchor = generateCatalogResources(plain, FIRST_GEN).entries[0];
     expect(anchor.aspects![GUIDELINES]).toBeUndefined();
   });
 });
@@ -361,7 +373,7 @@ describe('entity dataSource maps to a resource path', () => {
       metrics: [],
       entities: [{name: 'e', dataSource, keys: ['k'], fields: []}],
     };
-    const {entries} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, FIRST_GEN);
     const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
     return entity.aspects!['dataplex-types.global.semantic-entity']
         .data!.source.resources;
@@ -390,7 +402,7 @@ describe('entity dataSource maps to a resource path', () => {
 
 
 describe('semantic-metric aspect', () => {
-  function metricData(model: SemanticModel, opts = OPTS) {
+  function metricData(model: SemanticModel, opts = FIRST_GEN) {
     const {entries, warnings} = generateCatalogResources(model, opts);
     const metric = entries.find(e => e.entryType.endsWith('/semantic-metric'))!;
     return {
@@ -410,7 +422,7 @@ describe('semantic-metric aspect', () => {
             {name: 'rev', expression: 'SUM(o.p)', entity: 'o', type: 'Decimal'}
           ],
         };
-        const {data, warnings} = metricData(model, OPTS_EXPR);
+        const {data, warnings} = metricData(model, FIRST_GEN_EXPR);
         expect(data).toEqual(
             {entity: 'o', dataType: 'NUMERIC', expression: 'SUM(o.p)'});
         expect(warnings.some(w => w.includes('dataType'))).toBe(false);
@@ -447,7 +459,8 @@ describe('semantic-metric aspect', () => {
         };
         expect(metricData(model).data)
             .toEqual({entity: 'o', dataType: 'NUMERIC'});
-        expect(metricData(model, OPTS_EXPR).data.expression).toBe('SUM(o.p)');
+        expect(metricData(model, FIRST_GEN_EXPR).data.expression)
+            .toBe('SUM(o.p)');
       });
 });
 
@@ -458,7 +471,7 @@ describe('model-level structure', () => {
       () => {
         const model: SemanticModel =
             {name: 'm', entities: [], relationships: [], metrics: []};
-        const {entries, warnings} = generateCatalogResources(model, OPTS);
+        const {entries, warnings} = generateCatalogResources(model, FIRST_GEN);
         const anchor = entries[0];
         expect(anchor.entryType.endsWith('/semantic-model')).toBe(true);
         expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
@@ -466,6 +479,18 @@ describe('model-level structure', () => {
         expect(warnings).toContain(
             'model has no entities; only the semantic-model entry will be generated');
       });
+
+  test('a model with no entities gets only its semantic-model entry, with a ' +
+           'warning',
+       () => {
+         const model: SemanticModel =
+             {name: 'm', entities: [], relationships: [], metrics: []};
+         const {entries, warnings} = generateCatalogResources(model, OPTS);
+         expect(entries.map(e => e.entryType))
+             .toEqual([`${DATAPLEX}/entryTypes/semantic-model`]);
+         expect(warnings).toContain(
+             'model has no entities; only the semantic-model entry will be generated');
+       });
 
   test(
       'a Spanner-targeted model records its Spanner target in the semantic-model aspect',
@@ -482,7 +507,7 @@ describe('model-level structure', () => {
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
           deployments: [{name: 'default', target: spannerUri}],
         };
-        const {entries} = generateCatalogResources(model, OPTS);
+        const {entries} = generateCatalogResources(model, FIRST_GEN);
         const anchor = entries[0];
         expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
             .toEqual({deploymentTargets: [spannerUri]});
@@ -508,7 +533,7 @@ describe('model-level structure', () => {
             {name: 'd3', target: alloyUri},
           ],
         };
-        const {entries} = generateCatalogResources(model, OPTS);
+        const {entries} = generateCatalogResources(model, FIRST_GEN);
         const anchor = entries[0];
         expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
             .toEqual({deploymentTargets: [spannerUri, bqUri, alloyUri]});
@@ -532,7 +557,7 @@ describe('model-level structure', () => {
           entities: [{name: 'e', dataSource: 'p.d.t', keys: ['k'], fields: []}],
           deployments: targets.map((target, i) => ({name: `d_${i}`, target})),
         };
-        const {entries} = generateCatalogResources(model, OPTS);
+        const {entries} = generateCatalogResources(model, FIRST_GEN);
         const anchor = entries[0];
         expect(anchor.aspects!['dataplex-types.global.semantic-model'].data)
             .toEqual({deploymentTargets: targets});
@@ -569,7 +594,7 @@ describe('model-level structure', () => {
             {name: 'a/b', dataSource: 'p.d.t2', keys: ['k'], fields: []},
           ],
         };
-        const {entries, warnings} = generateCatalogResources(model, OPTS);
+        const {entries, warnings} = generateCatalogResources(model, FIRST_GEN);
         const entityEntries =
             entries.filter(e => e.entryType.endsWith('/semantic-entity'));
         expect(entityEntries.length).toBe(1);
@@ -607,7 +632,7 @@ describe('relationships map to schema-join entry links', () => {
 
   test('a direct FK becomes one FOREIGN_KEY schema-join link', () => {
     const {entryLinks, warnings} =
-        generateCatalogResources(directFkModel(), OPTS);
+        generateCatalogResources(directFkModel(), FIRST_GEN);
     expect(entryLinks.length).toBe(1);
     const link = entryLinks[0];
 
@@ -650,7 +675,8 @@ describe('relationships map to schema-join entry links', () => {
           sourceColumns: ['o_key'],
           destinationColumns: ['c_key'],
         };
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
         expect(entryLinks.length).toBe(0);
         expect(warnings.some(
                    w => w.includes('relationship \'placed\'') &&
@@ -663,7 +689,7 @@ describe('relationships map to schema-join entry links', () => {
     // Point the destination at an entity the model does not declare, so it is
     // never emitted and the link has no endpoint entry to reference.
     model.relationships[0].destination.entity = 'ghost';
-    const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+    const {entryLinks, warnings} = generateCatalogResources(model, FIRST_GEN);
     expect(entryLinks.length).toBe(0);
     expect(warnings.some(
                w => w.includes('relationship \'placed\'') &&
@@ -680,7 +706,8 @@ describe('relationships map to schema-join entry links', () => {
          const model = directFkModel();
          model.relationships[0].source.columns = [];
          model.relationships[0].destination.columns = [];
-         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+         const {entryLinks, warnings} =
+             generateCatalogResources(model, FIRST_GEN);
          expect(entryLinks.length).toBe(0);
          expect(warnings.some(
                     w => w.includes('relationship \'placed\'') &&
@@ -696,7 +723,8 @@ describe('relationships map to schema-join entry links', () => {
         // slugs the name into the link id; a pull can only recover that slugged
         // form. Warn so the author knows the round trip renames it.
         model.relationships[0].name = 'Orders_To_Customer';
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
         expect(entryLinks.length).toBe(1);
         expect(warnings.some(
                    w => w.includes('Orders_To_Customer') &&
@@ -722,7 +750,8 @@ describe('relationships map to schema-join entry links', () => {
           },
         ];
 
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
 
         expect(entryLinks.map(l => l.name)).toEqual([
           'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
@@ -761,7 +790,8 @@ describe('relationships map to schema-join entry links', () => {
           },
         ];
 
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
 
         expect(entryLinks.map(l => l.name)).toEqual([
           'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/m-billing',
@@ -795,7 +825,8 @@ describe('relationships map to schema-join entry links', () => {
           },
         ];
 
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
 
         expect(entryLinks.map(l => l.name)).toEqual([
           'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
@@ -840,7 +871,8 @@ describe('relationships map to schema-join entry links', () => {
             },
           },
         ];
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
         expect(entryLinks.map(l => l.name)).toEqual([
           'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
               'm-placed',
@@ -879,7 +911,8 @@ describe('relationships map to schema-join entry links', () => {
           },
         ];
 
-        const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
+        const {entryLinks, warnings} =
+            generateCatalogResources(model, FIRST_GEN);
 
         expect(entryLinks.map(l => l.name)).toEqual([
           'projects/dest-proj/locations/us/entryGroups/eg/entryLinks/' +
@@ -928,16 +961,18 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
     };
   }
 
-  test('every entity is published (anchor + 2 entities), no warnings', () => {
+  test('every entity and the relationship are published, no warnings', () => {
     const {entries, warnings} = generateCatalogResources(logicalModel(), OPTS);
     const kinds = entries.map(e => e.entryType.replace(/.*\//, ''));
-    expect(kinds).toEqual(
-        ['semantic-model', 'semantic-entity', 'semantic-entity']);
+    expect(kinds).toEqual([
+      'semantic-model', 'semantic-entity', 'semantic-entity',
+      'semantic-relationship'
+    ]);
     expect(warnings).toEqual([]);
   });
 
   test('a logical entity emits an empty source (no bogus empty element)', () => {
-    const {entries} = generateCatalogResources(logicalModel(), OPTS);
+    const {entries} = generateCatalogResources(logicalModel(), FIRST_GEN);
     const orders = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
     // No table -> `source.resources` is [], not the old omitted source (which
     // the semantic-entity template rejects) or a bogus source:{resources:['']}.
@@ -948,7 +983,8 @@ describe('a purely logical model (no physical binding) emits cleanly', () => {
   test(
       'the schema-join endpoints fall back to the entity name when there is no table',
       () => {
-        const {entryLinks} = generateCatalogResources(logicalModel(), OPTS);
+        const {entryLinks} =
+            generateCatalogResources(logicalModel(), FIRST_GEN);
         expect(entryLinks.length).toBe(1);
         const join = entryLinks[0]
                          .aspects!['dataplex-types.global.schema-join']
@@ -978,7 +1014,8 @@ describe('abstract entities are skipped for Knowledge Catalog', () => {
   }
 
   test('an abstract entity produces no entry and warns', () => {
-    const {entries, warnings} = generateCatalogResources(withAbstract(), OPTS);
+    const {entries, warnings} =
+        generateCatalogResources(withAbstract(), FIRST_GEN);
     const names = entries.map(e => e.entrySource!.displayName ?? '');
     expect(names).not.toContain('Party');
     expect(warnings.some(
@@ -988,7 +1025,7 @@ describe('abstract entities are skipped for Knowledge Catalog', () => {
   });
 
   test('the concrete subtype is still published', () => {
-    const {entries} = generateCatalogResources(withAbstract(), OPTS);
+    const {entries} = generateCatalogResources(withAbstract(), FIRST_GEN);
     const person =
         entries.find(e => e.entryType.endsWith('/semantic-entity'));
     expect(person).toBeDefined();
@@ -1010,7 +1047,7 @@ describe('a field a binding profile excludes', () => {
       }],
       relationships: [], metrics: [],
     };
-    const {entries} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, FIRST_GEN);
     const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
     const fields = entity.aspects!['dataplex-types.global.schema'].data!.fields;
     expect(fields.map((f: any) => f.name)).toEqual(['k']);
@@ -1046,8 +1083,8 @@ entities:
 metrics_exclude: "*"
 `,
             'ops', {skipActions: true});
-        const {entries} =
-            generateCatalogResources({...models[0], profiles: [ops]}, OPTS);
+        const {entries} = generateCatalogResources(
+            {...models[0], profiles: [ops]}, OPTS);
         const entity =
             entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
         expect(entity.aspects!['dataplex-types.global.schema'].data!.fields.map(
@@ -1069,7 +1106,7 @@ describe('an entity source is stored as written', () => {
       entities:
           [{name: 'e', authoredSource, dataSource, keys: ['k'], fields: []}],
     };
-    const {entries} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, FIRST_GEN);
     const entity = entries.find(e => e.entryType.endsWith('/semantic-entity'))!;
     return entity.aspects!['dataplex-types.global.semantic-entity']
         .data!.source;
@@ -1107,7 +1144,7 @@ ${customerFields}`;
   };
 
   function customerField(model: SemanticModel, name: string): any {
-    const {entries} = generateCatalogResources(model, OPTS);
+    const {entries} = generateCatalogResources(model, FIRST_GEN);
     const customer = entries.find(e => e.entrySource?.displayName === 'Customer')!;
     return customer.aspects!['dataplex-types.global.schema'].data!.fields.find(
         (f: any) => f.name === name);
@@ -1215,7 +1252,7 @@ ${ENTITY_YAML('orders')}
 `;
   const loaded = () => load(MODEL_FILE);
   const metric = (model: SemanticModel, name: string,
-                  type = 'semantic-metric', opts = V2) =>
+                  type = 'semantic-metric', opts = OPTS) =>
       data(model, `${model.name}/metrics/${name}`, type, opts);
   const excluded = (model: SemanticModel, name: string) =>
       metric(model, name).excludedInProfiles;
@@ -1319,7 +1356,8 @@ ${ENTITY_YAML('orders')}
          const model = loaded();
          expect(metric(model, 'revenue', 'sql-expressions'))
              .toEqual({expressions: [{sql: 'SUM(orders.amount)'}]});
-         expect(metric(model, 'revenue', 'semantic-metric', V2_EXPR).expression)
+         expect(
+             metric(model, 'revenue', 'semantic-metric', OPTS_EXPR).expression)
              .toBeUndefined();
          expect(metric(model, 'order_count', 'sql-expressions')).toEqual({
            expressions: [
@@ -1346,7 +1384,7 @@ ${ENTITY_YAML('orders')}
          // nothing, and one with no entry warns.
          const sidecar = {content: '# Sales', contentType: 'MARKDOWN',
                           links: [{url: 'https://wiki/sales', title: 'Wiki'}]};
-         const opts = {...V2, overviews: new Map<string, OverviewSidecar>([
+         const opts = {...OPTS, overviews: new Map<string, OverviewSidecar>([
            ['sales', sidecar], ['sales/metrics/revenue', {content: 'Net.'}],
            ['sales/metrics/opaque_metric', {}],
            ['sales/metrics/gone', {content: 'Old.'}],
@@ -1373,7 +1411,7 @@ ${ENTITY_YAML('orders')}
            data: {owner: 'analytics', tier: 1.5,
                   tags: {pii: false, area: ['emea', 'apac']}},
          });
-         expect(data(model, 'sales', 'guidelines', OPTS))
+         expect(data(model, 'sales', 'guidelines', FIRST_GEN))
              .toEqual(GUIDE('Sales data.'));
          expect(metric(model, 'revenue', 'guidelines'))
              .toEqual({data: {unit: 'USD', scale: null}, userManaged: true});
@@ -1393,11 +1431,12 @@ ${ENTITY_YAML('orders')}
            const model = load(MODEL_FILE.replace('tier: 1.5', `tier: ${value}`));
            expect(data(model, 'sales', 'guidelines').data).toEqual(
                {owner: 'analytics', tags: {pii: false, area: ['emea', 'apac']}});
-           expect(generateCatalogResources(model, V2).warnings).toContain(
+           expect(generateCatalogResources(model, OPTS).warnings).toContain(
                `model 'sales': ai_context member 'tier' is not pushed: its ` +
                `value holds ${holds}, which Knowledge Catalog cannot store ` +
                `as written`);
-           expect(generateCatalogResources(model, OPTS).warnings).toEqual([]);
+           expect(generateCatalogResources(model, FIRST_GEN).warnings)
+               .toEqual([]);
          }
        });
 });
@@ -1460,7 +1499,7 @@ ${ENTITY_YAML('addresses')}
                [{vendorName: 'DBT', data: '{"relationship": true}'}],
          });
          const id = 'sales/relationships/orders_to_customers';
-         const opts = {...V2, overviews: new Map([[id, {content: 'Edge.'}]])};
+         const opts = {...OPTS, overviews: new Map([[id, {content: 'Edge.'}]])};
          expect(data(model, id, 'overview', opts)).toEqual({
            content: 'Edge.', ...EXAMPLES('Which customer placed order 42?'),
          });
@@ -1525,7 +1564,7 @@ ${ENTITY_YAML('addresses')}
                          sourceColumns: ['o_key'], destinationColumns: ['c_key']},
          });
          const {entries, entryLinks, warnings} =
-             generateCatalogResources(model, V2);
+             generateCatalogResources(model, OPTS);
          expect(entries.map(e => e.name)).toEqual([
            'sales',
            'sales/entities/orders',
@@ -1628,7 +1667,7 @@ semantic_model:
   const loaded = () => load(MODEL_FILE);
   // The data of aspect `type` on the entry of entity `name`.
   const aspect =
-      (model: SemanticModel, name: string, type: string, opts = V2) =>
+      (model: SemanticModel, name: string, type: string, opts = OPTS) =>
           data(model, `sales/entities/${name}`, type, opts);
   const NO_KEYS = (entity: string) =>
       `entity '${entity}': no keys declared in the source model; declare ` +
@@ -1667,7 +1706,7 @@ semantic_model:
              ['person', 'party'];
          expect(aspect(model, 'customers', 'semantic-entity').extends)
              .toEqual(['person', 'party']);
-         const {entryLinks, warnings} = generateCatalogResources(model, V2);
+         const {entryLinks, warnings} = generateCatalogResources(model, OPTS);
          expect(entryLinks).toEqual([
            extendsLink('person', 'party'), extendsLink('customers', 'person'),
            extendsLink('customers', 'party'), extendsLink('visits', 'events'),
@@ -1693,11 +1732,11 @@ semantic_model:
               ] as [string, SemanticModel['profiles'], boolean][]) {
            const model = loaded();
            model.profiles = profiles;
-           expect(generateCatalogResources(model, V2).warnings.filter(
+           expect(generateCatalogResources(model, OPTS).warnings.filter(
                       w => w.includes('no keys')), name)
                .toEqual(warns ? [NO_KEYS('events')] : []);
          }
-         expect(generateCatalogResources(loaded(), OPTS).warnings)
+         expect(generateCatalogResources(loaded(), FIRST_GEN).warnings)
              .toContain(NO_KEYS('visits'));
        });
 
@@ -1766,7 +1805,7 @@ semantic_model:
              'prod');
          if ('error' in applied) throw new Error(applied.error);
          const {model} = applied;
-         for (const opts of [V2, V2_EXPR]) {
+         for (const opts of [OPTS, OPTS_EXPR]) {
            expect(aspect(model, 'customers', 'schema', opts)).toEqual({
              fields: [
                {name: 'signup', dataType: 'Date', metadataType: 'DATETIME',
@@ -1790,8 +1829,8 @@ semantic_model:
          const who = (opts: KcGenerateOptions) =>
              generateCatalogResources(model, opts)
                  .warnings.filter(w => w.includes('parameter \'who\''));
-         expect(who(V2)).toEqual([]);
-         expect(who(OPTS)).not.toEqual([]);
+         expect(who(OPTS)).toEqual([]);
+         expect(who(FIRST_GEN)).not.toEqual([]);
        });
 
   test('an entity carries guidelines, semantic-extensions and an overview ' +
@@ -1802,7 +1841,10 @@ semantic_model:
          const AT = (type: string) => `${KEY(type)}@Schema.id`;
          const model = loaded();
          const id = 'sales/entities/customers';
-         const opts = {...V2, overviews: new Map([[id, {content: 'Buyers.'}]])};
+         const opts = {
+           ...OPTS,
+           overviews: new Map([[id, {content: 'Buyers.'}]])
+         };
          const customers = entry(model, id, opts).aspects!;
          const party = entry(model, 'sales/entities/party').aspects!;
          expect(customers[KEY('overview')].data).toEqual(
@@ -1826,7 +1868,7 @@ semantic_model:
          ]);
          expect(Object.keys(party))
              .toEqual([...HEAD, ...Object.keys(FIELD).map(AT)]);
-         expect(generateCatalogResources(model, V2).warnings.filter(
+         expect(generateCatalogResources(model, OPTS).warnings.filter(
                     w => w.includes('ai_context member')))
              .toEqual([['field \'party.id\'', '.inf'],
                        ['entity \'customers\'', '.nan']].map(

@@ -10,15 +10,19 @@
         "dataplex-types.global.semantic-model": {
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-model",
           "data": {
-            "deploymentTargets": [
-              "bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph"
+            "specVersion": "0.2.0.dev0/google",
+            "deployments": [
+              {
+                "name": "default",
+                "target": "bigquery.googleapis.com/projects/demo/datasets/sales/propertyGraphs/sales_graph"
+              }
             ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.entities.orders",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales/entities/orders",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-entity",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
       "entrySource": {
@@ -29,8 +33,11 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-entity",
           "data": {
             "source": {
-              "resources": [
-                "bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders"
+              "resource": "bigquery.googleapis.com/projects/demo/datasets/sales/tables/orders"
+            },
+            "primaryKey": {
+              "fields": [
+                "o_orderkey"
               ]
             }
           }
@@ -41,26 +48,38 @@
             "fields": [
               {
                 "name": "o_orderkey",
-                "dataType": "STRING",
+                "dataType": "Opaque",
                 "metadataType": "OTHER"
               },
               {
                 "name": "o_totalprice",
-                "dataType": "STRING",
+                "dataType": "Opaque",
                 "metadataType": "OTHER"
               }
-            ],
-            "primaryKey": {
-              "fields": [
-                "o_orderkey"
-              ]
-            }
+            ]
+          }
+        },
+        "dataplex-types.global.sql-expressions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/sql-expressions",
+          "data": {
+            "fieldExpressions": [
+              {
+                "name": "o_orderkey",
+                "dialect": "ANSI_SQL",
+                "sql": "o_orderkey"
+              },
+              {
+                "name": "o_totalprice",
+                "dialect": "ANSI_SQL",
+                "sql": "o_totalprice"
+              }
+            ]
           }
         }
       }
     },
     {
-      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales.metrics.total_revenue",
+      "name": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales/metrics/total_revenue",
       "entryType": "projects/dataplex-types/locations/global/entryTypes/semantic-metric",
       "parentEntry": "projects/sqlgen-testing/locations/us/entryGroups/semantic/entries/sales",
       "entrySource": {
@@ -71,7 +90,19 @@
           "aspectType": "projects/dataplex-types/locations/global/aspectTypes/semantic-metric",
           "data": {
             "entity": "orders",
-            "dataType": "STRING"
+            "dataType": "Opaque",
+            "metadataType": "OTHER"
+          }
+        },
+        "dataplex-types.global.sql-expressions": {
+          "aspectType": "projects/dataplex-types/locations/global/aspectTypes/sql-expressions",
+          "data": {
+            "expressions": [
+              {
+                "dialect": "ANSI_SQL",
+                "sql": "SUM(orders.o_totalprice)"
+              }
+            ]
           }
         }
       }

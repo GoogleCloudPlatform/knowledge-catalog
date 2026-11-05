@@ -238,8 +238,6 @@ export type PushRun = Awaited<ReturnType<typeof runPush>>;
 // outcomes it sets.
 interface PushStep extends Scope {
   flags?: commands.PushOptions;
-  // Sets KC_V2_ASPECTS=1 for this push; without it, KC_V2_ASPECTS=0.
-  v2Aspects?: boolean;
   services?: Services;
   code?: number;
   // Every line push prints with console.error, exactly.
@@ -413,12 +411,12 @@ async function runCase(c: Case): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'kcmd-two-phase-'));
   process.chdir(dir);
   try {
+    // With KC_V2_ASPECTS unset, push writes the second-generation layout.
+    delete process.env.KC_V2_ASPECTS;
     const runs: PushRun[] = [];
     for (const step of [c, ...c.then ?? []]) {
       const own = step === c ? {} : step;
       writeScope(dir, {...c, ...own});
-      if (step.v2Aspects) process.env.KC_V2_ASPECTS = '1';
-      else process.env.KC_V2_ASPECTS = '0';
       const services = {...c.services, ...own.services};
       runs.push(await runPush(services, step.flags ?? {}));
       await checkPush(runs.at(-1)!, step, runs);

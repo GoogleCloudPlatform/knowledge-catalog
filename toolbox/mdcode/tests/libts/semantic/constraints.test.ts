@@ -22,10 +22,9 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
+  v2Aspects: true
 };
-// What a second-generation push writes, which pull reads.
-const V2 = {...OPTS, v2Aspects: true};
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -700,7 +699,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // The emit side above and this read side are what make the annotation
     // survive a round trip; dropping either would lose a declared field
     // silently, since the pull rewrites the document it read.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries);
     expect(models[0].constraints![0].aiContext).toEqual({
       instructions:
@@ -728,13 +727,13 @@ describe('Knowledge Catalog publish/pull round trip', () => {
        });
 
   test('a pull recovers the constraints', () => {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries);
     expect(models[0].constraints).toEqual(model.constraints);
   });
 
   test('a pull recovers actions and constraints together', () => {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries);
     expect(models[0].actions).toEqual(model.actions);
     expect(models[0].constraints).toEqual(model.constraints);
@@ -743,9 +742,9 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   test('a second push of the pulled model produces the same entries', () => {
     // Push -> pull -> push has to be a fixed point: if it were not, a pull
     // followed by a push would rewrite entries that nobody edited.
-    const first = generateCatalogResources(model, V2);
+    const first = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(first.entries);
-    const second = generateCatalogResources(models[0], V2);
+    const second = generateCatalogResources(models[0], OPTS);
 
     const constraintsOf = (entries: typeof first.entries) =>
         entries.filter(e => e.entryType.endsWith(CONSTRAINT_ENTRY_TYPE))
@@ -758,7 +757,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   test('both routing words survive publish and pull', () => {
     // Without these the catalog states every rule the same way, and a credit a
     // supervisor may approve reads as one nobody can.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
     expect(held.aspects![CONSTRAINT_ASPECT].data!.onViolation)
@@ -783,7 +782,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // pulled model's own push-side validation, so it is dropped -- and since
     // `onViolation` is required, the pulled constraint then states no routing
     // word at all rather than falling back to one.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
     held.aspects![CONSTRAINT_ASPECT].data!.onViolation = 'maybe';
@@ -806,7 +805,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // word belongs. Coercing it would read `["escalate"]` back as `escalate`,
     // which invents a routing word the catalog never stated -- the one failure
     // mode worse than dropping it, because nothing would say it happened.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
     held.aspects![CONSTRAINT_ASPECT].data!.onViolation = ['escalate'];
@@ -826,7 +825,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // Quoting an empty word back would give a reader a typo to hunt that is
     // not there -- what they are owed is that the word is missing, which is
     // the same thing an absent field is told.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
     held.aspects![CONSTRAINT_ASPECT].data!.onViolation = '   ';
@@ -844,7 +843,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // Severity ranks and reports rather than routes, so an unreadable one
     // leaves the rule unranked rather than changing what the engine does. That
     // is the cheaper of the two failures, and it is still said out loud.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const held = entries.find(
         e => e.entrySource?.displayName === 'OrderWithinStandingLimit')!;
     held.aspects![CONSTRAINT_ASPECT].data!.severity = 'urgent';
@@ -863,7 +862,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   test('an entry whose judgment is blank is skipped and warned', () => {
     // A hand-edited aspect can carry a blank judgment. Such a constraint
     // states no rule, so it degrades itself rather than the pull.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const broken =
         entries.find(e => e.entrySource?.displayName === 'PositiveQuantity')!;
     broken.aspects![CONSTRAINT_ASPECT].data!.judgment = '  ';
@@ -887,7 +886,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // still hold one, and nothing reads it. Skipping silently would drop a
     // rule the catalog still shows a reader, so the warning names the stale
     // body and says the rule has to be restated.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const broken =
         entries.find(e => e.entrySource?.displayName === 'PositiveQuantity')!;
     delete broken.aspects![CONSTRAINT_ASPECT].data!.judgment;
@@ -972,16 +971,16 @@ describe('judged constraints', () => {
   });
 
   test('a pull recovers the judgment', () => {
-    const {entries} = generateCatalogResources(judged, V2);
+    const {entries} = generateCatalogResources(judged, OPTS);
     const {models, warnings} = modelsFromCatalogResources(entries);
     expect(models[0].constraints).toEqual(judged.constraints);
     expect(warnings.filter(w => w.includes('MemoNamesAFailure'))).toEqual([]);
   });
 
   test('push -> pull -> push is a fixed point', () => {
-    const first = generateCatalogResources(judged, V2);
+    const first = generateCatalogResources(judged, OPTS);
     const {models} = modelsFromCatalogResources(first.entries);
-    const second = generateCatalogResources(models[0], V2);
+    const second = generateCatalogResources(models[0], OPTS);
     expect(second.entries).toEqual(first.entries);
   });
 

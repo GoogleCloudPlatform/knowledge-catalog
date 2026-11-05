@@ -120,7 +120,7 @@ beforeEach(() => {
   process.chdir(dir);
   logs = [];
   savedV2Aspects = process.env.KC_V2_ASPECTS;
-  process.env.KC_V2_ASPECTS = '0';
+  delete process.env.KC_V2_ASPECTS;
   spyOn(ApiContext, 'default').mockReturnValue(CTX);
   for (const channel of ['log', 'warn', 'error'] as const) {
     spyOn(console, channel).mockImplementation((...a: unknown[]) => {

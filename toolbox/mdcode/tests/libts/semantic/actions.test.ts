@@ -21,10 +21,11 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const OPTS = {
   project: 'dest',
   location: 'us',
-  entryGroup: 'eg'
+  entryGroup: 'eg',
+  v2Aspects: true
 };
-// What a second-generation push writes, which pull reads.
-const V2 = {...OPTS, v2Aspects: true};
+// The first-generation layout, for tests of the first-generation writer.
+const FIRST_GEN = {...OPTS, v2Aspects: false};
 
 function loadFixtureModel(name: string): SemanticModel {
   const text = fs.readFileSync(path.join(FIXTURES, name), 'utf8');
@@ -687,8 +688,8 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     // built-in types the other entries reference.
     expect(entry.entryType)
         .toBe('projects/dest/locations/global/entryTypes/semantic-action');
-    // Ids sit alongside `<model>.entities.` and `<model>.metrics.`, and the
-    // action hangs off the model anchor the way a metric does.
+    // The id is `<model>.actions.<name>`, and the action hangs off the model
+    // anchor the way a metric does.
     expect(entry.name)
         .toBe(
             'projects/dest/locations/us/entryGroups/eg/entries/' +
@@ -724,8 +725,27 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     expect(ownedPrefixes).toContain('sales.actions.');
   });
 
+  test('an action whose name gives the entry id of an earlier action is ' +
+           'skipped with a warning',
+       () => {
+         // The id keeps letters, digits, '_', '.' and '-' and turns any other
+         // character into '_'.
+         const {models} = withActions([
+           {name: 'Place_Order', executor: MCP},
+           {name: 'Place Order', executor: MCP},
+         ]);
+         const {entries, warnings} = generateCatalogResources(models[0], OPTS);
+         expect(entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))
+                    .map(e => e.entrySource?.displayName))
+             .toEqual(['Place_Order']);
+         expect(warnings).toContain(
+             'action \'Place Order\': generated entry id ' +
+             '\'m.actions.Place_Order\' duplicates an earlier one; skipped ' +
+             '(rename to avoid overwriting it on publish)');
+       });
+
   test('a pull recovers the actions', () => {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries);
     expect(models[0].actions).toEqual(model.actions);
   });
@@ -737,7 +757,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
     const unbound: SemanticModel = structuredClone(model);
     delete unbound.actions![0].executor;
 
-    const {entries} = generateCatalogResources(unbound, V2);
+    const {entries} = generateCatalogResources(unbound, OPTS);
     const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
     const data = entry.aspects!['dest.global.semantic-action'].data!;
     expect(data.executorKind).toBeUndefined();
@@ -761,7 +781,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
   test('an entry whose executor names a kind it cannot back is skipped', () => {
     // The other half of the rule above: no kind is a published state, a kind
     // with no coordinates is damage, and damage still degrades itself.
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const entry = entries.find(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))!;
     entry.aspects!['dest.global.semantic-action'].data!.mcpTool = '';
 
@@ -780,7 +800,7 @@ describe('Knowledge Catalog publish/pull round trip', () => {
         // and its wording intact and still names the field it came from -- the
         // pull is missing the field's own entry, not the parameter's
         // definition.
-        const {entries} = generateCatalogResources(model, V2);
+        const {entries} = generateCatalogResources(model, OPTS);
         const withoutEntities =
             entries.filter(e => !e.entryType.endsWith('/semantic-entity'));
         const {models, warnings} = modelsFromCatalogResources(withoutEntities);
@@ -907,7 +927,7 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
   });
 
   test('a pull recovers every action unchanged', () => {
-    const {entries} = generateCatalogResources(model, V2);
+    const {entries} = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(entries);
     // Entries come back ordered by the catalog rather than by the document, so
     // compare as a set keyed by name.
@@ -919,9 +939,9 @@ describe('Knowledge Catalog round trip across executor kinds', () => {
   test('a second push of the pulled model produces the same entries', () => {
     // Push -> pull -> push has to be a fixed point: if it were not, a pull
     // followed by a push would rewrite entries that nobody edited.
-    const first = generateCatalogResources(model, V2);
+    const first = generateCatalogResources(model, OPTS);
     const {models} = modelsFromCatalogResources(first.entries);
-    const second = generateCatalogResources(models[0], V2);
+    const second = generateCatalogResources(models[0], OPTS);
 
     const actionsOf = (entries: typeof first.entries) =>
         entries.filter(e => e.entryType.endsWith(ACTION_ENTRY_TYPE))
@@ -972,14 +992,14 @@ describe('actions projecting concepts the push does not publish', () => {
         // Resolved against the ontology, which includes abstract entities.
         expect(models[0].actions![0].parameters[0].type).toBe('String');
 
-        const {warnings} = generateCatalogResources(models[0], OPTS);
+        const {warnings} = generateCatalogResources(models[0], FIRST_GEN);
         expect(warnings.some(
                    w => w.includes('parameter \'who\'') &&
                        w.includes('does not publish')))
             .toBe(true);
         // The second-generation types give the entity an entry, so the
         // parameter draws no warning.
-        expect(generateCatalogResources(models[0], {...OPTS, v2Aspects: true})
+        expect(generateCatalogResources(models[0], OPTS)
                    .warnings.filter(w => w.includes('does not publish')))
             .toEqual([]);
       });
@@ -1035,7 +1055,7 @@ describe('parameter description, required, and default', () => {
           required: false,
         });
 
-        const cat = generateCatalogResources(models[0], V2);
+        const cat = generateCatalogResources(models[0], OPTS);
         const pulled = modelsFromCatalogResources(cat.entries);
         expect(pulled.models[0].actions![0].parameters).toEqual(params);
       });
@@ -1170,7 +1190,7 @@ describe('parameter description, required, and default', () => {
             {name: 'largeInt', type: 'Integer', default: '9007199254740993'},
           ],
         }]);
-        const cat = generateCatalogResources(models[0], V2);
+        const cat = generateCatalogResources(models[0], OPTS);
         const pulled = modelsFromCatalogResources(cat.entries);
         expect(pulled.models[0].actions![0].parameters)
             .toEqual(models[0].actions![0].parameters);
@@ -1393,9 +1413,9 @@ describe('a projection the catalog cannot give back', () => {
   });
 
   test('the concept is a relationship, whose fields no entry records', () => {
-    // Pull rebuilds relationships from `schema-join` entry links alone, and a
-    // link records its two endpoints and nothing else -- so an association's
-    // own fields come back from no entry, published or not.
+    // A relationship entry records its endpoints and join columns, not fields
+    // of its own, and push gives an association no entry at all -- so an
+    // association's own fields come back from no entry.
     const model: SemanticModel = {
       name: 'm',
       entities: [

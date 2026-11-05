@@ -14,7 +14,7 @@
 //         ./tests/libts/semantic/knowledge_catalog.e2e.test.ts
 //   then read the diff before committing.
 //
-// Focused behavior (warnings, schema-join link emission, metric dataType
+// Focused behavior (warnings, relationship entries and links, metric dataType
 // fallback) is asserted in knowledge_catalog.test.ts; the publisher's write
 // sequence in deploy_knowledge_catalog.test.ts.
 
@@ -28,9 +28,9 @@ import {loadModels, LoadOptions} from '../../../src/libts/semantic/loader';
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 // Fixtures that get a KC golden. Chosen to exercise the distinct mappings:
-//   sales_bq_graph_target -> model aspect deploymentTargets + un-typed metric
+//   sales_bq_graph_target -> model aspect deployments + un-typed metric
 //     (dataType fallback); star_orders_customer -> a direct-FK relationship
-//     (schema-join link) + multiple entities/metrics; tpcds_date_edge ->
+//     (its entry and links) + multiple entities/metrics; tpcds_date_edge ->
 //     temporal field types; actions_place_order -> the custom
 //     `semantic-action` and `semantic-constraint` types, the only fixture that
 //     declares either.
@@ -42,11 +42,13 @@ const CORPUS = [
 ];
 
 // A fixed destination + default (dataplex-types/global) system types, so the
-// golden pins the exact resource names the emitter produces.
+// golden pins the exact resource names the emitter produces, in the
+// second-generation layout that push writes.
 const GEN_OPTS = {
   project: 'sqlgen-testing',
   location: 'us',
-  entryGroup: 'semantic'
+  entryGroup: 'semantic',
+  v2Aspects: true
 };
 
 function loadFixture(fixture: string, load: LoadOptions = {}) {
@@ -55,7 +57,7 @@ function loadFixture(fixture: string, load: LoadOptions = {}) {
 }
 
 // The exact artifact a golden captures: the generated entries, then the
-// relationship entry links, then the emitter warnings, as pretty JSON so a
+// entry links, then the emitter warnings, as pretty JSON so a
 // reviewer sees the full resource shapes.
 function render(fixture: string): string {
   const {models} = loadFixture(fixture);

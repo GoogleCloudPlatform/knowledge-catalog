@@ -123,9 +123,9 @@ beforeEach(() => {
   process.chdir(dir);
   logs = [];
   errs = [];
-  // Each test starts with KC_V2_ASPECTS=0, whatever the shell sets.
+  // Each test starts with KC_V2_ASPECTS unset, whatever the shell sets.
   savedV2Aspects = process.env.KC_V2_ASPECTS;
-  process.env.KC_V2_ASPECTS = '0';
+  delete process.env.KC_V2_ASPECTS;
   // No test may reach the network.
   spyOn(globalThis, 'fetch').mockImplementation((() => {
     throw new Error('a test made a network call');
@@ -958,7 +958,7 @@ semantic_model:
        ] as const) {
     test(`prints only push's one-model error for two models${label}`,
          async () => {
-           if (v2) process.env.KC_V2_ASPECTS = '1';
+           if (!v2) process.env.KC_V2_ASPECTS = '0';
            writeScope({
              'commerce.yaml': model,
              'shop.yaml': commerce().replace('name: commerce', 'name: shop'),
@@ -1032,7 +1032,6 @@ semantic_model:
          }, "not 'markdown'", ''],
        ] as [string, Record<string, string>, string, string?][]) {
     test(`prints push's error for ${label} with KC_V2_ASPECTS on`, async () => {
-      process.env.KC_V2_ASPECTS = '1';
       writeScope(files);
       const pushed = await pushResult();
       expect(pushed).toEqual(
@@ -1045,7 +1044,6 @@ semantic_model:
   test('exits 0 for an aspect one profile file keeps under the size limit ' +
            'with KC_V2_ASPECTS on',
        async () => {
-         process.env.KC_V2_ASPECTS = '1';
          writeScope(wideScope('a'));
          expect(await pushResult()).toEqual({code: 0, errors: []});
          expect(await profiles()).toBe(0);
@@ -1054,7 +1052,6 @@ semantic_model:
   test('prints push\'s warnings for a custom ai_context member push leaves ' +
            'out and a sidecar that names no entry, with KC_V2_ASPECTS on',
        async () => {
-         process.env.KC_V2_ASPECTS = '1';
          const warned: string[] = [];
          spyOn(console, 'warn').mockImplementation((m: any) => {
            warned.push(String(m));
@@ -1120,7 +1117,7 @@ semantic_model:
     test(`throws push's error for a profile file that breaks a layout rule${
              v2Aspects ? ' with KC_V2_ASPECTS on' : ''}`,
          async () => {
-           if (v2Aspects) process.env.KC_V2_ASPECTS = '1';
+           if (!v2Aspects) process.env.KC_V2_ASPECTS = '0';
            writeScope({
              'commerce.yaml': commerce(),
              'commerce.profile.prod.yaml': profileFile('other'),
