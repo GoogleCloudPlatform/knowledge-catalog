@@ -57,8 +57,9 @@ const STANDARD_REFUSED = err(
     `${at('sp')}: instance test-project/i is a Standard edition instance, ` +
     'and Spanner Graph needs an Enterprise or Enterprise Plus edition ' +
     'instance. Upgrade the instance (gcloud spanner instances update i ' +
-    '--edition=ENTERPRISE --project=test-project), or remove the ' +
-    'deployment; push still publishes the model to Knowledge Catalog.');
+    '--edition=ENTERPRISE --project=test-project). To publish the model to ' +
+    'Knowledge Catalog without this graph, leave the deployment out with ' +
+    '--deployment or --no-deployment, or remove it.');
 
 scenarios('push writes nothing when a check fails', [
   {
@@ -370,6 +371,21 @@ scenarios('how push deploys each deployment in order, and what it prints', [
       // The source check fails when it cannot read the instance.
       {flags: {skipSourceCheck: true}, services: {getInstance: {status: 403}}},
     ].map(step => ({code: 0, events: SP_DEPLOYED, ...step})),
+  },
+  {
+    name: 'a Spanner deployment on a Standard edition instance lets the model publish when push leaves it out with --no-deployment or --deployment, or when it is removed',
+    ...SPANNER_DEPLOYMENT,
+    services: instanceIs({edition: 'STANDARD'}),
+    flags: {deployment: false},
+    events: ['preflight', 'apply'],
+    then: [
+      {
+        deployments: [...SPANNER_DEPLOYMENT.deployments, 'g'],
+        flags: {deployment: ['g']},
+        events: ['preflight', 'apply', 'deploy g'],
+      },
+      {deployments: [], events: ['preflight', 'apply']},
+    ].map(step => ({code: 0, ...step})),
   },
   {
     name: 'a profile that gives the join columns deploys, and with KC_V2_ASPECTS=1 so do relationships whose link IDs collide',

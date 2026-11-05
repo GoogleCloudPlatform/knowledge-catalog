@@ -1069,9 +1069,10 @@ async function liveErrors(
         `${at}: instance ${project}/${instance} is a Standard edition ` +
         `instance, and Spanner Graph needs an Enterprise or Enterprise Plus ` +
         `edition instance. Upgrade the instance (gcloud spanner instances ` +
-        `update ${instance} --edition=ENTERPRISE --project=${project}), or ` +
-        `remove the deployment; push still publishes the model to Knowledge ` +
-        `Catalog.`,
+        `update ${instance} --edition=ENTERPRISE --project=${project}). To ` +
+        `publish the model to Knowledge Catalog without this graph, leave ` +
+        `the deployment out with --deployment or --no-deployment, or remove ` +
+        `it.`,
       ];
     }
     return validateSpannerActionStatements([model], spanner);
