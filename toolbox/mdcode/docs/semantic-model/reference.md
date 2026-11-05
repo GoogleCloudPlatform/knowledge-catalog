@@ -140,10 +140,10 @@ either, so it treats a Spanner table the same way, and push alone refuses a
 Spanner deployment on a PostgreSQL-dialect database.
 Import judges a table in the database a Spanner deployment targets as
 `SPANNER`, since push refuses that deployment on a PostgreSQL-dialect database.
-On such a table, import still reports what push refuses whatever the dialect:
-a field with no text in any dialect the table can have and no `ANSI_SQL` text,
-and a column or field that a text reads in every one of those dialects. Nothing
-is written
+On a table whose dialect no lookup read, import still reports what push
+refuses whatever the dialect: a field with no text in any dialect the table can
+have and no `ANSI_SQL` text, and a column or field that a text reads in every
+one of those dialects. Nothing is written
 when the import reports an error. Import rewrites only the values it changes,
 and every other line of the file stays as written, with its comments, blank
 lines, quoting, indentation and line endings. Comments on anything import
