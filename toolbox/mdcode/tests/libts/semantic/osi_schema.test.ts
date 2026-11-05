@@ -328,6 +328,8 @@ const MODEL_CASES: Case[] = [
   ['an inline profiles: key', base(m => { m.profiles = [{ name: 'p' }]; }), false],
   ['a deployment_target: key', base(m => { m.deployment_target = TARGET.bigquery; }), false],
   ['an unknown key on an entity', base(m => { m.entities[0].colour = 'red'; }), false],
+  ['an empty deployments list', base(m => { m.deployments = []; }), true],
+  ['an empty primary_key', base(m => { m.entities[0].primary_key = []; }), true],
 
   // Dialects and datatypes.
   ['a dialect outside the list', base(m => {
@@ -623,10 +625,12 @@ const PROFILE_CASES: Case[] = [
 describeAgreement('the Google schema and the loader agree on profile files',
   validateProfile, profileErrors, PROFILE_CASES);
 
-// The schema cannot see the model file, so this case checks the schema alone.
-test('a profile entity with no primary_key passes the schema', () => {
+// The schema cannot see the model file, so these cases check the schema alone.
+test('a profile entity with no primary_key, or an empty one, passes the schema', () => {
   expect(schemaErrors(validateProfile,
     profile(p => { delete p.entities[1].primary_key; }))).toBeUndefined();
+  expect(schemaErrors(validateProfile,
+    profile(p => { p.entities[1].primary_key = []; }))).toBeUndefined();
 });
 
 test('the Google flavor rejects a GOOGLE custom_extensions block in any letter case', () => {

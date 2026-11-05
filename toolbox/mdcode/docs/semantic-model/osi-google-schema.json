@@ -314,7 +314,6 @@
         },
         "primary_key": {
           "type": "array",
-          "minItems": 1,
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/ColumnName"
@@ -518,7 +517,6 @@
         },
         "primary_key": {
           "type": "array",
-          "minItems": 1,
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/ColumnName"
@@ -838,7 +836,6 @@
         },
         "deployments": {
           "type": "array",
-          "minItems": 1,
           "items": {
             "$ref": "#/$defs/Deployment"
           }
