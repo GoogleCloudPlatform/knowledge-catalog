@@ -341,6 +341,13 @@ const MODEL_CASES: Case[] = [
   ['an unknown key on an entity', base(m => { m.entities[0].colour = 'red'; }), false],
   ['an empty deployments list', base(m => { m.deployments = []; }), true],
   ['an empty primary_key', base(m => { m.entities[0].primary_key = []; }), true],
+  ["an empty primary_key on a relationship's target",
+    base(m => { m.entities[1].primary_key = []; }), true,
+    "push needs a key on a relationship's target; the schema checks each entity alone"],
+  ['an empty primary_key on the entity of a metric a graph deploys', base(m => {
+    m.deployments = [{ name: 'prod', target: TARGET.bigquery }];
+    m.entities[0].primary_key = [];
+  }), true, "a graph needs a key on a metric's entity; the schema checks each entity alone"],
 
   // Dialects and datatypes.
   ['a dialect outside the list', base(m => {
