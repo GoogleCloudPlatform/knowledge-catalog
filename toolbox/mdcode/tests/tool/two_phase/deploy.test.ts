@@ -180,7 +180,7 @@ scenarios('push writes nothing when a check fails', [
         services: {getDatabase: {status: 404, message: 'Not found'}},
         errors: [err(`${at('sp')}: database test-project/i/db not found`)],
       },
-    ].map(step => ({code: 1, nothingWritten: true, ...step})),
+    ].map(step => ({code: 1, nothingWritten: true, called: {spannerDml: 0}, ...step})),
   },
 ], {
   deployments: ['g1', 'g2'],
@@ -366,6 +366,7 @@ scenarios('how push deploys each deployment in order, and what it prints', [
     ...SPANNER_DEPLOYMENT,
     services: instanceIs({edition: 'ENTERPRISE'}),
     events: SP_DEPLOYED,
+    warnings: [],
     then: [
       {services: instanceIs({edition: 'ENTERPRISE_PLUS'})},
       // The source check fails when it cannot read the instance.
@@ -378,7 +379,16 @@ scenarios('how push deploys each deployment in order, and what it prints', [
           'edition instance',
         ],
       },
-    ].map(step => ({code: 0, events: SP_DEPLOYED, ...step})),
+      {
+        flags: {skipSourceCheck: true},
+        services: {getInstance: {status: 403, message: 'Access Denied'}},
+        warnings: [
+          'Warning: could not read the edition of instance test-project/i ' +
+          '(Access Denied); Spanner Graph needs an Enterprise or Enterprise ' +
+          'Plus edition instance',
+        ],
+      },
+    ].map(step => ({code: 0, events: SP_DEPLOYED, warnings: [], ...step})),
   },
   {
     name: 'a Spanner deployment on a Standard edition instance lets the model publish when push leaves it out with --no-deployment or --deployment, or when it is removed',
