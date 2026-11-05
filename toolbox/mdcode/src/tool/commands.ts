@@ -1024,13 +1024,13 @@ async function checkBeforeWrites(
   // must be valid UTF-8 too.
   let overviews: Map<string, OverviewSidecar>|undefined;
   if (kcV2Aspects() && docs.length === 1) {
-    for (const {path: sidecar} of layout.overviewSidecarPaths()) {
-      const error = checkUtf8(
-          sidecar, fileNameOf(layout, docs[0].name, sidecar),
-          fs.readFileSync(sidecar, 'utf8'));
-      if (error) return fail(error);
-    }
     try {
+      for (const {path: sidecar} of layout.overviewSidecarPaths()) {
+        const error = checkUtf8(
+            sidecar, fileNameOf(layout, docs[0].name, sidecar),
+            fs.readFileSync(sidecar, 'utf8'));
+        if (error) return fail(error);
+      }
       overviews = layout.overviewSidecars();
     } catch (err: any) {
       return fail(err.message);

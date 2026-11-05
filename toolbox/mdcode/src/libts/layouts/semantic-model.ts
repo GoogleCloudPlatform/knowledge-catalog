@@ -502,8 +502,9 @@ export class SemanticModelLayout implements CatalogLayout {
   }
 }
 
-// The name push gives a model file or profile file of the model `model`: its
-// path relative to the entry group directory, with `/` between segments.
+// The name push gives a model file, profile file or overview sidecar of the
+// model `model`: its path relative to the entry group directory, with `/`
+// between segments.
 export function fileNameOf(
     layout: SemanticModelLayout, model: string, localPath: string): string {
   return path.relative(path.dirname(layout.modelPath(model)), localPath)
