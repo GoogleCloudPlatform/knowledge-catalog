@@ -1427,16 +1427,16 @@ export function importHint(
 }
 
 // The dialect a model's sources imply: that of the one database every concrete
-// entity reads from, or undefined when they name several, or a source names
-// none. It is null when every source is a table whose dialect no lookup read
-// (see dialectOfSources).
+// entity with a source reads from, or undefined when they name several, a
+// source names none, or no entity has one. It is null when every source is a
+// table whose dialect no lookup read (see dialectOfSources).
 export function sourcesDialect(model: {
   entities?: ReadonlyArray<
       Pick<Entity, 'abstract'|'authoredSource'|'dataSource'|'sourceDialect'>>;
 }): string|null|undefined {
   return dialectOfSources(
       (model.entities ?? [])
-          .filter(e => !e.abstract)
+          .filter(e => !e.abstract && (e.authoredSource || e.dataSource))
           .map(e => ({
                  source: writtenSource(e),
                  lookedUp: e.sourceDialect,

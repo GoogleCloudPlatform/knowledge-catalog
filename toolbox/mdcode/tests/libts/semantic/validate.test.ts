@@ -7,7 +7,7 @@ import {Action, Entity, Field, Metric, ProfileSpec, SemanticModel} from '../../.
 import {listed, LoadedModel, LoadOptions, loadModels} from '../../../src/libts/semantic/loader';
 import {applyProfile, applyProfileFile} from '../../../src/libts/semantic/resolve_profiles';
 import {isColumnName} from '../../../src/libts/semantic/sql_expr_utils';
-import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
+import {inlineBindingWarnings, validateBigQueryActionStatements, validateBigQueryDataSources, validateDeployments, validateExpressionReferences, validateInheritedColumns, validateInlineDialects, validatePushRequirements, validateSpannerActionStatements} from '../../../src/libts/semantic/validate';
 import {BigQueryClientMock, mockSchema, SpannerClientMock} from '../mocks';
 
 // A parsed BigQuery Graph deployment target the strict matcher accepts.
@@ -3484,4 +3484,39 @@ ${extra}`, {sourceDialects: new Map([
     delete noSource.entities[0].authoredSource;
     expect(check(noSource)).toEqual([]);
   });
+});
+
+// Customer inherits field `label`, which reads the double-quoted column
+// "p_name", from Party on another table of one PostgreSQL-dialect database.
+// An entity with no source leaves the model file's dialect to the others.
+test('validateInheritedColumns reads an inherited field in the dialect of the tables the model file binds', () => {
+  const cloudSql = (t: string) =>
+      `cloudsql.googleapis.com/projects/p/locations/l/instances/i/databases/d/schemas/public/tables/${t}`;
+  const spanner = 'spanner.googleapis.com/projects/p/instances/i/databases/db';
+  const entry = (t: string) => `projects/p/locations/l/entryGroups/g/entries/${t}`;
+  const sourceless = '      - {name: Order, primary_key: [id], fields: [{name: id, expression: id}]}\n';
+  // [label, table of each entity, key of each table's looked-up POSTGRES dialect, Order]
+  const cases: Array<[string, (t: string) => string, (t: string) => string|undefined, string]> = [
+    ['Cloud SQL', cloudSql, cloudSql, sourceless],
+    ['Cloud SQL, as import reads it', cloudSql, () => undefined, sourceless],
+    ['AlloyDB', t => `${TARGET.alloydb}/schemas/public/tables/${t}`, () => undefined, sourceless],
+    ['Spanner', t => `${spanner}/tables/${t}`, () => spanner, sourceless],
+    ['third-party', entry, entry, sourceless],
+    ['Cloud SQL, abstract Order', cloudSql, cloudSql,
+     '      - {name: Order, abstract: true, fields: [{name: id}]}\n'],
+  ];
+  for (const [label, table, key, order] of cases) {
+    const looked = ['party', 'customer'].flatMap(
+        t => key(t) ? [[key(t)!, 'POSTGRES'] as [string, string]] : []);
+    const m = loadOne('shop', `    datasets:
+      - {name: Party, source: ${table('party')}, primary_key: [id],
+         fields: [{name: id, expression: id}, {name: label, expression: '"p_name"'}]}
+      - {name: Customer, extends: [Party], source: ${table('customer')},
+         primary_key: [id], fields: [{name: id, expression: id}]}
+${order}`, {sourceDialects: new Map(looked)});
+    expect({label, errors: validateInheritedColumns(m, 'shop')}).toEqual({label, errors: [
+      "entity 'Customer' in model 'shop' (shop): field 'label' is inherited from 'Party', whose " +
+          "expression reads column 'p_name' of that entity's table; restate it with an " +
+          "expression for this entity's table."]});
+  }
 });
