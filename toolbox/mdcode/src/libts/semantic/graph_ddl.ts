@@ -456,8 +456,7 @@ function renderNodeTable(
   const hasAncestors = !!(entity.extends && entity.extends.length);
   if (hasAncestors || isSupertype) lines.push(line(2, 'DEFAULT LABEL'));
   if (labelOpts) lines.push(line(2, labelOpts));
-  lines.push(...propertiesClause(
-      properties, entity.fields.some(f => isLeftOut(f, entity, engine))));
+  lines.push(propertiesClause(properties));
 
   // Inheritance: declare one LABEL per transitive ancestor (resolveInheritance
   // expanded `extends` to the full ancestor set), each re-listing that
@@ -486,7 +485,6 @@ function renderNodeTable(
     }
     lines.push(line(2, `LABEL ${quoteIfReserved(ancestorName)}`));
     let signature: string[];
-    let anyLeftOut = false;
     if (ancestor.abstract) {
       // Render each inherited field from THIS subtype's own binding, keyed by
       // the abstract ancestor's field names. Skip any the subtype leaves
@@ -495,10 +493,7 @@ function renderNodeTable(
       // simply does not expose that property under the shared label.
       signature = [];
       for (const af of ancestor.fields) {
-        if (leftOutUnder.get(ancestorName)?.has(af.name)) {
-          anyLeftOut = true;
-          continue;
-        }
+        if (leftOutUnder.get(ancestorName)?.has(af.name)) continue;
         const child = boundFields.find(cf => cf.name === af.name);
         if (child) {
           signature.push(renderFieldProperty(child, entity, engine));
@@ -509,19 +504,19 @@ function renderNodeTable(
       signature =
           ancestor.fields.filter(f => 'sql' in fieldSql(f, ancestor, engine))
               .map(f => renderFieldProperty(f, ancestor, engine));
-      anyLeftOut = ancestor.fields.some(f => isLeftOut(f, ancestor, engine));
     }
-    lines.push(...propertiesClause(signature, anyLeftOut));
+    lines.push(propertiesClause(signature));
   }
   return lines.join('\n');
 }
 
-// The properties clause of a table or label. When `anyLeftOut` is set, an
-// empty list gives NO PROPERTIES, since a missing clause exposes every column.
-function propertiesClause(
-    properties: string[], anyLeftOut: boolean): string[] {
-  if (properties.length) return [propertiesBlock(properties)];
-  return anyLeftOut ? [line(2, 'NO PROPERTIES')] : [];
+// The properties clause of a node table, label or edge. An empty list gives NO
+// PROPERTIES: BigQuery and Spanner read a missing clause as PROPERTIES ARE ALL
+// COLUMNS, which would expose every column of the table, including one a
+// profile leaves out.
+function propertiesClause(properties: string[]): string {
+  return properties.length ? propertiesBlock(properties) :
+                             line(2, 'NO PROPERTIES');
 }
 
 // Whether a field has SQL, but the engine has none to render it from: none of
@@ -736,9 +731,14 @@ function renderEdgeTable(
   ];
 
   // Edge description and synonyms attach to the DEFAULT LABEL: after the
-  // SOURCE/DESTINATION clauses (grammar: element_table_definition).
+  // SOURCE/DESTINATION clauses, before the properties clause (grammar:
+  // element_table_definition).
   const labelOpts = engine.elementOptions(rel.description, rel.aiContext);
   if (labelOpts) lines.push(line(2, labelOpts));
+
+  // A foreign-key relationship declares no fields of its own, so its edge
+  // lists none.
+  lines.push(propertiesClause([]));
 
   return lines.join('\n');
 }
@@ -813,8 +813,7 @@ function renderAssociationEdge(
             return false;
           })
           .map(f => renderFieldProperty(f, owner, engine));
-  lines.push(...propertiesClause(
-      properties, owner.fields.some(f => isLeftOut(f, owner, engine))));
+  lines.push(propertiesClause(properties));
 
   return lines.join('\n');
 }

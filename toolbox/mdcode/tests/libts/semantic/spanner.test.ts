@@ -619,6 +619,60 @@ EDGE TABLES (
 `);
     }
   });
+
+  // An element with nothing to list for any other reason gets NO PROPERTIES
+  // too. Without the clause, the engine exposes every column of the table,
+  // including one a profile leaves out. Here a profile excludes both of
+  // Orders' fields, Calendar declares none, Customer, Party's one leaf,
+  // excludes Party's only field, and the association table declares none.
+  test('an element with nothing to list gets NO PROPERTIES', () => {
+    const model = modelOf('shop', [
+      entity('Orders', 'Orders', ['order_id'],
+             {order_id: 'order_id', ssn: 'ssn'},
+             {excludedFields: ['order_id', 'ssn']}),
+      entity('Calendar', 'Calendar', ['day'], {}),
+      entity('Party', '', [], {email: {}}, {abstract: true}),
+      entity('Customer', 'Customer', ['id'], {id: 'id', email: 'c_email'},
+             {extends: ['Party'], excludedFields: ['email']}),
+    ], {relationships: [{
+      name: 'gifted_to',
+      source: {entity: 'Orders', columns: ['order_id']},
+      destination: {entity: 'Customer', columns: ['id']},
+      association: {dataSource: 'Gifts', keys: ['gift_id'],
+                    sourceColumns: ['order_id'],
+                    destinationColumns: ['customer_id'], fields: []},
+    }]});
+    for (const [engine, generate, q] of ENGINES) {
+      const {ddl, warnings} = generate(model);
+      expect(ddl, engine).toBe(`\
+CREATE OR REPLACE PROPERTY GRAPH ${q}shop${q}
+NODE TABLES (
+  ${q}Orders${q} AS Orders
+    KEY(order_id)
+    NO PROPERTIES,
+  ${q}Calendar${q} AS Calendar
+    KEY(day)
+    NO PROPERTIES,
+  ${q}Customer${q} AS Customer
+    KEY(id)
+    DEFAULT LABEL
+    PROPERTIES(
+      id
+    )
+    LABEL Party
+    NO PROPERTIES
+)
+EDGE TABLES (
+  ${q}Gifts${q} AS gifted_to
+    KEY(gift_id)
+    SOURCE KEY(order_id) REFERENCES Orders(order_id)
+    DESTINATION KEY(customer_id) REFERENCES Customer(id)
+    NO PROPERTIES
+);
+`);
+      expect(warnings, engine).toEqual([]);
+    }
+  });
 });
 
 

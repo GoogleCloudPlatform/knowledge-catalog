@@ -65,22 +65,26 @@ EDGE TABLES (
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_sold_date_sk) REFERENCES date_dim(d_date_sk)
-    OPTIONS(synonyms=["sales date relationship", "when sale occurred"]),
+    OPTIONS(synonyms=["sales date relationship", "when sale occurred"])
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_customer
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_customer_sk) REFERENCES customer(c_customer_sk)
-    OPTIONS(synonyms=["customer purchase relationship", "who bought"]),
+    OPTIONS(synonyms=["customer purchase relationship", "who bought"])
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_item
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_item_sk) REFERENCES item(i_item_sk)
-    OPTIONS(synonyms=["product sold relationship", "what was sold"]),
+    OPTIONS(synonyms=["product sold relationship", "what was sold"])
+    NO PROPERTIES,
   `tpcds.public.store_sales` AS store_sales_to_store
     KEY(ss_item_sk, ss_ticket_number)
     SOURCE KEY(ss_item_sk, ss_ticket_number) REFERENCES store_sales(ss_item_sk, ss_ticket_number)
     DESTINATION KEY(ss_store_sk) REFERENCES store(s_store_sk)
     OPTIONS(synonyms=["store location relationship", "where sale occurred"])
+    NO PROPERTIES
 );
 
 -- warnings --
