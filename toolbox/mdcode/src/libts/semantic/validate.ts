@@ -2173,7 +2173,6 @@ async function deploymentPlan(
           deployment.engine === 'bigquery' ? deployBigQuery : deploySpanner,
           [narrowed]);
   if (typeof generated === 'string') return fail(`${at}: ${generated}`);
-  // Push prints no warning of a profile it rejects.
   for (const w of warnings) {
     warn(`profile '${deployment.profile}': [${document}] ${w}`);
   }
